@@ -7,7 +7,14 @@ import {createHash} from 'node:crypto';
 export const MAX_MANIFEST_BYTES = 131072;
 export const MAX_FILE_BYTES = 2_000_000;
 export const MAX_UPDATE_BYTES = 20_000_000;
-const ALLOWED_ROOTS = new Set(['server.mjs','engine.mjs','execution.mjs','markets.mjs','news.mjs','links.mjs','journal.mjs','signal_lifecycle.mjs','updater.mjs','update-cli.mjs','package.json','start.sh','persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','backup_data.bat','migrate_legacy_data.bat','restore_data.bat','open_data_folder.bat']);
+const ALLOWED_ROOTS = new Set([
+ 'server.mjs','engine.mjs','quality.mjs','signal_pipeline.mjs','observation.mjs','scan_diagnostics.mjs',
+ 'execution.mjs','markets.mjs','news.mjs','links.mjs','journal.mjs','signal_lifecycle.mjs',
+ 'paper.mjs','paper_health.mjs','mobile_access.mjs','windows_paper_notify.mjs','windows_paper_notify.ps1',
+ 'tradfi.mjs','tradfi_signal.mjs','tradfi_feed.mjs','updater.mjs','update-cli.mjs','package.json',
+ 'start.sh','persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','backup_data.bat',
+ 'migrate_legacy_data.bat','restore_data.bat','open_data_folder.bat','scripts/check-market-data.mjs'
+]);
 const VERSION=/^\d+\.\d+\.\d+$/;
 export function compareVersions(a,b){
  if(!VERSION.test(a)||!VERSION.test(b))throw Error('잘못된 버전 형식');

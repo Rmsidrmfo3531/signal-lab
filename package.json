@@ -6,7 +6,8 @@
   "description": "Binance and Variational crypto 1H+4H confirmed signals and TradFi 1H+4H reference-candle scanner, responsive PC/mobile, persistent paper PNL",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "test:market": "node scripts/check-market-data.mjs"
   },
   "engines": {
     "node": ">=22"

@@ -154,7 +154,7 @@
 .quality-row{display:grid;grid-template-columns:16px minmax(0,1fr) minmax(65px,auto);gap:8px;align-items:start;padding:5px 0;border-bottom:1px solid #253e53;font-size:11px}
 .quality-row:last-child{border-bottom:none}
 .quality-row small{font-size:10px;color:#8eb1c9;text-align:right}
-.quality-ok{color:#62dca7}.quality-bad{color:#ff9099}
+.quality-ok{color:#62dca7}.quality-bad{color:#ff9099}.quality-bonus{color:#e9c07a}
 @media(max-width:690px){.quality-row{grid-template-columns:16px 1fr}.quality-row small{grid-column:2;text-align:left}}
 
 /* v4.9 MOBILE: use readable vertical signal cards instead of a 1450px-wide grid. */

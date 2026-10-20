@@ -6,7 +6,29 @@ export function normalizedKlines(rows, now=Date.now()) {
   return rows.map(r => Array.isArray(r) ? ({
     time:Number(r[0]), closeTime:Number(r[6]), open:Number(r[1]), high:Number(r[2]), low:Number(r[3]), close:Number(r[4]),
     volume:Number(r[5]), quoteVolume:Number(r[7]||0), closed:Number(r[6]) < now
-  }) : r).filter(k => [k.open,k.high,k.low,k.close,k.volume].every(Number.isFinite)).sort((a,b)=>a.time-b.time);
+  }) : r).filter(k => k&&[k.open,k.high,k.low,k.close,k.volume].every(Number.isFinite)).sort((a,b)=>a.time-b.time);
+}
+/** Validate the full returned sequence before indicators consume completed bars.
+ * Missing/duplicate candles and malformed OHLC must not be hidden by filtering.
+ * UTC boundary alignment is not imposed: only the supplied bar duration/gaps
+ * are checked, which also permits deterministic historical replay fixtures.
+ */
+export function validateKlineSeries(rows,intervalMs,now=Date.now()) {
+  const parsed=normalizedKlines(rows,now),reasons=[];
+  if(!Array.isArray(rows)||parsed.length!==rows.length)reasons.push('가격·거래량 값이 유효하지 않은 봉');
+  const candles=parsed.map(c=>({...c,closeTime:Number(c.closeTime??Number(c.time)+intervalMs-1)}));
+  for(let i=0;i<candles.length;i++) {
+    const c=candles[i];
+    if(!Number.isFinite(c.time)||c.time<=0||!Number.isFinite(c.closeTime)||
+      Math.abs(c.closeTime-(c.time+intervalMs-1))>1||c.time>now+60000)reasons.push('봉 시작·종료 시각 오류');
+    if(Math.min(c.open,c.high,c.low,c.close)<=0||c.volume<0||
+      c.high<Math.max(c.open,c.close)||c.low>Math.min(c.open,c.close)||c.high<c.low||
+      c.quoteVolume!==undefined&&(!Number.isFinite(c.quoteVolume)||c.quoteVolume<0))reasons.push('OHLC·거래량 구조 오류');
+    if(i&&c.time===candles[i-1].time)reasons.push('중복 봉 시각');
+  }
+  const completed=candles.filter(c=>c.closed!==false&&c.closeTime<now);
+  for(let i=1;i<completed.length;i++)if(completed[i].time-completed[i-1].time!==intervalMs)reasons.push('봉 간격 누락 또는 불일치');
+  return {valid:reasons.length===0,reasons:[...new Set(reasons)],candles:completed};
 }
 export function ema(values, period) {
   if (!values?.length) return [];
@@ -73,13 +95,16 @@ function volumeRatio(candles) {
   return avg>0?candles.at(-1).volume/avg:0;
 }
 function recentRange(candles, count) {
-  const a=candles.slice(-count-1,-1);
+  // The caller already removed the current confirmation bar.
+  const a=candles.slice(-count);
   return {high:Math.max(...a.map(x=>x.high)),low:Math.min(...a.map(x=>x.low))};
 }
 export function analyze(symbol, h1Rows, h4Rows, m15Rows=[], priceOverride=null, meta={}) {
   const now=Date.now();
-  const h1=normalizedKlines(h1Rows,now).filter(c=>c.closed);
-  const h4=normalizedKlines(h4Rows,now).filter(c=>c.closed);
+  const validation1=validateKlineSeries(h1Rows,3600000,now),validation4=validateKlineSeries(h4Rows,4*3600000,now);
+  const h1=validation1.candles,h4=validation4.candles;
+  const dataValidation={valid:validation1.valid&&validation4.valid,reasons:[...validation1.reasons.map(x=>'1H '+x),...validation4.reasons.map(x=>'4H '+x)]};
+  if(!dataValidation.valid)return {symbol,status:'insufficient',reason:dataValidation.reasons.join(' / '),dataValidation,technicalQualified:false,qualified:false,scannedAt:now,patternConfirmed:false};
   if(h1.length<65||h4.length<60) return {symbol,status:'insufficient',reason:'봉 데이터 부족'};
   const last=h1.at(-1), prev=h1.at(-2), price=Number(priceOverride)>0?Number(priceOverride):last.close;
   const values1=h1.map(x=>x.close), values4=h4.map(x=>x.close);
@@ -183,7 +208,7 @@ export function analyze(symbol, h1Rows, h4Rows, m15Rows=[], priceOverride=null, 
   return {
     symbol, price, trend, ema20:e1, atr:a, volumeRatio:vRatio, supports:lv.supports,
     resistances:lv.resistances, time:last.time, status:quality?'signal':best?'watch':'neutral',
-    ...(best?{...best,qualified:Boolean(quality)}:{}),quoteVolume:Number(meta.quoteVolume||0),
+    ...(best?{...best,qualified:Boolean(quality)}:{}),dataValidation,quoteVolume:Number(meta.quoteVolume||0),
     priceChangePercent:Number(meta.priceChangePercent||0),scannedAt:now,
     patternConfirmed:Boolean(best),patternTimeframe:'1h',
     patternConfirmedAt:best ? (Number(last.closeTime)||last.time+3600000) : null,

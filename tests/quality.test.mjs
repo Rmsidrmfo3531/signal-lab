@@ -18,6 +18,25 @@ test('strict confirmation can pass all independent hard criteria on a strong fre
  assert.equal(r.status,'signal');assert.equal(r.technicalQualified,true);
  assert.equal(r.score,100);assert.ok(r.score>=STRICT_MIN_SCORE);
  assert.deepEqual(r.quality.failed,[]);assert.equal(r.quality.checks.length,9);
+ assert.equal(r.quality.checks.filter(x=>x.required).length,8);
+ assert.equal(r.quality.checks.filter(x=>!x.required)[0].key,'4hSlope');
+});
+
+test('90-point aligned LONG and SHORT qualify without the optional slope bonus',()=>{
+ for(const direction of ['LONG','SHORT']){
+  const {h1,h4}=fixture();
+  h4.forEach((c,i)=>{
+   let close=i>85?110:70+i*.28;
+   if(i>=105)close=[108,100,100,100,106][i-105];
+   Object.assign(c,{open:close-.1,high:close+.35,low:close-.35,close});
+  });
+  if(direction==='SHORT')for(const c of [...h1,...h4])Object.assign(c,{open:200-c.open,close:200-c.close,high:200-c.low,low:200-c.high});
+  const r=scan(h1,h4,{price:direction==='LONG'?102.2:97.8});
+  assert.equal(r.score,90);assert.equal(r.quality.minimumScore,90);
+  assert.equal(r.quality.passed,true);assert.equal(r.technicalQualified,true);
+  assert.equal(r.status,'signal');assert.equal(r.direction,direction);
+  assert.deepEqual(r.quality.failed,[]);assert.deepEqual(r.quality.missingBonus,['4시간봉 EMA20 기울기 유지']);
+ }
 });
 
 test('weak volume rejects otherwise identical pattern; score is evidence count, not success probability',()=>{
@@ -30,6 +49,7 @@ test('strong volume but insufficient 1h executed notional fails',()=>{
  const {h1,h4}=fixture();h1.at(-1).quoteVolume=1000;
  const r=scan(h1,h4);
  assert.equal(r.technicalQualified,false);assert.ok(r.quality.failed.some(x=>x.includes('1시간 거래대금')));
+ assert.equal(r.score,95);assert.equal(r.status,'watch','95 points cannot override mandatory liquidity');
 });
 test('24h liquidity too small fails',()=>{
  const {h1,h4}=fixture();const r=scan(h1,h4,{quoteVolume:1e6});
@@ -44,9 +64,15 @@ test('stale close cannot trigger recent scan signal',()=>{
  const {h1,h4}=fixture(Date.now()-3*3600000);const r=scan(h1,h4);
  assert.equal(r.technicalQualified,false);assert.ok(r.quality.failed.some(x=>x.includes('75분')));
 });
-test('trend slope veto overrides volume and candlestick strength',()=>{
+test('opposing 4H trend still vetoes strong volume and candlestick strength',()=>{
  const {h1,h4}=fixture();h4.forEach((c,i)=>{if(i>=h4.length-5){c.close=90-i*.20;c.open=c.close+.1;c.high=c.open+.35;c.low=c.close-.35}});
  const r=scan(h1,h4);assert.notEqual(r.status,'signal');
+});
+test('stale 4H context is a mandatory failure even at 90 points',()=>{
+ const {h1,h4}=fixture();for(const c of h4)c.time-=40*86400000;
+ const r=scan(h1,h4);assert.equal(r.patternConfirmed,true);assert.equal(r.score,90);
+ assert.equal(r.technicalQualified,false);assert.equal(r.status,'watch');
+ assert.ok(r.quality.failed.some(x=>x.includes('4시간봉 255분')));
 });
 test('three targets and fractional scale-out have exact percent and direction symmetry',()=>{
  for(const direction of ['LONG','SHORT']){

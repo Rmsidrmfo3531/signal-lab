@@ -52,7 +52,7 @@ function updateStatusText(info){
 }
 function renderScanDiagnostics(f){
  if(!f)return;
- const vals={diagUnique:f.uniqueAnalyzed,diagNoPattern:f.noPattern,diagPattern:f.patternCount,diagQuality:f.quality,diagVenue:f.venue,diagEntry:f.entry,diagReady:f.ready};
+ const vals={diagUnique:f.uniqueAnalyzed,diagNoPattern:f.noPattern,diagPattern:f.patternCount,diagTechnicalPassed:f.technicalPassed,diagQuality:f.quality,diagVenuePassed:f.venuePassed,diagVenue:f.venue,diagEntry:f.entry,diagReady:f.ready};
  for(const [id,value] of Object.entries(vals)){const el=$(id);if(el)el.textContent=Number(value||0).toLocaleString('ko-KR')+'종';}
  const el=$('diagReasons');if(el){
    const reasons=(f.topReasons||[]).slice(0,5);
@@ -72,6 +72,7 @@ function setStatus(s){app.status=s;renderScanDiagnostics(s.scanFunnel);
  $('sysQuoteAge').textContent=s.lastTickerAt?Math.round((Date.now()-s.lastTickerAt)/1000)+'초 전 · '+(s.lastTickerCount||0)+'틱 수신':'실시간 틱 미수신';
  $('sysQuoteVAR').textContent=s.lastVariational?Math.round((Date.now()-s.lastVariational)/1000)+'초 전':'조회 전';
  $('sysNewsAge').textContent=s.newsChecked?Math.round((Date.now()-s.newsChecked)/1000)+'초 전':'조회 전';
+ const storageEl=$('sysStorage');if(storageEl){storageEl.textContent=s.storage?.healthy===false?'저장 실패 · 모의매매 일시 중지':s.storage?.lastSavedAt?'정상 · '+clock(s.storage.lastSavedAt):'확인 중';storageEl.classList.toggle('negative',s.storage?.healthy===false);}
  $('sysTG').textContent=s.telegramConfigured?'서버 설정 완료':'설정 필요';
  $('metricContracts').textContent=s.variational==='connected'?String(s.activeCount):s.researchCount?String(s.researchCount)+' (분석 전용)':'—';
  $('metricScanned').textContent=s.scannedTotal||0;
@@ -83,7 +84,8 @@ function setStatus(s){app.status=s;renderScanDiagnostics(s.scanFunnel);
  $('socketStatus').innerHTML=`<i class="dot ${alive?'green':s.rest==='connected'?'amber':'red'}"></i><span>${alive?'LIVE STREAM':s.rest==='connected'?'REST ONLY':'연결 대기'}</span>`;
  $('sysLiveHealth').textContent=liveFresh?Math.round((Date.now()-s.lastLiveDataAt)/1000)+'초 전 · 이벤트 분석 '+(s.liveAnalyzed||0)+'건':(s.liveLastError||'시세 구독 후 실제 봉 데이터 수신 대기');
  $('sysSubscriptions').textContent=(s.liveSubscribeAcks||0)+'개 ACK / '+(s.liveSubscribeErrors||0)+'개 오류';
- if(s.variational==='offline')banner('Variational 상장 목록 검증 실패',s.error||'공식 API 접속 불가 · 공통 종목 및 신호를 숨깁니다.');
+ if(s.storage?.healthy===false)banner('기록 저장 실패 · 모의매매 확인 필요',s.storage.error||'기록이 디스크에 저장되지 않았습니다. 데이터 경로와 저장 공간을 확인하세요.');
+ else if(s.variational==='offline')banner('Variational 상장 목록 검증 실패',s.error||'공식 API 접속 불가 · 공통 종목 및 신호를 숨깁니다.');
  else if(s.error && (!s.activeCount||s.rest==='offline'))banner('시장 데이터 접속 오류',s.error+' · 서버에서 자동 재시도 중입니다.');
  else if(s.rest==='connected'&&s.variational==='connected')clearBanner();
  app.watchlist=s.watchlist||app.watchlist;
@@ -115,13 +117,22 @@ async function loadExecution(){
  }catch(e){if(symbol===app.symbol){setExecutionView(null);$('executionVerdict').textContent='호가 조회 실패: '+e.message}}
 }
 function selectedPrice(){return app.marketMap.get(app.symbol)?.price||app.analysis?.price||0}
+function mergeMarketQuote(row,previous){
+ // Metadata snapshots can arrive after a newer price event. Preserve its original
+ // timestamp, including when it has become stale; a refresh must not make it fresh.
+ const incomingAt=Number(row.priceAt)||0,previousAt=Number(previous?.priceAt)||0;
+ if(previousAt>incomingAt&&Number.isFinite(previous?.price)&&previous.price>0){
+  return {...row,price:previous.price,priceAt:previousAt,priceSource:previous.priceSource};
+ }
+ return {...row};
+}
 function applyMarket({markets,research=[],watchlist}){
  if(!Array.isArray(markets))return;
- const before=app.symbol;
- app.market=markets;
+ const previous=app.marketMap;
  // Research-only Binance markets are shown as non-tradable observations when
  // Variational metadata is unavailable. They can NEVER create order links.
- app.marketMap=new Map([...research.filter(x=>!markets.some(m=>m.symbol===x.symbol)).map(m=>[m.symbol,{...m,researchOnly:true}]),...markets.map(m=>[m.symbol,{...m,researchOnly:false}])]);
+ app.marketMap=new Map([...research.filter(x=>!markets.some(m=>m.symbol===x.symbol)).map(m=>[m.symbol,{...mergeMarketQuote(m,previous.get(m.symbol)),researchOnly:true}]),...markets.map(m=>[m.symbol,{...mergeMarketQuote(m,previous.get(m.symbol)),researchOnly:false}])]);
+ app.market=markets.map(m=>app.marketMap.get(m.symbol));
  updateJournalSymbols();
  if(watchlist)app.watchlist=watchlist.filter(x=>markets.some(m=>m.symbol===x));
  // Viewing a public TradingView chart does NOT require exchange listing verification.
@@ -131,10 +142,7 @@ function applyMarket({markets,research=[],watchlist}){
  app.patterns=app.patterns.filter(x=>app.marketMap.has(x.symbol));
  app.watch=app.watch.filter(x=>app.marketMap.has(x.symbol));
  app.alerts=app.alerts.filter(x=>app.marketMap.has(x.symbol));
- if(app.symbol!==before){app.analysis=null;app.candles=[];
-   if(app.marketMap.has(app.symbol)){loadChart();loadAnalysis()}
-   else renderAnalysis();
- }
+ if(!app.marketMap.has(app.symbol)){app.analysis=null;renderAnalysis();}
  renderWatch();renderPair();renderSignals();renderRecentCoverage();renderAlerts();renderMatched();loadExecution();renderTradingView();
 }
 function renderWatch(){
@@ -174,7 +182,6 @@ function renderMatched(){
 function levelRows(levelArr,side){return levelArr?.length?levelArr.map((p,i)=>`<div class="level-row ${side==='res'?'res':''}"><strong>${fmt(p.price)}</strong><span>${escapeHtml(p.source||'1h')} · ${i===0?'가장 가까움':'추가 레벨'}</span></div>`).join(''):'<div class="empty-small">확인된 피벗 구간 없음</div>'}
 function renderAnalysis(){const a=app.analysis;
  if(!a||a.status==='insufficient'){$('analysisTag').textContent='분석 대기';$('analysisTrend').textContent='—';$('supports').innerHTML='<div class="empty-small">분석할 봉 데이터 부족</div>';$('resistances').innerHTML='<div class="empty-small">분석할 봉 데이터 부족</div>';$('currentCandidate').innerHTML='<div class="empty-small">분석된 유효 진입 지점이 없습니다.</div>';return}
- $('analysisTag').textContent=a.status==='signal'?'확정 패턴 · 매매 검증 통과':a.patternConfirmed?'차트 패턴 확정 · 진입 보류':a.status==='watch'?'패턴 조건 관찰 중':'대기 / 확인 중';
  $('analysisTrend').textContent=a.trend==='up'?'▲ 상승 추세':a.trend==='down'?'▼ 하락 추세':'━ 중립 / 횡보';$('analysisTrend').className=a.trend==='up'?'positive':a.trend==='down'?'negative':'';
  $('supports').innerHTML=levelRows(a.supports,'sup');$('resistances').innerHTML=levelRows(a.resistances,'res');
  $('volRatio').textContent=a.volumeRatio?.toFixed(2)+'x';$('atrValue').textContent=fmt(a.atr);
@@ -182,12 +189,14 @@ function renderAnalysis(){const a=app.analysis;
  const currentMarket=app.marketMap.get(a.symbol);
  const plan=tradePlan(a);
  const timing=entryTiming(a,{price:currentMarket?.price,priceAt:currentMarket?.priceAt,venueReady:ready});
+ const currentReady=ready&&timing.actionable;
+ $('analysisTag').textContent=currentReady?'확정 패턴 · 현재 진입 검증 통과':a.patternConfirmed?'차트 패턴 확정 · 진입 보류':a.status==='watch'?'패턴 조건 관찰 중':'대기 / 확인 중';
  const vx=a.execution;
- const qualityInfo=a.quality?.checks?.length?`<div class="quality-checks"><h4>엄격 검증 체크리스트 · 승률 예측이 아님</h4>${a.quality.checks.map(c=>`<div class="quality-row"><span class="${c.passed?'quality-ok':'quality-bad'}">${c.passed?'✓':'✕'}</span><span>${escapeHtml(c.label)}</span><small>${escapeHtml(String(c.value??''))}</small></div>`).join('')}</div>`:'';
+ const qualityInfo=a.quality?.checks?.length?`<div class="quality-checks"><h4>필수 조건 충족 + 90점 이상 · 기울기는 가산점</h4>${a.quality.checks.map(c=>`<div class="quality-row"><span class="${c.passed?'quality-ok':c.required===false?'quality-bonus':'quality-bad'}">${c.passed?'✓':c.required===false?'○':'✕'}</span><span>${c.required===false?'[가산점]':'[필수]'} ${escapeHtml(c.label)} (${Number(c.weight)||0}점)</span><small>${escapeHtml(String(c.value??''))}</small></div>`).join('')}<small>필수 위험 조건은 점수와 관계없이 모두 충족해야 합니다. 점수는 승률이 아닙니다.</small></div>`:'';
  const execInfo=vx?`<div class="signal-check ${vx.eligible?'':'blocked'}">${vx.eligible?'Variational 공개 호가 검증 통과':'Variational 비용/신선도 검증 보류'}<small>${escapeHtml(vx.reasons?.join(' · ')||'상세는 체결비용 검증 패널 참고')} · 추정 왕복 비용 ${vx.spreadCostUSD==null?'미확인':money(vx.spreadCostUSD)} · 명목 ${money(vx.notional)} · 펀딩 별도</small></div>`:'';
- const tps=plan?`<div class="tradeplan-box"><strong class="tradeplan-label">3단계 분할 익절 · 가상 계획</strong><div class="tp-columns">${plan.targets.filter(Boolean).map(t=>`<div class="tp-target"><span>${t.name} (${t.multiple}R) · ${t.reducePct}% 청산</span><strong>${fmt(t.price)}</strong><small>가격 변화 +${t.movePct.toFixed(2)}% ${t.estimatedPartProfitUSD!=null?' · 해당 물량 예상 +'+money(t.estimatedPartProfitUSD):''}</small><small>남은 물량 ${t.remainingPct}%</small></div>`).join('')}</div><p class="tradeplan-caution">전량 각 목표 체결을 가정한 총 이론수익 ${plan.projectedGrossUSD!=null?'+'+money(plan.projectedGrossUSD):'금액 미확인'} · 가중 손익비 ${plan.weightedR.toFixed(2)}R · 모든 비용·슬리피지·펀딩 제외. 1차 익절 뒤 나머지 손절 조정은 자동 수행하지 않습니다.</p></div>`:'';
+ const tps=plan?`<div class="tradeplan-box"><strong class="tradeplan-label">3단계 분할 익절 · 가상 계획</strong><div class="tp-columns">${plan.targets.filter(Boolean).map(t=>`<div class="tp-target"><span>${t.name} (${t.multiple}R) · ${t.reducePct}% 청산</span><strong>${fmt(t.price)}</strong><small>가격 변화 +${t.movePct.toFixed(2)}% ${t.estimatedPartProfitUSD!=null?' · 해당 물량 예상 +'+money(t.estimatedPartProfitUSD):''}</small><small>남은 물량 ${t.remainingPct}%</small></div>`).join('')}</div><p class="tradeplan-caution">전량 각 목표 체결을 가정한 총 이론수익 ${plan.projectedGrossUSD!=null?'+'+money(plan.projectedGrossUSD):'금액 미확인'} · 가중 손익비 ${plan.weightedR.toFixed(2)}R · 모든 비용·슬리피지·펀딩 제외. 자동 모의매매는 1차 익절 뒤 잔여 손절을 진입 체결가로 이동합니다. 청산 비용은 별도입니다.</p></div>`:'';
  const timingBlock=plan?`<div class="timing-card ${timing.actionable?'timing-ready':'timing-wait'}"><div class="timing-title">진입 시점 체크 <strong>${escapeHtml(timing.label)}</strong></div><p>${escapeHtml(timing.detail)}</p><p><b>${escapeHtml(a.direction)} 관찰 가격 구간: ${fmt(timing.zoneLow)} ~ ${fmt(timing.zoneHigh)}</b></p><p class="timing-condition">확정 1시간봉 + 4시간봉 추세 + 최신 시세 + Variational 호가/비용을 확인해야 합니다. 신규 진입은 추격하지 않고 구간 재접근을 관찰합니다.</p></div>`:'';
- $('currentCandidate').innerHTML=a.pattern?`<div class="signal-heading"><span class="dir ${a.direction==='LONG'?'long':'short'}">${a.direction}</span><span class="subtle-tag">규칙 충족 ${a.score}/100 (승률 아님)</span></div><div class="signal-pattern">${escapeHtml(a.pattern)} ${ready?'· 진입 검증 통과':a.patternConfirmed?'· 차트 확정 / 매매 보류':'· 추가 확인 필요'}</div><div class="signal-comment">${escapeHtml(a.reason)} · 차트 기준 진입가를 실제 Variational 확정 주문 가격으로 오해하지 마세요.</div><div class="signal-grid"><div><span>진입 기준가</span><strong>${fmt(a.entry)}</strong></div><div><span>손절 무효화</span><strong>${fmt(a.stop)}</strong></div><div><span>손절 거리 (가격 기준)</span><strong>${plan?plan.riskPct.toFixed(2)+'%':'—'}</strong></div><div><span>계획 명목 포지션</span><strong>${money(a.risk?.nominal)}</strong></div></div>${qualityInfo}${timingBlock}${tps}${execInfo}`:'<div class="empty-small">현재 확정된 진입 신호 없음. 1H 구조·4H 추세·거래량·2R 목표를 함께 검사 중입니다.</div>';
+ $('currentCandidate').innerHTML=a.pattern?`<div class="signal-heading"><span class="dir ${a.direction==='LONG'?'long':'short'}">${a.direction}</span><span class="subtle-tag">규칙 충족 ${a.score}/100 (승률 아님)</span></div><div class="signal-pattern">${escapeHtml(a.pattern)} ${currentReady?'· 현재 진입 검증 통과':a.patternConfirmed?'· 차트 확정 / 매매 보류':'· 추가 확인 필요'}</div><div class="signal-comment">${escapeHtml(a.reason)} · 차트 기준 진입가를 실제 Variational 확정 주문 가격으로 오해하지 마세요.</div><div class="signal-grid"><div><span>진입 기준가</span><strong>${fmt(a.entry)}</strong></div><div><span>손절 무효화</span><strong>${fmt(a.stop)}</strong></div><div><span>손절 거리 (가격 기준)</span><strong>${plan?plan.riskPct.toFixed(2)+'%':'—'}</strong></div><div><span>계획 명목 포지션</span><strong>${money(a.risk?.nominal)}</strong></div></div>${qualityInfo}${timingBlock}${tps}${execInfo}`:'<div class="empty-small">현재 확정된 진입 신호 없음. 1H 구조·4H 추세·거래량·2R 목표를 함께 검사 중입니다.</div>';
 }
 function scanPagination(hostId,infoId,paged,onPage){
  const host=$(hostId),info=$(infoId);if(!host)return;
@@ -205,7 +214,8 @@ function renderRecentCoverage(){
  host.innerHTML=rows.length?rows.map(x=>{
   const market=app.marketMap.get(x.symbol)||{};
   const verified=Boolean(market.variational)&&app.status?.variational==='connected';
-  const stage=x.status==='insufficient'?'캔들 부족':!x.pattern?'분석 완료 · 패턴 없음':!x.quality?.passed?'패턴 발견 · 기술조건 미달':!verified?'패턴 발견 · Variational 미검증':x.status==='signal'&&x.qualified?'최종 진입 검증 통과':'패턴 발견 · 호가/진입 보류';
+  const ready=app.signals.some(a=>a.symbol===x.symbol&&a.time===x.time&&a.pattern===x.pattern);
+  const stage=x.status==='insufficient'?'캔들 부족':!x.pattern?'분석 완료 · 패턴 없음':!x.quality?.passed?'패턴 발견 · 기술조건 미달':!verified?'패턴 발견 · Variational 미검증':ready?'최종 진입 검증 통과':'패턴 발견 · 호가/진입 보류';
   return `<button type="button" class="scan-recent-item" data-recent-symbol="${escapeHtml(x.symbol)}"><strong>${escapeHtml(x.symbol)}</strong><span>${escapeHtml(stage)}</span><small>기술 점수 ${Number(x.score||0)} · ${clock(x.scannedAt)} · ${verified?'공통 상장':'주문 검증 전'}</small></button>`;
  }).join(''):'<div class="empty-small">아직 분석된 종목 없음. 스캔 성공 건수와 API 연결을 확인하세요.</div>';
  host.querySelectorAll('button[data-recent-symbol]').forEach(b=>b.addEventListener('click',()=>{selectSymbol(b.dataset.recentSymbol);document.getElementById('chartPanel').scrollIntoView({behavior:'smooth'})}));
@@ -244,14 +254,15 @@ function renderSignals(){
    const mPrice=app.marketMap.get(a.symbol)?.price||a.price;
    const latest=browserAlertState(a);
    const invalidated=a.patternInvalidated||(a.direction==='LONG'?mPrice<=a.stop:mPrice>=a.stop);
-   const ready=!invalidated&&latest.cls==='live'&&app.signals.some(s=>s.symbol===a.symbol&&s.pattern===a.pattern&&s.time===a.time);
+   const ready=!invalidated&&latest.cls==='live'&&app.signals.some(s=>s.symbol===a.symbol&&s.pattern===a.pattern&&s.time===a.time)&&entryTiming(a,{price:mPrice,priceAt:app.marketMap.get(a.symbol)?.priceAt,venueReady:true}).actionable;
    const expiredOrHit=['유효기간 경과','1차 목표 구간 도달','손절 무효화'].includes(latest.text);
    const unverified=!app.marketMap.get(a.symbol)?.variational || app.status?.variational!=='connected';
    const label=unverified?'⚠ Binance 패턴 관찰 · Variational 주문 검증 전':invalidated?'✕ 손절 무효화 · 진입 금지':ready?'● 진입 검증 통과':expiredOrHit?'✕ '+latest.text:a.patternConfirmed?(a.technicalQualified===false?'◆ 패턴 발견 · 기술 조건 미달':'◆ 패턴 확인 · 거래 검증 보류'):'○ 패턴 관찰 중';
    const cls=unverified||invalidated||expiredOrHit?'pattern-invalid':ready?'pattern-ready':a.patternConfirmed?'pattern-held':'pattern-watch';
    const qualityProblems=(a.quality?.failed||[]).join(' · ');
    const venueProblems=(a.execution?.reasons||[]).slice(0,2).join(' · ');
-   const detail=a.patternConfirmed?`1H 마감 ${dateClock(a.patternConfirmedAt)} KST · 손절 ${fmt(a.stop)}${qualityProblems?' · 기술 미달: '+escapeHtml(qualityProblems):venueProblems?' · 호가 보류: '+escapeHtml(venueProblems):''}`:escapeHtml(a.reason||'');
+   const finalProblems=(a.decision?.reasons||[]).slice(0,2).join(' · ');
+   const detail=a.patternConfirmed?`1H 마감 ${dateClock(a.patternConfirmedAt)} KST · 손절 ${fmt(a.stop)}${qualityProblems?' · 기술 미달: '+escapeHtml(qualityProblems):venueProblems?' · 호가 보류: '+escapeHtml(venueProblems):finalProblems?' · 진입 보류: '+escapeHtml(finalProblems):''}`:escapeHtml(a.reason||'');
    const plan=tradePlan(a);
    const onMarket=app.marketMap.get(a.symbol);
    const timing=entryTiming(a,{price:onMarket?.price,priceAt:onMarket?.priceAt,venueReady:ready});
@@ -454,7 +465,7 @@ function drawChart(){if(app.chartMode!=='basic')return;const canvas=$('chart'),f
  if(app.hover>=0&&app.hover<c.length){const idx=app.hover,X=chartL+(idx+.5)*candleWidth;ctx.strokeStyle='#7893aa';ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(X,chartT);ctx.lineTo(X,chartB);ctx.stroke();ctx.setLineDash([])}
  app.chartGeom={left:chartL,right:chartR,step:candleWidth,len:c.length,candles:c};
 }
-function onQuote(arr){let selectedChanged=false;for(const [symbol,price] of arr){const q=app.marketMap.get(symbol);if(q){q.price=Number(price);q.priceAt=Date.now();if(symbol===app.symbol)selectedChanged=true}}
+function onQuote(arr){let selectedChanged=false;for(const [symbol,price,priceAt] of arr){const q=app.marketMap.get(symbol);const at=priceAt===undefined?Date.now():Number(priceAt);if(q&&Number.isFinite(Number(price))&&Number(price)>0&&Number.isFinite(at)&&at>0&&at<=Date.now()+60000&&at>=Number(q.priceAt||0)){q.price=Number(price);q.priceAt=at;if(symbol===app.symbol)selectedChanged=true}}
  if(selectedChanged){renderPair();drawChart();if(Date.now()-(app.lastTimingRender||0)>5000){renderAnalysis();app.lastTimingRender=Date.now()}}
  const now=Date.now();if(now-(app.lastWatchRender||0)>6000){renderWatch();renderSignals();renderAlerts();app.lastWatchRender=now}
 }
@@ -509,7 +520,7 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('status',e=>{try{setStatus(JSON.parse(e.data))}catch{}});
  es.addEventListener('market',e=>{try{applyMarket(JSON.parse(e.data))}catch{}});
  es.addEventListener('quotes',e=>{try{const p=JSON.parse(e.data);app.lastSocketEvent=Date.now();onQuote(p.data||[])}catch{}});
- es.addEventListener('scan',e=>{try{const x=JSON.parse(e.data);setStatus(x.status);app.signals=x.signals||[];app.patterns=x.patterns||[];app.watch=x.watch||[];if(x.recent)app.recent=x.recent;app.structures=x.structures||[];app.history=x.history||[];renderObservations();renderSignals();renderRecentCoverage();json('/api/market').then(applyMarket).catch(()=>{});const found=app.signals.find(x=>x.symbol===app.symbol);if(found){app.analysis=found;renderAnalysis();drawChart()}else if(!app.analysis||app.analysis.status==='insufficient'){loadAnalysis()} }catch{}});
+ es.addEventListener('scan',e=>{try{const x=JSON.parse(e.data);setStatus(x.status);app.signals=x.signals||[];app.patterns=x.patterns||[];app.watch=x.watch||[];if(x.recent)app.recent=x.recent;app.structures=x.structures||[];app.history=x.history||[];renderObservations();renderSignals();renderRecentCoverage();json('/api/market').then(applyMarket).catch(()=>{});refreshSelectedAnalysis(x,{reloadMissing:true});drawChart() }catch{}});
  es.addEventListener('execution',e=>{try{const payload=JSON.parse(e.data);for(const item of payload.items||[]){const q=app.marketMap.get(item.symbol);if(q)q.variational=item.variational;}renderPair();renderMatched();loadExecution()}catch{}});
  es.addEventListener('alert',e=>{try{const a=JSON.parse(e.data);app.alerts.unshift(a);app.alerts=app.alerts.slice(0,60);renderAlerts();notify(a);loadResults()}catch{}});
  es.addEventListener('live',e=>{try{const d=JSON.parse(e.data);if(d.signals)app.signals=d.signals;if(d.patterns)app.patterns=d.patterns;if(d.watch)app.watch=d.watch;renderSignals();if(d.symbol===app.symbol){loadAnalysis();if(d.reason?.includes('close'))loadChart()}}catch{}});
@@ -519,7 +530,14 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('update',e=>{try{updateStatusText({...JSON.parse(e.data),version:'5.8.0'})}catch{}});
  es.onerror=()=>{if(es.readyState===EventSource.CLOSED)banner('서버 연결 종료','Node.js 서버를 다시 실행하세요.');$('socketStatus').innerHTML='<i class="dot red"></i><span>서버 재접속</span>'};
 }
-async function loadResults(){try{const data=await json('/api/results');app.signals=(data.signals||[]).filter(x=>app.marketMap.has(x.symbol));app.patterns=(data.patterns||[]).filter(x=>app.marketMap.has(x.symbol));app.watch=(data.watch||[]).filter(x=>app.marketMap.has(x.symbol));app.recent=(data.recent||[]).filter(x=>app.marketMap.has(x.symbol));app.structures=data.structures||[];app.history=data.history||[];renderObservations();app.alerts=(data.alerts||[]).filter(x=>app.marketMap.has(x.symbol));renderSignals();renderRecentCoverage();renderAlerts();const found=(data.recent||[]).find(x=>x.symbol===app.symbol);if(found){app.analysis=found;renderAnalysis()}}catch(e){console.warn('Results:',e.message)}}
+function refreshSelectedAnalysis(data,{reloadMissing=false}={}){
+ const candidates=[...(data.signals||[]),...(data.recent||[]),...(data.patterns||[]),...(data.watch||[])];
+ const found=candidates.find(x=>x.symbol===app.symbol);
+ app.analysis=found||null;
+ renderAnalysis();
+ if(!found&&reloadMissing&&app.marketMap.has(app.symbol))void loadAnalysis();
+}
+async function loadResults(){try{const data=await json('/api/results');app.signals=(data.signals||[]).filter(x=>app.marketMap.has(x.symbol));app.patterns=(data.patterns||[]).filter(x=>app.marketMap.has(x.symbol));app.watch=(data.watch||[]).filter(x=>app.marketMap.has(x.symbol));app.recent=(data.recent||[]).filter(x=>app.marketMap.has(x.symbol));app.structures=data.structures||[];app.history=data.history||[];renderObservations();app.alerts=(data.alerts||[]).filter(x=>app.marketMap.has(x.symbol));renderSignals();renderRecentCoverage();renderAlerts();refreshSelectedAnalysis(data)}catch(e){console.warn('Results:',e.message)}}
 async function loadAll(){
  // Failure to fetch Variational metadata must NEVER hide the public TV chart.
  const [st,market]=await Promise.allSettled([json('/api/status'),json('/api/market')]);

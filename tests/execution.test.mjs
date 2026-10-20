@@ -13,3 +13,19 @@ test('notional outside API sample band blocked',()=>{const v=listing();assert.eq
 test('missing funding is unknown, never silently displayed as zero',()=>{const x=make(listing({funding:null}));assert.equal(x.fundingOneIntervalUSD,null);assert.equal(x.fundingIntervalRate,null)});
 test('trade risk sized to quote spread and stop distance',()=>{const r=riskSizedEstimate({signal:{entry:81000,stop:80595,target1:81810,direction:'LONG'},listing:listing(),binancePrice:81001,binancePriceAt:T,statsReceivedAt:T,now:T});assert.ok(r.notional>0&&r.notional<=1500);assert.ok(r.estimatedStopLossUSD<=6.001)});
 test('must have Binance symbol-specific recent updates',()=>{const x=make(listing(),{binancePriceAt:T-300000});assert.equal(x.eligible,false);assert.ok(x.reasons.join(' ').includes('Binance'))});
+test('future quote, Binance and receipt timestamps fail closed',()=>{
+ for(const field of ['quote','binance','stats']){
+  const v=listing(),extra={};
+  if(field==='quote')v.quoteUpdatedAt=T+86400000;
+  if(field==='binance')extra.binancePriceAt=T+86400000;
+  if(field==='stats')extra.statsReceivedAt=T+86400000;
+  const result=make(v,extra);assert.equal(result.eligible,false);assert.match(result.reasons.join(' '),/미래/);
+ }
+});
+test('risk and reward use the directional venue quote rather than an optimistic chart entry',()=>{
+ const quote={bid:100.339966,ask:100.35},signal={direction:'LONG',entry:100,stop:99,target1:102};
+ const result=riskSizedEstimate({signal,listing:{markPrice:100,quoteUpdatedAt:T,quote1k:quote,quoteBase:quote},binancePrice:100,binancePriceAt:T,statsReceivedAt:T,now:T});
+ assert.equal(result.entryBasis,quote.ask);
+ assert.ok(result.notional*(quote.ask-signal.stop)/quote.ask<=6);
+ assert.ok(result.estimatedNetRR<1.8);
+});

@@ -37,6 +37,7 @@ export function executionEstimate({listing,side='LONG',notional=1000,binancePric
  if(quoteAgeSeconds===null||quoteAgeSeconds>cfg.maxQuoteAgeSeconds)reasons.push('Variational 호가 오래됨 또는 갱신시각 없음');
  if(binanceAgeSeconds===null||binanceAgeSeconds>cfg.maxFeedAgeSeconds)reasons.push('Binance 해당 종목 시세 오래됨');
  if(statsAgeSeconds===null||statsAgeSeconds>cfg.maxQuoteAgeSeconds)reasons.push('Variational API 응답 오래됨');
+ if([at,binancePriceAt,statsReceivedAt].some(t=>Number.isFinite(t)&&t>now+5000))reasons.push('시장 데이터 시각이 현재보다 미래임');
  const mid=bid&&ask?(bid+ask)/2:null;
  const effectiveSpreadBps=mid?((ask-bid)/mid)*10000:null;
  const venueMarkDiffBps=mark&&bp?bps(mark,bp):null;
@@ -61,12 +62,16 @@ export function executionEstimate({listing,side='LONG',notional=1000,binancePric
 export function riskSizedEstimate({signal,listing,binancePrice,binancePriceAt,statsReceivedAt,now=Date.now(),limits}={}){
  if(!signal?.entry||!signal?.stop)return {eligible:false,reasons:['진입가·손절가 없음']};
  const direction=signal.direction;
- const stopRate=Math.abs(signal.entry-signal.stop)/signal.entry;
  const quote1k=executionEstimate({listing,side:direction,notional:1000,binancePrice,binancePriceAt,statsReceivedAt,now,limits});
+ const entryBasis=(direction==='LONG'?quote1k.ask:quote1k.bid)||signal.entry;
+ const sign=direction==='LONG'?1:-1;
+ const stopRate=sign*(entryBasis-signal.stop)/entryBasis;
+ const targetRate=sign*(signal.target1-entryBasis)/entryBasis;
  const spreadRate=Math.max(0,quote1k.roundTripCostBps??0)/10000;
  const n=Math.min(1500,Math.max(0,(limits?.riskUSD??EXEC_DEFAULTS.riskUSD)/(stopRate+spreadRate)));
  const result=executionEstimate({listing,side:direction,notional:n,binancePrice,binancePriceAt,statsReceivedAt,now,limits});
+ if(!(stopRate>0&&targetRate>0)){result.eligible=false;result.reasons.push('Variational 참고 진입가 기준 손절·목표 방향 불일치')}
  const expectedLoss=n*(stopRate+spreadRate);
- return {...result,stopRate,estimatedStopLossUSD:expectedLoss,expectedGrossTargetUSD:n*Math.abs(signal.target1-signal.entry)/signal.entry,
-  estimatedNetRR:expectedLoss>0?(n*Math.abs(signal.target1-signal.entry)/signal.entry-(result.spreadCostUSD||0))/expectedLoss:null};
+ return {...result,stopRate,entryBasis,estimatedStopLossUSD:expectedLoss,expectedGrossTargetUSD:n*targetRate,
+  estimatedNetRR:expectedLoss>0?(n*targetRate-(result.spreadCostUSD||0))/expectedLoss:null};
 }

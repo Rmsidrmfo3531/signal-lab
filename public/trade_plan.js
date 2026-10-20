@@ -4,6 +4,14 @@
 export const TP_WEIGHTS=Object.freeze([40,35,25]);
 export const TP_R_MULTIPLES=Object.freeze([2,3,4]);
 
+// Share the stricter intersection of the price, ATR and risk-distance limits
+// with the server's final decision and the first simulated entry quote.
+export function entryAllowance(signal){
+  const entry=Number(signal?.entry),stop=Number(signal?.stop),atr=Number(signal?.atr);
+  if(!(entry>0)||!(stop>0)||!Number.isFinite(entry)||!Number.isFinite(stop))return 0;
+  return Math.min(.004,Math.abs(entry-stop)/entry*.25,Number.isFinite(atr)&&atr>0?atr/entry*.45:Infinity);
+}
+
 export function tradePlan(signal,{notional=signal?.risk?.nominal}={}){
   const entry=Number(signal?.entry),stop=Number(signal?.stop),side=signal?.direction;
   if(!['LONG','SHORT'].includes(side)||!Number.isFinite(entry)||entry<=0||!Number.isFinite(stop)||stop<=0||
@@ -36,9 +44,8 @@ export function entryTiming(signal,{price=null,priceAt=null,now=Date.now(),venue
   const plan=tradePlan(signal);
   const result=(code,label,detail,actionable=false,extra={})=>({code,label,detail,actionable,...extra});
   if(!plan)return result('invalid','진입 조건 불명확','진입·손절 기준을 검증할 수 없습니다.');
-  const {entry,stop,oneR,side}=plan,dir=side==='LONG'?1:-1;
-  const atr=Number(signal.atr)||0;
-  const width=Math.min(oneR*.25,entry*.004,Math.max(oneR*.12,atr*.25));
+  const {entry,stop,side}=plan,dir=side==='LONG'?1:-1;
+  const width=entry*entryAllowance(signal);
   const zoneLow=entry-width, zoneHigh=entry+width;
   const trigger=`1시간봉 ${signal.pattern||'패턴'} 종가 확정 + 4시간봉 추세 확인 → ${formatTriggerSide(side)} ${zoneLow.toPrecision(8)}~${zoneHigh.toPrecision(8)} 재진입 → Variational 실제 주문 호가 확인`;
   const extra={zoneLow,zoneHigh,confirmation:trigger};

@@ -5,14 +5,15 @@ const KNOWN_TRADFI_BASES=new Set(['XAU','XAG','US100','US500','US30','US400','DX
  */
 export function extractVariationalPerps(payload) {
   if (!payload || !Array.isArray(payload.listings)) throw Error('Variational v2 API: listings array missing');
-  const markets=new Map();
+  const markets=new Map(),ambiguous=new Set();
   for (const x of payload.listings) {
     if (!x || x.contract_type!=='perpetual' || typeof x.ticker!=='string') continue;
     const match=/^([A-Z0-9]+)-PERP$/.exec(x.ticker);
     if (!match) continue;
     const base=match[1];
     // v2 API may list an asset several times; only unambiguous ticker mapping is used.
-    if (markets.has(base)) { markets.delete(base); continue; }
+    if (ambiguous.has(base)) continue;
+    if (markets.has(base)) { markets.delete(base); ambiguous.add(base); continue; }
     const mark=Number(x.mark_price);
     markets.set(base, {
       ticker:x.ticker,name:String(x.name||''),

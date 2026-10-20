@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import {resolveDataDir,prepareData,atomicWriteStore,readStore,backupStore,importLegacy,acquireDataLock,isLocked} from '../persistence.mjs';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {resolveDataDir,prepareData,atomicWriteStore,readStore,backupStore,restoreStore,importLegacy,acquireDataLock,isLocked} from '../persistence.mjs';
 const work=()=>fs.mkdtempSync(path.join(os.tmpdir(),'signal-persist-'));
+const cli=fileURLToPath(new URL('../data-cli.mjs',import.meta.url));
+const restoreCLI=(dir,backup)=>spawnSync(process.execPath,[cli,'restore',backup],{env:{PATH:process.env.PATH,SIGNAL_LAB_DATA_DIR:dir},encoding:'utf8'});
 const fixture=(id='p1')=>({journal:[{id:'manual'}],paper:{pending:[],open:[{key:id,entryFill:100}],closed:[{key:'old',realizedPnLUSD:7.5}],skipped:[],seen:{x:42}},alerts:[{id:'a'}],watchlist:['BTCUSDT']});
 test('Windows user data directory is stable across extracted version paths',()=>{
  const a=resolveDataDir({platform:'win32',home:'C:\\Users\\tester',env:{LOCALAPPDATA:'C:\\Users\\tester\\AppData\\Local'}});
@@ -38,6 +42,77 @@ test('backup and restore preserve pending/open/closed and crash-corrupted file c
   atomicWriteStore(file,readStore(backup));
   assert.equal(readStore(file).paper.open.length,1);
  }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});
+test('shared records remain authoritative when unused legacy copy is corrupted',()=>{
+ const sandbox=work();try{
+  const dir=path.join(sandbox,'shared'),app=path.join(sandbox,'release');fs.mkdirSync(dir);fs.mkdirSync(app);
+  const current=path.join(dir,'store.json');atomicWriteStore(current,fixture('shared-position'));
+  const before=fs.readFileSync(current);fs.writeFileSync(path.join(app,'store.json'),'damaged unused legacy');
+  const prepared=prepareData(app,{env:{SIGNAL_LAB_DATA_DIR:dir}});
+  assert.equal(prepared.migratedStore,false);assert.ok(fs.readFileSync(current).equals(before));
+  assert.equal(readStore(current).paper.open[0].key,'shared-position');
+ }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});
+test('corrupt authoritative shared records are never replaced by a legacy copy',()=>{
+ const sandbox=work();try{
+  const dir=path.join(sandbox,'shared'),app=path.join(sandbox,'release');fs.mkdirSync(dir);fs.mkdirSync(app);
+  const current=path.join(dir,'store.json');fs.writeFileSync(current,'damaged shared record');
+  atomicWriteStore(path.join(app,'store.json'),fixture('legacy'));
+  assert.throws(()=>prepareData(app,{env:{SIGNAL_LAB_DATA_DIR:dir}}),/자동으로 초기화하지 않습니다/);
+  assert.equal(fs.readFileSync(current,'utf8'),'damaged shared record');
+ }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});
+test('restore CLI recovers corrupt current JSON and preserves its exact original bytes',()=>{
+ const sandbox=work();try{
+  const dir=path.join(sandbox,'shared');fs.mkdirSync(dir);
+  const current=path.join(dir,'store.json'),backup=path.join(sandbox,'good-backup.json');
+  const record=fixture('continued-position');record.paper.pending.push({key:'pending'});atomicWriteStore(backup,record);
+  const damaged=Buffer.from([0xef,0xbb,0xbf,0x7b,0x00,0xff,0x0a]);fs.writeFileSync(current,damaged);
+  const result=restoreCLI(dir,backup);assert.equal(result.status,0,result.stderr);
+  assert.deepEqual(readStore(current),record);assert.deepEqual(readStore(backup),record);
+  const recovered=fs.readdirSync(path.join(dir,'recovery'));assert.equal(recovered.length,1);
+  assert.ok(fs.readFileSync(path.join(dir,'recovery',recovered[0])).equals(damaged));
+  assert.equal(isLocked(dir),false);
+ }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});
+test('restore CLI rejects an invalid backup without changing current records',()=>{
+ const sandbox=work();try{
+  const current=path.join(sandbox,'store.json'),backup=path.join(sandbox,'bad-backup.json');
+  atomicWriteStore(current,fixture());const before=fs.readFileSync(current);fs.writeFileSync(backup,'bad backup');
+  const result=restoreCLI(sandbox,backup);assert.equal(result.status,1);
+  assert.ok(fs.readFileSync(current).equals(before));assert.equal(fs.existsSync(path.join(sandbox,'recovery')),false);
+  assert.equal(isLocked(sandbox),false);
+ }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});
+test('restore CLI keeps the running-server lock and never overwrites its records',()=>{
+ const sandbox=work();let release;try{
+  const current=path.join(sandbox,'store.json'),backup=path.join(sandbox,'good-backup.json');
+  atomicWriteStore(current,fixture('running'));atomicWriteStore(backup,fixture('incoming'));release=acquireDataLock(sandbox);
+  const before=fs.readFileSync(current),result=restoreCLI(sandbox,backup);
+  assert.equal(result.status,1);assert.match(result.stderr,/서버를 종료/);
+  assert.ok(fs.readFileSync(current).equals(before));assert.equal(isLocked(sandbox),true);
+ }finally{release?.();fs.rmSync(sandbox,{recursive:true,force:true})}
+});
+test('restoring over healthy data first backs up every existing record',()=>{
+ const sandbox=work();try{
+  const current=path.join(sandbox,'store.json'),backup=path.join(sandbox,'incoming.json');
+  const old=fixture('old-open'),incoming=fixture('new-open');atomicWriteStore(current,old);atomicWriteStore(backup,incoming);
+  const result=restoreStore(backup,sandbox);
+  assert.deepEqual(readStore(result.previous),old);assert.deepEqual(readStore(current),incoming);
+  assert.equal(result.preservedCorrupt,null);assert.equal(isLocked(sandbox),false);
+ }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});
+test('failed restore swap preserves corrupt bytes, reports the failure, and releases its lock',()=>{
+ const sandbox=work(),originalRename=fs.renameSync;try{
+  const current=path.join(sandbox,'store.json'),backup=path.join(sandbox,'incoming.json');
+  atomicWriteStore(backup,fixture());fs.writeFileSync(current,'damaged-current');
+  fs.renameSync=(from,to)=>{if(to===current)throw Object.assign(Error('simulated disk failure'),{code:'EIO'});return originalRename(from,to)};
+  assert.throws(()=>restoreStore(backup,sandbox),/simulated disk failure/);
+  assert.equal(fs.readFileSync(current,'utf8'),'damaged-current');
+  const preserved=fs.readdirSync(path.join(sandbox,'recovery'));assert.equal(preserved.length,1);
+  assert.equal(fs.readFileSync(path.join(sandbox,'recovery',preserved[0]),'utf8'),'damaged-current');
+  assert.equal(isLocked(sandbox),false);assert.equal(fs.readdirSync(sandbox).some(n=>n.includes('.tmp-')),false);
+ }finally{fs.renameSync=originalRename;fs.rmSync(sandbox,{recursive:true,force:true})}
 });
 test('explicit legacy import backs up existing empty shared store, blocks overwrite of existing paper trades',()=>{
  const sandbox=work();try{

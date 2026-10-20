@@ -36,6 +36,10 @@ test('no verified Variational data fails closed, no guessed matches',()=>{
  assert.throws(()=>intersectPerpetualMarkets(binance,ticks,{listings:null}));
  const res=intersectPerpetualMarkets(binance,ticks,{listings:[]});assert.deepEqual(res.markets,[]);
 });
+test('an ambiguous ticker stays excluded even after a third duplicate',()=>{
+ const listing={ticker:'BTC-PERP',contract_type:'perpetual',mark_price:'100'};
+ for(const count of [2,3,4])assert.equal(extractVariationalPerps({listings:Array(count).fill(listing)}).has('BTC'),false);
+});
 
 test('known TradFi base is not misclassified as crypto when a Binance XAUUSDT future exists',()=>{
  const v={listings:[...variational.listings,{ticker:'XAU-PERP',contract_type:'perpetual',mark_price:'4000'}]};
