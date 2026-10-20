@@ -1,0 +1,15 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {parsePerpExecution,executionEstimate,riskSizedEstimate} from '../execution.mjs';
+const T=Date.now();
+const listing=(changes={})=>parsePerpExecution({ticker:'BTC-PERP',contract_type:'perpetual',mark_price:'81000',volume_24h:'100000000',open_interest:{long_open_interest:'10000',short_open_interest:'9000'},funding:{last:{interval_rate:'0.00008'},next:{interval_rate:'0.0001'},interval_seconds:28800,next_timestamp:Math.floor(T/1000)+28000},quotes:{updated_at:new Date(T-10_000).toISOString(),base:{bid:'80997',ask:'81003'},size_1k:{bid:'80996',ask:'81004'}},...changes});
+const make=(v,more={})=>executionEstimate({listing:v,side:'LONG',notional:1000,binancePrice:81001,binancePriceAt:T-10000,statsReceivedAt:T-1000,now:T,...more});
+test('public indicative quote and funding parsing; rate in per-interval units',()=>{const v=listing();assert.equal(v.quote1k.ask,81004);assert.equal(v.fundingIntervalRate,.0001);assert.equal(v.fundingIntervalSeconds,28800);assert.ok(v.quoteUpdatedAt<T)});
+test('eligible: clear current two-sided quote with inexpensive spread',()=>{const x=make(listing());assert.equal(x.eligible,true);assert.ok(x.spreadBps>0);assert.ok(x.spreadCostUSD>0);assert.equal(x.fundingOneIntervalUSD,.1)});
+test('funding is direction dependent',()=>{const v=listing();const l=make(v),s=make(v,{side:'SHORT'});assert.equal(l.fundingOneIntervalUSD,-s.fundingOneIntervalUSD);assert.equal(s.fundingOneIntervalUSD,-.1)});
+test('strict fail closed if stale quote, missing timestamp, or missing bid',()=>{const old=listing({quotes:{updated_at:new Date(T-700_000).toISOString(),size_1k:{bid:'80996',ask:'81004'}}});assert.equal(make(old).eligible,false);const missing=listing({quotes:{size_1k:{bid:'80996',ask:'81004'}}});assert.equal(make(missing).eligible,false);const noAsk=listing({quotes:{updated_at:new Date(T).toISOString(),size_1k:{bid:'80996'}}});assert.equal(make(noAsk).eligible,false)});
+test('price mismatch and spread blocks alerts',()=>{assert.equal(make(listing({quotes:{updated_at:new Date(T).toISOString(),size_1k:{bid:'80000',ask:'82000'}}})).eligible,false);assert.equal(make(listing(),{binancePrice:80000}).eligible,false)});
+test('notional outside API sample band blocked',()=>{const v=listing();assert.equal(make(v,{notional:200}).eligible,false);assert.equal(make(v,{notional:2000}).eligible,false)});
+test('missing funding is unknown, never silently displayed as zero',()=>{const x=make(listing({funding:null}));assert.equal(x.fundingOneIntervalUSD,null);assert.equal(x.fundingIntervalRate,null)});
+test('trade risk sized to quote spread and stop distance',()=>{const r=riskSizedEstimate({signal:{entry:81000,stop:80595,target1:81810,direction:'LONG'},listing:listing(),binancePrice:81001,binancePriceAt:T,statsReceivedAt:T,now:T});assert.ok(r.notional>0&&r.notional<=1500);assert.ok(r.estimatedStopLossUSD<=6.001)});
+test('must have Binance symbol-specific recent updates',()=>{const x=make(listing(),{binancePriceAt:T-300000});assert.equal(x.eligible,false);assert.ok(x.reasons.join(' ').includes('Binance'))});

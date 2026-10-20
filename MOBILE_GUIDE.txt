@@ -1,0 +1,48 @@
+v5.1 모바일 탭에 「자동 PNL」이 추가되었습니다. PC·모바일 모두 같은 자동 모의매매 기록을 보며, 서버는 PC에서 실행해야 합니다.
+
+Signal Lab v5.0 — Android / iPhone mobile access guide
+=======================================================
+
+[START]
+1. Connect PC and phone to the same trusted private Wi-Fi / home network.
+2. Stop the previously running start.bat (port 3000). Close its command window.
+3. Extract the entire ZIP to a new folder on the PC.
+4. Double-click start_mobile.bat (NOT start.bat).
+5. The black command window prints a URL like http://192.168.0.15:3000,
+   a username (signal), and a temporary password.
+6. On the phone open Chrome/Safari and type the printed PC URL. 127.0.0.1
+   on the PHONE points to the phone, not the PC.
+7. Enter the login credentials from the PC window.
+8. Use the bottom menu for signals, chart, news, alerts. TradingView is
+   embedded (external widget; internet still required).
+
+[CONNECTIVITY]
+* If the phone cannot connect, both devices must be on the same Wi-Fi/subnet.
+  Disable guest Wi-Fi/client isolation. Temporarily disconnect mobile-data/VPN
+  if it routes the browser unexpectedly. In Windows Defender Firewall allow
+  Node.js for PRIVATE networks only, or inbound TCP 3000 for the private profile.
+* When your PC changes Wi-Fi networks, the printed IP URL may change.
+* The server must keep running on your PC. This does not host the app online;
+  from 4G/5G or outside your home network it is not accessible without a
+  secure VPN (e.g. Tailscale) or an HTTPS-hosted deployment, which are NOT
+  included in this package.
+* Local access: open http://127.0.0.1:3000 on the PC. No login required on
+  localhost. Mobile access requires the credentials in the command window.
+* Password changes on every server restart unless MOBILE_ACCESS_PASSWORD is
+  set in the PC's private .env file (use a long, unique password).
+* No TLS is provided. Password and financial journal are transmitted over
+  unencrypted HTTP on your LAN. NEVER use public/shared Wi-Fi, port forwarding,
+  open TCP/3000 to the internet, or share this URL/password. For remote access,
+  use an authenticated VPN or HTTPS reverse proxy.
+
+[MOBILE ALERTS]
+* The mobile browser can show the site while open. Background notifications
+  are NOT guaranteed, especially over non-HTTPS IP addresses.
+* Telegram alerts require your bot configuration and the PC/server running.
+* No automated trades; clicking Variational opens the manual order page.
+
+[WINDOWS DATA MIGRATION]
+* Keep your own .env / store.json safe, and copy from your previous install
+  if desired. Do not send private files or tokens to other people.
+
+PC와 모바일 모두 메인 화면의 TradFi 영역에서 SWAP/PERP 참고시세 및 차트를 확인할 수 있습니다.
