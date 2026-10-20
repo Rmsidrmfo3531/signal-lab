@@ -13,6 +13,17 @@ test('notional outside API sample band blocked',()=>{const v=listing();assert.eq
 test('missing funding is unknown, never silently displayed as zero',()=>{const x=make(listing({funding:null}));assert.equal(x.fundingOneIntervalUSD,null);assert.equal(x.fundingIntervalRate,null)});
 test('trade risk sized to quote spread and stop distance',()=>{const r=riskSizedEstimate({signal:{entry:81000,stop:80595,target1:81810,direction:'LONG'},listing:listing(),binancePrice:81001,binancePriceAt:T,statsReceivedAt:T,now:T});assert.ok(r.notional>0&&r.notional<=1500);assert.ok(r.estimatedStopLossUSD<=6.001)});
 test('must have Binance symbol-specific recent updates',()=>{const x=make(listing(),{binancePriceAt:T-300000});assert.equal(x.eligible,false);assert.ok(x.reasons.join(' ').includes('Binance'))});
+test('invalid execution limits fail closed instead of disabling freshness and risk guards',()=>{
+ const stale=listing({quotes:{updated_at:new Date(T-700_000).toISOString(),size_1k:{bid:'80996',ask:'81004'}}});
+ const malformedAge=make(stale,{limits:{maxQuoteAgeSeconds:Number('invalid')}});
+ assert.equal(malformedAge.eligible,false,'a mistyped age setting must not approve an old venue quote');
+ assert.match(malformedAge.reasons.join(' '),/설정 오류: maxQuoteAgeSeconds/);
+ for(const limits of [{maxFeedAgeSeconds:NaN},{maxSpreadBps:Infinity},{maxAdverseVenueBps:undefined},{maxRoundTripBps:-1},{riskUSD:0}]){
+  const result=make(listing(),{limits});
+  assert.equal(result.eligible,false,JSON.stringify(limits));assert.match(result.reasons.join(' '),/설정 오류/);
+ }
+ assert.equal(make(listing(),{limits:{maxQuoteAgeSeconds:180,maxSpreadBps:20}}).eligible,true,'valid user settings remain unchanged');
+});
 test('future quote, Binance and receipt timestamps fail closed',()=>{
  for(const field of ['quote','binance','stats']){
   const v=listing(),extra={};

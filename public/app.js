@@ -59,7 +59,7 @@ function renderScanDiagnostics(f){
    el.textContent=reasons.length?'주요 보류 사유: '+reasons.map(x=>`${x.reason} ${x.count}종`).join(' · '):'패턴 미발견 또는 진단 자료 집계 중';
  }
 }
-function setStatus(s){app.status=s;renderScanDiagnostics(s.scanFunnel);
+function setStatus(s){const previousVenue=app.status?.variational;app.status=s;renderScanDiagnostics(s.scanFunnel);
  if(s.update)updateStatusText({...s.update,version:'5.8.0'});
  $('sysWS').textContent=s.ws==='connected'?'정상 연결':s.ws==='connecting'?'연결 중':'끊김 / 재접속';
  $('sysREST').textContent=s.rest==='connected'?'연결됨':s.rest==='connecting'?'연결 중':'접속 실패';
@@ -93,6 +93,7 @@ function setStatus(s){app.status=s;renderScanDiagnostics(s.scanFunnel);
  $('execLimits').textContent=`허용 스프레드 ≤${s.executionLimits?.maxSpreadBps??20}bp · 불리한 가격차 ≤${s.executionLimits?.maxAdverseVenueBps??35}bp · 호가 나이 ≤${s.executionLimits?.maxQuoteAgeSeconds??180}초 · 보류 신호 ${s.blockedSignals||0}건`;
  $('sysVAR').textContent=s.variational==='connected'?'공통 종목 검증 완료':s.researchCount?'검증 대기 · 기술분석만 '+s.researchCount+'종':'검증 실패 / 재시도';
  $('matchVerified').textContent=s.variational==='connected'?(s.activeCount+'종목 교집합 확인 · '+dateClock(s.lastVariational)+' KST'):'Variational 공통 상장 정보 확인 대기 · 미검증 종목 숨김';
+ if(previousVenue!==s.variational){renderAnalysis();renderSignals();renderRecentCoverage()}
 }
 function setExecutionView(x){
  const e=$('executionVerdict');
@@ -149,7 +150,7 @@ function renderWatch(){
  const symbols=app.watchlist.filter(x=>app.marketMap.has(x));
  $('watchlist').innerHTML=symbols.length?symbols.map(symbol=>{
   const m=app.marketMap.get(symbol),change=Number(m.change)||0,base=m.baseAsset;
-  return `<button class="watchrow ${app.symbol===symbol?'selected':''}" data-symbol="${escapeHtml(symbol)}"><span class="watch-logo">${escapeHtml(base.slice(0,2))}</span><span class="watch-info">${escapeHtml(base)}<small>${escapeHtml(m.variational.ticker)} · BINANCE ${escapeHtml(symbol)}</small></span><span class="watch-change ${change>=0?'positive':'negative'}">${pct(change)}</span></button>`;
+  return `<button class="watchrow ${app.symbol===symbol?'selected':''}" data-symbol="${escapeHtml(symbol)}"><span class="watch-logo">${escapeHtml(base.slice(0,2))}</span><span class="watch-info">${escapeHtml(base)}<small>${escapeHtml(m.variational?.ticker||'상장 검증 대기')} · BINANCE ${escapeHtml(symbol)}</small></span><span class="watch-change ${change>=0?'positive':'negative'}">${pct(change)}</span></button>`;
  }).join(''):'<div class="tiny-muted">공통 상장 종목 확인 전이거나 등록된 관심 종목이 없습니다.</div>';
  document.querySelectorAll('.watchrow').forEach(b=>b.addEventListener('click',()=>selectSymbol(b.dataset.symbol)));
 }
@@ -185,7 +186,7 @@ function renderAnalysis(){const a=app.analysis;
  $('analysisTrend').textContent=a.trend==='up'?'▲ 상승 추세':a.trend==='down'?'▼ 하락 추세':'━ 중립 / 횡보';$('analysisTrend').className=a.trend==='up'?'positive':a.trend==='down'?'negative':'';
  $('supports').innerHTML=levelRows(a.supports,'sup');$('resistances').innerHTML=levelRows(a.resistances,'res');
  $('volRatio').textContent=a.volumeRatio?.toFixed(2)+'x';$('atrValue').textContent=fmt(a.atr);
- const ready=app.signals.some(x=>x.symbol===a.symbol&&x.time===a.time&&x.pattern===a.pattern);
+ const ready=currentReadySignals().some(x=>x.symbol===a.symbol&&x.time===a.time&&x.pattern===a.pattern);
  const currentMarket=app.marketMap.get(a.symbol);
  const plan=tradePlan(a);
  const timing=entryTiming(a,{price:currentMarket?.price,priceAt:currentMarket?.priceAt,venueReady:ready});
@@ -214,7 +215,7 @@ function renderRecentCoverage(){
  host.innerHTML=rows.length?rows.map(x=>{
   const market=app.marketMap.get(x.symbol)||{};
   const verified=Boolean(market.variational)&&app.status?.variational==='connected';
-  const ready=app.signals.some(a=>a.symbol===x.symbol&&a.time===x.time&&a.pattern===x.pattern);
+  const ready=currentReadySignals().some(a=>a.symbol===x.symbol&&a.time===x.time&&a.pattern===x.pattern);
   const stage=x.status==='insufficient'?'캔들 부족':!x.pattern?'분석 완료 · 패턴 없음':!x.quality?.passed?'패턴 발견 · 기술조건 미달':!verified?'패턴 발견 · Variational 미검증':ready?'최종 진입 검증 통과':'패턴 발견 · 호가/진입 보류';
   return `<button type="button" class="scan-recent-item" data-recent-symbol="${escapeHtml(x.symbol)}"><strong>${escapeHtml(x.symbol)}</strong><span>${escapeHtml(stage)}</span><small>기술 점수 ${Number(x.score||0)} · ${clock(x.scannedAt)} · ${verified?'공통 상장':'주문 검증 전'}</small></button>`;
  }).join(''):'<div class="empty-small">아직 분석된 종목 없음. 스캔 성공 건수와 API 연결을 확인하세요.</div>';
@@ -237,15 +238,24 @@ function renderObservations(){
   }).join(''):`<div class="empty-small">${g.historic?'최근 24시간의 해당 확정 패턴 기록이 없습니다.':'현재 1시간봉이 지정한 주요 가격구간에 접근한 관찰 후보가 없습니다.'} 데이터 수신과 고유 종목 검사 건수를 확인하세요.</div>`;
  }
 }
+function currentReadySignals(now=Date.now()){
+ if(app.status?.variational!=='connected')return [];
+ return app.signals.filter(signal=>{
+  const market=app.marketMap.get(signal.symbol);
+  return Boolean(market?.variational)&&!market.researchOnly&&
+   entryTiming(signal,{price:market.price,priceAt:market.priceAt,now,venueReady:true}).actionable;
+ });
+}
 function results(){return app.showWatch?app.watch:app.patterns}
 function renderSignals(){
  const filter=$('signalFilter').value;
- let data=filter==='watch'?app.watch:filter==='ready'?app.signals:results();
+ const approved=currentReadySignals();
+ let data=filter==='watch'?app.watch:filter==='ready'?approved:results();
  if(filter==='LONG'||filter==='SHORT')data=data.filter(x=>x.direction===filter);
  data=data.filter(x=>x?.symbol&&app.marketMap.has(x.symbol)).sort((a,b)=>(b.patternConfirmedAt||0)-(a.patternConfirmedAt||0)||(b.score||0)-(a.score||0));
  $('metricSignals').textContent=app.patterns.length;
  $('navSignalCount').textContent=app.patterns.length;
- $('signalFoot').textContent=`확정 ${app.patterns.length}건 중 주문 검증 통과 ${app.signals.length}건`;
+ $('signalFoot').textContent=`확정 ${app.patterns.length}건 중 주문 검증 통과 ${approved.length}건`;
  const paged=paginateScan(data,app.signalPage,SCAN_PAGE_SIZE);
  app.signalPage=paged.page;
  scanPagination('scanPageControls','scanPageInfo',paged,page=>{app.signalPage=page;renderSignals()});
@@ -254,7 +264,7 @@ function renderSignals(){
    const mPrice=app.marketMap.get(a.symbol)?.price||a.price;
    const latest=browserAlertState(a);
    const invalidated=a.patternInvalidated||(a.direction==='LONG'?mPrice<=a.stop:mPrice>=a.stop);
-   const ready=!invalidated&&latest.cls==='live'&&app.signals.some(s=>s.symbol===a.symbol&&s.pattern===a.pattern&&s.time===a.time)&&entryTiming(a,{price:mPrice,priceAt:app.marketMap.get(a.symbol)?.priceAt,venueReady:true}).actionable;
+   const ready=!invalidated&&latest.cls==='live'&&approved.some(s=>s.symbol===a.symbol&&s.pattern===a.pattern&&s.time===a.time);
    const expiredOrHit=['유효기간 경과','1차 목표 구간 도달','손절 무효화'].includes(latest.text);
    const unverified=!app.marketMap.get(a.symbol)?.variational || app.status?.variational!=='connected';
    const label=unverified?'⚠ Binance 패턴 관찰 · Variational 주문 검증 전':invalidated?'✕ 손절 무효화 · 진입 금지':ready?'● 진입 검증 통과':expiredOrHit?'✕ '+latest.text:a.patternConfirmed?(a.technicalQualified===false?'◆ 패턴 발견 · 기술 조건 미달':'◆ 패턴 확인 · 거래 검증 보류'):'○ 패턴 관찰 중';
@@ -271,7 +281,7 @@ function renderSignals(){
  }).join(''):`<tr><td colspan="10" class="table-empty">${filter==='watch'?'현재 발견된 패턴 중 검증이 보류된 종목 없음':filter==='ready'?'현재 1시간 확정·4시간 추세·Variational 비용 검증까지 통과한 진입 후보 없음':'최근 2시간 내 확인된 1시간봉 패턴이 없습니다. 위의 스캔 진단에서 고유 종목 수와 단계별 탈락 건수를 확인하세요.'}</td></tr>`;
  document.querySelectorAll('#signalsBody button[data-symbol]').forEach(b=>b.addEventListener('click',()=>focusSignal(b.dataset.symbol)));
  document.querySelectorAll('#signalsBody button[data-journal]').forEach(b=>b.addEventListener('click',()=>fillJournalFromSignal(b.dataset.journal)));
- $('scanSummary').textContent=`${app.status?.scanMode==='research-only'?'Binance 기술 스캔 중 · Variational 검증 전 주문 금지 · ':''}패턴 발견 ${app.patterns.length}종 · 최종 진입 검증 ${app.signals.length}종 · 관찰 후보 ${app.watch.length}종 · 기술 조건 미달 ${app.status?.scanFunnel?.quality??'—'}종`; 
+ $('scanSummary').textContent=`${app.status?.scanMode==='research-only'?'Binance 기술 스캔 중 · Variational 검증 전 주문 금지 · ':''}패턴 발견 ${app.patterns.length}종 · 최종 진입 검증 ${approved.length}종 · 관찰 후보 ${app.watch.length}종 · 기술 조건 미달 ${app.status?.scanFunnel?.quality??'—'}종`;
  $('showWatchButton').textContent=app.showWatch?'확정 패턴으로 돌아가기 →':'진입 검증 통과만 보기 →';
 }
 
@@ -565,7 +575,7 @@ $('testNotificationButton').addEventListener('click',()=>{
  notify({id:'signal-lab-local-test',symbol,direction:'LONG',pattern:'테스트용 예시 — 실제 신호 아님',entry:price,stop:price*.99,target1:price*1.02},{test:true});
  if(!('Notification' in window)||Notification.permission!=='granted')toast('브라우저 시스템 알림을 받으려면 먼저 ‘알림 켜기’를 눌러 허용하세요.',true);
 });
-$('scanButton').addEventListener('click',async e=>{e.currentTarget.disabled=true;e.currentTarget.textContent='분석 중…';try{await loadAnalysis();toast(app.symbol+' 선택 종목 최신 분석 완료')}finally{e.currentTarget.disabled=false;e.currentTarget.textContent='✦ 선택 종목 분석'}});
+$('scanButton').addEventListener('click',async e=>{const button=e.currentTarget;button.disabled=true;button.textContent='분석 중…';try{await loadAnalysis();toast(app.symbol+' 선택 종목 최신 분석 완료')}finally{button.disabled=false;button.textContent='✦ 선택 종목 분석'}});
 $('refreshButton').addEventListener('click',()=>loadAll());
 $('runScanNow').addEventListener('click',async()=>{const b=$('runScanNow');b.disabled=true;b.textContent='스캔 요청 중…';try{const x=await json('/api/scan',{method:'POST'});toast(x.accepted?'전체 보완 스캔을 시작했습니다. 처리 건수는 자동 갱신됩니다.':'이미 자동 스캔이 진행 중입니다.');}catch(e){toast('스캔 요청 실패: '+e.message,true)}finally{b.disabled=false;b.textContent='↻ 지금 스캔'}});
 $('updateButton').addEventListener('click',async()=>{const b=$('updateButton');b.disabled=true;try{const x=await json('/api/update/check',{method:'POST'});updateStatusText({...x,version:'5.8.0'});toast(x.message||'업데이트 확인 완료',x.state==='error')}catch(e){toast('업데이트 확인 실패: '+e.message,true)}finally{b.disabled=false}});
@@ -595,6 +605,8 @@ $('menuButton').addEventListener('click',()=>{$('sidebar').classList.toggle('ope
 const canvas=$('chart');canvas.addEventListener('mousemove',e=>{const p=app.chartGeom;if(!p)return;const x=e.clientX-canvas.getBoundingClientRect().left;app.hover=Math.max(0,Math.min(p.len-1,Math.floor((x-p.left)/p.step)));const c=p.candles[app.hover];if(c){$('chartTooltip').innerHTML=`${dateClock(c.time)} KST<br>O ${fmt(c.open)} &nbsp; H ${fmt(c.high)}<br>L ${fmt(c.low)} &nbsp; C ${fmt(c.close)}<br>Vol ${compact(c.volume)}`;$('chartTooltip').style.left=Math.min(canvas.clientWidth-155,Math.max(8,x+18))+'px';$('chartTooltip').style.top='15px';$('chartTooltip').classList.remove('hidden')}drawChart()});canvas.addEventListener('mouseleave',()=>{app.hover=-1;$('chartTooltip').classList.add('hidden');drawChart()});
 window.addEventListener('resize',drawChart);setInterval(()=>{$('clock').textContent=clock(Date.now())+' KST';if(app.status){setStatus(app.status);if(app.status.ws==='connected'&&Date.now()-Math.max(app.status.lastMarket,app.lastSocketEvent)>90000)banner('실시간 시세 지연','90초 이상 실시간 가격 업데이트가 없습니다. 신호의 최신성을 신뢰하지 마세요.')}},1000);
 setInterval(loadExecution,30000);setInterval(loadJournal,60000);setInterval(loadChart,35000);setInterval(loadResults,65000);setInterval(loadNews,90000);setInterval(async()=>{try{const st=await json('/api/status');const changed=st.lastVariational!==app.status?.lastVariational;setStatus(st);if(st.ws!=='connected'||!app.market.length||changed){const m=await json('/api/market');applyMarket(m)}}catch{}},18000);
+// A stalled feed must not leave a green entry badge on screen indefinitely.
+setInterval(()=>{const now=Date.now();if(now-(app.lastWatchRender||0)>=5000){renderSignals();renderRecentCoverage();renderAlerts();app.lastWatchRender=now}if(now-(app.lastTimingRender||0)>=5000){renderAnalysis();app.lastTimingRender=now}},1000);
 if('Notification' in window&&Notification.permission==='granted')$('notificationButton').textContent='✓ 브라우저 알림 ON';
 // Mount TradingView immediately, before waiting for either exchange API.
 renderPair();renderTradingView();connectEvents();loadAll();

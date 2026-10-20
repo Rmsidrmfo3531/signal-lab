@@ -19,7 +19,7 @@ import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {extractTradFiMarkets,swapFundingUSD,tradfiQuoteVerdict} from './tradfi.mjs';
 import {analyzeTradFi} from './tradfi_signal.mjs';
 import {pullSeries} from './tradfi_feed.mjs';
-import {PaperEngine,paperCSV} from './paper.mjs';
+import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
@@ -385,18 +385,22 @@ async function checkSymbolInternal(symbol, force=false){
  }
  if(decision.technical&&!decision.venue){state.blockedSignals++;state.lastBlockReason=decision.reasons.join(' / ')}
  state.analyses.set(symbol,out);
- if(decision.ready&&storageHealth.healthy){
-  paper.register(out,{market:'CRYPTO',symbol,quoteEligible:true});
-  const key=`${symbol}:${out.direction}:${out.pattern}:${out.time}`;
-  if(!persisted.seen[key]){
-   const item={...out,id:key};
-   save({...persisted,seen:{...persisted.seen,[key]:Date.now()},alerts:[item,...persisted.alerts]});
-   send('alert',item);void tgNotify(item);
-   console.log('[SIGNAL]',symbol,out.direction,out.pattern,out.score);
-  }
- }
-
+ publishCryptoSignal(out,decision);
  return out;
+}
+function publishCryptoSignal(row,decision,now=Date.now()){
+ if(!decision.ready||!storageHealth.healthy)return;
+ const {symbol,direction,pattern}=row;
+ const paperKey=signalKey({market:'CRYPTO',symbol,direction,pattern,barAt:row.patternConfirmedAt});
+ // The same fresh approval may be observed by a scan and many ticker events.
+ // Persist each paper registration and alert once, including after a restart.
+ if(!paper.store.seen[paperKey])paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
+ const key=`${symbol}:${direction}:${pattern}:${row.time}`;
+ if(persisted.seen[key])return;
+ const item={...row,decision,execution:decision.execution,qualified:true,status:'signal',id:key};
+ save({...persisted,seen:{...persisted.seen,[key]:now},alerts:[item,...persisted.alerts]});
+ send('alert',item);void tgNotify(item);
+ console.log('[SIGNAL]',symbol,direction,pattern,row.score);
 }
 // Event-driven scanner. The global mini-ticker stream supplies fast price updates;
 // per-symbol 1H + 4H kline close streams trigger re-analysis at candle completion.
@@ -492,6 +496,22 @@ const _refreshSubscriptions=refreshLiveSubscriptions;
 function recoverLive(){if(state.activeSet.size||state.researchSet.size){liveSubscriptionKey='';_refreshSubscriptions()}}
 
 let marketWs, retryMs=1500; const changed=new Map();
+function cryptoEntryAllowed(symbol,now=Date.now()){
+ if(!storageHealth.healthy||!state.activeSet.has(symbol)||state.variational!=='connected')return false;
+ const analysis=state.analyses.get(symbol);
+ if(!analysis?.patternConfirmed||!analysis.technicalQualified)return false;
+ const decision=assessAnalysis(analysis,now);
+ // An analysis can precede its first live price. Publish when the complete
+ // approval becomes ready; registering on this tick still requires a later tick
+ // for the fill, as enforced by PaperEngine's signalAt guard.
+ publishCryptoSignal(analysis,decision,now);
+ const pending=paper.store.pending.filter(x=>x.market==='CRYPTO'&&x.symbol===symbol);
+ // An entry approval belongs to this exact completed candle/pattern. Do not
+ // reuse approval for another analysis, or after its public quote has expired.
+ if(pending.length!==1||analysis.pattern!==pending[0].pattern||analysis.direction!==pending[0].direction||
+  analysis.patternConfirmedAt!==pending[0].barAt)return false;
+ return decision.ready;
+}
 function connectWS(){
  let endpoint=0;let retryTimer=null;
  const urls=['wss://fstream.binance.com/market/ws/!miniTicker@arr','wss://fstream.binance.com/market/stream?streams=!miniTicker@arr'];
@@ -521,7 +541,7 @@ function connectWS(){
      const price=Number(q.c);if(!Number.isFinite(price)||price<=0)continue;
      const p=state.quotes.get(q.s)||{symbol:q.s},previous=p.price;p.price=price;p.priceAt=Date.now();
      if(q.q)p.quoteVolume=Number(q.q);state.quotes.set(q.s,p);changed.set(q.s,[q.s,p.price,p.priceAt]);
-     paper.onPrice('CRYPTO',q.s,p.price,p.priceAt,{entryAllowed:state.activeSet.has(q.s)&&state.variational==='connected'&&storageHealth.healthy});priceLevelTrigger(q.s,previous,p.price);valid++;
+     paper.onPrice('CRYPTO',q.s,p.price,p.priceAt,{entryAllowed:cryptoEntryAllowed(q.s,p.priceAt)});priceLevelTrigger(q.s,previous,p.price);valid++;
     }
     if(valid){received=true;state.ws='connected';state.lastTickerAt=Date.now();state.lastTickerCount+=valid;send('status',getStatus())}
     else if(payload.code || payload.error)state.error='바이낸스 시세 스트림 오류: '+JSON.stringify(payload).slice(0,140);
@@ -645,17 +665,18 @@ async function pollNews(){
  if(!feeds.length){state.newsStatus='offline';send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:0,error:'RSS 제공처 모두 연결 실패'});return}
  const incoming=prepareNews(feeds,state.newsChecked,[...state.ranked.map(x=>({symbol:x.baseAsset,name:x.variational?.name||''})),...tradfiState.swaps.map(x=>({symbol:x.base,name:x.name||''}))]);
  state.newsStatus=feeds.length===FEEDS.length?'connected':'partial';state.news=incoming;
- const newsSeen=new Set(Object.keys(persisted.newsSeen));let changed=false;
+ const newsSeen=new Set(Object.keys(persisted.newsSeen)),nextSeen={...persisted.newsSeen},notifications=[];let changed=false;
  for(const article of incoming){
-  if(!newsBootstrapped){persisted.newsSeen[article.id]=article.published;changed=true;continue}
+  if(!newsBootstrapped){nextSeen[article.id]=article.published;changed=true;continue}
   if(shouldNotifyArticle(article,newsSeen,state.newsChecked)){
-   persisted.newsSeen[article.id]=article.published;changed=true;
-   send('news-alert',article);void tgNews(article);
+   nextSeen[article.id]=article.published;changed=true;notifications.push(article);
   }
  }
+ for(const [id,date] of Object.entries(nextSeen))if(date<state.newsChecked-7*86400000){delete nextSeen[id];changed=true}
+ if(changed)save({...persisted,newsSeen:nextSeen});
+ // Failed writes must neither complete bootstrap nor deliver unrecorded news.
  newsBootstrapped=true;
- for(const [id,date] of Object.entries(persisted.newsSeen))if(date<state.newsChecked-7*86400000){delete persisted.newsSeen[id];changed=true}
- if(changed)save();
+ for(const article of notifications){send('news-alert',article);void tgNews(article)}
  send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:feeds.length,error:state.newsError});
 }
 async function tgNews(article){

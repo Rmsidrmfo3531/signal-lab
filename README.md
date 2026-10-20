@@ -6,6 +6,8 @@
 
 실행은 기존 `start.bat` / `start_mobile.bat` / `npm start` 그대로입니다. 자동 테스트는 `npm test`, 실제 공개 시장 연결 점검은 별도로 `npm run test:market`입니다. 후자는 공개 REST GET만 사용하며 주문을 보내지 않습니다. 상세 정책·기록 보호·검증 결과는 [수정 및 검증 기록](FIX_VALIDATION_KO.md)을 참고하세요.
 
+PR #1의 33개 파일 전체 리뷰, 추가 수정과 최신 테스트 결과는 [머지 전 재검증 보고서](PR1_REVIEW_KO.md)에 있습니다. GitHub Actions는 Node.js 22/24와 Linux/Windows에서 자동 검사합니다.
+
 아래는 수정 전 v5.8 및 이전 버전의 변경 이력입니다. 100점 필수·15분봉·과거 스캔 주기에 관한 이전 설명은 위의 현재 정책을 우선합니다.
 
 # Signal Lab v5.8 — 0개 시그널 검증 및 관찰 화면 (PC·모바일 공용)

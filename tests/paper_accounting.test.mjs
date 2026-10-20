@@ -53,12 +53,35 @@ test('daily loss limit includes actual remaining-position loss after earlier-day
  assert.match(t.engine.store.skipped.at(-1).reason,/일간\/주간/);
 });
 
+for(const limit of ['daily','weekly'])test(`a pending entry cannot bypass the ${limit} loss limit after another position stops`,()=>{
+ const settings=limit==='daily'?{maxDailyLoss:5,maxWeeklyLoss:100}:{maxDailyLoss:100,maxWeeklyLoss:5};
+ const t=create({settings});
+ t.engine.register(sample(t.now()),{quoteEligible:true});t.quote(100);
+ t.engine.register(sample(t.now(),{symbol:'ETHUSDT'}),{symbol:'ETHUSDT',quoteEligible:true});
+ assert.equal(t.engine.store.pending.length,1);
+ t.quote(98);assert.equal(t.engine.store.closed[0].closeReason,'STOP');
+ assert.ok(t.engine.snapshot().netRealizedUSD<=-5);
+ t.quote(100,'ETHUSDT');
+ assert.equal(t.engine.store.open.length,0);assert.equal(t.engine.store.pending.length,0);
+ assert.equal(t.engine.store.closed.length,1);assert.match(t.engine.store.skipped.at(-1).reason,/진입 직전.*손실/);
+});
+
 test('legacy summary-only closed records keep lifetime PNL and are marked approximate for date allocation',()=>{
  const legacy={closed:[{key:'legacy',closedAt:initial,realizedPnLUSD:12.5,feesUSD:.3}],open:[],pending:[],skipped:[],seen:{}};
  const original=structuredClone(legacy);const t=create({seed:legacy});
  near(t.engine.snapshot().netRealizedUSD,12.5);near(t.engine.snapshot().dailyPnLUSD,12.5);
  assert.equal(t.engine.snapshot().periodPnLApproximate,true);
  assert.deepEqual(legacy,original);
+});
+
+test('legacy closed records with empty exit parts use the close day rather than restating PNL on the entry day',()=>{
+ const closedAt=Date.parse('2026-10-19T15:01:00Z'); // Tuesday 00:01 KST
+ const legacy={closed:[{key:'legacy-empty-parts',openedAt:initial,closedAt,closeParts:[],realizedPnLUSD:12.5,feesUSD:.3}]};
+ const original=structuredClone(legacy),t=create({at:closedAt,seed:legacy});
+ near(t.engine.snapshot().netRealizedUSD,12.5);near(t.engine.snapshot().dailyPnLUSD,12.5);
+ assert.equal(t.engine.snapshot().periodPnLApproximate,true);
+ near(paperSummary(t.engine.store,{now:initial}).dailyPnLUSD,0);
+ assert.deepEqual(legacy,original,'review must not rewrite existing records');
 });
 
 test('storage failures roll back pending acceptance, OPEN, partial target and final CLOSE before notifications',()=>{

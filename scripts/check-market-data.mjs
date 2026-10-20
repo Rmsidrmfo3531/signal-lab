@@ -12,28 +12,36 @@ const destinations={
 const payloads={},checks=await Promise.all(Object.entries(destinations).map(async([name,url])=>{
  try{
   const response=await fetch(url,{method:'GET',signal:AbortSignal.timeout(10000),headers:{accept:'application/json'}});
-  if(!response.ok)return {name,passed:false,status:response.status};
-  const data=await response.json();
-  const count=name==='binanceListings'?data?.symbols?.length:name==='variationalListings'?data?.listings?.length:Array.isArray(data)?data.length:null;
-  if(!Number.isInteger(count)||count===0)return {name,passed:false,reason:'공용 응답 구조 또는 데이터 개수 확인 필요'};
+  if(!response.ok)return {name,passed:false,status:response.status,failureType:'http'};
+  let data;
+  try{data=await response.json()}catch{return {name,passed:false,status:response.status,failureType:'data',reason:'공용 응답 JSON 형식 오류'}};
+  const records=name==='binanceListings'?data?.symbols:name==='variationalListings'?data?.listings:data;
+  const count=Array.isArray(records)?records.length:null;
+  if(!Number.isInteger(count)||count===0)return {name,passed:false,status:response.status,failureType:'data',reason:'공용 응답 구조 또는 데이터 개수 확인 필요'};
   payloads[name]=data;
   return {name,passed:true,status:response.status,records:count};
  }catch(error){
   // Report error type/code only; proxy configuration and credentials are never printed.
-  return {name,passed:false,errorType:error?.name||'Error',errorCode:error?.cause?.code||(typeof error?.code==='string'?error.code:null)};
+  return {name,passed:false,failureType:'transport',errorType:error?.name||'Error',errorCode:error?.cause?.code||(typeof error?.code==='string'?error.code:null)};
  }
 }));
-let analysis=null,commonContracts=null;
+let analysis=null,commonContracts=null,analysisError=null;
 if(checks.every(check=>check.passed)){
- const common=intersectPerpetualMarkets(payloads.binanceListings,payloads.binance24h,payloads.variationalListings);
- commonContracts=common.markets.length;
- const btc=payloads.binance24h.find(row=>row.symbol==='BTCUSDT');
- const result=analyze('BTCUSDT',payloads.binance1h,payloads.binance4h,[],Number(btc?.lastPrice),{quoteVolume:Number(btc?.quoteVolume)});
- analysis={symbol:'BTCUSDT',status:result.status,pattern:result.pattern??null,score:result.score??null,
-  technicalQualified:result.technicalQualified===true,dataValid:result.dataValidation?.valid??result.status!=='insufficient'};
+ try{
+  const common=intersectPerpetualMarkets(payloads.binanceListings,payloads.binance24h,payloads.variationalListings);
+  commonContracts=common.markets.length;
+  const btc=payloads.binance24h.find(row=>row?.symbol==='BTCUSDT');
+  if(!btc||!Number.isFinite(Number(btc.lastPrice))||Number(btc.lastPrice)<=0||!Number.isFinite(Number(btc.quoteVolume))||Number(btc.quoteVolume)<0){
+   analysisError='BTCUSDT 시세가 없거나 유효하지 않음';
+  }else{
+   const result=analyze('BTCUSDT',payloads.binance1h,payloads.binance4h,[],Number(btc.lastPrice),{quoteVolume:Number(btc.quoteVolume)});
+   analysis={symbol:'BTCUSDT',status:result.status,pattern:result.pattern??null,score:result.score??null,
+    technicalQualified:result.technicalQualified===true,dataValid:result.dataValidation?.valid??result.status!=='insufficient'};
+  }
+ }catch{analysisError='공용 상장·시세·봉 데이터 분석 검증 실패'}
 }
-const connected=checks.every(check=>check.passed);
-const validationPassed=connected&&commonContracts>0&&analysis?.dataValid===true;
-console.log(JSON.stringify({kind:'REAL_PUBLIC_DATA_READ_ONLY',status:!connected?'blocked':validationPassed?'passed':'failed',validationPassed,checkedAt:new Date().toISOString(),checks,commonContracts,analysis,
+const connected=checks.every(check=>check.passed||check.failureType==='data');
+const validationPassed=checks.every(check=>check.passed)&&!analysisError&&commonContracts>0&&analysis?.dataValid===true;
+console.log(JSON.stringify({kind:'REAL_PUBLIC_DATA_READ_ONLY',status:!connected?'blocked':validationPassed?'passed':'failed',validationPassed,checkedAt:new Date().toISOString(),checks,commonContracts,analysis,analysisError,
  note:'가상 시세 테스트와 별도인 실제 공용 REST 점검. WebSocket·계정 권한·실제 주문·모의 진입 검증은 포함하지 않음.'},null,2));
 process.exitCode=!connected?2:validationPassed?0:1;

@@ -14,10 +14,10 @@ const isoWeek=(at)=>{const d=new Date(at+9*3600000);let dow=(d.getUTCDay()+6)%7;
 const rounded=v=>Math.round(v*100000000)/100000000;
 // Reconstruct cash flows without rewriting historical records. Fees have already
 // been charged in each trade, so changing today's fee settings must not restate PNL.
-function realizedCashFlows(trade){
+function realizedCashFlows(trade,closed=false){
  const total=Number(trade.realizedPnLUSD)||0;
  const openedAt=Number(trade.openedAt),parts=trade.closeParts;
- if(Number.isFinite(openedAt)&&openedAt>0&&Array.isArray(parts)&&Number.isFinite(Number(trade.feesUSD))&&
+ if(Number.isFinite(openedAt)&&openedAt>0&&Array.isArray(parts)&&(!closed||parts.length>0)&&Number.isFinite(Number(trade.feesUSD))&&
    parts.every(p=>Number.isFinite(Number(p.at))&&Number(p.at)>0&&Number.isFinite(Number(p.profitUSD))&&Number.isFinite(Number(p.feeUSD)))){
   const exitFees=parts.reduce((sum,p)=>sum+Number(p.feeUSD),0);
   const entryFee=Math.max(0,Number(trade.feesUSD)-exitFees);
@@ -47,7 +47,7 @@ export function paperSummary(store,{now=Date.now(),settings=PAPER_DEFAULTS}={}){
  const marketValue=settings.startingBalance+total+unrealized;
  let peak=settings.startingBalance,maxDrawdownUSD=0,running=settings.startingBalance;
  for(const r of [...done].sort((a,b)=>a.closedAt-b.closedAt)) {running+=r.realizedPnLUSD;peak=Math.max(peak,running);maxDrawdownUSD=Math.max(maxDrawdownUSD,peak-running)}
- const today=isoDay(now),week=isoWeek(now),cashFlows=[...done,...active].map(realizedCashFlows);
+ const today=isoDay(now),week=isoWeek(now),cashFlows=[...done.map(t=>realizedCashFlows(t,true)),...active.map(t=>realizedCashFlows(t))];
  const daily=cashFlows.flatMap(x=>x.flows).filter(t=>isoDay(t.at)===today).reduce((s,x)=>s+x.amount,0);
  const weekly=cashFlows.flatMap(x=>x.flows).filter(t=>isoWeek(t.at)===week).reduce((s,x)=>s+x.amount,0);
  return {startingBalance:settings.startingBalance,closedCount:done.length,openCount:active.length,pendingCount:(store.pending||[]).length,
@@ -127,6 +127,12 @@ export class PaperEngine {
    if(at<=pending.signalAt)continue;
    this.store.pending=this.store.pending.filter(x=>x.key!==pending.key);
    if(at>pending.expiresAt||now>pending.expiresAt){this.store.skipped.push({key:pending.key,reason:'신호 진입 유효기간 종료',at:now});modified++;continue}
+   // Another position may realize a loss while this signal is waiting. Approval
+   // at registration is not permission to bypass the current session loss caps.
+   const summary=paperSummary(this.store,{now,settings});
+   if(summary.dailyPnLUSD<=-settings.maxDailyLoss||summary.weeklyPnLUSD<=-settings.maxWeeklyLoss){
+    this.store.skipped.push({key:pending.key,reason:'진입 직전 일간/주간 손실 경고 상한',at:now});modified++;continue;
+   }
    const dir=pending.direction==='LONG'?1:-1;
    if(dir*(price-pending.stop)<=0||dir*(price-pending.targets[0])>=0){this.store.skipped.push({key:pending.key,reason:'첫 실시간 관측 시 손절선/목표가 이미 통과',at:now});modified++;continue}
    const deviation=Math.abs(price-pending.signalPrice)/pending.signalPrice;

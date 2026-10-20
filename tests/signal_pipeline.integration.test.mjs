@@ -28,9 +28,13 @@ async function sandbox(config){
   if(['public','tests'].includes(first))return !relative.split(path.sep).some(part=>part.startsWith('.'));
   return relative==='package.json'||(!relative.includes(path.sep)&&relative.endsWith('.mjs'));
  }});
- let cfg=config,child,logs='';
+ let cfg={marketNow:Date.now(),...config},child,logs='';
  const write=async patch=>{cfg={...cfg,...patch};await fs.writeFile(control+'.tmp',JSON.stringify(cfg));await fs.rename(control+'.tmp',control)};
  await write({});
+ await fs.mkdir(data,{recursive:true});
+ // OPEN/CLOSE history is still recorded when delivery is disabled. Never launch
+ // a real PowerShell notification on a Windows test runner.
+ await fs.writeFile(path.join(data,'store.json'),JSON.stringify({paperNotify:{enabled:false,history:[]}}));
  const socket=net.createServer();socket.listen(0,'127.0.0.1');await once(socket,'listening');const port=socket.address().port;await new Promise(r=>socket.close(r));
  const base='http://127.0.0.1:'+port;
  const get=async endpoint=>{const response=await fetch(base+endpoint);assert.equal(response.status,200,endpoint);return response.json()};
@@ -42,7 +46,12 @@ async function sandbox(config){
   await until(()=>get('/api/status'),s=>s.activeCount===Object.keys(cfg.scenarios).filter(symbol=>!cfg.unlisted?.includes(symbol)).length,{label:'market discovery '+logs});
   if(cfg.emit)await until(()=>get('/api/status'),s=>s.ws==='connected');
  }
- async function stop(){if(!child||child.exitCode!==null)return;const exited=once(child,'exit');child.kill('SIGTERM');await Promise.race([exited,nap(2500)]);if(child.exitCode===null){child.kill('SIGKILL');await exited}}
+ async function stop(){
+  if(!child||child.exitCode!==null||child.signalCode!==null)return;
+  const exited=once(child,'exit');child.kill('SIGTERM');let timer;
+  try{await Promise.race([exited,new Promise(resolve=>{timer=setTimeout(resolve,2500)})])}finally{clearTimeout(timer)}
+  if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await exited}
+ }
  return {get,write,start,stop,data,requests,base,logs:()=>logs,async close(){await stop();await fs.rm(root,{recursive:true,force:true})}};
 }
 
@@ -165,12 +174,54 @@ test('restored open positions remain price-monitored outside both the verified l
   }
   assert.equal(seed.store.open.length,2);
   await fs.mkdir(app.data,{recursive:true});
-  await fs.writeFile(path.join(app.data,'store.json'),JSON.stringify({paper:seed.store,watchlist:[],journal:[],alerts:[],seen:{},newsSeen:{}}));
+  await fs.writeFile(path.join(app.data,'store.json'),JSON.stringify({paper:seed.store,watchlist:[],journal:[],alerts:[],seen:{},newsSeen:{},paperNotify:{enabled:false,history:[]}}));
   await app.start();
   const market=await app.get('/api/market');assert.deepEqual(market.markets.map(row=>row.symbol),['BTCUSDT']);
   const paper=await until(()=>app.get('/api/paper'),p=>p.closedCount===2&&p.openCount===0,{label:'both restored positions must stop despite LOW being excluded from discovery'});
   assert.deepEqual(new Set(paper.closed.map(row=>row.symbol)),new Set(['BTCUSDT','LOWUSDT']));
   assert.ok(paper.closed.every(row=>row.closeReason==='STOP'&&row.realizedPnLUSD<0));
   assert.ok(paper.closed.every(row=>row.closeParts.at(-1).reference===95));
+ }finally{await app.close()}
+});
+
+test('pending entries recheck the current venue quote before the first simulated fill',{timeout:12000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true,pauseWhenPending:true});
+ try{
+  await app.start();
+  await app.get('/api/analyze?symbol=BTCUSDT');
+  const before=await until(()=>app.get('/api/paper'),p=>p.pendingCount===1&&p.openCount===0);
+  const registeredAt=before.pending[0].signalAt;
+  await app.write({clockOffsetMs:181000,pauseWhenPending:false});
+  await until(()=>app.get('/api/status'),s=>s.lastTickerAt>=registeredAt+181000,{label:'a fresh post-expiry tick must be processed'});
+  const paper=await app.get('/api/paper'),results=await app.get('/api/results'),funnel=await app.get('/api/scan/diagnostics');
+  assert.equal(paper.pendingCount,1,'the still-valid pending signal waits for renewed venue approval');
+  assert.equal(paper.openCount,0,'a new tick alone cannot turn a stale venue quote into a fill');
+  assert.equal(results.signals.length,0);assert.equal(funnel.technicalPassed,1);assert.equal(funnel.venuePassed,0);
+  assert.ok(results.recent[0].execution.reasons.some(reason=>/오래됨/.test(reason)));
+  assert.equal((await app.get('/api/paper/notifications')).history.length,0,'no OPEN event for a rejected fill');
+ }finally{await app.close()}
+});
+
+test('the first fresh ticker promotes an already analyzed setup and opens it without another scan',{timeout:12000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:false});
+ try{
+  await app.start();
+  const analyzed=await app.get('/api/analyze?symbol=BTCUSDT');
+  assert.equal(analyzed.patternConfirmed,true);assert.equal(analyzed.technicalQualified,true);
+  assert.equal(analyzed.qualified,false,'before a Binance tick the setup is not actionable');
+  const before=await app.get('/api/paper');assert.equal(before.pendingCount,0);assert.equal(before.openCount,0);
+  await app.write({emit:true});
+  // No manual analyze, candle-close trigger, or periodic scan is requested here.
+  const paper=await until(()=>app.get('/api/paper'),p=>p.openCount===1,{label:'a newly fresh analyzed setup must reach its first forward-only fill'});
+  const signals=await app.get('/api/results'),funnel=await app.get('/api/scan/diagnostics');
+  assert.equal(signals.signals.length,1);assert.equal(funnel.ready,1);
+  assert.equal(signals.alerts.length,1,'the promoted setup publishes exactly one signal alert');
+  assert.equal(paper.open[0].direction,'LONG');assert.ok(paper.open[0].openedAt>paper.open[0].signalAt,'registration and fill require separate observations');
+  const notices=await app.get('/api/paper/notifications');
+  assert.equal(notices.history.filter(row=>row.type==='OPEN').length,1);
+  await nap(180);
+  assert.equal((await app.get('/api/paper')).openCount,1);
+  assert.equal((await app.get('/api/paper/notifications')).history.filter(row=>row.type==='OPEN').length,1,'later ticks must not replay OPEN');
+  assert.equal((await app.get('/api/results')).alerts.length,1,'later ticks must not replay the signal alert');
  }finally{await app.close()}
 });

@@ -15,11 +15,12 @@ const noop=()=>{};
 function ui(){
  const nodes=new Map();
  const $=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',innerHTML:'',className:'',classList:{toggle:noop,add:noop,remove:noop}});return nodes.get(id)};
- const app={symbol:'BTCUSDT',market:[],marketMap:new Map(),signals:[],patterns:[],watch:[],alerts:[],watchlist:[],analysis:null};
+ const app={symbol:'BTCUSDT',market:[],marketMap:new Map(),signals:[],patterns:[],watch:[],alerts:[],watchlist:[],analysis:null,status:{variational:'connected'}};
  const ctx=vm.createContext({app,$,Date,Number,Map,tradePlan,entryTiming,
   updateJournalSymbols:noop,loadChart:noop,loadAnalysis:noop,renderWatch:noop,renderPair:noop,renderSignals:noop,
   renderRecentCoverage:noop,renderAlerts:noop,renderMatched:noop,loadExecution:noop,renderTradingView:noop,drawChart:noop,
   renderAnalysis:noop,levelRows:()=>'',fmt:String,money:String,escapeHtml:String});
+ vm.runInContext(piece('function currentReadySignals(','function results('),ctx);
  return {app,ctx,$};
 }
 const market=(price=100,priceAt)=>({symbol:'BTCUSDT',baseAsset:'BTC',price,priceAt,variational:{ticker:'BTC-PERP',markPrice:100}});
@@ -106,4 +107,44 @@ test('shared entry allowance retains price, risk and ATR guards for LONG and SHO
   assert.ok(Math.abs(entryAllowance({...signal,stop:direction==='LONG'?99.8:100.2,atr:10})-.0005)<1e-12,'risk guard remains one quarter of stop distance');
  }
  assert.equal(entryAllowance({entry:NaN,stop:98}),0);
+});
+
+test('current entry display expires mandatory candle/analysis freshness and venue approval without a new scan',()=>{
+ const {app,ctx}=ui(),now=Date.now();
+ const signal={symbol:'BTCUSDT',direction:'LONG',pattern:'돌파',patternConfirmed:true,patternConfirmedAt:now-1000,
+  entry:100,stop:98,atr:2,qualified:true,execution:{eligible:true},scannedAt:now,quality:{validUntil:now+1000}};
+ app.signals=[signal];app.marketMap.set('BTCUSDT',market(100,now));
+ assert.equal(ctx.currentReadySignals(now).length,1);
+ assert.equal(ctx.currentReadySignals(now+1001).length,0,'mandatory candle freshness expires before the two-hour pattern window');
+ signal.quality.validUntil=now+3600000;signal.scannedAt=now-21*60000;
+ assert.equal(ctx.currentReadySignals(now).length,0,'a cached final signal still needs recent analysis');
+ signal.scannedAt=now;app.status.variational='offline';
+ assert.equal(ctx.currentReadySignals(now).length,0,'offline venue cannot keep the cached final badge ready');
+ app.status.variational='connected';app.marketMap.get('BTCUSDT').researchOnly=true;
+ assert.equal(ctx.currentReadySignals(now).length,0,'research-only metadata never permits an entry');
+ app.marketMap.get('BTCUSDT').researchOnly=false;app.marketMap.get('BTCUSDT').priceAt=now-100000;
+ assert.equal(ctx.currentReadySignals(now).length,0,'a stalled price feed expires the local ready list');
+});
+
+test('a saved watchlist remains renderable during research-only venue outages',()=>{
+ const {app,ctx,$}=ui();
+ ctx.document={querySelectorAll:()=>[]};ctx.pct=String;
+ vm.runInContext(piece('function renderWatch(','function renderPair('),ctx);
+ app.watchlist=['BTCUSDT'];app.status.variational='offline';
+ app.marketMap.set('BTCUSDT',{symbol:'BTCUSDT',baseAsset:'BTC',price:100,researchOnly:true});
+ ctx.renderWatch();
+ assert.match($('watchlist').innerHTML,/상장 검증 대기/);
+ assert.match($('watchlist').innerHTML,/BTCUSDT/);
+});
+
+test('the selected-analysis button recovers after asynchronous dispatch clears event.currentTarget',async()=>{
+ const {ctx,$}=ui();let click,finish;
+ const button=$('scanButton');button.addEventListener=(_type,handler)=>{click=handler};
+ ctx.loadAnalysis=()=>new Promise(resolve=>{finish=resolve});ctx.toast=noop;
+ vm.runInContext(piece("$('scanButton').addEventListener(","$('refreshButton').addEventListener("),ctx);
+ const event={currentTarget:button},pending=click(event);
+ assert.equal(button.disabled,true);
+ event.currentTarget=null; // Real browsers clear this after event dispatch, before awaited work settles.
+ finish();await pending;
+ assert.equal(button.disabled,false);assert.equal(button.textContent,'✦ 선택 종목 분석');
 });

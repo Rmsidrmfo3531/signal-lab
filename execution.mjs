@@ -20,6 +20,12 @@ export function parsePerpExecution(listing){
 }
 export function executionEstimate({listing,side='LONG',notional=1000,binancePrice=null,binancePriceAt=null,statsReceivedAt=null,now=Date.now(),limits=EXEC_DEFAULTS}={}){
  const reasons=[];const cfg={...EXEC_DEFAULTS,...limits};
+ // A mistyped numeric environment setting becomes NaN in server.mjs. Comparisons
+ // such as age > NaN are always false, so reject the setting rather than silently
+ // disabling a risk limit. Zero remains a valid strict spread/age threshold.
+ for(const key of Object.keys(EXEC_DEFAULTS)){
+  if(!Number.isFinite(cfg[key])||cfg[key]<0||key==='riskUSD'&&cfg[key]===0)reasons.push('체결 검증 설정 오류: '+key);
+ }
  const n=Number(notional),mark=finitePositive(listing?.markPrice),bp=finitePositive(binancePrice);
  const quote=Number.isFinite(n)&&n>=250&&n<=3000?listing?.quote1k:listing?.quoteBase;
  const bid=finitePositive(quote?.bid),ask=finitePositive(quote?.ask);

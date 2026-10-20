@@ -51,6 +51,10 @@ export function entryTiming(signal,{price=null,priceAt=null,now=Date.now(),venue
   const extra={zoneLow,zoneHigh,confirmation:trigger};
   const confirmed=Number(signal.patternConfirmedAt??signal.time+3600000);
   if(!signal.patternConfirmed||!Number.isFinite(confirmed)||confirmed>now+60000)return result('unconfirmed','패턴 확정 대기','1시간봉 마감 확정 전 진입 판단 보류',false,extra);
+  if(Number.isFinite(signal.quality?.validUntil)&&now>signal.quality.validUntil)
+    return result('expired','필수 봉 신선도 만료 · 재분석 대기','1시간·4시간 확정봉의 필수 신선도 조건이 만료되었습니다.',false,extra);
+  if(Number.isFinite(signal.scannedAt)&&(signal.scannedAt>now+60000||now-signal.scannedAt>20*60000))
+    return result('expired','최근 분석 만료 · 재분석 대기','최종 진입은 최근 20분 이내의 분석이 필요합니다.',false,extra);
   if(now-confirmed>maxAgeMs)return result('expired','신호 만료 · 신규 진입 금지','1시간봉 확정 후 2시간 초과. 새 패턴을 기다리세요.',false,extra);
   const p=Number(price),at=Number(priceAt);
   if(!Number.isFinite(p)||p<=0||!Number.isFinite(at)||at<=0||at>now+60000||now-at>maxPriceAgeMs)

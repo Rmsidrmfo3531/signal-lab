@@ -1,9 +1,17 @@
 // Test-only exchange transport. All external destinations and write methods fail closed.
 import fs from 'node:fs';
+import path from 'node:path';
 import {marketSeries,ENTRY} from './fixtures/pipeline_market.mjs';
 const realFetch=globalThis.fetch;
+const realNow=Date.now.bind(Date);
 let lastControl={scenarios:{BTCUSDT:'breakout-long',ETHUSDT:'breakout-short'},prices:{},emit:false};
 function control(){try{lastControl=JSON.parse(fs.readFileSync(process.env.SIGNAL_LAB_TEST_CONTROL,'utf8'))}catch{}return lastControl}
+// Only this isolated child sees the synthetic clock. Timers retain real time.
+Date.now=()=>realNow()+Number(lastControl.clockOffsetMs||0);
+function waitingForEntry(){
+ if(!control().pauseWhenPending)return false;
+ try{return JSON.parse(fs.readFileSync(path.join(process.env.SIGNAL_LAB_DATA_DIR,'store.json'),'utf8')).paper?.pending?.length>0}catch{return false}
+}
 const json=obj=>new Response(JSON.stringify(obj),{headers:{'content-type':'application/json'}});
 const symbols=()=>Object.keys(control().scenarios);
 const price=symbol=>Number(control().prices?.[symbol]??(control().scenarios[symbol]==='range'?100:ENTRY));
@@ -18,7 +26,8 @@ globalThis.fetch=async(input,options={})=>{
   if(url.pathname==='/fapi/v1/klines'){
    const symbol=url.searchParams.get('symbol'),interval=url.searchParams.get('interval');
    if(!['1h','4h','1d'].includes(interval))throw Error('Test transport forbids sub-hour/unknown candles');
-   const series=marketSeries(control().scenarios[symbol],Date.now());
+   const cfg=control();
+   const series=marketSeries(cfg.scenarios[symbol],cfg.marketNow??Date.now());
    return json(interval==='1h'?series.h1:interval==='4h'?series.h4:[]);
   }
  }
@@ -41,7 +50,7 @@ globalThis.WebSocket=class SyntheticWebSocket extends EventTarget{
    if(this.readyState!==1)return;
    const cfg=control();
    if(this.url.includes('miniTicker')){
-    if(cfg.emit)this.emit(symbols().map(symbol=>({s:symbol,c:String(price(symbol)),st:1})));
+    if(cfg.emit&&!waitingForEntry())this.emit(symbols().map(symbol=>({s:symbol,c:String(price(symbol)),st:1})));
    }else if(cfg.trigger!==this.lastTrigger){
     this.lastTrigger=cfg.trigger;
     for(const symbol of symbols())this.emit({data:{e:'kline',s:symbol,st:1,k:{x:Boolean(cfg.trigger),i:'1h'}}});
