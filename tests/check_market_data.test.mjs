@@ -4,13 +4,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {marketSeries,ENTRY} from './fixtures/pipeline_market.mjs';
 const project=fileURLToPath(new URL('../',import.meta.url));
 const market=base=>({symbol:base+'USDT',baseAsset:base,quoteAsset:'USDT',contractType:'PERPETUAL',status:'TRADING'});
 
 async function check(mode){
- const sandbox=await fs.mkdtemp(path.join(os.tmpdir(),'signal-public-data-check-'));
+ // Exercise file-URL encoding on every CLI check, including Windows drive paths.
+ const sandbox=await fs.mkdtemp(path.join(os.tmpdir(),'signal-public-data-한글 # % + '));
  try{
   const series=marketSeries('breakout-long');
   const rows={exchangeInfo:{symbols:[market('BTC'),market('ETH')]},tickers:[{symbol:'BTCUSDT',lastPrice:String(ENTRY),quoteVolume:'100000000'},{symbol:'ETHUSDT',lastPrice:'100',quoteVolume:'100000000'}],
@@ -34,7 +35,7 @@ async function check(mode){
   `);
   const env={PATH:process.env.PATH};
   if(process.env.SystemRoot)env.SystemRoot=process.env.SystemRoot;
-  const result=spawnSync(process.execPath,['--import',preload,'scripts/check-market-data.mjs'],{cwd:project,env,encoding:'utf8',timeout:5000});
+  const result=spawnSync(process.execPath,['--import',pathToFileURL(preload).href,'scripts/check-market-data.mjs'],{cwd:project,env,encoding:'utf8',timeout:5000});
   assert.equal(result.error,undefined);assert.equal(result.stderr,'','validation errors must be reported as structured results, not an uncaught stack');
   return {code:result.status,report:JSON.parse(result.stdout)};
  }finally{await fs.rm(sandbox,{recursive:true,force:true})}
