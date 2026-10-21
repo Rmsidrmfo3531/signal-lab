@@ -320,9 +320,8 @@ function calcJournalPreview(){
  if(!stopValid){box.className='journal-preview warn';box.textContent='손절가는 롱일 때 진입가 아래, 숏일 때 진입가 위여야 합니다.';return}
  const loss=notional*Math.abs(entry-stop)/entry+fees, margin=notional/leverage;
  const pnl=exit?(x.side==='LONG'?1:-1)*notional*(exit-entry)/entry-fees-(Number(x.funding)||0):null;
- const warn=loss>6||loss>12-(app.journalSummary?.stopRiskOpen||0);
- box.className='journal-preview'+(warn?' warn':'');
- box.textContent=`계획상 손절 손실 $${loss.toFixed(2)} · 초기 증거금 약 $${margin.toFixed(2)} · 계좌 대비 ${(loss/1000*100).toFixed(2)}%${pnl!=null?' · 입력 청산가 기준 실현손익 $'+pnl.toFixed(2):''}${warn?' · ⚠ $6/거래 또는 열린 포지션 합산 $12 위험 한도 초과':''}. 실제 슬리피지·청산 위험은 별도입니다.`;
+ box.className='journal-preview';
+ box.textContent=`계획상 손절 손실 ${loss.toFixed(2)} · 초기 증거금 약 ${margin.toFixed(2)}${pnl!=null?' · 입력 청산가 기준 실현손익 $'+pnl.toFixed(2):''} · 계좌 자산 가정 없음. 실제 슬리피지·청산 위험은 별도입니다.`;
 }
 function fillJournalFromSignal(symbol){
  const a=[...app.signals,...app.patterns,...app.alerts].find(x=>x.symbol===symbol)||app.analysis;
@@ -337,9 +336,8 @@ function renderJournal(){
  $('journalWeek').textContent=cur(j.weekPnL);$('journalWeek').className=signed(j.weekPnL);
  $('journalTotal').textContent=cur(j.totalPnL)+' / '+(j.winRate==null?'승률 —':(100*j.winRate).toFixed(1)+'%');$('journalTotal').className=signed(j.totalPnL);
  $('journalOpenRisk').textContent=cur(j.stopRiskOpen)+' ('+(j.open||0)+'건)';
- const danger=j.dayExceeded||j.weekExceeded||j.stopRiskOpen>12;
- $('journalRiskBanner').className='journal-risk-banner'+(danger?' warn':'');
- $('journalRiskBanner').textContent=danger?'⚠ 직접 입력한 기록 기준 위험 예산 초과: '+(j.dayExceeded?'오늘 실현손실 $15 이상 · ':'')+(j.weekExceeded?'이번 주 실현손실 $40 이상 · ':'')+(j.stopRiskOpen>12?'열린 포지션 합산 계획 위험 $12 초과 · ':'')+'신규 진입 전 확인하세요. 자동매매 차단 기능은 아닙니다.':'기록상 오늘 -$15 / 주간 -$40 / 동시 계획 위험 $12를 기준으로 경고합니다. 누락 거래·미실현손익은 제외됩니다.';
+ $('journalRiskBanner').className='journal-risk-banner';
+ $('journalRiskBanner').textContent=`계좌 자산 가정 없음 · 열린 포지션 ${j.open||0}건 계획손절 합계 ${cur(j.stopRiskOpen)} · 오늘 ${cur(j.todayPnL)} / 이번 주 ${cur(j.weekPnL)} (기록 참고용). 실제 청산 위험과 누락 거래는 별도입니다.`;
  $('journalList').innerHTML=app.journal.length?app.journal.slice(0,50).map(t=>`<div class="journal-record"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side}</span><span class="${t.realizedPnLUSD>0?'journal-pnl-positive':t.realizedPnLUSD<0?'journal-pnl-negative':''}">${t.status==='OPEN'?'진행 중':cur(t.realizedPnLUSD)}</span></div><p>진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)} · ${t.status==='CLOSED'?'청산 '+fmt(t.exit)+' · ':''}명목 ${cur(t.notional)} · ${t.leverage}x<br>계획 손절 ${cur(t.stopRiskUSD)} · 기록된 비용 ${cur(t.fees)} · 펀딩 ${cur(t.funding)}</p><small>${dateClock(t.createdAt)} KST · ${escapeHtml(t.note||'메모 없음')}</small><div class="journal-record-actions">${t.status==='OPEN'?`<button data-close="${escapeHtml(t.id)}">청산 기록</button>`:''}<button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`).join(''):'<div class="empty-small">저장된 거래 기록이 없습니다. 수동으로 입력하거나 시그널에서 ‘매매일지에 입력’을 사용하세요.</div>';
  document.querySelectorAll('#journalList [data-close]').forEach(b=>b.addEventListener('click',()=>{closingTradeId=b.dataset.close;$('closeTradePrice').value='';$('closeTradeFee').value='0';$('closeTradeFunding').value='0';$('closeTradeError').textContent='';$('closeTradeDialog').showModal()}));
  document.querySelectorAll('#journalList [data-delete]').forEach(b=>b.addEventListener('click',async()=>{if(!confirm('이 수동 거래 기록을 삭제할까요?'))return;try{await json('/api/journal/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:b.dataset.delete})});await loadJournal();toast('삭제 완료')}catch(e){toast('삭제 실패: '+e.message,true)}}));
