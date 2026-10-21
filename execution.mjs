@@ -4,7 +4,7 @@
 const finitePositive=x=>{const n=Number(x);return Number.isFinite(n)&&n>0?n:null};
 const finiteSigned=x=>{if(x===undefined||x===null||x==='')return null;const n=Number(x);return Number.isFinite(n)?n:null};
 const bps=(a,b)=>((a-b)/b)*10000;
-export const EXEC_DEFAULTS=Object.freeze({maxQuoteAgeSeconds:180,maxFeedAgeSeconds:90,maxSpreadBps:20,maxAdverseVenueBps:35,maxRoundTripBps:30,riskUSD:6});
+export const EXEC_DEFAULTS=Object.freeze({maxQuoteAgeSeconds:180,maxFeedAgeSeconds:90,maxSpreadBps:20,maxAdverseVenueBps:35,maxRoundTripBps:30,paperNotionalUSD:500});
 export function parsePerpExecution(listing){
  if(!listing||listing.contract_type!=='perpetual'||!/^([A-Z0-9]+)-PERP$/.test(listing.ticker||''))return null;
  const q=listing.quotes||{};
@@ -24,7 +24,7 @@ export function executionEstimate({listing,side='LONG',notional=1000,binancePric
  // such as age > NaN are always false, so reject the setting rather than silently
  // disabling a risk limit. Zero remains a valid strict spread/age threshold.
  for(const key of Object.keys(EXEC_DEFAULTS)){
-  if(!Number.isFinite(cfg[key])||cfg[key]<0||key==='riskUSD'&&cfg[key]===0)reasons.push('체결 검증 설정 오류: '+key);
+  if(!Number.isFinite(cfg[key])||cfg[key]<0||key==='paperNotionalUSD'&&cfg[key]===0)reasons.push('체결 검증 설정 오류: '+key);
  }
  const n=Number(notional),mark=finitePositive(listing?.markPrice),bp=finitePositive(binancePrice);
  const quote=Number.isFinite(n)&&n>=250&&n<=3000?listing?.quote1k:listing?.quoteBase;
@@ -68,14 +68,15 @@ export function executionEstimate({listing,side='LONG',notional=1000,binancePric
 export function riskSizedEstimate({signal,listing,binancePrice,binancePriceAt,statsReceivedAt,now=Date.now(),limits}={}){
  if(!signal?.entry||!signal?.stop)return {eligible:false,reasons:['진입가·손절가 없음']};
  const direction=signal.direction;
- const quote1k=executionEstimate({listing,side:direction,notional:1000,binancePrice,binancePriceAt,statsReceivedAt,now,limits});
- const entryBasis=(direction==='LONG'?quote1k.ask:quote1k.bid)||signal.entry;
+ // Public $1,000 quote is an indicative size sample, not an account balance.
+ const n=limits?.paperNotionalUSD??EXEC_DEFAULTS.paperNotionalUSD;
+ const quote=executionEstimate({listing,side:direction,notional:n,binancePrice,binancePriceAt,statsReceivedAt,now,limits});
+ const entryBasis=(direction==='LONG'?quote.ask:quote.bid)||signal.entry;
  const sign=direction==='LONG'?1:-1;
  const stopRate=sign*(entryBasis-signal.stop)/entryBasis;
  const targetRate=sign*(signal.target1-entryBasis)/entryBasis;
- const spreadRate=Math.max(0,quote1k.roundTripCostBps??0)/10000;
- const n=Math.min(1500,Math.max(0,(limits?.riskUSD??EXEC_DEFAULTS.riskUSD)/(stopRate+spreadRate)));
- const result=executionEstimate({listing,side:direction,notional:n,binancePrice,binancePriceAt,statsReceivedAt,now,limits});
+ const spreadRate=Math.max(0,quote.roundTripCostBps??0)/10000;
+ const result=quote;
  if(!(stopRate>0&&targetRate>0)){result.eligible=false;result.reasons.push('Variational 참고 진입가 기준 손절·목표 방향 불일치')}
  const expectedLoss=n*(stopRate+spreadRate);
  return {...result,stopRate,entryBasis,estimatedStopLossUSD:expectedLoss,expectedGrossTargetUSD:n*targetRate,
