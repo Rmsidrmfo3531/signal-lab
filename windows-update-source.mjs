@@ -30,7 +30,7 @@ export function github({token=credential(),fetcher=fetch}={}){
    if(data.total_count<=100&&approvedCI(run,sha,data.jobs||[]))return {sha,runId:run.id}
   }return null;
  },
- tree:sha=>{if(!sha40.test(sha))throw Error('SHA 오류');return get(root+'/git/trees/'+sha+'?recursive=1')},
+ tree:async sha=>{if(!sha40.test(sha))throw Error('SHA 오류');const commit=await get(root+'/git/commits/'+sha);if(!sha40.test(commit.tree?.sha))throw Error('커밋의 tree SHA 누락');return get(root+'/git/trees/'+commit.tree.sha+'?recursive=1')},
  async blob(sha){
   if(!sha40.test(sha))throw Error('Blob SHA 오류');const r=await get(root+'/git/blobs/'+sha);
   if(r.encoding!=='base64'||typeof r.content!=='string')throw Error('Blob 인코딩 오류');
