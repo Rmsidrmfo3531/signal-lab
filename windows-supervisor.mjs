@@ -11,7 +11,7 @@ const root=path.dirname(fileURLToPath(import.meta.url)),dataDir=resolveDataDir()
 let proc,interval,closing=false,updating=false,failures=0;
 const active=()=>proc&&proc.exitCode===null&&proc.signalCode===null;
 const getPort=()=>{let port=process.env.PORT||'3000';const envPath=path.join(dataDir,'.env');
- if(!process.env.PORT&&fs.existsSync(envPath)){const m=fs.readFileSync(envPath,'utf8').match(/^\\s*PORT\\s*=\\s*(\\d+)\\s*$/m);if(m)port=m[1]}
+ if(!process.env.PORT&&fs.existsSync(envPath)){const m=fs.readFileSync(envPath,'utf8').match(/^\s*PORT\s*=\s*(\d+)\s*$/m);if(m)port=m[1]}
  const n=Number(port);if(!Number.isSafeInteger(n)||n<1||n>65535)throw Error('PORT 설정 오류');return n};
 const url=()=>`http://127.0.0.1:${getPort()}`;
 function launch(openBrowser){
