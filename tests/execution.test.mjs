@@ -11,14 +11,14 @@ test('strict fail closed if stale quote, missing timestamp, or missing bid',()=>
 test('price mismatch and spread blocks alerts',()=>{assert.equal(make(listing({quotes:{updated_at:new Date(T).toISOString(),size_1k:{bid:'80000',ask:'82000'}}})).eligible,false);assert.equal(make(listing(),{binancePrice:80000}).eligible,false)});
 test('notional outside API sample band blocked',()=>{const v=listing();assert.equal(make(v,{notional:200}).eligible,false);assert.equal(make(v,{notional:2000}).eligible,false)});
 test('missing funding is unknown, never silently displayed as zero',()=>{const x=make(listing({funding:null}));assert.equal(x.fundingOneIntervalUSD,null);assert.equal(x.fundingIntervalRate,null)});
-test('trade risk sized to quote spread and stop distance',()=>{const r=riskSizedEstimate({signal:{entry:81000,stop:80595,target1:81810,direction:'LONG'},listing:listing(),binancePrice:81001,binancePriceAt:T,statsReceivedAt:T,now:T});assert.ok(r.notional>0&&r.notional<=1500);assert.ok(r.estimatedStopLossUSD<=6.001)});
+test('fixed simulated notional is independent of account capital',()=>{const r=riskSizedEstimate({signal:{entry:81000,stop:80595,target1:81810,direction:'LONG'},listing:listing(),binancePrice:81001,binancePriceAt:T,statsReceivedAt:T,now:T});assert.equal(r.notional,500);assert.ok(r.estimatedStopLossUSD>0);assert.ok(r.estimatedNetRR>0)});
 test('must have Binance symbol-specific recent updates',()=>{const x=make(listing(),{binancePriceAt:T-300000});assert.equal(x.eligible,false);assert.ok(x.reasons.join(' ').includes('Binance'))});
 test('invalid execution limits fail closed instead of disabling freshness and risk guards',()=>{
  const stale=listing({quotes:{updated_at:new Date(T-700_000).toISOString(),size_1k:{bid:'80996',ask:'81004'}}});
  const malformedAge=make(stale,{limits:{maxQuoteAgeSeconds:Number('invalid')}});
  assert.equal(malformedAge.eligible,false,'a mistyped age setting must not approve an old venue quote');
  assert.match(malformedAge.reasons.join(' '),/설정 오류: maxQuoteAgeSeconds/);
- for(const limits of [{maxFeedAgeSeconds:NaN},{maxSpreadBps:Infinity},{maxAdverseVenueBps:undefined},{maxRoundTripBps:-1},{riskUSD:0}]){
+ for(const limits of [{maxFeedAgeSeconds:NaN},{maxSpreadBps:Infinity},{maxAdverseVenueBps:undefined},{maxRoundTripBps:-1},{paperNotionalUSD:0}]){
   const result=make(listing(),{limits});
   assert.equal(result.eligible,false,JSON.stringify(limits));assert.match(result.reasons.join(' '),/설정 오류/);
  }
@@ -37,6 +37,7 @@ test('risk and reward use the directional venue quote rather than an optimistic 
  const quote={bid:100.339966,ask:100.35},signal={direction:'LONG',entry:100,stop:99,target1:102};
  const result=riskSizedEstimate({signal,listing:{markPrice:100,quoteUpdatedAt:T,quote1k:quote,quoteBase:quote},binancePrice:100,binancePriceAt:T,statsReceivedAt:T,now:T});
  assert.equal(result.entryBasis,quote.ask);
- assert.ok(result.notional*(quote.ask-signal.stop)/quote.ask<=6);
+ assert.equal(result.notional,500);
+ assert.ok(result.estimatedStopLossUSD>6,'fixed trade size must not be silently reduced by $6 cap');
  assert.ok(result.estimatedNetRR<1.8);
 });
