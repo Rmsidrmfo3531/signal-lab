@@ -10,7 +10,7 @@ const base=root=>path.join(root,'.updates');
 export const readAutoStatus=root=>{try{return JSON.parse(fs.readFileSync(path.join(base(root),'auto-status.json'),'utf8'))}catch{return {enabled:false}}};
 export function writeAutoStatus(root,state){fs.mkdirSync(base(root),{recursive:true});const to=path.join(base(root),'auto-status.json'),temp=to+'.tmp';fs.writeFileSync(temp,JSON.stringify(state,null,2));fs.renameSync(temp,to)}
 export const gitBlobHash=data=>hex('sha1',Buffer.concat([Buffer.concat([Buffer.from('blob '+data.length),Buffer.from([0])]),data]));
-export function approvedCI(run,sha,jobs){return sha40.test(sha)&&run?.head_sha===sha&&run?.head_branch==='main'&&run?.event==='push'&&run?.name==='Node.js tests'&&run?.conclusion==='success'&&run?.status==='completed'&&run?.path?.endsWith('/.github/workflows/'+CI)&&run?.head_repository?.full_name===REPO&&names.every(name=>jobs.some(j=>j.name===name&&j.status==='completed'&&j.conclusion==='success'))}
+export function approvedCI(run,sha,jobs){return sha40.test(sha)&&run?.head_sha===sha&&run?.head_branch==='main'&&run?.event==='push'&&run?.name==='Node.js tests'&&run?.conclusion==='success'&&run?.status==='completed'&&(run?.path?.includes('/.github/workflows/'+CI))&&run?.head_repository?.full_name===REPO&&names.every(name=>jobs.some(j=>j.name===name&&j.status==='completed'&&j.conclusion==='success'))}
 function credential(){try{return execFileSync('gh',['auth','token'],{encoding:'utf8',windowsHide:true,timeout:10000,stdio:['ignore','pipe','ignore']}).trim()}catch{throw Error('GitHub CLI 설치 및 gh auth login 최초 1회 인증 필요')}}
 export function github({token=credential(),fetcher=fetch}={}){
  const root='/repos/'+REPO;
