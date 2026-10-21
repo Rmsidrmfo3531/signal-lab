@@ -700,6 +700,16 @@ const server=http.createServer(async(req,res)=>{
    const pulse=setInterval(()=>{try{res.write(': heartbeat\n\n')}catch{}},20000);
    req.on('close',()=>{clearInterval(pulse);state.clients.delete(res)});return;
   }
+  if(pathname.startsWith('/api/internal/supervisor/')){
+   const loopback=['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+   if(!loopback||!process.env.SIGNAL_LAB_SUPERVISOR_TOKEN||req.headers['x-signal-lab-supervisor']!==process.env.SIGNAL_LAB_SUPERVISOR_TOKEN)return response(res,403,{error:'supervisor authentication required'});
+   if(pathname==='/api/internal/supervisor/ping'&&req.method==='GET')return response(res,200,{ok:true,storageHealthy:storageHealth.healthy});
+   if(pathname==='/api/internal/supervisor/shutdown'&&req.method==='POST'){
+    try{save()}catch(e){return response(res,503,{error:'저장 실패로 안전 종료 거부'})}
+    response(res,200,{ok:true});setImmediate(()=>gracefulShutdown());return;
+   }
+   return response(res,404,{error:'Not found'});
+  }
   if(pathname==='/api/status')return response(res,200,getStatus());
   if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,variational:state.variational,marketError:state.marketError});
   if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:storageHealth.healthy,updatedByServer:true,...storageHealth,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
