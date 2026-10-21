@@ -15,7 +15,7 @@ test('only exact trusted main commit with all four successful CI jobs is approve
  assert.equal(approvedCI(run,sha,jobs.map((j,i)=>i===1?{...j,conclusion:'failure'}:j)),false);
 });
 test('Git native blob hash includes size header and NUL byte',()=>{
- const data=Buffer.from('hello');const expected=createHash('sha1').update(Buffer.concat([Buffer.from('blob 5\\0'),data])).digest('hex');
+ const data=Buffer.from('hello');const expected=createHash('sha1').update(Buffer.concat([Buffer.concat([Buffer.from('blob 5'),Buffer.from([0])]),data])).digest('hex');
  assert.equal(gitBlobHash(data),expected);
 });
 test('Git tree rejects missing required binaries and incomplete responses',()=>{
