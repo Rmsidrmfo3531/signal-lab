@@ -4,7 +4,9 @@
  */
 import {entryAllowance} from './public/trade_plan.js';
 
-export const PAPER_DEFAULTS=Object.freeze({startingBalance:1000,riskUSD:6,maxPositions:2,maxNotional:1500,minNotional:100,maxDailyLoss:15,maxWeeklyLoss:40,
+// Fixed simulation trade size, independent of any assumed account balance.
+// Signals must still pass pattern, quality, quote, entry-timing and stop checks.
+export const PAPER_DEFAULTS=Object.freeze({paperNotionalUSD:500,maxPositions:2,maxNotional:1500,minNotional:250,
  feeBps:5,slippageBps:2,cryptoHalfSpreadBps:1,entryTimeoutMs:20*60000,maxFreshMsCrypto:90000,maxFreshMsTradFi:180000,
  maxQuoteGapMsCrypto:120000,maxQuoteGapMsTradFi:240000});
 const num=v=>Number(v);
@@ -44,14 +46,14 @@ export function paperSummary(store,{now=Date.now(),settings=PAPER_DEFAULTS}={}){
  const total=closedRealized+openPartRealized,winning=done.filter(x=>x.realizedPnLUSD>0);
  const grossWinning=done.reduce((s,x)=>s+Math.max(x.realizedPnLUSD,0),0),grossLosing=done.reduce((s,x)=>s+Math.max(-x.realizedPnLUSD,0),0);
  const unrealized=active.reduce((s,x)=>s+(validPrice(x.markPrice)?x.qtyRemaining*(x.direction==='LONG'?1:-1)*(x.markPrice-x.entryFill):0),0);
- const marketValue=settings.startingBalance+total+unrealized;
- let peak=settings.startingBalance,maxDrawdownUSD=0,running=settings.startingBalance;
+ // Cumulative PNL is centered at zero, without assuming initial deposit.
+ let peak=0,maxDrawdownUSD=0,running=0;
  for(const r of [...done].sort((a,b)=>a.closedAt-b.closedAt)) {running+=r.realizedPnLUSD;peak=Math.max(peak,running);maxDrawdownUSD=Math.max(maxDrawdownUSD,peak-running)}
  const today=isoDay(now),week=isoWeek(now),cashFlows=[...done.map(t=>realizedCashFlows(t,true)),...active.map(t=>realizedCashFlows(t))];
  const daily=cashFlows.flatMap(x=>x.flows).filter(t=>isoDay(t.at)===today).reduce((s,x)=>s+x.amount,0);
  const weekly=cashFlows.flatMap(x=>x.flows).filter(t=>isoWeek(t.at)===week).reduce((s,x)=>s+x.amount,0);
- return {startingBalance:settings.startingBalance,closedCount:done.length,openCount:active.length,pendingCount:(store.pending||[]).length,
-  netRealizedUSD:rounded(total),closedTradeRealizedUSD:rounded(closedRealized),openPartialRealizedUSD:rounded(openPartRealized),unrealizedUSD:rounded(unrealized),indicativeEquityUSD:rounded(marketValue),winRatePct:done.length?rounded(winning.length/done.length*100):null,
+ return {startingBalance:null,indicativeEquityUSD:null,paperNotionalUSD:settings.paperNotionalUSD,closedCount:done.length,openCount:active.length,pendingCount:(store.pending||[]).length,
+  netRealizedUSD:rounded(total),closedTradeRealizedUSD:rounded(closedRealized),openPartialRealizedUSD:rounded(openPartRealized),unrealizedUSD:rounded(unrealized),totalMarkedPnLUSD:rounded(total+unrealized),winRatePct:done.length?rounded(winning.length/done.length*100):null,
   profitFactor:grossLosing>0?rounded(grossWinning/grossLosing):null,maxClosedTradeDrawdownUSD:rounded(maxDrawdownUSD),dailyPnLUSD:rounded(daily),weeklyPnLUSD:rounded(weekly),periodPnLApproximate:cashFlows.some(x=>x.approximate),
   totalFeesUSD:rounded(done.reduce((s,x)=>s+x.feesUSD,0)+active.reduce((s,x)=>s+x.feesUSD,0)),
   assumptions:`모의 시장가 · 수수료 편도 ${settings.feeBps}bp + 슬리피지 편도 ${settings.slippageBps}bp + 스프레드 가정 · 펀딩/청산/차입비용 미반영`,fundingIncluded:false};
@@ -99,9 +101,7 @@ export class PaperEngine {
   const key=signalKey({market,symbol,direction,pattern,barAt});if(this.store.seen[key])return false;
   if(!quoteEligible)return this.reject(key,'상장/호가/진입 검증 실패');
   if(this.store.open.some(x=>x.symbol===symbol&&x.market===market)||this.store.pending.some(x=>x.symbol===symbol&&x.market===market))return this.reject(key,'동일 종목 중복 가상 포지션 방지');
-  const summary=paperSummary(this.store,{now,settings});
   if(this.store.open.length+this.store.pending.length>=settings.maxPositions)return this.reject(key,'동시 포지션 상한');
-  if(summary.dailyPnLUSD<=-settings.maxDailyLoss||summary.weeklyPnLUSD<=-settings.maxWeeklyLoss)return this.reject(key,'일간/주간 손실 경고 상한');
   const targets=(Array.isArray(signal.targets)&&signal.targets.length===3?signal.targets:[2,3,4].map(r=>entry+(direction==='LONG'?1:-1)*Math.abs(entry-stop)*r)).map(num);
   if(targets.some(p=>!validPrice(p))||targets.some((p,i)=>direction==='LONG'?p<=entry||(i>0&&p<=targets[i-1]):p>=entry||(i>0&&p>=targets[i-1])))return this.reject(key,'목표가 데이터 불일치',{remember:false});
   this.store.seen={...this.store.seen,[key]:now};
@@ -127,12 +127,6 @@ export class PaperEngine {
    if(at<=pending.signalAt)continue;
    this.store.pending=this.store.pending.filter(x=>x.key!==pending.key);
    if(at>pending.expiresAt||now>pending.expiresAt){this.store.skipped.push({key:pending.key,reason:'신호 진입 유효기간 종료',at:now});modified++;continue}
-   // Another position may realize a loss while this signal is waiting. Approval
-   // at registration is not permission to bypass the current session loss caps.
-   const summary=paperSummary(this.store,{now,settings});
-   if(summary.dailyPnLUSD<=-settings.maxDailyLoss||summary.weeklyPnLUSD<=-settings.maxWeeklyLoss){
-    this.store.skipped.push({key:pending.key,reason:'진입 직전 일간/주간 손실 경고 상한',at:now});modified++;continue;
-   }
    const dir=pending.direction==='LONG'?1:-1;
    if(dir*(price-pending.stop)<=0||dir*(price-pending.targets[0])>=0){this.store.skipped.push({key:pending.key,reason:'첫 실시간 관측 시 손절선/목표가 이미 통과',at:now});modified++;continue}
    const deviation=Math.abs(price-pending.signalPrice)/pending.signalPrice;
@@ -143,10 +137,10 @@ export class PaperEngine {
    const entryFill=fillPrice(price,pending.direction==='LONG'?'BUY':'SELL',{halfSpreadBps:spread,slippageBps:settings.slippageBps});
    const stopFill=fillPrice(pending.stop,pending.direction==='LONG'?'SELL':'BUY',{halfSpreadBps:spread,slippageBps:settings.slippageBps});
    if(dir*(entryFill-pending.stop)<=0){this.store.skipped.push({key:pending.key,reason:'스프레드 반영 후 진입 가격 무효',at:now});modified++;continue}
-   // Size against modeled stop INCLUDING two fees, spread and slippage, but not gaps.
-   const costPerDollar=(Math.abs(entryFill-stopFill)+settings.feeBps/10000*(entryFill+stopFill))/entryFill;
-   const n=Math.min(settings.maxNotional,settings.riskUSD/costPerDollar);
-   if(!Number.isFinite(n)||n<settings.minNotional){this.store.skipped.push({key:pending.key,reason:'비용 포함 위험 한도에 맞는 최소 명목금액 미충족',at:now});modified++;continue}
+   // The fixed notional refers only to the synthetic trade; $250-$1500 is
+   // the band validated against Variational's public indicative quote sample.
+   const n=settings.paperNotionalUSD;
+   if(!Number.isFinite(n)||n<settings.minNotional||n>settings.maxNotional){this.store.skipped.push({key:pending.key,reason:'모의 거래 명목금액이 호가 샘플 검증 범위를 벗어남',at:now});modified++;continue}
    const quantity=n/entryFill,feesUSD=n*settings.feeBps/10000;
    this.store.open.push({...pending,openedAt:at,entryRefPrice:price,entryFill,initialStop:pending.stop,notionalUSD:rounded(n),originalQty:quantity,qtyRemaining:quantity,
      exitedPct:0,realizedGrossUSD:0,feesUSD,realizedPnLUSD:-feesUSD,closeParts:[],markPrice:price,lastPriceAt:at,
