@@ -38,7 +38,7 @@ function render(payload){
   `$${Number(payload.maxClosedTradeDrawdownUSD||0).toFixed(2)}`
  ];
  find('paperMetrics').innerHTML=summaries.map((x,i)=>`<div><span>${['종료 거래','누적 실현 PNL','승률 (종료)','평가 손익 (참고)','종료 거래 낙폭'][i]}</span><strong>${x}</strong></div>`).join('');
- find('paperStatus').textContent=`가상 시작자금 $${fmt(payload.startingBalance)} · 추정 계좌가치 $${fmt(payload.indicativeEquityUSD)} · 진행 ${payload.openCount}건 · 진입 대기 ${payload.pendingCount}건 · 오늘 ${usd(payload.dailyPnLUSD)} · 이번 주 ${usd(payload.weeklyPnLUSD)} · ${payload.assumptions}`;
+ find('paperStatus').textContent=`시작자금·계좌잔고 가정 없음 · 모의 거래당 ${fmt(payload.paperNotionalUSD)} · 누적 평가손익 ${usd(payload.totalMarkedPnLUSD)} · 진행 ${payload.openCount}건 · 진입 대기 ${payload.pendingCount}건 · 오늘 ${usd(payload.dailyPnLUSD)} · 이번 주 ${usd(payload.weeklyPnLUSD)} · ${payload.assumptions}`;
  const open=[...(payload.open||[])];
  const cards=open.map(t=>{
   const stale=timeGap(t.lastPriceAt,t.market==='TRADFI'?180000:90000);
