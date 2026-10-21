@@ -45,15 +45,15 @@ test('partial realizations and entry fees also respect the Monday KST week bound
  near(summary.dailyPnLUSD,summary.weeklyPnLUSD);
 });
 
-test('daily loss limit includes actual remaining-position loss after earlier-day partial profit',()=>{
+test('daily PNL includes actual remaining-position loss without rejecting new simulated patterns',()=>{
  const t=create({settings:{maxDailyLoss:7}});t.engine.register(sample(t.now()),{quoteEligible:true});t.quote(100);t.quote(104);
  t.set(Date.parse('2026-10-19T15:01:00Z'));t.quote(95);
  const summary=t.engine.snapshot();assert.ok(summary.dailyPnLUSD<-7);assert.ok(summary.netRealizedUSD>-7);
- assert.equal(t.engine.register(sample(t.now(),{symbol:'ETHUSDT'}),{symbol:'ETHUSDT',quoteEligible:true}),false);
- assert.match(t.engine.store.skipped.at(-1).reason,/일간\/주간/);
+ assert.equal(t.engine.register(sample(t.now(),{symbol:'ETHUSDT'}),{symbol:'ETHUSDT',quoteEligible:true}),true);
+ assert.equal(t.engine.store.pending.length,1,'loss totals are PNL data, not a fixed-capital gate');
 });
 
-for(const limit of ['daily','weekly'])test(`a pending entry cannot bypass the ${limit} loss limit after another position stops`,()=>{
+for(const limit of ['daily','weekly'])test(`a pending entry continues after the ${limit} loss tally changes`,()=>{
  const settings=limit==='daily'?{maxDailyLoss:5,maxWeeklyLoss:100}:{maxDailyLoss:100,maxWeeklyLoss:5};
  const t=create({settings});
  t.engine.register(sample(t.now()),{quoteEligible:true});t.quote(100);
@@ -62,8 +62,8 @@ for(const limit of ['daily','weekly'])test(`a pending entry cannot bypass the ${
  t.quote(98);assert.equal(t.engine.store.closed[0].closeReason,'STOP');
  assert.ok(t.engine.snapshot().netRealizedUSD<=-5);
  t.quote(100,'ETHUSDT');
- assert.equal(t.engine.store.open.length,0);assert.equal(t.engine.store.pending.length,0);
- assert.equal(t.engine.store.closed.length,1);assert.match(t.engine.store.skipped.at(-1).reason,/진입 직전.*손실/);
+ assert.equal(t.engine.store.open.length,1);assert.equal(t.engine.store.pending.length,0);
+ assert.equal(t.engine.store.closed.length,1);assert.equal(t.engine.store.open[0].symbol,'ETHUSDT');
 });
 
 test('legacy summary-only closed records keep lifetime PNL and are marked approximate for date allocation',()=>{
