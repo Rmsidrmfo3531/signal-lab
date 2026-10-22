@@ -415,3 +415,24 @@
 .scan-history summary{cursor:pointer;color:#b7cde2;font-size:12px}
 .scan-history summary small{color:#8b9eb3;font-size:10px}
 @media(max-width:640px){.scan-observation-item{align-items:flex-start;flex-direction:column;gap:7px}.scan-observation-item>div:last-child{min-width:0;display:flex;text-align:left;gap:14px}.scan-observation{padding:12px}}
+
+
+/* Confirmed directional chart-entry references: clearly separate from executable quotes. */
+.direction-entry-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:15px 22px 7px;color:#cfe4f5;font-size:12px}
+.direction-entry-heading small{font-size:10px;color:#8ba4ba;line-height:1.6}
+.direction-entry-board,.pair-direction-entries{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:8px 22px 20px}
+.pair-direction-entries{padding:10px 15px;border-top:1px solid #243b50;border-bottom:1px solid #243b50}
+.direction-entry-box{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:14px;border:1px solid #30516a;border-radius:10px;background:#132539;min-width:0}
+.direction-entry-box.long{border-color:#2e6a5a}
+.direction-entry-box.short{border-color:#754457}
+.direction-entry-caption{display:flex;align-items:center;gap:10px}
+.direction-entry-caption b{font-size:12px;overflow-wrap:anywhere}
+.direction-entry-box>strong,.direction-entry-value{font:700 21px 'DM Mono',monospace;overflow-wrap:anywhere;color:#e0efff}
+.direction-entry-box>small{font-size:10px;color:#90a8bc;line-height:1.5}
+.direction-entry-box p{font-size:11px;line-height:1.5;color:#c0d2df;margin:0}
+.direction-entry-stage{font-size:10px;color:#f4b58b}
+.direction-entry-stage.entry-safe{color:#80e7c6}
+.entry-price-ref{display:grid;gap:7px;min-width:112px}
+.entry-price-ref strong{font:700 13px 'DM Mono',monospace;color:#e2eeff}
+.entry-price-ref small{font-size:10px;color:#8297aa;line-height:1.5}
+@media(max-width:690px){.direction-entry-heading{display:grid;padding:12px 14px 6px}.direction-entry-board,.pair-direction-entries{grid-template-columns:1fr 1fr;gap:7px;padding:8px 10px 15px}.direction-entry-box{padding:11px;gap:6px}.direction-entry-box>strong,.direction-entry-value{font-size:15px}.direction-entry-box p,.direction-entry-box>small{font-size:9px}}
