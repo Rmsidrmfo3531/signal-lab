@@ -2,6 +2,7 @@ import { tradingViewTicker, tradingViewInterval, tradingViewChartUrl, tradingVie
 import {NEWS_PER_PAGE,paginateNews,clipNewsText,pageWindow} from "/news_pagination.js";
 import {tradePlan,entryTiming} from "/trade_plan.js";
 import {SCAN_PAGE_SIZE,paginateScan,scanPageWindow} from "/scan_pagination.js";
+import {latestDirectionPattern} from "/directional_entries.js";
 const $=id=>document.getElementById(id);
 const initialSymbol=new URLSearchParams(window.location.search).get('symbol')?.toUpperCase()||'';
 const rememberedSymbol=localStorage.getItem('sl-symbol');
@@ -246,6 +247,49 @@ function currentReadySignals(now=Date.now()){
    entryTiming(signal,{price:market.price,priceAt:market.priceAt,now,venueReady:true}).actionable;
  });
 }
+// These are confirmed chart reference prices, not live Variational firm quotes.
+// Never infer an entry from observations, last price, or old historic patterns.
+function directionalEntryRows(){return [...app.signals,...app.patterns,...app.watch,...(app.analysis?[app.analysis]:[])].filter(x=>x?.symbol&&app.marketMap.get(x.symbol)?.variational&&!app.marketMap.get(x.symbol)?.researchOnly&&app.status?.variational==='connected')}
+function directionalEntryStatus(row,approved){
+ if(!row)return '확정 패턴 없음';
+ const m=app.marketMap.get(row.symbol);
+ const p=Number(m?.price);
+ if(row.patternInvalidated||Number.isFinite(p)&&p>0&&(row.direction==='LONG'?p<=row.stop:p>=row.stop))return '손절 무효화 · 진입 금지';
+ const isReady=approved.some(x=>x.symbol===row.symbol&&x.direction===row.direction&&x.pattern===row.pattern&&x.patternConfirmedAt===row.patternConfirmedAt&&x.entry===row.entry);
+ if(isReady)return '현재 진입 검증 통과 · 실제 호가 별도 확인';
+ if(row.quality?.passed===false)return '기술 조건 미달 · 진입 금지';
+ if(row.execution?.eligible===false)return '호가·비용 검증 보류';
+ return '진입 시점·가격 확인 대기';
+}
+function directionReferenceHTML(row,direction,approved,{selected=false}={}){
+ const tag=direction==='LONG'?'long':'short';
+ if(!row)return `<div class="direction-entry-box ${tag}"><span class="dir ${tag}">${direction}</span><strong>—</strong><small>최근 2시간 이내 유효한 확정 패턴 없음</small></div>`;
+ const stage=directionalEntryStatus(row,approved),ready=stage.startsWith('현재 진입');
+ const market=app.marketMap.get(row.symbol);
+ const time=entryTiming(row,{price:market?.price,priceAt:market?.priceAt,venueReady:ready});
+ return `<div class="direction-entry-box ${tag}"><div class="direction-entry-caption"><span class="dir ${tag}">${direction}</span><b>${escapeHtml(row.symbol)}</b></div><strong class="direction-entry-value">${fmt(row.entry)}</strong><small>차트 기준 진입가 (실제 주문가 아님)</small><span class="direction-entry-stage ${ready?'entry-safe':''}">${escapeHtml(stage)}</span><p>손절 ${fmt(row.stop)} · 1차 목표 ${fmt(row.target1)}</p>${time?.zoneLow>0&&time?.zoneHigh>0?`<p>관찰 진입 구간 ${fmt(time.zoneLow)} ~ ${fmt(time.zoneHigh)}</p>`:''}<small>${escapeHtml(row.pattern||'')} · 1H 확정 ${dateClock(row.patternConfirmedAt)} KST</small>${selected?'':`<button type="button" class="table-link" data-direction-symbol="${escapeHtml(row.symbol)}">차트 확인 ↗</button>`}</div>`;
+}
+function renderDirectionalEntries(){
+ const global=$('directionEntryBoard'),single=$('pairDirectionEntries');
+ if(!global&&!single)return;
+ const now=Date.now(),rows=directionalEntryRows(),approved=currentReadySignals(now);
+ if(global){
+  global.innerHTML=['LONG','SHORT'].map(dir=>directionReferenceHTML(latestDirectionPattern(rows,dir,{now}),dir,approved)).join('');
+  global.querySelectorAll('button[data-direction-symbol]').forEach(b=>b.addEventListener('click',()=>focusSignal(b.dataset.directionSymbol)));
+ }
+ if(single){
+  single.innerHTML=['LONG','SHORT'].map(dir=>{
+   const pattern=latestDirectionPattern(rows,dir,{now,symbol:app.symbol});
+   if(pattern)return directionReferenceHTML(pattern,dir,approved,{selected:true});
+   const a=app.analysis?.symbol===app.symbol?app.analysis:null,m=app.marketMap.get(app.symbol);
+   const live=Number(m?.price)>0&&Number(m?.priceAt)>0&&now-Number(m.priceAt)<=90000;
+   const levels=live?(dir==='LONG'?a?.resistances:a?.supports)||[]:[];
+   const eligible=levels.map(x=>Number(x.price)).filter(x=>Number.isFinite(x)&&x>0&&(dir==='LONG'?x>m.price:x<m.price));
+   const level=eligible.length?(dir==='LONG'?Math.min(...eligible):Math.max(...eligible)):null;
+   return `<div class="direction-entry-box ${dir==='LONG'?'long':'short'}"><span class="dir ${dir==='LONG'?'long':'short'}">${dir}</span><strong>진입가 —</strong><small>확정 패턴 없음 · 매매 진입 불가</small>${level?`<p>참고 관찰선 ${fmt(level)} (확정 진입가 아님)</p>`:''}</div>`;
+  }).join('');
+ }
+}
 function results(){return app.showWatch?app.watch:app.patterns}
 function renderSignals(){
  const filter=$('signalFilter').value;
@@ -277,12 +321,13 @@ function renderSignals(){
    const onMarket=app.marketMap.get(a.symbol);
    const timing=entryTiming(a,{price:onMarket?.price,priceAt:onMarket?.priceAt,venueReady:ready});
    const tpCell=plan?`<div class="tp-list">${plan.targets.filter(Boolean).map(t=>`<div class="tp-line"><b>${t.name} ${fmt(t.price)}</b><span>${t.reducePct}% 청산 · +${t.movePct.toFixed(2)}%</span></div>`).join('')}<small>비용 제외 · 총 ${plan.weightedR.toFixed(2)}R (전량 목표 도달 가정)</small></div>`:'<span class="quiet">계산 불가</span>';
-   return `<tr><td>${escapeHtml(a.symbol)}</td><td class="monospace">${fmt(onMarket?.price||a.price)}</td><td class="monospace ${change>=0?'positive':'negative'}">${pct(change)}</td><td><span class="dir ${a.direction==='LONG'?'long':'short'}">${a.direction}</span><strong style="display:block;color:#cfdeef;margin-top:6px;font-size:11px">${escapeHtml(a.pattern)}</strong><span class="pattern-detail">${detail}</span></td><td><span class="pattern-label ${cls}">${label}</span><div style="font-size:10px;color:#849cb2;margin-top:6px">규칙 충족 ${a.score||0}/100 · 승률 아님 · 거래량 ${Number(a.volumeRatio||0).toFixed(2)}x</div></td><td><div class="entry-timing ${timing.actionable?'entry-now':'entry-wait'}"><strong>${escapeHtml(timing.label)}</strong>${plan?`<div class="monospace">${fmt(timing.zoneLow)} ~ ${fmt(timing.zoneHigh)}</div>`:''}<small>${escapeHtml(timing.detail)}</small></div></td><td>${tpCell}</td><td class="monospace" style="font-size:10px">${fmt(a.supports?.[0]?.price)} / ${fmt(a.resistances?.[0]?.price)}</td><td class="monospace" style="font-size:10px">${clock(a.scannedAt)}</td><td><div class="action-stack"><button class="table-link" data-symbol="${escapeHtml(a.symbol)}">진입·익절 상세 ↗</button><button class="table-link" data-journal="${escapeHtml(a.symbol)}">매매일지에 입력 ↗</button>${linkButtons(a.symbol)}</div></td></tr>`;
+   return `<tr><td>${escapeHtml(a.symbol)}</td><td class="monospace">${fmt(onMarket?.price||a.price)}</td><td class="monospace ${change>=0?'positive':'negative'}">${pct(change)}</td><td><span class="dir ${a.direction==='LONG'?'long':'short'}">${a.direction}</span><strong style="display:block;color:#cfdeef;margin-top:6px;font-size:11px">${escapeHtml(a.pattern)}</strong><span class="pattern-detail">${detail}</span></td><td><span class="pattern-label ${cls}">${label}</span><div style="font-size:10px;color:#849cb2;margin-top:6px">규칙 충족 ${a.score||0}/100 · 승률 아님 · 거래량 ${Number(a.volumeRatio||0).toFixed(2)}x</div></td><td><div class="entry-price-ref"><span class="dir ${a.direction==='LONG'?'long':'short'}">${a.direction}</span><strong>${fmt(a.entry)}</strong><small>확정 패턴 기준 · ${ready?'진입 검증 통과':'진입 보류'}</small></div></td><td><div class="entry-timing ${timing.actionable?'entry-now':'entry-wait'}"><strong>${escapeHtml(timing.label)}</strong>${plan?`<div class="monospace">${fmt(timing.zoneLow)} ~ ${fmt(timing.zoneHigh)}</div>`:''}<small>${escapeHtml(timing.detail)}</small></div></td><td>${tpCell}</td><td class="monospace" style="font-size:10px">${fmt(a.supports?.[0]?.price)} / ${fmt(a.resistances?.[0]?.price)}</td><td class="monospace" style="font-size:10px">${clock(a.scannedAt)}</td><td><div class="action-stack"><button class="table-link" data-symbol="${escapeHtml(a.symbol)}">진입·익절 상세 ↗</button><button class="table-link" data-journal="${escapeHtml(a.symbol)}">매매일지에 입력 ↗</button>${linkButtons(a.symbol)}</div></td></tr>`;
  }).join(''):`<tr><td colspan="10" class="table-empty">${filter==='watch'?'현재 발견된 패턴 중 검증이 보류된 종목 없음':filter==='ready'?'현재 1시간 확정·4시간 추세·Variational 비용 검증까지 통과한 진입 후보 없음':'최근 2시간 내 확인된 1시간봉 패턴이 없습니다. 위의 스캔 진단에서 고유 종목 수와 단계별 탈락 건수를 확인하세요.'}</td></tr>`;
  document.querySelectorAll('#signalsBody button[data-symbol]').forEach(b=>b.addEventListener('click',()=>focusSignal(b.dataset.symbol)));
  document.querySelectorAll('#signalsBody button[data-journal]').forEach(b=>b.addEventListener('click',()=>fillJournalFromSignal(b.dataset.journal)));
  $('scanSummary').textContent=`${app.status?.scanMode==='research-only'?'Binance 기술 스캔 중 · Variational 검증 전 주문 금지 · ':''}패턴 발견 ${app.patterns.length}종 · 최종 진입 검증 ${approved.length}종 · 관찰 후보 ${app.watch.length}종 · 기술 조건 미달 ${app.status?.scanFunnel?.quality??'—'}종`;
  $('showWatchButton').textContent=app.showWatch?'확정 패턴으로 돌아가기 →':'진입 검증 통과만 보기 →';
+ renderDirectionalEntries();
 }
 
 function browserAlertState(a){
@@ -437,10 +482,10 @@ async function toggleChartFullscreen(){
 }
 async function selectSymbol(symbol){
  if(!symbol||!app.marketMap.has(symbol)){toast('Variational·Binance 공통 PERP가 아닌 종목입니다.',true);return}
- app.symbol=symbol;localStorage.setItem('sl-symbol',symbol);renderTradingView();renderNews();history.replaceState(null,'',`${location.pathname}?symbol=${encodeURIComponent(symbol)}${location.hash}`);app.analysis=null;renderPair();renderWatch();renderAnalysis();loadExecution();
+ app.symbol=symbol;localStorage.setItem('sl-symbol',symbol);renderTradingView();renderNews();history.replaceState(null,'',`${location.pathname}?symbol=${encodeURIComponent(symbol)}${location.hash}`);app.analysis=null;renderPair();renderWatch();renderAnalysis();renderDirectionalEntries();loadExecution();
  await Promise.allSettled([loadChart(),loadAnalysis()]);
 }
-async function loadAnalysis(){const symbol=app.symbol;if(!symbol||!app.marketMap.has(symbol))return;try{const result=await json('/api/analyze?symbol='+encodeURIComponent(symbol));if(app.symbol!==symbol)return;app.analysis=result;renderAnalysis();drawChart()}catch(e){if(app.symbol===symbol){toast('분석 실패: '+e.message,true);$('analysisTag').textContent='연결 오류'}}}
+async function loadAnalysis(){const symbol=app.symbol;if(!symbol||!app.marketMap.has(symbol))return;try{const result=await json('/api/analyze?symbol='+encodeURIComponent(symbol));if(app.symbol!==symbol)return;app.analysis=result;renderAnalysis();renderDirectionalEntries();drawChart()}catch(e){if(app.symbol===symbol){toast('분석 실패: '+e.message,true);$('analysisTag').textContent='연결 오류'}}}
 function parseRows(rows){return (rows||[]).map(r=>({time:Number(r[0]),open:Number(r[1]),high:Number(r[2]),low:Number(r[3]),close:Number(r[4]),volume:Number(r[5]),closed:Number(r[6])<Date.now()})).filter(x=>[x.time,x.open,x.high,x.low,x.close].every(Number.isFinite)).sort((a,b)=>a.time-b.time)}
 async function loadChart(){if(app.chartMode!=='basic')return;const symbol=app.symbol,interval=app.interval;if(!symbol||!app.marketMap.has(symbol))return;app.chartLoading=true;$('chartOverlay').classList.remove('hidden');$('chartOverlay').textContent='실제 캔들 데이터를 불러오는 중…';
  try{const data=await json(`/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}`);if(app.symbol!==symbol||app.interval!==interval)return;app.candles=parseRows(data.rows);$('chartOverlay').classList.add('hidden');$('chartUpdated').textContent='BINANCE · '+clock(Date.now())+' KST';drawChart()}
