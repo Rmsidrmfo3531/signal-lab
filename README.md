@@ -4,6 +4,8 @@ OrangeX 1단계 조회 전용 연결은 [OrangeX 설정·검증·후속 설계](
 
 필수 공개 매개변수, 종목별 Mark, 계약 원필드와 실제 자료 검증 상태는 [공개 시장 연동 보고서](ORANGEX_MARKET_INTEGRATION_KO.md)에 정리했습니다. 최소량·증분·수수료 의미가 미검증이면 값을 임의 환산하지 않으며 OrangeX PAPER 자동 진입은 비활성입니다.
 
+사용자가 제공한 실제 Windows 6건 HTTP 200 진단은 [실측 대조 보고서](ORANGEX_WINDOWS_OBSERVATION_KO.md)에 원값·시각·미검증 항목을 구분해 정리했습니다. 과거 실측 자료를 현재 실시간 호가나 PAPER 승인으로 재사용하지 않습니다.
+
 클라우드 연결이 차단되면 [Windows 공개 API 진단 안내](ORANGEX_WINDOWS_PUBLIC_DIAGNOSTIC_KO.md)에 따라 `npm run diagnose:orangex`를 실행할 수 있습니다. 키 없이 공개 GET만 사용하며 기존 데이터에 접근하지 않습니다. [최근 재시도 결과](ORANGEX_PUBLIC_RETRY_KO.md)를 별도로 기록합니다.
 
 현재 수정본은 **필수 위험·확인 조건 8개(90점) + 4H EMA20 기울기 가산점(10점)** 으로 판정합니다. 필수 조건을 전부 충족한 90점은 기술 통과이며, 필수 조건이 빠진 95점은 통과하지 않습니다. Variational 상장·호가·비용 및 현재 진입 조건은 계속 별도로 검증합니다. 점수는 승률이 아닙니다.
