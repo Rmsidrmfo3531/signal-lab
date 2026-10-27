@@ -6,6 +6,7 @@ import {stageUpdate,pendingInfo} from './updater.mjs';
 import {normalizeTrade,closeTrade,journalSummary,exportTradesCSV} from './journal.mjs';
 import {signalLifecycle} from './signal_lifecycle.mjs';
 import {evaluateSignal} from './signal_pipeline.mjs';
+import {OrangeXReadOnlyAdapter} from './orangex.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -49,6 +50,17 @@ const CONFIG={
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  limits:{...EXEC_DEFAULTS,maxQuoteAgeSeconds:Number(process.env.MAX_VARIATIONAL_QUOTE_AGE_SEC||180),maxSpreadBps:Number(process.env.MAX_VARIATIONAL_SPREAD_BPS||20),maxAdverseVenueBps:Number(process.env.MAX_ADVERSE_VENUE_BPS||35),maxRoundTripBps:Number(process.env.MAX_ROUNDTRIP_BPS||30)}
 };
+// OrangeX stage 1 has an isolated, read-only transport. No setting, API key or
+// browser request can enable paper/live execution or change existing records.
+let orangeX,orangeXConfigError=false;
+try{
+ orangeX=new OrangeXReadOnlyAdapter({enabled:process.env.ORANGEX_ENABLED==='true',mode:process.env.ORANGEX_MODE||'READ_ONLY',
+  clientId:process.env.ORANGEX_CLIENT_ID||'',clientSecret:process.env.ORANGEX_CLIENT_SECRET||'',
+  instruments:(process.env.ORANGEX_INSTRUMENTS||'BTC-USDT-PERPETUAL,ETH-USDT-PERPETUAL,SOL-USDT-PERPETUAL').split(',').map(x=>x.trim()).filter(Boolean),
+  timeoutMs:Number(process.env.ORANGEX_REQUEST_TIMEOUT_MS||8000)});
+}catch{
+ orangeX=new OrangeXReadOnlyAdapter();orangeXConfigError=true;
+}
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
 const lanMode=!['127.0.0.1','::1','localhost'].includes(CONFIG.host);
@@ -694,6 +706,15 @@ const server=http.createServer(async(req,res)=>{
    res.end('Signal Lab: 모바일 접속 인증이 필요합니다. PC 실행 창에 표시된 사용자명(signal)과 접속 암호를 입력하세요.');return;
   }
   const url=new URL(req.url,'http://localhost');const pathname=url.pathname;
+  if(pathname==='/api/orangex'||pathname.startsWith('/api/orangex/')){
+   if(req.method!=='GET')return response(res,405,{error:'ORANGEX_READ_ONLY',message:'OrangeX 1단계는 조회만 허용합니다.',orderSubmissionEnabled:false});
+   if(pathname!=='/api/orangex')return response(res,404,{error:'ORANGEX_READ_ONLY_ROUTE_NOT_FOUND',orderSubmissionEnabled:false});
+   try{
+    const snapshot=await orangeX.snapshot({refresh:url.searchParams.get('refresh')==='1'});
+    if(orangeXConfigError)snapshot.errors=[...(snapshot.errors||[]),{code:'CONFIG_INVALID',message:'OrangeX 설정이 유효하지 않아 연결을 비활성화했습니다.',at:Date.now()}];
+    return response(res,200,snapshot);
+   }catch{return response(res,503,{mode:'READ_ONLY',connected:false,orderSubmissionEnabled:false,error:'ORANGEX_READ_FAILED'})}
+  }
   if(pathname==='/events'){
    res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});
    state.clients.add(res);res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);

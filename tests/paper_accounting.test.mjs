@@ -47,8 +47,20 @@ test('partial realizations and entry fees also respect the Monday KST week bound
 
 test('daily PNL includes actual remaining-position loss without rejecting new simulated patterns',()=>{
  const t=create({settings:{maxDailyLoss:7}});t.engine.register(sample(t.now()),{quoteEligible:true});t.quote(100);t.quote(104);
+ // This branch uses a fixed $500 simulation, without assumed account capital.
+ // Compute both days' cash flows independently from the observed prices and
+ // documented fee/slippage assumptions rather than an old $6-risk-sized amount.
+ const entry=100*(1+3/10000),quantity=500/entry,feeRate=5/10000;
+ const firstExit=104*(1-3/10000),remainingExit=95*(1-3/10000);
+ const priorDayProfit=quantity*.4*(firstExit-entry)-500*feeRate-quantity*.4*firstExit*feeRate;
+ const currentDayProfit=quantity*.6*(remainingExit-entry)-quantity*.6*remainingExit*feeRate;
+ near(t.engine.snapshot().netRealizedUSD,priorDayProfit);
  t.set(Date.parse('2026-10-19T15:01:00Z'));t.quote(95);
- const summary=t.engine.snapshot();assert.ok(summary.dailyPnLUSD<-7);assert.ok(summary.netRealizedUSD>-7);
+ const summary=t.engine.snapshot();
+ near(summary.dailyPnLUSD,currentDayProfit);
+ near(summary.netRealizedUSD,priorDayProfit+currentDayProfit);
+ assert.ok(summary.dailyPnLUSD<-7);assert.ok(summary.netRealizedUSD>summary.dailyPnLUSD);
+ assert.equal(summary.startingBalance,null);
  assert.equal(t.engine.register(sample(t.now(),{symbol:'ETHUSDT'}),{symbol:'ETHUSDT',quoteEligible:true}),true);
  assert.equal(t.engine.store.pending.length,1,'loss totals are PNL data, not a fixed-capital gate');
 });

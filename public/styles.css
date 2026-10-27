@@ -436,3 +436,40 @@
 .entry-price-ref strong{font:700 13px 'DM Mono',monospace;color:#e2eeff}
 .entry-price-ref small{font-size:10px;color:#8297aa;line-height:1.5}
 @media(max-width:690px){.direction-entry-heading{display:grid;padding:12px 14px 6px}.direction-entry-board,.pair-direction-entries{grid-template-columns:1fr 1fr;gap:7px;padding:8px 10px 15px}.direction-entry-box{padding:11px;gap:6px}.direction-entry-box>strong,.direction-entry-value{font-size:15px}.direction-entry-box p,.direction-entry-box>small{font-size:9px}}
+
+
+/* OrangeX phase 1: one read-only panel shared by desktop and mobile. */
+.orangex-panel{margin:16px 0 20px;min-width:0;scroll-margin-top:15px;overflow:hidden}
+.orangex-heading{flex-wrap:wrap;gap:12px}.orangex-heading h3{overflow-wrap:anywhere}
+.orangex-notice{padding:12px 20px;border-block:1px solid #71553b;background:#362a21;color:#f1c18d;font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.orangex-ok .orangex-notice{border-color:#326d62;background:#153a34;color:#a1e4cf}
+.orangex-metrics,.orangex-pnl{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:#2c4357}
+.orangex-metrics>div,.orangex-pnl>div{background:#102236;min-width:0;padding:15px 17px;display:grid;align-content:start;gap:9px}
+.orangex-metrics span,.orangex-pnl span{color:#97adc5;font-size:10px;line-height:1.5}
+.orangex-metrics strong,.orangex-pnl strong{color:#e2edf7;font-size:12px;line-height:1.65;overflow-wrap:anywhere}
+.orangex-pnl{grid-template-columns:repeat(3,minmax(0,1fr))}.orangex-pnl strong{font-family:'DM Mono',monospace;font-size:17px}
+.orangex-pnl .positive{color:#7fe2bf}.orangex-pnl .negative{color:#ff99aa}
+.orangex-subheading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:9px;padding:18px 20px 4px}
+.orangex-subheading h4{margin:0;font-size:13px;color:#d8e9f8}.orangex-subheading small{color:#99afc8;font-size:10px}
+.orangex-caption{font-size:11px;color:#9fb6cc;line-height:1.8;margin:8px 20px 14px;overflow-wrap:anywhere}
+.orangex-table{width:100%;min-width:970px;border-collapse:collapse;font-size:11px;white-space:nowrap}
+.orangex-table th{text-align:left;background:#152b40;color:#9fb9d0;padding:12px;border-block:1px solid #2c4357;font-size:10px}
+.orangex-table td{padding:12px;border-bottom:1px solid #263e54;color:#d4e6f6;font-variant-numeric:tabular-nums}
+.orangex-quote-age{display:block;color:#d4b68a;font-size:10px;margin-top:5px}
+.orangex-account-table{min-width:440px}.orangex-empty{padding:16px 20px;color:#a5b9cb;line-height:1.8;font-size:11px;white-space:normal;overflow-wrap:anywhere}
+.orangex-position-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:8px 20px 16px}
+.orangex-position{border:1px solid #35536b;border-radius:9px;background:#13293d;padding:14px;min-width:0}
+.orangex-position header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.orangex-position header strong{font-size:12px;overflow-wrap:anywhere}.orangex-position header small{font-size:10px;color:#9db4c8}
+.orangex-position dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;margin:15px 0 11px}.orangex-position dl>div{min-width:0}
+.orangex-position dt{font-size:10px;color:#8eaac1}.orangex-position dd{margin:6px 0 0;font-size:12px;color:#e2eef8;overflow-wrap:anywhere}
+.orangex-position p{font-size:10px;line-height:1.7;color:#adc2d4;margin:7px 0 0;overflow-wrap:anywhere}
+.orangex-details{margin:0 20px 12px;border:1px solid #304b64;border-radius:8px;background:#102237;overflow:hidden}
+.orangex-details summary{padding:13px;cursor:pointer;color:#c3dbed;font-size:12px;line-height:1.6}
+.orangex-errors{list-style:none;padding:0 13px 13px;margin:0;display:grid;gap:8px}
+.orangex-errors li{display:grid;gap:5px;border-top:1px solid #2b4157;padding:10px 0 0;color:#bacfe2;font-size:11px;line-height:1.6;overflow-wrap:anywhere}
+.orangex-errors strong{color:#edba92;font-size:10px}.orangex-errors small{color:#809bb4}
+.orangex-security-note{border-top:1px solid #2c4357;padding-top:13px}
+@media(max-width:900px){.orangex-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.orangex-position-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.mobile-bottom-nav{grid-template-columns:repeat(5,minmax(0,1fr))}}
+@media(max-width:690px){.orangex-heading{align-items:flex-start}.orangex-heading .outline-btn{min-height:40px}.orangex-notice{padding:11px 13px;font-size:11px}.orangex-metrics>div,.orangex-pnl>div{padding:12px;gap:7px}.orangex-metrics strong{font-size:11px}.orangex-pnl strong{font-size:13px}.orangex-subheading{padding:15px 13px 3px}.orangex-caption{margin:7px 13px 12px;font-size:10px}.orangex-position-grid{padding:7px 13px 13px}.orangex-details{margin:0 13px 10px}.mobile-bottom-nav a{font-size:10px}}

@@ -1,0 +1,119 @@
+// Phase 1 is a display-only client. Authentication and all credentials stay on the server.
+const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const numeric=value=>(typeof value==='number'||typeof value==='string')&&!(typeof value==='string'&&!value.trim())&&Number.isFinite(Number(value))?Number(value):null;
+const number=value=>{const n=numeric(value);return n===null?'—':n.toLocaleString('en-US',{maximumFractionDigits:8})};
+const money=value=>{const n=numeric(value);return n===null?'—':`${n<0?'-':''}$${Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`};
+const time=value=>{const n=numeric(value);return n!==null&&n>0?new Date(n).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',hour12:false}):'미확인'};
+const records=value=>Array.isArray(value)?value:[];
+const first=(value,...keys)=>{for(const key of keys)if(value?.[key]!==undefined&&value[key]!==null)return value[key];return undefined};
+const cell=value=>`<td>${esc(value)}</td>`;
+const empty=(span,message)=>`<tr><td colspan="${span}" class="orangex-empty">${esc(message)}</td></tr>`;
+const statusLabels={DISABLED:'연결 비활성',UNCONFIGURED:'미설정',NOT_CONFIGURED:'미설정',CONNECTED:'연결 확인',READY:'조회 가능',
+ UNTESTED:'미검증',BLOCKED:'연결 차단',ERROR:'조회 오류',FAILED:'조회 실패',UNAVAILABLE:'조회 불가',AUTH_REQUIRED:'인증 미설정',
+ NOT_AUTHENTICATED:'인증 미설정',NOT_SUPPORTED:'지원 미확인',UNSUPPORTED:'지원 미확인',PENDING:'확인 중',OFFLINE:'연결 안 됨',STALE:'이전 자료 · 재조회 필요'};
+const errorLabels={DISABLED:'OrangeX 조회 연결이 꺼져 있습니다.',ORANGEX_DISABLED:'OrangeX 조회 연결이 꺼져 있습니다.',
+ NOT_CONFIGURED:'서버의 OrangeX 연결 설정이 필요합니다.',AUTH_REQUIRED:'계좌 조회 인증이 설정되지 않았습니다.',
+ AUTH_FAILED:'계좌 조회 인증에 실패했습니다.',AUTH_ERROR:'계좌 조회 인증에 실패했습니다.',
+ SPEC_UNVERIFIED:'공식 API 명세 검증이 완료되지 않았습니다.',UNVERIFIED_SPEC:'공식 API 명세 검증이 완료되지 않았습니다.',
+ NETWORK_BLOCKED:'현재 환경에서 OrangeX 연결이 차단되었습니다.',NETWORK_ERROR:'거래소 네트워크 연결을 확인하세요.',
+ TIMEOUT:'조회 제한시간을 초과했습니다.',HTTP_ERROR:'거래소 또는 서버 조회에 실패했습니다.',
+ RATE_LIMITED:'조회 요청 한도로 인해 대기 중입니다.',SCHEMA_INVALID:'응답 형식이 확인된 명세와 다릅니다.',
+ UNSUPPORTED:'아직 검증되지 않은 조회 기능입니다.',READ_ONLY:'현재 단계에서는 주문을 지원하지 않습니다.'};
+const status=value=>statusLabels[String(value||'').toUpperCase()]||'미검증';
+const errorCode=value=>/^[A-Z][A-Z0-9_-]{0,47}$/.test(String(value||''))?String(value):'UNKNOWN';
+const signClass=value=>numeric(value)===null?'':Number(value)<0?'negative':Number(value)>0?'positive':'';
+const direction=value=>value==='LONG'||value==='BUY'?'LONG':value==='SHORT'||value==='SELL'?'SHORT':'미확인';
+const targetPrices=value=>records(value).slice(0,3).map((item,index)=>`${index+1}차 ${number(typeof item==='object'?item?.price:item)}`).join(' · ')||'미확인';
+const unit=value=>numeric(value)===null?'미검증':number(value);
+const marketState=item=>item?.instrumentVerified===false?'미검증 · 주문 차단':item?.tradable===true?'거래 가능':item?.tradable===false?'거래 불가':'미검증 · 주문 차단';
+const quoteAge=item=>{
+ const at=numeric(item?.priceAt),now=Date.now();
+ if(item?.fresh===false||at===null||at<=0||at>now+5000||now-at>90000)return '시세 만료/미확인';
+ return item?.fresh===true?'시세 시각 확인':'신선도 미검증';
+};
+
+export function orangeXView(payload={}){
+ const data=payload&&typeof payload==='object'?payload:{};
+ const markets=records(data.markets),account=data.account&&typeof data.account==='object'?data.account:null;
+ const balances=records(account?.balances),positions=records(account?.positions),orders=records(account?.openOrders),trades=records(account?.trades);
+ const verified=data.verification?.officialSpec==='VERIFIED';
+ const invalidMode=data.mode!==undefined&&data.mode!=='READ_ONLY';
+ const connected=data.enabled===true&&data.connected===true;
+ const mode=invalidMode?'지원하지 않는 모드 · 주문 차단':'READ_ONLY · 조회 전용';
+ const accountReady=data.capabilities?.accountRead===true&&account!==null&&['READY','CONNECTED','OK'].includes(String(data.accountStatus||'').toUpperCase());
+ const errors=records(data.errors).slice(-30).map(item=>{
+  const code=errorCode(item?.code);
+  // Do not echo arbitrary provider text: an upstream error can contain a URL or credential.
+  return `<li><strong>${esc(code)}</strong><span>${esc(errorLabels[code]||'서버의 연결·명세·권한 상태를 확인하세요.')}</span><small>${esc(time(item?.at))}</small></li>`;
+ });
+ const metrics=[['운영 모드',mode],['시장 API',connected?'연결 확인':data.enabled===false?'연결 비활성':status(data.marketStatus)],
+  ['계좌 조회',accountReady?'조회 가능':status(data.accountStatus)],['자동매매','OFF · 1단계 미구현'],
+  ['공식 명세',verified?'명세 확인':'미검증'],['실제 연결 검증',status(data.verification?.liveConnection)],
+  ['긴급 중지','거래 엔진 미구현 · 신규 주문 없음'],['마지막 조회',time(data.checkedAt)]];
+ const totals=[['미실현 PNL',first(account,'unrealizedPnL','unrealizedPnl')],['당일 실현 PNL',first(account,'dailyRealizedPnL','dailyPnL')],
+  ['누적 실현 PNL',first(account,'cumulativeRealizedPnL','totalRealizedPnL')]];
+ return {
+  mode,connected,hasAccount:accountReady,
+  notice:invalidMode||data.orderSubmissionEnabled===true?'모드 확인 필요 · 이 화면은 조회만 제공하며 주문 제어 기능이 없습니다.':data._stale===true?
+   '조회 갱신 실패 · 이전에 확인한 자료를 표시합니다. 시세 시각을 확인하세요.':'조회 전용 · 주문 제출·자동 진입·손절·분할 익절 제어는 구현하지 않았습니다.',
+  state:connected&&verified?'orangex-ok':'orangex-pending',
+  metrics:metrics.map(([label,value])=>`<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join(''),
+  marketCount:`조회된 종목 후보 ${markets.length}개`,
+  markets:markets.slice(0,100).map(item=>`<tr>${cell(item?.symbol||'미확인')}${cell(item?.instrumentName||'미확인')}`+
+   `${cell(marketState(item))}${cell(number(item?.markPrice))}`+
+   `${cell(number(item?.bid))}${cell(number(item?.ask))}${cell(numeric(item?.spreadBps)===null?'미검증':number(item.spreadBps)+' bp')}`+
+   `${cell(unit(item?.minQty))}${cell(unit(item?.qtyStep))}${cell(unit(item?.priceTick))}<td>${esc(time(item?.priceAt))}<small class="orangex-quote-age">${esc(quoteAge(item))}</small></td></tr>`).join('')||empty(11,'확인된 OrangeX 계약·호가가 없습니다. 상장이나 가격을 추정하지 않습니다.'),
+  balanceNote:data.accountStatus==='STALE'?'이전 조회 자료입니다. 현재 잔고·포지션 상태는 재확인이 필요합니다.':accountReady?'거래소 조회값입니다. 기존 모의매매 PNL과 합산하지 않습니다.':'계좌 조회 미설정 또는 미검증 · 잔고와 PNL을 0으로 가정하지 않습니다.',
+  balances:balances.slice(0,30).map(item=>`<tr>${cell(first(item,'asset','currency')||'미확인')}${cell(number(first(item,'balance','total')))}`+
+   `${cell(number(first(item,'availableBalance','available')))}${cell(number(item?.equity))}</tr>`).join('')||empty(4,accountReady?'조회된 잔고 자료가 없습니다.':'계좌 조회 미설정 · 잔고 미확인'),
+  pnl:totals.map(([label,value])=>`<div><span>${esc(label)}</span><strong class="${signClass(value)}">${esc(money(value))}</strong></div>`).join(''),
+  positions:positions.slice(0,100).map(item=>`<article class="orangex-position"><header><strong>${esc(item?.symbol||'미확인')} · ${esc(direction(first(item,'direction','side')))}</strong>`+
+   `<small>레버리지 ${numeric(item?.leverage)===null?'미확인':esc(number(item.leverage))+'x'}</small></header>`+
+   `<dl><div><dt>수량</dt><dd>${esc(number(first(item,'size','quantity')))}</dd></div><div><dt>진입가</dt><dd>${esc(number(item?.entryPrice))}</dd></div>`+
+   `<div><dt>현재가</dt><dd>${esc(number(item?.markPrice))}</dd></div><div><dt>손절가</dt><dd>${esc(number(item?.stopPrice))}</dd></div>`+
+   `<div><dt>미실현 PNL</dt><dd class="${signClass(item?.unrealizedPnL)}">${esc(money(item?.unrealizedPnL))}</dd></div>`+
+   `<div><dt>실현 PNL</dt><dd class="${signClass(item?.realizedPnL)}">${esc(money(item?.realizedPnL))}</dd></div></dl>`+
+   `<p>익절가 ${esc(targetPrices(item?.targets))}</p></article>`).join('')||'<p class="orangex-empty">확인된 포지션 자료가 없습니다. 미조회 상태를 포지션 0건으로 해석하지 마세요.</p>',
+  orders:orders.slice(0,100).map(item=>`<tr>${cell(item?.symbol||'미확인')}${cell(first(item,'orderId','id')??'미확인')}`+
+   `${cell(direction(first(item,'direction','side')))}${cell(item?.status||'미확인')}${cell(number(item?.price))}`+
+   `${cell(number(first(item,'quantity','size')))}${cell(number(first(item,'filledQuantity','filledSize')))}</tr>`).join('')||empty(7,'조회된 미체결 주문 자료가 없습니다.'),
+  trades:trades.slice(0,100).map(item=>`<tr>${cell(item?.symbol||'미확인')}${cell(direction(first(item,'direction','side')))}`+
+   `${cell(number(item?.price))}${cell(number(first(item,'quantity','size')))}${cell(money(item?.fee))}${cell(money(item?.realizedPnL))}`+
+   `${cell(time(first(item,'at','timestamp')))}</tr>`).join('')||empty(7,'조회된 체결 자료가 없습니다. 요청 성공 응답을 체결로 표시하지 않습니다.'),
+  errors:errors.join('')||'<li><span>표시할 오류 기록이 없습니다. 연결 성공을 의미하지는 않습니다.</span></li>',
+  rejection:'1단계 조회 전용: 모든 시그널은 OrangeX 주문 제출 대상에서 제외됩니다. PAPER·LIVE 및 보호 주문은 후속 검증 대상입니다.'
+ };
+}
+
+export function renderOrangeX(payload,{root=globalThis.document}={}){
+ const view=orangeXView(payload),find=id=>root?.getElementById(id);
+ const set=(id,value,html=false)=>{const node=find(id);if(node)node[html?'innerHTML':'textContent']=value};
+ set('orangexNotice',view.notice);set('orangexMetrics',view.metrics,true);set('orangexMarketCount',view.marketCount);
+ set('orangexMarkets',view.markets,true);set('orangexBalanceNote',view.balanceNote);set('orangexBalances',view.balances,true);
+ set('orangexPnl',view.pnl,true);set('orangexPositions',view.positions,true);set('orangexOrders',view.orders,true);
+ set('orangexTrades',view.trades,true);set('orangexErrors',view.errors,true);set('orangexRejections',view.rejection);
+ const panel=find('orangex');if(panel)panel.className='panel orangex-panel '+view.state;
+ return view;
+}
+
+export function initOrangeX({root=globalThis.document,fetcher=globalThis.fetch,interval=30000,setTimer=globalThis.setInterval}={}){
+ if(!root?.getElementById('orangex'))return null;
+ let active=false,lastSnapshot=null;
+ const button=root.getElementById('orangexRefresh');
+ async function refresh(force=false){
+  if(active)return false;
+  active=true;if(button)button.disabled=true;
+  try{
+   const response=await fetcher(force?'/api/orangex?refresh=1':'/api/orangex',{method:'GET',cache:'no-store',headers:{Accept:'application/json'}});
+   if(!response.ok)throw Error('OrangeX read-only response failed');
+   const data=await response.json();lastSnapshot=data;renderOrangeX(data,{root});return true;
+  }catch{
+   renderOrangeX({...lastSnapshot,_stale:lastSnapshot!==null,connected:false,marketStatus:'ERROR',accountStatus:'STALE',errors:[{code:'HTTP_ERROR',at:Date.now()}]},{root});return false;
+  }finally{active=false;if(button)button.disabled=false}
+ }
+ button?.addEventListener('click',()=>void refresh(true));
+ const timer=setTimer?.(()=>void refresh(),interval);void refresh();
+ return {refresh,timer};
+}
+
+if(typeof document!=='undefined')initOrangeX();

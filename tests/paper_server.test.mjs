@@ -36,7 +36,10 @@ test('simulated execution HTTP API, CSV route, shared PC/mobile pane, persisted 
   assert.equal(storage.persistent,true);assert.equal(storage.paperClosed,1);
   assert.ok((await fs.readFile(path.join(sandbox,'persistent-data','store.json'),'utf8')).includes('test fixture only'));
   assert.equal(result.netRealizedUSD,6.7,'automatic simulation history is persisted');
-  assert.equal(result.startingBalance,1000);assert.equal(result.winRatePct,100);
+  assert.equal(result.startingBalance,null,'paper PNL must not invent an initial account deposit');
+  assert.equal(result.indicativeEquityUSD,null,'paper PNL is not a live account balance');
+  assert.equal(result.totalMarkedPnLUSD,6.7,'the original historical profit remains the PNL total');
+  assert.equal(result.paperNotionalUSD,500);assert.equal(result.winRatePct,100);
   const csv=await(await fetch(`http://127.0.0.1:${port}/api/paper/export`)).text();
   assert.match(csv,/BTCUSDT/);assert.match(csv,/realizedPnLUSD/);
   const html=await(await fetch(`http://127.0.0.1:${port}/`)).text();

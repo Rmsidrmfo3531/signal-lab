@@ -17,6 +17,7 @@
       <a href="#overview" class="navlink active"><span class="navi">◫</span>대시보드<span class="navright">01</span></a>
       <a href="#scanner" class="navlink"><span class="navi">⌁</span>시그널 스캐너<span id="navSignalCount" class="navright">0</span></a>
       <a href="#paper" class="navlink"><span class="navi">◉</span>자동 모의매매 PNL<span class="navright">NEW</span></a>
+      <a href="#orangex" class="navlink"><span class="navi">◌</span>OrangeX 조회<span class="navright">READ</span></a>
       <a href="#tradfi" class="navlink"><span class="navi">◈</span>TradFi 시장<span class="navright">NEW</span></a>
       <a href="#news" class="navlink"><span class="navi">◈</span>시황·종목 뉴스<span class="navright">↗</span></a>
       <a href="#alerts" class="navlink"><span class="navi">◷</span>알림 기록<span class="navright">↗</span></a><a href="#journal" class="navlink"><span class="navi">▦</span>매매일지 · 위험관리<span class="navright">05</span></a>
@@ -25,7 +26,7 @@
     <div class="watchlist" id="watchlist"><div class="tiny-muted">시장 데이터 연결 중…</div></div>
     <div class="sidebar-bottom">
       <div class="risk-card"><div class="mini-row"><span>PAPER TRADE SIZE</span><span class="risk-tag">SIMULATION ONLY</span></div><div class="risk-value">$500 <small>명목금액</small></div><div class="risk-sep"></div><div class="mini-row muted"><span>시작자금 가정</span><strong>없음</strong></div><div class="mini-row muted"><span>손절 손익</span><strong>가격·비용 반영</strong></div><div class="mini-row muted"><span>일간/주간 손익</span><strong>기록만 집계</strong></div></div>
-      <div class="sidebar-footnote">Binance 공개 시장 데이터 · 읽기 전용<br>자동 주문 및 거래소 계정 연결 없음</div>
+      <div class="sidebar-footnote">Binance 공개 시장 데이터 · 읽기 전용<br>자동 주문 없음 · OrangeX 계좌 조회는 명세 검증 후 지원</div>
     </div>
   </aside>
   <main class="main" id="overview">
@@ -96,6 +97,26 @@
         <div class="paper-section"><h4 id="paperOpenHeading">현재 가상 포지션 · 자동 익절 대기</h4><div id="paperOpen" class="paper-grid"><p class="empty-small">신규 검증 신호를 기다리는 중입니다.</p></div></div>
         <div class="paper-section"><h4 id="paperClosedHeading">가상 청산 완료 기록 <small>최근 200건 · 수수료 공제</small></h4><div id="paperClosed" class="paper-grid"><p class="empty-small">아직 종료된 가상 거래가 없습니다.</p></div></div>
         <div class="paper-section"><details><summary>진입하지 않은 신호 / 이유 보기</summary><div id="paperSkipped" class="paper-skipped">기록 없음</div></details></div>
+      </section>
+      <section id="orangex" class="panel orangex-panel" aria-labelledby="orangexHeading">
+        <div class="panel-header orangex-heading"><div><p class="panel-eyebrow">ORANGEX / READ ONLY / PHASE 1</p><h3 id="orangexHeading">OrangeX 무기한 선물 · 조회 전용</h3></div><button type="button" class="outline-btn" id="orangexRefresh">↻ 조회 갱신</button></div>
+        <p class="section-note"><strong>1단계 READ_ONLY</strong> — 공개 호가 조회를 시도합니다. 계좌 조회와 상장·주문 단위는 명세 검증 전까지 차단됩니다. 기존 Binance·Variational 분석과 모의 PNL은 별도로 유지합니다. PAPER·LIVE, 자동 진입 및 보호성 손절 주문은 후속 단계이며 이 화면에서 활성화할 수 없습니다.</p>
+        <div id="orangexNotice" class="orangex-notice" role="status" aria-live="polite">조회 전용 · 연결 상태 확인 중</div>
+        <div id="orangexMetrics" class="orangex-metrics"><div><span>운영 모드</span><strong>READ_ONLY · 조회 전용</strong></div><div><span>자동매매</span><strong>OFF · 1단계 미구현</strong></div></div>
+        <div class="orangex-subheading"><h4>거래 가능 여부·참고 호가</h4><small id="orangexMarketCount">조회 대기</small></div>
+        <p class="orangex-caption">상장 검증이 완료되지 않은 항목은 조회 후보이며 거래 가능 승인으로 해석하지 않습니다. 최소 수량·수량 단위·가격 단위가 없으면 미검증으로 남깁니다. 참고 호가는 주문 승인이나 체결을 뜻하지 않습니다.</p>
+        <div class="table-scroll orangex-table-wrap"><table class="orangex-table"><thead><tr><th>종목</th><th>계약명</th><th>상장 상태</th><th>Mark</th><th>Bid</th><th>Ask</th><th>스프레드</th><th>최소 수량</th><th>수량 단위</th><th>가격 단위</th><th>시세 시각 (KST)</th></tr></thead><tbody id="orangexMarkets"><tr><td colspan="11" class="orangex-empty">확인된 시장 자료가 없습니다.</td></tr></tbody></table></div>
+        <div class="orangex-subheading"><h4>계좌 잔고·PNL</h4></div>
+        <p id="orangexBalanceNote" class="orangex-caption">계좌 조회 미설정 또는 미검증 · 잔고와 PNL을 0으로 가정하지 않습니다.</p>
+        <div id="orangexPnl" class="orangex-pnl"><div><span>미실현 PNL</span><strong>—</strong></div><div><span>당일 실현 PNL</span><strong>—</strong></div><div><span>누적 실현 PNL</span><strong>—</strong></div></div>
+        <div class="table-scroll orangex-table-wrap"><table class="orangex-table orangex-account-table"><thead><tr><th>자산</th><th>잔고</th><th>사용 가능</th><th>Equity</th></tr></thead><tbody id="orangexBalances"><tr><td colspan="4" class="orangex-empty">계좌 자료 미확인</td></tr></tbody></table></div>
+        <div class="orangex-subheading"><h4>현재 포지션·레버리지·보호 가격</h4></div>
+        <div id="orangexPositions" class="orangex-position-grid"><p class="orangex-empty">계좌 포지션 자료 미확인</p></div>
+        <details class="orangex-details"><summary>미체결 주문 조회</summary><div class="table-scroll"><table class="orangex-table"><thead><tr><th>종목</th><th>주문 ID</th><th>방향</th><th>상태</th><th>가격</th><th>수량</th><th>체결 수량</th></tr></thead><tbody id="orangexOrders"><tr><td colspan="7" class="orangex-empty">미체결 주문 자료 미확인</td></tr></tbody></table></div></details>
+        <details class="orangex-details"><summary>실제 체결 내역 조회</summary><div class="table-scroll"><table class="orangex-table"><thead><tr><th>종목</th><th>방향</th><th>체결가</th><th>수량</th><th>수수료</th><th>실현 PNL</th><th>시각 (KST)</th></tr></thead><tbody id="orangexTrades"><tr><td colspan="7" class="orangex-empty">체결 자료 미확인</td></tr></tbody></table></div></details>
+        <div class="orangex-subheading"><h4>시그널 주문 제외 사유</h4></div><p id="orangexRejections" class="orangex-caption">READ_ONLY에서는 모든 시그널의 주문 전송이 차단됩니다.</p>
+        <details class="orangex-details"><summary>연결·조회 오류 기록</summary><ul id="orangexErrors" class="orangex-errors"><li>조회 결과 대기 중</li></ul></details>
+        <p class="orangex-caption orangex-security-note">인증 정보는 서버 환경 설정에서만 관리합니다. API 키·인증 토큰을 이 화면에 입력하지 마세요. 실현손익이 누적 조회 범위에 포함되지 않으면 PNL은 미확인으로 표시합니다.</p>
       </section>
       <section id="tradfi" class="panel tradfi-panel">
         <div class="panel-header"><div><p class="panel-eyebrow">TRADFI / VARIATIONAL SWAPS</p><h3>TradFi 시장 · 확정 기술 패턴</h3></div><div class="scan-toolbar"><button class="outline-btn" type="button" id="tradfiRefresh">↻ 시세 새로고침</button><select id="tradfiCategory" aria-label="TradFi 종류"><option value="all">모든 TradFi</option><option value="미국 지수">미국 지수</option><option value="주가지수">기타 지수</option><option value="귀금속">귀금속</option><option value="원자재">원자재</option><option value="에너지">에너지</option><option value="달러 지수">달러 지수</option><option value="외환">외환</option><option value="주식">주식</option><option value="기타 TradFi">기타</option></select><input id="tradfiSearch" type="search" placeholder="금, US100, XAU 등 검색" aria-label="TradFi 종목 검색"></div></div>
@@ -216,9 +237,10 @@
 <dialog id="closeTradeDialog" class="dialog"><form method="dialog"><h3>기록된 포지션 종료</h3><p>실제 체결한 청산 가격과 추가 비용을 입력합니다. 수동 기록이며 거래소에 주문을 보내지 않습니다.</p><input id="closeTradePrice" type="number" min="0.000000000001" step="any" placeholder="실제 청산 체결가" required><input id="closeTradeFee" type="number" min="0" step="any" value="0" placeholder="추가 수수료·스프레드 비용 ($)"><input id="closeTradeFunding" type="number" step="any" value="0" placeholder="추가 펀딩 지급 ($, 수취는 음수)"><div id="closeTradeError" class="dialog-error"></div><div class="dialog-buttons"><button class="secondary-btn" value="cancel">취소</button><button class="primary-btn" type="button" id="closeTradeSave">기록상 종료</button></div></form></dialog>
 <script type="module" src="/app.js"></script>
 <script type="module" src="/paper_ui.js"></script>
+<script type="module" src="/orangex.js"></script>
 <script type="module">import {initTradFi} from "/tradfi.js"; initTradFi();</script>
 <nav class="mobile-bottom-nav" aria-label="모바일 빠른 이동">
-<a href="#scanner"><span>⌁</span>시그널</a><a href="#paper"><span>◉</span>자동 PNL</a><a href="#chartPanel"><span>▥</span>차트</a><a href="#alerts"><span>◷</span>알림</a>
+<a href="#scanner"><span>⌁</span>시그널</a><a href="#paper"><span>◉</span>자동 PNL</a><a href="#chartPanel"><span>▥</span>차트</a><a href="#alerts"><span>◷</span>알림</a><a href="#orangex"><span>◌</span>OrangeX</a>
 </nav>
 </body>
 </html>
