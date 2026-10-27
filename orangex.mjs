@@ -13,10 +13,10 @@ const MESSAGES=Object.freeze({
  INVALID_CONFIG:'OrangeX 조회 설정이 유효하지 않습니다.',INVALID_INSTRUMENT:'조회 요청 종목 이름이 유효하지 않습니다.',
  UNSUPPORTED_OPERATION:'공식 명세를 확인하지 못한 조회 기능입니다.',
  NETWORK_ERROR:'OrangeX 연결에 실패했습니다.',REQUEST_TIMEOUT:'OrangeX 조회 시간이 초과됐습니다.',
- HTTP_ERROR:'OrangeX 서버가 조회 요청을 거부했습니다.',RATE_LIMITED:'OrangeX 조회 요청 제한에 도달했습니다.',
+ HTTP_ERROR:'OrangeX 조회 경로에서 HTTP 오류 응답을 받았습니다.',RATE_LIMITED:'조회 요청 제한 응답 또는 대기 상태입니다.',
  REDIRECT_BLOCKED:'OrangeX의 다른 주소로 이동하는 응답을 차단했습니다.',
  INVALID_RESPONSE:'OrangeX 조회 응답 구조가 유효하지 않습니다.',API_ERROR:'OrangeX가 API 오류를 반환했습니다.',
- AUTH_FAILED:'OrangeX 인증에 실패했습니다.',TOKEN_RESPONSE_INVALID:'OrangeX 인증 응답이 유효하지 않습니다.'
+ AUTH_FAILED:'OrangeX 인증 요청을 완료하지 못했습니다.',TOKEN_RESPONSE_INVALID:'OrangeX 인증 응답이 유효하지 않습니다.'
 });
 const number=value=>{
  if(typeof value!=='number'&&typeof value!=='string'||typeof value==='string'&&!value.trim())return null;
@@ -25,9 +25,46 @@ const number=value=>{
 const positive=value=>{const n=number(value);return n!==null&&n>0?n:null};
 const instrument=value=>typeof value==='string'&&/^[A-Z0-9]{2,20}-[A-Z0-9]{2,12}-PERPETUAL$/.test(value);
 const safeClone=value=>structuredClone(value);
+// Preserve only known diagnostic identifiers, never arbitrary provider values.
+// A numeric HTTP status alone does not establish whether a proxy or OrangeX
+// produced it; callers must keep that distinction explicitly unconfirmed.
+const DNS_CODES=new Set(['EAI_AGAIN','EAI_FAIL','ENOTFOUND']);
+const TLS_CODES=new Set(['CERT_HAS_EXPIRED','CERT_NOT_YET_VALID','DEPTH_ZERO_SELF_SIGNED_CERT',
+ 'SELF_SIGNED_CERT_IN_CHAIN','UNABLE_TO_VERIFY_LEAF_SIGNATURE','UNABLE_TO_GET_ISSUER_CERT',
+ 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY','ERR_TLS_CERT_ALTNAME_INVALID','ERR_TLS_CERT_SIGNATURE_ALGORITHM_UNSUPPORTED',
+ 'ERR_SSL_WRONG_VERSION_NUMBER','ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE']);
+const TIMEOUT_CODES=new Set(['ETIMEDOUT','ESOCKETTIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT']);
+const TRANSPORT_CODES=new Set([...DNS_CODES,...TLS_CODES,...TIMEOUT_CODES,'ECONNRESET','ECONNREFUSED','ECONNABORTED',
+ 'ENETUNREACH','EHOSTUNREACH','EPIPE','EPROTO','UND_ERR_SOCKET']);
+const HTTP_STATUS=value=>typeof value==='number'&&Number.isInteger(value)&&value>=100&&value<=599?value:null;
+function transportCode(error){
+ const seen=new Set();
+ try{for(let current=error,depth=0;current&&typeof current==='object'&&depth<5&&!seen.has(current);depth++){
+   seen.add(current);
+   if(TRANSPORT_CODES.has(current.code))return current.code;
+   current=current.cause;
+  }}catch{return null}
+ return null;
+}
+function category(code,causeCode){
+ if(DNS_CODES.has(causeCode))return 'DNS';
+ if(TLS_CODES.has(causeCode))return 'TLS';
+ if(TIMEOUT_CODES.has(causeCode)||code==='REQUEST_TIMEOUT')return 'TIMEOUT';
+ if(['INVALID_RESPONSE','TOKEN_RESPONSE_INVALID'].includes(code))return 'SCHEMA';
+ if(['HTTP_ERROR','RATE_LIMITED','REDIRECT_BLOCKED'].includes(code))return 'HTTP';
+ if(code==='API_ERROR')return 'API';
+ if(code==='AUTH_FAILED')return 'AUTH';
+ return code==='NETWORK_ERROR'?'NETWORK':'CONFIGURATION';
+}
 
 export class OrangeXError extends Error {
- constructor(code){super(MESSAGES[code]||MESSAGES.INVALID_RESPONSE);this.name='OrangeXError';this.code=Object.hasOwn(MESSAGES,code)?code:'INVALID_RESPONSE'}
+ constructor(code,diagnostics={}){
+  const safeCode=Object.hasOwn(MESSAGES,code)?code:'INVALID_RESPONSE';
+  super(MESSAGES[safeCode]);this.name='OrangeXError';this.code=safeCode;
+  this.transportCode=TRANSPORT_CODES.has(diagnostics?.transportCode)?diagnostics.transportCode:null;
+  this.httpStatus=HTTP_STATUS(diagnostics?.httpStatus);
+  this.category=category(safeCode,this.transportCode);this.responseSource='UNCONFIRMED';
+ }
 }
 
 /** Credentials remain private memory. contract is dependency injection for a
@@ -35,7 +72,7 @@ export class OrangeXError extends Error {
  */
 export class OrangeXReadOnlyAdapter {
  #fetch;#clock;#sleep;#clientId;#clientSecret;#token=null;#refreshToken=null;#expiresAt=0;
- #authPending=null;#refreshPending=null;#id=0;#lastRequestAt=0;#cooldownUntil=0;#snapshot;#contract;
+ #authPending=null;#refreshPending=null;#id=0;#lastRequestAt=0;#cooldownUntil=0;#snapshot;#contract;#responseStatuses=new WeakMap();
  constructor({enabled=false,mode='READ_ONLY',clientId='',clientSecret='',
   instruments=['BTC-USDT-PERPETUAL','ETH-USDT-PERPETUAL','SOL-USDT-PERPETUAL'],
   fetcher=globalThis.fetch,now=()=>Date.now(),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
@@ -69,7 +106,7 @@ export class OrangeXReadOnlyAdapter {
    automation:{enabled:false,canEnable:false,killSwitch:'NOT_IMPLEMENTED',reason:'1단계 조회 전용'},
    verification:{officialSpec:this.#contract.authVerified?'VERIFIED_FOR_INJECTED_AUTH_CONTRACT':'UNVERIFIED',
     protocolReference:'SDK_SOURCE_ONLY',reference:REFERENCE,sourceOwnership:'UNVERIFIED',
-    liveConnection:this.#snapshot.checkedAt===null?'UNTESTED':this.#snapshot.connected?'CONNECTED':this.enabled?'BLOCKED':'UNTESTED'},
+    liveConnection:this.#snapshot.checkedAt===null?'UNTESTED':this.#snapshot.connected?'CONNECTED':'FAILED'},
    warnings:['조회 프로토콜은 공개 SDK 소스 참조이며 공식 문서·실제 응답 검증을 대체하지 않습니다.',
     '조회 후보의 공통 상장·최소 주문량·가격 단위·수수료·펀딩·보호 주문은 미검증이며 거래 가능으로 승인하지 않습니다.'],
    orderSubmissionEnabled:false};
@@ -122,10 +159,11 @@ export class OrangeXReadOnlyAdapter {
   for(let attempt=0;attempt<=attempts;attempt++){
    const wait=this.minIntervalMs-(this.#clock()-this.#lastRequestAt);if(wait>0)await this.#sleep(wait);
    this.#lastRequestAt=this.#clock();
-   const controller=new AbortController();let timer;
+   const controller=new AbortController();let timer,responseStatus=null;
    try{
     const timedOut=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new OrangeXError('REQUEST_TIMEOUT'))},this.timeoutMs)});
     const response=await Promise.race([this.#fetch(url.href,{method,headers,body,redirect:'error',signal:controller.signal}),timedOut]);
+    responseStatus=HTTP_STATUS(response?.status);
     if(response?.redirected||response?.status>=300&&response.status<400)throw new OrangeXError('REDIRECT_BLOCKED');
     if(response?.status===429||response?.status>=500){
      const retryAfter=this.#retryAfter(response,attempt);
@@ -143,17 +181,27 @@ export class OrangeXReadOnlyAdapter {
     if(!response?.ok){await Promise.race([response?.body?.cancel?.(),timedOut]);throw new OrangeXError(auth?'AUTH_FAILED':'HTTP_ERROR')}
     let envelope;
     try{envelope=await Promise.race([this.#readJSON(response),timedOut])}
-    catch(error){if(error instanceof OrangeXError)throw error;throw new OrangeXError(controller.signal.aborted?'REQUEST_TIMEOUT':'INVALID_RESPONSE')}
+    catch(error){
+     if(error instanceof OrangeXError)throw error;
+     const causeCode=transportCode(error);
+     throw new OrangeXError(controller.signal.aborted?'REQUEST_TIMEOUT':causeCode?'NETWORK_ERROR':'INVALID_RESPONSE',
+      {transportCode:causeCode});
+    }
     if(!envelope||typeof envelope!=='object'||Array.isArray(envelope)||envelope.error)throw new OrangeXError(envelope?.error?'API_ERROR':'INVALID_RESPONSE');
     if(envelope.jsonrpc!==undefined&&envelope.jsonrpc!=='2.0')throw new OrangeXError('INVALID_RESPONSE');
     if(method==='POST'&&String(envelope.id)!==requestId)throw new OrangeXError('INVALID_RESPONSE');
     if(!Object.hasOwn(envelope,'result')||!envelope.result||typeof envelope.result!=='object')throw new OrangeXError('INVALID_RESPONSE');
+    this.#responseStatuses.set(envelope.result,responseStatus);
     return envelope.result;
    }catch(error){
-    if(error instanceof OrangeXError)throw error;
+    if(error instanceof OrangeXError){
+     if(error.httpStatus===null&&responseStatus!==null)throw new OrangeXError(error.code,{httpStatus:responseStatus,transportCode:error.transportCode});
+     throw error;
+    }
     // Never reuse the provider's exception text: it can contain an auth URL,
     // response body, client secret, access token or refresh token.
-    throw new OrangeXError(controller.signal.aborted?'REQUEST_TIMEOUT':'NETWORK_ERROR');
+    throw new OrangeXError(controller.signal.aborted?'REQUEST_TIMEOUT':'NETWORK_ERROR',
+     {httpStatus:responseStatus,transportCode:transportCode(error)});
    }finally{clearTimeout(timer)}
   }
  }
@@ -161,7 +209,7 @@ export class OrangeXReadOnlyAdapter {
   const lifetime=positive(result?.expires_in),token=result?.access_token,refresh=result?.refresh_token;
   const validToken=value=>typeof value==='string'&&value.length>0&&value.length<=16384&&!/[\s\u0000-\u001f\u007f]/.test(value);
   if(!validToken(token)||!lifetime||!Number.isFinite(lifetime*1000)||
-   refresh!==undefined&&refresh!==null&&!validToken(refresh))throw new OrangeXError('TOKEN_RESPONSE_INVALID');
+   refresh!==undefined&&refresh!==null&&!validToken(refresh))throw new OrangeXError('TOKEN_RESPONSE_INVALID',{httpStatus:this.#responseStatuses.get(result)});
   const expiresAt=this.#clock()+lifetime*1000;
   if(!Number.isFinite(expiresAt))throw new OrangeXError('TOKEN_RESPONSE_INVALID');
   this.#token=token;this.#expiresAt=expiresAt;
@@ -195,16 +243,17 @@ export class OrangeXReadOnlyAdapter {
  async getOrderBook(instrumentName,{depth=20}={}){
   if(!instrument(instrumentName)||!this.instruments.includes(instrumentName)||!Number.isInteger(depth)||depth<1||depth>20)throw new OrangeXError('INVALID_INSTRUMENT');
   const result=await this.#request(BOOK,{params:{instrument_name:instrumentName,depth}});
-  if(result.instrument_name!==undefined&&result.instrument_name!==instrumentName)throw new OrangeXError('INVALID_RESPONSE');
+  const schemaError=()=>new OrangeXError('INVALID_RESPONSE',{httpStatus:this.#responseStatuses.get(result)});
+  if(result.instrument_name!==undefined&&result.instrument_name!==instrumentName)throw schemaError();
   const levels=rows=>{
-   if(!Array.isArray(rows)||!rows.length||rows.length>10000)throw new OrangeXError('INVALID_RESPONSE');
+   if(!Array.isArray(rows)||!rows.length||rows.length>10000)throw schemaError();
    return rows.map(row=>{
-    if(!Array.isArray(row)||row.length!==2||!positive(row[0])||!positive(row[1]))throw new OrangeXError('INVALID_RESPONSE');
+    if(!Array.isArray(row)||row.length!==2||!positive(row[0])||!positive(row[1]))throw schemaError();
     return [Number(row[0]),Number(row[1])];
    });
   };
   const bids=levels(result.bids).sort((a,b)=>b[0]-a[0]),asks=levels(result.asks).sort((a,b)=>a[0]-b[0]);
-  const bid=bids[0][0],ask=asks[0][0];if(bid>=ask)throw new OrangeXError('INVALID_RESPONSE');
+  const bid=bids[0][0],ask=asks[0][0];if(bid>=ask)throw schemaError();
   // The SDK consumes timestamp directly; no undocumented seconds-to-ms guess.
   const suppliedAt=positive(result.timestamp),now=this.#clock();
   const priceAt=suppliedAt!==null&&suppliedAt>=1e12?suppliedAt:null;
@@ -227,7 +276,9 @@ export class OrangeXReadOnlyAdapter {
    const markets=[],errors=[];
    for(const requested of this.instruments){
     try{markets.push(await this.getOrderBook(requested))}
-    catch(error){const safe=error instanceof OrangeXError?error:new OrangeXError('NETWORK_ERROR');errors.push({code:safe.code,message:safe.message,at:this.#clock(),instrumentName:requested})}
+    catch(error){const safe=error instanceof OrangeXError?error:new OrangeXError('NETWORK_ERROR');errors.push({code:safe.code,message:safe.message,
+     category:safe.category,httpStatus:safe.httpStatus,transportCode:safe.transportCode,responseSource:safe.responseSource,
+     at:this.#clock(),instrumentName:requested})}
    }
    this.#snapshot={connected:markets.length>0,checkedAt:this.#clock(),marketStatus:markets.length===this.instruments.length?'connected':markets.length?'partial':'offline',markets,errors};
    return this.getStatus();

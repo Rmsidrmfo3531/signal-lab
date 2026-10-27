@@ -104,13 +104,74 @@ test('HTTP and provider error text is discarded from public errors',async()=>{
   async()=>envelope(null,{error:{code:999,message:sensitive}}),async()=>new Response(sensitive,{status:200})]){
   const client=adapter({fetcher});const status=await client.refresh();
   assert.equal(status.connected,false);assert.equal(status.errors.length,1);
+  assert.equal(status.verification.liveConnection,'FAILED','an unsuccessful query alone does not prove a proxy policy block');
   assert.doesNotMatch(JSON.stringify(status),/fixture-secret|fixture-access-token|private\.example/);
  }
 });
 
+test('DNS diagnostics retain only recognized cause codes without fabricating an HTTP response',async()=>{
+ for(const causeCode of ['EAI_AGAIN','ENOTFOUND']){
+  const client=adapter({fetcher:async()=>{throw new TypeError('fixture-private-network-message',{cause:{code:causeCode}})}});
+  const status=await client.refresh(),error=status.errors[0];
+  assert.equal(error.code,'NETWORK_ERROR');assert.equal(error.category,'DNS');assert.equal(error.transportCode,causeCode);
+  assert.equal(error.httpStatus,null);assert.equal(error.responseSource,'UNCONFIRMED');
+  assert.doesNotMatch(JSON.stringify(status),/fixture-private-network-message/);
+ }
+});
+
+test('TLS diagnostic codes remain distinct from DNS and generic transport errors',async()=>{
+ for(const causeCode of ['CERT_HAS_EXPIRED','ERR_TLS_CERT_ALTNAME_INVALID','UNABLE_TO_VERIFY_LEAF_SIGNATURE']){
+  const client=adapter({fetcher:async()=>{throw new TypeError('fixture-private-cert-message',{cause:{cause:{code:causeCode}}})}});
+  const error=(await client.refresh()).errors[0];
+  assert.equal(error.code,'NETWORK_ERROR');assert.equal(error.category,'TLS');assert.equal(error.transportCode,causeCode);
+  assert.equal(error.httpStatus,null);assert.equal(error.responseSource,'UNCONFIRMED');
+ }
+});
+
+test('HTTP diagnostic status never labels a 403 response as proven OrangeX or proxy output',async()=>{
+ for(const statusCode of [403,429,503]){
+  const client=adapter({fetcher:async()=>new Response('fixture-private-http-body',{status:statusCode,headers:{server:'fixture-server'}})});
+  const status=await client.refresh(),error=status.errors[0];
+  assert.equal(error.category,'HTTP');assert.equal(error.httpStatus,statusCode);
+  assert.equal(error.transportCode,null);assert.equal(error.responseSource,'UNCONFIRMED');
+  assert.doesNotMatch(JSON.stringify(status),/fixture-private-http-body|fixture-server/);
+ }
+});
+
+test('schema and API errors preserve the observed HTTP status independently of transport diagnostics',async()=>{
+ for(const fetcher of [async()=>new Response('fixture-invalid-json',{status:200}),async()=>envelope(depth({bids:[]}))]){
+  const error=(await adapter({fetcher}).refresh()).errors[0];
+  assert.equal(error.code,'INVALID_RESPONSE');assert.equal(error.category,'SCHEMA');assert.equal(error.httpStatus,200);
+  assert.equal(error.transportCode,null);assert.equal(error.responseSource,'UNCONFIRMED');
+ }
+ const error=(await adapter({fetcher:async()=>envelope(null,{error:{code:10000,message:'fixture-private-api-message'}})}).refresh()).errors[0];
+ assert.equal(error.code,'API_ERROR');assert.equal(error.category,'API');assert.equal(error.httpStatus,200);
+ assert.doesNotMatch(JSON.stringify(error),/fixture-private-api-message|10000/);
+});
+
+test('a transport failure while reading a response body is not misreported as malformed JSON',async()=>{
+ const client=adapter({fetcher:async()=>({ok:true,status:200,json:async()=>{throw new TypeError('fixture-private-body-error',{cause:{code:'ECONNRESET'}})}})});
+ const error=(await client.refresh()).errors[0];
+ assert.equal(error.code,'NETWORK_ERROR');assert.equal(error.category,'NETWORK');assert.equal(error.transportCode,'ECONNRESET');
+ assert.equal(error.httpStatus,200);assert.equal(error.responseSource,'UNCONFIRMED');
+});
+
+test('unrecognized diagnostic fields and sensitive error codes are discarded rather than echoed',async()=>{
+ const sensitive='fixture-secret-never-public';
+ const client=adapter({fetcher:async()=>{throw Object.assign(Error(sensitive),{code:sensitive,cause:{code:sensitive},
+  httpStatus:403,responseSource:'ORIGIN',category:'TLS',headers:{authorization:sensitive}})}});
+ const status=await client.refresh(),error=status.errors[0];
+ assert.equal(error.category,'NETWORK');assert.equal(error.transportCode,null);assert.equal(error.httpStatus,null);
+ assert.equal(error.responseSource,'UNCONFIRMED');assert.doesNotMatch(JSON.stringify(status),new RegExp(sensitive));
+ const typed=new OrangeXError('NETWORK_ERROR',{transportCode:sensitive,httpStatus:'403',responseSource:'ORIGIN',category:'TLS',extra:sensitive});
+ assert.equal(typed.transportCode,null);assert.equal(typed.httpStatus,null);assert.equal(typed.category,'NETWORK');
+ assert.equal(typed.responseSource,'UNCONFIRMED');assert.doesNotMatch(JSON.stringify(typed),new RegExp(sensitive));
+});
+
 test('timeouts bound both connection and JSON body reads',async()=>{
  for(const fetcher of [()=>new Promise(()=>{}),async()=>({ok:true,status:200,json:()=>new Promise(()=>{})})]){
-  const client=adapter({fetcher,timeoutMs:100});await assert.rejects(client.getOrderBook(BTC),code('REQUEST_TIMEOUT'));
+  const client=adapter({fetcher,timeoutMs:100});
+  await assert.rejects(client.getOrderBook(BTC),error=>code('REQUEST_TIMEOUT')(error)&&error.category==='TIMEOUT'&&error.responseSource==='UNCONFIRMED');
  }
 });
 

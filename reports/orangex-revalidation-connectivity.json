@@ -1,0 +1,66 @@
+{
+  "kind": "REAL_PUBLIC_READ_ONLY",
+  "checkedAtUTC": "2026-10-27T04:25:20.982519+00:00",
+  "baseline": "894300a",
+  "checks": [
+    {
+      "target": "official_docs",
+      "url": "https://openapi-docs.orangex.com/",
+      "curlExitCode": 56,
+      "category": "PROXY_CONNECT_DENIED",
+      "httpStatus": null,
+      "proxyConnectStatus": 403,
+      "tlsVerifyResult": null,
+      "seconds": 0.005092,
+      "originResponseObserved": false,
+      "tlsHandshakeObserved": false,
+      "note": "No credentials or private endpoints used"
+    },
+    {
+      "target": "BTC",
+      "url": "https://api.orangex.com/api/v1/public/get_order_book?instrument_name=BTC-USDT-PERPETUAL&depth=20",
+      "curlExitCode": 56,
+      "category": "PROXY_CONNECT_DENIED",
+      "httpStatus": null,
+      "proxyConnectStatus": 403,
+      "tlsVerifyResult": null,
+      "seconds": 0.006829,
+      "originResponseObserved": false,
+      "tlsHandshakeObserved": false,
+      "note": "No credentials or private endpoints used"
+    },
+    {
+      "target": "ETH",
+      "url": "https://api.orangex.com/api/v1/public/get_order_book?instrument_name=ETH-USDT-PERPETUAL&depth=20",
+      "curlExitCode": 56,
+      "category": "PROXY_CONNECT_DENIED",
+      "httpStatus": null,
+      "proxyConnectStatus": 403,
+      "tlsVerifyResult": null,
+      "seconds": 0.006576,
+      "originResponseObserved": false,
+      "tlsHandshakeObserved": false,
+      "note": "No credentials or private endpoints used"
+    },
+    {
+      "target": "SOL",
+      "url": "https://api.orangex.com/api/v1/public/get_order_book?instrument_name=SOL-USDT-PERPETUAL&depth=20",
+      "curlExitCode": 56,
+      "category": "PROXY_CONNECT_DENIED",
+      "httpStatus": null,
+      "proxyConnectStatus": 403,
+      "tlsVerifyResult": null,
+      "seconds": 0.007376,
+      "originResponseObserved": false,
+      "tlsHandshakeObserved": false,
+      "note": "No credentials or private endpoints used"
+    }
+  ],
+  "policyObservation": {
+    "observationsCurrent": true,
+    "state": "enforced",
+    "mode": "restricted",
+    "orangeXHostsAllowed": false,
+    "githubApiHostAllowed": false
+  }
+}

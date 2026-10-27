@@ -1,5 +1,7 @@
 # OrangeX 1단계: 조회 전용 연결과 검증 기록
 
+후속 실제 연결 재검증과 진단 오류 수정 결과는 [OrangeX 재검증 보고서](ORANGEX_REVALIDATION_KO.md)를 참고하세요. 아래의 235개 테스트는 최초 커밋 `894300a` 당시 기록입니다.
+
 ## 이번 구현의 범위
 
 대상은 `Rmsidrmfo3531/signal-lab`입니다. `feat/orangex-readonly`는 원격의 최신 기능 브랜치 `fix/paper-no-fixed-capital` 커밋 `a78da08`에서 분리했습니다. `main`과 기존 PR 브랜치를 수정·병합하지 않았습니다. 이전 작업 폴더의 미완료 연구 변경도 별도로 보존했습니다.
