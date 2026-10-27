@@ -1,0 +1,81 @@
+{
+  "checkedAt": "2026-10-27T04:49:35.740422+00:00",
+  "scope": "TEMP_DATA_OFFLINE_REGRESSION_AND_MOCK_BROWSER",
+  "unitIntegrationRuns": [
+    {
+      "os": "Linux",
+      "node": "22.23.3",
+      "tests": 261,
+      "passed": 261,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "durationMs": 14498.54655
+    },
+    {
+      "os": "Linux",
+      "node": "24.19.0",
+      "tests": 261,
+      "passed": 261,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "durationMs": 14719.408718
+    }
+  ],
+  "newDiagnosticTests": 15,
+  "browser": {
+    "kind": "MOCK_ORANGEX_READ_ONLY_BROWSER",
+    "passed": true,
+    "viewports": [
+      {
+        "width": 1440,
+        "documentWidth": 1440,
+        "passed": true,
+        "pageErrors": 0,
+        "requestMethods": [
+          "GET"
+        ],
+        "refreshFailureRecovered": true
+      },
+      {
+        "width": 390,
+        "documentWidth": 390,
+        "passed": true,
+        "pageErrors": 0,
+        "requestMethods": [
+          "GET"
+        ],
+        "refreshFailureRecovered": true
+      },
+      {
+        "width": 360,
+        "documentWidth": 360,
+        "passed": true,
+        "pageErrors": 0,
+        "requestMethods": [
+          "GET"
+        ],
+        "refreshFailureRecovered": true
+      },
+      {
+        "width": 720,
+        "documentWidth": 720,
+        "passed": true,
+        "pageErrors": 0,
+        "requestMethods": [
+          "GET"
+        ],
+        "refreshFailureRecovered": true
+      }
+    ]
+  },
+  "hostedGitHubActions": {
+    "status": "UNCONFIRMED",
+    "reason": "api.github.com request Forbidden"
+  },
+  "actualWindowsOSChecked": false,
+  "actualOrangeXConnectionVerified": false,
+  "dataDirectory": "TEMPORARY",
+  "ordersSubmitted": false
+}

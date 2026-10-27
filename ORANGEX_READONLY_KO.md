@@ -2,6 +2,8 @@
 
 후속 실제 연결 재검증과 진단 오류 수정 결과는 [OrangeX 재검증 보고서](ORANGEX_REVALIDATION_KO.md)를 참고하세요. 아래의 235개 테스트는 최초 커밋 `894300a` 당시 기록입니다.
 
+`3e51027` 이후 정책 적용 확인과 공개 API 재시도는 [최근 재시도 보고서](ORANGEX_PUBLIC_RETRY_KO.md), Windows에서의 독립 실행은 [공개 API 진단 안내](ORANGEX_WINDOWS_PUBLIC_DIAGNOSTIC_KO.md)를 참고하세요. 과거 보고서의 관측과 이번 결과는 구분합니다.
+
 ## 이번 구현의 범위
 
 대상은 `Rmsidrmfo3531/signal-lab`입니다. `feat/orangex-readonly`는 원격의 최신 기능 브랜치 `fix/paper-no-fixed-capital` 커밋 `a78da08`에서 분리했습니다. `main`과 기존 PR 브랜치를 수정·병합하지 않았습니다. 이전 작업 폴더의 미완료 연구 변경도 별도로 보존했습니다.
