@@ -124,7 +124,19 @@ test('OrangeX PAPER/LIVE/invalid configuration cannot enable automation or expos
  }
 });
 
-test('OrangeX public-book HTTP reads stay separate from scanner, account credentials and stored trading history',{timeout:15000},async()=>{
+test('obsolete PAPER opt-in variables cannot activate a simulation or create a new account store',{timeout:15000},async()=>{
+ const app=await sandbox({ORANGEX_MODE:'READ_ONLY',ORANGEX_PAPER_ENABLED:'true',ORANGEX_PAPER_FEE_BPS:'5',ORANGEX_PAPER_FUNDING_BPS_PER_8H:'0'});
+ try{
+  const snapshot=JSON.parse((await app.read('/api/orangex')).text);
+  assert.equal(snapshot.mode,'READ_ONLY');assert.equal(snapshot.automation.enabled,false);assert.equal(snapshot.orderSubmissionEnabled,false);
+  assert.equal(Object.hasOwn(snapshot,'paper'),false);
+  const records=path.dirname(path.dirname(app.retainedBackup));
+  await assert.rejects(fs.stat(path.join(records,'orangex-paper')),error=>error.code==='ENOENT');
+  assert.deepEqual((await app.disk()).paper,app.fixture.paper);await noExternalRequests(app.requests);
+ }finally{await app.close()}
+});
+
+test('OrangeX public-market HTTP reads stay separate from scanner, account credentials and stored trading history',{timeout:15000},async()=>{
  const clientId='fixture-account-client',secret='fixture-account-secret';
  const app=await sandbox({ORANGEX_ENABLED:'true',ORANGEX_MODE:'READ_ONLY',ORANGEX_CLIENT_ID:clientId,
   ORANGEX_CLIENT_SECRET:secret,SIGNAL_LAB_TEST_ORANGEX_BOOK:'fresh'});
@@ -142,13 +154,22 @@ test('OrangeX public-book HTTP reads stay separate from scanner, account credent
    assert.equal(market.bid,mid-.01);assert.equal(market.ask,mid+.01);
    assert.equal(market.fresh,true);assert.equal(market.tradable,false);assert.equal(market.instrumentVerified,false);
    assert.equal(market.minQty,null);assert.equal(market.qtyStep,null);assert.equal(market.priceTick,null);
+   assert.equal(market.listingObserved,true);assert.equal(market.active,true);assert.equal(market.markPrice,mid);assert.equal(market.markPriceFresh,true);
+   assert.equal(market.contractFields.min_trade_amount.value,1);assert.equal(market.contractFields.min_qty.value,.001);
+   assert.equal(market.contractFields.qty_step.value,.001);assert.equal(market.fees.units,'UNVERIFIED');
+   assert.equal(market.binanceComparison.mappingVerified,false);
   }
   assert.equal(text.includes(clientId),false);assert.equal(text.includes(secret),false);
   const outgoing=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(outgoing.length,3);
+  assert.equal(outgoing.length,7,'one instruments query, three individual tickers and three books');
+  assert.equal(outgoing.filter(x=>x.path==='/api/v1/public/get_instruments').length,1);
+  assert.equal(outgoing.filter(x=>x.path==='/api/v1/public/tickers').length,3);
+  assert.equal(outgoing.filter(x=>x.path==='/api/v1/public/get_order_book').length,3);
   for(const request of outgoing){
    assert.equal(request.host,'api.orangex.com');assert.equal(request.method,'GET');
-   assert.equal(request.path,'/api/v1/public/get_order_book');assert.equal(request.depth,'20');
+   if(request.path==='/api/v1/public/get_order_book')assert.equal(request.depth,'20');
+   else if(request.path==='/api/v1/public/get_instruments')assert.equal(request.currency,'USDT');
+   else {assert.equal(request.path,'/api/v1/public/tickers');assert.ok(request.instrumentName)}
    assert.equal(request.hasAuthorization,false,'public market reads must not send account credentials');
   }
   const after=JSON.parse((await app.read('/api/status')).text);
@@ -168,6 +189,7 @@ test('OrangeX missing or old public timestamps never become fresh, verified trad
    assert.equal(snapshot.markets.length,3);
    for(const market of snapshot.markets){
     assert.equal(market.fresh,false);assert.equal(market.tradable,false);assert.equal(market.instrumentVerified,false);
+    assert.equal(market.markPriceFresh,false);
     if(mode==='missing-time')assert.equal(market.priceAt,null);
     else assert.ok(Date.now()-market.priceAt>=180000);
    }

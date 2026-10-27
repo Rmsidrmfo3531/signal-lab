@@ -22,14 +22,18 @@ function observedClock(value,now){
   ageMs:milliseconds?now-timestamp:null,fresh:milliseconds?timestamp<=now+5000&&now-timestamp<=90000:null};
 }
 
-export function publicProbeURL(kind,instrumentName){
+export function publicProbeURL(kind,instrumentName,{currency='USDT'}={}){
  if(kind==='docs')return 'https://openapi-docs.orangex.com/';
  const paths={instruments:'/public/get_instruments',tickers:'/public/tickers',book:'/public/get_order_book'};
  if(!Object.hasOwn(paths,kind))throw new Error('PUBLIC_ENDPOINT_NOT_ALLOWED');
  const url=new URL(API+paths[kind]);
- if(kind==='book'){
+ if(kind==='instruments'){
+  if(typeof currency!=='string'||!/^[A-Z0-9]{2,12}$/.test(currency))throw new Error('INVALID_PUBLIC_CURRENCY');
+  url.searchParams.set('currency',currency);
+ }
+ if(kind==='book'||kind==='tickers'){
   if(typeof instrumentName!=='string'||!NAME.test(instrumentName))throw new Error('INVALID_PUBLIC_INSTRUMENT');
-  url.searchParams.set('instrument_name',instrumentName);url.searchParams.set('depth','20');
+  url.searchParams.set('instrument_name',instrumentName);if(kind==='book')url.searchParams.set('depth','20');
  }
  return url.href;
 }
@@ -49,8 +53,8 @@ export function classifyCurl({exitCode,proxyConnectStatus=null,httpStatus=null,p
 }
 
 // Exported transport accepts only fixed public probes, never a caller-supplied URL.
-export function curlPublicProbe(kind,instrumentName,{spawnProcess=spawn,platform=process.platform}={}){
- const url=publicProbeURL(kind,instrumentName);
+export function curlPublicProbe(kind,instrumentName,{spawnProcess=spawn,platform=process.platform,currency='USDT'}={}){
+ const url=publicProbeURL(kind,instrumentName,{currency});
  const args=['--disable','--silent','--show-error','--request','GET','--proto','=https',
   '--connect-timeout','6','--max-time','12','--max-filesize',String(LIMIT),
   '--header','Accept: application/json','--write-out',MARKER+'%{http_connect},%{http_code}',
@@ -93,7 +97,7 @@ function decode(probe){
  const type=value=>value===null?'NULL':Array.isArray(value)?'ARRAY':typeof value==='object'?'OBJECT':typeof value==='string'?'STRING':
   typeof value==='number'?'NUMBER':typeof value==='boolean'?'BOOLEAN':'MISSING';
  const result=plain(envelope)?envelope.result:undefined,knownResultFields={};
- for(const key of ['instruments','tickers','data','bids','asks','timestamp','instrument_name','mark_price']){
+ for(const key of ['instruments','tickers','data','bids','asks','timestamp','mark_timestamp','instrument_name','mark_price']){
   if(plain(result)&&Object.hasOwn(result,key))knownResultFields[key]=type(result[key]);
  }
  // Closed key names and types only: no arbitrary field names, values or bodies.
@@ -112,8 +116,9 @@ function rows(result,key){
 
 function fields(row,path){
  const output={};
- for(const key of ['contract_size','min_trade_amount','min_order_amount','min_order_size','min_notional',
-  'lot_size','qty_step','tick_size','maker_commission','taker_commission','maker_fee','taker_fee']){
+ for(const key of ['contract_size','min_trade_amount','min_qty','min_order_amount','min_order_size','min_notional',
+  'lot_size','qty_step','quantity_step','quantity_increment','tick_size','maker_commission','taker_commission','maker_fee','taker_fee',
+  'maker_fee_rate','taker_fee_rate','maker','taker']){
   const value=numeric(row?.[key]);
   if(value!==null)output[key]={value,source:`${path}.${key}`,units:'UNVERIFIED'};
  }
@@ -131,30 +136,31 @@ export function observeBook(result,now=Date.now()){
  if(!side(result.bids)||!side(result.asks))return null;
  const bid=result.bids.reduce((best,level)=>Math.max(best,Number(level[0])),-Infinity),
   ask=result.asks.reduce((best,level)=>Math.min(best,Number(level[0])),Infinity);
- if(bid>ask)return null;
+ if(bid>=ask)return null;
  const clock=observedClock(result.timestamp,now);
  return {bid,ask,spread:ask-bid,spreadBps:(ask-bid)/((bid+ask)/2)*10000,
+  bids:result.bids.slice(0,20).map(row=>[Number(row[0]),Number(row[1])]),
+  asks:result.asks.slice(0,20).map(row=>[Number(row[0]),Number(row[1])]),
   timestamp:clock.timestamp,timestampSource:clock.timestamp===null?null:'result.timestamp',timestampUnits:clock.units,
   ageMs:clock.ageMs,fresh:clock.fresh,
   markPrice:positive(result.mark_price),markPriceSource:positive(result.mark_price)===null?null:'result.mark_price'};
 }
 
-export async function diagnoseOrangeXPublic({probe=curlPublicProbe,now=()=>Date.now()}={}){
+export async function diagnoseOrangeXPublic({probe=curlPublicProbe,now=()=>Date.now(),currency='USDT'}={}){
+ publicProbeURL('instruments',undefined,{currency}); // Validate before any request.
  const checkedAt=new Date(now()).toISOString(),requests=[];
  const run=async(kind,name)=>{
-  const raw=await probe(kind,name),decoded=decode({...raw,kind});
-  requests.push({kind,instrumentName:name??null,url:publicProbeURL(kind,name),method:'GET',
-   parameterSpecificationVerified:false,status:decoded.status,...decoded.diagnostic,
+  const raw=await probe(kind,name,{currency}),decoded=decode({...raw,kind});
+  requests.push({kind,instrumentName:name??null,url:publicProbeURL(kind,name,{currency}),method:'GET',
+   ...(kind==='instruments'?{currency,currencyMeaning:'UNVERIFIED'}:{}),
+   parameterNamesSource:'USER_CONFIRMED_OFFICIAL_DOCUMENTATION',parameterSpecificationVerified:false,status:decoded.status,...decoded.diagnostic,
    ...(decoded.schemaObservation?{schemaObservation:decoded.schemaObservation}:{}),
    ...(decoded.endpointNamesPresent?{endpointNamesPresent:decoded.endpointNamesPresent}:{})});
   return decoded;
  };
- const docs=await run('docs'),instruments=await run('instruments'),tickers=await run('tickers');
- const instrumentRows=rows(instruments.result,'instruments'),tickerRows=rows(tickers.result,'tickers');
- for(const [kind,result,list] of [['instruments',instruments,instrumentRows],['tickers',tickers,tickerRows]]){
-  if(result.status==='OBSERVED'&&!list){
-   const request=requests.find(item=>item.kind===kind);request.status='FAILED';request.category='SCHEMA';
-  }
+ await run('docs');const instruments=await run('instruments'),instrumentRows=rows(instruments.result,'instruments');
+ if(instruments.status==='OBSERVED'&&!instrumentRows){
+  const request=requests.find(item=>item.kind==='instruments');request.status='FAILED';request.category='SCHEMA';
  }
  const markets=[];
  for(const asset of ASSETS){
@@ -167,34 +173,52 @@ export async function diagnoseOrangeXPublic({probe=curlPublicProbe,now=()=>Date.
   // Bounded public diagnostic, never a full exchange crawler.
   const candidates=matches.length?matches.slice(0,3):[{row:null,path:null}];
   for(const {row,path} of candidates){
-   const instrumentName=row?.instrument_name??`${asset}-USDT-PERPETUAL`,book=await run('book',instrumentName);
+   const instrumentName=row?.instrument_name??`${asset}-USDT-PERPETUAL`,tickers=await run('tickers',instrumentName);
+   const tickerRequest=requests.at(-1),tickerRows=rows(tickers.result,'tickers')??
+    (plain(tickers.result)&&typeof tickers.result.instrument_name==='string'?{items:[tickers.result],path:'result'}:null);
+   const tickerMatches=(tickerRows?.items??[]).map((item,index)=>({item,index})).filter(({item})=>plain(item)&&item.instrument_name===instrumentName);
+   const ticker=tickerMatches.length===1?tickerMatches[0].item:null,
+    tickerPath=ticker?tickerRows.path==='result'&&plain(tickers.result)?'result':`${tickerRows.path}[${tickerMatches[0].index}]`:null;
+   if(tickers.status==='OBSERVED'&&!ticker){tickerRequest.status='FAILED';tickerRequest.category='SCHEMA'}
+   const book=await run('book',instrumentName);
    const nameMatches=book.result?.instrument_name===undefined||book.result.instrument_name===instrumentName;
    const observation=book.status==='OBSERVED'&&nameMatches?observeBook(book.result,now()):null;
    if(book.status==='OBSERVED'&&!observation){const request=requests.at(-1);request.status='FAILED';request.category='SCHEMA'}
    if(observation&&observation.fresh!==true){const request=requests.at(-1);request.status='FAILED';request.category='FRESHNESS'}
-   const tickerIndex=tickerRows?.items.findIndex(item=>plain(item)&&item.instrument_name===instrumentName)??-1;
-   const ticker=tickerIndex>=0?tickerRows.items[tickerIndex]:null,tickerPath=tickerIndex>=0?`${tickerRows.path}[${tickerIndex}]`:null;
-   const tickerMark=positive(ticker?.mark_price),bookMark=observation?.markPrice??null;
-   const markPrice=tickerMark??bookMark,markClock=observedClock(tickerMark!==null?ticker.timestamp:observation?.timestamp,now());
+   // Mark always belongs to this contract's ticker. A book midpoint, book Mark,
+   // receipt timestamp or another contract's ticker never fills a missing value.
+   const markPrice=positive(ticker?.mark_price),hasMarkTimestamp=ticker!==null&&Object.hasOwn(ticker,'mark_timestamp'),
+    markClock=observedClock(hasMarkTimestamp?ticker.mark_timestamp:ticker?.timestamp,now());
+   if(tickers.status==='OBSERVED'&&ticker&&(markPrice===null||markClock.fresh!==true)){
+    tickerRequest.status='FAILED';tickerRequest.category=markPrice===null?'SCHEMA':'FRESHNESS';
+   }
+   const levels=book.result&&observation?[...book.result.bids,...book.result.asks]:[],alignment=(value,step)=>{
+    const count=value/step,tolerance=Math.min(1e-6,Math.max(1,Math.abs(count))*Number.EPSILON*8);
+    return Number.isSafeInteger(Math.round(count))&&Math.abs(count-Math.round(count))<=tolerance;
+   };
+   const tick=positive(row?.tick_size),quantityCandidates=['qty_step','quantity_step','quantity_increment'].filter(key=>positive(row?.[key])!==null)
+    .map(key=>({field:key,value:Number(row[key]),allObservedLevelsAligned:levels.length?levels.every(level=>alignment(Number(level[1]),Number(row[key]))):null,unitsVerified:false}));
    markets.push({asset,instrumentName,contractNameSource:row?`${path}.instrument_name`:'SDK_CANDIDATE_ONLY',
     listingObserved:row!==null,active:typeof row?.is_active==='boolean'?row.is_active:null,
     additionalContractsOmitted:Math.max(0,matches.length-3),
     officialSpecificationVerified:false,orderSubmissionEnabled:false,contractFields:row?fields(row,path):{},
     tickerFields:ticker?fields(ticker,tickerPath):{},book:observation,
-    markPrice,markPriceSource:tickerMark!==null?`${tickerPath}.mark_price`:observation?.markPriceSource??null,
+    markPrice,markPriceSource:markPrice!==null?`${tickerPath}.mark_price`:null,
     markPriceTimestamp:markPrice!==null?markClock.timestamp:null,
-    markPriceTimestampSource:markPrice===null||markClock.timestamp===null?null:tickerMark!==null?`${tickerPath}.timestamp`:'result.timestamp',
+    markPriceTimestampSource:markPrice===null||markClock.timestamp===null?null:`${tickerPath}.${hasMarkTimestamp?'mark_timestamp':'timestamp'}`,
     markPriceTimestampUnits:markPrice!==null?markClock.units:null,
     markPriceAgeMs:markPrice!==null?markClock.ageMs:null,markPriceFresh:markPrice!==null?markClock.fresh:null,
-    minimumOrderQuantityVerified:false,feeUnitsVerified:false});
+    precisionObservations:{priceTick:tick===null?null:{field:'tick_size',value:tick,
+     allObservedLevelsAligned:levels.length?levels.every(level=>alignment(Number(level[0]),tick)):null,unitsVerified:false},quantityCandidates},
+    minimumOrderQuantityVerified:false,quantityIncrementVerified:false,feeUnitsVerified:false});
   }
  }
  const failures=requests.filter(item=>item.status==='FAILED'),transport=failures.some(item=>
   ['PROXY_CONNECT_REJECTED','PROXY_DNS','DNS','TLS','TIMEOUT','NETWORK','CURL_NOT_FOUND'].includes(item.category));
- return {kind:'ORANGEX_PUBLIC_DIAGNOSTIC',mode:'READ_ONLY',checkedAt,status:failures.length?'INCOMPLETE':'PUBLIC_RESPONSES_OBSERVED',
+ return {kind:'ORANGEX_PUBLIC_DIAGNOSTIC',mode:'READ_ONLY',checkedAt,currency,currencyMeaning:'UNVERIFIED',status:failures.length?'INCOMPLETE':'PUBLIC_RESPONSES_OBSERVED',
   exitCode:failures.length?(transport?2:1):0,officialSpecificationVerified:false,
   accountChecked:false,ordersSubmitted:false,requests,markets,
-  note:'공개 GET 진단만 수행합니다. 응답 필드 관측과 공식 명세·단위 확인은 다릅니다. 상장 목록에 없거나 조회 실패한 계약을 상장 폐지로 단정하지 않습니다. 가격 중간값을 Mark Price로 대체하지 않습니다.'};
+  note:`공개 GET 진단만 수행합니다. currency=${currency}는 의미 미검증 조회 후보이며 필수 매개변수 이름만 사용자 확인 자료에 근거합니다. 응답 필드 관측과 공식 명세·단위 확인은 다릅니다. min_trade_amount·min_qty·수량 증분·수수료 단위를 임의로 동일시하지 않습니다. 종목별 티커의 Mark와 시각만 사용하며 호가 값으로 보충하지 않습니다.`};
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){

@@ -16,6 +16,7 @@ test('default adapter performs no requests and exposes only READ_ONLY disabled s
  assert.equal(status.account,null);assert.equal(status.orderSubmissionEnabled,false);assert.equal(status.automation.canEnable,false);
  assert.equal(status.verification.officialSpec,'UNVERIFIED');assert.equal(status.verification.sourceOwnership,'UNVERIFIED');
  assert.equal(status.verification.liveConnection,'UNTESTED');
+ assert.equal(status.dataSource,'UNOBSERVED','an idle disabled adapter has not observed any public response');
 });
 
 for(const mode of ['PAPER','LIVE','live',''])test(`unsupported mode ${JSON.stringify(mode)} is rejected before transport`,()=>{
@@ -104,6 +105,7 @@ test('HTTP and provider error text is discarded from public errors',async()=>{
   async()=>envelope(null,{error:{code:999,message:sensitive}}),async()=>new Response(sensitive,{status:200})]){
   const client=adapter({fetcher});const status=await client.refresh();
   assert.equal(status.connected,false);assert.equal(status.errors.length,1);
+  assert.equal(status.dataSource,'UNOBSERVED','failed requests without validated observations are not a real public-data observation');
   assert.equal(status.verification.liveConnection,'FAILED','an unsuccessful query alone does not prove a proxy policy block');
   assert.doesNotMatch(JSON.stringify(status),/fixture-secret|fixture-access-token|private\.example/);
  }
@@ -249,4 +251,137 @@ test('malformed token lifetimes and refresh response IDs are rejected without re
  }});
  await client.authenticate();await assert.rejects(client.refreshAuthentication(),code('INVALID_RESPONSE'));
  assert.equal(client.getStatus().authentication.authenticated,false);assert.equal(calls,2);
+});
+
+// Synthetic protocol examples only. They are not the unavailable Windows JSON,
+// independently authenticated OrangeX responses, or verified contract semantics.
+const observedListing=(patch={})=>({instrument_name:BTC,is_active:true,base_currency:'BTC',quote_currency:'USDT',
+ min_trade_amount:.1,min_qty:.01,min_notional:5,tick_size:.01,contract_size:1,maker_commission:0,taker_commission:.05,...patch});
+const publicFetcher=({listing=observedListing(),ticker={instrument_name:BTC,mark_price:100.4,timestamp:T},book=depth(),onRequest=()=>{}}={})=>async(url,options)=>{
+ const parsed=new URL(url);onRequest(parsed,options);
+ if(parsed.pathname.endsWith('/get_instruments'))return envelope([listing]);
+ if(parsed.pathname.endsWith('/tickers'))return envelope(ticker);
+ if(parsed.pathname.endsWith('/get_order_book'))return envelope(book);
+ assert.fail('unexpected endpoint');
+};
+
+test('public metadata requires explicit currency and each ticker requires an exact configured instrument',async()=>{
+ const calls=[],client=adapter({fetcher:publicFetcher({onRequest:(url,options)=>calls.push({url,options})})});
+ for(const value of [undefined,'','usdt','../private/buy','USDT&token=secret'])
+  await assert.rejects(client.getPublicInstruments(value),code('INVALID_CONFIG'));
+ for(const value of [undefined,'','BTCUSDT','ETH-USDT-PERPETUAL','BTC-USDT-PERPETUAL&token=secret'])
+  await assert.rejects(client.getPublicTickers(value),code('INVALID_INSTRUMENT'));
+ assert.equal(calls.length,0);
+ const listing=await client.getPublicInstruments('USDT'),ticker=await client.getPublicTickers(BTC);
+ assert.equal(calls.length,2);assert.equal(calls[0].url.searchParams.get('currency'),'USDT');
+ assert.equal(calls[1].url.searchParams.get('instrument_name'),BTC);
+ assert.ok(calls.every(({options})=>options.method==='GET'&&!options.body&&!('authorization' in options.headers)));
+ assert.equal(listing.currencyMeaningVerified,false);assert.equal(ticker.officialSpecificationVerified,false);
+});
+
+test('detailed refresh keeps all minimum, contract and fee fields separate without guessing their units',async()=>{
+ const requests=[],client=adapter({includePublicDetails:true,fetcher:publicFetcher({listing:observedListing({
+  base_currency:'USDT',quote_currency:'BTC',quantity_increment:.5,maker:.001,taker:.002,unknown_secret:'synthetic-hidden'}),
+  onRequest:url=>requests.push(url)})});
+ const status=await client.refresh(),market=status.markets[0];
+ assert.equal(requests.length,3);assert.equal(status.includePublicDetails,true);assert.equal(status.listingCurrency,'USDT');
+ assert.equal(status.listingCurrencyVerified,false);assert.equal(status.dataSource,'REAL_PUBLIC_READ_ONLY');
+ assert.equal(status.verification.protocolReference,'USER_REPORTED_PARAMETERS_AND_SDK_REFERENCE');
+ assert.equal(market.listingObserved,true);assert.equal(market.active,true);assert.equal(market.actualInstrumentName,BTC);
+ assert.equal(market.listingStatus,'OBSERVED_ACTIVE');assert.equal(market.contractFields.min_trade_amount.value,.1);
+ assert.equal(market.contractFields.min_qty.value,.01);assert.equal(market.contractFields.min_notional.value,5);
+ assert.equal(market.contractFields.quantity_increment.value,.5);assert.equal(market.contractFields.tick_size.value,.01);
+ assert.equal(market.contractFields.base_currency.value,'USDT');assert.equal(market.contractFields.quote_currency.value,'BTC');
+ assert.equal(market.currencyDefinitionsVerified,false);assert.equal(market.symbolMappingVerified,false);
+ assert.equal(market.contractFields.maker_commission.value,0);assert.equal(market.contractFields.maker_commission.units,'UNVERIFIED');
+ assert.equal(market.contractFields.maker.value,.001);assert.equal(market.contractFields.taker.value,.002);
+ assert.deepEqual(market.fees,{units:'UNVERIFIED',makerBps:null,takerBps:null});
+ assert.equal(market.minQty,null);assert.equal(market.qtyStep,null);assert.equal(market.priceTick,null);
+ assert.equal(market.tradable,false);assert.equal(market.instrumentVerified,false);assert.equal(status.orderSubmissionEnabled,false);
+ assert.equal(status.verification.officialSpec,'UNVERIFIED');assert.doesNotMatch(JSON.stringify(status),/synthetic-hidden|unknown_secret/);
+});
+
+test('book and ticker clocks are independent and a midpoint never supplies a missing Mark',async()=>{
+ for(const timestamp of [undefined,null,T-90001,T+5001,T/1000]){
+  const client=adapter({includePublicDetails:true,fetcher:publicFetcher({ticker:{instrument_name:BTC,mark_price:100.4,timestamp}})});
+  const market=(await client.refresh()).markets[0];assert.equal(market.fresh,true);assert.equal(market.markPrice,100.4);
+  assert.equal(market.markPriceFresh,false);assert.notEqual(market.markPriceAt,market.priceAt);
+ }
+ const noMark=adapter({includePublicDetails:true,fetcher:publicFetcher({ticker:{instrument_name:BTC,timestamp:T}})});
+ const market=(await noMark.refresh()).markets[0];assert.equal(market.midPrice,100.5);assert.equal(market.markPrice,null);
+ assert.equal(market.markPriceAt,null);assert.equal(market.markPriceFresh,false);
+});
+
+test('explicit invalid or stale Mark clocks cannot fall back to an otherwise fresh ticker timestamp',async()=>{
+ for(const mark_timestamp of [undefined,null,'invalid',false,[],T/1000,T-90001]){
+  const client=adapter({fetcher:publicFetcher({ticker:{instrument_name:BTC,mark_price:100.4,timestamp:T,mark_timestamp}})});
+  // JSON omits undefined, so exercise that absence separately below.
+  const ticker=await client.getPublicTickers(BTC);
+  assert.equal(ticker.markPriceFresh,mark_timestamp===undefined);
+  if(mark_timestamp!==undefined)assert.notEqual(ticker.markPriceAt,T);
+ }
+ const client=adapter({fetcher:publicFetcher({ticker:{instrument_name:BTC,mark_price:'100.4',timestamp:T,mark_timestamp:T-1000}})});
+ const result=await client.getPublicTickers(BTC);assert.equal(result.markPriceFresh,true);assert.equal(result.markPriceAt,T-1000);
+ assert.equal(result.markPriceAtSource,'result.mark_timestamp');
+});
+
+test('cached Mark and book freshness are reevaluated separately after their original clocks age',async()=>{
+ let now=T;const client=adapter({includePublicDetails:true,now:()=>now,
+  fetcher:publicFetcher({ticker:{instrument_name:BTC,mark_price:100.4,timestamp:T-10000}})});
+ await client.refresh();now+=80001;const market=client.getStatus().markets[0];
+ assert.equal(market.fresh,true);assert.equal(market.markPriceFresh,false);
+});
+
+test('observed precision checks explicit price/quantity increments and never uses a minimum as an increment',async()=>{
+ const inspect=async listing=>(await adapter({includePublicDetails:true,fetcher:publicFetcher({listing})}).refresh()).markets[0].precision;
+ const noStep=await inspect(observedListing());assert.equal(noStep.priceGrid,'MATCH');assert.equal(noStep.quantityGrid,'UNVERIFIED');
+ assert.equal(noStep.quantityBasis,null);assert.equal(noStep.unitsVerified,false);
+ const exact=await inspect(observedListing({qty_step:.5}));assert.equal(exact.quantityGrid,'MATCH');assert.equal(exact.quantityBasis,'qty_step');
+ const wrong=await inspect(observedListing({tick_size:.3,quantity_increment:.3}));assert.equal(wrong.priceGrid,'MISMATCH');assert.equal(wrong.quantityGrid,'MISMATCH');
+ const conflict=await inspect(observedListing({qty_step:.5,quantity_increment:.3}));assert.equal(conflict.quantityGrid,'UNVERIFIED');
+});
+
+test('unobserved, inactive and unknown listing status are distinct and never approve an instrument',async()=>{
+ const inactive=adapter({includePublicDetails:true,fetcher:publicFetcher({listing:observedListing({is_active:false})})});
+ const inactiveMarket=(await inactive.refresh()).markets[0];assert.equal(inactiveMarket.listingObserved,true);assert.equal(inactiveMarket.active,false);
+ assert.equal(inactiveMarket.listingStatus,'OBSERVED_INACTIVE');assert.equal(inactiveMarket.tradable,false);
+ const unknown=adapter({includePublicDetails:true,fetcher:publicFetcher({listing:observedListing({is_active:'true'})})});
+ const unknownMarket=(await unknown.refresh()).markets[0];assert.equal(unknownMarket.listingObserved,true);assert.equal(unknownMarket.active,null);
+ assert.equal(unknownMarket.listingStatus,'OBSERVED_STATUS_UNKNOWN');
+ const missing=adapter({includePublicDetails:true,fetcher:publicFetcher({listing:observedListing({instrument_name:'ETH-USDT-PERPETUAL'})})});
+ const missingMarket=(await missing.refresh()).markets[0];assert.equal(missingMarket.listingObserved,false);assert.equal(missingMarket.active,null);
+ assert.equal(missingMarket.listingStatus,'UNOBSERVED');assert.equal(missingMarket.actualInstrumentName,null);
+});
+
+test('per-instrument ticker mismatches and ambiguous collections fail closed without retaining a Mark',async()=>{
+ for(const ticker of [{instrument_name:'ETH-USDT-PERPETUAL',mark_price:100.4,timestamp:T},
+  {mark_price:100.4,timestamp:T},[{instrument_name:BTC,mark_price:100.4,timestamp:T},{instrument_name:BTC,mark_price:100.5,timestamp:T}]]){
+  const client=adapter({includePublicDetails:true,fetcher:publicFetcher({ticker})}),status=await client.refresh();
+  assert.equal(status.connected,true);assert.equal(status.marketStatus,'partial');assert.equal(status.markets[0].markPrice,null);
+  assert.equal(status.errors.length,1);assert.equal(status.errors[0].endpoint,'ticker');assert.equal(status.errors[0].httpStatus,200);
+ }
+});
+
+test('listing, ticker and book failures remain separate while successful observations survive',async()=>{
+ for(const failed of ['get_instruments','tickers','get_order_book']){
+  const base=publicFetcher(),client=adapter({includePublicDetails:true,fetcher:async(url,options)=>
+   new URL(url).pathname.endsWith('/'+failed)?new Response('synthetic-private-provider-body',{status:403}):base(url,options)});
+  const status=await client.refresh(),market=status.markets[0];assert.equal(status.errors.length,1);
+  assert.equal(status.errors[0].endpoint,failed==='get_instruments'?'instruments':failed==='tickers'?'ticker':'book');
+  assert.equal(status.errors[0].httpStatus,403);assert.equal(status.errors[0].responseSource,'UNCONFIRMED');
+  assert.equal(status.dataSource,'REAL_PUBLIC_READ_ONLY','successful book/listing/Mark observations survive a different endpoint failure');
+  assert.equal(market.bookObserved,failed!=='get_order_book');assert.equal(market.listingObserved,failed!=='get_instruments');
+  assert.equal(market.markPrice,failed==='tickers'?null:100.4);
+  if(failed==='get_order_book'){assert.equal(market.bid,null);assert.equal(market.fresh,false);assert.equal(status.connected,false)}
+  else assert.equal(market.bid,100);
+  assert.doesNotMatch(JSON.stringify(status),/synthetic-private-provider-body/);
+ }
+});
+
+test('metadata schema errors never turn duplicate or unknown responses into verified empty listings',async()=>{
+ for(const rows of [[observedListing(),observedListing()],{data:[observedListing()]},[{instrument_name:'invalid name'}]]){
+  const client=adapter({fetcher:async()=>envelope(rows)});await assert.rejects(client.getPublicInstruments('USDT'),code('INVALID_RESPONSE'));
+ }
+ for(const includePublicDetails of ['true',1,null])assert.throws(()=>adapter({includePublicDetails}),code('INVALID_CONFIG'));
+ for(const listingCurrency of ['',null,'usdt','../auth'])assert.throws(()=>adapter({listingCurrency}),code('INVALID_CONFIG'));
 });

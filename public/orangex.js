@@ -3,7 +3,7 @@ const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&
 const numeric=value=>(typeof value==='number'||typeof value==='string')&&!(typeof value==='string'&&!value.trim())&&Number.isFinite(Number(value))?Number(value):null;
 const number=value=>{const n=numeric(value);return n===null?'—':n.toLocaleString('en-US',{maximumFractionDigits:8})};
 const money=value=>{const n=numeric(value);return n===null?'—':`${n<0?'-':''}$${Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4})}`};
-const time=value=>{const n=numeric(value);return n!==null&&n>0?new Date(n).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',hour12:false}):'미확인'};
+const time=value=>{const n=numeric(value);return n!==null&&n>0&&Number.isFinite(new Date(n).getTime())?new Date(n).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',hour12:false}):'미확인'};
 const records=value=>Array.isArray(value)?value:[];
 const first=(value,...keys)=>{for(const key of keys)if(value?.[key]!==undefined&&value[key]!==null)return value[key];return undefined};
 const cell=value=>`<td>${esc(value)}</td>`;
@@ -31,6 +31,39 @@ const quoteAge=item=>{
  if(item?.fresh===false||at===null||at<=0||at>now+5000||now-at>90000)return '시세 만료/미확인';
  return item?.fresh===true?'시세 시각 확인':'신선도 미검증';
 };
+const markAge=(item,now=Date.now())=>{
+ const at=numeric(item?.markPriceAt);
+ if(numeric(item?.markPrice)===null)return 'Mark 미확인';
+ return item?.markPriceFresh===false||at===null||at<=0||at>now+5000||now-at>90000?'Mark 시각 만료/미확인':'Mark 시각 확인';
+};
+const observedNumber=value=>numeric(value)===null?'미관측':String(value).trim();
+const sourceLabel=value=>({REAL_PUBLIC_READ_ONLY:'공개 조회 응답 · 독립 출처 미검증',WINDOWS_DIAGNOSTIC_REPLAY:'Windows 진단 재생 · 현재 실시간 응답 아님',
+ SYNTHETIC_FIXTURE:'합성 Mock 자료 · 실제 시장 관측 아님'}[value]||'자료 출처 미확인');
+const listingLabel=item=>item?.listingObserved===true?(item?.active===true?'상장·활성 관측':item?.active===false?'상장·비활성 관측':'상장 관측 · 활성 미확인'):'상장 목록 미관측';
+const gridLabel=value=>({MATCH:'관측 호가 격자 일치',MISMATCH:'관측 호가 격자 불일치'}[value]||'관측 격자 미검증');
+const contractNumbers=['min_trade_amount','min_qty','min_notional','tick_size','contract_size','qty_step','quantity_step','quantity_increment',
+ 'maker_commission','taker_commission','maker_fee','taker_fee','maker','taker','maker_fee_rate','taker_fee_rate'];
+const contractCurrencies=['base_currency','quote_currency','settlement_currency'];
+const contractText=value=>typeof value==='string'&&/^[A-Za-z0-9]{1,20}$/.test(value)?value:'미관측';
+
+export function orangeXContractDetails(markets,{dataSource,now=Date.now()}={}){
+ return records(markets).slice(0,100).map(item=>{
+  const fields=item?.contractFields&&typeof item.contractFields==='object'&&!Array.isArray(item.contractFields)?item.contractFields:{};
+  const quantities=[['Bid 표시 잔량',item?.bids?.[0]?.[1]],['Ask 표시 잔량',item?.asks?.[0]?.[1]]];
+  const comparison=item?.binanceComparison;
+  const compareStatus=comparison?.mappingVerified===true?'대응 계약 확인':'대응 계약 미검증';
+  return `<article class="orangex-contract"><header><strong>${esc(item?.actualInstrumentName||item?.instrumentName||'계약 미확인')}</strong>`+
+   `<small>${esc(listingLabel(item))} · 주문 차단</small></header>`+
+   `<p class="orangex-contract-source">${esc(sourceLabel(dataSource))}</p>`+
+   `<dl>${contractNumbers.map(key=>`<div><dt>${esc(key)}</dt><dd>${esc(observedNumber(fields[key]?.value))}<small>필드 의미·단위 미검증</small></dd></div>`).join('')}`+
+   `${contractCurrencies.map(key=>`<div><dt>${esc(key)}</dt><dd>${esc(contractText(fields[key]?.value))}<small>거래소 정의 미검증</small></dd></div>`).join('')}`+
+   `${quantities.map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${esc(observedNumber(value))}<small>거래소 수량 단위 미검증</small></dd></div>`).join('')}</dl>`+
+   `<p>Mark ${esc(observedNumber(item?.markPrice))} · ${esc(time(item?.markPriceAt))} · ${esc(markAge(item,now))}</p>`+
+   `<p>가격 ${esc(gridLabel(item?.precision?.priceGrid))} · 수량 ${esc(gridLabel(item?.precision?.quantityGrid))} · 공식 정밀도 승인 아님</p>`+
+   `<p>최소값과 주문 증분은 서로 대체하지 않습니다. Maker·Taker 관측값의 단위가 확인되지 않아 %·bp·예상 비용으로 환산하지 않습니다.</p>`+
+   `<p>Binance 비교: ${esc(compareStatus)} · 기준가 ${esc(observedNumber(comparison?.price))} · 차이 ${esc(numeric(comparison?.gapBps)===null?'미관측':observedNumber(comparison.gapBps)+' bp')} · ${esc(time(comparison?.priceAt))}</p></article>`;
+ }).join('')||'<p class="orangex-empty">관측한 계약 규격이 없습니다. 누락 값을 계산하거나 수수료를 0으로 채우지 않습니다.</p>';
+}
 
 export function orangeXView(payload={}){
  const data=payload&&typeof payload==='object'?payload:{};
@@ -49,7 +82,7 @@ export function orangeXView(payload={}){
  const metrics=[['운영 모드',mode],['시장 API',connected?'연결 확인':data.enabled===false?'연결 비활성':status(data.marketStatus)],
   ['계좌 조회',accountReady?'조회 가능':status(data.accountStatus)],['자동매매','OFF · 1단계 미구현'],
   ['공식 명세',verified?'명세 확인':'미검증'],['실제 연결 검증',status(data.verification?.liveConnection)],
-  ['긴급 중지','거래 엔진 미구현 · 신규 주문 없음'],['마지막 조회',time(data.checkedAt)]];
+  ['긴급 중지','거래 엔진 미구현 · 신규 주문 없음'],['마지막 조회',time(data.checkedAt)],['조회 자료',sourceLabel(data.dataSource)]];
  const totals=[['미실현 PNL',first(account,'unrealizedPnL','unrealizedPnl')],['당일 실현 PNL',first(account,'dailyRealizedPnL','dailyPnL')],
   ['누적 실현 PNL',first(account,'cumulativeRealizedPnL','totalRealizedPnL')]];
  return {
@@ -60,9 +93,10 @@ export function orangeXView(payload={}){
   metrics:metrics.map(([label,value])=>`<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join(''),
   marketCount:`조회된 종목 후보 ${markets.length}개`,
   markets:markets.slice(0,100).map(item=>`<tr>${cell(item?.symbol||'미확인')}${cell(item?.instrumentName||'미확인')}`+
-   `${cell(marketState(item))}${cell(number(item?.markPrice))}`+
+   `<td>${esc(marketState(item))}<small class="orangex-quote-age">${esc(listingLabel(item))}</small></td><td>${esc(number(item?.markPrice))}<small class="orangex-quote-age">${esc(time(item?.markPriceAt))} · ${esc(markAge(item))}</small></td>`+
    `${cell(number(item?.bid))}${cell(number(item?.ask))}${cell(numeric(item?.spreadBps)===null?'미검증':number(item.spreadBps)+' bp')}`+
    `${cell(unit(item?.minQty))}${cell(unit(item?.qtyStep))}${cell(unit(item?.priceTick))}<td>${esc(time(item?.priceAt))}<small class="orangex-quote-age">${esc(quoteAge(item))}</small></td></tr>`).join('')||empty(11,'확인된 OrangeX 계약·호가가 없습니다. 상장이나 가격을 추정하지 않습니다.'),
+  contractDetails:orangeXContractDetails(markets,{dataSource:data.dataSource}),
   balanceNote:data.accountStatus==='STALE'?'이전 조회 자료입니다. 현재 잔고·포지션 상태는 재확인이 필요합니다.':accountReady?'거래소 조회값입니다. 기존 모의매매 PNL과 합산하지 않습니다.':'계좌 조회 미설정 또는 미검증 · 잔고와 PNL을 0으로 가정하지 않습니다.',
   balances:balances.slice(0,30).map(item=>`<tr>${cell(first(item,'asset','currency')||'미확인')}${cell(number(first(item,'balance','total')))}`+
    `${cell(number(first(item,'availableBalance','available')))}${cell(number(item?.equity))}</tr>`).join('')||empty(4,accountReady?'조회된 잔고 자료가 없습니다.':'계좌 조회 미설정 · 잔고 미확인'),
@@ -90,6 +124,7 @@ export function renderOrangeX(payload,{root=globalThis.document}={}){
  const set=(id,value,html=false)=>{const node=find(id);if(node)node[html?'innerHTML':'textContent']=value};
  set('orangexNotice',view.notice);set('orangexMetrics',view.metrics,true);set('orangexMarketCount',view.marketCount);
  set('orangexMarkets',view.markets,true);set('orangexBalanceNote',view.balanceNote);set('orangexBalances',view.balances,true);
+ set('orangexContractDetails',view.contractDetails,true);
  set('orangexPnl',view.pnl,true);set('orangexPositions',view.positions,true);set('orangexOrders',view.orders,true);
  set('orangexTrades',view.trades,true);set('orangexErrors',view.errors,true);set('orangexRejections',view.rejection);
  const panel=find('orangex');if(panel)panel.className='panel orangex-panel '+view.state;

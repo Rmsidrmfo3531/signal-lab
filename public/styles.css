@@ -470,6 +470,12 @@
 .orangex-errors li{display:grid;gap:5px;border-top:1px solid #2b4157;padding:10px 0 0;color:#bacfe2;font-size:11px;line-height:1.6;overflow-wrap:anywhere}
 .orangex-errors strong{color:#edba92;font-size:10px}.orangex-errors small{color:#809bb4}
 .orangex-security-note{border-top:1px solid #2c4357;padding-top:13px}
+.orangex-contract-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:8px 20px 16px}
+.orangex-contract{min-width:0;border:1px solid #35536b;border-radius:9px;background:#102237;padding:14px;overflow-wrap:anywhere}
+.orangex-contract header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px}.orangex-contract header strong{font-size:12px;color:#dcecf8}.orangex-contract header small{font-size:10px;color:#edc18b}
+.orangex-contract dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}.orangex-contract dl>div{min-width:0}.orangex-contract dt{font-size:10px;color:#94afc5}.orangex-contract dd{margin:5px 0 0;font-size:12px;color:#e0edf7;font-variant-numeric:tabular-nums}.orangex-contract dd small{display:block;margin-top:4px;color:#bda680;font-size:9px}.orangex-contract p{font-size:10px;line-height:1.7;color:#acc2d4;margin:7px 0}.orangex-contract-source{color:#d8b484!important}
+@media(max-width:900px){.orangex-contract-grid{grid-template-columns:1fr}}
+@media(max-width:690px){.orangex-contract-grid{padding:7px 13px 13px}.orangex-contract{padding:12px}}
 @media(max-width:900px){.orangex-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.orangex-position-grid{grid-template-columns:1fr}}
 @media(max-width:760px){.mobile-bottom-nav{grid-template-columns:repeat(5,minmax(0,1fr))}}
 @media(max-width:690px){.orangex-heading{align-items:flex-start}.orangex-heading .outline-btn{min-height:40px}.orangex-notice{padding:11px 13px;font-size:11px}.orangex-metrics>div,.orangex-pnl>div{padding:12px;gap:7px}.orangex-metrics strong{font-size:11px}.orangex-pnl strong{font-size:13px}.orangex-subheading{padding:15px 13px 3px}.orangex-caption{margin:7px 13px 12px;font-size:10px}.orangex-position-grid{padding:7px 13px 13px}.orangex-details{margin:0 13px 10px}.mobile-bottom-nav a{font-size:10px}}

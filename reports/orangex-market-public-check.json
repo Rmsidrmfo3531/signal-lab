@@ -1,0 +1,290 @@
+{
+  "kind": "REAL_PUBLIC_READ_ONLY",
+  "status": "transport_error",
+  "exitCode": 2,
+  "checkedAt": 1793100810029,
+  "officialSpecificationVerified": false,
+  "accountChecked": false,
+  "ordersSubmitted": false,
+  "publicDetailsEnabled": true,
+  "listingCurrency": "USDT",
+  "listingCurrencyVerified": false,
+  "requested": [
+    "BTC-USDT-PERPETUAL",
+    "ETH-USDT-PERPETUAL",
+    "SOL-USDT-PERPETUAL"
+  ],
+  "requests": [
+    {
+      "symbol": "BTC",
+      "instrumentName": "BTC-USDT-PERPETUAL",
+      "listingStatus": "UNOBSERVED",
+      "listingObserved": false,
+      "active": null,
+      "bookStatus": "FAILED",
+      "bid": null,
+      "ask": null,
+      "spreadBps": null,
+      "priceAt": null,
+      "fresh": false,
+      "markPrice": null,
+      "markPriceAt": null,
+      "markPriceFresh": false,
+      "contractFields": {},
+      "precision": {
+        "priceGrid": "UNVERIFIED",
+        "quantityGrid": "UNVERIFIED",
+        "priceBasis": null,
+        "quantityBasis": null,
+        "unitsVerified": false
+      },
+      "feeUnits": "UNVERIFIED",
+      "diagnostic": {
+        "code": "REQUEST_TIMEOUT",
+        "message": "OrangeX 조회 시간이 초과됐습니다.",
+        "instrumentName": "BTC-USDT-PERPETUAL",
+        "category": "TIMEOUT",
+        "httpStatus": null,
+        "transportCode": null,
+        "responseSource": "UNCONFIRMED",
+        "endpoint": "book"
+      },
+      "stageErrors": [
+        {
+          "code": "NETWORK_ERROR",
+          "message": "OrangeX 연결에 실패했습니다.",
+          "category": "DNS",
+          "httpStatus": null,
+          "transportCode": "EAI_AGAIN",
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "instruments"
+        },
+        {
+          "code": "REQUEST_TIMEOUT",
+          "message": "OrangeX 조회 시간이 초과됐습니다.",
+          "instrumentName": "BTC-USDT-PERPETUAL",
+          "category": "TIMEOUT",
+          "httpStatus": null,
+          "transportCode": null,
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "book"
+        },
+        {
+          "code": "NETWORK_ERROR",
+          "message": "OrangeX 연결에 실패했습니다.",
+          "instrumentName": "BTC-USDT-PERPETUAL",
+          "category": "DNS",
+          "httpStatus": null,
+          "transportCode": "EAI_AGAIN",
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "ticker"
+        }
+      ]
+    },
+    {
+      "symbol": "ETH",
+      "instrumentName": "ETH-USDT-PERPETUAL",
+      "listingStatus": "UNOBSERVED",
+      "listingObserved": false,
+      "active": null,
+      "bookStatus": "FAILED",
+      "bid": null,
+      "ask": null,
+      "spreadBps": null,
+      "priceAt": null,
+      "fresh": false,
+      "markPrice": null,
+      "markPriceAt": null,
+      "markPriceFresh": false,
+      "contractFields": {},
+      "precision": {
+        "priceGrid": "UNVERIFIED",
+        "quantityGrid": "UNVERIFIED",
+        "priceBasis": null,
+        "quantityBasis": null,
+        "unitsVerified": false
+      },
+      "feeUnits": "UNVERIFIED",
+      "diagnostic": {
+        "code": "REQUEST_TIMEOUT",
+        "message": "OrangeX 조회 시간이 초과됐습니다.",
+        "instrumentName": "ETH-USDT-PERPETUAL",
+        "category": "TIMEOUT",
+        "httpStatus": null,
+        "transportCode": null,
+        "responseSource": "UNCONFIRMED",
+        "endpoint": "book"
+      },
+      "stageErrors": [
+        {
+          "code": "NETWORK_ERROR",
+          "message": "OrangeX 연결에 실패했습니다.",
+          "category": "DNS",
+          "httpStatus": null,
+          "transportCode": "EAI_AGAIN",
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "instruments"
+        },
+        {
+          "code": "REQUEST_TIMEOUT",
+          "message": "OrangeX 조회 시간이 초과됐습니다.",
+          "instrumentName": "ETH-USDT-PERPETUAL",
+          "category": "TIMEOUT",
+          "httpStatus": null,
+          "transportCode": null,
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "book"
+        },
+        {
+          "code": "REQUEST_TIMEOUT",
+          "message": "OrangeX 조회 시간이 초과됐습니다.",
+          "instrumentName": "ETH-USDT-PERPETUAL",
+          "category": "TIMEOUT",
+          "httpStatus": null,
+          "transportCode": null,
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "ticker"
+        }
+      ]
+    },
+    {
+      "symbol": "SOL",
+      "instrumentName": "SOL-USDT-PERPETUAL",
+      "listingStatus": "UNOBSERVED",
+      "listingObserved": false,
+      "active": null,
+      "bookStatus": "FAILED",
+      "bid": null,
+      "ask": null,
+      "spreadBps": null,
+      "priceAt": null,
+      "fresh": false,
+      "markPrice": null,
+      "markPriceAt": null,
+      "markPriceFresh": false,
+      "contractFields": {},
+      "precision": {
+        "priceGrid": "UNVERIFIED",
+        "quantityGrid": "UNVERIFIED",
+        "priceBasis": null,
+        "quantityBasis": null,
+        "unitsVerified": false
+      },
+      "feeUnits": "UNVERIFIED",
+      "diagnostic": {
+        "code": "NETWORK_ERROR",
+        "message": "OrangeX 연결에 실패했습니다.",
+        "instrumentName": "SOL-USDT-PERPETUAL",
+        "category": "DNS",
+        "httpStatus": null,
+        "transportCode": "EAI_AGAIN",
+        "responseSource": "UNCONFIRMED",
+        "endpoint": "book"
+      },
+      "stageErrors": [
+        {
+          "code": "NETWORK_ERROR",
+          "message": "OrangeX 연결에 실패했습니다.",
+          "category": "DNS",
+          "httpStatus": null,
+          "transportCode": "EAI_AGAIN",
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "instruments"
+        },
+        {
+          "code": "NETWORK_ERROR",
+          "message": "OrangeX 연결에 실패했습니다.",
+          "instrumentName": "SOL-USDT-PERPETUAL",
+          "category": "DNS",
+          "httpStatus": null,
+          "transportCode": "EAI_AGAIN",
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "book"
+        },
+        {
+          "code": "REQUEST_TIMEOUT",
+          "message": "OrangeX 조회 시간이 초과됐습니다.",
+          "instrumentName": "SOL-USDT-PERPETUAL",
+          "category": "TIMEOUT",
+          "httpStatus": null,
+          "transportCode": null,
+          "responseSource": "UNCONFIRMED",
+          "endpoint": "ticker"
+        }
+      ]
+    }
+  ],
+  "observed": [],
+  "errors": [
+    {
+      "code": "NETWORK_ERROR",
+      "message": "OrangeX 연결에 실패했습니다.",
+      "category": "DNS",
+      "httpStatus": null,
+      "transportCode": "EAI_AGAIN",
+      "responseSource": "UNCONFIRMED",
+      "endpoint": "instruments"
+    },
+    {
+      "code": "REQUEST_TIMEOUT",
+      "message": "OrangeX 조회 시간이 초과됐습니다.",
+      "instrumentName": "BTC-USDT-PERPETUAL",
+      "category": "TIMEOUT",
+      "httpStatus": null,
+      "transportCode": null,
+      "responseSource": "UNCONFIRMED",
+      "endpoint": "book"
+    },
+    {
+      "code": "NETWORK_ERROR",
+      "message": "OrangeX 연결에 실패했습니다.",
+      "instrumentName": "BTC-USDT-PERPETUAL",
+      "category": "DNS",
+      "httpStatus": null,
+      "transportCode": "EAI_AGAIN",
+      "responseSource": "UNCONFIRMED",
+      "endpoint": "ticker"
+    },
+    {
+      "code": "REQUEST_TIMEOUT",
+      "message": "OrangeX 조회 시간이 초과됐습니다.",
+      "instrumentName": "ETH-USDT-PERPETUAL",
+      "category": "TIMEOUT",
+      "httpStatus": null,
+      "transportCode": null,
+      "responseSource": "UNCONFIRMED",
+      "endpoint": "book"
+    },
+    {
+      "code": "REQUEST_TIMEOUT",
+      "message": "OrangeX 조회 시간이 초과됐습니다.",
+      "instrumentName": "ETH-USDT-PERPETUAL",
+      "category": "TIMEOUT",
+      "httpStatus": null,
+      "transportCode": null,
+      "responseSource": "UNCONFIRMED",
+      "endpoint": "ticker"
+    },
+    {
+      "code": "NETWORK_ERROR",
+      "message": "OrangeX 연결에 실패했습니다.",
+      "instrumentName": "SOL-USDT-PERPETUAL",
+      "category": "DNS",
+      "httpStatus": null,
+      "transportCode": "EAI_AGAIN",
+      "responseSource": "UNCONFIRMED",
+      "endpoint": "book"
+    },
+    {
+      "code": "REQUEST_TIMEOUT",
+      "message": "OrangeX 조회 시간이 초과됐습니다.",
+      "instrumentName": "SOL-USDT-PERPETUAL",
+      "category": "TIMEOUT",
+      "httpStatus": null,
+      "transportCode": null,
+      "responseSource": "UNCONFIRMED",
+      "endpoint": "ticker"
+    }
+  ],
+  "note": "공개 GET 관측입니다. 필수 매개변수 이름은 사용자 제공 조건을 반영했으며 통화·수량·수수료 의미는 미검증입니다. HTTP 응답만으로 공식 명세·주문 가능을 승인하지 않습니다. 프록시 CONNECT 거부와 원 서버 오류를 구분합니다."
+}

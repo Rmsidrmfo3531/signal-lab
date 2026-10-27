@@ -106,6 +106,9 @@
         <div class="orangex-subheading"><h4>거래 가능 여부·참고 호가</h4><small id="orangexMarketCount">조회 대기</small></div>
         <p class="orangex-caption">상장 검증이 완료되지 않은 항목은 조회 후보이며 거래 가능 승인으로 해석하지 않습니다. 최소 수량·수량 단위·가격 단위가 없으면 미검증으로 남깁니다. 참고 호가는 주문 승인이나 체결을 뜻하지 않습니다.</p>
         <div class="table-scroll orangex-table-wrap"><table class="orangex-table"><thead><tr><th>종목</th><th>계약명</th><th>상장 상태</th><th>Mark</th><th>Bid</th><th>Ask</th><th>스프레드</th><th>최소 수량</th><th>수량 단위</th><th>가격 단위</th><th>시세 시각 (KST)</th></tr></thead><tbody id="orangexMarkets"><tr><td colspan="11" class="orangex-empty">확인된 시장 자료가 없습니다.</td></tr></tbody></table></div>
+        <div class="orangex-subheading"><h4>공개 계약 필드·정밀도 관측</h4><small>원 필드 관측과 공식 의미 검증을 구분합니다.</small></div>
+        <p class="orangex-caption">min_trade_amount·min_qty·주문 증분·최소 명목금액은 서로 다른 필드입니다. base_currency·quote_currency의 거래소 정의와 수수료 단위가 확인되기 전에는 해석하거나 환산하지 않습니다. 상장 활성 관측은 주문 가능 승인이나 PAPER 자동 진입을 뜻하지 않습니다.</p>
+        <div id="orangexContractDetails" class="orangex-contract-grid"><p class="orangex-empty">공개 계약 필드 조회 대기</p></div>
         <div class="orangex-subheading"><h4>계좌 잔고·PNL</h4></div>
         <p id="orangexBalanceNote" class="orangex-caption">계좌 조회 미설정 또는 미검증 · 잔고와 PNL을 0으로 가정하지 않습니다.</p>
         <div id="orangexPnl" class="orangex-pnl"><div><span>미실현 PNL</span><strong>—</strong></div><div><span>당일 실현 PNL</span><strong>—</strong></div><div><span>누적 실현 PNL</span><strong>—</strong></div></div>

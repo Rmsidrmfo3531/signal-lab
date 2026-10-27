@@ -10,15 +10,18 @@ const ok=(kind,result)=>({kind,category:'OK',responseSource:'UNCONFIRMED',exitCo
  body:kind==='docs'?'/public/get_order_book /public/get_instruments /public/tickers':JSON.stringify({result})});
 const fixture=(mutate=()=>{})=>(async(kind,name)=>{
  let result=kind==='instruments'?['BTC','ETH','SOL'].map(asset=>({instrument_name:`${asset}-USDT-PERPETUAL`,is_active:true,
-  base_currency:asset,quote_currency:'USDT',contract_size:1,min_order_amount:0.001,min_notional:5,tick_size:0.01,maker_fee:0,taker_fee:0.0005})):
-  kind==='tickers'?['BTC','ETH','SOL'].map(asset=>({instrument_name:`${asset}-USDT-PERPETUAL`,mark_price:100.5})):
+  base_currency:asset,quote_currency:'USDT',contract_size:1,min_trade_amount:0.01,min_qty:0.001,min_order_amount:0.001,
+  qty_step:0.0001,min_notional:5,tick_size:0.01,maker_fee:0,taker_fee:0.0005})):
+  kind==='tickers'?[{instrument_name:name,mark_price:100.5,timestamp:NOW}]:
   {...book,instrument_name:name};
  mutate(kind,result);return ok(kind,result);
 });
 
 test('public diagnostic allows only fixed HTTPS GET probes and safe contract names',()=>{
- assert.equal(publicProbeURL('instruments'),'https://api.orangex.com/api/v1/public/get_instruments');
- assert.equal(publicProbeURL('tickers'),'https://api.orangex.com/api/v1/public/tickers');
+ assert.equal(publicProbeURL('instruments'),'https://api.orangex.com/api/v1/public/get_instruments?currency=USDT');
+ assert.equal(publicProbeURL('tickers','BTC-USDT-PERPETUAL'),'https://api.orangex.com/api/v1/public/tickers?instrument_name=BTC-USDT-PERPETUAL');
+ assert.throws(()=>publicProbeURL('tickers'),/INVALID_PUBLIC_INSTRUMENT/);
+ assert.throws(()=>publicProbeURL('instruments',undefined,{currency:'USDT&token=secret'}),/INVALID_PUBLIC_CURRENCY/);
  assert.match(publicProbeURL('book','BTC-USDT-PERPETUAL'),/instrument_name=BTC-USDT-PERPETUAL&depth=20$/);
  for(const key of ['auth','orders','cancel','https://example.com'])assert.throws(()=>publicProbeURL(key),/PUBLIC_ENDPOINT_NOT_ALLOWED/);
  for(const value of ['BTC-USDT-PERPETUAL&token=secret','../../private/buy','BTCUSDT'])assert.throws(()=>publicProbeURL('book',value),/INVALID_PUBLIC_INSTRUMENT/);
@@ -77,16 +80,18 @@ test('book observation computes actual best bid/ask and never turns midpoint int
 
 test('successful fixtures record listing, exact contract fields and Mark sources without asserting verified units',async()=>{
  const report=await diagnoseOrangeXPublic({probe:fixture(),now:()=>NOW});
- assert.equal(report.exitCode,0);assert.equal(report.requests.length,6);assert.equal(report.markets.length,3);
+ assert.equal(report.exitCode,0);assert.equal(report.requests.length,8);assert.equal(report.markets.length,3);
  assert.equal(report.officialSpecificationVerified,false);assert.equal(report.mode,'READ_ONLY');
  assert.equal(report.accountChecked,false);assert.equal(report.ordersSubmitted,false);
  for(const row of report.markets){
   assert.equal(row.listingObserved,true);assert.equal(row.active,true);assert.equal(row.orderSubmissionEnabled,false);
   assert.equal(row.contractFields.min_order_amount.value,0.001);assert.equal(row.contractFields.min_notional.value,5);
+  assert.equal(row.contractFields.min_trade_amount.value,0.01);assert.equal(row.contractFields.min_qty.value,0.001);
+  assert.equal(row.contractFields.qty_step.value,0.0001);assert.equal(row.quantityIncrementVerified,false);
   assert.equal(row.contractFields.maker_fee.value,0);assert.equal(row.contractFields.maker_fee.units,'UNVERIFIED');
   assert.equal(row.minimumOrderQuantityVerified,false);assert.equal(row.feeUnitsVerified,false);
   assert.equal(row.markPrice,100.5);assert.match(row.markPriceSource,/result\[\d\]\.mark_price/);
-  assert.equal(row.markPriceTimestamp,null);assert.equal(row.markPriceAgeMs,null);assert.equal(row.markPriceFresh,null);
+  assert.equal(row.markPriceTimestamp,NOW);assert.equal(row.markPriceAgeMs,0);assert.equal(row.markPriceFresh,true);
  }
  assert.ok(report.requests.every(row=>row.method==='GET'&&!row.parameterSpecificationVerified));
 });
@@ -116,7 +121,7 @@ test('unsupported list schema and API errors do not imply confirmed delisting or
 
 test('proxy failure report preserves layer-specific evidence without inventing any prices',async()=>{
  const report=await diagnoseOrangeXPublic({probe:async()=>({category:'PROXY_CONNECT_REJECTED',responseSource:'PROXY',exitCode:56,proxyConnectStatus:403,httpStatus:null,body:''}),now:()=>NOW});
- assert.equal(report.exitCode,2);assert.equal(report.requests.length,6);
+ assert.equal(report.exitCode,2);assert.equal(report.requests.length,8);
  assert.ok(report.requests.every(row=>row.proxyConnectStatus===403&&row.httpStatus===null));
  assert.ok(report.markets.every(row=>!row.listingObserved&&row.book===null&&row.markPrice===null));
 });
@@ -166,4 +171,70 @@ test('unsupported result.data schema exposes only closed type hints without arbi
  const output=JSON.stringify(report);
  for(const text of ['secret_key','sensitive-value','arbitrary_secret_key','other-sensitive-value'])assert.equal(output.includes(text),false);
  assert.equal(report.officialSpecificationVerified,false);
+});
+
+test('public diagnostic supplies mandatory parameters and gets each contract ticker independently',async()=>{
+ const calls=[],base=fixture();
+ const report=await diagnoseOrangeXPublic({probe:async(kind,name,options)=>{
+  calls.push({kind,name,url:publicProbeURL(kind,name,options)});return base(kind,name);
+ },now:()=>NOW});
+ assert.equal(report.exitCode,0);assert.equal(calls.length,8);
+ assert.deepEqual(calls.filter(row=>row.kind==='tickers').map(row=>row.name),['BTC','ETH','SOL'].map(asset=>`${asset}-USDT-PERPETUAL`));
+ assert.equal(calls.find(row=>row.kind==='instruments').url,'https://api.orangex.com/api/v1/public/get_instruments?currency=USDT');
+ assert.ok(calls.filter(row=>row.kind==='tickers').every(row=>new URL(row.url).searchParams.get('instrument_name')===row.name));
+ assert.equal(report.currencyMeaning,'UNVERIFIED');assert.ok(report.requests.every(row=>!row.parameterSpecificationVerified));
+});
+
+test('ticker Mark is never borrowed from a book, another contract or a fallback clock',async()=>{
+ for(const mode of ['missing-mark','wrong-contract','invalid-mark-clock','old-mark-clock']){
+  const report=await diagnoseOrangeXPublic({probe:fixture((kind,result)=>{
+   if(kind==='book'){result.mark_price=101;result.mark_timestamp=NOW}
+   if(kind==='tickers')for(const row of result){
+    if(mode==='missing-mark')delete row.mark_price;
+    if(mode==='wrong-contract')row.instrument_name='WRONG-USDT-PERPETUAL';
+    if(mode==='invalid-mark-clock')row.mark_timestamp=null;
+    if(mode==='old-mark-clock')row.mark_timestamp=NOW-90001;
+   }
+  }),now:()=>NOW});
+  assert.equal(report.exitCode,1);assert.equal(report.requests.filter(row=>row.kind==='tickers'&&row.status==='FAILED').length,3);
+  for(const market of report.markets){
+   assert.equal(market.book.fresh,true);
+   if(['missing-mark','wrong-contract'].includes(mode)){assert.equal(market.markPrice,null);assert.equal(market.markPriceSource,null)}
+   else{assert.equal(market.markPrice,100.5);assert.notEqual(market.markPriceFresh,true)}
+  }
+ }
+});
+
+test('raw order limits and currency names stay separate from unit semantics and precision observations',async()=>{
+ const report=await diagnoseOrangeXPublic({probe:fixture((kind,result)=>{
+  if(kind==='instruments')for(const row of result){
+   row.base_currency='USDT';row.quote_currency='BTC';row.quantity_increment=.3;row.quantity_step=.0002;
+   row.maker=.02;row.taker=.05;row.maker_fee_rate=.0002;row.taker_fee_rate=.0005;
+  }
+ }),now:()=>NOW});
+ assert.equal(report.exitCode,0);
+ for(const market of report.markets){
+  assert.equal(market.contractFields.min_trade_amount.value,.01);assert.equal(market.contractFields.min_qty.value,.001);
+  assert.equal(market.contractFields.qty_step.value,.0001);assert.equal(market.contractFields.quantity_increment.value,.3);
+  assert.equal(market.contractFields.quantity_step.value,.0002);
+  for(const [field,value] of [['maker',.02],['taker',.05],['maker_fee_rate',.0002],['taker_fee_rate',.0005]]){
+   assert.equal(market.contractFields[field].value,value);assert.equal(market.contractFields[field].units,'UNVERIFIED');
+  }
+  assert.equal(market.contractFields.base_currency.value,'USDT');assert.equal(market.contractFields.quote_currency.value,'BTC');
+  assert.equal(market.contractFields.base_currency.meaning,'UNVERIFIED');assert.equal(market.feeUnitsVerified,false);
+  assert.equal(market.precisionObservations.priceTick.allObservedLevelsAligned,true);
+  assert.deepEqual(market.precisionObservations.quantityCandidates.map(row=>[row.field,row.allObservedLevelsAligned]),[['qty_step',true],['quantity_step',true],['quantity_increment',false]]);
+  assert.ok(market.precisionObservations.quantityCandidates.every(row=>row.unitsVerified===false));
+  assert.equal(market.book.bids.length,2);assert.equal(market.book.asks.length,2);
+ }
+});
+
+test('per-instrument ticker object responses preserve exact Mark source while remaining schema-unverified',async()=>{
+ const base=fixture();const report=await diagnoseOrangeXPublic({probe:async(kind,name)=>kind==='tickers'?
+  ok(kind,{instrument_name:name,mark_price:100.5,timestamp:NOW,mark_timestamp:NOW-1000}):base(kind,name),now:()=>NOW});
+ assert.equal(report.exitCode,0);
+ for(const market of report.markets){
+  assert.equal(market.markPriceSource,'result.mark_price');assert.equal(market.markPriceTimestampSource,'result.mark_timestamp');
+  assert.equal(market.markPriceAgeMs,1000);assert.equal(market.officialSpecificationVerified,false);
+ }
 });

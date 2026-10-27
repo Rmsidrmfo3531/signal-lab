@@ -1,5 +1,7 @@
 # OrangeX 1단계: 조회 전용 연결과 검증 기록
 
+최신 공개 API 매개변수·Mark·규격 원필드 보완과 미검증 범위는 [공개 시장 연동 보고서](ORANGEX_MARKET_INTEGRATION_KO.md)를 참고하세요. 아래는 최초 구현 당시의 기록입니다. OrangeX PAPER는 계속 비활성입니다.
+
 후속 실제 연결 재검증과 진단 오류 수정 결과는 [OrangeX 재검증 보고서](ORANGEX_REVALIDATION_KO.md)를 참고하세요. 아래의 235개 테스트는 최초 커밋 `894300a` 당시 기록입니다.
 
 `3e51027` 이후 정책 적용 확인과 공개 API 재시도는 [최근 재시도 보고서](ORANGEX_PUBLIC_RETRY_KO.md), Windows에서의 독립 실행은 [공개 API 진단 안내](ORANGEX_WINDOWS_PUBLIC_DIAGNOSTIC_KO.md)를 참고하세요. 과거 보고서의 관측과 이번 결과는 구분합니다.

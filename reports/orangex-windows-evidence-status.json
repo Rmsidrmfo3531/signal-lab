@@ -1,0 +1,24 @@
+{
+  "kind": "EVIDENCE_AVAILABILITY_REPORT",
+  "source": "USER_STATEMENT_ONLY",
+  "originalDiagnosticJSONAvailable": false,
+  "originalAPIResponseFixtureCreated": false,
+  "reportedWindowsResult": {
+    "exitCode": 0,
+    "http200Requests": 6,
+    "listedAndActiveAssets": [
+      "BTC",
+      "ETH",
+      "SOL"
+    ],
+    "freshBooksReported": true,
+    "exactContractNames": null,
+    "contractNumericalSpecifications": null,
+    "markPrice": null,
+    "feeUnits": null
+  },
+  "independentlyVerified": false,
+  "officialSpecificationVerified": false,
+  "paperEnabled": false,
+  "note": "사용자 관측 보고와 첨부 JSON 원문을 구분합니다. 이 파일은 실제 API 응답 fixture가 아닙니다."
+}

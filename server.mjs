@@ -7,6 +7,7 @@ import {normalizeTrade,closeTrade,journalSummary,exportTradesCSV} from './journa
 import {signalLifecycle} from './signal_lifecycle.mjs';
 import {evaluateSignal} from './signal_pipeline.mjs';
 import {OrangeXReadOnlyAdapter} from './orangex.mjs';
+import {compareOrangeXBinance} from './orangex_comparison.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -55,6 +56,7 @@ const CONFIG={
 let orangeX,orangeXConfigError=false;
 try{
  orangeX=new OrangeXReadOnlyAdapter({enabled:process.env.ORANGEX_ENABLED==='true',mode:process.env.ORANGEX_MODE||'READ_ONLY',
+  includePublicDetails:true,listingCurrency:process.env.ORANGEX_LISTING_CURRENCY||'USDT',
   clientId:process.env.ORANGEX_CLIENT_ID||'',clientSecret:process.env.ORANGEX_CLIENT_SECRET||'',
   instruments:(process.env.ORANGEX_INSTRUMENTS||'BTC-USDT-PERPETUAL,ETH-USDT-PERPETUAL,SOL-USDT-PERPETUAL').split(',').map(x=>x.trim()).filter(Boolean),
   timeoutMs:Number(process.env.ORANGEX_REQUEST_TIMEOUT_MS||8000)});
@@ -552,6 +554,9 @@ function connectWS(){
      if(!q.s||!q.c||Number(q.st||1)!==1||!state.activeSet.has(q.s)&&!state.researchSet.has(q.s)&&!tracked)continue;
      const price=Number(q.c);if(!Number.isFinite(price)||price<=0)continue;
      const p=state.quotes.get(q.s)||{symbol:q.s},previous=p.price;p.price=price;p.priceAt=Date.now();
+     // OrangeX comparison requires Binance's source event clock; the existing
+     // scanner's receipt-time behavior remains unchanged.
+     p.exchangePriceAt=typeof q.E==='number'&&Number.isFinite(q.E)&&q.E>0?q.E:null;
      if(q.q)p.quoteVolume=Number(q.q);state.quotes.set(q.s,p);changed.set(q.s,[q.s,p.price,p.priceAt]);
      paper.onPrice('CRYPTO',q.s,p.price,p.priceAt,{entryAllowed:cryptoEntryAllowed(q.s,p.priceAt)});priceLevelTrigger(q.s,previous,p.price);valid++;
     }
@@ -711,6 +716,8 @@ const server=http.createServer(async(req,res)=>{
    if(pathname!=='/api/orangex')return response(res,404,{error:'ORANGEX_READ_ONLY_ROUTE_NOT_FOUND',orderSubmissionEnabled:false});
    try{
     const snapshot=await orangeX.snapshot({refresh:url.searchParams.get('refresh')==='1'});
+    snapshot.markets=snapshot.markets.map(market=>({...market,binanceComparison:
+     compareOrangeXBinance(market,state.quotes.get(market.symbol),{now:Date.now()})}));
     if(orangeXConfigError)snapshot.errors=[...(snapshot.errors||[]),{code:'CONFIG_INVALID',message:'OrangeX 설정이 유효하지 않아 연결을 비활성화했습니다.',at:Date.now()}];
     return response(res,200,snapshot);
    }catch{return response(res,503,{mode:'READ_ONLY',connected:false,orderSubmissionEnabled:false,error:'ORANGEX_READ_FAILED'})}

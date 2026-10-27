@@ -39,3 +39,14 @@ test('schema failures and stale timestamps are data failures rather than network
  assert.equal(stale.status,'stale_data');assert.equal(stale.exitCode,1);
  assert.ok(stale.requests.every(row=>row.bookStatus==='STALE_OR_UNDATED'&&row.priceAt===null));
 });
+
+test('detailed public smoke requires observed active listings and independently fresh ticker Mark in addition to books',()=>{
+ const markets=books().map(row=>({...row,bookObserved:true,listingObserved:true,listingStatus:'OBSERVED_ACTIVE',active:true,
+  markPrice:100,markPriceAt:1000,markPriceFresh:true}));
+ const run=(rows,errors=[])=>publicCheckReport({markets:rows,errors,checkedAt:1001,includePublicDetails:true,listingCurrency:'USDT'},names);
+ assert.equal(run(markets).exitCode,0);assert.equal(run(markets).officialSpecificationVerified,false);
+ for(const patch of [{active:null},{listingObserved:false},{markPriceFresh:false},{bookObserved:false,bid:null,ask:null}]){
+  const result=run(markets.map((row,index)=>index===0?{...row,...patch}:row));assert.notEqual(result.exitCode,0);
+ }
+ assert.notEqual(run(markets,[{...error(names[0],'HTTP',400),endpoint:'ticker'}]).exitCode,0);
+});

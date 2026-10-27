@@ -3,7 +3,7 @@
  * The public protocol reference is a GitHub SDK, not a verified official spec.
  */
 const API='https://api.orangex.com/api/v1';
-const AUTH='/public/auth',BOOK='/public/get_order_book';
+const AUTH='/public/auth',BOOK='/public/get_order_book',INSTRUMENTS='/public/get_instruments',TICKERS='/public/tickers';
 const MAX_RESPONSE_BYTES=2*1024*1024;
 const REFERENCE='https://github.com/OrangeX-Global/orangex-api-python/tree/b6aece329906fa651249bc919a5ec6391abd881e';
 const MESSAGES=Object.freeze({
@@ -24,6 +24,20 @@ const number=value=>{
 };
 const positive=value=>{const n=number(value);return n!==null&&n>0?n:null};
 const instrument=value=>typeof value==='string'&&/^[A-Z0-9]{2,20}-[A-Z0-9]{2,12}-PERPETUAL$/.test(value);
+const currency=value=>typeof value==='string'&&/^[A-Z0-9]{2,20}$/.test(value);
+const publicInstrument=value=>typeof value==='string'&&/^[A-Z0-9][A-Z0-9_-]{1,79}$/.test(value);
+const NUMERIC_FIELDS=Object.freeze(['min_trade_amount','min_qty','min_notional','tick_size','contract_size','qty_step','quantity_increment',
+ 'quantity_step','min_order_amount','min_order_size','maker_commission','taker_commission','maker_fee','taker_fee','maker','taker','maker_fee_rate','taker_fee_rate']);
+const STRING_FIELDS=Object.freeze(['base_currency','quote_currency','settlement_currency','kind','settlement_period']);
+const stamp=value=>{const at=positive(value);return at!==null&&at>=1e12&&at<=8640000000000000?at:null};
+const freshAt=(at,now,age)=>at!==null&&at<=now+5000&&now-at<=age;
+function gridMatch(values,step){
+ if(!positive(step))return 'UNVERIFIED';
+ return values.every(value=>{
+  const units=value/step,nearest=Math.round(units);
+  return Number.isSafeInteger(nearest)&&Math.abs(value-nearest*step)<=Math.max(Number.EPSILON*Math.abs(value)*8,step*1e-9);
+ })?'MATCH':'MISMATCH';
+}
 const safeClone=value=>structuredClone(value);
 // Preserve only known diagnostic identifiers, never arbitrary provider values.
 // A numeric HTTP status alone does not establish whether a proxy or OrangeX
@@ -75,6 +89,7 @@ export class OrangeXReadOnlyAdapter {
  #authPending=null;#refreshPending=null;#id=0;#lastRequestAt=0;#cooldownUntil=0;#snapshot;#contract;#responseStatuses=new WeakMap();
  constructor({enabled=false,mode='READ_ONLY',clientId='',clientSecret='',
   instruments=['BTC-USDT-PERPETUAL','ETH-USDT-PERPETUAL','SOL-USDT-PERPETUAL'],
+  includePublicDetails=false,listingCurrency='USDT',
   fetcher=globalThis.fetch,now=()=>Date.now(),sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms)),
   timeoutMs=8000,maxRetries=1,minIntervalMs=100,maxQuoteAgeMs=90000,refreshIntervalMs=30000,contract=null}={}){
   if(mode!=='READ_ONLY')throw new OrangeXError('MODE_NOT_ALLOWED');
@@ -83,10 +98,11 @@ export class OrangeXReadOnlyAdapter {
    !Number.isInteger(timeoutMs)||timeoutMs<100||timeoutMs>30000||!Number.isInteger(maxRetries)||maxRetries<0||maxRetries>2||
    !Number.isInteger(minIntervalMs)||minIntervalMs<0||minIntervalMs>5000||!Number.isInteger(maxQuoteAgeMs)||maxQuoteAgeMs<1000||
    !Number.isInteger(refreshIntervalMs)||refreshIntervalMs<1000||refreshIntervalMs>3600000||
-   typeof clientId!=='string'||typeof clientSecret!=='string')throw new OrangeXError('INVALID_CONFIG');
+   typeof clientId!=='string'||typeof clientSecret!=='string'||typeof includePublicDetails!=='boolean'||!currency(listingCurrency))throw new OrangeXError('INVALID_CONFIG');
   this.enabled=enabled;this.mode='READ_ONLY';this.instruments=Object.freeze([...new Set(instruments)]);
   this.timeoutMs=timeoutMs;this.maxRetries=maxRetries;this.minIntervalMs=minIntervalMs;this.maxQuoteAgeMs=maxQuoteAgeMs;
   this.refreshIntervalMs=refreshIntervalMs;
+  this.includePublicDetails=includePublicDetails;this.listingCurrency=listingCurrency;
   this.#fetch=fetcher;this.#clock=now;this.#sleep=sleep;this.#clientId=clientId;this.#clientSecret=clientSecret;
   this.#contract=Object.freeze({authVerified:contract?.officialSpecVerified===true&&contract?.authVerified===true});
   this.#snapshot={connected:false,checkedAt:null,marketStatus:enabled?'unverified':'disabled',markets:[],errors:[]};
@@ -98,16 +114,23 @@ export class OrangeXReadOnlyAdapter {
   specificationVerified:this.#contract.authVerified}}
  getStatus(){
   const snapshot=safeClone(this.#snapshot),now=this.#clock();
-  for(const market of snapshot.markets)market.fresh=market.priceAt!==null&&market.priceAt<=now+5000&&now-market.priceAt<=this.maxQuoteAgeMs;
+  for(const market of snapshot.markets){
+   market.fresh=freshAt(market.priceAt,now,this.maxQuoteAgeMs);
+   if(Object.hasOwn(market,'markPriceAt'))market.markPriceFresh=market.markPrice!==null&&freshAt(market.markPriceAt,now,this.maxQuoteAgeMs);
+  }
   return {enabled:this.enabled,mode:'READ_ONLY',...snapshot,accountStatus:this.#clientId&&this.#clientSecret?'unverified':'not_configured',account:null,
    authentication:this.#authentication(),rateLimit:{blocked:now<this.#cooldownUntil,retryAfterAt:Number.isFinite(this.#cooldownUntil)&&this.#cooldownUntil>now?this.#cooldownUntil:null},
-   capabilities:{marketData:true,accountRead:false,instruments:false,positions:false,openOrders:false,trades:false,
+   listingCurrency:this.listingCurrency,listingCurrencyVerified:false,includePublicDetails:this.includePublicDetails,publicDetailsEnabled:this.includePublicDetails,
+   dataSource:snapshot.markets.some(market=>market.bookObserved===true||positive(market.bid)&&positive(market.ask)&&market.ask>market.bid||
+    market.listingObserved===true||positive(market.markPrice))?'REAL_PUBLIC_READ_ONLY':'UNOBSERVED',
+   capabilities:{marketData:true,publicInstruments:true,publicTickers:true,accountRead:false,instruments:false,positions:false,openOrders:false,trades:false,
     oauth:this.#contract.authVerified,oauthImplemented:true,orderSubmission:false,websocket:false},
    automation:{enabled:false,canEnable:false,killSwitch:'NOT_IMPLEMENTED',reason:'1단계 조회 전용'},
    verification:{officialSpec:this.#contract.authVerified?'VERIFIED_FOR_INJECTED_AUTH_CONTRACT':'UNVERIFIED',
-    protocolReference:'SDK_SOURCE_ONLY',reference:REFERENCE,sourceOwnership:'UNVERIFIED',
+    protocolReference:this.includePublicDetails?'USER_REPORTED_PARAMETERS_AND_SDK_REFERENCE':'SDK_SOURCE_ONLY',reference:REFERENCE,sourceOwnership:'UNVERIFIED',
     liveConnection:this.#snapshot.checkedAt===null?'UNTESTED':this.#snapshot.connected?'CONNECTED':'FAILED'},
-   warnings:['조회 프로토콜은 공개 SDK 소스 참조이며 공식 문서·실제 응답 검증을 대체하지 않습니다.',
+   warnings:[this.includePublicDetails?'공개 경로·필수 매개변수는 사용자 확인 자료를 반영했으며 응답 필드·단위의 공식 검증을 대체하지 않습니다.':
+    '조회 프로토콜은 공개 SDK 소스 참조이며 공식 문서·실제 응답 검증을 대체하지 않습니다.',
     '조회 후보의 공통 상장·최소 주문량·가격 단위·수수료·펀딩·보호 주문은 미검증이며 거래 가능으로 승인하지 않습니다.'],
    orderSubmissionEnabled:false};
  }
@@ -150,7 +173,7 @@ export class OrangeXReadOnlyAdapter {
   if(this.#clock()<this.#cooldownUntil)throw new OrangeXError('RATE_LIMITED');
   // This closed allowlist is separate from caller input. No generic API method
   // or provider path is accepted through the public interface.
-  if(!((path===BOOK&&method==='GET'&&!auth)||(path===AUTH&&auth&&['GET','POST'].includes(method))))throw new OrangeXError('UNSUPPORTED_OPERATION');
+  if(!(([BOOK,INSTRUMENTS,TICKERS].includes(path)&&method==='GET'&&!auth)||(path===AUTH&&auth&&['GET','POST'].includes(method))))throw new OrangeXError('UNSUPPORTED_OPERATION');
   const requestId=String(++this.#id),url=new URL(API+path),headers={accept:'application/json'};
   let body;
   if(method==='GET')for(const [key,value] of Object.entries(params))url.searchParams.set(key,String(value));
@@ -264,6 +287,46 @@ export class OrangeXReadOnlyAdapter {
    priceAt,receivedAt:now,fresh,bids,asks,version:number(result.version),minQty:null,qtyStep:null,priceTick:null,
    verification:'SDK_PROTOCOL_REFERENCE_ONLY',orderSubmissionEnabled:false};
  }
+ async getPublicInstruments(requestCurrency){
+  if(!currency(requestCurrency))throw new OrangeXError('INVALID_CONFIG');
+  const result=await this.#request(INSTRUMENTS,{params:{currency:requestCurrency}});
+  const rows=Array.isArray(result)?result:Array.isArray(result.instruments)?result.instruments:null;
+  if(!rows||rows.length>10000)throw new OrangeXError('INVALID_RESPONSE',{httpStatus:this.#responseStatuses.get(result)});
+  const seen=new Set(),items=[];
+  for(let index=0;index<rows.length;index++){
+   const item=rows[index];
+   if(!item||typeof item!=='object'||Array.isArray(item)||!publicInstrument(item.instrument_name)||seen.has(item.instrument_name))
+    throw new OrangeXError('INVALID_RESPONSE',{httpStatus:this.#responseStatuses.get(result)});
+   seen.add(item.instrument_name);const row={instrument_name:item.instrument_name,fields:{}};
+   if(typeof item.is_active==='boolean')row.is_active=item.is_active;
+   const source=Array.isArray(result)?`result[${index}]`:`result.instruments[${index}]`;
+   for(const key of NUMERIC_FIELDS){
+    const value=number(item[key]);if(value!==null)row.fields[key]={value,units:'UNVERIFIED',source:`${source}.${key}`};
+   }
+   for(const key of STRING_FIELDS){
+    const value=item[key];if(typeof value==='string'&&/^[A-Za-z0-9_-]{1,32}$/.test(value))
+     row.fields[key]={value,units:'UNVERIFIED',source:`${source}.${key}`};
+   }
+   items.push(row);
+  }
+  return {currency:requestCurrency,currencyMeaningVerified:false,observedAt:this.#clock(),officialSpecificationVerified:false,items};
+ }
+ async getPublicTickers(instrumentName){
+  if(!instrument(instrumentName)||!this.instruments.includes(instrumentName))throw new OrangeXError('INVALID_INSTRUMENT');
+  const result=await this.#request(TICKERS,{params:{instrument_name:instrumentName}});
+  const rows=Array.isArray(result)?result:Array.isArray(result.tickers)?result.tickers:[result];
+  const item=rows.length===1?rows[0]:null;
+  if(!item||typeof item!=='object'||Array.isArray(item)||item.instrument_name!==instrumentName)
+   throw new OrangeXError('INVALID_RESPONSE',{httpStatus:this.#responseStatuses.get(result)});
+  const source=Array.isArray(result)?'result[0]':Array.isArray(result.tickers)?'result.tickers[0]':'result';
+  const markPrice=positive(item.mark_price),hasMarkTimestamp=Object.hasOwn(item,'mark_timestamp'),
+   markPriceAt=markPrice===null?null:stamp(hasMarkTimestamp?item.mark_timestamp:item.timestamp),now=this.#clock();
+  return {instrumentName,observedAt:now,officialSpecificationVerified:false,markPrice,markPriceAt,
+   markPriceFresh:markPrice!==null&&freshAt(markPriceAt,now,this.maxQuoteAgeMs),
+   markPriceSource:markPrice===null?null:`${source}.mark_price`,
+   markPriceAtSource:markPriceAt===null?null:`${source}.${hasMarkTimestamp?'mark_timestamp':'timestamp'}`,
+   tickerAt:stamp(item.timestamp),timestampUnits:'MILLISECONDS_CANDIDATE_UNVERIFIED'};
+ }
  async listInstruments(){throw new OrangeXError('UNSUPPORTED_OPERATION')}
  async readAccount(){throw new OrangeXError('SPEC_UNVERIFIED')}
  async getPositions(){throw new OrangeXError('SPEC_UNVERIFIED')}
@@ -273,14 +336,38 @@ export class OrangeXReadOnlyAdapter {
   if(!this.enabled)return this.getStatus();
   if(this.#refreshPending)return this.#refreshPending;
   this.#refreshPending=(async()=>{
-   const markets=[],errors=[];
-   for(const requested of this.instruments){
-    try{markets.push(await this.getOrderBook(requested))}
-    catch(error){const safe=error instanceof OrangeXError?error:new OrangeXError('NETWORK_ERROR');errors.push({code:safe.code,message:safe.message,
+   const markets=[],errors=[];let listings=null,booksObserved=0;
+   const fail=(error,endpoint,instrumentName)=>{
+    const safe=error instanceof OrangeXError?error:new OrangeXError('NETWORK_ERROR');errors.push({code:safe.code,message:safe.message,
      category:safe.category,httpStatus:safe.httpStatus,transportCode:safe.transportCode,responseSource:safe.responseSource,
-     at:this.#clock(),instrumentName:requested})}
+     at:this.#clock(),endpoint,...(instrumentName?{instrumentName}:{})});
+   };
+   if(this.includePublicDetails)try{listings=await this.getPublicInstruments(this.listingCurrency)}catch(error){fail(error,'instruments')}
+   for(const requested of this.instruments){
+    let book=null,ticker=null;
+    try{book=await this.getOrderBook(requested);booksObserved++}catch(error){fail(error,'book',requested)}
+    if(!this.includePublicDetails){if(book)markets.push(book);continue}
+    try{ticker=await this.getPublicTickers(requested)}catch(error){fail(error,'ticker',requested)}
+    const listed=listings?.items.find(item=>item.instrument_name===requested),contractFields=listed?.fields??{};
+    const priceStep=positive(contractFields.tick_size?.value),explicitStep=positive(contractFields.qty_step?.value),
+     increment=positive(contractFields.quantity_increment?.value),
+     quantityStep=explicitStep!==null&&increment!==null&&explicitStep!==increment?null:explicitStep??increment,
+     quantityBasis=quantityStep===null?null:explicitStep!==null?'qty_step':'quantity_increment';
+    markets.push({...book,symbol:requested.split('-').slice(0,2).join(''),instrumentName:requested,
+     bookObserved:book!==null,bid:book?.bid??null,ask:book?.ask??null,midPrice:book?.midPrice??null,
+     priceAt:book?.priceAt??null,fresh:book?.fresh??false,spreadBps:book?.spreadBps??null,
+     listingObserved:listed!==undefined,active:typeof listed?.is_active==='boolean'?listed.is_active:null,
+     listingStatus:listed?.is_active===true?'OBSERVED_ACTIVE':listed?.is_active===false?'OBSERVED_INACTIVE':listed?'OBSERVED_STATUS_UNKNOWN':'UNOBSERVED',
+     actualInstrumentName:listed?.instrument_name??null,contractFields,currencyDefinitionsVerified:false,symbolMappingVerified:false,
+     markPrice:ticker?.markPrice??null,markPriceAt:ticker?.markPriceAt??null,markPriceFresh:ticker?.markPriceFresh??false,
+     markPriceSource:ticker?.markPriceSource??null,markPriceAtSource:ticker?.markPriceAtSource??null,tickerAt:ticker?.tickerAt??null,
+     precision:{priceGrid:book?gridMatch([...book.bids,...book.asks].map(level=>level[0]),priceStep):'UNVERIFIED',
+      quantityGrid:book?gridMatch([...book.bids,...book.asks].map(level=>level[1]),quantityStep):'UNVERIFIED',
+      priceBasis:priceStep===null?null:'tick_size',quantityBasis,unitsVerified:false},
+     fees:{units:'UNVERIFIED',makerBps:null,takerBps:null},
+     tradable:false,instrumentVerified:false,minQty:null,qtyStep:null,priceTick:null,orderSubmissionEnabled:false});
    }
-   this.#snapshot={connected:markets.length>0,checkedAt:this.#clock(),marketStatus:markets.length===this.instruments.length?'connected':markets.length?'partial':'offline',markets,errors};
+   this.#snapshot={connected:booksObserved>0,checkedAt:this.#clock(),marketStatus:booksObserved===this.instruments.length&&!errors.length?'connected':booksObserved?'partial':'offline',markets,errors};
    return this.getStatus();
   })();
   try{return await this.#refreshPending}finally{this.#refreshPending=null}
