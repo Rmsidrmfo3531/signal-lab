@@ -100,7 +100,10 @@ function recentRange(candles, count) {
   return {high:Math.max(...a.map(x=>x.high)),low:Math.min(...a.map(x=>x.low))};
 }
 export function analyze(symbol, h1Rows, h4Rows, m15Rows=[], priceOverride=null, meta={}) {
-  const now=Date.now();
+  // Replay can supply a clock without replacing global Date or altering live
+  // defaults. All candle/quality freshness checks use this same event clock.
+  const now=meta.now===undefined?Date.now():meta.now;
+  if(!Number.isFinite(now)||now<=0)throw Error('INVALID_ANALYSIS_CLOCK');
   const validation1=validateKlineSeries(h1Rows,3600000,now),validation4=validateKlineSeries(h4Rows,4*3600000,now);
   const h1=validation1.candles,h4=validation4.candles;
   const dataValidation={valid:validation1.valid&&validation4.valid,reasons:[...validation1.reasons.map(x=>'1H '+x),...validation4.reasons.map(x=>'4H '+x)]};

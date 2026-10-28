@@ -1,5 +1,5 @@
 // Display-only client. Offline PAPER has no browser trading or activation API.
-import {renderOrangeXPaper} from './orangex_paper.js';
+import {renderOrangeXPaper,renderOrangeXPaperReplay} from './orangex_paper.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const numeric=value=>(typeof value==='number'||typeof value==='string')&&!(typeof value==='string'&&!value.trim())&&Number.isFinite(Number(value))?Number(value):null;
 const number=value=>{const n=numeric(value);return n===null?'—':n.toLocaleString('en-US',{maximumFractionDigits:8})};
@@ -204,7 +204,7 @@ export function renderOrangeX(payload,{root=globalThis.document}={}){
 
 export function initOrangeX({root=globalThis.document,fetcher=globalThis.fetch,interval=30000,setTimer=globalThis.setInterval}={}){
  if(!root?.getElementById('orangex'))return null;
- let active=false,lastSnapshot=null,paperSnapshot=null;
+ let active=false,lastSnapshot=null,paperSnapshot=null,replaySnapshot=null;
  const button=root.getElementById('orangexRefresh');
  async function refreshPaper(){
   if(!root?.getElementById('orangexPaper'))return;
@@ -214,12 +214,20 @@ export function initOrangeX({root=globalThis.document,fetcher=globalThis.fetch,i
    paperSnapshot=await response.json();renderOrangeXPaper(paperSnapshot,{root});
   }catch{renderOrangeXPaper({...paperSnapshot,_stale:true},{root})}
  }
+ async function refreshReplay(){
+  if(!root?.getElementById('orangexPaperReplay'))return;
+  try{
+   const response=await fetcher('/api/orangex/paper/replay',{method:'GET',cache:'no-store',headers:{Accept:'application/json'}});
+   if(!response.ok)throw Error('Replay archive unavailable');
+   replaySnapshot=await response.json();renderOrangeXPaperReplay(replaySnapshot,{root});
+  }catch{renderOrangeXPaperReplay({...replaySnapshot,_stale:true},{root})}
+ }
  async function refresh(force=false){
   if(active)return false;
   active=true;if(button)button.disabled=true;
   // Local simulation records remain available while a public venue request is
   // waiting or failing. Both reads share the same refresh serialization gate.
-  const paperRead=refreshPaper();
+  const paperRead=Promise.all([refreshPaper(),refreshReplay()]);
   try{
    const response=await fetcher(force?'/api/orangex?refresh=1':'/api/orangex',{method:'GET',cache:'no-store',headers:{Accept:'application/json'}});
    if(!response.ok)throw Error('OrangeX read-only response failed');

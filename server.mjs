@@ -9,6 +9,7 @@ import {evaluateSignal} from './signal_pipeline.mjs';
 import {OrangeXReadOnlyAdapter} from './orangex.mjs';
 import {compareOrangeXBinance} from './orangex_comparison.mjs';
 import {OrangeXPaperService} from './orangex_paper_service.mjs';
+import {OrangeXPaperReplayStore} from './orangex_paper_replay_store.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -67,6 +68,11 @@ try{
  orangeX=new OrangeXReadOnlyAdapter();orangeXConfigError=true;
 }
 const orangeXPaper=new OrangeXPaperService({directory:path.join(storage.dir,'orangex-paper')});
+// Replay archives are read separately and never become a forward PAPER seed.
+function orangeXReplayView(){
+ try{return new OrangeXPaperReplayStore({directory:path.join(storage.dir,'orangex-paper-replays')}).snapshot()}
+ catch{return {kind:'ORANGEX_PAPER_REPLAY_VIEW',runKind:'BACKTEST',status:'ERROR',result:null,realDataAutoEntryEnabled:false,liveOrdersEnabled:false}}
+}
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
 const lanMode=!['127.0.0.1','::1','localhost'].includes(CONFIG.host);
@@ -721,6 +727,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/orangex'||pathname.startsWith('/api/orangex/')){
    if(req.method!=='GET')return response(res,405,{error:'ORANGEX_READ_ONLY',message:'OrangeX 1단계는 조회만 허용합니다.',orderSubmissionEnabled:false});
    if(pathname==='/api/orangex/paper')return response(res,200,orangeXPaper.snapshot());
+   if(pathname==='/api/orangex/paper/replay')return response(res,200,orangeXReplayView());
    if(pathname!=='/api/orangex')return response(res,404,{error:'ORANGEX_READ_ONLY_ROUTE_NOT_FOUND',orderSubmissionEnabled:false});
    try{
     const snapshot=await orangeX.snapshot({refresh:url.searchParams.get('refresh')==='1'});

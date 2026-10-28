@@ -11,7 +11,9 @@
     "test:orangex": "node scripts/check-orangex-readonly.mjs",
     "diagnose:orangex": "node scripts/diagnose-orangex-public.mjs",
     "diagnose:orangex:currencies": "node scripts/diagnose-orangex-currencies.mjs",
-    "paper:orangex:offline": "node scripts/orangex-paper-offline.mjs"
+    "paper:orangex:offline": "node scripts/orangex-paper-offline.mjs",
+    "paper:orangex:replay": "node scripts/orangex-paper-replay.mjs",
+    "test:orangex:paper:endurance": "node scripts/check-orangex-paper-endurance.mjs"
   },
   "engines": {
     "node": ">=22"

@@ -2,6 +2,8 @@
 import {TP_WEIGHTS,TP_R_MULTIPLES,entryAllowance} from './public/trade_plan.js';
 import {orangeXBookIntegrity} from './orangex_listing_domains.mjs';
 const SOURCE='SYNTHETIC_FIXTURE',NAME=/^[A-Z0-9]{2,20}-[A-Z0-9]{2,12}-PERPETUAL$/;
+const EXECUTION_MODES=new Set(['SYNTHETIC_TEST','HISTORICAL_REPLAY','LIVE_MARKET_PAPER']);
+const RUN_KINDS=new Set(['FORWARD_PAPER','BACKTEST']);
 const plain=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const finite=x=>typeof x==='number'&&Number.isFinite(x),positive=x=>finite(x)&&x>0;
 const clone=x=>structuredClone(x),sign=x=>x==='LONG'?1:-1;
@@ -14,7 +16,8 @@ const aligned=(value,step)=>positive(value)&&positive(step)&&Math.abs(value/step
 const fresh=(at,now,age)=>stamp(at)&&at<=now+5000&&now-at<=age;
 export const ORANGEX_PAPER_DEFAULTS=Object.freeze({capitalUSD:null,leverage:1,maxRiskUSD:null,dailyLossLimitUSD:null,maxPositions:2,
  maxPositionNotionalUSD:null,maxTotalNotionalUSD:null,maxQuoteAgeMs:90000,maxSignalAgeMs:7200000,entryTimeoutMs:1200000,
- maxSpreadBps:30,maxSlippageBps:100,maxHoldingMs:86400000,killSwitch:false});
+ maxSpreadBps:30,maxSlippageBps:100,maxHoldingMs:86400000,killSwitch:false,maxConsecutiveLosses:3,
+ maxPositionMarginUSD:null,maxTotalMarginUSD:null});
 const MONEY=['capitalUSD','maxRiskUSD','dailyLossLimitUSD','maxPositionNotionalUSD','maxTotalNotionalUSD'];
 const SETTINGS=Object.keys(ORANGEX_PAPER_DEFAULTS);
 const CONTRACT_FIELDS=['instrumentName','symbol','source','quantityUnit','contractSizeBase','minQty','qtyStep','minNotional','priceTick',
@@ -48,9 +51,11 @@ function settingsCopy(settings,base=ORANGEX_PAPER_DEFAULTS){
  if(!plain(settings))throw Error('INVALID_PAPER_SETTINGS');const result={...base};
  for(const key of SETTINGS)if(Object.hasOwn(settings,key))result[key]=settings[key];
  for(const key of MONEY)if(result[key]!==null&&!positive(result[key]))throw Error('INVALID_PAPER_SETTING_'+key);
+ for(const key of ['maxPositionMarginUSD','maxTotalMarginUSD'])if(result[key]!==null&&!positive(result[key]))throw Error('INVALID_PAPER_SETTING_'+key);
  for(const key of ['leverage','maxPositions','maxQuoteAgeMs','maxSignalAgeMs','entryTimeoutMs','maxHoldingMs'])
   if(!positive(result[key])||!Number.isInteger(result[key]))throw Error('INVALID_PAPER_SETTING_'+key);
- if(result.leverage>100||result.maxPositions>100||result.maxQuoteAgeMs>90000||result.maxHoldingMs>7*86400000||
+ if(!Number.isInteger(result.maxConsecutiveLosses)||result.maxConsecutiveLosses<1||result.maxConsecutiveLosses>100||
+  result.leverage>100||result.maxPositions>100||result.maxQuoteAgeMs>90000||result.maxHoldingMs>7*86400000||
   !finite(result.maxSpreadBps)||result.maxSpreadBps<0||result.maxSpreadBps>1000||!finite(result.maxSlippageBps)||result.maxSlippageBps<0||
   result.maxSlippageBps>1000||typeof result.killSwitch!=='boolean')throw Error('INVALID_PAPER_SETTINGS');return result;
 }
@@ -102,6 +107,22 @@ function marketCopy(market,settings,now){
  return {instrumentName:market.instrumentName,dataSource:SOURCE,bids:clone(market.bids),asks:clone(market.asks),timestamp:market.timestamp,
   markPrice:market.markPrice,markPriceAt:market.markPriceAt,sequence:Number.isSafeInteger(market.sequence)?market.sequence:null};
 }
+function validBookCursor(book,instrumentName){
+ if(!plain(book)||book.instrumentName!==instrumentName||book.dataSource!==SOURCE||!stamp(book.timestamp)||
+  !positive(book.markPrice)||!stamp(book.markPriceAt)||
+  book.sequence!==null&&book.sequence!==undefined&&!Number.isSafeInteger(book.sequence))return false;
+ for(const [levels,ascending]of [[book.bids,false],[book.asks,true]]){
+  if(!Array.isArray(levels)||!levels.length||levels.length>20)return false;
+  let previous=null;
+  for(const row of levels){
+   // Persisted book size can be zero after our own fills consume that level.
+   if(!Array.isArray(row)||row.length!==2||!positive(row[0])||!finite(row[1])||row[1]<0||
+    previous!==null&&(ascending?row[0]<=previous:row[0]>=previous))return false;
+   previous=row[0];
+  }
+ }
+ return book.bids[0][0]<book.asks[0][0];
+}
 function depthFill(book,buy,requested,contract,{limitPrice=null,consume=false}={}){
  const rows=buy?book.asks:book.bids,changes=[];let left=requested,total=0;
  for(let index=0;index<rows.length&&left>1e-12;index++){
@@ -119,6 +140,12 @@ function depthFill(book,buy,requested,contract,{limitPrice=null,consume=false}={
  if(consume)for(const [index,take]of changes)rows[index][1]=Math.max(0,rows[index][1]-take);
  return {quantity,price:total/quantity,notionalUSD:total*contract.contractSizeBase};
 }
+function referenceCosts(book,buy,fill,contract,referencePrice){
+ const marketMidPrice=(book.bids[0][0]+book.asks[0][0])/2,multiplier=fill.quantity*contract.contractSizeBase,side=buy?1:-1;
+ const slippageUSD=side*(fill.price-referencePrice)*multiplier,spreadCostUSD=side*(referencePrice-marketMidPrice)*multiplier;
+ return {referencePrice,marketMidPrice,slippageUSD:slippageUSD===0?0:slippageUSD,
+  spreadCostUSD:spreadCostUSD===0?0:spreadCostUSD};
+}
 function cashFlows(position){
  return [...position.entryParts.map(part=>({at:part.at,amount:-part.feeUSD})),
   ...position.exitParts.map(part=>({at:part.at,amount:part.grossUSD-part.feeUSD})),
@@ -131,11 +158,22 @@ function fundingMissing(position,now){
  return !Number.isSafeInteger(expected)||observed.size!==expected;
 }
 export class OrangeXPaperEngine{
- constructor(seed={}, {now=()=>Date.now(),onChange=()=>{},onEvent=()=>{},settings,contracts}={}){
+ #executionMode;#runKind;
+ constructor(seed={}, {now=()=>Date.now(),onChange=()=>{},onEvent=()=>{},settings,contracts,executionMode,runKind}={}){
   validateSeed(seed);this.now=now;this.onChange=onChange;this.onEvent=onEvent;this.storageHealthy=true;
+  const existing=Object.keys(seed).length>0,savedMode=seed.executionMode??'SYNTHETIC_TEST',savedKind=seed.runKind??'FORWARD_PAPER';
+  this.#executionMode=executionMode??savedMode;this.#runKind=runKind??savedKind;
+  if(!EXECUTION_MODES.has(this.#executionMode)||!RUN_KINDS.has(this.#runKind))throw Error('INVALID_PAPER_EXECUTION_CONTEXT');
+  if(existing&&(this.#executionMode!==savedMode||this.#runKind!==savedKind))throw Error('PAPER_EXECUTION_CONTEXT_IMMUTABLE');
+  if(this.#executionMode!=='SYNTHETIC_TEST'&&((seed.open?.length??0)||(seed.pending?.length??0)||(seed.closed?.length??0)))
+   throw Error('NON_SYNTHETIC_FILL_RECORDS_FORBIDDEN');
+  if(seed.connection!==undefined&&(!plain(seed.connection)||typeof seed.connection.connected!=='boolean'||!stamp(seed.connection.at)))
+   throw Error('INVALID_PAPER_CONNECTION_STATE');
   this.recoveredKeys=new Set([...(seed.open??[]),...(seed.pending??[])].map(position=>position.key));
   const initial={schemaVersion:1,settings:settingsCopy(seed.settings??{}),contracts:{},pending:[],open:[],closed:[],seen:{},fundingSeen:{},events:[],rejections:[],lastMarkets:{},updatedAt:null,...clone(seed)};
   initial.settings=settingsCopy(settings??{},settingsCopy(seed.settings??{},ORANGEX_PAPER_DEFAULTS));
+  initial.executionMode=this.#executionMode;initial.runKind=this.#runKind;
+  initial.connection=seed.connection?clone(seed.connection):{connected:true,at:this.now()};
   if((initial.open.length||initial.pending.length)&&settings)for(const field of ['capitalUSD','leverage'])
    if(initial.settings[field]!==seed.settings?.[field])throw Error('PAPER_ACCOUNT_CONFIG_LOCKED_WITH_POSITIONS');
   initial.contracts={};
@@ -143,15 +181,23 @@ export class OrangeXPaperEngine{
    const contract=contractCopy(input);if(name!==contract.instrumentName)throw Error('INVALID_PAPER_CONTRACT_MAPPING');
    initial.contracts[name]=contract;
   }
-  for(const position of [...initial.pending,...initial.open,...initial.closed])position.contract=contractCopy(position.contract);
+  for(const position of [...initial.pending,...initial.open,...initial.closed]){
+   if(position.executionMode!==undefined&&position.executionMode!==this.#executionMode||position.runKind!==undefined&&position.runKind!==this.#runKind)
+    throw Error('MIXED_PAPER_EXECUTION_CONTEXT_FORBIDDEN');
+   position.contract=contractCopy(position.contract);
+  }
   if(contracts!==undefined){
    const items=Array.isArray(contracts)?contracts:Object.values(contracts);
-   for(const item of items){const contract=contractCopy(item);initial.contracts[contract.instrumentName]=contract}
+   for(const item of items){const contract=contractCopy(item);
+    if([...initial.open,...initial.pending].some(p=>p.instrumentName===contract.instrumentName)&&
+     JSON.stringify(initial.contracts[contract.instrumentName])!==JSON.stringify(contract))throw Error('PAPER_CONTRACT_LOCKED_WITH_POSITIONS');
+    initial.contracts[contract.instrumentName]=contract}
   }
   this.store=initial;
  }
  exportState(){return clone(this.store)}
  #transaction(run){
+  if(this.store.executionMode!==this.#executionMode||this.store.runKind!==this.#runKind)throw Error('PAPER_EXECUTION_CONTEXT_IMMUTABLE');
   const prior=this.store;this.store=clone(prior);const events=[];
   try{
    const result=run(events);this.store.updatedAt=this.now();
@@ -176,11 +222,31 @@ export class OrangeXPaperEngine{
    ['source','technical','contract','risk','market','entry'].includes(stage)?stage:'technical',events,instrumentName));
  }
  configure(patch){return this.#transaction(events=>{
+  if(plain(patch)&&(Object.hasOwn(patch,'executionMode')||Object.hasOwn(patch,'runKind')))throw Error('PAPER_EXECUTION_CONTEXT_IMMUTABLE');
   const next=settingsCopy(patch,this.store.settings);
   if(this.store.open.length||this.store.pending.length)for(const field of ['capitalUSD','leverage'])
    if(next[field]!==this.store.settings[field])throw Error('PAPER_ACCOUNT_CONFIG_LOCKED_WITH_POSITIONS');
   this.store.settings=next;this.#event('CONFIGURED',{},events);return true;
  })}
+ setConnectionStatus({connected,at=this.now()}={}){return this.#transaction(events=>{
+  if(typeof connected!=='boolean'||!stamp(at)||at>this.now()+5000||at<this.store.connection.at)throw Error('INVALID_PAPER_CONNECTION_EVENT');
+  this.store.connection={connected,at};this.#event(connected?'CONNECTION_RESTORED':'CONNECTION_LOST',{connected},events);return true;
+ })}
+ #lossStreak(){
+  let losses=0;
+  // Source timestamps may tie across instruments. Ledger append order is the
+  // deterministic tie breaker, so a newer loss cannot hide behind an older win.
+  const closed=[...this.store.closed].reverse().sort((a,b)=>b.closedAt-a.closedAt);
+  for(const position of closed){if(position.realizedPnLUSD>=0)break;losses++}
+  return losses;
+ }
+ #entryBlock(){
+  if(this.#executionMode!=='SYNTHETIC_TEST')return 'EXECUTION_MODE_BLOCKED';
+  if(this.store.connection.connected!==true)return 'CONNECTION_DISCONNECTED';
+  if(this.#lossStreak()>=this.store.settings.maxConsecutiveLosses)return 'CONSECUTIVE_LOSS_LIMIT';
+  if([...this.store.open,...this.store.closed].some(p=>fundingMissing(p,this.now())))return 'FUNDING_EVENTS_MISSING';
+  return null;
+ }
  setContract(input){return this.#transaction(events=>{
   const contract=contractCopy(input);
   if(this.store.open.some(p=>p.instrumentName===contract.instrumentName)||this.store.pending.some(p=>p.instrumentName===contract.instrumentName))
@@ -199,6 +265,7 @@ export class OrangeXPaperEngine{
   this.store.pending.filter(p=>p.key!==exclude).reduce((sum,p)=>sum+(p.plannedRiskUSD??this.store.settings.maxRiskUSD??0),0)}
  register(input,{orderType='MARKET',limitPrice=null,dataSource}={}){return this.#transaction(events=>{
   const key=input?.key,s=this.store.settings;
+  const blocked=this.#entryBlock();if(blocked)return this.#reject(key,blocked,'risk',events);
   if(dataSource!==SOURCE)return this.#reject(key,'REAL_DATA_ENTRY_DISABLED','source',events);
   if(!this.#settingsReady())return this.#reject(key,'PAPER_SETTINGS_UNCONFIGURED','risk',events);
   if(s.killSwitch)return this.#reject(key,'KILL_SWITCH','risk',events);
@@ -224,6 +291,7 @@ export class OrangeXPaperEngine{
    ['ENTRY_CEIL_STOP_FLOOR_TARGETS_CEIL','ENTRY_FLOOR_STOP_CEIL_TARGETS_FLOOR'].includes(input.priceAlignment.policy))
    signal.priceAlignment={priceTick:input.priceAlignment.priceTick,source:SOURCE,policy:input.priceAlignment.policy,riskMustBeRecalculated:true};
   this.store.pending.push({key,instrumentName:signal.instrumentName,symbol:signal.symbol,direction:signal.direction,orderType,limitPrice:orderType==='LIMIT'?limitPrice:null,
+   executionMode:this.#executionMode,runKind:this.#runKind,
    signal,contract:clone(contract),createdAt:this.now(),expiresAt:this.now()+s.entryTimeoutMs,quantityRequested:null,quantityRemaining:null,
    plannedRiskUSD:s.maxRiskUSD,dataSource:SOURCE});this.store.seen[key]=this.now();this.#event('SIGNAL_ACCEPTED',{key,instrumentName:signal.instrumentName},events);return true;
  })}
@@ -236,6 +304,7 @@ export class OrangeXPaperEngine{
  }
  #size(order,book){
   const s=this.store.settings,c=order.contract,dir=sign(order.direction),account=this.#account();
+  const blocked=this.#entryBlock();if(blocked)return {error:blocked};
   if(!this.#settingsReady()||account.available===null)return {error:'PAPER_SETTINGS_UNCONFIGURED'};
   if(this.store.open.some(p=>!fresh(p.markPriceAt,this.now(),s.maxQuoteAgeMs)||!fresh(p.lastPriceAt,this.now(),s.maxQuoteAgeMs)))return {error:'PORTFOLIO_VALUATION_STALE'};
   if([...this.store.open,...this.store.closed].some(p=>fundingMissing(p,this.now())))return {error:'FUNDING_EVENTS_MISSING'};
@@ -249,7 +318,11 @@ export class OrangeXPaperEngine{
    risk=Math.min(s.maxRiskUSD-ownRisk,s.dailyLossLimitUSD+this.#dailyPnL()-this.#reservedRisk(order.key)-ownRisk);
   const exposure=this.store.open.reduce((sum,p)=>sum+p.quantityRemaining*p.entryPrice*p.contract.contractSizeBase,0);
   const ownNotional=existing?existing.quantityRemaining*existing.entryPrice*existing.contract.contractSizeBase:0,
-   notional=Math.min(s.maxPositionNotionalUSD-ownNotional,s.maxTotalNotionalUSD-exposure,Math.max(0,account.available)*s.leverage);
+   positionMarginCap=s.maxPositionMarginUSD??s.maxPositionNotionalUSD/s.leverage,
+   totalMarginCap=s.maxTotalMarginUSD??s.maxTotalNotionalUSD/s.leverage,
+   ownMargin=existing?ownNotional/existing.leverage:0,
+   marginAvailable=Math.max(0,Math.min(account.available,totalMarginCap-account.margin,positionMarginCap-ownMargin)),
+   notional=Math.min(s.maxPositionNotionalUSD-ownNotional,s.maxTotalNotionalUSD-exposure,marginAvailable*s.leverage);
   const quantity=floor(Math.min(risk/perQty,notional/(Math.max(worstEntry,reference)*c.contractSizeBase)),c.qtyStep*20);
   const minPrice=Math.min(order.signal.stop,...order.signal.targets,reference);
   if(!positive(quantity)||quantity*.25<c.minQty-1e-10||quantity*.25*c.contractSizeBase*minPrice<c.minNotional-1e-10)return {error:'RISK_OR_MINIMUM_CONFLICT'};
@@ -271,9 +344,11 @@ export class OrangeXPaperEngine{
   if(!positive(quantity)||quantity*.25<c.minQty-1e-10||quantity*.25*c.contractSizeBase*order.signal.stop<c.minNotional-1e-10){this.#reject(order.key,'SPLIT_MINIMUM_CONFLICT','execution',events);return 0}
   const preview=depthFill(book,dir===1,quantity,c,{limitPrice:order.limitPrice});
   if(Math.abs(preview.price-top)/top*10000>s.maxSlippageBps){this.#reject(order.key,'SLIPPAGE_LIMIT','execution',events);return 0}
-  const fill=depthFill(book,dir===1,quantity,c,{limitPrice:order.limitPrice,consume:true}),feeUSD=fill.notionalUSD*c.takerRate;
+  const referencePrice=(dir===1?book.asks:book.bids).find(level=>level[1]>0)[0],
+   fill=depthFill(book,dir===1,quantity,c,{limitPrice:order.limitPrice,consume:true}),feeUSD=fill.notionalUSD*c.takerRate;
   let p=this.store.open.find(p=>p.key===order.key);
   if(!p){p={key:order.key,instrumentName:order.instrumentName,symbol:order.symbol,direction:order.direction,contract:clone(c),dataSource:SOURCE,
+    executionMode:this.#executionMode,runKind:this.#runKind,
     quantityOriginal:0,quantityRemaining:0,entryPrice:0,entryParts:[],stop:order.signal.stop,targets:clone(order.signal.targets),tpFilled:[0,0,0],
     leverage:s.leverage,marginUSD:0,plannedRiskUSD:0,openedAt:book.timestamp,lastPriceAt:book.timestamp,
     markPrice:book.markPrice,markPriceAt:book.markPriceAt,feesUSD:0,fundingUSD:0,realizedGrossUSD:0,realizedPnLUSD:0,exitParts:[],fundingParts:[],status:'OPEN',quoteGaps:0};
@@ -281,7 +356,8 @@ export class OrangeXPaperEngine{
    if(order.signal.priceAlignment)p.priceAlignment=clone(order.signal.priceAlignment);
    this.store.open.push(p)}
   const old=p.quantityOriginal;p.quantityOriginal+=fill.quantity;p.quantityRemaining+=fill.quantity;p.entryPrice=(p.entryPrice*old+fill.price*fill.quantity)/p.quantityOriginal;
-  p.entryParts.push({quantity:fill.quantity,price:fill.price,feeUSD,at:book.timestamp,liquidity:'TAKER',model:'VISIBLE_OPPOSITE_DEPTH_NO_QUEUE_PRIORITY'});
+  p.entryParts.push({quantity:fill.quantity,price:fill.price,feeUSD,at:book.timestamp,liquidity:'TAKER',model:'VISIBLE_OPPOSITE_DEPTH_NO_QUEUE_PRIORITY',
+   ...referenceCosts(book,dir===1,fill,c,referencePrice)});
   p.feesUSD+=feeUSD;p.realizedPnLUSD-=feeUSD;p.marginUSD=p.quantityRemaining*p.entryPrice*c.contractSizeBase/p.leverage;
   p.plannedRiskUSD+=plan.plannedRiskUSD/plan.quantity*fill.quantity;
   order.quantityRemaining=Math.max(0,order.quantityRemaining-fill.quantity);
@@ -294,16 +370,22 @@ export class OrangeXPaperEngine{
   return 1;
  }
  #exit(p,book,quantity,type,events){
-  const c=p.contract,fill=depthFill(book,p.direction==='SHORT',Math.min(quantity,p.quantityRemaining),c,{consume:true});
+  const c=p.contract,buy=p.direction==='SHORT',referencePrice=(buy?book.asks:book.bids).find(level=>level[1]>0)?.[0],
+   fill=depthFill(book,buy,Math.min(quantity,p.quantityRemaining),c,{consume:true});
   if(!fill)return 0;
   const grossUSD=fill.quantity*c.contractSizeBase*sign(p.direction)*(fill.price-p.entryPrice),feeUSD=fill.notionalUSD*c.takerRate;
-  p.exitParts.push({type,quantity:fill.quantity,price:fill.price,feeUSD,grossUSD,at:book.timestamp});
+  p.exitParts.push({type,quantity:fill.quantity,price:fill.price,feeUSD,grossUSD,at:book.timestamp,...referenceCosts(book,buy,fill,c,referencePrice)});
   p.quantityRemaining=Math.max(0,p.quantityRemaining-fill.quantity);if(p.quantityRemaining<c.qtyStep*.5)p.quantityRemaining=0;
   p.realizedGrossUSD+=grossUSD;p.feesUSD+=feeUSD;p.realizedPnLUSD+=grossUSD-feeUSD;p.marginUSD=p.quantityRemaining*p.entryPrice*c.contractSizeBase/p.leverage;
   if(type.startsWith('TP'))p.tpFilled[Number(type[2])-1]+=fill.quantity;
   this.#event(type,{key:p.key,instrumentName:p.instrumentName,quantity:fill.quantity,price:fill.price,netPnLUSD:grossUSD-feeUSD},events);
   if(!p.quantityRemaining){
    p.closedAt=book.timestamp;p.closeReason=type==='TP3'?'ALL_TARGETS':type;p.status='CLOSED';
+   if(type==='STOP'&&-p.realizedPnLUSD>p.plannedRiskUSD){
+    p.gapStopExceeded={plannedRiskUSD:p.plannedRiskUSD,realizedLossUSD:-p.realizedPnLUSD,
+     overrunUSD:-p.realizedPnLUSD-p.plannedRiskUSD,at:book.timestamp};
+    this.#event('STOP_RISK_OVERRUN',{key:p.key,instrumentName:p.instrumentName,...p.gapStopExceeded},events);
+   }
    this.store.open=this.store.open.filter(item=>item.key!==p.key);this.store.pending=this.store.pending.filter(item=>item.key!==p.key);this.store.closed.push(p);
    this.#event('CLOSE',{key:p.key,instrumentName:p.instrumentName,netPnLUSD:p.realizedPnLUSD,reason:p.closeReason},events);
   }
@@ -328,12 +410,31 @@ export class OrangeXPaperEngine{
   }
   return changed;
  }
+ #ledgerBookBoundary(instrumentName){
+  let boundary=0;
+  for(const position of [...this.store.open,...this.store.closed]){
+   if(position.instrumentName!==instrumentName)continue;
+   boundary=Math.max(boundary,position.lastPriceAt);
+   for(const part of position.entryParts)boundary=Math.max(boundary,part.at);
+   for(const part of position.exitParts)boundary=Math.max(boundary,part.at);
+  }
+  return boundary;
+ }
+ #forwardBook(book){
+  const previous=this.store.lastMarkets[book.instrumentName],known=validBookCursor(previous,book.instrumentName),
+   boundary=Math.max(this.#ledgerBookBoundary(book.instrumentName),known?previous.timestamp:0);
+  if(book.timestamp>boundary)return true;
+  // With a missing, older or malformed saved cursor the fill ledger still
+  // proves this timestamp was consumed. A supplied sequence cannot recreate
+  // missing cursor evidence; wait for a strictly newer source snapshot.
+  return book.timestamp===boundary&&known&&previous.timestamp===boundary&&
+   Number.isSafeInteger(book.sequence)&&Number.isSafeInteger(previous.sequence)&&book.sequence>previous.sequence;
+ }
  onMarket(input){return this.#transaction(events=>{
+  if(this.#executionMode!=='SYNTHETIC_TEST'){this.#reject(null,'EXECUTION_MODE_BLOCKED','source',events);return 0}
   const book=marketCopy(input,this.store.settings,this.now());
   if(book.error)return this.#reject(null,book.error,'market',events)?1:0;
-  const previous=this.store.lastMarkets[book.instrumentName];
-  if(previous&&(book.timestamp<previous.timestamp||book.timestamp===previous.timestamp&&
-   !(book.sequence!==null&&previous.sequence!==null&&book.sequence>previous.sequence))){this.#reject(null,'BOOK_REPLAY','market',events);return 0}
+  if(!this.#forwardBook(book)){this.#reject(null,'BOOK_REPLAY','market',events);return 0}
   const contract=this.store.contracts[book.instrumentName];
   if(contract&&validateOrangeXPaperContract(contract).valid){
    if([...book.bids,...book.asks].some(([price,quantity])=>!aligned(price,contract.priceTick)||!aligned(quantity,contract.qtyStep))){this.#reject(null,'MARKET_GRID_MISMATCH','market',events);return 0}
@@ -355,14 +456,15 @@ export class OrangeXPaperEngine{
  })}
  closePosition(key,market){
   return this.#transaction(events=>{
+   if(this.#executionMode!=='SYNTHETIC_TEST')return this.#reject(key,'EXECUTION_MODE_BLOCKED','source',events);
    const p=this.store.open.find(p=>p.key===key);if(!p)return false;p.closingReason='CLOSE';
    this.store.pending=this.store.pending.filter(item=>item.key!==key);
    let book=this.store.lastMarkets[p.instrumentName];
+   if(!validBookCursor(book,p.instrumentName)||book.timestamp<this.#ledgerBookBoundary(p.instrumentName))book=null;
    if(market!==undefined){
     const next=marketCopy(market,this.store.settings,this.now());
-    const forward=!book||next.timestamp>book.timestamp||next.timestamp===book.timestamp&&next.sequence!==null&&book.sequence!==null&&next.sequence>book.sequence;
     if(next.error||next.instrumentName!==p.instrumentName)this.#reject(key,next.error??'BOOK_INSTRUMENT_MISMATCH','market',events);
-    else if(!forward)this.#reject(key,'BOOK_REPLAY','market',events);
+    else if(!this.#forwardBook(next))this.#reject(key,'BOOK_REPLAY','market',events);
     else if([...next.bids,...next.asks].some(([price,quantity])=>!aligned(price,p.contract.priceTick)||!aligned(quantity,p.contract.qtyStep)))this.#reject(key,'MARKET_GRID_MISMATCH','market',events);
     else{book=next;this.store.lastMarkets[p.instrumentName]=book}
    }
@@ -372,6 +474,7 @@ export class OrangeXPaperEngine{
   });
  }
  applyFunding(input){return this.#transaction(events=>{
+  if(this.#executionMode!=='SYNTHETIC_TEST')return this.#reject(null,'EXECUTION_MODE_BLOCKED','source',events);
   if(!plain(input)||input.dataSource!==SOURCE||!safeKey(input.id)||!NAME.test(input.instrumentName)||!stamp(input.at)||input.at>this.now()+5000||
    !finite(input.rate)||Math.abs(input.rate)>.1||!positive(input.markPrice))return this.#reject(null,'FUNDING_EVENT_INVALID','funding',events);
   if(this.store.fundingSeen[input.id])return false;
@@ -400,9 +503,15 @@ export class OrangeXPaperEngine{
    grossWins=state.closed.reduce((sum,p)=>sum+Math.max(0,p.realizedPnLUSD),0),grossLoss=state.closed.reduce((sum,p)=>sum-Math.min(0,p.realizedPnLUSD),0);
   let peak=0,running=0,drawdown=0;for(const p of [...state.closed].sort((a,b)=>a.closedAt-b.closedAt)){running+=p.realizedPnLUSD;peak=Math.max(peak,running);drawdown=Math.max(drawdown,peak-running)}
   for(const order of state.pending)order.recovered=this.recoveredKeys.has(order.key);
-  return {schemaVersion:1,mode:'PAPER_OFFLINE',simulationOnly:true,dataSource:SOURCE,realDataEntryEnabled:false,liveOrdersImplemented:false,recovered:this.recoveredKeys.size>0,
+  return {schemaVersion:1,mode:'PAPER_OFFLINE',executionMode:this.#executionMode,runKind:this.#runKind,
+   simulationOnly:true,dataSource:SOURCE,realDataEntryEnabled:false,liveOrdersImplemented:false,recovered:this.recoveredKeys.size>0,
    settings:state.settings,contracts:state.contracts,pending:state.pending,open:state.open,closed:state.closed,rejections:state.rejections,events:state.events,
    updatedAt:state.updatedAt,storageHealthy:this.storageHealthy,configured:this.#settingsReady(),
+   risk:{entryBlockReason:this.#entryBlock(),connection:clone(state.connection),currentLossStreak:this.#lossStreak(),
+    maxConsecutiveLosses:state.settings.maxConsecutiveLosses,
+    positionMarginLimitUSD:state.settings.maxPositionMarginUSD??(state.settings.maxPositionNotionalUSD===null?null:state.settings.maxPositionNotionalUSD/state.settings.leverage),
+    totalMarginLimitUSD:state.settings.maxTotalMarginUSD??(state.settings.maxTotalNotionalUSD===null?null:state.settings.maxTotalNotionalUSD/state.settings.leverage),
+    usedMarginUSD:round(account.margin),gapStopExceededCount:state.closed.filter(p=>p.gapStopExceeded).length},
    summary:{capitalUSD:capital,equityUSD:capital===null||valuationStale||unverifiedFunding?null:round(account.equity),
     availableMarginUSD:capital===null||valuationStale||unverifiedFunding?null:round(account.available),usedMarginUSD:round(account.margin),
     realizedPnLUSD:unverifiedFunding?null:round(account.realized),accountedRealizedPnLUSD:round(account.realized),unrealizedPnLUSD:valuationStale?null:round(account.unrealized),

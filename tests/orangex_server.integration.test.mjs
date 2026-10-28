@@ -10,6 +10,8 @@ import {fileURLToPath} from 'node:url';
 import {PaperEngine} from '../paper.mjs';
 import {runOrangeXPaperScenario} from '../scripts/orangex-paper-offline.mjs';
 import {paperScenario} from './fixtures/orangex_paper_scenario.mjs';
+import {syntheticReplayInput} from './fixtures/orangex_paper_replay.mjs';
+import {replayReport} from '../scripts/orangex-paper-replay.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -87,6 +89,8 @@ test('separate offline PAPER records reach the dashboard through GET only withou
  try{
   const empty=JSON.parse((await app.read('/api/orangex/paper')).text);
   assert.equal(empty.recordStatus,'UNCONFIGURED');assert.equal(empty.realDataAutoEntryEnabled,false);
+  assert.equal(JSON.parse((await app.read('/api/orangex/paper/replay')).text).status,'UNOBSERVED');
+  await assert.rejects(fs.stat(path.join(records,'orangex-paper-replays')),error=>error.code==='ENOENT');
   await assert.rejects(fs.stat(directory),error=>error.code==='ENOENT','reading the default view creates no PAPER directory');
   const result=runOrangeXPaperScenario(paperScenario(),{directory});
   const snapshot=JSON.parse((await app.read('/api/orangex/paper')).text);
@@ -94,7 +98,16 @@ test('separate offline PAPER records reach the dashboard through GET only withou
   assert.equal(snapshot.closed[0].direction,'LONG');assert.equal(snapshot.closed[1].direction,'SHORT');
   assert.equal(snapshot.storage.readOnly,true);assert.equal(snapshot.storage.healthy,true);
   assert.equal(snapshot.realDataAutoEntryEnabled,false);assert.equal(snapshot.liveOrdersEnabled,false);
+  assert.equal(snapshot.executionMode,'SYNTHETIC_TEST');assert.equal(snapshot.runKind,'FORWARD_PAPER');
+  assert.equal(snapshot.performance.audit.valid,true);assert.equal(snapshot.performance.metrics.totalTrades,2);
+  const replayDirectory=path.join(records,'orangex-paper-replays');
+  replayReport(syntheticReplayInput({complete:true}),{directory:replayDirectory});
+  const replay=JSON.parse((await app.read('/api/orangex/paper/replay')).text);
+  assert.equal(replay.status,'OBSERVED');assert.equal(replay.runKind,'BACKTEST');assert.equal(replay.result.summary.trades,1);
+  assert.equal(replay.result.performance.runKind,'BACKTEST');assert.equal(replay.result.performance.sample.strategyValidated,false);
+  assert.equal(replay.result.analyses,undefined);assert.equal(JSON.parse((await app.read('/api/orangex/paper')).text).closed.length,2);
   for(const method of ['POST','PUT','PATCH','DELETE'])assert.equal((await fetch(app.base+'/api/orangex/paper',{method})).status,405);
+  assert.equal((await fetch(app.base+'/api/orangex/paper/replay',{method:'POST'})).status,405);
   assert.equal((await fetch(app.base+'/api/orangex/paper/orders')).status,404);
   const module=(await app.read('/orangex_paper.js')).text;assert.match(module,/renderOrangeXPaper/);
   assert.deepEqual((await app.disk()).paper,app.fixture.paper);assert.deepEqual((await app.disk()).paperNotify,app.fixture.paperNotify);
@@ -104,6 +117,9 @@ test('separate offline PAPER records reach the dashboard through GET only withou
   assert.equal(unavailable.recordsUnavailable,true);assert.equal(unavailable.summary,null);
   assert.equal((await fetch(app.base+'/api/status')).status,200,'a new PANEL record problem must not stop the legacy server');
   assert.equal(await fs.readFile(file,'utf8'),'damaged OrangeX test record');
+  await fs.writeFile(path.join(replayDirectory,'orangex-replay.json'),'damaged replay archive');
+  const badReplay=JSON.parse((await app.read('/api/orangex/paper/replay')).text);
+  assert.equal(badReplay.status,'ERROR');assert.equal(badReplay.result,null);
   assert.deepEqual((await app.disk()).paper,app.fixture.paper);await noExternalRequests(app.requests);
  }finally{await app.close()}
 });

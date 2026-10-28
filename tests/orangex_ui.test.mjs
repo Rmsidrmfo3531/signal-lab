@@ -104,9 +104,10 @@ test('OrangeX refresh uses GET only and serializes concurrent requests while res
  assert.equal(await controller.refresh(true),false,'a pending read cannot create a second exchange request');
  release();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(root.nodes.get('orangexRefresh').disabled,false);
- await controller.refresh(true);assert.equal(calls.length,4);
- assert.deepEqual(calls.filter(call=>call.url!=='/api/orangex/paper').map(call=>call.url),['/api/orangex','/api/orangex?refresh=1']);
+ await controller.refresh(true);assert.equal(calls.length,6);
+ assert.deepEqual(calls.filter(call=>call.url==='/api/orangex'||call.url==='/api/orangex?refresh=1').map(call=>call.url),['/api/orangex','/api/orangex?refresh=1']);
  assert.equal(calls.filter(call=>call.url==='/api/orangex/paper').length,2);
+ assert.equal(calls.filter(call=>call.url==='/api/orangex/paper/replay').length,2);
  assert.ok(calls.every(call=>call.options.method==='GET'&&!('body' in call.options)));
  assert.ok(calls.every(call=>Object.keys(call.options.headers).join(',')==='Accept'));
  assert.equal(typeof tick,'function');assert.equal(typeof root.nodes.get('orangexRefresh').listeners.get('click'),'function');

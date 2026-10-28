@@ -1,0 +1,128 @@
+{
+  "kind": "ORANGEX_PAPER25_VALIDATION",
+  "checkedAt": "2026-10-28T12:53:10.766821+00:00",
+  "baseCommit": "dd5f041",
+  "branch": "feat/orangex-readonly",
+  "realDataAutoEntryEnabled": false,
+  "liveOrdersImplemented": false,
+  "actualOrangeXRequestsRun": false,
+  "apiKeysUsed": false,
+  "existingUserRecordsTouched": false,
+  "executionModes": {
+    "SYNTHETIC_TEST": "SYNTHETIC_FILLS_ONLY",
+    "HISTORICAL_REPLAY": "ANALYSIS_ONLY_NO_FILLS",
+    "LIVE_MARKET_PAPER": "DISABLED"
+  },
+  "tests": [
+    {
+      "os": "Linux",
+      "nodeVersion": "24.19.0",
+      "passed": 469,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "seconds": 20.17,
+      "temporaryData": true,
+      "offlineFetchAndWebSocketGuard": true
+    },
+    {
+      "os": "Linux",
+      "nodeVersion": "22.23.3",
+      "passed": 469,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "seconds": 20.311,
+      "temporaryData": true,
+      "offlineFetchAndWebSocketGuard": true
+    }
+  ],
+  "newTests": 69,
+  "finalSafetyTests": {
+    "runtimes": [
+      "22.23.3",
+      "24.19.0"
+    ],
+    "passedEach": 29,
+    "failed": 0
+  },
+  "browser": {
+    "passed": true,
+    "os": "Linux",
+    "engine": "Chromium",
+    "dataSource": "SYNTHETIC_FIXTURE",
+    "separateForwardTrades": 2,
+    "separateBacktestTrades": 1,
+    "publicPaperReplayRefreshFailuresRecovered": true,
+    "views": [
+      {
+        "name": "pc",
+        "width": 1440,
+        "documentWidth": 1440,
+        "paperClosedCount": 2,
+        "pageErrors": [],
+        "requestMethods": [
+          "GET"
+        ],
+        "refreshFailureRecovered": true
+      },
+      {
+        "name": "mobile390",
+        "width": 390,
+        "documentWidth": 390,
+        "paperClosedCount": 2,
+        "pageErrors": [],
+        "requestMethods": [
+          "GET"
+        ],
+        "refreshFailureRecovered": true
+      },
+      {
+        "name": "mobile360",
+        "width": 360,
+        "documentWidth": 360,
+        "paperClosedCount": 2,
+        "pageErrors": [],
+        "requestMethods": [
+          "GET"
+        ],
+        "refreshFailureRecovered": true
+      },
+      {
+        "name": "mobile720",
+        "width": 720,
+        "documentWidth": 720,
+        "paperClosedCount": 2,
+        "pageErrors": [],
+        "requestMethods": [
+          "GET"
+        ],
+        "refreshFailureRecovered": true
+      }
+    ],
+    "externalFontsAndTradingViewBlocked": true
+  },
+  "findingsFixed": [
+    "PRICE_CLOCK_SOURCE_MIX",
+    "SYNTHETIC_RELABEL_AS_HISTORICAL",
+    "SAME_TIME_CONTROL_ORDER",
+    "SAME_TIME_LOSS_STREAK_ORDER",
+    "MISSING_OR_CORRUPT_BOOK_CURSOR_REFILL",
+    "STALE_CACHED_CLOSE_DEPTH",
+    "COHERENT_FEE_TAMPERING",
+    "NESTED_ARCHIVE_CONTEXT_MISMATCH"
+  ],
+  "earlierFocusedFailure": {
+    "category": "KNOWN_ZERO_SIGN_SERIALIZATION",
+    "fix": "Normalize signed zero for known computed cost metadata; unknown costs remain null."
+  },
+  "windowsLocalTestsRun": false,
+  "remoteGitHubActionsResultsVerified": false,
+  "limitations": [
+    "NO_REAL_MARKET_PERFORMANCE_VERIFICATION",
+    "REALIZED_CASH_FLOW_MDD_EXCLUDES_UNREALIZED_DRAWDOWN",
+    "VIRTUAL_DAYS_NOT_WALL_CLOCK_UPTIME",
+    "SAMPLED_MEMORY_CAN_GROW_WITH_RETAINED_HISTORY",
+    "NO_UNBOUNDED_DURATION_OR_HIGH_FREQUENCY_GUARANTEE"
+  ]
+}

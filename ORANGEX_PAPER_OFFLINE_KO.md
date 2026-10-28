@@ -1,5 +1,7 @@
 # OrangeX 2단계 — 오프라인 PAPER 구현과 사용 안내
 
+후속 [2.5단계 보고서](ORANGEX_PAPER_25_KO.md)에 재생·성과·위험·장기 장애 검증을 추가했습니다. 아래는 `dd5f041` 구현 당시 기록이며, 실제 시세 자동 진입은 계속 OFF입니다.
+
 대상은 `Rmsidrmfo3531/signal-lab`의 `feat/orangex-readonly`, 기준 커밋은 `ae3f164`입니다. 이번 단계에서는 **합성 시나리오로 실행하는 OrangeX 전용 PAPER 엔진**을 구현했습니다. 실제 OrangeX 공개 API 연결을 재시도하지 않았으며, Windows 신규 진단 결과를 확보했다고 주장하지 않습니다.
 
 OrangeX의 거래소 연결은 계속 `READ_ONLY`입니다. 새 `PAPER_OFFLINE`은 별도 로컬 시뮬레이션의 이름이며 `ORANGEX_MODE=PAPER`나 `LIVE`를 허용하는 설정이 아닙니다. **실제 데이터 자동 진입 OFF, LIVE 주문 기능 없음**을 유지합니다.

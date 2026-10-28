@@ -9,12 +9,14 @@ export function runOrangeXPaperScenario(scenario,{directory,resume=false}={}){
  if(!plain(scenario)||scenario.kind!=='ORANGEX_PAPER_SCENARIO'||scenario.dataSource!=='SYNTHETIC_FIXTURE'||
   !Array.isArray(scenario.events)||!scenario.events.length||scenario.events.length>10000||typeof directory!=='string'||!directory.trim())
   throw Error('INVALID_OFFLINE_SCENARIO');
+ if((scenario.executionMode??'SYNTHETIC_TEST')!=='SYNTHETIC_TEST'||(scenario.runKind??'FORWARD_PAPER')!=='FORWARD_PAPER')throw Error('OFFLINE_FORWARD_CONTEXT_REQUIRED');
  let previous=0;
  for(const event of scenario.events){
   if(!plain(event)||!stamp(event.at)||event.at<previous||
-   !['SIGNAL','MARKET','FUNDING','CLOSE','CANCEL','CONFIGURE'].includes(event.type))throw Error('INVALID_OFFLINE_SCENARIO_EVENT');
+   !['SIGNAL','MARKET','FUNDING','CLOSE','CANCEL','CONFIGURE','CONNECTION'].includes(event.type))throw Error('INVALID_OFFLINE_SCENARIO_EVENT');
   if(event.type==='MARKET'&&event.market?.dataSource!=='SYNTHETIC_FIXTURE'||
    event.type==='FUNDING'&&event.funding?.dataSource!=='SYNTHETIC_FIXTURE')throw Error('ACTUAL_DATA_INPUT_DISABLED');
+  if(event.type==='MARKET'&&(!stamp(event.market.timestamp)||event.market.timestamp>event.at||!stamp(event.market.markPriceAt)||event.market.markPriceAt>event.at))throw Error('QUOTE_NOT_AVAILABLE_AT_EVENT_TIME');
   previous=event.at;
  }
  let now=scenario.events[0].at;
@@ -47,9 +49,10 @@ export function runOrangeXPaperScenario(scenario,{directory,resume=false}={}){
    if(event.type==='CLOSE')result=service.closePosition(event.key);
    if(event.type==='CANCEL')result=service.cancelOrder(event.key);
    if(event.type==='CONFIGURE')result=service.configure(event.settings);
+   if(event.type==='CONNECTION')result=service.setConnectionStatus({connected:event.connected,at:event.at});
    results.push({type:event.type,at:event.at,result});
   }
-  return {kind:'ORANGEX_PAPER_SCENARIO_RESULT',mode:'PAPER_OFFLINE',dataSource:'SYNTHETIC_FIXTURE',
+  return {kind:'ORANGEX_PAPER_SCENARIO_RESULT',mode:'PAPER_OFFLINE',executionMode:'SYNTHETIC_TEST',runKind:'FORWARD_PAPER',dataSource:'SYNTHETIC_FIXTURE',
    realDataAutoEntryEnabled:false,liveOrdersEnabled:false,results,snapshot:service.snapshot()};
  }finally{service.close()}
 }
