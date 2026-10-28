@@ -1,5 +1,7 @@
 # OrangeX 1단계: 조회 전용 연결과 검증 기록
 
+최신 거래 영역 기본값 수정과 Windows 8건 실측 대조는 [거래 영역 보고서](ORANGEX_CURRENCY_DOMAIN_KO.md)를 우선 참고하세요. 이전 `currency=USDT` 기본값은 제거됐으며 아래 구현·테스트 수는 과거 기록입니다.
+
 최신 공개 API 매개변수·Mark·규격 원필드 보완과 미검증 범위는 [공개 시장 연동 보고서](ORANGEX_MARKET_INTEGRATION_KO.md)를 참고하세요. 아래는 최초 구현 당시의 기록입니다. OrangeX PAPER는 계속 비활성입니다.
 
 후속 실제 연결 재검증과 진단 오류 수정 결과는 [OrangeX 재검증 보고서](ORANGEX_REVALIDATION_KO.md)를 참고하세요. 아래의 235개 테스트는 최초 커밋 `894300a` 당시 기록입니다.

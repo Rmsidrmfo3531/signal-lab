@@ -1,0 +1,803 @@
+{
+  "kind": "ORANGEX_PUBLIC_DIAGNOSTIC",
+  "mode": "READ_ONLY",
+  "checkedAt": "2026-10-27T12:37:02.419Z",
+  "currency": "USDT",
+  "currencyMeaning": "UNVERIFIED",
+  "status": "PUBLIC_RESPONSES_OBSERVED",
+  "exitCode": 0,
+  "officialSpecificationVerified": false,
+  "accountChecked": false,
+  "ordersSubmitted": false,
+  "requests": [
+    {
+      "kind": "docs",
+      "instrumentName": null,
+      "url": "https://openapi-docs.orangex.com/",
+      "method": "GET",
+      "parameterNamesSource": "USER_CONFIRMED_OFFICIAL_DOCUMENTATION",
+      "parameterSpecificationVerified": false,
+      "status": "OBSERVED",
+      "category": "OK",
+      "responseSource": "UNCONFIRMED",
+      "exitCode": 0,
+      "proxyConnectStatus": null,
+      "httpStatus": 200,
+      "endpointNamesPresent": {
+        "/public/get_order_book": true,
+        "/public/get_instruments": true,
+        "/public/tickers": true
+      }
+    },
+    {
+      "kind": "instruments",
+      "instrumentName": null,
+      "url": "https://api.orangex.com/api/v1/public/get_instruments?currency=USDT",
+      "method": "GET",
+      "parameterNamesSource": "USER_CONFIRMED_OFFICIAL_DOCUMENTATION",
+      "parameterSpecificationVerified": false,
+      "status": "OBSERVED",
+      "category": "OK",
+      "responseSource": "UNCONFIRMED",
+      "exitCode": 0,
+      "proxyConnectStatus": null,
+      "httpStatus": 200,
+      "currency": "USDT",
+      "currencyMeaning": "UNVERIFIED",
+      "schemaObservation": {
+        "envelopeType": "OBJECT",
+        "resultType": "ARRAY",
+        "knownResultFields": {}
+      }
+    },
+    {
+      "kind": "tickers",
+      "instrumentName": "BTC-USDT-PERPETUAL",
+      "url": "https://api.orangex.com/api/v1/public/tickers?instrument_name=BTC-USDT-PERPETUAL",
+      "method": "GET",
+      "parameterNamesSource": "USER_CONFIRMED_OFFICIAL_DOCUMENTATION",
+      "parameterSpecificationVerified": false,
+      "status": "OBSERVED",
+      "category": "OK",
+      "responseSource": "UNCONFIRMED",
+      "exitCode": 0,
+      "proxyConnectStatus": null,
+      "httpStatus": 200,
+      "schemaObservation": {
+        "envelopeType": "OBJECT",
+        "resultType": "ARRAY",
+        "knownResultFields": {}
+      }
+    },
+    {
+      "kind": "book",
+      "instrumentName": "BTC-USDT-PERPETUAL",
+      "url": "https://api.orangex.com/api/v1/public/get_order_book?instrument_name=BTC-USDT-PERPETUAL&depth=20",
+      "method": "GET",
+      "parameterNamesSource": "USER_CONFIRMED_OFFICIAL_DOCUMENTATION",
+      "parameterSpecificationVerified": false,
+      "status": "OBSERVED",
+      "category": "OK",
+      "responseSource": "UNCONFIRMED",
+      "exitCode": 0,
+      "proxyConnectStatus": null,
+      "httpStatus": 200,
+      "schemaObservation": {
+        "envelopeType": "OBJECT",
+        "resultType": "OBJECT",
+        "knownResultFields": {
+          "bids": "ARRAY",
+          "asks": "ARRAY",
+          "timestamp": "STRING",
+          "instrument_name": "STRING"
+        }
+      }
+    },
+    {
+      "kind": "tickers",
+      "instrumentName": "ETH-USDT-PERPETUAL",
+      "url": "https://api.orangex.com/api/v1/public/tickers?instrument_name=ETH-USDT-PERPETUAL",
+      "method": "GET",
+      "parameterNamesSource": "USER_CONFIRMED_OFFICIAL_DOCUMENTATION",
+      "parameterSpecificationVerified": false,
+      "status": "OBSERVED",
+      "category": "OK",
+      "responseSource": "UNCONFIRMED",
+      "exitCode": 0,
+      "proxyConnectStatus": null,
+      "httpStatus": 200,
+      "schemaObservation": {
+        "envelopeType": "OBJECT",
+        "resultType": "ARRAY",
+        "knownResultFields": {}
+      }
+    },
+    {
+      "kind": "book",
+      "instrumentName": "ETH-USDT-PERPETUAL",
+      "url": "https://api.orangex.com/api/v1/public/get_order_book?instrument_name=ETH-USDT-PERPETUAL&depth=20",
+      "method": "GET",
+      "parameterNamesSource": "USER_CONFIRMED_OFFICIAL_DOCUMENTATION",
+      "parameterSpecificationVerified": false,
+      "status": "OBSERVED",
+      "category": "OK",
+      "responseSource": "UNCONFIRMED",
+      "exitCode": 0,
+      "proxyConnectStatus": null,
+      "httpStatus": 200,
+      "schemaObservation": {
+        "envelopeType": "OBJECT",
+        "resultType": "OBJECT",
+        "knownResultFields": {
+          "bids": "ARRAY",
+          "asks": "ARRAY",
+          "timestamp": "STRING",
+          "instrument_name": "STRING"
+        }
+      }
+    },
+    {
+      "kind": "tickers",
+      "instrumentName": "SOL-USDT-PERPETUAL",
+      "url": "https://api.orangex.com/api/v1/public/tickers?instrument_name=SOL-USDT-PERPETUAL",
+      "method": "GET",
+      "parameterNamesSource": "USER_CONFIRMED_OFFICIAL_DOCUMENTATION",
+      "parameterSpecificationVerified": false,
+      "status": "OBSERVED",
+      "category": "OK",
+      "responseSource": "UNCONFIRMED",
+      "exitCode": 0,
+      "proxyConnectStatus": null,
+      "httpStatus": 200,
+      "schemaObservation": {
+        "envelopeType": "OBJECT",
+        "resultType": "ARRAY",
+        "knownResultFields": {}
+      }
+    },
+    {
+      "kind": "book",
+      "instrumentName": "SOL-USDT-PERPETUAL",
+      "url": "https://api.orangex.com/api/v1/public/get_order_book?instrument_name=SOL-USDT-PERPETUAL&depth=20",
+      "method": "GET",
+      "parameterNamesSource": "USER_CONFIRMED_OFFICIAL_DOCUMENTATION",
+      "parameterSpecificationVerified": false,
+      "status": "OBSERVED",
+      "category": "OK",
+      "responseSource": "UNCONFIRMED",
+      "exitCode": 0,
+      "proxyConnectStatus": null,
+      "httpStatus": 200,
+      "schemaObservation": {
+        "envelopeType": "OBJECT",
+        "resultType": "OBJECT",
+        "knownResultFields": {
+          "bids": "ARRAY",
+          "asks": "ARRAY",
+          "timestamp": "STRING",
+          "instrument_name": "STRING"
+        }
+      }
+    }
+  ],
+  "markets": [
+    {
+      "asset": "BTC",
+      "instrumentName": "BTC-USDT-PERPETUAL",
+      "contractNameSource": "SDK_CANDIDATE_ONLY",
+      "listingObserved": false,
+      "active": null,
+      "additionalContractsOmitted": 0,
+      "officialSpecificationVerified": false,
+      "orderSubmissionEnabled": false,
+      "contractFields": {},
+      "tickerFields": {},
+      "book": {
+        "bid": 80205.3,
+        "ask": 80205.4,
+        "spread": 0.09999999999126885,
+        "spreadBps": 0.01246799621113415,
+        "bids": [
+          [
+            80205.3,
+            0.997
+          ],
+          [
+            80205.2,
+            0.759
+          ],
+          [
+            80205.1,
+            0.214
+          ],
+          [
+            80205,
+            0.877
+          ],
+          [
+            80204.9,
+            0.149
+          ],
+          [
+            80204.8,
+            0.696
+          ],
+          [
+            80204.7,
+            0.193
+          ],
+          [
+            80204.6,
+            0.557
+          ],
+          [
+            80204.5,
+            0.174
+          ],
+          [
+            80204.4,
+            0.516
+          ],
+          [
+            80204.3,
+            0.385
+          ],
+          [
+            80204.2,
+            0.66
+          ],
+          [
+            80204.1,
+            0.098
+          ],
+          [
+            80204,
+            0.136
+          ],
+          [
+            80203.9,
+            0.146
+          ],
+          [
+            80203.8,
+            0.406
+          ],
+          [
+            80203.7,
+            0.144
+          ],
+          [
+            80203.6,
+            0.447
+          ],
+          [
+            80203.5,
+            0.399
+          ],
+          [
+            80203.4,
+            0.463
+          ]
+        ],
+        "asks": [
+          [
+            80205.4,
+            0.922
+          ],
+          [
+            80205.5,
+            0.158
+          ],
+          [
+            80205.6,
+            0.216
+          ],
+          [
+            80205.7,
+            0.19
+          ],
+          [
+            80205.8,
+            0.819
+          ],
+          [
+            80205.9,
+            0.777
+          ],
+          [
+            80206,
+            0.133
+          ],
+          [
+            80206.1,
+            0.685
+          ],
+          [
+            80206.2,
+            0.491
+          ],
+          [
+            80206.3,
+            0.708
+          ],
+          [
+            80206.4,
+            0.686
+          ],
+          [
+            80206.5,
+            0.586
+          ],
+          [
+            80206.6,
+            0.504
+          ],
+          [
+            80206.7,
+            0.472
+          ],
+          [
+            80206.8,
+            0.569
+          ],
+          [
+            80206.9,
+            0.503
+          ],
+          [
+            80207,
+            0.45
+          ],
+          [
+            80207.1,
+            0.498
+          ],
+          [
+            80207.2,
+            0.378
+          ],
+          [
+            80207.3,
+            0.317
+          ]
+        ],
+        "timestamp": 1793104606846,
+        "timestampSource": "result.timestamp",
+        "timestampUnits": "MILLISECONDS_BY_MAGNITUDE_UNVERIFIED",
+        "ageMs": 16944,
+        "fresh": true,
+        "markPrice": null,
+        "markPriceSource": null
+      },
+      "markPrice": 80205.3,
+      "markPriceSource": "result[0].mark_price",
+      "markPriceTimestamp": 1793104606391,
+      "markPriceTimestampSource": "result[0].timestamp",
+      "markPriceTimestampUnits": "MILLISECONDS_BY_MAGNITUDE_UNVERIFIED",
+      "markPriceAgeMs": 17400,
+      "markPriceFresh": true,
+      "precisionObservations": {
+        "priceTick": null,
+        "quantityCandidates": []
+      },
+      "minimumOrderQuantityVerified": false,
+      "quantityIncrementVerified": false,
+      "feeUnitsVerified": false
+    },
+    {
+      "asset": "ETH",
+      "instrumentName": "ETH-USDT-PERPETUAL",
+      "contractNameSource": "SDK_CANDIDATE_ONLY",
+      "listingObserved": false,
+      "active": null,
+      "additionalContractsOmitted": 0,
+      "officialSpecificationVerified": false,
+      "orderSubmissionEnabled": false,
+      "contractFields": {},
+      "tickerFields": {},
+      "book": {
+        "bid": 2326.27,
+        "ask": 2326.28,
+        "spread": 0.010000000000218279,
+        "spreadBps": 0.042987179074779544,
+        "bids": [
+          [
+            2326.27,
+            106.17
+          ],
+          [
+            2326.26,
+            2.48
+          ],
+          [
+            2326.25,
+            11.37
+          ],
+          [
+            2326.24,
+            8.52
+          ],
+          [
+            2326.23,
+            2.74
+          ],
+          [
+            2326.22,
+            2.85
+          ],
+          [
+            2326.21,
+            9.61
+          ],
+          [
+            2326.2,
+            9.04
+          ],
+          [
+            2326.19,
+            2.53
+          ],
+          [
+            2326.18,
+            1.68
+          ],
+          [
+            2326.17,
+            1.86
+          ],
+          [
+            2326.16,
+            2.08
+          ],
+          [
+            2326.15,
+            1.76
+          ],
+          [
+            2326.14,
+            1.52
+          ],
+          [
+            2326.13,
+            4.73
+          ],
+          [
+            2326.12,
+            4.35
+          ],
+          [
+            2326.11,
+            1.48
+          ],
+          [
+            2326.1,
+            5.92
+          ],
+          [
+            2326.09,
+            5.91
+          ],
+          [
+            2326.08,
+            5.22
+          ]
+        ],
+        "asks": [
+          [
+            2326.28,
+            87.77
+          ],
+          [
+            2326.29,
+            2.36
+          ],
+          [
+            2326.3,
+            10.42
+          ],
+          [
+            2326.31,
+            11.49
+          ],
+          [
+            2326.32,
+            7.8
+          ],
+          [
+            2326.33,
+            1.69
+          ],
+          [
+            2326.34,
+            1.87
+          ],
+          [
+            2326.35,
+            7.15
+          ],
+          [
+            2326.36,
+            1.43
+          ],
+          [
+            2326.35,
+            7.15
+          ],
+          [
+            2326.36,
+            1.43
+          ],
+          [
+            2326.37,
+            5.95
+          ],
+          [
+            2326.38,
+            5.81
+          ],
+          [
+            2326.39,
+            6.99
+          ],
+          [
+            2326.4,
+            5.4
+          ],
+          [
+            2326.41,
+            6.96
+          ],
+          [
+            2326.42,
+            6.35
+          ],
+          [
+            2326.43,
+            4.41
+          ],
+          [
+            2326.44,
+            4.84
+          ],
+          [
+            2326.45,
+            5.06
+          ],
+          [
+            2326.46,
+            4.18
+          ],
+          [
+            2326.47,
+            4.89
+          ]
+        ],
+        "timestamp": 1793104607142,
+        "timestampSource": "result.timestamp",
+        "timestampUnits": "MILLISECONDS_BY_MAGNITUDE_UNVERIFIED",
+        "ageMs": 16933,
+        "fresh": true,
+        "markPrice": null,
+        "markPriceSource": null
+      },
+      "markPrice": 2326.27,
+      "markPriceSource": "result[0].mark_price",
+      "markPriceTimestamp": 1793104606623,
+      "markPriceTimestampSource": "result[0].timestamp",
+      "markPriceTimestampUnits": "MILLISECONDS_BY_MAGNITUDE_UNVERIFIED",
+      "markPriceAgeMs": 17452,
+      "markPriceFresh": true,
+      "precisionObservations": {
+        "priceTick": null,
+        "quantityCandidates": []
+      },
+      "minimumOrderQuantityVerified": false,
+      "quantityIncrementVerified": false,
+      "feeUnitsVerified": false
+    },
+    {
+      "asset": "SOL",
+      "instrumentName": "SOL-USDT-PERPETUAL",
+      "contractNameSource": "SDK_CANDIDATE_ONLY",
+      "listingObserved": false,
+      "active": null,
+      "additionalContractsOmitted": 0,
+      "officialSpecificationVerified": false,
+      "orderSubmissionEnabled": false,
+      "contractFields": {},
+      "tickerFields": {},
+      "book": {
+        "bid": 100.61,
+        "ask": 100.62,
+        "spread": 0.010000000000005116,
+        "spreadBps": 0.9938875913139309,
+        "bids": [
+          [
+            100.61,
+            671.1
+          ],
+          [
+            100.6,
+            449.6
+          ],
+          [
+            100.59,
+            544.1
+          ],
+          [
+            100.58,
+            583.9
+          ],
+          [
+            100.57,
+            365.1
+          ],
+          [
+            100.56,
+            580.7
+          ],
+          [
+            100.55,
+            542.6
+          ],
+          [
+            100.54,
+            809.3
+          ],
+          [
+            100.53,
+            398.3
+          ],
+          [
+            100.52,
+            384.6
+          ],
+          [
+            100.51,
+            366.8
+          ],
+          [
+            100.5,
+            261.6
+          ],
+          [
+            100.49,
+            401.5
+          ],
+          [
+            100.48,
+            338.1
+          ],
+          [
+            100.47,
+            354.3
+          ],
+          [
+            100.44,
+            463.1
+          ],
+          [
+            100.43,
+            664.2
+          ],
+          [
+            100.42,
+            511.3
+          ],
+          [
+            100.4,
+            437.7
+          ],
+          [
+            100.39,
+            584
+          ]
+        ],
+        "asks": [
+          [
+            100.62,
+            460.6
+          ],
+          [
+            100.63,
+            506.4
+          ],
+          [
+            100.64,
+            1089.1
+          ],
+          [
+            100.65,
+            898.1
+          ],
+          [
+            100.66,
+            885.5
+          ],
+          [
+            100.67,
+            901.5
+          ],
+          [
+            100.68,
+            401.8
+          ],
+          [
+            100.69,
+            355.6
+          ],
+          [
+            100.7,
+            414.5
+          ],
+          [
+            100.71,
+            621.9
+          ],
+          [
+            100.72,
+            477.8
+          ],
+          [
+            100.73,
+            543.6
+          ],
+          [
+            100.74,
+            710.1
+          ],
+          [
+            100.75,
+            460.6
+          ],
+          [
+            100.76,
+            415.2
+          ],
+          [
+            100.77,
+            671.4
+          ],
+          [
+            100.78,
+            470.2
+          ],
+          [
+            100.79,
+            425.5
+          ],
+          [
+            100.8,
+            370.1
+          ],
+          [
+            100.81,
+            124.4
+          ]
+        ],
+        "timestamp": 1793104607385,
+        "timestampSource": "result.timestamp",
+        "timestampUnits": "MILLISECONDS_BY_MAGNITUDE_UNVERIFIED",
+        "ageMs": 16930,
+        "fresh": true,
+        "markPrice": null,
+        "markPriceSource": null
+      },
+      "markPrice": 100.6,
+      "markPriceSource": "result[0].mark_price",
+      "markPriceTimestamp": 1793104606389,
+      "markPriceTimestampSource": "result[0].timestamp",
+      "markPriceTimestampUnits": "MILLISECONDS_BY_MAGNITUDE_UNVERIFIED",
+      "markPriceAgeMs": 17926,
+      "markPriceFresh": true,
+      "precisionObservations": {
+        "priceTick": null,
+        "quantityCandidates": []
+      },
+      "minimumOrderQuantityVerified": false,
+      "quantityIncrementVerified": false,
+      "feeUnitsVerified": false
+    }
+  ],
+  "note": "공개 GET 진단만 수행합니다. currency=USDT는 의미 미검증 조회 후보이며 필수 매개변수 이름만 사용자 확인 자료에 근거합니다. 응답 필드 관측과 공식 명세·단위 확인은 다릅니다. min_trade_amount·min_qty·수량 증분·수수료 단위를 임의로 동일시하지 않습니다. 종목별 티커의 Mark와 시각만 사용하며 호가 값으로 보충하지 않습니다."
+}

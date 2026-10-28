@@ -50,6 +50,9 @@ test('public book uses fixed HTTPS read endpoint and normalizes data without app
  assert.equal(result.bid,100);assert.equal(result.ask,101);assert.ok(result.spreadBps>0);assert.equal(result.priceAt,T);assert.equal(result.fresh,true);
  assert.equal(result.tradable,false);assert.equal(result.instrumentVerified,false);assert.equal(result.markPrice,null);
  assert.equal(result.minQty,null);assert.equal(result.qtyStep,null);assert.equal(result.priceTick,null);
+ assert.equal(result.bookIntegrity.valid,false,'unsorted source depth stays observable but cannot approve readiness');
+ assert.deepEqual(result.asks,[[102,4],[101,5]],'preserve original sequence rather than silently repairing it');
+ assert.ok(result.bookIntegrity.issues.includes('BOOK_UNSORTED'));
  assert.doesNotMatch(JSON.stringify(result),/fixture-never-public/);
 });
 
@@ -284,7 +287,9 @@ test('detailed refresh keeps all minimum, contract and fee fields separate witho
   base_currency:'USDT',quote_currency:'BTC',quantity_increment:.5,maker:.001,taker:.002,unknown_secret:'synthetic-hidden'}),
   onRequest:url=>requests.push(url)})});
  const status=await client.refresh(),market=status.markets[0];
- assert.equal(requests.length,3);assert.equal(status.includePublicDetails,true);assert.equal(status.listingCurrency,'USDT');
+ assert.equal(requests.length,5);assert.equal(status.includePublicDetails,true);assert.equal(status.listingCurrency,'BTC');
+ assert.deepEqual(status.listingCurrencies,['BTC','ETH','SPOT']);
+ assert.deepEqual(requests.filter(url=>url.pathname.endsWith('/get_instruments')).map(url=>url.searchParams.get('currency')),['BTC','ETH','SPOT']);
  assert.equal(status.listingCurrencyVerified,false);assert.equal(status.dataSource,'REAL_PUBLIC_READ_ONLY');
  assert.equal(status.verification.protocolReference,'USER_REPORTED_PARAMETERS_AND_SDK_REFERENCE');
  assert.equal(market.listingObserved,true);assert.equal(market.active,true);assert.equal(market.actualInstrumentName,BTC);
@@ -337,8 +342,10 @@ test('observed precision checks explicit price/quantity increments and never use
  const noStep=await inspect(observedListing());assert.equal(noStep.priceGrid,'MATCH');assert.equal(noStep.quantityGrid,'UNVERIFIED');
  assert.equal(noStep.quantityBasis,null);assert.equal(noStep.unitsVerified,false);
  const exact=await inspect(observedListing({qty_step:.5}));assert.equal(exact.quantityGrid,'MATCH');assert.equal(exact.quantityBasis,'qty_step');
+ const explicitQuantityStep=await inspect(observedListing({quantity_step:.5}));assert.equal(explicitQuantityStep.quantityGrid,'MATCH');assert.equal(explicitQuantityStep.quantityBasis,'quantity_step');
  const wrong=await inspect(observedListing({tick_size:.3,quantity_increment:.3}));assert.equal(wrong.priceGrid,'MISMATCH');assert.equal(wrong.quantityGrid,'MISMATCH');
  const conflict=await inspect(observedListing({qty_step:.5,quantity_increment:.3}));assert.equal(conflict.quantityGrid,'UNVERIFIED');
+ const otherConflict=await inspect(observedListing({qty_step:.5,quantity_step:.3}));assert.equal(otherConflict.quantityGrid,'UNVERIFIED');
 });
 
 test('unobserved, inactive and unknown listing status are distinct and never approve an instrument',async()=>{
@@ -366,7 +373,8 @@ test('listing, ticker and book failures remain separate while successful observa
  for(const failed of ['get_instruments','tickers','get_order_book']){
   const base=publicFetcher(),client=adapter({includePublicDetails:true,fetcher:async(url,options)=>
    new URL(url).pathname.endsWith('/'+failed)?new Response('synthetic-private-provider-body',{status:403}):base(url,options)});
-  const status=await client.refresh(),market=status.markets[0];assert.equal(status.errors.length,1);
+  const status=await client.refresh(),market=status.markets[0];assert.equal(status.errors.length,failed==='get_instruments'?3:1);
+  if(failed==='get_instruments')assert.deepEqual(status.errors.map(error=>error.listingCurrency),['BTC','ETH','SPOT']);
   assert.equal(status.errors[0].endpoint,failed==='get_instruments'?'instruments':failed==='tickers'?'ticker':'book');
   assert.equal(status.errors[0].httpStatus,403);assert.equal(status.errors[0].responseSource,'UNCONFIRMED');
   assert.equal(status.dataSource,'REAL_PUBLIC_READ_ONLY','successful book/listing/Mark observations survive a different endpoint failure');

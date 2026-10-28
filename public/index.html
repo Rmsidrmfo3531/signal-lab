@@ -103,6 +103,10 @@
         <p class="section-note"><strong>1단계 READ_ONLY</strong> — 공개 호가 조회를 시도합니다. 계좌 조회와 상장·주문 단위는 명세 검증 전까지 차단됩니다. 기존 Binance·Variational 분석과 모의 PNL은 별도로 유지합니다. PAPER·LIVE, 자동 진입 및 보호성 손절 주문은 후속 단계이며 이 화면에서 활성화할 수 없습니다.</p>
         <div id="orangexNotice" class="orangex-notice" role="status" aria-live="polite">조회 전용 · 연결 상태 확인 중</div>
         <div id="orangexMetrics" class="orangex-metrics"><div><span>운영 모드</span><strong>READ_ONLY · 조회 전용</strong></div><div><span>자동매매</span><strong>OFF · 1단계 미구현</strong></div></div>
+        <div class="orangex-subheading"><h4>상장 조회 영역·공개 시장 검증</h4><small>HTTP 200과 거래 준비 상태를 구분합니다.</small></div>
+        <p id="orangexReadiness" class="orangex-caption" role="status" aria-live="polite">상장·시세 검증 대기 · PAPER 자동 진입 OFF · READ_ONLY</p>
+        <div id="orangexListingDomains" class="orangex-domain-grid"><p class="orangex-empty">조회 영역 결과 대기</p></div>
+        <ul id="orangexReadinessReasons" class="orangex-errors orangex-readiness-reasons"><li>조회 결과 확인 전 · 실제 주문 차단</li></ul>
         <div class="orangex-subheading"><h4>거래 가능 여부·참고 호가</h4><small id="orangexMarketCount">조회 대기</small></div>
         <p class="orangex-caption">상장 검증이 완료되지 않은 항목은 조회 후보이며 거래 가능 승인으로 해석하지 않습니다. 최소 수량·수량 단위·가격 단위가 없으면 미검증으로 남깁니다. 참고 호가는 주문 승인이나 체결을 뜻하지 않습니다.</p>
         <div class="table-scroll orangex-table-wrap"><table class="orangex-table"><thead><tr><th>종목</th><th>계약명</th><th>상장 상태</th><th>Mark</th><th>Bid</th><th>Ask</th><th>스프레드</th><th>최소 수량</th><th>수량 단위</th><th>가격 단위</th><th>시세 시각 (KST)</th></tr></thead><tbody id="orangexMarkets"><tr><td colspan="11" class="orangex-empty">확인된 시장 자료가 없습니다.</td></tr></tbody></table></div>

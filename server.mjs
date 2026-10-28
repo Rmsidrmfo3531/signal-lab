@@ -56,7 +56,9 @@ const CONFIG={
 let orangeX,orangeXConfigError=false;
 try{
  orangeX=new OrangeXReadOnlyAdapter({enabled:process.env.ORANGEX_ENABLED==='true',mode:process.env.ORANGEX_MODE||'READ_ONLY',
-  includePublicDetails:true,listingCurrency:process.env.ORANGEX_LISTING_CURRENCY||'USDT',
+  includePublicDetails:true,...(process.env.ORANGEX_LISTING_CURRENCIES?.trim()?
+   {listingCurrencies:process.env.ORANGEX_LISTING_CURRENCIES.split(',').map(x=>x.trim()).filter(Boolean)}:
+   process.env.ORANGEX_LISTING_CURRENCY?.trim()?{listingCurrency:process.env.ORANGEX_LISTING_CURRENCY.trim()}:{}),
   clientId:process.env.ORANGEX_CLIENT_ID||'',clientSecret:process.env.ORANGEX_CLIENT_SECRET||'',
   instruments:(process.env.ORANGEX_INSTRUMENTS||'BTC-USDT-PERPETUAL,ETH-USDT-PERPETUAL,SOL-USDT-PERPETUAL').split(',').map(x=>x.trim()).filter(Boolean),
   timeoutMs:Number(process.env.ORANGEX_REQUEST_TIMEOUT_MS||8000)});

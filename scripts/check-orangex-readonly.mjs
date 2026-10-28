@@ -21,7 +21,8 @@ export function publicCheckReport(result,instruments){
    diagnostic:error??null,stageErrors:errors.filter(row=>row.instrumentName===instrumentName||row.endpoint==='instruments')};
  });
  const valid=requests.length>0&&requests.every(row=>row.bookStatus==='OBSERVED'&&
-  (!details||row.listingObserved&&row.active===true&&row.markPriceFresh))&&(!details||errors.length===0);
+  (!details||row.listingObserved&&row.active===true&&row.markPriceFresh))&&(!details||errors.length===0)&&
+  (!result.marketReadiness||result.marketReadiness.publicDataReady===true);
  const transportFailure=errors.some(row=>['DNS','TLS','TIMEOUT','NETWORK'].includes(row.category));
  const httpFailure=errors.some(row=>['HTTP','AUTH','API'].includes(row.category));
  const dataFailure=errors.some(row=>row.category==='SCHEMA');
@@ -32,13 +33,16 @@ export function publicCheckReport(result,instruments){
  return {kind:'REAL_PUBLIC_READ_ONLY',status,exitCode:valid?0:transportFailure?2:1,checkedAt:result.checkedAt,
   officialSpecificationVerified:false,accountChecked:false,ordersSubmitted:false,publicDetailsEnabled:details,
   listingCurrency:result.listingCurrency??null,listingCurrencyVerified:false,
+  listingCurrencies:result.listingCurrencies??(result.listingCurrency?[result.listingCurrency]:[]),
+  listingDiscovery:result.listingDiscovery??[],marketReadiness:result.marketReadiness??
+   {publicDataReady:false,ready:false,tradingReady:false,paperReady:false,blockingReasons:['READINESS_UNVERIFIED','PAPER_DISABLED','OFFICIAL_UNITS_AND_FEES_UNVERIFIED']},
   requested:[...instruments],requests,observed:result.markets.filter(row=>row.bookObserved!==false&&Number.isFinite(row.bid)&&row.bid>0&&Number.isFinite(row.ask)&&row.ask>row.bid).map(({instrumentName,bid,ask,spreadBps,priceAt,fresh,tradable})=>
    ({instrumentName,bid,ask,spreadBps,priceAt,fresh,tradable})),errors,
   note:'공개 GET 관측입니다. 필수 매개변수 이름은 사용자 제공 조건을 반영했으며 통화·수량·수수료 의미는 미검증입니다. HTTP 응답만으로 공식 명세·주문 가능을 승인하지 않습니다. 프록시 CONNECT 거부와 원 서버 오류를 구분합니다.'};
 }
 
 async function main(){
- const adapter=new OrangeXReadOnlyAdapter({enabled:true,mode:'READ_ONLY',includePublicDetails:true,listingCurrency:'USDT',timeoutMs:4000,maxRetries:0});
+ const adapter=new OrangeXReadOnlyAdapter({enabled:true,mode:'READ_ONLY',includePublicDetails:true,timeoutMs:4000,maxRetries:0});
  const report=publicCheckReport(await adapter.refresh(),adapter.instruments);
  console.log(JSON.stringify(report,null,2));process.exitCode=report.exitCode;
 }

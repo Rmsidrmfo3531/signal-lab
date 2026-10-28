@@ -146,6 +146,9 @@ test('OrangeX public-market HTTP reads stay separate from scanner, account crede
   assert.equal(snapshot.mode,'READ_ONLY');assert.equal(snapshot.enabled,true);assert.equal(snapshot.connected,true);
   assert.equal(snapshot.orderSubmissionEnabled,false);assert.equal(snapshot.automation.enabled,false);
   assert.equal(snapshot.capabilities.accountRead,false);assert.equal(snapshot.account,null);
+  assert.deepEqual(snapshot.listingCurrencies,['BTC','ETH','SPOT']);
+  assert.equal(snapshot.marketReadiness.publicDataReady,true);assert.equal(snapshot.marketReadiness.ready,false);
+  assert.equal(snapshot.marketReadiness.paperReady,false);assert.equal(snapshot.marketReadiness.tradingReady,false);
   assert.equal(snapshot.verification.officialSpec,'UNVERIFIED','a mocked SDK-shaped response is not official specification verification');
   assert.equal(snapshot.markets.length,3);
   const expected=new Map([['BTCUSDT',81000],['ETHUSDT',2500],['SOLUSDT',180]]);
@@ -161,14 +164,15 @@ test('OrangeX public-market HTTP reads stay separate from scanner, account crede
   }
   assert.equal(text.includes(clientId),false);assert.equal(text.includes(secret),false);
   const outgoing=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(outgoing.length,7,'one instruments query, three individual tickers and three books');
-  assert.equal(outgoing.filter(x=>x.path==='/api/v1/public/get_instruments').length,1);
+  assert.equal(outgoing.length,9,'three documented-area queries, three individual tickers and three books');
+  assert.equal(outgoing.filter(x=>x.path==='/api/v1/public/get_instruments').length,3);
+  assert.deepEqual(outgoing.filter(x=>x.path==='/api/v1/public/get_instruments').map(x=>x.currency),['BTC','ETH','SPOT']);
   assert.equal(outgoing.filter(x=>x.path==='/api/v1/public/tickers').length,3);
   assert.equal(outgoing.filter(x=>x.path==='/api/v1/public/get_order_book').length,3);
   for(const request of outgoing){
    assert.equal(request.host,'api.orangex.com');assert.equal(request.method,'GET');
    if(request.path==='/api/v1/public/get_order_book')assert.equal(request.depth,'20');
-   else if(request.path==='/api/v1/public/get_instruments')assert.equal(request.currency,'USDT');
+   else if(request.path==='/api/v1/public/get_instruments')assert.ok(['BTC','ETH','SPOT'].includes(request.currency));
    else {assert.equal(request.path,'/api/v1/public/tickers');assert.ok(request.instrumentName)}
    assert.equal(request.hasAuthorization,false,'public market reads must not send account credentials');
   }
@@ -193,6 +197,37 @@ test('OrangeX missing or old public timestamps never become fresh, verified trad
     if(mode==='missing-time')assert.equal(market.priceAt,null);
     else assert.ok(Date.now()-market.priceAt>=180000);
    }
+   assert.deepEqual((await app.disk()).paper,app.fixture.paper);
+  }finally{await app.close()}
+ }
+});
+
+test('all public reads can succeed while a legacy USDT area finds no listings and blocks market readiness',{timeout:15000},async()=>{
+ const app=await sandbox({ORANGEX_ENABLED:'true',ORANGEX_MODE:'READ_ONLY',ORANGEX_LISTING_CURRENCY:'USDT',SIGNAL_LAB_TEST_ORANGEX_BOOK:'fresh'});
+ try{
+  const snapshot=JSON.parse((await app.read('/api/orangex?refresh=1')).text);
+  assert.equal(snapshot.connected,true);assert.equal(snapshot.errors.length,0);
+  assert.deepEqual(snapshot.listingCurrencies,['USDT']);assert.equal(snapshot.marketReadiness.publicDataReady,false);
+  assert.equal(snapshot.marketReadiness.ready,false);assert.equal(snapshot.marketReadiness.paperReady,false);
+  assert.ok(snapshot.marketReadiness.publicDataReasons.includes('LISTING_UNOBSERVED'));
+  for(const row of snapshot.markets){assert.equal(row.fresh,true);assert.equal(row.markPriceFresh,true);
+   assert.equal(row.listingObserved,false);assert.equal(row.active,null);assert.deepEqual(row.contractFields,{})}
+  assert.deepEqual((await app.disk()).paper,app.fixture.paper);
+ }finally{await app.close()}
+});
+
+test('plural documented areas override legacy settings and independent stale book or Mark blocks readiness',{timeout:15000},async()=>{
+ for(const mode of ['old-book','old-mark']){
+  const app=await sandbox({ORANGEX_ENABLED:'true',ORANGEX_MODE:'READ_ONLY',ORANGEX_LISTING_CURRENCY:'USDT',
+   ORANGEX_LISTING_CURRENCIES:'BTC,ETH,SPOT',SIGNAL_LAB_TEST_ORANGEX_BOOK:mode});
+  try{
+   const snapshot=JSON.parse((await app.read('/api/orangex?refresh=1')).text);
+   assert.deepEqual(snapshot.listingCurrencies,['BTC','ETH','SPOT']);assert.equal(snapshot.marketReadiness.publicDataReady,false);
+   assert.equal(snapshot.marketReadiness.paperReady,false);
+   assert.ok(snapshot.marketReadiness.publicDataReasons.includes(mode==='old-book'?'BOOK_STALE':'MARK_STALE'));
+   for(const row of snapshot.markets){assert.equal(row.listingObserved,true);assert.equal(row.fresh,mode!=='old-book');assert.equal(row.markPriceFresh,mode!=='old-mark')}
+   const requests=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
+   assert.ok(requests.filter(row=>row.path.endsWith('/get_instruments')).every(row=>['BTC','ETH','SPOT'].includes(row.currency)));
    assert.deepEqual((await app.disk()).paper,app.fixture.paper);
   }finally{await app.close()}
  }

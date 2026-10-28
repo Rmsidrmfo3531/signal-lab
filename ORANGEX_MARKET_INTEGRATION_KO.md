@@ -1,5 +1,7 @@
 # OrangeX 공개 시장 데이터 연동 보완
 
+최신 Windows 8건 JSON 및 거래 영역 기본값 수정은 [거래 영역 보고서](ORANGEX_CURRENCY_DOMAIN_KO.md)를 우선 참고하세요. 아래 내용은 해당 후속 자료 수신 전의 기록입니다.
+
 후속으로 실제 Windows 진단 JSON을 수신했습니다. 수신 전의 아래 기록은 보존하고, 실제 수치·누락 항목·현재 코드 대조는 [Windows 실측 대조 보고서](ORANGEX_WINDOWS_OBSERVATION_KO.md)를 우선 참고하세요.
 
 대상은 `Rmsidrmfo3531/signal-lab`, 기준은 `feat/orangex-readonly`의 `9f80e62`입니다. 최신 지시에 따라 **공개 조회만 구현**했습니다. 거래소 전송과 화면은 READ_ONLY이며 OrangeX PAPER 자동 진입은 비활성입니다.

@@ -5,7 +5,7 @@ import {PassThrough} from 'node:stream';
 import {classifyCurl,curlPublicProbe,diagnoseOrangeXPublic,observeBook,publicProbeURL} from '../scripts/diagnose-orangex-public.mjs';
 
 const NOW=1793100000000;
-const book={bids:[[99,2],[100,1]],asks:[[102,1],[101,2]],timestamp:NOW};
+const book={bids:[[100,1],[99,2]],asks:[[101,2],[102,1]],timestamp:NOW};
 const ok=(kind,result)=>({kind,category:'OK',responseSource:'UNCONFIRMED',exitCode:0,proxyConnectStatus:200,httpStatus:200,
  body:kind==='docs'?'/public/get_order_book /public/get_instruments /public/tickers':JSON.stringify({result})});
 const fixture=(mutate=()=>{})=>(async(kind,name)=>{
@@ -18,7 +18,7 @@ const fixture=(mutate=()=>{})=>(async(kind,name)=>{
 });
 
 test('public diagnostic allows only fixed HTTPS GET probes and safe contract names',()=>{
- assert.equal(publicProbeURL('instruments'),'https://api.orangex.com/api/v1/public/get_instruments?currency=USDT');
+ assert.equal(publicProbeURL('instruments'),'https://api.orangex.com/api/v1/public/get_instruments?currency=BTC');
  assert.equal(publicProbeURL('tickers','BTC-USDT-PERPETUAL'),'https://api.orangex.com/api/v1/public/tickers?instrument_name=BTC-USDT-PERPETUAL');
  assert.throws(()=>publicProbeURL('tickers'),/INVALID_PUBLIC_INSTRUMENT/);
  assert.throws(()=>publicProbeURL('instruments',undefined,{currency:'USDT&token=secret'}),/INVALID_PUBLIC_CURRENCY/);
@@ -70,6 +70,10 @@ test('book observation computes actual best bid/ask and never turns midpoint int
  const result=observeBook(book,NOW);
  assert.equal(result.bid,100);assert.equal(result.ask,101);assert.equal(result.spread,1);
  assert.equal(result.spreadBps,1/100.5*10000);assert.equal(result.markPrice,null);assert.equal(result.fresh,true);
+ assert.equal(result.bookIntegrity.valid,true);
+ const unsorted=observeBook({...book,bids:[[99,2],[100,1]],asks:[[102,1],[101,2]]},NOW);
+ assert.equal(unsorted.bid,100);assert.equal(unsorted.ask,101);assert.equal(unsorted.bookIntegrity.valid,false);
+ assert.ok(unsorted.bookIntegrity.issues.includes('BOOK_UNSORTED'));
  assert.equal(observeBook({...book,timestamp:NOW-90001},NOW).fresh,false);
  assert.equal(observeBook({...book,timestamp:NOW+6000},NOW).fresh,false);
  assert.equal(observeBook({...book,timestamp:NOW/1000},NOW).fresh,null);
@@ -80,7 +84,7 @@ test('book observation computes actual best bid/ask and never turns midpoint int
 
 test('successful fixtures record listing, exact contract fields and Mark sources without asserting verified units',async()=>{
  const report=await diagnoseOrangeXPublic({probe:fixture(),now:()=>NOW});
- assert.equal(report.exitCode,0);assert.equal(report.requests.length,8);assert.equal(report.markets.length,3);
+ assert.equal(report.exitCode,0);assert.equal(report.requests.length,10);assert.equal(report.markets.length,3);
  assert.equal(report.officialSpecificationVerified,false);assert.equal(report.mode,'READ_ONLY');
  assert.equal(report.accountChecked,false);assert.equal(report.ordersSubmitted,false);
  for(const row of report.markets){
@@ -121,7 +125,7 @@ test('unsupported list schema and API errors do not imply confirmed delisting or
 
 test('proxy failure report preserves layer-specific evidence without inventing any prices',async()=>{
  const report=await diagnoseOrangeXPublic({probe:async()=>({category:'PROXY_CONNECT_REJECTED',responseSource:'PROXY',exitCode:56,proxyConnectStatus:403,httpStatus:null,body:''}),now:()=>NOW});
- assert.equal(report.exitCode,2);assert.equal(report.requests.length,8);
+ assert.equal(report.exitCode,2);assert.equal(report.requests.length,10);
  assert.ok(report.requests.every(row=>row.proxyConnectStatus===403&&row.httpStatus===null));
  assert.ok(report.markets.every(row=>!row.listingObserved&&row.book===null&&row.markPrice===null));
 });
@@ -178,11 +182,11 @@ test('public diagnostic supplies mandatory parameters and gets each contract tic
  const report=await diagnoseOrangeXPublic({probe:async(kind,name,options)=>{
   calls.push({kind,name,url:publicProbeURL(kind,name,options)});return base(kind,name);
  },now:()=>NOW});
- assert.equal(report.exitCode,0);assert.equal(calls.length,8);
+ assert.equal(report.exitCode,0);assert.equal(calls.length,10);
  assert.deepEqual(calls.filter(row=>row.kind==='tickers').map(row=>row.name),['BTC','ETH','SOL'].map(asset=>`${asset}-USDT-PERPETUAL`));
- assert.equal(calls.find(row=>row.kind==='instruments').url,'https://api.orangex.com/api/v1/public/get_instruments?currency=USDT');
+ assert.equal(calls.find(row=>row.kind==='instruments').url,'https://api.orangex.com/api/v1/public/get_instruments?currency=BTC');
  assert.ok(calls.filter(row=>row.kind==='tickers').every(row=>new URL(row.url).searchParams.get('instrument_name')===row.name));
- assert.equal(report.currencyMeaning,'UNVERIFIED');assert.ok(report.requests.every(row=>!row.parameterSpecificationVerified));
+ assert.equal(report.currencyMeaning,'TRADING_DOMAIN');assert.deepEqual(report.currencies,['BTC','ETH','SPOT']);assert.ok(report.requests.every(row=>!row.parameterSpecificationVerified));
 });
 
 test('ticker Mark is never borrowed from a book, another contract or a fallback clock',async()=>{

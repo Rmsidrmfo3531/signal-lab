@@ -45,6 +45,70 @@ const contractNumbers=['min_trade_amount','min_qty','min_notional','tick_size','
  'maker_commission','taker_commission','maker_fee','taker_fee','maker','taker','maker_fee_rate','taker_fee_rate'];
 const contractCurrencies=['base_currency','quote_currency','settlement_currency'];
 const contractText=value=>typeof value==='string'&&/^[A-Za-z0-9]{1,20}$/.test(value)?value:'미관측';
+const listingDomains={BTC:'문서 예시 · 사용자 제공 명세',ETH:'문서 예시 · 사용자 제공 명세',
+ SPOT:'문서 예시 · 현물 영역, 무기한 승인에 사용 안 함',PERPETUAL:'별도 확인 후보 · 미검증',USDT:'기존 미확인 값 · 기본값 제외'};
+const readinessLabels={PUBLIC_MARKETS_UNOBSERVED:'공개 시장 관측 자료 없음',MARKET_UNOBSERVED:'해당 계약 관측 자료 없음',
+ LISTING_NOT_REQUESTED:'상장 목록 조회 전',LISTING_UNOBSERVED:'상장 목록에서 해당 계약을 찾지 못함',
+ LISTING_ACTIVE_UNKNOWN:'상장 활성 상태 미확인',LISTING_INACTIVE:'현재 비활성으로 관측된 계약',
+ LISTING_CONFLICT:'조회 영역별 상장 상태·계약 규격 충돌',LISTING_DOMAIN_UNVERIFIED:'무기한 계약 조회 영역 미검증',
+ BOOK_UNOBSERVED:'호가 미관측',BOOK_STALE:'호가 시각 만료 또는 미확인',BOOK_INTEGRITY_FAILED:'호가 배열 검증 실패',
+ BOOK_DUPLICATE_PRICE:'호가 가격 중복',BOOK_UNSORTED:'호가 가격 순서 역전',BOOK_DEPTH_EXCEEDED:'요청한 호가 단계 수 초과',
+ BOOK_LEVELS_INVALID:'호가 가격·수량 구조 오류',MARK_UNOBSERVED:'Mark Price 미관측',
+ MARK_STALE:'Mark 시각 만료 또는 미확인',PRICE_GRID_MISMATCH:'관측 가격 격자 불일치',QUANTITY_GRID_MISMATCH:'관측 수량 격자 불일치',
+ CONTRACT_UNITS_UNVERIFIED:'최소량·계약 크기·수량 증분의 공식 의미 미검증',FEES_UNVERIFIED:'Maker·Taker 수수료 단위 미검증',
+ PAPER_DISABLED:'PAPER 자동 진입 OFF',READ_ONLY_MODE:'READ_ONLY · 실제 주문 차단'};
+const readinessLabel=code=>typeof code==='string'&&Object.hasOwn(readinessLabels,code)?readinessLabels[code]:'세부 조건 미검증 · 조회 결과 확인 필요';
+const freshClock=(value,now)=>numeric(value)!==null&&Number(value)>=1e12&&Number(value)<=now+5000&&now-Number(value)<=90000;
+const safeInstrument=value=>typeof value==='string'&&/^[A-Z0-9]{2,20}-[A-Z0-9]{2,12}-PERPETUAL$/.test(value)?value:'계약명 미확인';
+const positive=value=>numeric(value)!==null&&Number(value)>0;
+
+export function orangeXReadinessView(payload={}, {now=Date.now()}={}){
+ const data=payload&&typeof payload==='object'&&!Array.isArray(payload)?payload:{},markets=records(data.markets);
+ const readiness=data.marketReadiness&&typeof data.marketReadiness==='object'?data.marketReadiness:{};
+ const perMarket=records(readiness.markets),configured=Array.isArray(data.listingCurrencies)?data.listingCurrencies:
+  typeof data.listingCurrency==='string'?[data.listingCurrency]:[];
+ const discoveries=records(data.listingDiscovery),domainRows=discoveries.length?discoveries:configured.map(currency=>({currency}));
+ const rows=markets.map(item=>{
+  const reasons=[];
+  if(item?.listingObserved!==true)reasons.push('LISTING_UNOBSERVED');
+  else if(item?.active===false)reasons.push('LISTING_INACTIVE');
+  else if(item?.active!==true)reasons.push('LISTING_ACTIVE_UNKNOWN');
+  if(item?.listingConflict===true)reasons.push('LISTING_CONFLICT');
+  if(item?.listingDomainEligible!==true||!records(item?.listingMatches).some(match=>['BTC','ETH'].includes(match?.currency)))
+   reasons.push('LISTING_DOMAIN_UNVERIFIED');
+  if(item?.bookObserved===false||!positive(item?.bid)||!positive(item?.ask)||Number(item.bid)>=Number(item.ask))reasons.push('BOOK_UNOBSERVED');
+  else if(item?.fresh===false||!freshClock(item?.priceAt,now))reasons.push('BOOK_STALE');
+  if(item?.bookIntegrity?.valid===false)reasons.push('BOOK_INTEGRITY_FAILED',...records(item.bookIntegrity.issues));
+  if(!positive(item?.markPrice))reasons.push('MARK_UNOBSERVED');
+  else if(item?.markPriceFresh===false||!freshClock(item?.markPriceAt,now))reasons.push('MARK_STALE');
+  if(item?.precision?.priceGrid==='MISMATCH')reasons.push('PRICE_GRID_MISMATCH');
+  if(item?.precision?.quantityGrid==='MISMATCH')reasons.push('QUANTITY_GRID_MISMATCH');
+  const server=perMarket.find(row=>row?.instrumentName===item?.instrumentName);
+  reasons.push(...records(server?.reasons));
+  return {instrumentName:safeInstrument(item?.instrumentName),reasons:[...new Set(reasons)],
+   complete:reasons.length===0&&server?.publicDataReady===true};
+ });
+ // A server flag cannot refresh an old quote in an already-open browser view.
+ const publicDataReady=readiness.publicDataReady===true&&data.enabled===true&&data.connected===true&&data._stale!==true&&
+  rows.length>0&&rows.every(row=>row.complete)&&perMarket.length===rows.length;
+ const summary=`공개 시장 검증 ${publicDataReady?'관측 조건 통과':'대기'} · 계약별 통과 ${rows.filter(row=>row.complete).length}/${rows.length} · 거래 준비 미완료 · PAPER 자동 진입 OFF · READ_ONLY`;
+ const domains=domainRows.slice(0,5).map(item=>{
+  const currency=Object.hasOwn(listingDomains,item?.currency)?item.currency:null;
+  const count=numeric(item?.count),rowCount=count!==null&&Number.isInteger(count)&&count>=0?number(count):'미확인';
+  const matched=records(item?.matchedInstruments).slice(0,30).map(safeInstrument);
+  const http=numeric(item?.httpStatus),httpLabel=http!==null&&Number.isInteger(http)&&http>=100&&http<=599?`HTTP ${http}`:'HTTP 미관측';
+  const observation=item?.status==='OBSERVED'?'목록 응답 관측':item?.status==='FAILED'?'목록 조회 실패':'목록 조회 미확인';
+  return `<article class="orangex-domain"><strong>${esc(currency||'조회 영역 미확인')}</strong><small>${esc(currency?listingDomains[currency]:'영역 의미 미검증')}</small>`+
+   `<p>${esc(observation)} · ${esc(httpLabel)} · 목록 ${esc(rowCount)}개 · 대상 계약 ${matched.length}개</p>`+
+   `<p>${esc(matched.join(' · ')||'이 영역에서 일치한 대상 계약 없음')}</p></article>`;
+ }).join('')||'<p class="orangex-empty">조회 영역 자료가 없습니다. API 연결만으로 상장 검증을 통과시키지 않습니다.</p>';
+ const reasons=[...new Set([...records(readiness.publicDataReasons),...records(readiness.blockingReasons),
+  'CONTRACT_UNITS_UNVERIFIED','FEES_UNVERIFIED','PAPER_DISABLED','READ_ONLY_MODE'])];
+ const details=rows.filter(row=>row.reasons.length).map(row=>`<li><strong>${esc(row.instrumentName)}</strong>`+
+  `<span>${esc(row.reasons.map(readinessLabel).join(' · '))}</span></li>`).join('');
+ return {publicDataReady,tradingReady:false,paperReady:false,summary,domains,
+  reasons:details+reasons.map(code=>`<li><span>${esc(readinessLabel(code))}</span></li>`).join('')};
+}
 
 export function orangeXContractDetails(markets,{dataSource,now=Date.now()}={}){
  return records(markets).slice(0,100).map(item=>{
@@ -52,9 +116,11 @@ export function orangeXContractDetails(markets,{dataSource,now=Date.now()}={}){
   const quantities=[['Bid 표시 잔량',item?.bids?.[0]?.[1]],['Ask 표시 잔량',item?.asks?.[0]?.[1]]];
   const comparison=item?.binanceComparison;
   const compareStatus=comparison?.mappingVerified===true?'대응 계약 확인':'대응 계약 미검증';
+  const domains=[...new Set(records(item?.listingMatches).map(row=>row?.currency).filter(value=>Object.hasOwn(listingDomains,value)))];
   return `<article class="orangex-contract"><header><strong>${esc(item?.actualInstrumentName||item?.instrumentName||'계약 미확인')}</strong>`+
    `<small>${esc(listingLabel(item))} · 주문 차단</small></header>`+
    `<p class="orangex-contract-source">${esc(sourceLabel(dataSource))}</p>`+
+   `<p>상장 관측 영역: ${esc(domains.join(' · ')||'미확인')} · ${item?.listingConflict===true?'영역별 규격 충돌':item?.listingDomainEligible===true?'공개 목록 일치 · 공식 단위 승인 아님':'무기한 조회 영역 미검증'}</p>`+
    `<dl>${contractNumbers.map(key=>`<div><dt>${esc(key)}</dt><dd>${esc(observedNumber(fields[key]?.value))}<small>필드 의미·단위 미검증</small></dd></div>`).join('')}`+
    `${contractCurrencies.map(key=>`<div><dt>${esc(key)}</dt><dd>${esc(contractText(fields[key]?.value))}<small>거래소 정의 미검증</small></dd></div>`).join('')}`+
    `${quantities.map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${esc(observedNumber(value))}<small>거래소 수량 단위 미검증</small></dd></div>`).join('')}</dl>`+
@@ -73,6 +139,7 @@ export function orangeXView(payload={}){
  const invalidMode=data.mode!==undefined&&data.mode!=='READ_ONLY';
  const connected=data.enabled===true&&data.connected===true;
  const mode=invalidMode?'지원하지 않는 모드 · 주문 차단':'READ_ONLY · 조회 전용';
+ const readiness=orangeXReadinessView(data);
  const accountReady=data.capabilities?.accountRead===true&&account!==null&&['READY','CONNECTED','OK'].includes(String(data.accountStatus||'').toUpperCase());
  const errors=records(data.errors).slice(-30).map(item=>{
   const code=errorCode(item?.code);
@@ -83,6 +150,7 @@ export function orangeXView(payload={}){
   ['계좌 조회',accountReady?'조회 가능':status(data.accountStatus)],['자동매매','OFF · 1단계 미구현'],
   ['공식 명세',verified?'명세 확인':'미검증'],['실제 연결 검증',status(data.verification?.liveConnection)],
   ['긴급 중지','거래 엔진 미구현 · 신규 주문 없음'],['마지막 조회',time(data.checkedAt)],['조회 자료',sourceLabel(data.dataSource)]];
+ metrics.push(['공개 시장 검증',readiness.publicDataReady?'상장·호가·Mark 관측 조건 통과':'상장·시세 검증 대기'],['PAPER 자동 진입','OFF · READ_ONLY']);
  const totals=[['미실현 PNL',first(account,'unrealizedPnL','unrealizedPnl')],['당일 실현 PNL',first(account,'dailyRealizedPnL','dailyPnL')],
   ['누적 실현 PNL',first(account,'cumulativeRealizedPnL','totalRealizedPnL')]];
  return {
@@ -97,6 +165,7 @@ export function orangeXView(payload={}){
    `${cell(number(item?.bid))}${cell(number(item?.ask))}${cell(numeric(item?.spreadBps)===null?'미검증':number(item.spreadBps)+' bp')}`+
    `${cell(unit(item?.minQty))}${cell(unit(item?.qtyStep))}${cell(unit(item?.priceTick))}<td>${esc(time(item?.priceAt))}<small class="orangex-quote-age">${esc(quoteAge(item))}</small></td></tr>`).join('')||empty(11,'확인된 OrangeX 계약·호가가 없습니다. 상장이나 가격을 추정하지 않습니다.'),
   contractDetails:orangeXContractDetails(markets,{dataSource:data.dataSource}),
+  readinessSummary:readiness.summary,listingDomains:readiness.domains,readinessReasons:readiness.reasons,
   balanceNote:data.accountStatus==='STALE'?'이전 조회 자료입니다. 현재 잔고·포지션 상태는 재확인이 필요합니다.':accountReady?'거래소 조회값입니다. 기존 모의매매 PNL과 합산하지 않습니다.':'계좌 조회 미설정 또는 미검증 · 잔고와 PNL을 0으로 가정하지 않습니다.',
   balances:balances.slice(0,30).map(item=>`<tr>${cell(first(item,'asset','currency')||'미확인')}${cell(number(first(item,'balance','total')))}`+
    `${cell(number(first(item,'availableBalance','available')))}${cell(number(item?.equity))}</tr>`).join('')||empty(4,accountReady?'조회된 잔고 자료가 없습니다.':'계좌 조회 미설정 · 잔고 미확인'),
@@ -125,6 +194,7 @@ export function renderOrangeX(payload,{root=globalThis.document}={}){
  set('orangexNotice',view.notice);set('orangexMetrics',view.metrics,true);set('orangexMarketCount',view.marketCount);
  set('orangexMarkets',view.markets,true);set('orangexBalanceNote',view.balanceNote);set('orangexBalances',view.balances,true);
  set('orangexContractDetails',view.contractDetails,true);
+ set('orangexReadiness',view.readinessSummary);set('orangexListingDomains',view.listingDomains,true);set('orangexReadinessReasons',view.readinessReasons,true);
  set('orangexPnl',view.pnl,true);set('orangexPositions',view.positions,true);set('orangexOrders',view.orders,true);
  set('orangexTrades',view.trades,true);set('orangexErrors',view.errors,true);set('orangexRejections',view.rejection);
  const panel=find('orangex');if(panel)panel.className='panel orangex-panel '+view.state;

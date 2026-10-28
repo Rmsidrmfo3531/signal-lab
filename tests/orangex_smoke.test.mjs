@@ -13,6 +13,8 @@ test('public check records all three observed books without claiming verified li
  assert.equal(result.requests.length,3);assert.deepEqual(result.requests.map(row=>row.symbol),['BTC','ETH','SOL']);
  assert.ok(result.requests.every(row=>row.listingStatus==='UNVERIFIED'&&row.bookStatus==='OBSERVED'));
  assert.equal(result.accountChecked,false);assert.equal(result.ordersSubmitted,false);assert.equal(result.officialSpecificationVerified,false);
+ assert.equal(result.marketReadiness.publicDataReady,false,'book-only legacy observation is not market readiness');
+ assert.ok(result.marketReadiness.blockingReasons.includes('READINESS_UNVERIFIED'));
 });
 test('HTTP 403 is reported with an unknown response source instead of claiming a proxy policy denial',()=>{
  const result=report([],names.map(name=>error(name,'HTTP',403)));

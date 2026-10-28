@@ -9,7 +9,8 @@
     "test": "node --test tests/*.test.mjs",
     "test:market": "node scripts/check-market-data.mjs",
     "test:orangex": "node scripts/check-orangex-readonly.mjs",
-    "diagnose:orangex": "node scripts/diagnose-orangex-public.mjs"
+    "diagnose:orangex": "node scripts/diagnose-orangex-public.mjs",
+    "diagnose:orangex:currencies": "node scripts/diagnose-orangex-currencies.mjs"
   },
   "engines": {
     "node": ">=22"

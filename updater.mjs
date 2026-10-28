@@ -9,11 +9,11 @@ export const MAX_FILE_BYTES = 2_000_000;
 export const MAX_UPDATE_BYTES = 20_000_000;
 const ALLOWED_ROOTS = new Set([
  'server.mjs','engine.mjs','quality.mjs','signal_pipeline.mjs','observation.mjs','scan_diagnostics.mjs',
- 'execution.mjs','markets.mjs','news.mjs','links.mjs','journal.mjs','signal_lifecycle.mjs','orangex.mjs','orangex_comparison.mjs',
+ 'execution.mjs','markets.mjs','news.mjs','links.mjs','journal.mjs','signal_lifecycle.mjs','orangex.mjs','orangex_comparison.mjs','orangex_listing_domains.mjs',
  'paper.mjs','paper_health.mjs','mobile_access.mjs','windows_paper_notify.mjs','windows_paper_notify.ps1',
  'tradfi.mjs','tradfi_signal.mjs','tradfi_feed.mjs','updater.mjs','update-cli.mjs','package.json',
  'start.sh','persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','start_auto.bat','start_auto_test.bat','enable_auto_update.bat','disable_auto_update.bat','windows-supervisor.mjs','windows-update-source.mjs','backup_data.bat',
- 'migrate_legacy_data.bat','restore_data.bat','open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-orangex-readonly.mjs','scripts/diagnose-orangex-public.mjs'
+ 'migrate_legacy_data.bat','restore_data.bat','open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-orangex-readonly.mjs','scripts/diagnose-orangex-public.mjs','scripts/diagnose-orangex-currencies.mjs'
 ]);
 const VERSION=/^\d+\.\d+\.\d+$/;
 export function compareVersions(a,b){

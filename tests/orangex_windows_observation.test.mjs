@@ -37,7 +37,7 @@ test('the original Windows evidence records exactly six public HTTP 200 reads wi
  // These were successful legacy probes. They do not prove parameters optional.
  assert.equal(new URL(diagnostic.requests[1].url).search,'');
  assert.equal(new URL(diagnostic.requests[2].url).search,'');
- assert.equal(new URL(publicProbeURL('instruments')).searchParams.get('currency'),'USDT');
+ assert.equal(new URL(publicProbeURL('instruments')).searchParams.get('currency'),'BTC');
  assert.equal(new URL(publicProbeURL('tickers',instruments[0])).searchParams.get('instrument_name'),instruments[0]);
 });
 

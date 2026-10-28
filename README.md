@@ -2,6 +2,8 @@
 
 OrangeX 1단계 조회 전용 연결은 [OrangeX 설정·검증·후속 설계](ORANGEX_READONLY_KO.md)를 참고하세요. 기본 연결은 꺼져 있고 모드는 `READ_ONLY`입니다. 공식 명세·계좌 조회의 미검증 항목은 차단하며 OrangeX 주문 기능은 없습니다. 기존 `.env`와 거래 기록은 교체하지 마세요.
 
+최신 Windows 8건 실측의 상장 미확인 원인, 거래 영역 `BTC·ETH·SPOT` 비교와 미검증 `PERPETUAL` 후보, 독립 Mark·호가 검사는 [거래 영역 수정 보고서](ORANGEX_CURRENCY_DOMAIN_KO.md)를 참고하세요. HTTP 200만으로 거래 준비 완료를 표시하지 않으며 PAPER는 계속 OFF입니다.
+
 필수 공개 매개변수, 종목별 Mark, 계약 원필드와 실제 자료 검증 상태는 [공개 시장 연동 보고서](ORANGEX_MARKET_INTEGRATION_KO.md)에 정리했습니다. 최소량·증분·수수료 의미가 미검증이면 값을 임의 환산하지 않으며 OrangeX PAPER 자동 진입은 비활성입니다.
 
 사용자가 제공한 실제 Windows 6건 HTTP 200 진단은 [실측 대조 보고서](ORANGEX_WINDOWS_OBSERVATION_KO.md)에 원값·시각·미검증 항목을 구분해 정리했습니다. 과거 실측 자료를 현재 실시간 호가나 PAPER 승인으로 재사용하지 않습니다.
