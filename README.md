@@ -1,5 +1,7 @@
 # Signal Lab v5.8 — 스캐너·자동 모의매매 수정
 
+OrangeX 2단계 [오프라인 PAPER 구현·사용 안내](ORANGEX_PAPER_OFFLINE_KO.md)를 추가했습니다. 합성 시나리오로 LONG/SHORT·분할 익절·손절·비용·PNL을 별도 파일에 검증합니다. 거래소 모드는 READ_ONLY이며 **실제 데이터 자동 진입은 계속 OFF**입니다. 실행 예시는 [합성 JSON](examples/orangex-paper-scenario.json)이며 실제 계약 규격·수수료 자료가 아닙니다.
+
 OrangeX 1단계 조회 전용 연결은 [OrangeX 설정·검증·후속 설계](ORANGEX_READONLY_KO.md)를 참고하세요. 기본 연결은 꺼져 있고 모드는 `READ_ONLY`입니다. 공식 명세·계좌 조회의 미검증 항목은 차단하며 OrangeX 주문 기능은 없습니다. 기존 `.env`와 거래 기록은 교체하지 마세요.
 
 최신 Windows 8건 실측의 상장 미확인 원인, 거래 영역 `BTC·ETH·SPOT` 비교와 미검증 `PERPETUAL` 후보, 독립 Mark·호가 검사는 [거래 영역 수정 보고서](ORANGEX_CURRENCY_DOMAIN_KO.md)를 참고하세요. HTTP 200만으로 거래 준비 완료를 표시하지 않으며 PAPER는 계속 OFF입니다.

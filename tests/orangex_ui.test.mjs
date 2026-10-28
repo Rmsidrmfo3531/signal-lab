@@ -80,7 +80,7 @@ test('a server claiming LIVE or enabled submission cannot expose trading control
  const data=snapshot();data.mode='LIVE';data.orderSubmissionEnabled=true;data.automation.enabled=true;
  const view=orangeXView(data);
  assert.match(view.mode,/지원하지 않는 모드 · 주문 차단/);assert.match(view.notice,/조회만 제공/);
- assert.match(view.metrics,/OFF · 1단계 미구현/);assert.doesNotMatch(content(view),/<(?:button|input|form|select)\b/);
+ assert.match(view.metrics,/OFF · 실제 데이터 진입 비활성/);assert.doesNotMatch(content(view),/<(?:button|input|form|select)\b/);
  data.verification.officialSpec='UNVERIFIED';assert.equal(orangeXView(data).state,'orangex-pending');
 });
 
@@ -104,11 +104,29 @@ test('OrangeX refresh uses GET only and serializes concurrent requests while res
  assert.equal(await controller.refresh(true),false,'a pending read cannot create a second exchange request');
  release();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(root.nodes.get('orangexRefresh').disabled,false);
- await controller.refresh(true);assert.equal(calls.length,2);
- assert.deepEqual(calls.map(call=>call.url),['/api/orangex','/api/orangex?refresh=1']);
+ await controller.refresh(true);assert.equal(calls.length,4);
+ assert.deepEqual(calls.filter(call=>call.url!=='/api/orangex/paper').map(call=>call.url),['/api/orangex','/api/orangex?refresh=1']);
+ assert.equal(calls.filter(call=>call.url==='/api/orangex/paper').length,2);
  assert.ok(calls.every(call=>call.options.method==='GET'&&!('body' in call.options)));
  assert.ok(calls.every(call=>Object.keys(call.options.headers).join(',')==='Accept'));
  assert.equal(typeof tick,'function');assert.equal(typeof root.nodes.get('orangexRefresh').listeners.get('click'),'function');
+});
+
+test('offline PAPER records render independently while an exchange public-market read is still pending',async()=>{
+ const root=dom();let release;
+ const waiting=new Promise(resolve=>{release=resolve});
+ const controller=initOrangeX({root,setTimer:()=>1,fetcher:async url=>{
+  if(url==='/api/orangex/paper')return {ok:true,json:async()=>({mode:'PAPER_OFFLINE',dataSource:'SYNTHETIC_FIXTURE',
+   settings:{capitalUSD:10000},summary:{realizedPnLUSD:3.5},pending:[],open:[],closed:[]})};
+  await waiting;return {ok:true,json:async()=>snapshot()};
+ }});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.match(root.nodes.get('orangexPaperStatus').textContent,/합성 테스트 데이터/);
+ assert.match(root.nodes.get('orangexPaperSummary').innerHTML,/\$3\.50/);
+ assert.equal(root.nodes.get('orangexRefresh').disabled,true);
+ assert.equal(await controller.refresh(true),false);
+ release();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(root.nodes.get('orangexRefresh').disabled,false);
 });
 
 test('a refresh failure keeps prior observations visible with an error state and never echoes its exception',async()=>{

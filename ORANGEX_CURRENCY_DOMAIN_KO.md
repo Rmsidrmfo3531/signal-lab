@@ -1,5 +1,7 @@
 # OrangeX 상장 조회 영역 수정과 Windows 실측 재검증
 
+후속 [2단계 오프라인 PAPER 보고서](ORANGEX_PAPER_OFFLINE_KO.md)를 추가했습니다. 실제 API 검증은 여전히 미완료이며 합성 시뮬레이션만 구현했습니다. 아래는 `ae3f164`까지의 실측 대조·검증 기록입니다.
+
 대상은 `Rmsidrmfo3531/signal-lab`, 기준은 `feat/orangex-readonly`의 `205210b`입니다. 이번 변경은 상장 목록 조회·공개 시장 데이터 검증에 한정합니다. **READ_ONLY를 유지하고 OrangeX PAPER 자동 진입과 실제 주문은 모두 차단합니다.** 기존 Binance·Variational 분석이나 모의매매 기록을 OrangeX 기록으로 전환하지 않습니다.
 
 ## 원인과 확인 범위

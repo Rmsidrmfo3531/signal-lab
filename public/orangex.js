@@ -1,4 +1,5 @@
-// Phase 1 is a display-only client. Authentication and all credentials stay on the server.
+// Display-only client. Offline PAPER has no browser trading or activation API.
+import {renderOrangeXPaper} from './orangex_paper.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const numeric=value=>(typeof value==='number'||typeof value==='string')&&!(typeof value==='string'&&!value.trim())&&Number.isFinite(Number(value))?Number(value):null;
 const number=value=>{const n=numeric(value);return n===null?'—':n.toLocaleString('en-US',{maximumFractionDigits:8})};
@@ -147,7 +148,7 @@ export function orangeXView(payload={}){
   return `<li><strong>${esc(code)}</strong><span>${esc(errorLabels[code]||'서버의 연결·명세·권한 상태를 확인하세요.')}</span><small>${esc(time(item?.at))}</small></li>`;
  });
  const metrics=[['운영 모드',mode],['시장 API',connected?'연결 확인':data.enabled===false?'연결 비활성':status(data.marketStatus)],
-  ['계좌 조회',accountReady?'조회 가능':status(data.accountStatus)],['자동매매','OFF · 1단계 미구현'],
+  ['계좌 조회',accountReady?'조회 가능':status(data.accountStatus)],['자동매매','OFF · 실제 데이터 진입 비활성'],
   ['공식 명세',verified?'명세 확인':'미검증'],['실제 연결 검증',status(data.verification?.liveConnection)],
   ['긴급 중지','거래 엔진 미구현 · 신규 주문 없음'],['마지막 조회',time(data.checkedAt)],['조회 자료',sourceLabel(data.dataSource)]];
  metrics.push(['공개 시장 검증',readiness.publicDataReady?'상장·호가·Mark 관측 조건 통과':'상장·시세 검증 대기'],['PAPER 자동 진입','OFF · READ_ONLY']);
@@ -156,7 +157,7 @@ export function orangeXView(payload={}){
  return {
   mode,connected,hasAccount:accountReady,
   notice:invalidMode||data.orderSubmissionEnabled===true?'모드 확인 필요 · 이 화면은 조회만 제공하며 주문 제어 기능이 없습니다.':data._stale===true?
-   '조회 갱신 실패 · 이전에 확인한 자료를 표시합니다. 시세 시각을 확인하세요.':'조회 전용 · 주문 제출·자동 진입·손절·분할 익절 제어는 구현하지 않았습니다.',
+   '조회 갱신 실패 · 이전에 확인한 자료를 표시합니다. 시세 시각을 확인하세요.':'거래소 조회 전용 · 실제 데이터 자동 진입 OFF. 별도 OrangeX PAPER는 합성 시나리오로만 실행합니다.',
   state:connected&&verified?'orangex-ok':'orangex-pending',
   metrics:metrics.map(([label,value])=>`<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`).join(''),
   marketCount:`조회된 종목 후보 ${markets.length}개`,
@@ -203,18 +204,32 @@ export function renderOrangeX(payload,{root=globalThis.document}={}){
 
 export function initOrangeX({root=globalThis.document,fetcher=globalThis.fetch,interval=30000,setTimer=globalThis.setInterval}={}){
  if(!root?.getElementById('orangex'))return null;
- let active=false,lastSnapshot=null;
+ let active=false,lastSnapshot=null,paperSnapshot=null;
  const button=root.getElementById('orangexRefresh');
+ async function refreshPaper(){
+  if(!root?.getElementById('orangexPaper'))return;
+  try{
+   const response=await fetcher('/api/orangex/paper',{method:'GET',cache:'no-store',headers:{Accept:'application/json'}});
+   if(!response.ok)throw Error('Offline PAPER read failed');
+   paperSnapshot=await response.json();renderOrangeXPaper(paperSnapshot,{root});
+  }catch{renderOrangeXPaper({...paperSnapshot,_stale:true},{root})}
+ }
  async function refresh(force=false){
   if(active)return false;
   active=true;if(button)button.disabled=true;
+  // Local simulation records remain available while a public venue request is
+  // waiting or failing. Both reads share the same refresh serialization gate.
+  const paperRead=refreshPaper();
   try{
    const response=await fetcher(force?'/api/orangex?refresh=1':'/api/orangex',{method:'GET',cache:'no-store',headers:{Accept:'application/json'}});
    if(!response.ok)throw Error('OrangeX read-only response failed');
    const data=await response.json();lastSnapshot=data;renderOrangeX(data,{root});return true;
   }catch{
    renderOrangeX({...lastSnapshot,_stale:lastSnapshot!==null,connected:false,marketStatus:'ERROR',accountStatus:'STALE',errors:[{code:'HTTP_ERROR',at:Date.now()}]},{root});return false;
-  }finally{active=false;if(button)button.disabled=false}
+  }finally{
+   await paperRead;
+   active=false;if(button)button.disabled=false;
+  }
  }
  button?.addEventListener('click',()=>void refresh(true));
  const timer=setTimer?.(()=>void refresh(),interval);void refresh();

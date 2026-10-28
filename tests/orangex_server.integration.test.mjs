@@ -8,6 +8,8 @@ import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
 import {PaperEngine} from '../paper.mjs';
+import {runOrangeXPaperScenario} from '../scripts/orangex-paper-offline.mjs';
+import {paperScenario} from './fixtures/orangex_paper_scenario.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -79,6 +81,32 @@ const noExternalRequests=async file=>{
  let content='';try{content=await fs.readFile(file,'utf8')}catch(error){if(error.code!=='ENOENT')throw error}
  assert.equal(content,'','disabled or unsupported modes must not contact an OrangeX endpoint');
 };
+
+test('separate offline PAPER records reach the dashboard through GET only without altering legacy positions or PNL',{timeout:15000},async()=>{
+ const app=await sandbox(),records=path.dirname(path.dirname(app.retainedBackup)),directory=path.join(records,'orangex-paper');
+ try{
+  const empty=JSON.parse((await app.read('/api/orangex/paper')).text);
+  assert.equal(empty.recordStatus,'UNCONFIGURED');assert.equal(empty.realDataAutoEntryEnabled,false);
+  await assert.rejects(fs.stat(directory),error=>error.code==='ENOENT','reading the default view creates no PAPER directory');
+  const result=runOrangeXPaperScenario(paperScenario(),{directory});
+  const snapshot=JSON.parse((await app.read('/api/orangex/paper')).text);
+  assert.equal(snapshot.closed.length,2);assert.equal(snapshot.summary.realizedPnLUSD,result.snapshot.summary.realizedPnLUSD);
+  assert.equal(snapshot.closed[0].direction,'LONG');assert.equal(snapshot.closed[1].direction,'SHORT');
+  assert.equal(snapshot.storage.readOnly,true);assert.equal(snapshot.storage.healthy,true);
+  assert.equal(snapshot.realDataAutoEntryEnabled,false);assert.equal(snapshot.liveOrdersEnabled,false);
+  for(const method of ['POST','PUT','PATCH','DELETE'])assert.equal((await fetch(app.base+'/api/orangex/paper',{method})).status,405);
+  assert.equal((await fetch(app.base+'/api/orangex/paper/orders')).status,404);
+  const module=(await app.read('/orangex_paper.js')).text;assert.match(module,/renderOrangeXPaper/);
+  assert.deepEqual((await app.disk()).paper,app.fixture.paper);assert.deepEqual((await app.disk()).paperNotify,app.fixture.paperNotify);
+  assert.equal(await fs.readFile(app.retainedBackup,'utf8'),app.original);
+  const file=path.join(directory,'orangex-paper.json');await fs.writeFile(file,'damaged OrangeX test record');
+  const unavailable=JSON.parse((await app.read('/api/orangex/paper')).text);
+  assert.equal(unavailable.recordsUnavailable,true);assert.equal(unavailable.summary,null);
+  assert.equal((await fetch(app.base+'/api/status')).status,200,'a new PANEL record problem must not stop the legacy server');
+  assert.equal(await fs.readFile(file,'utf8'),'damaged OrangeX test record');
+  assert.deepEqual((await app.disk()).paper,app.fixture.paper);await noExternalRequests(app.requests);
+ }finally{await app.close()}
+});
 
 test('OrangeX default HTTP view is read-only, has unknown account data, and preserves existing PNL, positions and settings',{timeout:15000},async()=>{
  const app=await sandbox();

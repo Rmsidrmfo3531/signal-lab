@@ -8,6 +8,7 @@ import {signalLifecycle} from './signal_lifecycle.mjs';
 import {evaluateSignal} from './signal_pipeline.mjs';
 import {OrangeXReadOnlyAdapter} from './orangex.mjs';
 import {compareOrangeXBinance} from './orangex_comparison.mjs';
+import {OrangeXPaperService} from './orangex_paper_service.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -51,8 +52,8 @@ const CONFIG={
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  limits:{...EXEC_DEFAULTS,maxQuoteAgeSeconds:Number(process.env.MAX_VARIATIONAL_QUOTE_AGE_SEC||180),maxSpreadBps:Number(process.env.MAX_VARIATIONAL_SPREAD_BPS||20),maxAdverseVenueBps:Number(process.env.MAX_ADVERSE_VENUE_BPS||35),maxRoundTripBps:Number(process.env.MAX_ROUNDTRIP_BPS||30)}
 };
-// OrangeX stage 1 has an isolated, read-only transport. No setting, API key or
-// browser request can enable paper/live execution or change existing records.
+// OrangeX transport stays READ_ONLY. Stage 2 offline PAPER uses a separate store;
+// no setting, API key or browser request can enable actual-data auto entry.
 let orangeX,orangeXConfigError=false;
 try{
  orangeX=new OrangeXReadOnlyAdapter({enabled:process.env.ORANGEX_ENABLED==='true',mode:process.env.ORANGEX_MODE||'READ_ONLY',
@@ -65,6 +66,7 @@ try{
 }catch{
  orangeX=new OrangeXReadOnlyAdapter();orangeXConfigError=true;
 }
+const orangeXPaper=new OrangeXPaperService({directory:path.join(storage.dir,'orangex-paper')});
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
 const lanMode=!['127.0.0.1','::1','localhost'].includes(CONFIG.host);
@@ -406,6 +408,9 @@ async function checkSymbolInternal(symbol, force=false){
 }
 function publishCryptoSignal(row,decision,now=Date.now()){
  if(!decision.ready||!storageHealth.healthy)return;
+ // Observe the validated scanner output, but never route actual market data to
+ // the offline simulation engine or alter the existing paper registration.
+ orangeXPaper.observeSignal({...row,decision,qualified:true},{instrumentName:orangeX.instruments.find(name=>name.split('-').slice(0,2).join('')===row.symbol)});
  const {symbol,direction,pattern}=row;
  const paperKey=signalKey({market:'CRYPTO',symbol,direction,pattern,barAt:row.patternConfirmedAt});
  // The same fresh approval may be observed by a scan and many ticker events.
@@ -715,6 +720,7 @@ const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');const pathname=url.pathname;
   if(pathname==='/api/orangex'||pathname.startsWith('/api/orangex/')){
    if(req.method!=='GET')return response(res,405,{error:'ORANGEX_READ_ONLY',message:'OrangeX 1단계는 조회만 허용합니다.',orderSubmissionEnabled:false});
+   if(pathname==='/api/orangex/paper')return response(res,200,orangeXPaper.snapshot());
    if(pathname!=='/api/orangex')return response(res,404,{error:'ORANGEX_READ_ONLY_ROUTE_NOT_FOUND',orderSubmissionEnabled:false});
    try{
     const snapshot=await orangeX.snapshot({refresh:url.searchParams.get('refresh')==='1'});
