@@ -1,5 +1,7 @@
 # OrangeX PAPER 2.5단계 — 재생·성과·위험·장애 검증
 
+후속 저장·운영·진단 검증은 [2.6단계 보고서](ORANGEX_PAPER_26_KO.md)를 참고하세요. 아래 수치와 테스트 개수는 2.5단계 당시 기록입니다.
+
 대상은 `Rmsidrmfo3531/signal-lab`, `feat/orangex-readonly`, 기준 커밋 `dd5f041`입니다. 먼저 `ORANGEX_PAPER_OFFLINE_KO.md`를 읽고 기존 합성 전용 엔진을 확장했습니다. **실제 OrangeX API 재접속·API 키 사용·주문·main 수정·Merge는 하지 않았습니다.** 개발·테스트는 임시 데이터에서 수행했고 기존 PNL·설정·백업을 초기화하지 않았습니다.
 
 ## 구현한 기능과 재사용한 부분

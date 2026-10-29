@@ -1,5 +1,6 @@
 // Display-only client. Offline PAPER has no browser trading or activation API.
 import {renderOrangeXPaper,renderOrangeXPaperReplay} from './orangex_paper.js';
+import {renderOrangeXOperational} from './orangex_operational.js';
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const numeric=value=>(typeof value==='number'||typeof value==='string')&&!(typeof value==='string'&&!value.trim())&&Number.isFinite(Number(value))?Number(value):null;
 const number=value=>{const n=numeric(value);return n===null?'—':n.toLocaleString('en-US',{maximumFractionDigits:8})};
@@ -199,6 +200,7 @@ export function renderOrangeX(payload,{root=globalThis.document}={}){
  set('orangexPnl',view.pnl,true);set('orangexPositions',view.positions,true);set('orangexOrders',view.orders,true);
  set('orangexTrades',view.trades,true);set('orangexErrors',view.errors,true);set('orangexRejections',view.rejection);
  const panel=find('orangex');if(panel)panel.className='panel orangex-panel '+view.state;
+ renderOrangeXOperational(payload?.operationalReadiness,{root});
  return view;
 }
 

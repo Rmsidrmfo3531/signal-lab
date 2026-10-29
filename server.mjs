@@ -10,6 +10,7 @@ import {OrangeXReadOnlyAdapter} from './orangex.mjs';
 import {compareOrangeXBinance} from './orangex_comparison.mjs';
 import {OrangeXPaperService} from './orangex_paper_service.mjs';
 import {OrangeXPaperReplayStore} from './orangex_paper_replay_store.mjs';
+import {evaluateOrangeXReadiness} from './orangex_readiness.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -728,11 +729,13 @@ const server=http.createServer(async(req,res)=>{
    if(req.method!=='GET')return response(res,405,{error:'ORANGEX_READ_ONLY',message:'OrangeX 1단계는 조회만 허용합니다.',orderSubmissionEnabled:false});
    if(pathname==='/api/orangex/paper')return response(res,200,orangeXPaper.snapshot());
    if(pathname==='/api/orangex/paper/replay')return response(res,200,orangeXReplayView());
+   if(pathname==='/api/orangex/readiness')return response(res,200,evaluateOrangeXReadiness(orangeX.getStatus()));
    if(pathname!=='/api/orangex')return response(res,404,{error:'ORANGEX_READ_ONLY_ROUTE_NOT_FOUND',orderSubmissionEnabled:false});
    try{
     const snapshot=await orangeX.snapshot({refresh:url.searchParams.get('refresh')==='1'});
     snapshot.markets=snapshot.markets.map(market=>({...market,binanceComparison:
      compareOrangeXBinance(market,state.quotes.get(market.symbol),{now:Date.now()})}));
+    snapshot.operationalReadiness=evaluateOrangeXReadiness(snapshot);
     if(orangeXConfigError)snapshot.errors=[...(snapshot.errors||[]),{code:'CONFIG_INVALID',message:'OrangeX 설정이 유효하지 않아 연결을 비활성화했습니다.',at:Date.now()}];
     return response(res,200,snapshot);
    }catch{return response(res,503,{mode:'READ_ONLY',connected:false,orderSubmissionEnabled:false,error:'ORANGEX_READ_FAILED'})}

@@ -236,7 +236,10 @@ export function orangeXPaperView(payload={}, {now=Date.now()}={}){
  const storage=plain(data.storage)?data.storage:{},storageStatus=unavailable?'PAPER 기록 조회 실패 · 기존 파일 보존':
   data.storageHealthy===false||storage.healthy===false?'PAPER 기록 저장 실패 · 신규 모의 진입 중지':
   typeof storage.status==='string'&&Object.hasOwn(storageLabels,storage.status)?storageLabels[storage.status]:'PAPER 저장소 조회 상태 미확인';
- const storageView=`${storageStatus} · 기존 Signal Lab PNL·포지션·설정·백업과 분리 · ${source}`+
+ const capacity=numeric(storage.fileSizeBytes)!==null&&numeric(storage.maxStoreBytes)!==null?
+  ` · 원장 ${(storage.fileSizeBytes/1048576).toFixed(2)} / ${(storage.maxStoreBytes/1048576).toFixed(2)}MiB`:'',
+  storageView=`${storageStatus} · 기존 Signal Lab PNL·포지션·설정·백업과 분리 · ${source}`+capacity+
+  (storage.nearCapacity===true?' · 저장 용량 주의 · 기존 기록 자동 삭제 없음':'')+
   (data.recovered===true?' · 저장된 진행 포지션 복구됨':'')+(summary.valuationStale===true?' · 시세 지연, 평가값 재확인 필요':'')+
   (summary.unverifiedFunding===true?' · 펀딩 비용 미검증, 0으로 계산하지 않음':'');
  return {mode,source,state,configured,realDataAutoEntryEnabled:false,liveOrdersEnabled:false,notice,

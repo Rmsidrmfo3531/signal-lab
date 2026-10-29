@@ -19,8 +19,12 @@ test('all local runtime imports and Windows notifier are eligible without allowi
   const code=fs.readFileSync(new URL('../'+source,import.meta.url),'utf8');
   for(const [,name] of code.matchAll(/from\s+['"]\.\/([^'"]+)['"]/g))assert.equal(allowedFile(name),true,name);
  }
- for(const name of ['signal_pipeline.mjs','quality.mjs','windows_paper_notify.ps1','paper.mjs'])assert.equal(allowedFile(name),true,name);
- for(const name of ['store.json','.env','recovery/store-corrupt.json','backups/store-any.json','arbitrary.ps1'])assert.equal(allowedFile(name),false,name);
+ for(const name of ['signal_pipeline.mjs','quality.mjs','windows_paper_notify.ps1','paper.mjs',
+  'orangex_readiness.mjs','orangex_paper_journal.mjs','diagnose_orangex.bat','scripts/diagnose-orangex-windows.mjs',
+  'scripts/check-orangex-readiness.mjs','scripts/check-orangex-storage-performance.mjs','scripts/check-orangex-operational-stress.mjs',
+  'public/orangex_operational.js'])assert.equal(allowedFile(name),true,name);
+ for(const name of ['store.json','.env','recovery/store-corrupt.json','backups/store-any.json','arbitrary.ps1',
+  'orangex-paper/orangex-paper.json','orangex-paper-journal/manifest.json','scripts/unreviewed-diagnostic.mjs'])assert.equal(allowedFile(name),false,name);
 });
 test('runtime-module update is verified, applied, and retains both current and backup trade records',async()=>{
  const dir=root();try{

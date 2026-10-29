@@ -84,6 +84,7 @@ export class OrangeXPaperService{
    storage:{configured:Boolean(this.store),exists:disk.exists===true,readOnly:!this.writable,
     status:this.readError||disk.healthy===false?'ERROR':!disk.exists?'ABSENT':!this.writable?'READ_ONLY':'READY',
     healthy:!this.readError&&disk.healthy!==false&&disk.lastError==null,lastSavedAt:disk.lastSavedAt??null,
+    fileSizeBytes:disk.fileSizeBytes??null,maxStoreBytes:disk.maxStoreBytes??null,nearCapacity:disk.nearCapacity===true,
     errorCode:this.readError??(disk.lastError?'ORANGEX_PAPER_STORAGE_ERROR':null)},
    signalBridge:{timeframes:['1h','4h'],productionConnection:'OBSERVE_REJECTIONS_ONLY',
     realAutoEntryEnabled:false,syntheticInputEnabled:this.writable&&this.executionMode==='SYNTHETIC_TEST'&&this.runKind==='FORWARD_PAPER'},

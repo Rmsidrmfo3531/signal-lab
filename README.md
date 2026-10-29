@@ -1,5 +1,7 @@
 # Signal Lab v5.8 — 스캐너·자동 모의매매 수정
 
+OrangeX 최신 [2.6단계 운영 안정성·Windows 원클릭 검증 보고서](ORANGEX_PAPER_26_KO.md)에 별도 Journal 실험, 저장 한계, 운영 준비 상태 및 검증 도구 사용법을 정리했습니다. 기존 저장 방식과 READ_ONLY를 유지하며 실제 데이터 PAPER 자동 진입은 OFF입니다.
+
 OrangeX [PAPER 2.5단계 보고서](ORANGEX_PAPER_25_KO.md)는 시간순 재생·미래 참조 방지, 독립 회계 감사·성과 분석, 연속 손실·증거금 제한, 강제 종료 복구와 가상 7일·30일 측정을 설명합니다. 모의체결은 `SYNTHETIC_TEST`만 허용합니다. 과거 재생은 분석 전용이며 `LIVE_MARKET_PAPER`는 계속 OFF입니다.
 
 OrangeX 2단계 [오프라인 PAPER 구현·사용 안내](ORANGEX_PAPER_OFFLINE_KO.md)를 추가했습니다. 합성 시나리오로 LONG/SHORT·분할 익절·손절·비용·PNL을 별도 파일에 검증합니다. 거래소 모드는 READ_ONLY이며 **실제 데이터 자동 진입은 계속 OFF**입니다. 실행 예시는 [합성 JSON](examples/orangex-paper-scenario.json)이며 실제 계약 규격·수수료 자료가 아닙니다.

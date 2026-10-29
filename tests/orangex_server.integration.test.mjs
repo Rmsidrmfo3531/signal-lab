@@ -79,6 +79,17 @@ async function sandbox(configuration={}){
  }
 }
 
+function assertOperationalReadiness(report){
+ assert.equal(report.kind,'ORANGEX_OPERATIONAL_READINESS');assert.equal(report.status,'NOT_READY');
+ assert.equal(report.mode,'READ_ONLY');assert.equal(report.activationAllowed,false);
+ assert.equal(report.realDataAutoEntryEnabled,false);assert.equal(report.liveOrdersEnabled,false);
+ assert.equal(report.orderSubmissionEnabled,false);assert.equal(report.checks.length,54);
+ assert.equal(report.summary.total,54);assert.equal(report.markets.length,3);
+ assert.deepEqual(report.markets.map(row=>row.asset),['BTC','ETH','SOL']);
+ assert.ok(report.checks.some(row=>row.status!=='PASS'),'unknown market rules must prevent READY');
+ for(const market of report.markets){assert.equal(market.status,'NOT_READY');assert.equal(market.checks.length,17)}
+}
+
 const noExternalRequests=async file=>{
  let content='';try{content=await fs.readFile(file,'utf8')}catch(error){if(error.code!=='ENOENT')throw error}
  assert.equal(content,'','disabled or unsupported modes must not contact an OrangeX endpoint');
@@ -132,19 +143,45 @@ test('OrangeX default HTTP view is read-only, has unknown account data, and pres
    assert.equal(snapshot.mode,'READ_ONLY');assert.equal(snapshot.enabled,false);
    assert.equal(snapshot.orderSubmissionEnabled,false);assert.equal(snapshot.capabilities.accountRead,false);
    assert.equal(snapshot.account,null,'an unread account must not be fabricated as a zero balance or empty position list');
+   assertOperationalReadiness(snapshot.operationalReadiness);
   }
-  for(const method of ['POST','PUT','PATCH','DELETE'])for(const route of ['/api/orangex','/api/orangex/orders','/api/orangex/mode']){
+  for(const method of ['POST','PUT','PATCH','DELETE'])for(const route of ['/api/orangex','/api/orangex/orders','/api/orangex/mode','/api/orangex/readiness']){
    const result=await fetch(app.base+route,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'LIVE',side:'BUY',amount:1})});
    assert.equal(result.status,405,method+' '+route+' must not accept a trading or mode-change command');
   }
   const html=(await app.read('/')).text;
   for(const id of ['scanner','paper','tradfi','news','orangex'])assert.match(html,new RegExp('id="'+id+'"'));
-  for(const asset of ['/app.js','/paper_ui.js','/directional_entries.js','/orangex.js'])await app.read(asset);
+  for(const asset of ['/app.js','/paper_ui.js','/directional_entries.js','/orangex.js','/orangex_operational.js'])await app.read(asset);
   const after=await app.disk();
   assert.deepEqual(after.paper,app.fixture.paper,'OrangeX reads must preserve legacy open positions and recorded PNL');
   assert.deepEqual(after.paperNotify,app.fixture.paperNotify);
   assert.deepEqual(after.watchlist,app.fixture.watchlist);
   assert.equal(await fs.readFile(app.retainedBackup,'utf8'),app.original,'the existing backup remains intact');
+  await noExternalRequests(app.requests);
+ }finally{await app.close()}
+});
+
+test('cached operational readiness never refreshes markets, creates simulation stores or changes legacy records',{timeout:15000},async()=>{
+ const app=await sandbox({ORANGEX_ENABLED:'true',ORANGEX_MODE:'READ_ONLY',SIGNAL_LAB_TEST_ORANGEX_BOOK:'fresh'});
+ try{
+  const records=path.dirname(path.dirname(app.retainedBackup));
+  for(const route of ['/api/orangex/readiness','/api/orangex/readiness?refresh=1&mode=PAPER']){
+   const report=JSON.parse((await app.read(route)).text);assertOperationalReadiness(report);
+   for(const market of report.markets){
+    assert.equal(market.checks.find(row=>row.id==='LISTING_ACTIVE').status,'UNVERIFIED');
+    assert.equal(market.checks.find(row=>row.id==='BOOK_FRESHNESS').status,'UNVERIFIED');
+    assert.equal(market.checks.find(row=>row.id==='MARK_FRESHNESS').status,'UNVERIFIED');
+   }
+  }
+  for(const name of ['orangex-paper','orangex-paper-replays','orangex-paper-journal'])
+   await assert.rejects(fs.stat(path.join(records,name)),error=>error.code==='ENOENT');
+  const module=(await app.read('/orangex_operational.js')).text;
+  assert.match(module,/renderOrangeXOperational/);
+  const html=(await app.read('/')).text;
+  for(const id of ['orangexOperationalStatus','orangexOperationalChecks'])assert.match(html,new RegExp('id="'+id+'"'));
+  assert.deepEqual((await app.disk()).paper,app.fixture.paper);
+  assert.deepEqual((await app.disk()).paperNotify,app.fixture.paperNotify);
+  assert.equal(await fs.readFile(app.retainedBackup,'utf8'),app.original);
   await noExternalRequests(app.requests);
  }finally{await app.close()}
 });
@@ -195,6 +232,14 @@ test('OrangeX public-market HTTP reads stay separate from scanner, account crede
   assert.equal(snapshot.marketReadiness.paperReady,false);assert.equal(snapshot.marketReadiness.tradingReady,false);
   assert.equal(snapshot.verification.officialSpec,'UNVERIFIED','a mocked SDK-shaped response is not official specification verification');
   assert.equal(snapshot.markets.length,3);
+  assertOperationalReadiness(snapshot.operationalReadiness);
+  const cached=JSON.parse((await app.read('/api/orangex/readiness?refresh=1&mode=LIVE')).text);
+  assertOperationalReadiness(cached);
+  for(const market of cached.markets){
+   assert.equal(market.checks.find(row=>row.id==='LISTING_ACTIVE').status,'UNVERIFIED','mocked active metadata has no official listing-role review');
+   assert.equal(market.checks.find(row=>row.id==='BOOK_FRESHNESS').status,'PASS');
+   assert.equal(market.checks.find(row=>row.id==='MARK_FRESHNESS').status,'PASS');
+  }
   const expected=new Map([['BTCUSDT',81000],['ETHUSDT',2500],['SOLUSDT',180]]);
   for(const market of snapshot.markets){
    const mid=expected.get(market.symbol);assert.ok(mid);

@@ -1,0 +1,2503 @@
+{
+  "kind": "ORANGEX26_EXISTING_WINDOWS_EVIDENCE_REVIEW",
+  "source": "USER_PROVIDED_WINDOWS_OBSERVATION_SUMMARY",
+  "newActualOrangeXRequestsRun": false,
+  "rawResponseAvailable": false,
+  "sourceCheckedAt": "2026-10-27T12:37:02.419Z",
+  "atCapture": {
+    "kind": "ORANGEX_OPERATIONAL_READINESS",
+    "scope": "MARKET_DATA_PRECONDITIONS_ONLY",
+    "mode": "READ_ONLY",
+    "status": "NOT_READY",
+    "checkedAt": 1793104624315,
+    "checks": [
+      {
+        "id": "EVIDENCE_FORMAT",
+        "status": "PASS",
+        "reason": "NORMALIZED_PUBLIC_OBSERVATIONS",
+        "label": "입력 자료 구조",
+        "observed": {}
+      },
+      {
+        "id": "READ_ONLY_CONTEXT",
+        "status": "PASS",
+        "reason": "READ_ONLY_REPORTED",
+        "label": "조회 전용 상태",
+        "observed": {}
+      },
+      {
+        "id": "SOURCE_PROVENANCE",
+        "status": "UNVERIFIED",
+        "reason": "RESPONSE_ORIGIN_UNVERIFIED",
+        "label": "실측 출처 검증",
+        "observed": {
+          "synthetic": false
+        }
+      },
+      {
+        "id": "CONTRACT_NAME",
+        "status": "UNVERIFIED",
+        "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+        "label": "정확한 계약명",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "LISTING_ACTIVE",
+        "status": "UNVERIFIED",
+        "reason": "ACTIVE_LISTING_UNOBSERVED",
+        "label": "상장·활성 상태",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_SIZE",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "계약 크기",
+        "observed": {
+          "rawField": "contract_size",
+          "rawValue": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_UNIT",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "주문 수량 단위",
+        "observed": {
+          "unit": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "MINIMUM_QUANTITY",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 주문량",
+        "observed": {
+          "rawField": "min_qty",
+          "rawValue": null,
+          "minTradeAmount": null,
+          "minQty": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_INCREMENT",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "주문 수량 증분",
+        "observed": {
+          "rawField": "qty_step",
+          "rawValue": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "MIN_NOTIONAL",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 명목금액",
+        "observed": {
+          "rawField": "min_notional",
+          "rawValue": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_TICK",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "가격 단위",
+        "observed": {
+          "rawField": "tick_size",
+          "rawValue": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "FEE_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+        "label": "Maker·Taker 수수료 단위",
+        "observed": {
+          "makerRaw": null,
+          "takerRaw": null,
+          "unit": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "FUNDING",
+        "status": "UNVERIFIED",
+        "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+        "label": "펀딩 정산 정보",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "TIMESTAMP_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "호가·Mark 시각 단위",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_FRESHNESS",
+        "status": "PASS",
+        "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+        "label": "호가 독립 신선도",
+        "observed": {
+          "timestamp": 1793104606846,
+          "ageMs": 17469,
+          "price": 80205.35
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "MARK_FRESHNESS",
+        "status": "PASS",
+        "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+        "label": "Mark 독립 신선도",
+        "observed": {
+          "timestamp": 1793104606391,
+          "ageMs": 17924,
+          "price": 80205.3
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_INTEGRITY",
+        "status": "PASS",
+        "reason": "OBSERVED_DEPTH_SORTED_UNIQUE_AND_POSITIVE",
+        "label": "호가 배열 무결성",
+        "observed": {
+          "bidLevels": 20,
+          "askLevels": 20,
+          "issues": []
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 가격 정밀도",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 잔량 정밀도",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "BINANCE_MAPPING",
+        "status": "UNVERIFIED",
+        "reason": "BINANCE_REFERENCE_UNOBSERVED",
+        "label": "Binance 계약 대응",
+        "observed": {
+          "referenceSymbol": null,
+          "price": null,
+          "timestamp": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_NAME",
+        "status": "UNVERIFIED",
+        "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+        "label": "정확한 계약명",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "LISTING_ACTIVE",
+        "status": "UNVERIFIED",
+        "reason": "ACTIVE_LISTING_UNOBSERVED",
+        "label": "상장·활성 상태",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_SIZE",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "계약 크기",
+        "observed": {
+          "rawField": "contract_size",
+          "rawValue": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_UNIT",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "주문 수량 단위",
+        "observed": {
+          "unit": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "MINIMUM_QUANTITY",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 주문량",
+        "observed": {
+          "rawField": "min_qty",
+          "rawValue": null,
+          "minTradeAmount": null,
+          "minQty": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_INCREMENT",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "주문 수량 증분",
+        "observed": {
+          "rawField": "qty_step",
+          "rawValue": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "MIN_NOTIONAL",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 명목금액",
+        "observed": {
+          "rawField": "min_notional",
+          "rawValue": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_TICK",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "가격 단위",
+        "observed": {
+          "rawField": "tick_size",
+          "rawValue": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "FEE_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+        "label": "Maker·Taker 수수료 단위",
+        "observed": {
+          "makerRaw": null,
+          "takerRaw": null,
+          "unit": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "FUNDING",
+        "status": "UNVERIFIED",
+        "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+        "label": "펀딩 정산 정보",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "TIMESTAMP_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "호가·Mark 시각 단위",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_FRESHNESS",
+        "status": "PASS",
+        "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+        "label": "호가 독립 신선도",
+        "observed": {
+          "timestamp": 1793104607142,
+          "ageMs": 17173,
+          "price": 2326.275
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "MARK_FRESHNESS",
+        "status": "PASS",
+        "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+        "label": "Mark 독립 신선도",
+        "observed": {
+          "timestamp": 1793104606623,
+          "ageMs": 17692,
+          "price": 2326.27
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_INTEGRITY",
+        "status": "FAIL",
+        "reason": "BOOK_ARRAY_INVALID",
+        "label": "호가 배열 무결성",
+        "observed": {
+          "bidLevels": 20,
+          "askLevels": 22,
+          "issues": [
+            "BOOK_DEPTH_EXCEEDED",
+            "BOOK_DUPLICATE_PRICE",
+            "BOOK_UNSORTED"
+          ]
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 가격 정밀도",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 잔량 정밀도",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "BINANCE_MAPPING",
+        "status": "UNVERIFIED",
+        "reason": "BINANCE_REFERENCE_UNOBSERVED",
+        "label": "Binance 계약 대응",
+        "observed": {
+          "referenceSymbol": null,
+          "price": null,
+          "timestamp": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_NAME",
+        "status": "UNVERIFIED",
+        "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+        "label": "정확한 계약명",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "LISTING_ACTIVE",
+        "status": "UNVERIFIED",
+        "reason": "ACTIVE_LISTING_UNOBSERVED",
+        "label": "상장·활성 상태",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_SIZE",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "계약 크기",
+        "observed": {
+          "rawField": "contract_size",
+          "rawValue": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_UNIT",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "주문 수량 단위",
+        "observed": {
+          "unit": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "MINIMUM_QUANTITY",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 주문량",
+        "observed": {
+          "rawField": "min_qty",
+          "rawValue": null,
+          "minTradeAmount": null,
+          "minQty": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_INCREMENT",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "주문 수량 증분",
+        "observed": {
+          "rawField": "qty_step",
+          "rawValue": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "MIN_NOTIONAL",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 명목금액",
+        "observed": {
+          "rawField": "min_notional",
+          "rawValue": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_TICK",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "가격 단위",
+        "observed": {
+          "rawField": "tick_size",
+          "rawValue": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "FEE_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+        "label": "Maker·Taker 수수료 단위",
+        "observed": {
+          "makerRaw": null,
+          "takerRaw": null,
+          "unit": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "FUNDING",
+        "status": "UNVERIFIED",
+        "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+        "label": "펀딩 정산 정보",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "TIMESTAMP_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "호가·Mark 시각 단위",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_FRESHNESS",
+        "status": "PASS",
+        "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+        "label": "호가 독립 신선도",
+        "observed": {
+          "timestamp": 1793104607385,
+          "ageMs": 16930,
+          "price": 100.61500000000001
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "MARK_FRESHNESS",
+        "status": "PASS",
+        "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+        "label": "Mark 독립 신선도",
+        "observed": {
+          "timestamp": 1793104606389,
+          "ageMs": 17926,
+          "price": 100.6
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_INTEGRITY",
+        "status": "PASS",
+        "reason": "OBSERVED_DEPTH_SORTED_UNIQUE_AND_POSITIVE",
+        "label": "호가 배열 무결성",
+        "observed": {
+          "bidLevels": 20,
+          "askLevels": 20,
+          "issues": []
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 가격 정밀도",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 잔량 정밀도",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "BINANCE_MAPPING",
+        "status": "UNVERIFIED",
+        "reason": "BINANCE_REFERENCE_UNOBSERVED",
+        "label": "Binance 계약 대응",
+        "observed": {
+          "referenceSymbol": null,
+          "price": null,
+          "timestamp": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      }
+    ],
+    "markets": [
+      {
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL",
+        "status": "NOT_READY",
+        "checks": [
+          {
+            "id": "CONTRACT_NAME",
+            "status": "UNVERIFIED",
+            "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+            "label": "정확한 계약명",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "LISTING_ACTIVE",
+            "status": "UNVERIFIED",
+            "reason": "ACTIVE_LISTING_UNOBSERVED",
+            "label": "상장·활성 상태",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "CONTRACT_SIZE",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "계약 크기",
+            "observed": {
+              "rawField": "contract_size",
+              "rawValue": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_UNIT",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "주문 수량 단위",
+            "observed": {
+              "unit": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "MINIMUM_QUANTITY",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 주문량",
+            "observed": {
+              "rawField": "min_qty",
+              "rawValue": null,
+              "minTradeAmount": null,
+              "minQty": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_INCREMENT",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "주문 수량 증분",
+            "observed": {
+              "rawField": "qty_step",
+              "rawValue": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "MIN_NOTIONAL",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 명목금액",
+            "observed": {
+              "rawField": "min_notional",
+              "rawValue": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_TICK",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "가격 단위",
+            "observed": {
+              "rawField": "tick_size",
+              "rawValue": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "FEE_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+            "label": "Maker·Taker 수수료 단위",
+            "observed": {
+              "makerRaw": null,
+              "takerRaw": null,
+              "unit": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "FUNDING",
+            "status": "UNVERIFIED",
+            "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+            "label": "펀딩 정산 정보",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "TIMESTAMP_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "호가·Mark 시각 단위",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_FRESHNESS",
+            "status": "PASS",
+            "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+            "label": "호가 독립 신선도",
+            "observed": {
+              "timestamp": 1793104606846,
+              "ageMs": 17469,
+              "price": 80205.35
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "MARK_FRESHNESS",
+            "status": "PASS",
+            "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+            "label": "Mark 독립 신선도",
+            "observed": {
+              "timestamp": 1793104606391,
+              "ageMs": 17924,
+              "price": 80205.3
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_INTEGRITY",
+            "status": "PASS",
+            "reason": "OBSERVED_DEPTH_SORTED_UNIQUE_AND_POSITIVE",
+            "label": "호가 배열 무결성",
+            "observed": {
+              "bidLevels": 20,
+              "askLevels": 20,
+              "issues": []
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 가격 정밀도",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 잔량 정밀도",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "BINANCE_MAPPING",
+            "status": "UNVERIFIED",
+            "reason": "BINANCE_REFERENCE_UNOBSERVED",
+            "label": "Binance 계약 대응",
+            "observed": {
+              "referenceSymbol": null,
+              "price": null,
+              "timestamp": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          }
+        ]
+      },
+      {
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL",
+        "status": "NOT_READY",
+        "checks": [
+          {
+            "id": "CONTRACT_NAME",
+            "status": "UNVERIFIED",
+            "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+            "label": "정확한 계약명",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "LISTING_ACTIVE",
+            "status": "UNVERIFIED",
+            "reason": "ACTIVE_LISTING_UNOBSERVED",
+            "label": "상장·활성 상태",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "CONTRACT_SIZE",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "계약 크기",
+            "observed": {
+              "rawField": "contract_size",
+              "rawValue": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_UNIT",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "주문 수량 단위",
+            "observed": {
+              "unit": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "MINIMUM_QUANTITY",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 주문량",
+            "observed": {
+              "rawField": "min_qty",
+              "rawValue": null,
+              "minTradeAmount": null,
+              "minQty": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_INCREMENT",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "주문 수량 증분",
+            "observed": {
+              "rawField": "qty_step",
+              "rawValue": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "MIN_NOTIONAL",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 명목금액",
+            "observed": {
+              "rawField": "min_notional",
+              "rawValue": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_TICK",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "가격 단위",
+            "observed": {
+              "rawField": "tick_size",
+              "rawValue": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "FEE_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+            "label": "Maker·Taker 수수료 단위",
+            "observed": {
+              "makerRaw": null,
+              "takerRaw": null,
+              "unit": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "FUNDING",
+            "status": "UNVERIFIED",
+            "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+            "label": "펀딩 정산 정보",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "TIMESTAMP_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "호가·Mark 시각 단위",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_FRESHNESS",
+            "status": "PASS",
+            "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+            "label": "호가 독립 신선도",
+            "observed": {
+              "timestamp": 1793104607142,
+              "ageMs": 17173,
+              "price": 2326.275
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "MARK_FRESHNESS",
+            "status": "PASS",
+            "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+            "label": "Mark 독립 신선도",
+            "observed": {
+              "timestamp": 1793104606623,
+              "ageMs": 17692,
+              "price": 2326.27
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_INTEGRITY",
+            "status": "FAIL",
+            "reason": "BOOK_ARRAY_INVALID",
+            "label": "호가 배열 무결성",
+            "observed": {
+              "bidLevels": 20,
+              "askLevels": 22,
+              "issues": [
+                "BOOK_DEPTH_EXCEEDED",
+                "BOOK_DUPLICATE_PRICE",
+                "BOOK_UNSORTED"
+              ]
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 가격 정밀도",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 잔량 정밀도",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "BINANCE_MAPPING",
+            "status": "UNVERIFIED",
+            "reason": "BINANCE_REFERENCE_UNOBSERVED",
+            "label": "Binance 계약 대응",
+            "observed": {
+              "referenceSymbol": null,
+              "price": null,
+              "timestamp": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          }
+        ]
+      },
+      {
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL",
+        "status": "NOT_READY",
+        "checks": [
+          {
+            "id": "CONTRACT_NAME",
+            "status": "UNVERIFIED",
+            "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+            "label": "정확한 계약명",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "LISTING_ACTIVE",
+            "status": "UNVERIFIED",
+            "reason": "ACTIVE_LISTING_UNOBSERVED",
+            "label": "상장·활성 상태",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "CONTRACT_SIZE",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "계약 크기",
+            "observed": {
+              "rawField": "contract_size",
+              "rawValue": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_UNIT",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "주문 수량 단위",
+            "observed": {
+              "unit": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "MINIMUM_QUANTITY",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 주문량",
+            "observed": {
+              "rawField": "min_qty",
+              "rawValue": null,
+              "minTradeAmount": null,
+              "minQty": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_INCREMENT",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "주문 수량 증분",
+            "observed": {
+              "rawField": "qty_step",
+              "rawValue": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "MIN_NOTIONAL",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 명목금액",
+            "observed": {
+              "rawField": "min_notional",
+              "rawValue": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_TICK",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "가격 단위",
+            "observed": {
+              "rawField": "tick_size",
+              "rawValue": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "FEE_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+            "label": "Maker·Taker 수수료 단위",
+            "observed": {
+              "makerRaw": null,
+              "takerRaw": null,
+              "unit": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "FUNDING",
+            "status": "UNVERIFIED",
+            "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+            "label": "펀딩 정산 정보",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "TIMESTAMP_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "호가·Mark 시각 단위",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_FRESHNESS",
+            "status": "PASS",
+            "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+            "label": "호가 독립 신선도",
+            "observed": {
+              "timestamp": 1793104607385,
+              "ageMs": 16930,
+              "price": 100.61500000000001
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "MARK_FRESHNESS",
+            "status": "PASS",
+            "reason": "INDEPENDENT_SOURCE_CLOCK_FRESH",
+            "label": "Mark 독립 신선도",
+            "observed": {
+              "timestamp": 1793104606389,
+              "ageMs": 17926,
+              "price": 100.6
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_INTEGRITY",
+            "status": "PASS",
+            "reason": "OBSERVED_DEPTH_SORTED_UNIQUE_AND_POSITIVE",
+            "label": "호가 배열 무결성",
+            "observed": {
+              "bidLevels": 20,
+              "askLevels": 20,
+              "issues": []
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 가격 정밀도",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 잔량 정밀도",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "BINANCE_MAPPING",
+            "status": "UNVERIFIED",
+            "reason": "BINANCE_REFERENCE_UNOBSERVED",
+            "label": "Binance 계약 대응",
+            "observed": {
+              "referenceSymbol": null,
+              "price": null,
+              "timestamp": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "PASS": 10,
+      "FAIL": 1,
+      "UNVERIFIED": 43,
+      "total": 54
+    },
+    "requiredChecks": [
+      "EVIDENCE_FORMAT",
+      "READ_ONLY_CONTEXT",
+      "SOURCE_PROVENANCE",
+      "CONTRACT_NAME",
+      "LISTING_ACTIVE",
+      "CONTRACT_SIZE",
+      "QUANTITY_UNIT",
+      "MINIMUM_QUANTITY",
+      "QUANTITY_INCREMENT",
+      "MIN_NOTIONAL",
+      "PRICE_TICK",
+      "FEE_UNITS",
+      "FUNDING",
+      "TIMESTAMP_UNITS",
+      "BOOK_FRESHNESS",
+      "MARK_FRESHNESS",
+      "BOOK_INTEGRITY",
+      "PRICE_PRECISION",
+      "QUANTITY_PRECISION",
+      "BINANCE_MAPPING"
+    ],
+    "activationAllowed": false,
+    "realDataAutoEntryEnabled": false,
+    "liveOrdersEnabled": false,
+    "orderSubmissionEnabled": false,
+    "note": "상태 보고 전용입니다. PASS는 제공한 관측·검토 근거의 평가이며 자동매매 승인이나 실제 체결 보장이 아닙니다. 하나라도 미확인·실패이면 NOT_READY입니다."
+  },
+  "current": {
+    "kind": "ORANGEX_OPERATIONAL_READINESS",
+    "scope": "MARKET_DATA_PRECONDITIONS_ONLY",
+    "mode": "READ_ONLY",
+    "status": "NOT_READY",
+    "checkedAt": 1793261792378,
+    "checks": [
+      {
+        "id": "EVIDENCE_FORMAT",
+        "status": "PASS",
+        "reason": "NORMALIZED_PUBLIC_OBSERVATIONS",
+        "label": "입력 자료 구조",
+        "observed": {}
+      },
+      {
+        "id": "READ_ONLY_CONTEXT",
+        "status": "PASS",
+        "reason": "READ_ONLY_REPORTED",
+        "label": "조회 전용 상태",
+        "observed": {}
+      },
+      {
+        "id": "SOURCE_PROVENANCE",
+        "status": "UNVERIFIED",
+        "reason": "RESPONSE_ORIGIN_UNVERIFIED",
+        "label": "실측 출처 검증",
+        "observed": {
+          "synthetic": false
+        }
+      },
+      {
+        "id": "CONTRACT_NAME",
+        "status": "UNVERIFIED",
+        "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+        "label": "정확한 계약명",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "LISTING_ACTIVE",
+        "status": "UNVERIFIED",
+        "reason": "ACTIVE_LISTING_UNOBSERVED",
+        "label": "상장·활성 상태",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_SIZE",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "계약 크기",
+        "observed": {
+          "rawField": "contract_size",
+          "rawValue": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_UNIT",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "주문 수량 단위",
+        "observed": {
+          "unit": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "MINIMUM_QUANTITY",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 주문량",
+        "observed": {
+          "rawField": "min_qty",
+          "rawValue": null,
+          "minTradeAmount": null,
+          "minQty": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_INCREMENT",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "주문 수량 증분",
+        "observed": {
+          "rawField": "qty_step",
+          "rawValue": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "MIN_NOTIONAL",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 명목금액",
+        "observed": {
+          "rawField": "min_notional",
+          "rawValue": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_TICK",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "가격 단위",
+        "observed": {
+          "rawField": "tick_size",
+          "rawValue": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "FEE_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+        "label": "Maker·Taker 수수료 단위",
+        "observed": {
+          "makerRaw": null,
+          "takerRaw": null,
+          "unit": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "FUNDING",
+        "status": "UNVERIFIED",
+        "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+        "label": "펀딩 정산 정보",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "TIMESTAMP_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "호가·Mark 시각 단위",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_FRESHNESS",
+        "status": "FAIL",
+        "reason": "SOURCE_TIMESTAMP_STALE",
+        "label": "호가 독립 신선도",
+        "observed": {
+          "timestamp": 1793104606846,
+          "ageMs": 157185532,
+          "price": 80205.35
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "MARK_FRESHNESS",
+        "status": "FAIL",
+        "reason": "SOURCE_TIMESTAMP_STALE",
+        "label": "Mark 독립 신선도",
+        "observed": {
+          "timestamp": 1793104606391,
+          "ageMs": 157185987,
+          "price": 80205.3
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_INTEGRITY",
+        "status": "PASS",
+        "reason": "OBSERVED_DEPTH_SORTED_UNIQUE_AND_POSITIVE",
+        "label": "호가 배열 무결성",
+        "observed": {
+          "bidLevels": 20,
+          "askLevels": 20,
+          "issues": []
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 가격 정밀도",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 잔량 정밀도",
+        "observed": {},
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "BINANCE_MAPPING",
+        "status": "UNVERIFIED",
+        "reason": "BINANCE_REFERENCE_UNOBSERVED",
+        "label": "Binance 계약 대응",
+        "observed": {
+          "referenceSymbol": null,
+          "price": null,
+          "timestamp": null
+        },
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_NAME",
+        "status": "UNVERIFIED",
+        "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+        "label": "정확한 계약명",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "LISTING_ACTIVE",
+        "status": "UNVERIFIED",
+        "reason": "ACTIVE_LISTING_UNOBSERVED",
+        "label": "상장·활성 상태",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_SIZE",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "계약 크기",
+        "observed": {
+          "rawField": "contract_size",
+          "rawValue": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_UNIT",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "주문 수량 단위",
+        "observed": {
+          "unit": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "MINIMUM_QUANTITY",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 주문량",
+        "observed": {
+          "rawField": "min_qty",
+          "rawValue": null,
+          "minTradeAmount": null,
+          "minQty": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_INCREMENT",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "주문 수량 증분",
+        "observed": {
+          "rawField": "qty_step",
+          "rawValue": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "MIN_NOTIONAL",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 명목금액",
+        "observed": {
+          "rawField": "min_notional",
+          "rawValue": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_TICK",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "가격 단위",
+        "observed": {
+          "rawField": "tick_size",
+          "rawValue": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "FEE_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+        "label": "Maker·Taker 수수료 단위",
+        "observed": {
+          "makerRaw": null,
+          "takerRaw": null,
+          "unit": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "FUNDING",
+        "status": "UNVERIFIED",
+        "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+        "label": "펀딩 정산 정보",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "TIMESTAMP_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "호가·Mark 시각 단위",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_FRESHNESS",
+        "status": "FAIL",
+        "reason": "SOURCE_TIMESTAMP_STALE",
+        "label": "호가 독립 신선도",
+        "observed": {
+          "timestamp": 1793104607142,
+          "ageMs": 157185236,
+          "price": 2326.275
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "MARK_FRESHNESS",
+        "status": "FAIL",
+        "reason": "SOURCE_TIMESTAMP_STALE",
+        "label": "Mark 독립 신선도",
+        "observed": {
+          "timestamp": 1793104606623,
+          "ageMs": 157185755,
+          "price": 2326.27
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_INTEGRITY",
+        "status": "FAIL",
+        "reason": "BOOK_ARRAY_INVALID",
+        "label": "호가 배열 무결성",
+        "observed": {
+          "bidLevels": 20,
+          "askLevels": 22,
+          "issues": [
+            "BOOK_DEPTH_EXCEEDED",
+            "BOOK_DUPLICATE_PRICE",
+            "BOOK_UNSORTED"
+          ]
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 가격 정밀도",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 잔량 정밀도",
+        "observed": {},
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "BINANCE_MAPPING",
+        "status": "UNVERIFIED",
+        "reason": "BINANCE_REFERENCE_UNOBSERVED",
+        "label": "Binance 계약 대응",
+        "observed": {
+          "referenceSymbol": null,
+          "price": null,
+          "timestamp": null
+        },
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_NAME",
+        "status": "UNVERIFIED",
+        "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+        "label": "정확한 계약명",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "LISTING_ACTIVE",
+        "status": "UNVERIFIED",
+        "reason": "ACTIVE_LISTING_UNOBSERVED",
+        "label": "상장·활성 상태",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "CONTRACT_SIZE",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "계약 크기",
+        "observed": {
+          "rawField": "contract_size",
+          "rawValue": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_UNIT",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "주문 수량 단위",
+        "observed": {
+          "unit": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "MINIMUM_QUANTITY",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 주문량",
+        "observed": {
+          "rawField": "min_qty",
+          "rawValue": null,
+          "minTradeAmount": null,
+          "minQty": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_INCREMENT",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "주문 수량 증분",
+        "observed": {
+          "rawField": "qty_step",
+          "rawValue": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "MIN_NOTIONAL",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "최소 명목금액",
+        "observed": {
+          "rawField": "min_notional",
+          "rawValue": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_TICK",
+        "status": "UNVERIFIED",
+        "reason": "REQUIRED_FIELD_UNOBSERVED",
+        "label": "가격 단위",
+        "observed": {
+          "rawField": "tick_size",
+          "rawValue": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "FEE_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+        "label": "Maker·Taker 수수료 단위",
+        "observed": {
+          "makerRaw": null,
+          "takerRaw": null,
+          "unit": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "FUNDING",
+        "status": "UNVERIFIED",
+        "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+        "label": "펀딩 정산 정보",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "TIMESTAMP_UNITS",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_MEANING_UNVERIFIED",
+        "label": "호가·Mark 시각 단위",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_FRESHNESS",
+        "status": "FAIL",
+        "reason": "SOURCE_TIMESTAMP_STALE",
+        "label": "호가 독립 신선도",
+        "observed": {
+          "timestamp": 1793104607385,
+          "ageMs": 157184993,
+          "price": 100.61500000000001
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "MARK_FRESHNESS",
+        "status": "FAIL",
+        "reason": "SOURCE_TIMESTAMP_STALE",
+        "label": "Mark 독립 신선도",
+        "observed": {
+          "timestamp": 1793104606389,
+          "ageMs": 157185989,
+          "price": 100.6
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "BOOK_INTEGRITY",
+        "status": "PASS",
+        "reason": "OBSERVED_DEPTH_SORTED_UNIQUE_AND_POSITIVE",
+        "label": "호가 배열 무결성",
+        "observed": {
+          "bidLevels": 20,
+          "askLevels": 20,
+          "issues": []
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "PRICE_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 가격 정밀도",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "QUANTITY_PRECISION",
+        "status": "UNVERIFIED",
+        "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+        "label": "관측 잔량 정밀도",
+        "observed": {},
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      },
+      {
+        "id": "BINANCE_MAPPING",
+        "status": "UNVERIFIED",
+        "reason": "BINANCE_REFERENCE_UNOBSERVED",
+        "label": "Binance 계약 대응",
+        "observed": {
+          "referenceSymbol": null,
+          "price": null,
+          "timestamp": null
+        },
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL"
+      }
+    ],
+    "markets": [
+      {
+        "asset": "BTC",
+        "instrumentName": "BTC-USDT-PERPETUAL",
+        "status": "NOT_READY",
+        "checks": [
+          {
+            "id": "CONTRACT_NAME",
+            "status": "UNVERIFIED",
+            "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+            "label": "정확한 계약명",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "LISTING_ACTIVE",
+            "status": "UNVERIFIED",
+            "reason": "ACTIVE_LISTING_UNOBSERVED",
+            "label": "상장·활성 상태",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "CONTRACT_SIZE",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "계약 크기",
+            "observed": {
+              "rawField": "contract_size",
+              "rawValue": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_UNIT",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "주문 수량 단위",
+            "observed": {
+              "unit": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "MINIMUM_QUANTITY",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 주문량",
+            "observed": {
+              "rawField": "min_qty",
+              "rawValue": null,
+              "minTradeAmount": null,
+              "minQty": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_INCREMENT",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "주문 수량 증분",
+            "observed": {
+              "rawField": "qty_step",
+              "rawValue": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "MIN_NOTIONAL",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 명목금액",
+            "observed": {
+              "rawField": "min_notional",
+              "rawValue": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_TICK",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "가격 단위",
+            "observed": {
+              "rawField": "tick_size",
+              "rawValue": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "FEE_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+            "label": "Maker·Taker 수수료 단위",
+            "observed": {
+              "makerRaw": null,
+              "takerRaw": null,
+              "unit": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "FUNDING",
+            "status": "UNVERIFIED",
+            "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+            "label": "펀딩 정산 정보",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "TIMESTAMP_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "호가·Mark 시각 단위",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_FRESHNESS",
+            "status": "FAIL",
+            "reason": "SOURCE_TIMESTAMP_STALE",
+            "label": "호가 독립 신선도",
+            "observed": {
+              "timestamp": 1793104606846,
+              "ageMs": 157185532,
+              "price": 80205.35
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "MARK_FRESHNESS",
+            "status": "FAIL",
+            "reason": "SOURCE_TIMESTAMP_STALE",
+            "label": "Mark 독립 신선도",
+            "observed": {
+              "timestamp": 1793104606391,
+              "ageMs": 157185987,
+              "price": 80205.3
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_INTEGRITY",
+            "status": "PASS",
+            "reason": "OBSERVED_DEPTH_SORTED_UNIQUE_AND_POSITIVE",
+            "label": "호가 배열 무결성",
+            "observed": {
+              "bidLevels": 20,
+              "askLevels": 20,
+              "issues": []
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 가격 정밀도",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 잔량 정밀도",
+            "observed": {},
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          },
+          {
+            "id": "BINANCE_MAPPING",
+            "status": "UNVERIFIED",
+            "reason": "BINANCE_REFERENCE_UNOBSERVED",
+            "label": "Binance 계약 대응",
+            "observed": {
+              "referenceSymbol": null,
+              "price": null,
+              "timestamp": null
+            },
+            "asset": "BTC",
+            "instrumentName": "BTC-USDT-PERPETUAL"
+          }
+        ]
+      },
+      {
+        "asset": "ETH",
+        "instrumentName": "ETH-USDT-PERPETUAL",
+        "status": "NOT_READY",
+        "checks": [
+          {
+            "id": "CONTRACT_NAME",
+            "status": "UNVERIFIED",
+            "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+            "label": "정확한 계약명",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "LISTING_ACTIVE",
+            "status": "UNVERIFIED",
+            "reason": "ACTIVE_LISTING_UNOBSERVED",
+            "label": "상장·활성 상태",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "CONTRACT_SIZE",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "계약 크기",
+            "observed": {
+              "rawField": "contract_size",
+              "rawValue": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_UNIT",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "주문 수량 단위",
+            "observed": {
+              "unit": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "MINIMUM_QUANTITY",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 주문량",
+            "observed": {
+              "rawField": "min_qty",
+              "rawValue": null,
+              "minTradeAmount": null,
+              "minQty": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_INCREMENT",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "주문 수량 증분",
+            "observed": {
+              "rawField": "qty_step",
+              "rawValue": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "MIN_NOTIONAL",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 명목금액",
+            "observed": {
+              "rawField": "min_notional",
+              "rawValue": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_TICK",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "가격 단위",
+            "observed": {
+              "rawField": "tick_size",
+              "rawValue": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "FEE_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+            "label": "Maker·Taker 수수료 단위",
+            "observed": {
+              "makerRaw": null,
+              "takerRaw": null,
+              "unit": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "FUNDING",
+            "status": "UNVERIFIED",
+            "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+            "label": "펀딩 정산 정보",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "TIMESTAMP_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "호가·Mark 시각 단위",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_FRESHNESS",
+            "status": "FAIL",
+            "reason": "SOURCE_TIMESTAMP_STALE",
+            "label": "호가 독립 신선도",
+            "observed": {
+              "timestamp": 1793104607142,
+              "ageMs": 157185236,
+              "price": 2326.275
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "MARK_FRESHNESS",
+            "status": "FAIL",
+            "reason": "SOURCE_TIMESTAMP_STALE",
+            "label": "Mark 독립 신선도",
+            "observed": {
+              "timestamp": 1793104606623,
+              "ageMs": 157185755,
+              "price": 2326.27
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_INTEGRITY",
+            "status": "FAIL",
+            "reason": "BOOK_ARRAY_INVALID",
+            "label": "호가 배열 무결성",
+            "observed": {
+              "bidLevels": 20,
+              "askLevels": 22,
+              "issues": [
+                "BOOK_DEPTH_EXCEEDED",
+                "BOOK_DUPLICATE_PRICE",
+                "BOOK_UNSORTED"
+              ]
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 가격 정밀도",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 잔량 정밀도",
+            "observed": {},
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          },
+          {
+            "id": "BINANCE_MAPPING",
+            "status": "UNVERIFIED",
+            "reason": "BINANCE_REFERENCE_UNOBSERVED",
+            "label": "Binance 계약 대응",
+            "observed": {
+              "referenceSymbol": null,
+              "price": null,
+              "timestamp": null
+            },
+            "asset": "ETH",
+            "instrumentName": "ETH-USDT-PERPETUAL"
+          }
+        ]
+      },
+      {
+        "asset": "SOL",
+        "instrumentName": "SOL-USDT-PERPETUAL",
+        "status": "NOT_READY",
+        "checks": [
+          {
+            "id": "CONTRACT_NAME",
+            "status": "UNVERIFIED",
+            "reason": "REQUEST_CANDIDATE_IS_NOT_LISTING_VERIFICATION",
+            "label": "정확한 계약명",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "LISTING_ACTIVE",
+            "status": "UNVERIFIED",
+            "reason": "ACTIVE_LISTING_UNOBSERVED",
+            "label": "상장·활성 상태",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "CONTRACT_SIZE",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "계약 크기",
+            "observed": {
+              "rawField": "contract_size",
+              "rawValue": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_UNIT",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "주문 수량 단위",
+            "observed": {
+              "unit": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "MINIMUM_QUANTITY",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 주문량",
+            "observed": {
+              "rawField": "min_qty",
+              "rawValue": null,
+              "minTradeAmount": null,
+              "minQty": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_INCREMENT",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "주문 수량 증분",
+            "observed": {
+              "rawField": "qty_step",
+              "rawValue": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "MIN_NOTIONAL",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "최소 명목금액",
+            "observed": {
+              "rawField": "min_notional",
+              "rawValue": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_TICK",
+            "status": "UNVERIFIED",
+            "reason": "REQUIRED_FIELD_UNOBSERVED",
+            "label": "가격 단위",
+            "observed": {
+              "rawField": "tick_size",
+              "rawValue": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "FEE_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "MAKER_TAKER_RAW_FIELDS_UNOBSERVED",
+            "label": "Maker·Taker 수수료 단위",
+            "observed": {
+              "makerRaw": null,
+              "takerRaw": null,
+              "unit": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "FUNDING",
+            "status": "UNVERIFIED",
+            "reason": "FUNDING_OBSERVATION_UNAVAILABLE",
+            "label": "펀딩 정산 정보",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "TIMESTAMP_UNITS",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_MEANING_UNVERIFIED",
+            "label": "호가·Mark 시각 단위",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_FRESHNESS",
+            "status": "FAIL",
+            "reason": "SOURCE_TIMESTAMP_STALE",
+            "label": "호가 독립 신선도",
+            "observed": {
+              "timestamp": 1793104607385,
+              "ageMs": 157184993,
+              "price": 100.61500000000001
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "MARK_FRESHNESS",
+            "status": "FAIL",
+            "reason": "SOURCE_TIMESTAMP_STALE",
+            "label": "Mark 독립 신선도",
+            "observed": {
+              "timestamp": 1793104606389,
+              "ageMs": 157185989,
+              "price": 100.6
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "BOOK_INTEGRITY",
+            "status": "PASS",
+            "reason": "OBSERVED_DEPTH_SORTED_UNIQUE_AND_POSITIVE",
+            "label": "호가 배열 무결성",
+            "observed": {
+              "bidLevels": 20,
+              "askLevels": 20,
+              "issues": []
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "PRICE_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 가격 정밀도",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "QUANTITY_PRECISION",
+            "status": "UNVERIFIED",
+            "reason": "OFFICIAL_GRID_UNIT_UNVERIFIED",
+            "label": "관측 잔량 정밀도",
+            "observed": {},
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          },
+          {
+            "id": "BINANCE_MAPPING",
+            "status": "UNVERIFIED",
+            "reason": "BINANCE_REFERENCE_UNOBSERVED",
+            "label": "Binance 계약 대응",
+            "observed": {
+              "referenceSymbol": null,
+              "price": null,
+              "timestamp": null
+            },
+            "asset": "SOL",
+            "instrumentName": "SOL-USDT-PERPETUAL"
+          }
+        ]
+      }
+    ],
+    "summary": {
+      "PASS": 4,
+      "FAIL": 7,
+      "UNVERIFIED": 43,
+      "total": 54
+    },
+    "requiredChecks": [
+      "EVIDENCE_FORMAT",
+      "READ_ONLY_CONTEXT",
+      "SOURCE_PROVENANCE",
+      "CONTRACT_NAME",
+      "LISTING_ACTIVE",
+      "CONTRACT_SIZE",
+      "QUANTITY_UNIT",
+      "MINIMUM_QUANTITY",
+      "QUANTITY_INCREMENT",
+      "MIN_NOTIONAL",
+      "PRICE_TICK",
+      "FEE_UNITS",
+      "FUNDING",
+      "TIMESTAMP_UNITS",
+      "BOOK_FRESHNESS",
+      "MARK_FRESHNESS",
+      "BOOK_INTEGRITY",
+      "PRICE_PRECISION",
+      "QUANTITY_PRECISION",
+      "BINANCE_MAPPING"
+    ],
+    "activationAllowed": false,
+    "realDataAutoEntryEnabled": false,
+    "liveOrdersEnabled": false,
+    "orderSubmissionEnabled": false,
+    "note": "상태 보고 전용입니다. PASS는 제공한 관측·검토 근거의 평가이며 자동매매 승인이나 실제 체결 보장이 아닙니다. 하나라도 미확인·실패이면 NOT_READY입니다."
+  }
+}

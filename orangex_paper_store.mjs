@@ -178,9 +178,10 @@ export class OrangeXPaperStore{
   catch(error){this.#lastError=error.code??'ORANGEX_PAPER_RESTORE_FAILED';throw error}
  }
  status(){
-  let exists=false,healthy=true,error=null;
-  try{exists=this.#regular(this.file,{missing:true})!==null;if(exists)decode(this.#readBytes(this.file))}catch(cause){healthy=false;error=cause.code??'ORANGEX_PAPER_READ_FAILED'}
-  return {exists,healthy:healthy&&!this.#uncertain,writerLocked:this.#lease!==null,closed:this.#closed,lastSavedAt:this.#lastSavedAt,lastError:this.#lastError??error,lastRestoreBackup:this.#lastRestoreBackup};
+  let exists=false,healthy=true,error=null,fileSizeBytes=null;
+  try{const stat=this.#regular(this.file,{missing:true});exists=stat!==null;fileSizeBytes=stat?.size??null;if(exists)decode(this.#readBytes(this.file))}catch(cause){healthy=false;error=cause.code??'ORANGEX_PAPER_READ_FAILED'}
+  return {exists,healthy:healthy&&!this.#uncertain,writerLocked:this.#lease!==null,closed:this.#closed,lastSavedAt:this.#lastSavedAt,lastError:this.#lastError??error,lastRestoreBackup:this.#lastRestoreBackup,
+   fileSizeBytes,maxStoreBytes:MAX_BYTES,nearCapacity:fileSizeBytes!==null&&fileSizeBytes>=MAX_BYTES*.8};
  }
  snapshot(){return this.status()}
  close(){
