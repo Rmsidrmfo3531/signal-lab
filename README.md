@@ -1,5 +1,7 @@
 # Signal Lab v5.8 — 스캐너·자동 모의매매 수정
 
+OrangeX [2.7단계 검증·저장 장기 설계](ORANGEX_PAPER_27_KO.md)는 공개 진단 자료의 출처·시간 검사, Windows 진단 종료 처리 수정과 1천·1만·5만 건 저장 실험을 다룹니다. 운영 저장 교체와 실제 데이터 자동 진입은 하지 않습니다.
+
 OrangeX 최신 [2.6단계 운영 안정성·Windows 원클릭 검증 보고서](ORANGEX_PAPER_26_KO.md)에 별도 Journal 실험, 저장 한계, 운영 준비 상태 및 검증 도구 사용법을 정리했습니다. 기존 저장 방식과 READ_ONLY를 유지하며 실제 데이터 PAPER 자동 진입은 OFF입니다.
 
 OrangeX [PAPER 2.5단계 보고서](ORANGEX_PAPER_25_KO.md)는 시간순 재생·미래 참조 방지, 독립 회계 감사·성과 분석, 연속 손실·증거금 제한, 강제 종료 복구와 가상 7일·30일 측정을 설명합니다. 모의체결은 `SYNTHETIC_TEST`만 허용합니다. 과거 재생은 분석 전용이며 `LIVE_MARKET_PAPER`는 계속 OFF입니다.

@@ -46,7 +46,8 @@ export function classifyCurl({exitCode,proxyConnectStatus=null,httpStatus=null,p
  if(processError==='ENOENT')return {category:'CURL_NOT_FOUND',responseSource:'LOCAL'};
  if([5,6].includes(exitCode))return {category:exitCode===5?'PROXY_DNS':'DNS',responseSource:'UNCONFIRMED'};
  if([35,51,53,54,58,59,60,64,66,77,80,82,83,90,91].includes(exitCode))return {category:'TLS',responseSource:'UNCONFIRMED'};
- if(exitCode===28||processError==='PROCESS_TIMEOUT')return {category:'TIMEOUT',responseSource:'UNCONFIRMED'};
+ if(exitCode===28||['PROCESS_TIMEOUT','PROCESS_TERMINATION_UNCONFIRMED'].includes(processError))return {category:'TIMEOUT',responseSource:'UNCONFIRMED'};
+ if(processError!==null)return {category:'NETWORK',responseSource:'UNCONFIRMED'};
  if(exitCode!==0)return {category:'NETWORK',responseSource:'UNCONFIRMED'};
  if(httpStatus===null)return {category:'NETWORK',responseSource:'UNCONFIRMED'};
  if(httpStatus>=300&&httpStatus<400)return {category:'REDIRECT_NOT_FOLLOWED',responseSource:'UNCONFIRMED'};
@@ -55,43 +56,59 @@ export function classifyCurl({exitCode,proxyConnectStatus=null,httpStatus=null,p
 }
 
 // Exported transport accepts only fixed public probes, never a caller-supplied URL.
-export function curlPublicProbe(kind,instrumentName,{spawnProcess=spawn,platform=process.platform,currency='BTC'}={}){
+export function curlPublicProbe(kind,instrumentName,{spawnProcess=spawn,platform=process.platform,currency='BTC',processTimeoutMs=15000,killGraceMs=500}={}){
+ if(!Number.isSafeInteger(processTimeoutMs)||processTimeoutMs<1||processTimeoutMs>30000||!Number.isSafeInteger(killGraceMs)||killGraceMs<1||killGraceMs>5000)throw new Error('INVALID_PUBLIC_PROCESS_TIMEOUT');
  const url=publicProbeURL(kind,instrumentName,{currency});
  const args=['--disable','--silent','--show-error','--request','GET','--proto','=https',
   '--connect-timeout','6','--max-time','12','--max-filesize',String(LIMIT),
   '--header','Accept: application/json','--write-out',MARKER+'%{http_connect},%{http_code}',
   '--url',url];
  return new Promise(resolve=>{
-  let child,timer,chunks=[],size=0,tooLarge=false,processError=null,done=false;
-  const finish=code=>{
-   if(done)return;done=true;clearTimeout(timer);
+  let child,timer,forceTimer,reapTimer,chunks=[],size=0,tooLarge=false,processError=null,done=false,stopping=false;
+  const finish=(code,processClosed=true)=>{
+   if(done)return;done=true;for(const timerId of [timer,forceTimer,reapTimer])clearTimeout(timerId);
    const output=Buffer.concat(chunks).toString('utf8'),index=output.lastIndexOf(MARKER);
    const trailer=index<0?[]:output.slice(index+MARKER.length).trim().split(',');
    const proxyConnectStatus=http(trailer[0]),httpStatus=http(trailer[1]);
    const exitCode=Number.isInteger(code)?code:null;
-   resolve({kind,url,exitCode,proxyConnectStatus,httpStatus,processError,tooLarge,
+   resolve({kind,url,exitCode,proxyConnectStatus,httpStatus,processError,processClosed,tooLarge,
     ...classifyCurl({exitCode,proxyConnectStatus,httpStatus,processError,tooLarge}),
-    body:index<0?'':output.slice(0,index)});
+    body:!processClosed||index<0?'':output.slice(0,index)});
+  };
+  const stop=()=>{
+   if(done||stopping)return;stopping=true;
+   try{child.kill('SIGTERM')}catch{}
+   if(done)return;
+   forceTimer=setTimeout(()=>{
+    try{child.kill('SIGKILL')}catch{}
+    if(done)return;
+    reapTimer=setTimeout(()=>{
+     processError='PROCESS_TERMINATION_UNCONFIRMED';
+     child.stdout?.destroy();child.stderr?.destroy();child.unref?.();finish(null,false);
+    },killGraceMs);
+   },killGraceMs);
   };
   try{
    child=spawnProcess(platform==='win32'?'curl.exe':'curl',args,{shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});
    child.stdout.on('data',chunk=>{
     size+=chunk.length;
-    if(size>LIMIT+4096){tooLarge=true;child.kill();return}
+    if(size>LIMIT+4096){tooLarge=true;stop();return}
     chunks.push(Buffer.from(chunk));
    });
    // Drain stderr without recording it: proxy URLs/errors may contain secrets.
    child.stderr.on('data',()=>{});
    child.on('error',error=>{processError=error?.code==='ENOENT'?'ENOENT':'SPAWN_ERROR'});
-   child.on('close',finish);
-   timer=setTimeout(()=>{processError='PROCESS_TIMEOUT';child.kill();},15000);
+   child.on('close',code=>finish(code));
+   timer=setTimeout(()=>{processError='PROCESS_TIMEOUT';stop();},processTimeoutMs);
   }catch{processError='SPAWN_ERROR';finish(null)}
  });
 }
 
 function decode(probe){
  const diagnostic={category:probe.category,responseSource:probe.responseSource,exitCode:probe.exitCode,
-  proxyConnectStatus:probe.proxyConnectStatus??null,httpStatus:probe.httpStatus??null};
+  proxyConnectStatus:probe.proxyConnectStatus??null,httpStatus:probe.httpStatus??null,
+  processError:['ENOENT','SPAWN_ERROR','PROCESS_TIMEOUT','PROCESS_TERMINATION_UNCONFIRMED'].includes(probe.processError)?probe.processError:null,
+  processClosed:probe.processClosed===true?true:probe.processClosed===false?false:null};
  if(probe.category!=='OK')return {status:'FAILED',diagnostic};
  if(probe.kind==='docs')return {status:'OBSERVED',diagnostic,endpointNamesPresent:
   Object.fromEntries(['/public/get_order_book','/public/get_instruments','/public/tickers'].map(path=>[path,probe.body.includes(path)]))};
@@ -134,7 +151,9 @@ function fields(row,path){
 export function observeBook(result,now=Date.now()){
  if(!plain(result)||!Array.isArray(result.bids)||!Array.isArray(result.asks)||!result.bids.length||!result.asks.length||
   result.bids.length>1000||result.asks.length>1000)return null;
- const side=levels=>levels.every(level=>Array.isArray(level)&&level.length>=2&&positive(level[0])!==null&&positive(level[1])!==null);
+ // The confirmed schema is [price, quantity]. Never discard an unknown extra
+ // column and then certify the trimmed array as valid exchange depth.
+ const side=levels=>levels.every(level=>Array.isArray(level)&&level.length===2&&positive(level[0])!==null&&positive(level[1])!==null);
  if(!side(result.bids)||!side(result.asks))return null;
  const bid=result.bids.reduce((best,level)=>Math.max(best,Number(level[0])),-Infinity),
   ask=result.asks.reduce((best,level)=>Math.min(best,Number(level[0])),Infinity);
@@ -155,10 +174,14 @@ export async function diagnoseOrangeXPublic({probe=curlPublicProbe,now=()=>Date.
  // A singular currency is accepted only as an explicit compatibility override.
  // It never supplies a hidden USDT default.
  const requestedCurrencies=normalizeListingCurrencies(currencies??(currency===undefined?DOCUMENTED_LISTING_CURRENCIES:[currency]));
- const checkedAt=new Date(now()).toISOString(),requests=[],discoveries=[];
+ const checkedAt=new Date(now()).toISOString(),requests=[],discoveries=[];let cleanupUnconfirmed=false;
  const run=async(kind,name,domain=requestedCurrencies[0])=>{
-  const raw=await probe(kind,name,{currency:domain}),decoded=decode({...raw,kind});
+  const requestIssued=!cleanupUnconfirmed;
+  const raw=requestIssued?await probe(kind,name,{currency:domain}):{category:'PROCESS_CLEANUP_UNCONFIRMED',responseSource:'LOCAL',exitCode:null,processError:'PROCESS_TERMINATION_UNCONFIRMED',processClosed:false,body:''},decoded=decode({...raw,kind});
+  if(raw.processClosed===false)cleanupUnconfirmed=true;
+  if(!requestIssued)decoded.status='NOT_RUN';
   requests.push({kind,instrumentName:name??null,url:publicProbeURL(kind,name,{currency:domain}),method:'GET',
+   requestIssued,
    ...(kind==='instruments'?{currency:domain,currencyMeaning:'TRADING_DOMAIN',candidate:listingDomainInfo(domain)}:{}),
    parameterNamesSource:'USER_PROVIDED_OFFICIAL_DOCUMENTATION',parameterSpecificationVerified:false,status:decoded.status,...decoded.diagnostic,
    ...(decoded.schemaObservation?{schemaObservation:decoded.schemaObservation}:{}),

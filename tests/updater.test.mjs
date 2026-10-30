@@ -23,6 +23,8 @@ test('all local runtime imports and Windows notifier are eligible without allowi
   'orangex_readiness.mjs','orangex_paper_journal.mjs','diagnose_orangex.bat','scripts/diagnose-orangex-windows.mjs',
   'scripts/check-orangex-readiness.mjs','scripts/check-orangex-storage-performance.mjs','scripts/check-orangex-operational-stress.mjs',
   'public/orangex_operational.js'])assert.equal(allowedFile(name),true,name);
+ for(const name of ['orangex_evidence_review.mjs','orangex_paper_storage_lab.mjs','scripts/review-orangex-evidence.mjs',
+  'scripts/check-orangex-storage-scale.mjs'])assert.equal(allowedFile(name),true,name);
  for(const name of ['store.json','.env','recovery/store-corrupt.json','backups/store-any.json','arbitrary.ps1',
   'orangex-paper/orangex-paper.json','orangex-paper-journal/manifest.json','scripts/unreviewed-diagnostic.mjs'])assert.equal(allowedFile(name),false,name);
 });

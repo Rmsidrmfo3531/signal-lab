@@ -19,23 +19,38 @@ const fail=code=>Object.assign(Error(code),{code});
 
 // This is a local executable check, not an exchange request. Drain errors and
 // return only an allowlisted version; stderr may contain private proxy details.
-export function checkCurlEnvironment({spawnProcess=spawn,platform=process.platform,timeoutMs=3000}={}){
+export function checkCurlEnvironment({spawnProcess=spawn,platform=process.platform,timeoutMs=3000,killGraceMs=500}={}){
+ if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1||timeoutMs>30000||!Number.isSafeInteger(killGraceMs)||killGraceMs<1||killGraceMs>5000)throw fail('INVALID_CURL_CHECK_TIMEOUT');
  const executable=platform==='win32'?'curl.exe':'curl';
  return new Promise(resolve=>{
-  let child,timer,done=false,output='',processError=null;
-  const finish=code=>{
-   if(done)return;done=true;clearTimeout(timer);
+  let child,timer,forceTimer,reapTimer,done=false,stopping=false,output='',processError=null;
+  const finish=(code,processClosed=true)=>{
+   if(done)return;done=true;for(const timerId of [timer,forceTimer,reapTimer])clearTimeout(timerId);
    const match=/^curl (\d{1,3}\.\d{1,3}\.\d{1,3})\b/m.exec(output);
-   resolve({executable,available:code===0&&match!==null,version:code===0?match?.[1]??null:null,
-    errorCode:code===0&&match?'NONE':processError??(code===0?'CURL_VERSION_UNRECOGNIZED':'CURL_CHECK_FAILED')});
+   const available=processClosed&&processError===null&&code===0&&match!==null;
+   resolve({executable,available,version:available?match[1]:null,processClosed,
+    errorCode:processError??(code===0&&match?'NONE':code===0?'CURL_VERSION_UNRECOGNIZED':'CURL_CHECK_FAILED')});
+  };
+  const stop=()=>{
+   if(done||stopping)return;stopping=true;
+   try{child.kill('SIGTERM')}catch{}
+   if(done)return;
+   forceTimer=setTimeout(()=>{
+    try{child.kill('SIGKILL')}catch{}
+    if(done)return;
+    reapTimer=setTimeout(()=>{
+     processError='CURL_TERMINATION_UNCONFIRMED';
+     child.stdout?.destroy();child.stderr?.destroy();child.unref?.();finish(null,false);
+    },killGraceMs);
+   },killGraceMs);
   };
   try{
    child=spawnProcess(executable,['--disable','--version'],{shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});
    child.stdout.on('data',chunk=>{if(output.length<4096)output+=String(chunk).slice(0,4096-output.length)});
    child.stderr.on('data',()=>{});
    child.on('error',error=>{processError=error?.code==='ENOENT'?'CURL_NOT_FOUND':'CURL_CHECK_FAILED'});
-   child.on('close',finish);
-   timer=setTimeout(()=>{processError='CURL_CHECK_TIMEOUT';child.kill();},timeoutMs);
+   child.on('close',code=>finish(code));
+   timer=setTimeout(()=>{processError='CURL_CHECK_TIMEOUT';stop();},timeoutMs);
   }catch{processError='CURL_CHECK_FAILED';finish(null)}
  });
 }
@@ -97,8 +112,9 @@ export async function runOrangeXWindowsDiagnostic({probe,now=()=>Date.now(),data
  if(!env.nodeSupported)diagnostic=unavailableDiagnostic('NODE_22_REQUIRED',checkedAt);
  else{
   let curl;try{curl=await(curlCheck??checkCurlEnvironment)({platform:runtimeValue.platform})}catch{curl={available:false,version:null,errorCode:'CURL_CHECK_FAILED'}}
-  env=environment(runtimeValue,{executable:runtimeValue.platform==='win32'?'curl.exe':'curl',available:curl?.available===true,
-   version:safeVersion(curl?.version),errorCode:['NONE','CURL_NOT_FOUND','CURL_CHECK_FAILED','CURL_VERSION_UNRECOGNIZED','CURL_CHECK_TIMEOUT'].includes(curl?.errorCode)?curl.errorCode:'CURL_CHECK_FAILED'});
+  env=environment(runtimeValue,{executable:runtimeValue.platform==='win32'?'curl.exe':'curl',available:curl?.available===true&&curl?.processClosed!==false,
+   version:safeVersion(curl?.version),processClosed:curl?.processClosed===true?true:curl?.processClosed===false?false:null,
+   errorCode:['NONE','CURL_NOT_FOUND','CURL_CHECK_FAILED','CURL_VERSION_UNRECOGNIZED','CURL_CHECK_TIMEOUT','CURL_TERMINATION_UNCONFIRMED'].includes(curl?.errorCode)?curl.errorCode:'CURL_CHECK_FAILED'});
   if(!env.curl.available)diagnostic=unavailableDiagnostic(env.curl.errorCode,checkedAt);
   else{
    try{diagnostic=await diagnoseOrangeXPublic({...(probe?{probe}:{}),now,

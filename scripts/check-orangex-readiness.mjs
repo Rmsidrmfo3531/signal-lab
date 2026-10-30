@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {evaluateOrangeXReadiness} from '../orangex_readiness.mjs';
+import {normalizeOrangeXEvidence} from '../orangex_evidence_review.mjs';
 export function readinessOptions(args=[]){
  if(args.length!==2||args[0]!=='--input'||typeof args[1]!=='string'||!args[1]||args[1].startsWith('--'))throw Error('READINESS_INPUT_REQUIRED');
  return {file:args[1]};
@@ -9,10 +10,7 @@ export function readinessOptions(args=[]){
 export function checkOrangeXReadinessFile(file,{now=Date.now()}={}){
  const stat=fs.statSync(file);if(!stat.isFile()||stat.size>4*1024*1024)throw Error('INVALID_READINESS_FILE');
  const input=JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
- const synthetic=value=>value?.syntheticTest===true||['SYNTHETIC_TEST','SYNTHETIC_FIXTURE','MOCK','MOCK_RESPONSE','SYNTHETIC'].includes(value?.dataSource);
- const markedSynthetic=synthetic(input)||synthetic(input?.diagnostic);
- return evaluateOrangeXReadiness(input?.kind==='ORANGEX_WINDOWS_ONECLICK'?
-  {...input.diagnostic,dataSource:markedSynthetic?'SYNTHETIC_TEST':input.dataSource??input.diagnostic?.dataSource,syntheticTest:markedSynthetic}:input,{now});
+ return evaluateOrangeXReadiness(normalizeOrangeXEvidence(input),{now});
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
  try{const {file}=readinessOptions(process.argv.slice(2)),report=checkOrangeXReadinessFile(file);

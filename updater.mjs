@@ -13,6 +13,7 @@ const ALLOWED_ROOTS = new Set([
  'orangex_paper.mjs','orangex_paper_service.mjs','orangex_paper_signal.mjs','orangex_paper_store.mjs',
  'orangex_paper_performance.mjs','orangex_paper_replay.mjs','orangex_paper_replay_store.mjs',
  'orangex_readiness.mjs','orangex_paper_journal.mjs',
+ 'orangex_evidence_review.mjs','orangex_paper_storage_lab.mjs',
  'paper.mjs','paper_health.mjs','mobile_access.mjs','windows_paper_notify.mjs','windows_paper_notify.ps1',
  'tradfi.mjs','tradfi_signal.mjs','tradfi_feed.mjs','updater.mjs','update-cli.mjs','package.json',
  'start.sh','persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','start_auto.bat','start_auto_test.bat','enable_auto_update.bat','disable_auto_update.bat','windows-supervisor.mjs','windows-update-source.mjs','backup_data.bat',
@@ -20,7 +21,8 @@ const ALLOWED_ROOTS = new Set([
  'scripts/orangex-paper-offline.mjs','examples/orangex-paper-scenario.json',
  'scripts/orangex-paper-replay.mjs','scripts/check-orangex-paper-endurance.mjs','examples/orangex-paper-replay.json',
  'diagnose_orangex.bat','scripts/diagnose-orangex-windows.mjs','scripts/check-orangex-readiness.mjs',
- 'scripts/check-orangex-storage-performance.mjs','scripts/check-orangex-operational-stress.mjs'
+ 'scripts/check-orangex-storage-performance.mjs','scripts/check-orangex-operational-stress.mjs',
+ 'scripts/review-orangex-evidence.mjs','scripts/check-orangex-storage-scale.mjs'
 ]);
 const VERSION=/^\d+\.\d+\.\d+$/;
 export function compareVersions(a,b){

@@ -95,7 +95,7 @@ test('curl environment checking waits for child close and never returns stderr, 
  };
  const observed=await checkCurlEnvironment({spawnProcess,platform:'win32'});
  assert.equal(closed,true);assert.deepEqual(invocation.args,['--disable','--version']);assert.equal(invocation.command,'curl.exe');assert.equal(invocation.options.shell,false);
- assert.deepEqual(observed,{executable:'curl.exe',available:true,version:'8.14.1',errorCode:'NONE'});
+ assert.deepEqual(observed,{executable:'curl.exe',available:true,version:'8.14.1',processClosed:true,errorCode:'NONE'});
  assert.doesNotMatch(JSON.stringify(observed),/private|secret/);
 });
 

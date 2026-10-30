@@ -60,10 +60,15 @@ function isSynthetic(input){
  const tagged=value=>plain(value)&&(value.syntheticTest===true||value.executionMode==='SYNTHETIC_TEST'||
   ['SYNTHETIC_TEST','SYNTHETIC_FIXTURE','MOCK','MOCK_RESPONSE','SYNTHETIC'].includes(value.dataSource)||value.kind==='MOCK_ORANGEX_DIAGNOSTIC');
  return tagged(input)||(Array.isArray(input.markets)?input.markets.slice(0,1000):[]).some(row=>
-  tagged(row)||tagged(row?.book)||tagged(row?.fundingObservation)||tagged(row?.binanceObservation));
+  tagged(row)||tagged(row?.book)||tagged(row?.fundingObservation)||tagged(row?.binanceObservation)||tagged(row?.binanceComparison));
 }
 function provenance(input,verification,now){
  if(isSynthetic(input))return statusRow('SOURCE_PROVENANCE','FAIL','SYNTHETIC_DATA_CANNOT_VERIFY_OPERATIONAL_READINESS',{synthetic:true});
+ const historical=value=>plain(value)&&(value.executionMode==='HISTORICAL_REPLAY'||value.runKind==='BACKTEST'||
+  ['HISTORICAL_REPLAY','HISTORICAL_SNAPSHOT','HISTORICAL_PUBLIC_OBSERVATION','BACKTEST'].includes(value.dataSource));
+ if(historical(input)||(Array.isArray(input.markets)?input.markets.slice(0,1000):[]).some(row=>
+  historical(row)||historical(row?.book)||historical(row?.fundingObservation)||historical(row?.binanceObservation)||historical(row?.binanceComparison)))
+  return statusRow('SOURCE_PROVENANCE','FAIL','HISTORICAL_REPLAY_CANNOT_VERIFY_CURRENT_OPERATIONAL_READINESS',{historicalReplay:true});
  const proof=verification?.provenance,review=reviewed(proof,now);
  if(review.status!=='PASS')return statusRow('SOURCE_PROVENANCE',review.status,'RESPONSE_ORIGIN_UNVERIFIED',{synthetic:false});
  if(!['REAL_PUBLIC_API_RESPONSE','REAL_PUBLIC_OBSERVATION_SUMMARY','REAL_PUBLIC_READ_ONLY'].includes(input.dataSource)||
@@ -96,7 +101,7 @@ export function evaluateOrangeXReadiness(evidence={}, {now=Date.now(),maxQuoteAg
    fields=plain(market.contractFields)?market.contractFields:{},proof=verification?.markets?.[instrumentName]??{},local=[],
    book=plain(market.book)?market.book:market,
    bids=Array.isArray(book.bids)?book.bids:null,asks=Array.isArray(book.asks)?book.asks:null,
-   bestBid=Array.isArray(bids?.[0])?bids[0][0]:market.bid,bestAsk=Array.isArray(asks?.[0])?asks[0][0]:market.ask,
+   bestBid=Array.isArray(bids?.[0])?bids[0][0]:book.bid??market.bid,bestAsk=Array.isArray(asks?.[0])?asks[0][0]:book.ask??market.ask,
    bookAt=plain(market.book)?market.book.timestamp:market.priceAt,
    mark=market.markPrice,markAt=market.markPriceTimestamp??market.markPriceAt;
   const add=row=>{local.push({...row,asset,instrumentName});return row};

@@ -17,7 +17,9 @@
     "diagnose:orangex:windows": "node scripts/diagnose-orangex-windows.mjs",
     "check:orangex:readiness": "node scripts/check-orangex-readiness.mjs",
     "test:orangex:storage": "node scripts/check-orangex-storage-performance.mjs",
-    "test:orangex:operational": "node scripts/check-orangex-operational-stress.mjs"
+    "test:orangex:operational": "node scripts/check-orangex-operational-stress.mjs",
+    "review:orangex:evidence": "node scripts/review-orangex-evidence.mjs",
+    "test:orangex:storage:scale": "node scripts/check-orangex-storage-scale.mjs"
   },
   "engines": {
     "node": ">=22"
