@@ -10,7 +10,7 @@ const proof=extra=>({status:'VERIFIED',officialDocumentURL:doc,reviewedAt:NOW-10
 const raw=(value)=>({value,units:'UNVERIFIED'});
 const observed=(asset)=>({asset,instrumentName:asset+'-USDT-PERPETUAL',actualInstrumentName:asset+'-USDT-PERPETUAL',
  listingObserved:true,active:true,listingConflict:false,listingDomainEligible:true,listingSourceCurrency:'BTC',
- contractFields:{contract_size:raw(1),min_qty:raw(.001),min_trade_amount:raw(.01),qty_step:raw(.001),min_notional:raw(10),
+ contractFields:{contract_size:raw(1),min_qty:raw(.001),min_trade_amount:raw(.001),qty_step:raw(.001),min_notional:raw(10),
   tick_size:raw(.1),maker_commission:raw(.0002),taker_commission:raw(.0006),base_currency:raw('USDT'),quote_currency:raw(asset),kind:raw('perpetual')},
  book:{bids:[[100,.002],[99.9,.003]],asks:[[100.1,.004],[100.2,.005]],timestamp:NOW-500},
  markPrice:100.05,markPriceTimestamp:NOW-600,
@@ -73,7 +73,7 @@ test('raw minimum trade amount is not substituted for min_qty or an order quanti
  for(const row of input.markets){delete row.contractFields.min_qty;delete row.contractFields.qty_step;row.minimumOrderQuantityVerified=true;row.quantityIncrementVerified=true;row.feeUnitsVerified=true}
  const result=evaluate(input);
  assert.equal(check(result,'MINIMUM_QUANTITY').status,'UNVERIFIED');assert.equal(check(result,'QUANTITY_INCREMENT').status,'UNVERIFIED');
- assert.equal(check(result,'MINIMUM_QUANTITY').observed.minTradeAmount,.01);assert.equal(check(result,'MINIMUM_QUANTITY').observed.minQty,null);
+ assert.equal(check(result,'MINIMUM_QUANTITY').observed.minTradeAmount,.001);assert.equal(check(result,'MINIMUM_QUANTITY').observed.minQty,null);
  assert.equal(check(result,'FEE_UNITS').observed.makerRaw,.0002);assert.equal(check(result,'FEE_UNITS').observed.takerRaw,.0006);
  assert.equal(check(result,'FEE_UNITS').status,'UNVERIFIED');
 });
@@ -90,6 +90,37 @@ test('field and unit proofs must match observations and cannot borrow minimum qu
  ]){const input=syntheticEvidence();mutate(input);const result=evaluate(input);assert.ok(result.markets[0].checks.some(row=>row.status!=='PASS'))}
  const input=syntheticEvidence();delete input.operationalVerification.markets['BTC-USDT-PERPETUAL'].quantityUnit;
  assert.equal(check(evaluate(input),'MINIMUM_QUANTITY').status,'UNVERIFIED','minimum unit cannot become undefined==undefined proof');
+});
+
+test('reviewed min_trade_amount is an increment while min_qty remains the independent minimum quantity',()=>{
+ const input=syntheticEvidence(),row=input.markets[0],p=input.operationalVerification.markets[row.instrumentName];
+ delete row.contractFields.qty_step;row.contractFields.min_qty=raw(1);row.contractFields.min_trade_amount=raw(.1);
+ row.book.bids=[[100,1.2],[99.9,1.3]];row.book.asks=[[100.1,1.4],[100.2,1.5]];
+ p.minimumQuantity=proof({rawField:'min_qty',value:1,unit:'CONTRACT',meaning:'MINIMUM_ORDER_QUANTITY'});
+ p.quantityIncrement=proof({rawField:'min_trade_amount',value:.1,unit:'CONTRACT',meaning:'ORDER_QUANTITY_INCREMENT'});
+ let result=evaluate(input);assert.equal(check(result,'MINIMUM_QUANTITY').status,'PASS');
+ assert.equal(check(result,'QUANTITY_INCREMENT').status,'PASS');assert.equal(check(result,'QUANTITY_PRECISION').status,'PASS');
+ assert.equal(result.status,'NOT_READY','hypothetical synthetic proof never authorizes real execution');
+ p.minimumQuantity=proof({rawField:'min_trade_amount',value:.1,unit:'CONTRACT',meaning:'MINIMUM_ORDER_QUANTITY'});
+ assert.equal(check(evaluate(input),'MINIMUM_QUANTITY').status,'FAIL');
+ p.minimumQuantity=proof({rawField:'min_qty',value:1,unit:'CONTRACT',meaning:'MINIMUM_ORDER_QUANTITY'});
+ row.contractFields.qty_step=raw(1);assert.equal(check(evaluate(input),'QUANTITY_INCREMENT').status,'UNVERIFIED','conflicting candidate grids require reviewed unit correspondence');
+ delete row.contractFields.qty_step;delete p.quantityIncrement;
+ assert.equal(check(evaluate(input),'QUANTITY_INCREMENT').status,'UNVERIFIED','documentation excerpt alone is not an automatically injected unit review');
+});
+
+test('future is a derivative category rather than automatic evidence of a perpetual contract',()=>{
+ const input=syntheticEvidence(),row=input.markets[0],p=input.operationalVerification.markets[row.instrumentName];
+ row.contractFields.kind=raw('future');
+ assert.equal(check(evaluate(input),'LISTING_ACTIVE').status,'UNVERIFIED');
+ p.listing.kindClassification='future';p.listing.perpetualRoleEvidence={rawField:'settlement_period',value:'perpetual'};
+ row.contractFields.settlement_period=raw('perpetual');
+ assert.equal(check(evaluate(input),'LISTING_ACTIVE').status,'PASS');
+ row.contractFields.settlement_period=raw('month');assert.equal(check(evaluate(input),'LISTING_ACTIVE').status,'FAIL');
+ row.contractFields.settlement_period=raw('perpetual');row.listingDomainEligible=false;
+ assert.equal(check(evaluate(input),'LISTING_ACTIVE').status,'UNVERIFIED','a kind proof does not approve an unverified trading area');
+ row.listingDomainEligible=true;row.actualInstrumentName=null;
+ assert.equal(check(evaluate(input),'LISTING_ACTIVE').status,'UNVERIFIED','the generic category cannot promote a requested-name candidate');
 });
 
 test('independent source times expire separately and are never refreshed by a boolean or the other quote clock',()=>{

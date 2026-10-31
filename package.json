@@ -19,7 +19,8 @@
     "test:orangex:storage": "node scripts/check-orangex-storage-performance.mjs",
     "test:orangex:operational": "node scripts/check-orangex-operational-stress.mjs",
     "review:orangex:evidence": "node scripts/review-orangex-evidence.mjs",
-    "test:orangex:storage:scale": "node scripts/check-orangex-storage-scale.mjs"
+    "test:orangex:storage:scale": "node scripts/check-orangex-storage-scale.mjs",
+    "diagnose:orangex:continuous": "node scripts/diagnose-orangex-continuous.mjs"
   },
   "engines": {
     "node": ">=22"

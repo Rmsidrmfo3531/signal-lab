@@ -114,10 +114,19 @@ export function evaluateOrangeXReadiness(evidence={}, {now=Date.now(),maxQuoteAg
   else if(listingReview.status!=='PASS')add(statusRow('CONTRACT_NAME',listingReview.status,listingReview.reason));
   else if(proof.listing.instrumentName!==instrumentName)add(statusRow('CONTRACT_NAME','FAIL','REVIEW_CONTRACT_NAME_MISMATCH'));
   else add(statusRow('CONTRACT_NAME','PASS','EXACT_REVIEWED_CONTRACT_MATCH'));
-  if(raw(fields,'kind')!==undefined&&raw(fields,'kind')!=='perpetual'&&raw(fields,'kind')!=='PERPETUAL')add(statusRow('LISTING_ACTIVE','FAIL','CONTRACT_KIND_MISMATCH'));
+  const observedKind=raw(fields,'kind'),futureCategory=observedKind==='future'||observedKind==='FUTURE',
+   futureRole=proof.listing?.perpetualRoleEvidence,
+   reviewedFutureRole=listingReview.status==='PASS'&&proof.listing.kindClassification==='future'&&
+    proof.listing.kind==='PERPETUAL'&&market.actualInstrumentName===instrumentName&&
+    futureRole?.rawField==='settlement_period'&&futureRole.value==='perpetual'&&raw(fields,'settlement_period')==='perpetual';
+  if(observedKind!==undefined&&!['perpetual','PERPETUAL','future','FUTURE'].includes(observedKind))add(statusRow('LISTING_ACTIVE','FAIL','CONTRACT_KIND_MISMATCH'));
   else if(market.listingConflict===true||market.active===false)add(statusRow('LISTING_ACTIVE','FAIL',market.active===false?'LISTED_CONTRACT_INACTIVE':'CONFLICTING_LISTING_OBSERVATIONS'));
   else if(market.listingObserved!==true||market.active!==true)add(statusRow('LISTING_ACTIVE','UNVERIFIED','ACTIVE_LISTING_UNOBSERVED'));
   else if(listingReview.status!=='PASS')add(statusRow('LISTING_ACTIVE',listingReview.status,listingReview.reason));
+  else if(futureCategory&&!reviewedFutureRole)add(statusRow('LISTING_ACTIVE',futureRole?.rawField==='settlement_period'&&
+   futureRole.value!==raw(fields,'settlement_period')?'FAIL':'UNVERIFIED',
+   futureRole?.rawField==='settlement_period'&&futureRole.value!==raw(fields,'settlement_period')?
+    'REVIEWED_PERPETUAL_ROLE_CONTRADICTS_OBSERVATION':'FUTURE_CATEGORY_PERPETUAL_ROLE_UNVERIFIED'));
   else if(proof.listing.active!==true||proof.listing.kind!=='PERPETUAL'||typeof proof.listing.tradingArea!=='string'||
    proof.listing.tradingArea!==market.listingSourceCurrency||market.listingDomainEligible!==true)
    add(statusRow('LISTING_ACTIVE','UNVERIFIED','TRADING_AREA_AND_PERPETUAL_ROLE_UNVERIFIED'));
@@ -128,13 +137,26 @@ export function evaluateOrangeXReadiness(evidence={}, {now=Date.now(),maxQuoteAg
   add(statusRow('QUANTITY_UNIT',unitReview.status!=='PASS'?unitReview.status:['CONTRACT','BASE_ASSET'].includes(quantityUnit)?'PASS':'FAIL',
    unitReview.status!=='PASS'?unitReview.reason:['CONTRACT','BASE_ASSET'].includes(quantityUnit)?'EXPLICIT_QUANTITY_MEANING_REVIEWED':'UNSUPPORTED_QUANTITY_MEANING',
    {unit:['CONTRACT','BASE_ASSET'].includes(quantityUnit)?quantityUnit:null}));
-  const minimumField=['min_qty','min_trade_amount'].includes(proof.minimumQuantity?.rawField)?proof.minimumQuantity.rawField:'min_qty';
-  const minimum=numericReview('MINIMUM_QUANTITY',fields,minimumField,proof.minimumQuantity,quantityUnit,now,{meaning:'MINIMUM_ORDER_QUANTITY'});
+  // min_qty is the minimum order quantity. min_trade_amount can be a reviewed
+  // quantity increment, never a substitute for the minimum-order-quantity field.
+  const minimum=numericReview('MINIMUM_QUANTITY',fields,'min_qty',proof.minimumQuantity,quantityUnit,now,{meaning:'MINIMUM_ORDER_QUANTITY'});
+  if(proof.minimumQuantity?.rawField!==undefined&&proof.minimumQuantity.rawField!=='min_qty'){
+   minimum.status='FAIL';minimum.reason='MINIMUM_ORDER_QUANTITY_FIELD_MISMATCH';
+  }
   minimum.observed.minTradeAmount=safeNumber(raw(fields,'min_trade_amount'));minimum.observed.minQty=safeNumber(raw(fields,'min_qty'));add(minimum);
-  const increments=['qty_step','quantity_step','quantity_increment','lot_size'],stepField=increments.includes(proof.quantityIncrement?.rawField)?proof.quantityIncrement.rawField:'qty_step',
+  const increments=['qty_step','quantity_step','quantity_increment','lot_size','min_trade_amount'],
+   stepField=increments.includes(proof.quantityIncrement?.rawField)?proof.quantityIncrement.rawField:'qty_step',
    observedIncrements=increments.map(key=>raw(fields,key)).filter(value=>value!==undefined&&value!==null);
   const increment=numericReview('QUANTITY_INCREMENT',fields,stepField,proof.quantityIncrement,quantityUnit,now,{meaning:'ORDER_QUANTITY_INCREMENT'});
-  if(observedIncrements.some(value=>!positive(value))||new Set(observedIncrements).size>1){increment.status='FAIL';increment.reason='CONFLICTING_OR_INVALID_QUANTITY_INCREMENT_FIELDS'}
+  if(proof.quantityIncrement?.rawField!==undefined&&!increments.includes(proof.quantityIncrement.rawField)){
+   increment.status='FAIL';increment.reason='ORDER_QUANTITY_INCREMENT_FIELD_MISMATCH';
+  }
+  if(observedIncrements.some(value=>!positive(value))){increment.status='FAIL';increment.reason='INVALID_QUANTITY_INCREMENT_FIELD'}
+  else if(new Set(observedIncrements).size>1&&increment.status!=='FAIL'){
+   // A selected proof cannot erase a different observed increment candidate.
+   // Their quantity units/conversion have not both been reviewed by this schema.
+   increment.status='UNVERIFIED';increment.reason='QUANTITY_INCREMENT_UNIT_CORRESPONDENCE_UNVERIFIED';
+  }
   add(increment);
   add(numericReview('MIN_NOTIONAL',fields,'min_notional',proof.minNotional,'USDT',now));
   const tick=add(numericReview('PRICE_TICK',fields,'tick_size',proof.priceTick,'USDT',now));
