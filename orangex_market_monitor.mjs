@@ -138,6 +138,8 @@ export class OrangeXMarketMonitor{
    Object.hasOwn(row,'httpStatus')&&(!Number.isInteger(row.httpStatus)||row.httpStatus<200||row.httpStatus>=300))){
    reasons.push('REQUEST_TRANSPORT_OR_HTTP_NOT_SUCCESSFUL');failed=true;
   }
+  if(sample.requests.some(row=>row.processClosed!==true&&row.processClosed!==false))
+   reasons.push('REQUEST_PROCESS_CLOSURE_UNVERIFIED');
   if(now<sample.capturedAt||sample.localClockRegression)reasons.push('LOCAL_WALL_CLOCK_REGRESSION');
   if(sample.requests.some(row=>row.clockStatus==='FAIL'))reasons.push('REQUEST_CLOCK_MEASUREMENT_INVALID');
   if(sample.book.status!=='PASS')reasons.push(sample.book.reason);if(sample.mark.status!=='PASS')reasons.push(sample.mark.reason);

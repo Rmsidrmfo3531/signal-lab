@@ -129,3 +129,36 @@ test('zero public fees require explicit reviewed meaning and invalid clocks cann
  for(const options of [{now:0},{now:NOW,maxFundingAgeMs:0},{now:NOW,maxFundingAgeMs:Infinity},{now:NOW,maxFundingAgeMs:90001}])
   assert.throws(()=>evaluateOrangeXCostEvidence(input,options),/INVALID_COST_REVIEW_CLOCK/);
 });
+
+test('fee, spread, slippage and funding report separate states without inventing an aggregate simulation cost',()=>{
+ const input={mode:'READ_ONLY',dataSource:'REAL_PUBLIC_OBSERVATION_SUMMARY',market:{instrumentName:'SOL-USDT-PERPETUAL',
+  contractFields:{maker_commission:{value:.0002},taker_commission:{value:.0006}},
+  book:{bids:[[100,2],[99.9,3]],asks:[[100.1,2],[100.2,3]],timestamp:NOW-500}}};
+ const result=run(input),parts=result.costComponents;
+ assert.equal(parts.fees.status,'UNVERIFIED');assert.equal(parts.fees.documentedStandard.takerFraction,.0006);
+ assert.equal(parts.fees.accountApplicabilityStatus,'UNVERIFIED');assert.equal(parts.spread.observationStatus,'PASS');
+ assert.ok(Math.abs(parts.spread.priceDifference-.1)<1e-12);assert.equal(parts.spread.currentlyFresh,true);
+ assert.equal(parts.spread.status,'UNVERIFIED','observed price spread is not a size-specific execution cost');
+ assert.equal(parts.slippage.status,'UNVERIFIED');assert.equal(parts.funding.status,'UNVERIFIED');
+ for(const part of Object.values(parts))assert.equal(part.estimatedCost,null);
+ assert.equal(parts.total.status,'UNVERIFIED');assert.equal(result.paperAutoEntryEnabled,false);
+});
+
+test('spread evidence keeps captured numeric observations separate from expired clocks, mixed contracts and malformed depth',()=>{
+ const input={mode:'READ_ONLY',market:{instrumentName:'BTC-USDT-PERPETUAL',book:{bids:[[100,2]],asks:[[100.1,3]],timestamp:NOW-90001}}};
+ let component=run(input).costComponents.spread;
+ assert.equal(component.observationStatus,'PASS');assert.equal(component.status,'FAIL');assert.equal(component.currentlyFresh,false);
+ assert.notEqual(component.priceDifference,null,'expiry does not erase observed numbers');
+ for(const mutate of [book=>{book.asks.push([100.1,4])},book=>{book.asks=[[99,3]]},
+  book=>{book.instrumentName='ETH-USDT-PERPETUAL'},book=>{book.timestamp=NOW+1}]){
+  const sample=structuredClone(input);sample.market.book.timestamp=NOW-500;mutate(sample.market.book);
+  component=run(sample).costComponents.spread;assert.equal(component.status,'FAIL');assert.equal(component.estimatedCost,null);
+ }
+ const missing=structuredClone(input);delete missing.market.book.timestamp;
+ assert.equal(run(missing).costComponents.spread.status,'UNVERIFIED');
+ const large=structuredClone(input);large.market.book={bids:[[1e308,1]],asks:[[1.5e308,1]],timestamp:NOW-500};
+ assert.ok(Math.abs(run(large).costComponents.spread.spreadBps-4000)<1e-9,'finite prices cannot overflow their midpoint into a false zero spread');
+ assert.equal(evaluateOrangeXCostEvidence({...input,market:{...input.market,book:{...input.market.book,timestamp:NOW-500}}},
+  {now:NOW,maxFundingAgeMs:1}).costComponents.spread.currentlyFresh,true,'funding freshness never sets the independent quote age limit');
+ for(const maxQuoteAgeMs of [0,90001,Infinity])assert.throws(()=>evaluateOrangeXCostEvidence(input,{now:NOW,maxQuoteAgeMs}),/INVALID_COST_REVIEW_CLOCK/);
+});

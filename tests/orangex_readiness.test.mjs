@@ -164,6 +164,16 @@ test('funding requires fresh observations and reviewed schedule, rate unit and s
  input.markets[0].fundingObservation.observedAt=NOW-90001;assert.equal(check(evaluate(input),'FUNDING').status,'FAIL');
 });
 
+test('readiness rejects a positive funding payer opposite to the confirmed general rule',()=>{
+ const input=syntheticEvidence(),funding=input.operationalVerification.markets['BTC-USDT-PERPETUAL'].funding;
+ assert.equal(check(evaluate(input),'FUNDING').status,'PASS');
+ funding.positiveRateMeaning='SHORT_PAYS_LONG';
+ assert.equal(check(evaluate(input),'FUNDING').status,'FAIL');
+ funding.positiveRateMeaning='LONG_PAYS_SHORT';
+ assert.equal(check(evaluate(input),'FUNDING').status,'PASS');
+ assert.equal(evaluate(input).activationAllowed,false);
+});
+
 test('exchange currency field meanings and Binance source freshness are explicit and never flipped by their names',()=>{
  const input=syntheticEvidence();assert.equal(check(evaluate(input),'BINANCE_MAPPING').status,'PASS');
  input.operationalVerification.markets['BTC-USDT-PERPETUAL'].binanceMapping.exchangeCurrencyDefinitions={base_currency:'UNDERLYING_ASSET',quote_currency:'QUOTE_ASSET'};

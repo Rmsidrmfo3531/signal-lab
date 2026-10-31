@@ -1,5 +1,7 @@
 # Signal Lab v5.8 — 스캐너·자동 모의매매 수정
 
+OrangeX [2.9단계 검증 보완·남은 근거](ORANGEX_PAPER_29_KO.md)는 준비 검사의 펀딩 부호·종목별 종료 확인 오류 수정과 비용 구성 요소별 상태를 설명합니다. 최신 연속 JSON은 미전달로 실측 분석이 보류됐으며, READ_ONLY·실제 데이터 PAPER OFF·NOT_READY를 유지합니다.
+
 OrangeX [2.8단계 계약·비용·연속 시세 검증](ORANGEX_PAPER_28_KO.md)은 실제 Windows 관측을 보존하고 공식 표준 요율·일반 펀딩 원리와 상품/계정 적용을 구분합니다. 수량 검증을 보완하고 키 없는 연속 공개 진단을 추가했으며, READ_ONLY·실제 데이터 PAPER OFF·NOT_READY를 유지합니다.
 
 OrangeX [2.7단계 검증·저장 장기 설계](ORANGEX_PAPER_27_KO.md)는 공개 진단 자료의 출처·시간 검사, Windows 진단 종료 처리 수정과 1천·1만·5만 건 저장 실험을 다룹니다. 운영 저장 교체와 실제 데이터 자동 진입은 하지 않습니다.

@@ -119,6 +119,21 @@ test('HTTP200 success can coexist with invalid depth and stale Mark, so it does 
  assert.equal(report.monitor.marketDataStatus,'FAIL');assert.equal(report.monitor.markets[0].currentEligibility.entryEligible,false);
 });
 
+test('unknown process closure cannot qualify a market sample even when HTTP and quote clocks look valid',async()=>{
+ for(const processClosed of [null,undefined]){
+  const sample=monitor().record({asset:'BTC',capturedAt:START,book:b(START),mark:m(START),
+   requests:[{category:'OK',httpStatus:200,clockStatus:'PASS',processClosed}]});
+  assert.equal(sample.atCapture.status,'UNVERIFIED');assert.equal(sample.atCapture.marketDataEligible,false);
+  assert.ok(sample.atCapture.reasons.includes('REQUEST_PROCESS_CLOSURE_UNVERIFIED'));
+ }
+ const state=fixture(),probe=state.orangexProbe;
+ const report=await diagnoseOrangeXContinuous({...state,rounds:2,includeBinance:false,
+  orangexProbe:async(...args)=>({...await probe(...args),processClosed:null})});
+ assert.equal(report.success.httpSuccessRate,1);assert.equal(report.success.captureQualifiedRate,0);
+ assert.equal(report.monitor.marketDataStatus,'UNVERIFIED');assert.equal(report.exitCode,1);
+ assert.equal(report.realDataAutoEntryEnabled,false);
+});
+
 test('the first proxy policy denial stops before other assets, retries or Binance expansion',async()=>{
  let calls=0;
  const report=await diagnoseOrangeXContinuous({...fixture(),orangexProbe:async()=>{calls++;return {category:'PROXY_CONNECT_REJECTED',httpStatus:null,proxyConnectStatus:403,processClosed:true,body:''}}});

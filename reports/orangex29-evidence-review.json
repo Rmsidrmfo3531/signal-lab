@@ -1,0 +1,742 @@
+{
+  "kind": "ORANGEX29_EVIDENCE_AND_BLOCKERS_REVIEW",
+  "checkedAt": "2026-10-31T20:02:04.606Z",
+  "baseCommit": "e8b71fb83acb6f1970abbd072691dca9f8a992a2",
+  "mode": "READ_ONLY",
+  "status": "NOT_READY",
+  "latestContinuousInput": {
+    "provided": false,
+    "status": "UNVERIFIED",
+    "reason": "NO_NEW_ATTACHMENT_POINTER_OR_LOCAL_FILE_AVAILABLE",
+    "expectedKind": "ORANGEX_CONTINUOUS_PUBLIC_DIAGNOSTIC",
+    "actualCurrentRoundsReviewed": 0,
+    "substitutedSyntheticData": false
+  },
+  "originalActualWindowsObservation": {
+    "fileName": "orangex-public-20261031T005917Z-edaabd29a09c778d6282.json",
+    "sha256": "cf094ef5d29368a38f3b795f55462fbafa0e13b88ad7d5049c8bcbbb22ac3c41",
+    "bytes": 85233,
+    "kind": "ORANGEX_WINDOWS_ONECLICK",
+    "checkedAt": "2026-10-31T00:59:17.348Z",
+    "completedAt": "2026-10-31T00:59:19.246Z",
+    "http200Count": 11,
+    "source": "ACTUAL_USER_REPORTED_NORMALIZED_PUBLIC_OBSERVATIONS",
+    "syntheticTest": false,
+    "rawHttpBodiesIncluded": false,
+    "captureReadiness": {
+      "PASS": 11,
+      "FAIL": 0,
+      "UNVERIFIED": 43,
+      "total": 54
+    },
+    "currentReadiness": {
+      "PASS": 5,
+      "FAIL": 6,
+      "UNVERIFIED": 43,
+      "total": 54
+    },
+    "originalFileUnchanged": true
+  },
+  "officialDocumentation": {
+    "source": "USER_CONFIRMED_OFFICIAL_SOURCE_EXCERPTS_FROM_PHASE28",
+    "independentlyRetrievedThisPhase": false,
+    "confirmedStandardMakerFraction": 0.0002,
+    "confirmedStandardTakerFraction": 0.0006,
+    "effectiveAccountRateVerified": false,
+    "genericPositiveFundingPayer": "LONG",
+    "genericNegativeFundingPayer": "SHORT",
+    "genericEightHoursNeverAppliedToAllSymbols": true
+  },
+  "newOrangeXNetworkAttempts": 0,
+  "networkPolicy": {
+    "mode": "restricted",
+    "state": "enforced",
+    "orangeXDomainsAllowed": false,
+    "priorConnect403NotRetriedOrBypassed": true
+  },
+  "githubActions": {
+    "checkedAt": "2026-10-31T19:47:30.923495+00:00",
+    "url": "https://github.com/Rmsidrmfo3531/signal-lab/actions?query=branch%3Afeat%2Forangex-readonly",
+    "method": "GET",
+    "curlExitCode": 0,
+    "httpStatus": 404,
+    "actualWindowsExecution": "UNVERIFIED",
+    "remoteJobResults": "UNVERIFIED",
+    "keysOrAccountAPIUsed": false,
+    "bodyCommitted": false,
+    "attemptCount": 1,
+    "failure": "HTTP_ACCESS_FAILED"
+  },
+  "actualWindowsNode22And24Execution": "UNVERIFIED",
+  "markets": [
+    {
+      "asset": "BTC",
+      "instrumentName": "BTC-USDT-PERPETUAL",
+      "status": "NOT_READY",
+      "actualDataSource": "EXISTING_20261031_WINDOWS_SINGLE_DIAGNOSTIC",
+      "contractRaw": {
+        "contract_size": null,
+        "min_qty": 0.001,
+        "min_trade_amount": 0.001,
+        "min_notional": 10,
+        "tick_size": 0.1,
+        "base_currency": "USDT",
+        "quote_currency": "BTC",
+        "kind": "perpetual"
+      },
+      "confirmedOrderAmountUnit": null,
+      "minNotionalCurrency": null,
+      "confirmedNotionalFormula": null,
+      "conditions": [
+        {
+          "id": "HISTORICAL_ACTIVE_LISTING",
+          "status": "PASS",
+          "reason": "EXISTING_ACTUAL_WINDOWS_LISTING_NOT_LATEST_CONTINUOUS_DATA",
+          "observed": "BTC-USDT-PERPETUAL"
+        },
+        {
+          "id": "CONTRACT_SIZE",
+          "status": "UNVERIFIED",
+          "reason": "NOT_COLLECTED_IN_AVAILABLE_ATTACHMENT",
+          "observed": null
+        },
+        {
+          "id": "DEFAULT_AMOUNT_UNIT",
+          "status": "UNVERIFIED",
+          "reason": "DOCUMENTED_FALSE_AMOUNT_MODE_DEFAULT_UNIT_UNESTABLISHED",
+          "observed": null
+        },
+        {
+          "id": "MINIMUM_AND_INCREMENT_RAW",
+          "status": "PASS",
+          "reason": "DISTINCT_DOCUMENTED_FIELDS_NOT_QUANTITY_UNIT_PROOF",
+          "observed": {
+            "min_qty": 0.001,
+            "min_trade_amount": 0.001
+          }
+        },
+        {
+          "id": "MIN_NOTIONAL_CURRENCY_AND_FORMULA",
+          "status": "UNVERIFIED",
+          "reason": "BASECURRENCY_DESCRIPTION_AMBIGUOUS",
+          "observed": 10
+        },
+        {
+          "id": "CURRENCY_ROLES_SETTLEMENT_AND_MARGIN",
+          "status": "UNVERIFIED",
+          "reason": "RAW_NAMES_NEVER_FLIPPED_OR_USED_AS_SETTLEMENT_PROOF",
+          "observed": {
+            "base_currency": "USDT",
+            "quote_currency": "BTC"
+          }
+        },
+        {
+          "id": "PUBLIC_STANDARD_FEE_MATCH",
+          "status": "PASS",
+          "reason": "USER_CONFIRMED_2026_STANDARD_NUMERIC_MATCH",
+          "observed": {
+            "maker": 0.0002,
+            "taker": 0.0006
+          }
+        },
+        {
+          "id": "EFFECTIVE_ACCOUNT_FEES",
+          "status": "UNVERIFIED",
+          "reason": "PUBLIC_STANDARD_NOT_ACCOUNT_APPLICABILITY_PROOF",
+          "observed": null
+        },
+        {
+          "id": "FUNDING_IDENTIFIER_RATE_NEXT_TIME_INTERVAL",
+          "status": "UNVERIFIED",
+          "reason": "NO_NEW_CONTINUOUS_INPUT_OR_ACTUAL_FUNDING_ROWS",
+          "observed": null
+        },
+        {
+          "id": "HISTORICAL_BOOK_INTEGRITY",
+          "status": "PASS",
+          "reason": "EXISTING_ACTUAL_20_BID_20_ASK_OBSERVATION",
+          "observed": null
+        },
+        {
+          "id": "HISTORICAL_QUOTE_AND_MARK_LOCAL_AGE",
+          "status": "PASS",
+          "reason": "PRESERVED_CAPTURE_LOCAL_AGE_CHECK_NOT_CLOCK_AUTHENTICATION",
+          "observed": {
+            "quoteAgeMs": 24418,
+            "markAgeMs": 24897
+          }
+        },
+        {
+          "id": "CURRENT_OLD_QUOTE_AND_MARK_ELIGIBILITY",
+          "status": "FAIL",
+          "reason": "AVAILABLE_SNAPSHOT_HAS_EXPIRED_NOT_AN_EXCHANGE_OUTAGE",
+          "observed": null
+        },
+        {
+          "id": "NEW_CONTINUOUS_QUOTES_MARK_LATENCY_CACHE_STALL",
+          "status": "UNVERIFIED",
+          "reason": "LATEST_CONTINUOUS_JSON_NOT_RECEIVED",
+          "observed": null
+        },
+        {
+          "id": "BINANCE_PRICE_AND_CONTRACT_CORRESPONDENCE",
+          "status": "UNVERIFIED",
+          "reason": "NO_MATCHED_ACTUAL_BINANCE_OBSERVATIONS",
+          "observed": null
+        }
+      ],
+      "costComponentsAtHistoricalCapture": {
+        "fees": {
+          "status": "UNVERIFIED",
+          "documentedStandard": {
+            "makerFraction": 0.0002,
+            "takerFraction": 0.0006,
+            "makerPercent": 0.02,
+            "takerPercent": 0.06,
+            "scope": "PUBLIC_STANDARD_ONLY",
+            "sourceId": "STANDARD_FEES_2026",
+            "updatedOn": "2026-09-16",
+            "observedRawMatches": true,
+            "effectiveAccountRates": null
+          },
+          "accountApplicabilityStatus": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "DEFINITIONS_AND_APPLICABILITY_NOT_ACTUAL_CHARGE"
+        },
+        "spread": {
+          "status": "UNVERIFIED",
+          "reason": "SPREAD_OBSERVED_NOT_SIZE_SPECIFIC_EXECUTION_COST",
+          "observationStatus": "PASS",
+          "priceDifference": 0.09999999999126885,
+          "spreadBps": 0.012900787140401054,
+          "sourceTimestamp": 1793408334828,
+          "localAgeMs": 24418,
+          "currentlyFresh": true,
+          "priceCurrencyVerified": false,
+          "quantityConversionVerified": false,
+          "estimatedCost": null,
+          "scope": "VISIBLE_BOOK_OBSERVATION_NOT_VALIDATED_EXECUTION_COST"
+        },
+        "slippage": {
+          "status": "UNVERIFIED",
+          "reason": "NO_VERIFIED_PROPOSED_SIZE_AND_EXECUTION_MODEL",
+          "estimatedCost": null
+        },
+        "funding": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "OBSERVATION_SCHEDULE_AND_HISTORY_NOT_ACTUAL_SETTLEMENT"
+        },
+        "total": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "reason": "UNVERIFIED_COMPONENTS_ARE_NOT_ZERO_COSTS"
+        }
+      },
+      "costComponentsAtCurrentReview": {
+        "fees": {
+          "status": "UNVERIFIED",
+          "documentedStandard": {
+            "makerFraction": 0.0002,
+            "takerFraction": 0.0006,
+            "makerPercent": 0.02,
+            "takerPercent": 0.06,
+            "scope": "PUBLIC_STANDARD_ONLY",
+            "sourceId": "STANDARD_FEES_2026",
+            "updatedOn": "2026-09-16",
+            "observedRawMatches": true,
+            "effectiveAccountRates": null
+          },
+          "accountApplicabilityStatus": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "DEFINITIONS_AND_APPLICABILITY_NOT_ACTUAL_CHARGE"
+        },
+        "spread": {
+          "status": "FAIL",
+          "reason": "BOOK_CLOCK_FUTURE_OR_STALE",
+          "observationStatus": "PASS",
+          "priceDifference": 0.09999999999126885,
+          "spreadBps": 0.012900787140401054,
+          "sourceTimestamp": 1793408334828,
+          "localAgeMs": 68589778,
+          "currentlyFresh": false,
+          "priceCurrencyVerified": false,
+          "quantityConversionVerified": false,
+          "estimatedCost": null,
+          "scope": "VISIBLE_BOOK_OBSERVATION_NOT_VALIDATED_EXECUTION_COST"
+        },
+        "slippage": {
+          "status": "UNVERIFIED",
+          "reason": "NO_VERIFIED_PROPOSED_SIZE_AND_EXECUTION_MODEL",
+          "estimatedCost": null
+        },
+        "funding": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "OBSERVATION_SCHEDULE_AND_HISTORY_NOT_ACTUAL_SETTLEMENT"
+        },
+        "total": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "reason": "UNVERIFIED_COMPONENTS_ARE_NOT_ZERO_COSTS"
+        }
+      },
+      "actualFeeEstimate": null,
+      "actualFundingEstimate": null,
+      "realDataAutoEntryEnabled": false
+    },
+    {
+      "asset": "ETH",
+      "instrumentName": "ETH-USDT-PERPETUAL",
+      "status": "NOT_READY",
+      "actualDataSource": "EXISTING_20261031_WINDOWS_SINGLE_DIAGNOSTIC",
+      "contractRaw": {
+        "contract_size": null,
+        "min_qty": 0.01,
+        "min_trade_amount": 0.01,
+        "min_notional": 10,
+        "tick_size": 0.01,
+        "base_currency": "USDT",
+        "quote_currency": "ETH",
+        "kind": "perpetual"
+      },
+      "confirmedOrderAmountUnit": null,
+      "minNotionalCurrency": null,
+      "confirmedNotionalFormula": null,
+      "conditions": [
+        {
+          "id": "HISTORICAL_ACTIVE_LISTING",
+          "status": "PASS",
+          "reason": "EXISTING_ACTUAL_WINDOWS_LISTING_NOT_LATEST_CONTINUOUS_DATA",
+          "observed": "ETH-USDT-PERPETUAL"
+        },
+        {
+          "id": "CONTRACT_SIZE",
+          "status": "UNVERIFIED",
+          "reason": "NOT_COLLECTED_IN_AVAILABLE_ATTACHMENT",
+          "observed": null
+        },
+        {
+          "id": "DEFAULT_AMOUNT_UNIT",
+          "status": "UNVERIFIED",
+          "reason": "DOCUMENTED_FALSE_AMOUNT_MODE_DEFAULT_UNIT_UNESTABLISHED",
+          "observed": null
+        },
+        {
+          "id": "MINIMUM_AND_INCREMENT_RAW",
+          "status": "PASS",
+          "reason": "DISTINCT_DOCUMENTED_FIELDS_NOT_QUANTITY_UNIT_PROOF",
+          "observed": {
+            "min_qty": 0.01,
+            "min_trade_amount": 0.01
+          }
+        },
+        {
+          "id": "MIN_NOTIONAL_CURRENCY_AND_FORMULA",
+          "status": "UNVERIFIED",
+          "reason": "BASECURRENCY_DESCRIPTION_AMBIGUOUS",
+          "observed": 10
+        },
+        {
+          "id": "CURRENCY_ROLES_SETTLEMENT_AND_MARGIN",
+          "status": "UNVERIFIED",
+          "reason": "RAW_NAMES_NEVER_FLIPPED_OR_USED_AS_SETTLEMENT_PROOF",
+          "observed": {
+            "base_currency": "USDT",
+            "quote_currency": "ETH"
+          }
+        },
+        {
+          "id": "PUBLIC_STANDARD_FEE_MATCH",
+          "status": "PASS",
+          "reason": "USER_CONFIRMED_2026_STANDARD_NUMERIC_MATCH",
+          "observed": {
+            "maker": 0.0002,
+            "taker": 0.0006
+          }
+        },
+        {
+          "id": "EFFECTIVE_ACCOUNT_FEES",
+          "status": "UNVERIFIED",
+          "reason": "PUBLIC_STANDARD_NOT_ACCOUNT_APPLICABILITY_PROOF",
+          "observed": null
+        },
+        {
+          "id": "FUNDING_IDENTIFIER_RATE_NEXT_TIME_INTERVAL",
+          "status": "UNVERIFIED",
+          "reason": "NO_NEW_CONTINUOUS_INPUT_OR_ACTUAL_FUNDING_ROWS",
+          "observed": null
+        },
+        {
+          "id": "HISTORICAL_BOOK_INTEGRITY",
+          "status": "PASS",
+          "reason": "EXISTING_ACTUAL_20_BID_20_ASK_OBSERVATION",
+          "observed": null
+        },
+        {
+          "id": "HISTORICAL_QUOTE_AND_MARK_LOCAL_AGE",
+          "status": "PASS",
+          "reason": "PRESERVED_CAPTURE_LOCAL_AGE_CHECK_NOT_CLOCK_AUTHENTICATION",
+          "observed": {
+            "quoteAgeMs": 24148,
+            "markAgeMs": 24615
+          }
+        },
+        {
+          "id": "CURRENT_OLD_QUOTE_AND_MARK_ELIGIBILITY",
+          "status": "FAIL",
+          "reason": "AVAILABLE_SNAPSHOT_HAS_EXPIRED_NOT_AN_EXCHANGE_OUTAGE",
+          "observed": null
+        },
+        {
+          "id": "NEW_CONTINUOUS_QUOTES_MARK_LATENCY_CACHE_STALL",
+          "status": "UNVERIFIED",
+          "reason": "LATEST_CONTINUOUS_JSON_NOT_RECEIVED",
+          "observed": null
+        },
+        {
+          "id": "BINANCE_PRICE_AND_CONTRACT_CORRESPONDENCE",
+          "status": "UNVERIFIED",
+          "reason": "NO_MATCHED_ACTUAL_BINANCE_OBSERVATIONS",
+          "observed": null
+        }
+      ],
+      "costComponentsAtHistoricalCapture": {
+        "fees": {
+          "status": "UNVERIFIED",
+          "documentedStandard": {
+            "makerFraction": 0.0002,
+            "takerFraction": 0.0006,
+            "makerPercent": 0.02,
+            "takerPercent": 0.06,
+            "scope": "PUBLIC_STANDARD_ONLY",
+            "sourceId": "STANDARD_FEES_2026",
+            "updatedOn": "2026-09-16",
+            "observedRawMatches": true,
+            "effectiveAccountRates": null
+          },
+          "accountApplicabilityStatus": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "DEFINITIONS_AND_APPLICABILITY_NOT_ACTUAL_CHARGE"
+        },
+        "spread": {
+          "status": "UNVERIFIED",
+          "reason": "SPREAD_OBSERVED_NOT_SIZE_SPECIFIC_EXECUTION_COST",
+          "observationStatus": "PASS",
+          "priceDifference": 0.009999999999763531,
+          "spreadBps": 0.044468852902653365,
+          "sourceTimestamp": 1793408335098,
+          "localAgeMs": 24148,
+          "currentlyFresh": true,
+          "priceCurrencyVerified": false,
+          "quantityConversionVerified": false,
+          "estimatedCost": null,
+          "scope": "VISIBLE_BOOK_OBSERVATION_NOT_VALIDATED_EXECUTION_COST"
+        },
+        "slippage": {
+          "status": "UNVERIFIED",
+          "reason": "NO_VERIFIED_PROPOSED_SIZE_AND_EXECUTION_MODEL",
+          "estimatedCost": null
+        },
+        "funding": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "OBSERVATION_SCHEDULE_AND_HISTORY_NOT_ACTUAL_SETTLEMENT"
+        },
+        "total": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "reason": "UNVERIFIED_COMPONENTS_ARE_NOT_ZERO_COSTS"
+        }
+      },
+      "costComponentsAtCurrentReview": {
+        "fees": {
+          "status": "UNVERIFIED",
+          "documentedStandard": {
+            "makerFraction": 0.0002,
+            "takerFraction": 0.0006,
+            "makerPercent": 0.02,
+            "takerPercent": 0.06,
+            "scope": "PUBLIC_STANDARD_ONLY",
+            "sourceId": "STANDARD_FEES_2026",
+            "updatedOn": "2026-09-16",
+            "observedRawMatches": true,
+            "effectiveAccountRates": null
+          },
+          "accountApplicabilityStatus": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "DEFINITIONS_AND_APPLICABILITY_NOT_ACTUAL_CHARGE"
+        },
+        "spread": {
+          "status": "FAIL",
+          "reason": "BOOK_CLOCK_FUTURE_OR_STALE",
+          "observationStatus": "PASS",
+          "priceDifference": 0.009999999999763531,
+          "spreadBps": 0.044468852902653365,
+          "sourceTimestamp": 1793408335098,
+          "localAgeMs": 68589508,
+          "currentlyFresh": false,
+          "priceCurrencyVerified": false,
+          "quantityConversionVerified": false,
+          "estimatedCost": null,
+          "scope": "VISIBLE_BOOK_OBSERVATION_NOT_VALIDATED_EXECUTION_COST"
+        },
+        "slippage": {
+          "status": "UNVERIFIED",
+          "reason": "NO_VERIFIED_PROPOSED_SIZE_AND_EXECUTION_MODEL",
+          "estimatedCost": null
+        },
+        "funding": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "OBSERVATION_SCHEDULE_AND_HISTORY_NOT_ACTUAL_SETTLEMENT"
+        },
+        "total": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "reason": "UNVERIFIED_COMPONENTS_ARE_NOT_ZERO_COSTS"
+        }
+      },
+      "actualFeeEstimate": null,
+      "actualFundingEstimate": null,
+      "realDataAutoEntryEnabled": false
+    },
+    {
+      "asset": "SOL",
+      "instrumentName": "SOL-USDT-PERPETUAL",
+      "status": "NOT_READY",
+      "actualDataSource": "EXISTING_20261031_WINDOWS_SINGLE_DIAGNOSTIC",
+      "contractRaw": {
+        "contract_size": null,
+        "min_qty": 1,
+        "min_trade_amount": 0.1,
+        "min_notional": 100,
+        "tick_size": 0.01,
+        "base_currency": "USDT",
+        "quote_currency": "SOL",
+        "kind": "perpetual"
+      },
+      "confirmedOrderAmountUnit": null,
+      "minNotionalCurrency": null,
+      "confirmedNotionalFormula": null,
+      "conditions": [
+        {
+          "id": "HISTORICAL_ACTIVE_LISTING",
+          "status": "PASS",
+          "reason": "EXISTING_ACTUAL_WINDOWS_LISTING_NOT_LATEST_CONTINUOUS_DATA",
+          "observed": "SOL-USDT-PERPETUAL"
+        },
+        {
+          "id": "CONTRACT_SIZE",
+          "status": "UNVERIFIED",
+          "reason": "NOT_COLLECTED_IN_AVAILABLE_ATTACHMENT",
+          "observed": null
+        },
+        {
+          "id": "DEFAULT_AMOUNT_UNIT",
+          "status": "UNVERIFIED",
+          "reason": "DOCUMENTED_FALSE_AMOUNT_MODE_DEFAULT_UNIT_UNESTABLISHED",
+          "observed": null
+        },
+        {
+          "id": "MINIMUM_AND_INCREMENT_RAW",
+          "status": "PASS",
+          "reason": "DISTINCT_DOCUMENTED_FIELDS_NOT_QUANTITY_UNIT_PROOF",
+          "observed": {
+            "min_qty": 1,
+            "min_trade_amount": 0.1
+          }
+        },
+        {
+          "id": "MIN_NOTIONAL_CURRENCY_AND_FORMULA",
+          "status": "UNVERIFIED",
+          "reason": "BASECURRENCY_DESCRIPTION_AMBIGUOUS",
+          "observed": 100
+        },
+        {
+          "id": "CURRENCY_ROLES_SETTLEMENT_AND_MARGIN",
+          "status": "UNVERIFIED",
+          "reason": "RAW_NAMES_NEVER_FLIPPED_OR_USED_AS_SETTLEMENT_PROOF",
+          "observed": {
+            "base_currency": "USDT",
+            "quote_currency": "SOL"
+          }
+        },
+        {
+          "id": "PUBLIC_STANDARD_FEE_MATCH",
+          "status": "PASS",
+          "reason": "USER_CONFIRMED_2026_STANDARD_NUMERIC_MATCH",
+          "observed": {
+            "maker": 0.0002,
+            "taker": 0.0006
+          }
+        },
+        {
+          "id": "EFFECTIVE_ACCOUNT_FEES",
+          "status": "UNVERIFIED",
+          "reason": "PUBLIC_STANDARD_NOT_ACCOUNT_APPLICABILITY_PROOF",
+          "observed": null
+        },
+        {
+          "id": "FUNDING_IDENTIFIER_RATE_NEXT_TIME_INTERVAL",
+          "status": "UNVERIFIED",
+          "reason": "NO_NEW_CONTINUOUS_INPUT_OR_ACTUAL_FUNDING_ROWS",
+          "observed": null
+        },
+        {
+          "id": "HISTORICAL_BOOK_INTEGRITY",
+          "status": "PASS",
+          "reason": "EXISTING_ACTUAL_20_BID_20_ASK_OBSERVATION",
+          "observed": null
+        },
+        {
+          "id": "HISTORICAL_QUOTE_AND_MARK_LOCAL_AGE",
+          "status": "PASS",
+          "reason": "PRESERVED_CAPTURE_LOCAL_AGE_CHECK_NOT_CLOCK_AUTHENTICATION",
+          "observed": {
+            "quoteAgeMs": 23858,
+            "markAgeMs": 24475
+          }
+        },
+        {
+          "id": "CURRENT_OLD_QUOTE_AND_MARK_ELIGIBILITY",
+          "status": "FAIL",
+          "reason": "AVAILABLE_SNAPSHOT_HAS_EXPIRED_NOT_AN_EXCHANGE_OUTAGE",
+          "observed": null
+        },
+        {
+          "id": "NEW_CONTINUOUS_QUOTES_MARK_LATENCY_CACHE_STALL",
+          "status": "UNVERIFIED",
+          "reason": "LATEST_CONTINUOUS_JSON_NOT_RECEIVED",
+          "observed": null
+        },
+        {
+          "id": "BINANCE_PRICE_AND_CONTRACT_CORRESPONDENCE",
+          "status": "UNVERIFIED",
+          "reason": "NO_MATCHED_ACTUAL_BINANCE_OBSERVATIONS",
+          "observed": null
+        }
+      ],
+      "costComponentsAtHistoricalCapture": {
+        "fees": {
+          "status": "UNVERIFIED",
+          "documentedStandard": {
+            "makerFraction": 0.0002,
+            "takerFraction": 0.0006,
+            "makerPercent": 0.02,
+            "takerPercent": 0.06,
+            "scope": "PUBLIC_STANDARD_ONLY",
+            "sourceId": "STANDARD_FEES_2026",
+            "updatedOn": "2026-09-16",
+            "observedRawMatches": true,
+            "effectiveAccountRates": null
+          },
+          "accountApplicabilityStatus": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "DEFINITIONS_AND_APPLICABILITY_NOT_ACTUAL_CHARGE"
+        },
+        "spread": {
+          "status": "UNVERIFIED",
+          "reason": "SPREAD_OBSERVED_NOT_SIZE_SPECIFIC_EXECUTION_COST",
+          "observationStatus": "PASS",
+          "priceDifference": 0.010000000000005116,
+          "spreadBps": 1.033965775733352,
+          "sourceTimestamp": 1793408335388,
+          "localAgeMs": 23858,
+          "currentlyFresh": true,
+          "priceCurrencyVerified": false,
+          "quantityConversionVerified": false,
+          "estimatedCost": null,
+          "scope": "VISIBLE_BOOK_OBSERVATION_NOT_VALIDATED_EXECUTION_COST"
+        },
+        "slippage": {
+          "status": "UNVERIFIED",
+          "reason": "NO_VERIFIED_PROPOSED_SIZE_AND_EXECUTION_MODEL",
+          "estimatedCost": null
+        },
+        "funding": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "OBSERVATION_SCHEDULE_AND_HISTORY_NOT_ACTUAL_SETTLEMENT"
+        },
+        "total": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "reason": "UNVERIFIED_COMPONENTS_ARE_NOT_ZERO_COSTS"
+        }
+      },
+      "costComponentsAtCurrentReview": {
+        "fees": {
+          "status": "UNVERIFIED",
+          "documentedStandard": {
+            "makerFraction": 0.0002,
+            "takerFraction": 0.0006,
+            "makerPercent": 0.02,
+            "takerPercent": 0.06,
+            "scope": "PUBLIC_STANDARD_ONLY",
+            "sourceId": "STANDARD_FEES_2026",
+            "updatedOn": "2026-09-16",
+            "observedRawMatches": true,
+            "effectiveAccountRates": null
+          },
+          "accountApplicabilityStatus": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "DEFINITIONS_AND_APPLICABILITY_NOT_ACTUAL_CHARGE"
+        },
+        "spread": {
+          "status": "FAIL",
+          "reason": "BOOK_CLOCK_FUTURE_OR_STALE",
+          "observationStatus": "PASS",
+          "priceDifference": 0.010000000000005116,
+          "spreadBps": 1.033965775733352,
+          "sourceTimestamp": 1793408335388,
+          "localAgeMs": 68589218,
+          "currentlyFresh": false,
+          "priceCurrencyVerified": false,
+          "quantityConversionVerified": false,
+          "estimatedCost": null,
+          "scope": "VISIBLE_BOOK_OBSERVATION_NOT_VALIDATED_EXECUTION_COST"
+        },
+        "slippage": {
+          "status": "UNVERIFIED",
+          "reason": "NO_VERIFIED_PROPOSED_SIZE_AND_EXECUTION_MODEL",
+          "estimatedCost": null
+        },
+        "funding": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "scope": "OBSERVATION_SCHEDULE_AND_HISTORY_NOT_ACTUAL_SETTLEMENT"
+        },
+        "total": {
+          "status": "UNVERIFIED",
+          "estimatedCost": null,
+          "reason": "UNVERIFIED_COMPONENTS_ARE_NOT_ZERO_COSTS"
+        }
+      },
+      "actualFeeEstimate": null,
+      "actualFundingEstimate": null,
+      "realDataAutoEntryEnabled": false
+    }
+  ],
+  "p0": [
+    "LATEST_CONTINUOUS_EVIDENCE_MISSING",
+    "CONTRACT_SIZE_DEFAULT_AMOUNT_UNIT_MIN_NOTIONAL_CURRENCY_AND_FORMULA",
+    "SETTLEMENT_MARGIN_AND_EXCHANGE_CURRENCY_ROLE_DEFINITIONS",
+    "ACCOUNT_FEE_APPLICABILITY",
+    "SYMBOL_SPECIFIC_FUNDING_UNIT_SCHEDULE_AND_RECOVERY"
+  ],
+  "p1": [
+    "INDEPENDENT_MARK_BOOK_TIMESTAMP_MEANING_AND_CLOCK_ALIGNMENT",
+    "CONTINUOUS_LATENCY_CACHE_STALL_OBSERVATIONS",
+    "MATCHED_BINANCE_PRICE_AND_CONTRACT_DATA",
+    "ACTUAL_WINDOWS_NODE22_NODE24_AND_REMOTE_CI_RESULTS"
+  ],
+  "existingUserRecordsTouched": false,
+  "journalChanged": false,
+  "paperAutoEntryEnabled": false,
+  "realDataAutoEntryEnabled": false,
+  "liveOrdersEnabled": false,
+  "ordersSubmitted": false,
+  "accountChecked": false,
+  "apiKeysUsed": false
+}

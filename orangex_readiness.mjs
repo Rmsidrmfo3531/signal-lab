@@ -179,7 +179,7 @@ export function evaluateOrangeXReadiness(evidence={}, {now=Date.now(),maxQuoteAg
   else if(now-funding.observedAt>maxQuoteAgeMs)add(statusRow('FUNDING','FAIL','FUNDING_OBSERVATION_STALE'));
   else if(fr.status!=='PASS')add(statusRow('FUNDING',fr.status,fr.reason));
   else if(!near(fp.rate,funding.rate)||fp.intervalMs!==funding.intervalMs||fp.settlementAnchorAt!==funding.settlementAnchorAt||
-   !['FRACTION','PERCENT','BPS'].includes(fp.rateUnit)||!['LONG_PAYS_SHORT','SHORT_PAYS_LONG'].includes(fp.positiveRateMeaning))
+   !['FRACTION','PERCENT','BPS'].includes(fp.rateUnit)||fp.positiveRateMeaning!=='LONG_PAYS_SHORT')
    add(statusRow('FUNDING','FAIL','FUNDING_SCHEDULE_UNIT_OR_SIGN_UNVERIFIED'));
   else add(statusRow('FUNDING','PASS','OBSERVED_FUNDING_SCHEDULE_AND_MEANING_REVIEWED',
    {rate:funding.rate,intervalMs:funding.intervalMs,settlementAnchorAt:funding.settlementAnchorAt}));

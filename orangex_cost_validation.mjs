@@ -2,6 +2,7 @@
 // Supplied reviews are declarations to assess; they are not independent source
 // authentication. This module never authorizes PAPER or LIVE, even on READY.
 import {reviewOrangeXDocumentedStandards} from './orangex_official_sources.mjs';
+import {orangeXBookIntegrity} from './orangex_listing_domains.mjs';
 const plain=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const finite=value=>typeof value==='number'&&Number.isFinite(value);
 const positive=value=>finite(value)&&value>0;
@@ -27,6 +28,24 @@ function definition(id,proof,valid,now){
   row(id,'FAIL','REVIEW_CONTRADICTS_REQUIRED_DEFINITION');
 }
 
+// A visible spread is an observation, not a size-specific execution cost.
+// Preserve its numeric value after expiry without treating it as usable now.
+function spreadCostComponent(market,now,maxAgeMs){
+ const book=plain(market.book)?market.book:null,integrity=book?orangeXBookIntegrity(book):null,
+  bid=book?.bids?.[0]?.[0],ask=book?.asks?.[0]?.[0],
+  mismatch=book&&['instrumentName','instrument_name'].some(key=>Object.hasOwn(book,key)&&book[key]!==market.instrumentName),
+  valid=integrity?.valid===true&&positive(bid)&&positive(ask)&&ask>bid&&!mismatch,
+  clock=book?.timestamp,clockKnown=stamp(clock),fresh=clockKnown&&clock<=now&&now-clock<=maxAgeMs,
+  observedStatus=!book?'UNVERIFIED':valid?'PASS':'FAIL',
+  reason=!book?'BOOK_UNOBSERVED':mismatch?'BOOK_INSTRUMENT_MISMATCH':!valid?'BOOK_INVALID':
+   !clockKnown?'BOOK_CLOCK_UNOBSERVED':!fresh?'BOOK_CLOCK_FUTURE_OR_STALE':'SPREAD_OBSERVED_NOT_SIZE_SPECIFIC_EXECUTION_COST';
+ return {status:observedStatus==='FAIL'||valid&&clockKnown&&!fresh?'FAIL':'UNVERIFIED',reason,
+  observationStatus:observedStatus,priceDifference:valid?ask-bid:null,spreadBps:valid?(ask-bid)/(bid+(ask-bid)/2)*10000:null,
+  sourceTimestamp:clockKnown?clock:null,localAgeMs:clockKnown?now-clock:null,currentlyFresh:valid&&fresh,
+  priceCurrencyVerified:false,quantityConversionVerified:false,estimatedCost:null,
+  scope:'VISIBLE_BOOK_OBSERVATION_NOT_VALIDATED_EXECUTION_COST'};
+}
+
 /** Expected shape: {mode, dataSource, syntheticTest, sourceSHA256, market,
  * costVerification:{source,feeUnit,feeBasis,liquidityRole,accountApplicability,
  * contract,funding,fundingRecovery,feeConflicts},fundingHistory,
@@ -34,8 +53,8 @@ function definition(id,proof,valid,now){
  * Review sections share status, officialDocumentURL and reviewedAt headers.
  * No account identifier, private data, original quote or unknown input is output.
  */
-export function evaluateOrangeXCostEvidence(evidence={}, {now=Date.now(),maxFundingAgeMs=90000}={}){
- if(!stamp(now)||!Number.isSafeInteger(maxFundingAgeMs)||maxFundingAgeMs<1||maxFundingAgeMs>90000)throw Error('INVALID_COST_REVIEW_CLOCK');
+export function evaluateOrangeXCostEvidence(evidence={}, {now=Date.now(),maxFundingAgeMs=90000,maxQuoteAgeMs=90000}={}){
+ if(!stamp(now)||[maxFundingAgeMs,maxQuoteAgeMs].some(age=>!Number.isSafeInteger(age)||age<1||age>90000))throw Error('INVALID_COST_REVIEW_CLOCK');
  const input=plain(evidence)?evidence:{},market=plain(input.market)?input.market:{},fields=plain(market.contractFields)?market.contractFields:{},
   proof=plain(input.costVerification)?input.costVerification:{},checks=[],maker=raw(fields,'maker_commission'),taker=raw(fields,'taker_commission'),
   samples=[input,market,market.book,market.fundingObservation,input.fundingHistory,...(Array.isArray(input.fundingHistory?.events)?input.fundingHistory.events.slice(0,10001):[])],
@@ -120,12 +139,24 @@ export function evaluateOrangeXCostEvidence(evidence={}, {now=Date.now(),maxFund
   feeApplicable=['INSTRUMENT','READ_ONLY_CONTEXT','SOURCE_PROVENANCE','PUBLIC_FEE_VALUES','FEE_RATE_UNIT','FEE_NOTIONAL_BASIS','MAKER_TAKER_ROLE','ACCOUNT_RATE_APPLICABILITY','CONTRACT_VALUE_BASIS'].every(id=>byId(id).status==='PASS'),
   unit=feeUnitPassed?proof.feeUnit.unit:null,summary={PASS:0,FAIL:0,UNVERIFIED:0,total:checks.length};
  for(const check of checks)summary[check.status]++;
+ const componentStatus=ids=>ids.some(id=>byId(id).status==='FAIL')?'FAIL':ids.every(id=>byId(id).status==='PASS')?'PASS':'UNVERIFIED',
+  documentaryStandards=reviewOrangeXDocumentedStandards(market,{now}),
+  costComponents={
+   fees:{status:componentStatus(['INSTRUMENT','READ_ONLY_CONTEXT','SOURCE_PROVENANCE','FEE_RATE_UNIT','FEE_NOTIONAL_BASIS','MAKER_TAKER_ROLE','ACCOUNT_RATE_APPLICABILITY','CONTRACT_VALUE_BASIS']),
+    documentedStandard:documentaryStandards.standardFees,accountApplicabilityStatus:byId('ACCOUNT_RATE_APPLICABILITY').status,
+    estimatedCost:null,scope:'DEFINITIONS_AND_APPLICABILITY_NOT_ACTUAL_CHARGE'},
+   spread:spreadCostComponent(market,now,maxQuoteAgeMs),
+   slippage:{status:'UNVERIFIED',reason:'NO_VERIFIED_PROPOSED_SIZE_AND_EXECUTION_MODEL',estimatedCost:null},
+   funding:{status:componentStatus(['INSTRUMENT','READ_ONLY_CONTEXT','SOURCE_PROVENANCE','CONTRACT_VALUE_BASIS','FUNDING_OBSERVATION','FUNDING_UNIT_SIGN_SCHEDULE','FUNDING_HISTORY_RECOVERY']),
+    estimatedCost:null,scope:'OBSERVATION_SCHEDULE_AND_HISTORY_NOT_ACTUAL_SETTLEMENT'},
+   total:{status:'UNVERIFIED',estimatedCost:null,reason:'UNVERIFIED_COMPONENTS_ARE_NOT_ZERO_COSTS'}
+  };
  return {kind:'ORANGEX_COST_EVIDENCE_REVIEW',scope:'READ_ONLY_COST_DEFINITIONS_NOT_TRADING_APPROVAL',mode:'READ_ONLY',
   instrumentName:typeof market.instrumentName==='string'&&/^(BTC|ETH|SOL)-USDT-PERPETUAL$/.test(market.instrumentName)?market.instrumentName:null,
   checkedAt:now,status:checks.every(check=>check.status==='PASS')?'READY':'NOT_READY',checks,summary,
   publicFeeRateFractions:feeUnitPassed?{maker:rate(maker,unit),taker:rate(taker,unit)}:null,
   effectiveAccountFeeRates:feeApplicable?{maker:rate(maker,unit),taker:rate(taker,unit)}:null,
-  documentaryStandards:reviewOrangeXDocumentedStandards(market,{now}),
+  documentaryStandards,costComponents,
   fundingHistoryTimingModel:'EXACT_NOMINAL_SLOTS_ONLY_NO_AUTOMATIC_15_SECOND_TOLERANCE',
   actualFeeEstimate:null,actualFundingEstimate:null,
   activationAllowed:false,realDataAutoEntryEnabled:false,paperAutoEntryEnabled:false,liveOrdersEnabled:false,
