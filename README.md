@@ -414,9 +414,28 @@ macOS/Linux: 터미널에서 프로젝트 폴더로 이동하여 `node server.mj
 `node server.mjs` 프로세스가 **계속 실행 중이라면** 가격 조회와 시그널 스캐너는 계속 작동합니다. 단, 브라우저 알림은 브라우저가 닫혀 있으면 표시되지 않습니다. 브라우저가 꺼진 후에도 Telegram 메시지를 받으려면 다음 설정을 해주세요.
 
 1. Telegram의 공식 **@BotFather**에서 봇을 만들고 토큰을 발급받습니다.
-2. 새 봇에서 대화를 시작하고 본인 Telegram chat ID를 확인합니다.
-3. `.env.example`을 `.env`로 복사해 `TELEGRAM_BOT_TOKEN=...`, `TELEGRAM_CHAT_ID=...`를 입력하고 서버를 재실행합니다.
-4. 봇 토큰과 chat ID를 공유하거나 GitHub 공개 저장소에 올리지 마세요.
+2. 새 봇에서 `/start`를 전송합니다. Bot API `getUpdates`의 `message.chat.id` 필드로 본인 chat ID를 확인할 수 있습니다(봇에 먼저 말을 걸어야 개인 메시지 발송이 가능합니다).
+3. `%LOCALAPPDATA%\\SignalLab\\.env` (Windows, 기본 경로)를 만들거나 편집해 `TELEGRAM_BOT_TOKEN=...`, `TELEGRAM_CHAT_ID=...`를 입력하고 서버를 재실행합니다. macOS/Linux는 `~/.signal-lab/.env`가 기본 경로입니다. `SIGNAL_LAB_DATA_DIR`가 설정되었다면 그 디렉터리의 `.env`를 사용합니다. 기존 설치 폴더의 `.env`는 데이터 디렉터리에 파일이 없을 때 첫 실행 시 복사됩니다.
+4. 봇 토큰과 chat ID를 공유하거나 GitHub 저장소에 올리지 마세요.
+
+#### 점수 기반 알트코인 관찰용 텔레그램 알림 (선택 사항)
+
+기존 **최종 거래 신호**는 9개 기술 조건 100/100과 별도의 Variational 호가·비용 검증을 모두 통과해야 발송합니다. 다음 기능은 별개의 **관찰 알림**으로, 기술 점수가 지정 값 이상이지만 최종 신호가 아닌 후보를 알리는 용도입니다. 거래 실행 조건을 완화하지 않습니다.
+
+```ini
+TELEGRAM_BOT_TOKEN=본인_봇_토큰
+TELEGRAM_CHAT_ID=본인_chat_id
+TELEGRAM_WATCH_MIN_SCORE=80
+TELEGRAM_WATCH_ALT_ONLY=true
+TELEGRAM_NEWS_ALERTS=false
+```
+
+- `TELEGRAM_WATCH_MIN_SCORE`: 기본 0(OFF), 1~100의 정수로 설정하면 해당 점수 이상인 **확정 1H 패턴**의 관찰 알림을 켭니다. 권장 시작값은 임의의 예시값인 80이며 승률 80%를 뜻하지 않습니다.
+- `TELEGRAM_WATCH_ALT_ONLY`: 기본 `true`로 BTCUSDT를 제외합니다(ETH 및 기타 알트코인은 포함). `false`면 BTC도 포함합니다.
+- 공통 상장 PERP로 검증된 종목, 75분 이내 확정 패턴에만 발송합니다. 최종 신호와 중복되는 관찰 알림은 보내지 않으며, 종목·방향·패턴·확정봉별 1회만 발송합니다. 재시작 시에도 중복 방지 기록은 `store.json`에 유지됩니다.
+- 관찰 알림은 **매매 신호 아님**을 명시하고 기술 미충족 조건과 체결 검증 상태를 보여줍니다. 매수·매도는 실행하지 않습니다.
+- `TELEGRAM_NEWS_ALERTS=false`는 뉴스 텔레그램 발송을 끄는 선택 설정입니다. 기존 최종 거래 신호 알림은 유지됩니다.
+- 스캐너는 1H/4H 봉 확정 이벤트와 정기 스캔으로 동작하며 모든 코인을 틱 단위로 즉시 재평가하지는 않습니다. PC/VPS와 서버가 종료되면 알림도 중단됩니다.
 
 **24시간 서비스**는 항상 켜져 있는 PC 또는 VPS에서 이 서버를 지속 실행해야 합니다. 로컬 PC가 꺼지면 스캔과 알림도 중단됩니다. 휴대폰에서 사이트에 접속하려면 서버가 실행된 PC와 동일 LAN에서 `HOST=0.0.0.0`으로 서버를 실행하고 `http://PC_IP:3000`에 접속할 수 있습니다. 로컬 공유기 밖의 공용 인터넷에 직접 노출하지 말고 HTTPS/인증/방화벽을 별도로 구성하세요. 모바일 브라우저는 HTTP 환경에서 알림을 허용하지 않을 수 있습니다.
 
