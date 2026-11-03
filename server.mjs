@@ -13,6 +13,7 @@ import {structureObservations,historicalPatternObservations} from './observation
 import {describeScanFunnel} from './scan_diagnostics.mjs';
 import {intersectPerpetualMarkets} from './markets.mjs';
 import {officialMarketLinks,telegramMessage} from './links.mjs';
+import {watchMinScore,shouldNotifyWatch,watchAlertKey,telegramWatchMessage} from './telegram_watch.mjs';
 import {executionEstimate,riskSizedEstimate,EXEC_DEFAULTS,parsePerpExecution} from './execution.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {extractTradFiMarkets,swapFundingUSD,tradfiQuoteVerdict} from './tradfi.mjs';
@@ -39,6 +40,7 @@ const CONFIG={
  hotBatch:Math.max(5,Math.min(80,Number(process.env.SCAN_HOT_BATCH||12))),
  quoteVolume:Math.max(0,Number(process.env.MIN_DAILY_VOLUME_USDT||5000000)),
  tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
+  tgWatchMin:watchMinScore(process.env.TELEGRAM_WATCH_MIN_SCORE),tgWatchAltOnly:process.env.TELEGRAM_WATCH_ALT_ONLY!=='false',
  newsMs:Math.max(60000,Number(process.env.NEWS_POLL_MS||90000)),
  newsTelegram:process.env.TELEGRAM_NEWS_ALERTS!=='false',
  tradfiMs:Math.max(60000,Number(process.env.TRADFI_REFRESH_MS||60000)),
@@ -314,6 +316,17 @@ async function tgNotify(s){
  }catch(e){console.error('Telegram error:',e.message)}
 }
 
+async function tgWatchNotify(s,urls){
+ if(!CONFIG.tgToken||!CONFIG.tgChat)return;
+ try{
+  const payload={chat_id:CONFIG.tgChat,...telegramWatchMessage(s,urls)};
+  const r=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
+   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)
+  });
+  if(!r.ok)console.warn('[WATCH TELEGRAM HTTP]',r.status);
+ }catch(e){console.warn('[WATCH TELEGRAM ERROR]',e.message)}
+}
+
 let updateCheckPromise=null;
 async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
@@ -382,6 +395,20 @@ async function checkSymbolInternal(symbol, force=false){
   }
  }
  state.analyses.set(symbol,out);
+ // Optional research alert: does not change the strict 100/100 final signal gate.
+ if(CONFIG.tgWatchMin>0&&CONFIG.tgToken&&CONFIG.tgChat){
+  const verifiedMarket=state.quotes.get(symbol);
+  const marketReady=state.activeSet.has(symbol)&&state.variational==='connected'&&Boolean(verifiedMarket?.variational?.ticker);
+  const urls=marketReady?officialMarketLinks(symbol,verifiedMarket.variational.ticker):null;
+  if(urls&&shouldNotifyWatch(out,{minScore:CONFIG.tgWatchMin,altOnly:CONFIG.tgWatchAltOnly,verified:true})){
+   const watchKey=watchAlertKey(out);
+   if(!persisted.seen[watchKey]){
+    persisted.seen[watchKey]=Date.now();save();
+    void tgWatchNotify(out,urls);
+    console.log('[WATCH TELEGRAM]',symbol,out.direction,out.pattern,out.score);
+   }
+  }
+ }
  if(out.status==='signal'&&out.qualified&&relevantSignals().some(x=>x.symbol===symbol&&x.time===out.time&&x.direction===out.direction&&x.pattern===out.pattern)){
    paper.register(out,{market:'CRYPTO',symbol,quoteEligible:true});
  }
@@ -545,7 +572,7 @@ setInterval(()=>{
 function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.variational==='connected'?[]:state.researchSymbols,variational:state.variational});}
 function getStatus(){return {version:'5.8.0',scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,variational:state.variational,lastVariational:state.lastVariational,binancePerps:state.binancePerps,variationalPerps:state.variationalPerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
- intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:CONFIG.limits,
+ intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),telegramWatchMinScore:CONFIG.tgWatchMin,telegramWatchAltOnly:CONFIG.tgWatchAltOnly,watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:CONFIG.limits,
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
  liveWS:state.liveWS,liveWatched:state.liveWatched,lastLiveDataAt:state.lastLiveDataAt,lastLiveCandleClose:state.lastLiveCandleClose,liveSubscribeAcks:state.liveSubscribeAcks,liveSubscribeErrors:state.liveSubscribeErrors,liveLastError:state.liveLastError,lastLiveTrigger:state.lastLiveTrigger,livePending:state.livePending,liveAnalyzed:state.liveAnalyzed,confirmedPatternCount:confirmedPatterns().length,newsStatus:state.newsStatus,newsChecked:state.newsChecked,newsCount:state.news.length,newsError:state.newsError,newsSources:state.newsSources,update:state.update};}
 function recentAnalyses(){return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)||(state.variational!=='connected'&&state.researchSet.has(x.symbol))).sort((a,b)=>b.scannedAt-a.scannedAt).slice(0,140);}
