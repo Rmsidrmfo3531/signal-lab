@@ -1,3 +1,20 @@
+# OrangeX 자동매매 연동 준비 (읽기 전용 / 실주문 차단)
+
+**단계:** Binance 선물 스캐너는 현재 기존 동작(Variational 검증 포함)을 유지합니다. 이 브랜치는 OrangeX를 미래 실거래 실행 거래소로 준비하기 위한 1차 단계이며, **아직 실계좌 자동 주문 기능이 아닙니다.** `orangex_adapter.mjs`는 인증·포지션/주문상태 조회를 위한 읽기 전용 클라이언트, OrangeX 주문장 신선도/스프레드 검사, 거래 실행 전 예상 주문 계획 생성기를 제공합니다. **주문·출금·취소 API 호출은 거부**합니다. 이 버전은 OrangeX API Key가 없어도 설치 및 실행 가능합니다.
+
+- 목표 아키텍처: Binance Futures 1H/4H 분석 → 고득점 관찰 텔레그램(실행 아님) → **100/100 완전 통과 신호만** 별도 실행 승인 및 OrangeX 실제 호가 확인 → OrangeX 주문·손절/익절·체결상태 관리
+- 읽기 전용 공개 API 진단: `GET http://127.0.0.1:3000/api/orangex/quote?symbol=SOLUSDT`. Binance에서 추적 중인 심볼에 대해 OrangeX 공개 호가가 확인되면 상단 Bid/Ask, 스프레드, Binance 비교가격을 보여줍니다. OrangeX에 종목이 없거나 호가가 오래됐으면 오류로 차단합니다. 해당 엔드포인트는 계좌에 접속하거나 주문하지 않습니다.
+- `/api/status`에 `orangeXPreflightAvailable:true`, `orangeXLiveTradingEnabled:false`로 표시됩니다. **실제 자동매매는 여전히 비활성**입니다. API 자료를 받아오는 것과 거래소 주문 승인·체결은 전혀 다릅니다.
+- 향후 구현에서 필요한 안전 검증: OrangeX 공식 API 키 거래 권한(출금 권한 불필요), IP 화이트리스트, 계약별 최소 수량/틱·포지션 모드·레버리지, 실제 지정가/시장가 주문 동작, 주문 ID 기준 체결·취소·부분체결 재동기화, 손절·익절 주문이 거래소에서 유효한지 확인, 서버 재시작/중복 방지, 계좌별 최대 손실·일일 거래 횟수 제한, 킬스위치, 모의거래/실거래 기록 완전 분리.
+- `makeOrangeXOrderPlan`은 100점 최종 기술 신호·계약 확인·15초 이내 Binance 가격·10초 이내 OrangeX 호가·스프레드 15bp·가격차 30bp를 검증하는 **주문 미리보기 함수**입니다. 예시 안전 상한은 명목 100 USDT / 계획손실 2 USDT이며 수수료·펀딩·갭 리스크를 완전히 반영한 것이 아닙니다. 신호가 주문 가능하다는 확정 판정이 아니며 실제 주문은 지원하지 않습니다.
+- 공개 호가는 공식 `/public/get_order_book`, 인증은 `/public/auth`, 주문 상태는 `/private/get_order_state`, 포지션은 `/private/get_positions` 문서 기준입니다. 실제 API 연결 및 실계좌 권한은 아직 검증하지 않았습니다.
+- 현재 코드에 **OrangeX API Key/Secret을 넣지 않아도 됩니다.** 실계좌 연동 시 별도 키를 발급받되 **출금 권한 없이**, IP 제한을 적용하고 채팅/GitHub 저장소에 유출하지 마세요.
+- 테스트: `node --test tests/orangex_adapter.test.mjs`. 외부 거래소 서버/실계좌를 사용하지 않는 모의 요청만 검사합니다.
+
+공식 API 문서: https://openapi-docs.orangex.com/
+
+---
+
 # Signal Lab v5.8 — 0개 시그널 검증 및 관찰 화면 (PC·모바일 공용)
 
 ## 확인한 원인
