@@ -14,6 +14,7 @@ import {describeScanFunnel} from './scan_diagnostics.mjs';
 import {intersectPerpetualMarkets} from './markets.mjs';
 import {officialMarketLinks,telegramMessage} from './links.mjs';
 import {watchMinScore,shouldNotifyWatch,watchAlertKey,telegramWatchMessage} from './telegram_watch.mjs';
+import {OrangeXClient,orangeXInstrument,examineOrangeXBook} from './orangex_adapter.mjs';
 import {executionEstimate,riskSizedEstimate,EXEC_DEFAULTS,parsePerpExecution} from './execution.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {extractTradFiMarkets,swapFundingUSD,tradfiQuoteVerdict} from './tradfi.mjs';
@@ -74,6 +75,8 @@ const state={ws:'offline',rest:'connecting',variational:'connecting',lastVariati
  liveWS:'offline',liveWatched:0,lastLiveTrigger:0,livePending:0,liveAnalyzed:0,
  lastTickerAt:0,lastTickerCount:0,lastLiveDataAt:0,lastLiveCandleClose:0,liveSubscribeAcks:0,liveSubscribeErrors:0,liveLastError:'',lastScanAttempt:0,scanStartedAt:0,scanFailedAt:0,marketRetryCount:0,marketError:'',marketLastRetry:0,news:[],newsStatus:'connecting',newsChecked:0,newsSources:[],newsError:'',update:{state:'unconfigured',lastCheck:0,message:'업데이트 서버 미설정'},scanSuccess:0,scanFailed:0,lastScanFailures:[],lastScanSuccessAt:0};
 const apiCache=new Map();
+// Public OrangeX data preflight only. No account authorization or order placement.
+const orangeXPublic=new OrangeXClient();
 const structureBySymbol=new Map();
 const historyBySymbol=new Map();
 function recentStructures(){return [...structureBySymbol.values()].flat().filter(x=>Date.now()-x.observedAt<2*3600000).sort((a,b)=>b.observedAt-a.observedAt).slice(0,100)}
@@ -572,7 +575,7 @@ setInterval(()=>{
 function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.variational==='connected'?[]:state.researchSymbols,variational:state.variational});}
 function getStatus(){return {version:'5.8.0',scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,variational:state.variational,lastVariational:state.lastVariational,binancePerps:state.binancePerps,variationalPerps:state.variationalPerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
- intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),telegramWatchMinScore:CONFIG.tgWatchMin,telegramWatchAltOnly:CONFIG.tgWatchAltOnly,watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:CONFIG.limits,
+ intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),telegramWatchMinScore:CONFIG.tgWatchMin,telegramWatchAltOnly:CONFIG.tgWatchAltOnly,orangeXPreflightAvailable:true,orangeXLiveTradingEnabled:false,watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:CONFIG.limits,
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
  liveWS:state.liveWS,liveWatched:state.liveWatched,lastLiveDataAt:state.lastLiveDataAt,lastLiveCandleClose:state.lastLiveCandleClose,liveSubscribeAcks:state.liveSubscribeAcks,liveSubscribeErrors:state.liveSubscribeErrors,liveLastError:state.liveLastError,lastLiveTrigger:state.lastLiveTrigger,livePending:state.livePending,liveAnalyzed:state.liveAnalyzed,confirmedPatternCount:confirmedPatterns().length,newsStatus:state.newsStatus,newsChecked:state.newsChecked,newsCount:state.news.length,newsError:state.newsError,newsSources:state.newsSources,update:state.update};}
 function recentAnalyses(){return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)||(state.variational!=='connected'&&state.researchSet.has(x.symbol))).sort((a,b)=>b.scannedAt-a.scannedAt).slice(0,140);}
@@ -697,6 +700,19 @@ const server=http.createServer(async(req,res)=>{
    req.on('close',()=>{clearInterval(pulse);state.clients.delete(res)});return;
   }
   if(pathname==='/api/status')return response(res,200,getStatus());
+  if(pathname==='/api/orangex/quote'&&req.method==='GET'){
+   const symbol=(url.searchParams.get('symbol')||'').toUpperCase();
+   if(!/^[A-Z0-9]+USDT$/.test(symbol)||!state.quotes.has(symbol))return response(res,404,{error:'Tracked Binance USDT perp symbol not found'});
+   const instrument=orangeXInstrument(symbol);
+   const raw=await orangeXPublic.orderBook(instrument);
+   const book=examineOrangeXBook(raw);
+   const b=state.quotes.get(symbol),binancePrice=Number(b?.price),binancePriceAt=Number(b?.priceAt);
+   const referenceFresh=Number.isFinite(binancePrice)&&binancePrice>0&&Number.isFinite(binancePriceAt)&&binancePriceAt<=Date.now()&&Date.now()-binancePriceAt<15000;
+   return response(res,200,{symbol,instrument,mode:'PUBLIC_QUOTE_ONLY',liveTradingEnabled:false,
+    orangeX:book,binance:{price:referenceFresh?binancePrice:null,priceAt:referenceFresh?binancePriceAt:null},
+    basisBps:referenceFresh?10000*Math.abs(((book.bid+book.ask)/2)-binancePrice)/binancePrice:null,
+    notice:'Public quote only. Tradability, contract sizing, account and order execution are not verified.'});
+  }
   if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,variational:state.variational,marketError:state.marketError});
   if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:true,updatedByServer:true,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
   if(pathname==='/api/paper'&&req.method==='GET')return response(res,200,{
