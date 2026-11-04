@@ -1,4 +1,5 @@
 import {gradeSetup,STRICT_MIN_SCORE} from './quality.mjs';
+import {evaluateIndicators,compositeWatchScore} from './indicators.mjs';
 // Price-action scanner for closed Binance futures candles. No trading or order execution.
 export const number = value => Number(value);
 export function normalizedKlines(rows, now=Date.now()) {
@@ -175,6 +176,10 @@ export function analyze(symbol, h1Rows, h4Rows, m15Rows=[], priceOverride=null, 
     if(dt&&lastCrossedDown(dt.neck))push('SHORT','이중천장 넥라인 이탈',last.close,Math.max(dt.first.price,dt.b.price)+a*.25,72,'두 고점의 가격 근접·간격 확인, 1H 넥라인 하향 종가 이탈');
   }
   const best=candidates.sort((a,b)=>Number(b.technicalQualified)-Number(a.technicalQualified)||b.score-a.score)[0]??null;
+  // Score only the fully closed 1H candles; never include a live unfinished bar.
+  // The composite ranks WATCH candidates; it never overrides strict 100/100 gating.
+  const indicators=best?evaluateIndicators(h1,best.direction):null;
+  const compositeScore=best?compositeWatchScore(best.score,indicators):null;
   // The closed 1H confirmation and 4H trend are required; venue liquidity
   // and spread checks are applied separately in server.mjs.
   const quality = best && best.technicalQualified && best.score>=STRICT_MIN_SCORE &&
@@ -183,7 +188,7 @@ export function analyze(symbol, h1Rows, h4Rows, m15Rows=[], priceOverride=null, 
   return {
     symbol, price, trend, ema20:e1, atr:a, volumeRatio:vRatio, supports:lv.supports,
     resistances:lv.resistances, time:last.time, status:quality?'signal':best?'watch':'neutral',
-    ...(best?{...best,qualified:Boolean(quality)}:{}),quoteVolume:Number(meta.quoteVolume||0),
+    ...(best?{...best,indicators,compositeScore,compositeVersion:'COMPOSITE-60-40-V1',qualified:Boolean(quality)}:{}),quoteVolume:Number(meta.quoteVolume||0),
     priceChangePercent:Number(meta.priceChangePercent||0),scannedAt:now,
     patternConfirmed:Boolean(best),patternTimeframe:'1h',
     patternConfirmedAt:best ? (Number(last.closeTime)||last.time+3600000) : null,
