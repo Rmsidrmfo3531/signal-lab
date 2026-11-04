@@ -18,6 +18,10 @@ test('strict confirmation can pass all independent hard criteria on a strong fre
  assert.equal(r.status,'signal');assert.equal(r.technicalQualified,true);
  assert.equal(r.score,100);assert.ok(r.score>=STRICT_MIN_SCORE);
  assert.deepEqual(r.quality.failed,[]);assert.equal(r.quality.checks.length,9);
+ assert.equal(r.indicators?.valid,true);
+ assert.ok(Number.isInteger(r.indicators?.score)&&r.indicators.score>=0&&r.indicators.score<=100);
+ assert.equal(r.compositeScore,Math.round(.6*r.score+.4*r.indicators.score));
+ assert.equal(r.technicalQualified,true); // indicator score cannot weaken 100/100 strict gate
 });
 
 test('weak volume rejects otherwise identical pattern; score is evidence count, not success probability',()=>{
