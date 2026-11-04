@@ -3,7 +3,7 @@
  */
 const sum=a=>a.reduce((x,y)=>x+y,0);
 const round=x=>Number(x.toFixed(3));
-const validBars=c=>Array.isArray(c)&&c.length>=65&&c.every(x=>[x.open,x.high,x.low,x.close,x.volume].every(v=>Number.isFinite(v))&&x.high>=x.low&&x.close>0&&x.volume>=0);
+const validBars=c=>Array.isArray(c)&&c.length>=65&&c.every(x=>[x.open,x.high,x.low,x.close,x.volume].every(v=>Number.isFinite(v))&&x.high>=x.low&&x.close>0&&x.volume>=0&&x.closed!==false);
 function ema(values,n){
  if(values.length<n)return [];
  const out=Array(values.length).fill(null);
