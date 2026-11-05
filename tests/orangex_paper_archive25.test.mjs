@@ -70,11 +70,12 @@ test('CLI requires explicit input and keeps run mode provenance and immutable ar
   await fs.writeFile(inputFile,JSON.stringify(syntheticReplayInput({complete:true})));
   const args=[fileURLToPath(new URL('../scripts/orangex-paper-replay.mjs',import.meta.url)),'--input',inputFile,'--output-dir',directory],
    env={PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})},
-   first=spawnSync(process.execPath,args,{encoding:'utf8',env});
-  assert.equal(first.status,0,first.stderr);const value=JSON.parse(first.stdout);assert.equal(value.runKind,'BACKTEST');
+   first=spawnSync(process.execPath,args,{encoding:'utf8',env,timeout:15000,killSignal:'SIGKILL'});
+  assert.equal(first.error,undefined);assert.equal(first.status,0,first.stderr);const value=JSON.parse(first.stdout);assert.equal(value.runKind,'BACKTEST');
   assert.equal(value.snapshot.executionMode,'SYNTHETIC_TEST');assert.equal(value.performance.realMarketPerformanceVerified,false);
   const original=await fs.readFile(path.join(directory,'orangex-replay.json'),'utf8');
-  assert.equal(spawnSync(process.execPath,args,{encoding:'utf8',env}).status,1);
+  const repeated=spawnSync(process.execPath,args,{encoding:'utf8',env,timeout:15000,killSignal:'SIGKILL'});
+  assert.equal(repeated.error,undefined);assert.equal(repeated.status,1);
   assert.equal(await fs.readFile(path.join(directory,'orangex-replay.json'),'utf8'),original);
  }finally{await fs.rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });

@@ -120,8 +120,8 @@ test('file audit hashes exact BOM bytes, returns NOT_READY and preserves input a
  fs.writeFileSync(path.join(directory,'store.json'),'existing PNL');fs.writeFileSync(path.join(directory,'.env'),'existing settings');
  const report=reviewOrangeXEvidenceFile(file,{now:NOW});assert.equal(report.sourceSHA256,createHash('sha256').update(bytes).digest('hex'));
  const command=fileURLToPath(new URL('../scripts/review-orangex-evidence.mjs',import.meta.url));
- const child=spawnSync(process.execPath,[command,'--input',file],{encoding:'utf8',env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
- assert.equal(child.status,1);assert.equal(JSON.parse(child.stdout).status,'NOT_READY');assert.equal(child.stderr,'');
+ const child=spawnSync(process.execPath,[command,'--input',file],{encoding:'utf8',timeout:15000,killSignal:'SIGKILL',env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
+ assert.equal(child.error,undefined);assert.equal(child.status,1);assert.equal(JSON.parse(child.stdout).status,'NOT_READY');assert.equal(child.stderr,'');
  assert.ok(fs.readFileSync(file).equals(bytes));assert.equal(fs.readFileSync(path.join(directory,'store.json'),'utf8'),'existing PNL');
  assert.equal(fs.readFileSync(path.join(directory,'.env'),'utf8'),'existing settings');assert.equal(fs.readdirSync(directory).length,3);
 }));

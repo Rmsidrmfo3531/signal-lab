@@ -8,6 +8,7 @@ import {classifyCurl,curlPublicProbe,diagnoseOrangeXPublic,observeBook} from '..
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {trackChild,stopChild} from './helpers/child_process.mjs';
 
 // These are controlled process faults and generated public responses. No curl
 // request, actual Windows process or exchange API is used by this file.
@@ -84,8 +85,8 @@ test('controlled local children are actually closed before both timeout results 
  const children=[];
  const spawnProcess=(_command,_args,options)=>{
   const source="process.on('SIGTERM',()=>{});console.log('curl 8.14.1');console.log('synthetic'+"+JSON.stringify(trailer)+");setInterval(()=>{},1000);";
-  const child=spawn(process.execPath,['--input-type=module','-e',source],{...options,env:{PATH:process.env.PATH,
-   ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
+  const child=trackChild(spawn(process.execPath,['--input-type=module','-e',source],{...options,env:{PATH:process.env.PATH,
+   ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}}));
   const row={child,closed:false};children.push(row);child.once('close',()=>{row.closed=true});return child;
  };
  try{
@@ -95,7 +96,7 @@ test('controlled local children are actually closed before both timeout results 
   const publicResult=await curlPublicProbe('docs',undefined,{spawnProcess,processTimeoutMs:250,killGraceMs:1000});
   assert.equal(publicResult.category,'TIMEOUT');assert.equal(publicResult.processClosed,true);assert.equal(children[1].closed,true);
  }finally{
-  for(const row of children)if(!row.closed){row.child.kill('SIGKILL');await new Promise(resolve=>row.child.once('close',resolve))}
+  await Promise.all(children.map(row=>stopChild(row.child,{graceMs:1000,killMs:1000})));
  }
 });
 

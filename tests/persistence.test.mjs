@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {resolveDataDir,prepareData,atomicWriteStore,readStore,backupStore,restoreStore,importLegacy,acquireDataLock,isLocked} from '../persistence.mjs';
 const work=()=>fs.mkdtempSync(path.join(os.tmpdir(),'signal-persist-'));
 const cli=fileURLToPath(new URL('../data-cli.mjs',import.meta.url));
-const restoreCLI=(dir,backup)=>spawnSync(process.execPath,[cli,'restore',backup],{env:{PATH:process.env.PATH,SIGNAL_LAB_DATA_DIR:dir},encoding:'utf8'});
+const restoreCLI=(dir,backup)=>{const child=spawnSync(process.execPath,[cli,'restore',backup],{env:{PATH:process.env.PATH,SIGNAL_LAB_DATA_DIR:dir},encoding:'utf8',timeout:15000,killSignal:'SIGKILL'});assert.equal(child.error,undefined);return child};
 const fixture=(id='p1')=>({journal:[{id:'manual'}],paper:{pending:[],open:[{key:id,entryFill:100}],closed:[{key:'old',realizedPnLUSD:7.5}],skipped:[],seen:{x:42}},alerts:[{id:'a'}],watchlist:['BTCUSDT']});
 test('Windows user data directory is stable across extracted version paths',()=>{
  const a=resolveDataDir({platform:'win32',home:'C:\\Users\\tester',env:{LOCALAPPDATA:'C:\\Users\\tester\\AppData\\Local'}});

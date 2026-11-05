@@ -115,7 +115,7 @@ test('lost lock ownership blocks subsequent saves and close never removes anothe
 test('malformed locks are not deleted while a demonstrably exited process lock is safely recovered',()=>sandbox(({directory,create})=>{
  fs.mkdirSync(directory);const file=path.join(directory,'orangex-paper.lock');fs.writeFileSync(file,'broken-lock');
  const store=create();assert.throws(()=>store.write(state()),{code:'ORANGEX_PAPER_LOCKED'});assert.equal(fs.readFileSync(file,'utf8'),'broken-lock');
- const child=spawnSync(process.execPath,['-e','process.stdout.write(String(process.pid))'],{encoding:'utf8',windowsHide:true});assert.equal(child.status,0);
+ const child=spawnSync(process.execPath,['-e','process.stdout.write(String(process.pid))'],{encoding:'utf8',windowsHide:true,timeout:15000,killSignal:'SIGKILL'});assert.equal(child.error,undefined);assert.equal(child.status,0);
  fs.writeFileSync(file,JSON.stringify({kind:'ORANGEX_PAPER_OFFLINE',pid:Number(child.stdout),nonce:'exited-process'}));
  store.write(state({events:[{id:'recovered'}]}));assert.equal(store.read().events[0].id,'recovered');
 }));

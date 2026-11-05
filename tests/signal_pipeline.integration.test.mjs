@@ -9,6 +9,8 @@ import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {ENTRY} from './fixtures/pipeline_market.mjs';
 import {PaperEngine} from '../paper.mjs';
+import {trackChild,stopChild} from './helpers/child_process.mjs';
+import {fetchLocal} from './helpers/http_request.mjs';
 const project=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const nap=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(action,predicate,{timeout=7000,label='expected server state'}={}){
@@ -37,20 +39,18 @@ async function sandbox(config){
  await fs.writeFile(path.join(data,'store.json'),JSON.stringify({paperNotify:{enabled:false,history:[]}}));
  const socket=net.createServer();socket.listen(0,'127.0.0.1');await once(socket,'listening');const port=socket.address().port;await new Promise(r=>socket.close(r));
  const base='http://127.0.0.1:'+port;
- const get=async endpoint=>{const response=await fetch(base+endpoint);assert.equal(response.status,200,endpoint);return response.json()};
+ const get=async endpoint=>{const response=await fetchLocal(base+endpoint);assert.equal(response.status,200,endpoint);return response.json()};
  async function start(){
-  child=spawn(process.execPath,['--import','./tests/mock_pipeline.mjs','server.mjs'],{cwd:app,env:{PATH:process.env.PATH,
+  child=trackChild(spawn(process.execPath,['--import','./tests/mock_pipeline.mjs','server.mjs'],{cwd:app,env:{PATH:process.env.PATH,
    PORT:String(port),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:data,SIGNAL_LAB_TEST_CONTROL:control,SIGNAL_LAB_TEST_REQUESTS:requests,
-   AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:''},stdio:['ignore','pipe','pipe']});
+   AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',
+   ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})},stdio:['ignore','pipe','pipe']}));
   child.stdout.on('data',chunk=>{logs+=String(chunk)});child.stderr.on('data',chunk=>{logs+=String(chunk)});
   await until(()=>get('/api/status'),s=>s.activeCount===(cfg.binanceOffline?0:Object.keys(cfg.scenarios).filter(symbol=>!cfg.unlisted?.includes(symbol)).length),{label:'market discovery '+logs});
   if(cfg.emit)await until(()=>get('/api/status'),s=>s.ws==='connected');
  }
  async function stop(){
-  if(!child||child.exitCode!==null||child.signalCode!==null)return;
-  const exited=once(child,'close');child.kill('SIGTERM');let timer;
-  try{await Promise.race([exited,new Promise(resolve=>{timer=setTimeout(resolve,2500)})])}finally{clearTimeout(timer)}
-  if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await exited}
+  if(child)await stopChild(child);
  }
  return {get,write,start,stop,data,requests,base,logs:()=>logs,async close(){await stop();await fs.rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}};
 }
@@ -189,7 +189,7 @@ test('Binance public discovery outage blocks new entries and recovers without an
   assert.equal((await app.get('/api/status')).activeCount,0);
   assert.deepEqual((await app.get('/api/results')).signals,[]);assert.equal((await app.get('/api/paper')).pendingCount,0);
   await app.write({binanceOffline:false,emit:true});
-  const scan=await fetch(app.base+'/api/scan',{method:'POST'});assert.equal(scan.status,202);
+  const scan=await fetchLocal(app.base+'/api/scan',{method:'POST'});assert.equal(scan.status,202);await scan.arrayBuffer();
   await until(()=>app.get('/api/status'),s=>s.activeCount===1&&s.rest==='connected'&&!s.scanning);
   const analyzed=await app.get('/api/analyze?symbol=BTCUSDT');assert.equal(analyzed.qualified,true);
   assert.equal(analyzed.decision.analysisVenue,'BINANCE');assert.equal(analyzed.decision.tradeApproval,false);

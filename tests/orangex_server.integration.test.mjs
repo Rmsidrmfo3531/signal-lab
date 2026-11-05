@@ -12,6 +12,8 @@ import {runOrangeXPaperScenario} from '../scripts/orangex-paper-offline.mjs';
 import {paperScenario} from './fixtures/orangex_paper_scenario.mjs';
 import {syntheticReplayInput} from './fixtures/orangex_paper_replay.mjs';
 import {replayReport} from '../scripts/orangex-paper-replay.mjs';
+import {trackChild,stopChild} from './helpers/child_process.mjs';
+import {fetchLocal,statusOnly} from './helpers/http_request.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -19,7 +21,7 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function sandbox(configuration={}){
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'signal-orangex-readonly-'));
  const app=path.join(root,'app'),records=path.join(root,'records'),requests=path.join(root,'orangex-requests.jsonl');
- let child,closed,didClose=false;
+ let child,didClose=false;
  try{
   // Explicit source selection excludes the parent checkout's .env, .git,
   // user records, updater staging, and pre-existing backups.
@@ -52,28 +54,24 @@ async function sandbox(configuration={}){
    AUTO_UPDATE:'false',UPDATE_MANIFEST_URL:'',SIGNAL_LAB_OPEN_BROWSER:'0',TELEGRAM_NEWS_ALERTS:'false',
    TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',SIGNAL_LAB_TEST_ORANGEX_REQUESTS:requests,...configuration};
   if(process.env.SystemRoot)env.SystemRoot=process.env.SystemRoot;
-  child=spawn(process.execPath,['--import','./tests/mock_orangex_readonly.mjs','server.mjs'],{cwd:app,env,stdio:'ignore'});
-  closed=new Promise(resolve=>child.once('close',()=>{didClose=true;resolve()}));
+  child=trackChild(spawn(process.execPath,['--import','./tests/mock_orangex_readonly.mjs','server.mjs'],{cwd:app,env,stdio:'ignore'}));
+  child.once('close',()=>{didClose=true});
   child.once('error',()=>{});
   const base='http://127.0.0.1:'+port;
   for(let attempt=0;attempt<100;attempt++){
-   try{if((await fetch(base+'/api/status')).ok)break}catch{}
+   try{if(await statusOnly(base+'/api/status')===200)break}catch{}
    if(didClose)assert.fail('isolated existing server exited during OrangeX initialization');
    await pause(50);
   }
   const disk=async()=>JSON.parse(await fs.readFile(path.join(records,'store.json'),'utf8'));
-  const read=async route=>{const response=await fetch(base+route);assert.equal(response.status,200,route);return {response,text:await response.text()}};
+  const read=async route=>{const response=await fetchLocal(base+route);assert.equal(response.status,200,route);return {response,text:await response.text()}};
   async function close(){
-   if(child&&!didClose){
-    child.kill('SIGTERM');let timer;
-    try{await Promise.race([closed,new Promise(resolve=>{timer=setTimeout(resolve,2500)})])}finally{clearTimeout(timer)}
-    if(!didClose){child.kill('SIGKILL');await closed}
-   }
+   if(child)await stopChild(child);
    await fs.rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
   }
   return {base,fixture,disk,read,requests,retainedBackup,original,close};
  }catch(error){
-  if(child&&!didClose){child.kill('SIGKILL');await closed}
+  if(child)await stopChild(child);
   await fs.rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});
   throw error;
  }
@@ -117,16 +115,16 @@ test('separate offline PAPER records reach the dashboard through GET only withou
   assert.equal(replay.status,'OBSERVED');assert.equal(replay.runKind,'BACKTEST');assert.equal(replay.result.summary.trades,1);
   assert.equal(replay.result.performance.runKind,'BACKTEST');assert.equal(replay.result.performance.sample.strategyValidated,false);
   assert.equal(replay.result.analyses,undefined);assert.equal(JSON.parse((await app.read('/api/orangex/paper')).text).closed.length,2);
-  for(const method of ['POST','PUT','PATCH','DELETE'])assert.equal((await fetch(app.base+'/api/orangex/paper',{method})).status,405);
-  assert.equal((await fetch(app.base+'/api/orangex/paper/replay',{method:'POST'})).status,405);
-  assert.equal((await fetch(app.base+'/api/orangex/paper/orders')).status,404);
+  for(const method of ['POST','PUT','PATCH','DELETE'])assert.equal(await statusOnly(app.base+'/api/orangex/paper',{method}),405);
+  assert.equal(await statusOnly(app.base+'/api/orangex/paper/replay',{method:'POST'}),405);
+  assert.equal(await statusOnly(app.base+'/api/orangex/paper/orders'),404);
   const module=(await app.read('/orangex_paper.js')).text;assert.match(module,/renderOrangeXPaper/);
   assert.deepEqual((await app.disk()).paper,app.fixture.paper);assert.deepEqual((await app.disk()).paperNotify,app.fixture.paperNotify);
   assert.equal(await fs.readFile(app.retainedBackup,'utf8'),app.original);
   const file=path.join(directory,'orangex-paper.json');await fs.writeFile(file,'damaged OrangeX test record');
   const unavailable=JSON.parse((await app.read('/api/orangex/paper')).text);
   assert.equal(unavailable.recordsUnavailable,true);assert.equal(unavailable.summary,null);
-  assert.equal((await fetch(app.base+'/api/status')).status,200,'a new PANEL record problem must not stop the legacy server');
+  assert.equal(await statusOnly(app.base+'/api/status'),200,'a new PANEL record problem must not stop the legacy server');
   assert.equal(await fs.readFile(file,'utf8'),'damaged OrangeX test record');
   await fs.writeFile(path.join(replayDirectory,'orangex-replay.json'),'damaged replay archive');
   const badReplay=JSON.parse((await app.read('/api/orangex/paper/replay')).text);
@@ -146,7 +144,8 @@ test('OrangeX default HTTP view is read-only, has unknown account data, and pres
    assertOperationalReadiness(snapshot.operationalReadiness);
   }
   for(const method of ['POST','PUT','PATCH','DELETE'])for(const route of ['/api/orangex','/api/orangex/orders','/api/orangex/mode','/api/orangex/readiness']){
-   const result=await fetch(app.base+route,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'LIVE',side:'BUY',amount:1})});
+   const result=await fetchLocal(app.base+route,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'LIVE',side:'BUY',amount:1})});
+   await result.arrayBuffer();
    assert.equal(result.status,405,method+' '+route+' must not accept a trading or mode-change command');
   }
   const html=(await app.read('/')).text;

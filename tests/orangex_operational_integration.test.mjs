@@ -47,8 +47,8 @@ test('offline one-click JSON recheck preserves synthetic provenance and never ch
   const before=await fs.readFile(file,'utf8'),report=checkOrangeXReadinessFile(file);
   assert.equal(report.status,'NOT_READY');assert.equal(report.checks.find(row=>row.id==='SOURCE_PROVENANCE').status,'FAIL');
   const child=spawnSync(process.execPath,[fileURLToPath(new URL('../scripts/check-orangex-readiness.mjs',import.meta.url)),'--input',file],
-   {encoding:'utf8',env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
-  assert.equal(child.status,1);assert.equal(JSON.parse(child.stdout).status,'NOT_READY');
+   {encoding:'utf8',timeout:15000,killSignal:'SIGKILL',env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
+  assert.equal(child.error,undefined);assert.equal(child.status,1);assert.equal(JSON.parse(child.stdout).status,'NOT_READY');
   assert.equal(await fs.readFile(file,'utf8'),before);assert.deepEqual(await fs.readdir(root),['summary.json']);
   for(const inner of [{...diagnostic,syntheticTest:true,dataSource:'REAL_PUBLIC_OBSERVATION_SUMMARY'},
    {...diagnostic,dataSource:'SYNTHETIC_FIXTURE'}]){

@@ -6,6 +6,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {OrangeXPaperEngine} from '../orangex_paper.mjs';
 import {OrangeXPaperStore} from '../orangex_paper_store.mjs';
+import {trackChild,stopChild} from './helpers/child_process.mjs';
 
 // Explicit synthetic contract, quote levels and signals. These tests make no
 // claim about OrangeX market data, actual fills, fee rates or profitability.
@@ -23,7 +24,7 @@ const market=(at,{bid=99.99,ask=100.01,size=1000,...patch}={})=>({instrumentName
 const context={executionMode:'SYNTHETIC_TEST',runKind:'FORWARD_PAPER'};
 const remove=directory=>fs.rmSync(directory,{recursive:true,force:true,maxRetries:8,retryDelay:100});
 
-async function abruptPartialWriter(directory){
+async function abruptPartialWriter(directory,{signal:abortSignal}={}){
  const engineURL=new URL('../orangex_paper.mjs',import.meta.url).href,
   storeURL=new URL('../orangex_paper_store.mjs',import.meta.url).href;
  const code=`
@@ -40,33 +41,44 @@ async function abruptPartialWriter(directory){
    remaining:state.pending[0].quantityRemaining,parts:state.open[0].entryParts.length})+'\\n');
   setInterval(()=>{},1000);
  `;
- const child=spawn(process.execPath,['--input-type=module','-e',code,directory],{
+ const child=trackChild(spawn(process.execPath,['--input-type=module','-e',code,directory],{
   cwd:path.dirname(directory),env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})},
-  windowsHide:true,stdio:['ignore','pipe','pipe']});
- let ended=false,stderr='';const closed=new Promise(resolve=>child.once('close',()=>{ended=true;resolve()}));
- child.stderr.on('data',chunk=>{stderr+=String(chunk)});
+  windowsHide:true,stdio:['ignore','pipe','pipe']}));
+ let stderr='',timer,onData,onError,onClose,onAbort;
+ const stderrData=chunk=>{stderr=(stderr+String(chunk)).slice(-8192)};
+ child.stderr.on('data',stderrData);
  try{
   const ack=await new Promise((resolve,reject)=>{
-   let output='';const timer=setTimeout(()=>reject(Error('synthetic child acknowledgement timed out')),10000);
-   child.once('error',error=>{clearTimeout(timer);reject(error)});
-   child.once('close',()=>{clearTimeout(timer);if(!output.includes('\n'))reject(Error('synthetic child exited before acknowledgement: '+stderr))});
-   child.stdout.on('data',chunk=>{
+   let output='';timer=setTimeout(()=>reject(Error('synthetic child acknowledgement timed out')),10000);
+   onError=error=>reject(error);
+   onClose=()=>reject(Error('synthetic child exited before acknowledgement: '+stderr));
+   onAbort=()=>reject(abortSignal.reason??Error('synthetic writer test aborted'));
+   child.once('error',onError);child.once('close',onClose);
+   abortSignal?.addEventListener('abort',onAbort,{once:true});if(abortSignal?.aborted)onAbort();
+   onData=chunk=>{
     output+=String(chunk);if(!output.includes('\n'))return;
     clearTimeout(timer);try{resolve(JSON.parse(output.slice(0,output.indexOf('\n'))))}catch(error){reject(error)}
-   });
+   };
+   child.stdout.on('data',onData);
   });
   assert.equal(ack.kind,'DURABLE_ACK');
-  child.kill('SIGKILL');await closed;
+  assert.equal(child.kill('SIGKILL'),true,'the acknowledged writer must be abruptly killed');
+  await stopChild(child,{graceMs:1000,killMs:1000});
   return ack;
- }finally{if(!ended){child.kill('SIGKILL');await closed}}
+ }finally{
+  clearTimeout(timer);abortSignal?.removeEventListener('abort',onAbort);
+  if(onError)child.removeListener('error',onError);if(onClose)child.removeListener('close',onClose);
+  try{await stopChild(child,{graceMs:1000,killMs:1000})}
+  finally{if(onData)child.stdout.removeListener('data',onData);child.stderr.removeListener('data',stderrData)}
+ }
 }
 
-test('abrupt shutdown after acknowledged partial fill recovers exact quantities and never replays liquidity',{timeout:20000},async()=>{
+test('abrupt shutdown after acknowledged partial fill recovers exact quantities and never replays liquidity',{timeout:20000},async(t)=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'orangex-crash25-')),directory=path.join(root,'orangex-paper');
  const legacy=path.join(root,'store.json');fs.writeFileSync(legacy,'legacy PNL and settings stay untouched');
  let store;
  try{
-  const ack=await abruptPartialWriter(directory);assert.ok(Math.abs(ack.quantity-.2)<1e-9);assert.equal(ack.parts,1);
+  const ack=await abruptPartialWriter(directory,{signal:t.signal});assert.ok(Math.abs(ack.quantity-.2)<1e-9);assert.equal(ack.parts,1);
   // The killed writer left its lock. Store.write must demonstrate that the PID
   // is dead before recovering it; this test never manually deletes the lock.
   assert.equal(fs.existsSync(path.join(directory,'orangex-paper.lock')),true);

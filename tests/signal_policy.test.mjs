@@ -20,6 +20,6 @@ test('after loading settings the quality and analysis modules share the configur
  if(STRICT_MIN_SCORE!==90)process.exit(11);
  configureSignalScorePolicy({SIGNAL_FINAL_MIN_SCORE:'96'});
  if(STRICT_MIN_SCORE!==96||getSignalScorePolicy().liveApproval!==false)process.exit(12);`;
- const result=spawnSync(process.execPath,['--input-type=module','-e',code],{encoding:'utf8',env:{...process.env,SIGNAL_FINAL_MIN_SCORE:''}});
- assert.equal(result.status,0,result.stderr);
+ const result=spawnSync(process.execPath,['--input-type=module','-e',code],{encoding:'utf8',timeout:15000,killSignal:'SIGKILL',env:{...process.env,SIGNAL_FINAL_MIN_SCORE:''}});
+ assert.equal(result.error,undefined);assert.equal(result.status,0,result.stderr);
 });

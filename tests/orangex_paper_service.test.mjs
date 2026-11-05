@@ -87,13 +87,13 @@ test('standalone offline CLI writes only its explicit directory and refuses impl
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'orangex-paper-cli-')),scenarioFile=path.join(root,'synthetic.json'),directory=path.join(root,'orangex-paper');
  await fs.writeFile(scenarioFile,JSON.stringify(paperScenario()));
  const run=()=>spawnSync(process.execPath,[fileURLToPath(new URL('../scripts/orangex-paper-offline.mjs',import.meta.url)),
-  '--scenario',scenarioFile,'--data-dir',directory],{encoding:'utf8',env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
+  '--scenario',scenarioFile,'--data-dir',directory],{encoding:'utf8',timeout:15000,killSignal:'SIGKILL',env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
  try{
-  const first=run();assert.equal(first.status,0,first.stderr);const result=JSON.parse(first.stdout);
+  const first=run();assert.equal(first.error,undefined);assert.equal(first.status,0,first.stderr);const result=JSON.parse(first.stdout);
   assert.equal(result.snapshot.closed.length,2);assert.equal(result.mode,'PAPER_OFFLINE');
   assert.equal(result.realDataAutoEntryEnabled,false);assert.equal(result.liveOrdersEnabled,false);
   const file=path.join(directory,'orangex-paper.json'),before=await fs.readFile(file,'utf8');
-  const repeated=run();assert.equal(repeated.status,1);assert.equal(await fs.readFile(file,'utf8'),before);
+  const repeated=run();assert.equal(repeated.error,undefined);assert.equal(repeated.status,1);assert.equal(await fs.readFile(file,'utf8'),before);
   assert.equal((await fs.readdir(directory)).includes('orangex-paper.lock'),false,'writer lock handle is released after exit');
  }finally{await fs.rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });

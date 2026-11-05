@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
-import {once} from 'node:events';
 import {OrangeXPaperJournal} from '../orangex_paper_journal.mjs';
+import {killAcknowledgedJournalWriter} from './helpers/journal_writer.mjs';
 
 // Storage fixtures only. These are not exchange orders, balances or fees.
 const NOW=Date.parse('2026-10-29T00:00:00Z');
@@ -185,9 +185,9 @@ Object.defineProperty(process,'platform',{value:'win32'});const root=fs.mkdtempS
 try{for(const code of ['EACCES','EPERM','EINVAL','EISDIR','ENOTSUP','ENOSPC']){const directory=path.join(root,code);let j;const io=new Proxy(fs,{get(target,key){if(key==='openSync')return(file,...args)=>{if(fs.existsSync(file)&&fs.statSync(file).isDirectory())throw Object.assign(Error('injected directory fsync error'),{code});return fs.openSync(file,...args)};return Reflect.get(target,key)}});
 try{j=new OrangeXPaperJournal({directory,io});j.initialize(${JSON.stringify(state())});j.append(${JSON.stringify(fill)});const backup=j.backup();j.restoreBackup(backup);if(j.read().closed.length!==1)throw Error('lost trade');accepted.push(code)}catch(error){if(code!=='ENOSPC'||error.code!=='ENOSPC')throw error;refused=true}finally{j?.close()}}
 console.log(JSON.stringify({accepted,refused}))}finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}`;
- const child=spawnSync(process.execPath,['--input-type=module','-e',source],{encoding:'utf8',timeout:10000,windowsHide:true,
+ const child=spawnSync(process.execPath,['--input-type=module','-e',source],{encoding:'utf8',timeout:10000,killSignal:'SIGKILL',windowsHide:true,
   env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
- assert.equal(child.status,0,child.stderr);assert.deepEqual(JSON.parse(child.stdout),{accepted:['EACCES','EPERM','EINVAL','EISDIR','ENOTSUP'],refused:true});
+ assert.equal(child.error,undefined,child.error?.message);assert.equal(child.status,0,child.stderr);assert.deepEqual(JSON.parse(child.stdout),{accepted:['EACCES','EPERM','EINVAL','EISDIR','ENOTSUP'],refused:true});
 });
 
 test('ten thousand retained records do not require a full-history journal record for a small state update',()=>sandbox(({directory,create})=>{
@@ -211,16 +211,13 @@ test('the live state budget is enforced before durable ACK and exact byte accoun
  assert.equal(recovered.inspect().stateBytes,Buffer.byteLength(JSON.stringify(recovered.read())));recovered.checkpoint();
 }));
 
-test('a killed writer after durable ACK recovers its PID lock and does not apply acknowledged fill or funding again',{timeout:10000},async()=>{
+test('a killed writer after durable ACK recovers its PID lock and does not apply acknowledged fill or funding again',{timeout:10000},async(t)=>{
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'orangex-journal-kill-')),directory=path.join(root,'experiment'),moduleURL=new URL('../orangex_paper_journal.mjs',import.meta.url).href;
  const source=`import {OrangeXPaperJournal} from ${JSON.stringify(moduleURL)};const j=new OrangeXPaperJournal({directory:process.argv[1]});j.initialize(${JSON.stringify(state())});j.append(${JSON.stringify(fill)});j.append(${JSON.stringify(funding)});console.log('DURABLE_ACK');setInterval(()=>{},1000);`;
- const child=spawn(process.execPath,['--input-type=module','-e',source,directory],{stdio:['ignore','pipe','pipe'],windowsHide:true});let journal,closed=false;
- const exit=once(child,'close').then(()=>{closed=true});let timer;
+ const child=spawn(process.execPath,['--input-type=module','-e',source,directory],{stdio:['ignore','pipe','pipe'],windowsHide:true});let journal;
  try{
-  await new Promise((resolve,reject)=>{let text='';timer=setTimeout(()=>reject(Error('child ACK timeout')),5000);
-   child.stdout.on('data',chunk=>{text+=chunk;if(text.includes('DURABLE_ACK'))resolve()});child.once('error',reject);child.once('close',()=>reject(Error('child exited before ACK')));
-  });clearTimeout(timer);child.kill('SIGKILL');await exit;
+  await killAcknowledgedJournalWriter(child,{signal:t.signal});
   journal=new OrangeXPaperJournal({directory});assert.equal(journal.read().closed[0].realizedPnLUSD,2.375);
   assert.equal(journal.append(fill).duplicate,true);assert.equal(journal.append(funding).duplicate,true);assert.equal(journal.inspect().seq,2);assert.equal(journal.read().closed.length,1);
- }finally{clearTimeout(timer);if(!closed){child.kill('SIGKILL');await exit}journal?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }finally{journal?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });

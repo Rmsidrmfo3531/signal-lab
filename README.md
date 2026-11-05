@@ -1,5 +1,7 @@
 # Signal Lab — Issue #6 통합 개발판
 
+Windows CI 종료 문제 후속 검증: [PR7_WINDOWS_TEST_HANG_KO.md](PR7_WINDOWS_TEST_HANG_KO.md).
+
 PR #7 후속 수정·최신 테스트: [공급자 의존성 제거 및 점수 설정 검증](PR7_PROVIDER_REMOVAL_KO.md).
 
 Binance USDT 무기한 선물의 확정 1H·4H 데이터로 분석하는 로컬 PC·모바일 대시보드입니다. 최신 구현·검증 이력은 [ISSUE6_INTEGRATION_KO.md](ISSUE6_INTEGRATION_KO.md)를 참고하세요. 거래 점수는 승률이 아니며 **새 전략의 실전 성능은 미검증**입니다.

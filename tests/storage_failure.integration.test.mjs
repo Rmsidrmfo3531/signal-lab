@@ -1,3 +1,5 @@
+import {fetchLocal} from './helpers/http_request.mjs';
+import {trackChild,stopChild} from './helpers/child_process.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -14,15 +16,10 @@ async function freePort(){
  const server=net.createServer();server.listen(0,'127.0.0.1');await once(server,'listening');
  const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
-async function stop(child){
- if(!child||child.exitCode!==null||child.signalCode!==null)return;
- const exited=once(child,'exit');child.kill('SIGTERM');
- let timer;
- try{await Promise.race([exited,new Promise(resolve=>{timer=setTimeout(resolve,2500)})])}finally{clearTimeout(timer)}
- if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await exited}
-}
 
-test('disk failure returns HTTP 503, rolls back settings, exposes unhealthy storage, and recovers without losing records',{timeout:15000},async()=>{
+
+test('disk failure returns HTTP 503, rolls back settings, exposes unhealthy storage, and recovers without losing records',{timeout:15000},async(t)=>{
+ const request=(input,options={})=>fetchLocal(input,{...options,signal:t.signal});
  const sandbox=await fs.mkdtemp(path.join(os.tmpdir(),'signal-storage-http-'));
  const app=path.join(sandbox,'app'),dataDir=path.join(sandbox,'isolated-data');
  const flag=path.join(sandbox,'fail-store'),control=path.join(sandbox,'market-control.json');
@@ -39,16 +36,16 @@ test('disk failure returns HTTP 503, rolls back settings, exposes unhealthy stor
   await fs.writeFile(path.join(dataDir,'store.json'),JSON.stringify({paper:{pending:[],open:[],closed:[oldTrade],skipped:[],seen:{}},paperNotify:{enabled:true,history:[]},journal:[],alerts:[],watchlist:[],seen:{},newsSeen:{}}));
   await fs.writeFile(control,JSON.stringify({scenarios:{BTCUSDT:'range'},emit:false}));
   const port=await freePort(),base='http://127.0.0.1:'+port;
-  child=spawn(process.execPath,['--import','./tests/mock_storage_failure.mjs','server.mjs'],{
+  child=trackChild(spawn(process.execPath,['--import','./tests/mock_storage_failure.mjs','server.mjs'],{
    cwd:app,env:{PATH:process.env.PATH,PORT:String(port),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:dataDir,
     SIGNAL_LAB_TEST_CONTROL:control,SIGNAL_LAB_TEST_STORAGE_FAIL_FLAG:flag,AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false',
-    TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:''},stdio:['ignore','ignore','pipe']
-  });
+    TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})},stdio:['ignore','ignore','pipe']
+  }));
   let errors='';child.stderr.on('data',chunk=>{errors=(errors+String(chunk)).slice(-4000)});
-  const get=async route=>{const response=await fetch(base+route);assert.equal(response.status,200,route);return response.json()};
-  const post=async body=>{const response=await fetch(base+'/api/paper/notifications/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,body:await response.json()}};
+  const get=async route=>{const response=await request(base+route);assert.equal(response.status,200,route);return response.json()};
+  const post=async body=>{const response=await request(base+'/api/paper/notifications/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,body:await response.json()}};
   let ready=false;
-  for(let i=0;i<100;i++){try{if((await get('/api/paper/notifications')).enabled===true){ready=true;break}}catch{}await nap(50)}
+  for(let i=0;i<100;i++){t.signal.throwIfAborted();try{if((await get('/api/paper/notifications')).enabled===true){ready=true;break}}catch{}await nap(50)}
   assert.equal(ready,true,'isolated server must start before injecting the disk failure: '+errors);
   const disk=()=>fs.readFile(path.join(dataDir,'store.json'),'utf8').then(JSON.parse);
   const initial=await disk();assert.equal(initial.paperNotify.enabled,true);assert.equal((await get('/api/storage')).healthy,true);
@@ -67,5 +64,5 @@ test('disk failure returns HTTP 503, rolls back settings, exposes unhealthy stor
   const healthy=await get('/api/storage');assert.equal(healthy.healthy,true);assert.equal(healthy.persistent,true);assert.equal(healthy.error,'');
   assert.equal((await get('/api/status')).storage.healthy,true);
   assert.deepEqual((await disk()).paper.closed,initial.paper.closed);
- }finally{await stop(child);await fs.rm(sandbox,{recursive:true,force:true})}
+ }finally{await stopChild(child);await fs.rm(sandbox,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
