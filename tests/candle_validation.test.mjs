@@ -9,8 +9,8 @@ function fixture(now=Date.now()){
   return {time,closeTime:time+HOUR-1,open:close,high:close+.35,low:close-.35,close,volume:100,quoteVolume:1e6,closed:true};
  });
  Object.assign(h1.at(-1),{open:100,high:103,low:99.9,close:102.2,volume:230,quoteVolume:2300000});
- const h4=Array.from({length:110},(_,i)=>{
-  const close=70+i*.28,time=now-(110-i)*4*HOUR;
+ const h4=Array.from({length:300},(_,i)=>{
+  const close=70+i*.1,time=now-(300-i)*4*HOUR;
   return {time,closeTime:time+4*HOUR-1,open:close-.1,high:close+.35,low:close-.35,close,volume:300,quoteVolume:1e6,closed:true};
  });
  return {h1,h4};
@@ -48,5 +48,7 @@ test('previous candle high belongs to the breakout reference range',()=>{
  const rows=fixture();rows.h1.at(-2).high=104;
  const result=scan(rows);
  assert.notEqual(result.pattern,'박스권 상단 돌파');
- assert.notEqual(result.status,'signal');
+ // Another independently confirmed pattern may qualify under the new score;
+ // the previous high must never be omitted to manufacture a box breakout.
+ if(result.status==='signal')assert.ok(result.pattern&&result.pattern!=='박스권 상단 돌파'&&result.technicalValidation.passed);
 });

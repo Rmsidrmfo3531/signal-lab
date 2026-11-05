@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PaperEngine,fillPrice,paperSummary,paperCSV} from '../paper.mjs';
 let current=Date.parse('2026-10-19T08:00:00Z');
-const signal=(direction='LONG',symbol='BTCUSDT')=>({symbol,direction,pattern:'1H 확정',entry:100,stop:direction==='LONG'?98:102,patternConfirmedAt:current-60000});
+const signal=(direction='LONG',symbol='BTCUSDT')=>({managementVersion:'LEGACY_R_MULTIPLES',symbol,direction,pattern:'1H 확정',entry:100,stop:direction==='LONG'?98:102,patternConfirmedAt:current-60000});
 const create=(settings={})=>new PaperEngine({}, {now:()=>current,settings});
 function quote(p,engine,symbol='BTCUSDT',market='CRYPTO',options={}){current+=1000;return engine.onPrice(market,symbol,p,current,options)}
 

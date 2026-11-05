@@ -1,24 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {analyze} from '../engine.mjs';
+import {analyze} from '../research/legacy_v58/engine.mjs';
 import {runOrangeXPaperReplay} from '../orangex_paper_replay.mjs';
 import {marketSeries,ENTRY} from './fixtures/pipeline_market.mjs';
 import {REPLAY_NOW,syntheticReplayBook,syntheticReplayInput} from './fixtures/orangex_paper_replay.mjs';
 
-// Real scanner functions consume synthetic candles. Nothing in these examples
+// The explicitly selected legacy scanner consumes synthetic candles. These tests
+// preserve old replay behavior without enabling fixed-R targets in Issue6.
+// Nothing in these examples
 // represents observed exchange depth, actual historical profitability or fills.
 const HOUR=3600000,NOW=REPLAY_NOW,AT=NOW-1000;
 const clone=value=>structuredClone(value);
 const book=syntheticReplayBook;
 const fixture=(scenario='breakout-long')=>syntheticReplayInput({scenario});
 
-test('native closed 1H/4H replay creates synthetic LONG targets and SHORT stop outcomes with a separate BACKTEST context',()=>{
+test('explicit legacy closed 1H/4H replay preserves synthetic LONG targets and SHORT stop outcomes in BACKTEST',()=>{
  for(const [scenario,direction]of [['breakout-long','LONG'],['breakout-short','SHORT']]){
   const input=fixture(scenario);
   input.markets.push(...(direction==='LONG'?[book(AT+2,107,107.01),book(AT+3,110,110.01),book(AT+4,112,112.01)]:[book(AT+4,105,105.01)]));
   input.endAt=AT+4;
   const result=runOrangeXPaperReplay(input);
   assert.equal(result.runKind,'BACKTEST');assert.equal(result.executionMode,'SYNTHETIC_TEST');
+  assert.equal(result.strategyVersion,'LEGACY_V58');
   assert.equal(result.fillAccuracy,'SYNTHETIC_MODEL_ONLY');assert.equal(result.summary.analysisCount,1);
   assert.equal(result.summary.finalApproved,1);assert.equal(result.summary.entries,1);assert.equal(result.summary.trades,1);
   assert.equal(result.snapshot.closed[0].direction,direction);
@@ -29,6 +32,19 @@ test('native closed 1H/4H replay creates synthetic LONG targets and SHORT stop o
   assert.equal(result.analyses[0].entryAccepted,false,'decision history is not mutated by future executions');
   assert.equal(result.realDataAutoEntryEnabled,false);assert.equal(result.liveOrdersEnabled,false);
  }
+});
+
+test('default Issue6 replay retains EMA200 warmup and never silently falls back to legacy fixed-R targets',()=>{
+ const input=fixture();delete input.strategyVersion;
+ const result=runOrangeXPaperReplay(input);
+ assert.equal(result.strategyVersion,'ISSUE6-100-V1');
+ assert.ok(result.analyses[0].h4Count>=250,'the default strategy receives enough closed 4H history');
+ assert.equal(result.summary.entries,0);assert.equal(result.snapshot.pending.length,0);
+ assert.equal(result.snapshot.open.length,0);assert.equal(result.snapshot.closed.length,0);
+ assert.ok(result.analyses.every(row=>row.targets===null||row.targets.every(value=>value===null)),
+  'without trade-volume profile evidence no target price is invented');
+ const unknown=fixture();unknown.strategyVersion='UNREVIEWED_STRATEGY';
+ assert.throws(()=>runOrangeXPaperReplay(unknown),/INVALID_REPLAY_STRATEGY/);
 });
 
 test('detection, entry eligibility and source fill times remain distinct even when an old book is received later',()=>{

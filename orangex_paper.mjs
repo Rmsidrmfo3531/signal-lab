@@ -17,7 +17,7 @@ const fresh=(at,now,age)=>stamp(at)&&at<=now+5000&&now-at<=age;
 export const ORANGEX_PAPER_DEFAULTS=Object.freeze({capitalUSD:null,leverage:1,maxRiskUSD:null,dailyLossLimitUSD:null,maxPositions:2,
  maxPositionNotionalUSD:null,maxTotalNotionalUSD:null,maxQuoteAgeMs:90000,maxSignalAgeMs:7200000,entryTimeoutMs:1200000,
  maxSpreadBps:30,maxSlippageBps:100,maxHoldingMs:86400000,killSwitch:false,maxConsecutiveLosses:3,
- maxPositionMarginUSD:null,maxTotalMarginUSD:null});
+ maxPositionMarginUSD:null,maxTotalMarginUSD:null,TP1_MOVE_STOP_TO_BREAKEVEN:true});
 const MONEY=['capitalUSD','maxRiskUSD','dailyLossLimitUSD','maxPositionNotionalUSD','maxTotalNotionalUSD'];
 const SETTINGS=Object.keys(ORANGEX_PAPER_DEFAULTS);
 const CONTRACT_FIELDS=['instrumentName','symbol','source','quantityUnit','contractSizeBase','minQty','qtyStep','minNotional','priceTick',
@@ -57,7 +57,7 @@ function settingsCopy(settings,base=ORANGEX_PAPER_DEFAULTS){
  if(!Number.isInteger(result.maxConsecutiveLosses)||result.maxConsecutiveLosses<1||result.maxConsecutiveLosses>100||
   result.leverage>100||result.maxPositions>100||result.maxQuoteAgeMs>90000||result.maxHoldingMs>7*86400000||
   !finite(result.maxSpreadBps)||result.maxSpreadBps<0||result.maxSpreadBps>1000||!finite(result.maxSlippageBps)||result.maxSlippageBps<0||
-  result.maxSlippageBps>1000||typeof result.killSwitch!=='boolean')throw Error('INVALID_PAPER_SETTINGS');return result;
+  result.maxSlippageBps>1000||typeof result.killSwitch!=='boolean'||typeof result.TP1_MOVE_STOP_TO_BREAKEVEN!=='boolean')throw Error('INVALID_PAPER_SETTINGS');return result;
 }
 function validateSeed(seed){
  if(!plain(seed))throw Error('INVALID_PAPER_STATE_NO_RESET');
@@ -85,6 +85,13 @@ function validateSeed(seed){
    !close(gross-entryFees-exitFees-funding,p.realizedPnLUSD))throw Error('INVALID_PAPER_ACCOUNTING_TOTALS');
   const exited=p.exitParts.reduce((sum,part)=>sum+(positive(part?.quantity)?part.quantity:NaN),0);
   if(!finite(exited)||Math.abs(p.quantityOriginal-p.quantityRemaining-exited)>Math.max(1e-8,p.quantityOriginal*1e-9))throw Error('INVALID_PAPER_POSITION_QUANTITY');
+  if(p.managementVersion==='VOLUME_PROFILE_V1'){
+   const filled=p.exitParts.filter(part=>part.type==='TP1').reduce((sum,part)=>sum+part.quantity,0),target=p.quantityOriginal*.4;
+   if(typeof p.moveStopToBreakeven!=='boolean'||!['ENTRY','COST_COVERED'].includes(p.breakevenMode)||
+    !close(filled,p.tpFilled[0])||p.breakevenMovedAt!==undefined&&(!stamp(p.breakevenMovedAt)||
+     !p.moveStopToBreakeven||filled<target-Math.max(1e-8,p.contract.qtyStep*1e-6)||!positive(p.breakevenStop)))
+    throw Error('INVALID_PROFILE_MANAGEMENT_STATE_NO_RESET');
+  }
   keys.add(p.key);
  }
  const pendingKeys=new Set();
@@ -217,7 +224,7 @@ export class OrangeXPaperEngine{
   this.#event('REJECT',item,events);return false;
  }
  recordRejection({key=null,instrumentName=null,reason='SIGNAL_NORMALIZATION_FAILED',stage='technical'}={}){
-  const codes=['REAL_DATA_ENTRY_DISABLED','SIGNAL_NORMALIZATION_FAILED','TECHNICAL_UNQUALIFIED','SYMBOL_MAPPING_UNVERIFIED','CONTRACT_UNOBSERVED','PAPER_SETTINGS_UNCONFIGURED'];
+  const codes=['REAL_DATA_ENTRY_DISABLED','SIGNAL_NORMALIZATION_FAILED','TECHNICAL_UNQUALIFIED','SYMBOL_MAPPING_UNVERIFIED','CONTRACT_UNOBSERVED','PAPER_SETTINGS_UNCONFIGURED','TP_PROFILE_UNAVAILABLE'];
   return this.#transaction(events=>this.#reject(key,codes.includes(reason)?reason:'SIGNAL_NORMALIZATION_FAILED',
    ['source','technical','contract','risk','market','entry'].includes(stage)?stage:'technical',events,instrumentName));
  }
@@ -280,10 +287,30 @@ export class OrangeXPaperEngine{
   if(!['MARKET','LIMIT'].includes(orderType)||orderType==='LIMIT'&&(!positive(limitPrice)||!aligned(limitPrice,contract.priceTick)))return this.#reject(key,'LIMIT_PRICE_INVALID','entry',events);
   const dir=sign(input.direction),entry=input.entry,stop=input.stop;
   if(!aligned(entry,contract.priceTick)||!aligned(stop,contract.priceTick))return this.#reject(key,'PRICE_GRID_MISMATCH','entry',events);
-  const targets=input.targets===undefined?TP_R_MULTIPLES.map(r=>entry+dir*Math.abs(entry-stop)*r):input.targets;
+  const profileManaged=input.managementVersion==='VOLUME_PROFILE_V1',profile=input.targetPlan;
+  if(input.managementVersion!==undefined&&!['VOLUME_PROFILE_V1','LEGACY_R_V1'].includes(input.managementVersion))return this.#reject(key,'MANAGEMENT_VERSION_UNSUPPORTED','entry',events);
+  if(profileManaged&&(!plain(profile)||profile.ok!==true||!plain(profile.profileEvidence)||!Array.isArray(profile.targets)||profile.targets.length!==3||
+   !Array.isArray(profile.parts)||profile.parts.length!==3||profile.parts.some((part,i)=>!plain(part)||!finite(part.fraction)||Math.abs(part.fraction-[.4,.35,.25][i])>1e-10||
+    part.price!==undefined&&part.price!==profile.targets[i])))
+   return this.#reject(key,'TP_PROFILE_UNAVAILABLE','entry',events);
+  if(profileManaged&&input.targets!==undefined&&(!Array.isArray(input.targets)||input.targets.length!==3||input.targets.some((price,i)=>price!==profile.targets[i])))
+   return this.#reject(key,'TP_PROFILE_UNAVAILABLE','entry',events);
+  const targets=profileManaged?profile.targets:input.targets===undefined?TP_R_MULTIPLES.map(r=>entry+dir*Math.abs(entry-stop)*r):input.targets;
   if(!Array.isArray(targets)||targets.length!==3||targets.some((p,i)=>!positive(p)||!aligned(p,contract.priceTick)||dir*(p-entry)<=0||i>0&&dir*(p-targets[i-1])<=0))return this.#reject(key,'TARGET_INVALID','entry',events);
   const signal={key,symbol:input.symbol,instrumentName:input.instrumentName,direction:input.direction,entry,stop,targets:clone(targets),
-   patternConfirmedAt:input.patternConfirmedAt,timeframe:'1h',trendTimeframe:'4h',confirmed:true,trendConfirmed:true};
+   patternConfirmedAt:input.patternConfirmedAt,timeframe:'1h',trendTimeframe:'4h',confirmed:true,trendConfirmed:true,
+   managementVersion:profileManaged?'VOLUME_PROFILE_V1':'LEGACY_R_V1'};
+  if(profileManaged){
+   const choice=input.moveStopToBreakeven??input.TP1_MOVE_STOP_TO_BREAKEVEN??s.TP1_MOVE_STOP_TO_BREAKEVEN,
+    mode=input.breakevenMode??'ENTRY',cost=input.breakevenCostAssumptions;
+   if(typeof choice!=='boolean'||!['ENTRY','COST_COVERED'].includes(mode))return this.#reject(key,'BREAKEVEN_SETTINGS_INVALID','risk',events);
+   if(mode==='COST_COVERED'&&(!plain(cost)||cost.verifiedForSimulation!==true||!finite(cost.exitSlippageBps)||cost.exitSlippageBps<0||cost.exitSlippageBps>1000))
+    return this.#reject(key,'BREAKEVEN_COSTS_UNVERIFIED','risk',events);
+   signal.targetPlan={ok:true,targets:clone(targets),parts:profile.parts.map((part,i)=>({price:targets[i],fraction:part.fraction})),
+    ...(plain(profile.profileEvidence)?{profileEvidence:clone(profile.profileEvidence)}:{})};
+   signal.moveStopToBreakeven=choice;signal.breakevenMode=mode;
+   if(mode==='COST_COVERED')signal.breakevenCostAssumptions={verifiedForSimulation:true,exitSlippageBps:cost.exitSlippageBps};
+  }
   if(plain(input.sourcePrices)&&positive(input.sourcePrices.entry)&&positive(input.sourcePrices.stop)&&
    Array.isArray(input.sourcePrices.targets)&&input.sourcePrices.targets.length===3&&input.sourcePrices.targets.every(positive))
    signal.sourcePrices={entry:input.sourcePrices.entry,stop:input.sourcePrices.stop,targets:[...input.sourcePrices.targets]};
@@ -351,7 +378,12 @@ export class OrangeXPaperEngine{
     executionMode:this.#executionMode,runKind:this.#runKind,
     quantityOriginal:0,quantityRemaining:0,entryPrice:0,entryParts:[],stop:order.signal.stop,targets:clone(order.signal.targets),tpFilled:[0,0,0],
     leverage:s.leverage,marginUSD:0,plannedRiskUSD:0,openedAt:book.timestamp,lastPriceAt:book.timestamp,
-    markPrice:book.markPrice,markPriceAt:book.markPriceAt,feesUSD:0,fundingUSD:0,realizedGrossUSD:0,realizedPnLUSD:0,exitParts:[],fundingParts:[],status:'OPEN',quoteGaps:0};
+    markPrice:book.markPrice,markPriceAt:book.markPriceAt,feesUSD:0,fundingUSD:0,realizedGrossUSD:0,realizedPnLUSD:0,exitParts:[],fundingParts:[],status:'OPEN',quoteGaps:0,
+    managementVersion:order.signal.managementVersion};
+   if(order.signal.managementVersion==='VOLUME_PROFILE_V1'){
+    p.targetPlan=clone(order.signal.targetPlan);p.moveStopToBreakeven=order.signal.moveStopToBreakeven;p.breakevenMode=order.signal.breakevenMode;
+    if(order.signal.breakevenCostAssumptions)p.breakevenCostAssumptions=clone(order.signal.breakevenCostAssumptions);
+   }
    if(order.signal.sourcePrices)p.sourcePrices=clone(order.signal.sourcePrices);
    if(order.signal.priceAlignment)p.priceAlignment=clone(order.signal.priceAlignment);
    this.store.open.push(p)}
@@ -391,11 +423,39 @@ export class OrangeXPaperEngine{
   }
   return 1;
  }
+ #moveProfileStop(p,book,events){
+  if(p.managementVersion!=='VOLUME_PROFILE_V1'||p.moveStopToBreakeven!==true||p.breakevenMovedAt!==undefined||!p.quantityRemaining)return false;
+  const target=p.quantityOriginal*.4,filled=p.exitParts.filter(part=>part.type==='TP1').reduce((sum,part)=>sum+part.quantity,0),
+   tolerance=Math.max(1e-8,p.contract.qtyStep*1e-6);
+  if(filled<target-tolerance)return false; // A touch, acknowledgement or partial execution cannot move protection.
+  const dir=sign(p.direction),executable=dir===1?book.bids[0][0]:book.asks[0][0];let next=p.entryPrice;
+  if(p.breakevenMode==='COST_COVERED'){
+   const cost=p.breakevenCostAssumptions;
+   if(!plain(cost)||cost.verifiedForSimulation!==true||!finite(cost.exitSlippageBps))return false;
+   const fee=p.contract.takerRate,slip=cost.exitSlippageBps/10000;
+   next=dir===1?p.entryPrice*(1+fee)/((1-fee)*(1-slip)):p.entryPrice*(1-fee)/((1+fee)*(1+slip));
+  }
+  const reference=next,units=next/p.contract.priceTick,nearest=Math.round(units),
+   onTick=Math.abs(units-nearest)<=Math.max(1,Math.abs(units))*Number.EPSILON*16;
+  next=(onTick?nearest:dir===1?Math.ceil(units):Math.floor(units))*p.contract.priceTick;
+  if(!positive(next)||dir*(next-p.stop)<0)return false; // Never widen existing protection.
+  const previous=p.stop;p.stop=next;p.breakevenStop=next;p.breakevenMovedAt=book.timestamp;
+  p.breakevenReferencePrice=reference;p.breakevenFilledQuantity=filled;p.breakevenTargetQuantity=target;
+  p.breakevenCostCoverage=p.breakevenMode==='COST_COVERED'?'ENTRY_EXIT_TAKER_FEES_AND_EXPLICIT_EXIT_SLIPPAGE_ONLY':'ENTRY_PRICE_ONLY_NOT_COST_GUARANTEE';
+  this.#event('STOP_MOVED_TO_BREAKEVEN',{key:p.key,instrumentName:p.instrumentName,previousStop:previous,stop:next,
+   confirmedTP1Quantity:filled,targetTP1Quantity:target,quantityRemaining:p.quantityRemaining,mode:p.breakevenMode,
+   source:'CONFIRMED_SYNTHETIC_TP1_FILLS_NOT_EXCHANGE_ORDERS'},events);
+  // If a recovery snapshot is already through the newly required stop, management
+  // uses that current executable book. It never manufactures a fill at entry.
+  if(dir*(executable-next)<=0)p.closingReason='STOP';
+  return true;
+ }
  #manage(p,book,events){
   if(book.timestamp<p.lastPriceAt)return 0;
   if(book.timestamp-p.lastPriceAt>this.store.settings.maxQuoteAgeMs)p.quoteGaps++;
   p.markPrice=book.markPrice;p.markPriceAt=book.markPriceAt;p.lastPriceAt=book.timestamp;
   const executable=p.direction==='LONG'?book.bids[0][0]:book.asks[0][0],dir=sign(p.direction);
+  this.#moveProfileStop(p,book,events);
   if(dir*(executable-p.stop)<=0)p.closingReason='STOP';
   if(book.timestamp-p.openedAt>=this.store.settings.maxHoldingMs&&!p.closingReason)p.closingReason='TIME_LIMIT';
   if(p.closingReason){this.store.pending=this.store.pending.filter(item=>item.key!==p.key);return this.#exit(p,book,p.quantityRemaining,p.closingReason,events)}
@@ -406,6 +466,7 @@ export class OrangeXPaperEngine{
    if(dir*(executable-p.targets[i])<0)break;
    this.store.pending=this.store.pending.filter(item=>item.key!==p.key);
    const before=p.tpFilled[i];changed+=this.#exit(p,book,remaining,`TP${i+1}`,events);
+   if(i===0)this.#moveProfileStop(p,book,events);
    if(p.tpFilled[i]-before<remaining-p.contract.qtyStep*.5)break;
   }
   return changed;

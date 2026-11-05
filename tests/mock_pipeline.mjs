@@ -14,6 +14,7 @@ function waitingForEntry(){
 }
 const json=obj=>new Response(JSON.stringify(obj),{headers:{'content-type':'application/json'}});
 const symbols=()=>Object.keys(control().scenarios);
+const listedSymbols=()=>symbols().filter(symbol=>!control().unlisted?.includes(symbol));
 const price=symbol=>Number(control().prices?.[symbol]??(control().scenarios[symbol]==='range'?100:ENTRY));
 globalThis.fetch=async(input,options={})=>{
  const url=new URL(typeof input==='string'?input:input.url??String(input));
@@ -21,8 +22,15 @@ globalThis.fetch=async(input,options={})=>{
  if(!['GET','HEAD'].includes((options.method||'GET').toUpperCase()))throw Error('Test transport forbids external write methods');
  if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:url.pathname,interval:url.searchParams.get('interval')})+'\n');
  if(url.hostname==='fapi.binance.com'){
-  if(url.pathname==='/fapi/v1/exchangeInfo')return json({symbols:symbols().map(symbol=>({symbol,baseAsset:symbol.slice(0,-4),quoteAsset:'USDT',contractType:'PERPETUAL',status:'TRADING'}))});
-  if(url.pathname==='/fapi/v1/ticker/24hr')return json(symbols().map(symbol=>({symbol,lastPrice:String(price(symbol)),quoteVolume:'100000000',priceChangePercent:'2',highPrice:'120',lowPrice:'80'})));
+  if(control().binanceOffline)return new Response('synthetic Binance outage',{status:503});
+  if(url.pathname==='/fapi/v1/exchangeInfo')return json({symbols:listedSymbols().map(symbol=>({symbol,baseAsset:symbol.slice(0,-4),quoteAsset:'USDT',contractType:'PERPETUAL',status:'TRADING',marginAsset:'USDT',filters:[{filterType:'PRICE_FILTER',tickSize:'0.01'},{filterType:'LOT_SIZE',stepSize:'0.01',minQty:'0.01'},{filterType:'MIN_NOTIONAL',notional:'5'}]}))});
+  if(url.pathname==='/fapi/v1/ticker/24hr')return json(symbols().map(symbol=>({symbol,lastPrice:String(price(symbol)),quoteVolume:'100000000',priceChangePercent:'2',highPrice:'120',lowPrice:'80',closeTime:control().restPriceFresh===false?Date.now()-100000:Date.now()})));
+  if(url.pathname==='/fapi/v1/depth'){if(control().invalidQuote)return json({T:Date.now(),bids:[],asks:[]});const p=price(url.searchParams.get('symbol'));return json({T:Date.now(),bids:[[(p-.01).toFixed(2),'1000']],asks:[[(p+.01).toFixed(2),'1000']]});}
+  if(url.pathname==='/fapi/v1/aggTrades'){
+   if(control().profileUnavailable)return json([]);
+   const symbol=url.searchParams.get('symbol'),p=price(symbol),start=Number(url.searchParams.get('startTime'))||Date.now()-300000;
+   return json(Array.from({length:120},(_,i)=>({a:i+1,p:(p+([10,16,22,-10,-16,-22][Math.floor(i/20)]+(i%3)*.01)).toFixed(2),q:String(i%20<17?100:1),T:start+Math.floor(i*300000/119)})));
+  }
   if(url.pathname==='/fapi/v1/klines'){
    const symbol=url.searchParams.get('symbol'),interval=url.searchParams.get('interval');
    if(!['1h','4h','1d'].includes(interval))throw Error('Test transport forbids sub-hour/unknown candles');

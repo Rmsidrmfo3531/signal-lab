@@ -1,5 +1,7 @@
 // Chronological 1H/4H analysis. No transport, key, user store or live activation.
 import {analyze} from './engine.mjs';
+import {analyze as analyzeLegacyV58} from './research/legacy_v58/engine.mjs';
+import {SCORE_VERSION} from './quality.mjs';
 import {evaluateSignal} from './signal_pipeline.mjs';
 import {normalizeOrangeXPaperSignal,alignOrangeXPaperSignal} from './orangex_paper_signal.mjs';
 import {OrangeXPaperEngine} from './orangex_paper.mjs';
@@ -65,6 +67,10 @@ export function runOrangeXPaperReplay(input,{onProgress=()=>{},progressEvery=100
  if(input.executionMode==='SYNTHETIC_TEST'&&input.dataSource!=='SYNTHETIC_FIXTURE')throw Error('REPLAY_SYNTHETIC_SOURCE_REQUIRED');
  if(input.executionMode==='HISTORICAL_REPLAY'&&!HISTORICAL_SOURCES.has(input.dataSource))throw Error('REPLAY_HISTORICAL_SOURCE_REQUIRED');
  if(input.runKind!==undefined&&input.runKind!=='BACKTEST')throw Error('INVALID_REPLAY_CONTEXT');
+ const strategyVersion=input.strategyVersion??SCORE_VERSION;
+ if(!['LEGACY_V58',SCORE_VERSION].includes(strategyVersion))throw Error('INVALID_REPLAY_STRATEGY');
+ const legacy=strategyVersion==='LEGACY_V58',analyzeAt=legacy?analyzeLegacyV58:analyze,
+  maximumFourHourBars=legacy?110:301,maximumHourlyBars=legacy?150:200;
  const one=candles(input.h1,HOUR),four=candles(input.h4,4*HOUR),markets=timelineRows(input.markets,'receivedAt','MARKETS'),
   metadata=timelineRows(input.metadata,'at','METADATA'),venues=timelineRows(input.venueSnapshots,'at','VENUES'),
   controls=timelineRows(input.events,'at','EVENTS'),entry=executionOptions(input);
@@ -121,7 +127,7 @@ export function runOrangeXPaperReplay(input,{onProgress=()=>{},progressEvery=100
   processed++;
   if(event.type==='CANDLE_4H'){
    fourKnown.push(event.value);fourKnown.sort((a,b)=>a.closeAt-b.closeAt);
-   if(fourKnown.length>110)fourKnown.shift();
+   if(fourKnown.length>maximumFourHourBars)fourKnown.shift();
   }
   if(event.type==='METADATA')latestMetadata=event.value;
   if(event.type==='VENUE')latestVenue=event.value;
@@ -137,9 +143,9 @@ export function runOrangeXPaperReplay(input,{onProgress=()=>{},progressEvery=100
    if(value.type==='CLOSE'){engine.cancelOrder(value.key);engine.closePosition(value.key)}
   }
   if(event.type==='CANDLE_1H'){
-   oneKnown.push(event.value);oneKnown.sort((a,b)=>a.closeAt-b.closeAt);if(oneKnown.length>150)oneKnown.shift();
+   oneKnown.push(event.value);oneKnown.sort((a,b)=>a.closeAt-b.closeAt);if(oneKnown.length>maximumHourlyBars)oneKnown.shift();
    if(event.at<startAt)continue;
-   const hourly=oneKnown.slice(-150).map(item=>item.row),fourHourly=fourKnown.slice(-110).map(item=>item.row),
+   const hourly=oneKnown.slice(-maximumHourlyBars).map(item=>item.row),fourHourly=fourKnown.slice(-maximumFourHourBars).map(item=>item.row),
     venue=latestVenue,venueSourceUsable=synthetic&&venue?.dataSource==='SYNTHETIC_FIXTURE';
    // Keep a price inseparable from its own source clock. A newly received
    // venue snapshot must never lend freshness to a different, older Mark.
@@ -154,7 +160,8 @@ export function runOrangeXPaperReplay(input,{onProgress=()=>{},progressEvery=100
     price=venue.price;priceAt=venue.priceAt;priceSource='EXPLICIT_VENUE_PRICE';
     priceSourceFresh=stamp(priceAt)&&priceAt<=now&&now-priceAt<=maxPriceAgeMs;
    }
-   const row=analyze(input.symbol,hourly,fourHourly,[],price,{now,quoteVolume:latestMetadata?.quoteVolume??0});
+   const row=analyzeAt(input.symbol,hourly,fourHourly,[],price,{now,quoteVolume:latestMetadata?.quoteVolume??0});
+   if(legacy){row.strategyVersion='LEGACY_V58';row.managementVersion='LEGACY_R_MULTIPLES'}
    const venueUsable=venueSourceUsable&&priceSourceFresh;
    const decision=evaluateSignal(row,{verified:venueUsable&&venue.verified===true,venueConnected:venueUsable&&venue.venueConnected===true,
     listing:venueUsable?venue.listing:undefined,price,priceAt,
@@ -195,7 +202,7 @@ export function runOrangeXPaperReplay(input,{onProgress=()=>{},progressEvery=100
   signal.lastFillAt=position?.entryParts?.at(-1)?.at??null;
   signal.filledQuantity=position?.quantityOriginal??0;
  }
- return {kind:'ORANGEX_PAPER_REPLAY_RESULT',executionMode:input.executionMode,runKind:'BACKTEST',
+ return {kind:'ORANGEX_PAPER_REPLAY_RESULT',executionMode:input.executionMode,runKind:'BACKTEST',strategyVersion,
   dataSource:input.dataSource==='SYNTHETIC_FIXTURE'?'SYNTHETIC_FIXTURE':'USER_SUPPLIED_HISTORICAL_UNVERIFIED_ORIGIN',
   originalDataSource:input.dataSource,sourceOriginVerified:false,
   provenance:input.dataSource==='SYNTHETIC_FIXTURE'?'SYNTHETIC_DATA': 'USER_DECLARED_HISTORICAL_UNVERIFIED_ORIGIN',

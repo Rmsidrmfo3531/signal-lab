@@ -36,5 +36,6 @@ test('PC/mobile dashboard has separate LONG SHORT cards and an explicit entry pr
  assert.match(html,/롱\/숏 기준 진입가/);
  assert.match(app,/진입 보류/);
  assert.match(app,/차트 기준 진입가 \(실제 주문가 아님\)/);
- assert.match(app,/참고 관찰선/);
+ assert.doesNotMatch(app,/참고 관찰선/);
+ assert.match(app,/function directionalEntryRows\(\)\{return currentReadySignals\(\)\}/);
 });

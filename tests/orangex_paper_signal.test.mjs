@@ -1,23 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {analyze} from '../engine.mjs';
+import {analyze} from '../research/legacy_v58/engine.mjs';
 import {evaluateSignal} from '../signal_pipeline.mjs';
 import {marketSeries,ENTRY} from './fixtures/pipeline_market.mjs';
 import {normalizeOrangeXPaperSignal,alignOrangeXPaperSignal} from '../orangex_paper_signal.mjs';
 import {OrangeXPaperEngine} from '../orangex_paper.mjs';
 
-// Synthetic market candles and indicative quotes exercise the existing scanner.
+// Synthetic candles exercise the retained pre-Issue6 strategy for record compatibility.
+// The production single-score/profile strategy has separate management tests.
 // No live exchange response, authentication or user records are used here.
 function nativeFixture(scenario='breakout-long'){
  const at=Date.now(),series=marketSeries(scenario,at),row=analyze('BTCUSDT',series.h1,series.h4,[],ENTRY,{quoteVolume:1e8});
  const now=Date.now(),quote={bid:ENTRY-.005,ask:ENTRY+.005};
  const decision=evaluateSignal(row,{verified:true,venueConnected:true,listing:{markPrice:ENTRY,quoteUpdatedAt:now,
   quote1k:quote,quoteBase:quote},price:ENTRY,priceAt:now,statsReceivedAt:now,now});
- return {series,row:{...row,decision,qualified:decision.ready},now,
+ return {series,row:{...row,decision,qualified:decision.ready,strategyVersion:'LEGACY_V58',managementVersion:'LEGACY_R_MULTIPLES'},now,
   options:{now,source:'SYNTHETIC_FIXTURE',instrumentName:'BTC-USDT-PERPETUAL'}};
 }
 
-test('actual scanner functions produce approved synthetic 1H/4H LONG and SHORT signals for the PAPER bridge',()=>{
+test('preserved legacy scanner produces approved synthetic 1H/4H LONG and SHORT signals for existing PAPER records',()=>{
  for(const [scenario,direction,score]of [['breakout-long','LONG',100],['breakout-short','SHORT',100],
   ['retest-long','LONG',100],['retest-short','SHORT',100],['bonus-missing-long','LONG',90]]){
   const {row,options}=nativeFixture(scenario);

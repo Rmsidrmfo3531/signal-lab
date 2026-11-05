@@ -17,9 +17,17 @@ import {fileURLToPath} from 'node:url';
 import {analyze} from './engine.mjs';
 import {structureObservations,historicalPatternObservations} from './observation.mjs';
 import {describeScanFunnel} from './scan_diagnostics.mjs';
-import {intersectPerpetualMarkets} from './markets.mjs';
+import {binancePerpetualMarkets} from './markets.mjs';
 import {officialMarketLinks,telegramMessage} from './links.mjs';
 import {executionEstimate,EXEC_DEFAULTS,parsePerpExecution} from './execution.mjs';
+import {estimateBinanceExecution,BINANCE_PAPER_ASSUMPTIONS} from './binance_execution.mjs';
+import {VolumeProfileCollector} from './profile_collector.mjs';
+import {roundOrangeXDecimal} from './orangex_contract_validation.mjs';
+import {planVolumeTargets} from './volume_targets.mjs';
+import {shouldNotifyWatch,watchMinScore,watchAlertKey,telegramWatchMessage} from './telegram_watch.mjs';
+import {translateNewsArticles} from './news_translation.mjs';
+import {buildMarketCommentary} from './market_commentary.mjs';
+import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {extractTradFiMarkets,swapFundingUSD,tradfiQuoteVerdict} from './tradfi.mjs';
 import {analyzeTradFi} from './tradfi_signal.mjs';
@@ -47,6 +55,10 @@ const CONFIG={
  tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
  newsMs:Math.max(60000,Number(process.env.NEWS_POLL_MS||90000)),
  newsTelegram:process.env.TELEGRAM_NEWS_ALERTS!=='false',
+ watchMinScore:watchMinScore(process.env.TELEGRAM_WATCH_MIN_SCORE),
+ watchEnabled:process.env.TELEGRAM_SCORE_WATCH_ENABLED!=='false',
+ maxRiskUSD:Number(process.env.PAPER_MAX_RISK_USD||6),
+ translationURL:process.env.NEWS_TRANSLATION_URL||'',
  tradfiMs:Math.max(60000,Number(process.env.TRADFI_REFRESH_MS||60000)),
  tradfiScanMs:Math.max(300000,Number(process.env.TRADFI_SCAN_INTERVAL_MS||900000)),
  twelveKey:process.env.TWELVE_DATA_API_KEY||'',
@@ -106,11 +118,16 @@ persisted.paperNotify.enabled = persisted.paperNotify.enabled!==false;
 if(!Array.isArray(persisted.paperNotify.history))persisted.paperNotify.history=[];
 // Create the first shared store file even if no trading event occurs yet.
 save();
-const state={ws:'offline',rest:'connecting',variational:'connecting',lastVariational:0,lastMarketListings:0,executionRefreshAt:0,blockedSignals:0,lastBlockReason:'',binancePerps:0,variationalPerps:0,lastMarket:0,lastScan:0,scannedSinceBoot:0,cycleScanned:0,cycle:0,
+const state={ws:'offline',rest:'connecting',variational:'independent-tradfi',lastVariational:0,lastMarketListings:0,executionRefreshAt:0,blockedSignals:0,lastBlockReason:'',binancePerps:0,variationalPerps:0,lastMarket:0,lastScan:0,scannedSinceBoot:0,cycleScanned:0,cycle:0,
  activeSymbols:[],activeSet:new Set(),researchSymbols:[],researchSet:new Set(),researchRanked:[],scanMode:'waiting',lastValidatedAt:0,ranked:[],quotes:new Map(),analyses:new Map(),scanCursor:0,scanActive:false,error:'',clients:new Set(),recentSignals:[],
  liveWS:'offline',liveWatched:0,lastLiveTrigger:0,livePending:0,liveAnalyzed:0,
  lastTickerAt:0,lastTickerCount:0,lastLiveDataAt:0,lastLiveCandleClose:0,liveSubscribeAcks:0,liveSubscribeErrors:0,liveLastError:'',lastScanAttempt:0,scanStartedAt:0,scanFailedAt:0,marketRetryCount:0,marketError:'',marketLastRetry:0,news:[],newsStatus:'connecting',newsChecked:0,newsSources:[],newsError:'',update:{state:'unconfigured',lastCheck:0,message:'업데이트 서버 미설정'},scanSuccess:0,scanFailed:0,lastScanFailures:[],lastScanSuccessAt:0};
 const apiCache=new Map();
+const publicReadBudget=new PublicReadBudget();
+const books=new Map();
+let rawMarketTickers=[];
+let marketStatsReceivedAt=0,marketStatsPending=null;
+const profiles=new VolumeProfileCollector({request:url=>binance(url,0)});
 const structureBySymbol=new Map();
 const historyBySymbol=new Map();
 function recentStructures(){return [...structureBySymbol.values()].flat().filter(x=>Date.now()-x.observedAt<2*3600000).sort((a,b)=>b.observedAt-a.observedAt).slice(0,100)}
@@ -128,21 +145,23 @@ function emitPaperNotice(event,{test=false}={}){
   console.log(`[PAPER ${test?'TEST':event.type}]`,event.symbol,event.direction,delivery.reason);
   return {event:item,delivery};
 }
-const paper=new PaperEngine(persisted.paper,{onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
+const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
 
 async function binance(url,ttl=30000){
  const cache=apiCache.get(url);
  if(cache && cache.until>Date.now())return cache.data;
  if(cache?.pending)return cache.pending;
  const task=(async()=>{
+  const budget=publicReadBudget.reserve(url);if(!budget.ok)throw Error(budget.code);
   const ctrl=new AbortController();const timeout=setTimeout(()=>ctrl.abort(),12000);
   try {
    const r=await fetch('https://fapi.binance.com'+url,{signal:ctrl.signal,headers:{'User-Agent':'SignalLab/1.0','Accept':'application/json'}});
-   if(!r.ok)throw Error(`Binance HTTP ${r.status}: ${(await r.text()).slice(0,140)}`);
+   if(!r.ok){publicReadBudget.rateLimited(r.status,r.headers?.get?.('retry-after'));throw Error(`Binance HTTP ${r.status}: 공개 조회 일시 보류`);}
    const data=await r.json();apiCache.set(url,{data,until:Date.now()+ttl});state.rest='connected';return data;
   } finally{clearTimeout(timeout)}
  })();
  apiCache.set(url,{data:cache?.data,until:0,pending:task});
+ if(apiCache.size>1200){for(const [key,value]of apiCache){if(!value.pending&&value.until<Date.now())apiCache.delete(key);if(apiCache.size<=1000)break}}
  try{return await task;}catch(e){apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
 }
 async function variationalStats(){
@@ -239,111 +258,55 @@ async function runTradFiScan(){
 const exchangeInfo=()=>binance('/fapi/v1/exchangeInfo',15*60*1000);
 const market24=()=>binance('/fapi/v1/ticker/24hr',75000);
 const klines=(symbol,interval,limit=150)=>binance(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`,interval==='4h'?170000:interval==='1h'?54000:20000);
-// Two independent discovery stages: Binance price/candle scanning must not stop simply
-// because Variational's listing endpoint is slow or temporarily unavailable.  Exploratory
-// results are NEVER actionable and cannot open paper positions or emit order signals.
-function binanceResearchMarkets(info,tickers){
- const excludeTradFi=new Set(['XAU','XAG','US100','US500','US30','US400','DXI','UKOIL','USOIL','VXI','SPCX','CL','COPP']);
- const bySymbol=new Map((info?.symbols||[]).filter(x=>x.contractType==='PERPETUAL'&&x.status==='TRADING'&&x.quoteAsset==='USDT'&&
-  x.symbol===x.baseAsset+'USDT'&&!excludeTradFi.has(x.baseAsset)&&/^[A-Z0-9]+$/.test(x.baseAsset)).map(x=>[x.symbol,x]));
- return (Array.isArray(tickers)?tickers:[]).filter(x=>bySymbol.has(x.symbol)).map(x=>({
-  symbol:x.symbol,baseAsset:bySymbol.get(x.symbol).baseAsset,price:Number(x.lastPrice),
-  quoteVolume:Number(x.quoteVolume)||0,change:Number(x.priceChangePercent)||0
- })).filter(x=>Number.isFinite(x.price)&&x.price>0).sort((a,b)=>b.quoteVolume-a.quoteVolume).slice(0,45);
-}
-function useResearchMarkets(info,tickers){
- const fresh=binanceResearchMarkets(info,tickers);
- state.researchRanked=fresh;
- state.researchSymbols=fresh.map(x=>x.symbol);
- state.researchSet=new Set(state.researchSymbols);
- for(const row of fresh){
-  if(state.activeSet.has(row.symbol))continue;
-  const old=state.quotes.get(row.symbol);
-  state.quotes.set(row.symbol,{...row,price:old?.price||row.price,priceAt:old?.priceAt||0});
- }
- state.scanMode=state.activeSymbols.length?'verified-stale':'research-only';
-}
+// Binance alone defines crypto listings, prices and analysis. TradFi remains independent.
 function marketFailure(error){
- state.variational='offline';state.marketError=String(error.message||error);
- state.error='공통 상장 검증 지연: '+state.marketError;
- state.marketRetryCount++;state.marketLastRetry=Date.now();
- // Preserve previously verified matches, watchlists and paper trading state; no
- // fresh alerts are permitted while the venue verification is offline.
- state.scanMode=state.activeSymbols.length?'verified-stale':state.researchSymbols.length?'research-only':'waiting';
- refreshLiveSubscriptions();
- send('status',getStatus());
+ state.rest='offline';state.marketError=String(error?.message||error);state.error='Binance 데이터 검증 지연: '+state.marketError;
+ state.marketRetryCount++;state.marketLastRetry=Date.now();state.scanMode=state.activeSymbols.length?'binance-stale':'waiting';
+ refreshLiveSubscriptions();send('status',getStatus());
 }
 async function loadMarket(){
- const settled=await Promise.allSettled([exchangeInfo(),market24(),variationalStats()]);
- const [infoResult,tickersResult,variationalResult]=settled;
- if(infoResult.status==='fulfilled'&&tickersResult.status==='fulfilled'){
-  useResearchMarkets(infoResult.value,tickersResult.value);
-  state.rest='connected';
- }else{
-  const failures=settled.slice(0,2).filter(x=>x.status==='rejected').map(x=>x.reason?.message||String(x.reason));
-  state.rest='offline';marketFailure('Binance 상장/24시간 시세 API: '+failures.join(' / '));
-  if(!state.activeSymbols.length&&!state.researchSymbols.length)throw Error(state.marketError);
-  return state.ranked;
- }
- if(variationalResult.status==='rejected'){
-  marketFailure('Variational API: '+(variationalResult.reason?.message||String(variationalResult.reason)));
-  return state.ranked;
- }
- let joined;
- try{joined=intersectPerpetualMarkets(infoResult.value,tickersResult.value,variationalResult.value)}
- catch(e){marketFailure('상장 교집합 검증: '+e.message);return state.ranked}
- if(!joined.markets.length){marketFailure('응답은 정상이나 공통 PERP 0종목: 종목 형식 및 상장정보 확인 필요');return state.ranked}
- state.variational='connected';state.lastVariational=Date.now();state.lastMarketListings=Date.now();state.lastValidatedAt=Date.now();
- state.binancePerps=joined.binancePerps;state.variationalPerps=joined.variationalPerps;
- state.ranked=joined.markets;
- state.activeSymbols=state.ranked.map(x=>x.symbol);
- state.activeSet=new Set(state.activeSymbols);
- state.analyses.forEach((_,symbol)=>{if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))state.analyses.delete(symbol)});
- for(const row of state.ranked){
-  const old=state.quotes.get(row.symbol);state.quotes.set(row.symbol,{...row,price:old?.price||row.price,priceAt:old?.priceAt||0});
- }
- // Do not delete a user's saved watchlist when a venue is temporarily down.
- // It can contain symbols from past releases; only active contracts are selected for scanning.
- state.lastMarket=Date.now();state.executionRefreshAt=Date.now();state.rest='connected';
- state.scanMode='verified';state.error='';state.marketError='';state.marketRetryCount=0;
- refreshLiveSubscriptions();
- send('market',{at:state.lastMarket,markets:state.ranked,watchlist:persisted.watchlist,variationalStatus:state.variational});
- send('status',getStatus());
- return state.ranked;
+ try{
+  const [info,tickers]=await Promise.all([exchangeInfo(),market24()]),joined=binancePerpetualMarkets(info,tickers);
+  if(!joined.markets.length)throw Error('TRADING USDT 무기한 선물 목록 없음');
+  rawMarketTickers=tickers;marketStatsReceivedAt=Date.now();state.ranked=joined.markets;state.binancePerps=joined.binancePerps;
+  state.researchRanked=[];state.researchSymbols=[];state.researchSet=new Set();
+  state.activeSymbols=joined.markets.map(x=>x.symbol);state.activeSet=new Set(state.activeSymbols);
+  for(const row of joined.markets){const old=state.quotes.get(row.symbol);state.quotes.set(row.symbol,{...row,
+   price:old?.priceAt>row.priceAt?old.price:row.price,priceAt:old?.priceAt>row.priceAt?old.priceAt:row.priceAt});}
+  state.lastMarket=Date.now();state.lastMarketListings=Date.now();state.lastValidatedAt=Date.now();
+  state.rest='connected';state.scanMode='binance-usdt-perpetual';state.error='';state.marketError='';state.marketRetryCount=0;
+  refreshLiveSubscriptions();send('market',{at:state.lastMarket,markets:state.ranked,watchlist:persisted.watchlist,analysisVenue:'BINANCE'});send('status',getStatus());return state.ranked;
+ }catch(error){marketFailure(error);if(!state.ranked.length)throw error;return state.ranked}
 }
-// Keep indicative quotes fresh without calling the rate-limited public endpoint for every symbol.
-// If an API read fails, alert screening must fail closed rather than trusting stale quotes.
+async function depth(symbol){
+ const book=await binance(`/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=20`,2500);books.set(symbol,book);return book;
+}
+async function refreshMarketStats(){
+ if(marketStatsReceivedAt&&Date.now()-marketStatsReceivedAt<60000)return;
+ if(marketStatsPending)return marketStatsPending;
+ marketStatsPending=(async()=>{rawMarketTickers=await market24();marketStatsReceivedAt=Date.now()})();
+ try{await marketStatsPending}finally{marketStatsPending=null}
+}
 let refreshPromise=null;
 async function refreshExecution(){
  if(refreshPromise)return refreshPromise;
  refreshPromise=(async()=>{
-  try{
-   if(!state.activeSymbols.length)return;
-   const payload=await variationalStats();
-   const byTicker=new Map((payload.listings||[]).filter(x=>x.contract_type==='perpetual').map(x=>[x.ticker,x]));
-   const updated=[];
-   for(const [symbol,record] of state.quotes){
-    if(!state.activeSet.has(symbol))continue;
-    const x=byTicker.get(record.variational?.ticker);
-    if(!x){throw Error('공통 상장 종목 삭제/변경 감지: 목록 재검증 필요')}
-    const info=parsePerpExecution(x);if(!info){throw Error('Variational 공개 데이터 파싱 실패')}
-    record.variational={...record.variational,...info};
-    updated.push({symbol,variational:record.variational});
-   }
-   state.lastVariational=Date.now();state.executionRefreshAt=Date.now();
-   // A quote refresh alone does not revalidate the complete instrument universe.
-   if(Date.now()-state.lastMarketListings<12*60000){state.variational='connected';state.scanMode='verified'}
-   else{state.variational='offline';state.scanMode='verified-stale'};
-   send('execution',{at:state.executionRefreshAt,items:updated});send('status',getStatus());
-  }catch(e){marketFailure('Variational 호가 갱신 실패: '+e.message);console.warn('[EXECUTION]',e.message)}
- })();
- try{return await refreshPromise}finally{refreshPromise=null}
+  const symbols=[...new Set([...state.analyses.values()].filter(row=>row.technicalQualified===true).map(row=>row.symbol)
+   .concat(paper.store.open.filter(p=>p.market==='CRYPTO').map(p=>p.symbol)))].slice(0,12);
+  await Promise.allSettled(symbols.map(symbol=>depth(symbol)));state.executionRefreshAt=Date.now();send('status',getStatus());
+ })();try{return await refreshPromise}finally{refreshPromise=null}
+}
+async function tgWatch(row){
+ if(!CONFIG.watchEnabled||!CONFIG.tgToken||!CONFIG.tgChat||!shouldNotifyWatch(row,{minScore:CONFIG.watchMinScore,verified:state.activeSet.has(row.symbol),altOnly:true,now:Date.now()}))return;
+ const key=watchAlertKey(row);if(persisted.watchSeen?.[key]||persisted.watchSeen?.[`watch:${row.symbol}:${row.direction}:${row.pattern}:${row.time}`])return;
+ // Save deduplication before delivery; retry after an uncertain remote ACK cannot duplicate an alert.
+ save({...persisted,watchSeen:{...(persisted.watchSeen||{}),[key]:Date.now()}});
+ const urls=officialMarketLinks(row.symbol),payload={chat_id:CONFIG.tgChat,...telegramWatchMessage(row,urls)};
+ try{const r=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});if(!r.ok)console.warn('[TG WATCH] HTTP',r.status)}catch{console.warn('[TG WATCH] delivery unconfirmed')}
 }
 async function tgNotify(s){
  if(!CONFIG.tgToken||!CONFIG.tgChat)return;
- const verified=state.quotes.get(s.symbol);
- const urls=verified?.variational?.ticker&&state.activeSet.has(s.symbol)
-  ?officialMarketLinks(s.symbol,verified.variational.ticker):null;
+ const urls=state.activeSet.has(s.symbol)?officialMarketLinks(s.symbol):null;
  if(!urls){console.warn('Telegram suppressed: market link not verified',s.symbol);return}
  const F=p=>p>0?p.toLocaleString('en-US',{maximumFractionDigits:p>=1000?2:7}):String(p);
  const payload={chat_id:CONFIG.tgChat,...telegramMessage(s,urls,F)};
@@ -390,14 +353,34 @@ async function checkSymbol(symbol, force=false){
 async function checkSymbolInternal(symbol, force=false){
  if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))return null;
  const meta=state.quotes.get(symbol)||{};
- const [h1,h4]=await Promise.all([klines(symbol,'1h',150),klines(symbol,'4h',110)]);
- const out=analyze(symbol,h1,h4,[],meta.price,{quoteVolume:meta.quoteVolume,priceChangePercent:meta.change});
+ const [h1,h4,btcH4]=await Promise.all([klines(symbol,'1h',200),klines(symbol,'4h',301),symbol==='BTCUSDT'?Promise.resolve(null):klines('BTCUSDT','4h',301)]);
+ const out=analyze(symbol,h1,h4,[],meta.price,{quoteVolume:meta.quoteVolume,priceChangePercent:meta.change,btcH4Rows:btcH4??h4});
+ out.analysisVenue='BINANCE';out.tradeApproval=false;out.orangeXApproval=false;
+ if(out.pattern&&out.technicalQualified===true){
+  try{
+   const book=await depth(symbol),tick=Number(meta.filters?.PRICE_FILTER?.tickSize);
+   if(Number.isFinite(tick)&&tick>0){out.rawStop=out.stop;out.stop=Number(roundOrangeXDecimal(out.stop,tick,out.direction==='LONG'?'DOWN':'UP'));}
+   const estimate=estimateBinanceExecution({signal:out,book,market:meta,maxRiskUSD:CONFIG.maxRiskUSD});
+   out.binanceExecution=estimate;
+   if(estimate.eligible){
+    const profileResult=await profiles.get(symbol,{tickSize:estimate.tickSize,eligible:true}),costs={makerRate:BINANCE_PAPER_ASSUMPTIONS.makerRate,
+     takerRate:BINANCE_PAPER_ASSUMPTIONS.takerRate,slippageBps:BINANCE_PAPER_ASSUMPTIONS.slippageBps,spreadBps:estimate.spreadBps,
+     fundingRate:BINANCE_PAPER_ASSUMPTIONS.fundingReserveRate,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'};
+    const targetPlan=planVolumeTargets({profileResult,direction:out.direction,entry:estimate.entryBasis,stop:out.stop,quantity:estimate.quantity,
+     tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,
+     contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',unitsVerified:true,costs,minNetRR:1.8},{now:Date.now()});
+    out.targetPlan={...targetPlan,quantity:estimate.quantity,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',
+     minNotional:estimate.minNotional,minQuantity:estimate.minQuantity,quantityStep:estimate.quantityStep,tickSize:estimate.tickSize,costAssumptions:costs};
+    if(targetPlan.ok){out.referenceEntry=out.entry;out.entry=estimate.entryBasis;[out.target1,out.target2,out.target3]=targetPlan.targets;out.targets=targetPlan.targets;}
+   }
+  }catch{out.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['PUBLIC_EXECUTION_OR_PROFILE_UNAVAILABLE']};}
+ }
+
  // 1H closed-candle pattern and 4H trend are already validated in analyze().
  // No shorter than 1H timeframe is queried or required for a confirmed setup.
  out.confirmedTimeframes=['1h','4h'];
  // Historical/approaching observations never affect actual signals, alerts or simulated PNL.
- structureBySymbol.set(symbol,structureObservations(symbol,h1,h4));
- historyBySymbol.set(symbol,historicalPatternObservations(symbol,h1,h4));
+ // Observation candidates are Telegram-only; main view receives final signals only.
  if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))return null;
  const decision=assessAnalysis(out);
  out.execution=decision.execution;out.decision=decision;
@@ -410,6 +393,7 @@ async function checkSymbolInternal(symbol, force=false){
  }
  if(decision.technical&&!decision.venue){state.blockedSignals++;state.lastBlockReason=decision.reasons.join(' / ')}
  state.analyses.set(symbol,out);
+ void tgWatch(out).catch(()=>{});
  publishCryptoSignal(out,decision);
  return out;
 }
@@ -435,7 +419,7 @@ function publishCryptoSignal(row,decision,now=Date.now()){
 // Historical candles and Variational indicative prices remain REST snapshots, not tick-perfect.
 const liveQueue=[];const queued=new Set();const lastTrigger=new Map();let liveWorkers=0;
 const liveSockets=[];let liveSubscriptionKey='';let streamRequestId=1;
-function invalidateCandles(symbol){for(const interval of ['1h','4h'])for(const suffix of [150,110,100])apiCache.delete(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${suffix}`)}
+function invalidateCandles(symbol){for(const interval of ['1h','4h'])for(const suffix of [150,110,100,200,301])apiCache.delete(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${suffix}`)}
 function queueLive(symbol,reason='stream'){
  if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))return false;
  const candleClose=reason.endsWith('-close');
@@ -460,7 +444,7 @@ async function drainLive(){
    try{while(liveQueue.length){const item=liveQueue.shift();queued.delete(item.symbol);
     if(!state.activeSet.has(item.symbol)&&!state.researchSet.has(item.symbol))continue;
     try{const output=await checkSymbol(item.symbol,item.reason.includes('close'));if(output){state.liveAnalyzed++;state.lastLiveTrigger=Date.now()}else{state.liveLastError=item.symbol+': 분석 결과 없음'};
-      send('live',{symbol:item.symbol,reason:item.reason,at:state.lastLiveTrigger,signals:relevantSignals(),patterns:confirmedPatterns(),watch:watches()});
+      send('live',{symbol:item.symbol,reason:item.reason,at:state.lastLiveTrigger,signals:relevantSignals(),patterns:[],watch:[]});
     }catch(e){console.warn('[LIVE]',item.symbol,item.reason,e.message)}
     await new Promise(r=>setTimeout(r,180));state.livePending=liveQueue.length;
    }}finally{liveWorkers--;if(liveQueue.length)void drainLive()}
@@ -476,7 +460,7 @@ function priceLevelTrigger(symbol,prev,price){
  if(relevant)queueLive(symbol,'price-level');
 }
 function refreshLiveSubscriptions(){
- const monitored=state.variational==='connected'?state.activeSymbols:(state.researchSymbols.length?state.researchSymbols:state.activeSymbols);
+ const monitored=state.activeSymbols;
  if(!monitored.length){for(const ws of liveSockets){try{ws.close()}catch{}}liveSockets.length=0;liveSubscriptionKey='';state.liveWS='offline';state.liveWatched=0;return}
  const streams=[...monitored.map(s=>s.toLowerCase()+'@kline_1h'),...monitored.map(s=>s.toLowerCase()+'@kline_4h')];
  const key=streams.join('|');if(key===liveSubscriptionKey&&liveSockets.some(ws=>ws.readyState===WebSocket.OPEN))return;
@@ -525,7 +509,7 @@ function recoverLive(){if(state.activeSet.size||state.researchSet.size){liveSubs
 
 let marketWs, retryMs=1500; const changed=new Map();
 function cryptoEntryAllowed(symbol,now=Date.now()){
- if(!storageHealth.healthy||!state.activeSet.has(symbol)||state.variational!=='connected')return false;
+ if(!storageHealth.healthy||!state.activeSet.has(symbol)||state.rest!=='connected')return false;
  const analysis=state.analyses.get(symbol);
  if(!analysis?.patternConfirmed||!analysis.technicalQualified)return false;
  const decision=assessAnalysis(analysis,now);
@@ -596,9 +580,9 @@ setInterval(()=>{
  }
 },30000);
 function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.variational==='connected'?[]:state.researchSymbols,variational:state.variational,assess:row=>assessAnalysis(row)});}
-function getStatus(){return {storage:{...storageHealth},version:'5.8.0',scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,variational:state.variational,lastVariational:state.lastVariational,binancePerps:state.binancePerps,variationalPerps:state.variationalPerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
+function getStatus(){return {storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,variational:state.variational,lastVariational:state.lastVariational,binancePerps:state.binancePerps,variationalPerps:state.variationalPerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
- intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:CONFIG.limits,
+ intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:{maxQuoteAgeSeconds:15,maxFeedAgeSeconds:90,maxSpreadBps:20,maxRiskUSD:CONFIG.maxRiskUSD,minNetRR:1.8,analysisOnly:true},
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
  liveWS:state.liveWS,liveWatched:state.liveWatched,lastLiveDataAt:state.lastLiveDataAt,lastLiveCandleClose:state.lastLiveCandleClose,liveSubscribeAcks:state.liveSubscribeAcks,liveSubscribeErrors:state.liveSubscribeErrors,liveLastError:state.liveLastError,lastLiveTrigger:state.lastLiveTrigger,livePending:state.livePending,liveAnalyzed:state.liveAnalyzed,confirmedPatternCount:confirmedPatterns().length,newsStatus:state.newsStatus,newsChecked:state.newsChecked,newsCount:state.news.length,newsError:state.newsError,newsSources:state.newsSources,update:state.update};}
 function recentAnalyses(){return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)||(state.variational!=='connected'&&state.researchSet.has(x.symbol))).sort((a,b)=>b.scannedAt-a.scannedAt).slice(0,140).map(x=>currentAnalysis(x));}
@@ -615,8 +599,8 @@ function confirmedPatterns(){
 }
 function assessAnalysis(row,now=Date.now()){
  const m=state.quotes.get(row.symbol);
- return evaluateSignal(row,{verified:state.activeSet.has(row.symbol),venueConnected:state.variational==='connected',
-  listing:m?.variational,price:m?.price,priceAt:m?.priceAt,statsReceivedAt:state.lastVariational,now,limits:CONFIG.limits});
+ return evaluateSignal(row,{analysisVenue:'BINANCE',verified:state.activeSet.has(row.symbol),venueConnected:state.rest==='connected',
+  market:m,book:books.get(row.symbol),price:m?.price,priceAt:m?.priceAt,now,limits:{...CONFIG.limits,maxRiskUSD:CONFIG.maxRiskUSD}});
 }
 function currentAnalysis(row,now=Date.now()){
  const decision=assessAnalysis(row,now);
@@ -629,7 +613,7 @@ function currentAnalysis(row,now=Date.now()){
 function relevantSignals(){
  const now=Date.now();
  return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)).map(x=>currentAnalysis(x,now))
-  .filter(x=>x.decision.ready).sort((a,b)=>b.score-a.score);
+  .filter(x=>x.decision.ready).sort((a,b)=>b.score-a.score||(b.patternConfirmedAt-a.patternConfirmedAt)||a.symbol.localeCompare(b.symbol));
 }
 function watches(){
  // Watch candidates are observations, NOT ready-to-trade signals.
@@ -644,10 +628,10 @@ async function runScan(){
  try{
   // Always try rebuilding the verified universe, but never block candle checks for
   // previously discovered Binance markets if one venue's metadata API fails.
-  if((!state.ranked.length&&!state.researchRanked.length)||state.variational!=='connected'||Date.now()-state.lastMarketListings>10*60000){
+  if(!state.ranked.length||state.rest!=='connected'||Date.now()-state.lastMarketListings>10*60000){
    try{await loadMarket()}catch(e){state.marketError=e.message}
   }
-  const rows=state.variational==='connected'?state.ranked:(state.researchRanked.length?state.researchRanked:state.ranked);
+  const rows=state.ranked;
   if(!rows.length){
    state.lastScan=Date.now();state.scanMode='waiting';state.scanFailed++;
    if(state.lastScanFailures.length<12)state.lastScanFailures.push('시장 데이터 조회 실패: '+(state.marketError||'재시도 대기'));
@@ -674,11 +658,16 @@ async function runScan(){
   }
   await Promise.all(Array.from({length:3},()=>worker()));
   state.lastScan=Date.now();state.scanFailedAt=0;
-  if(state.variational==='connected')state.error='';
-  send('scan',{status:getStatus(),signals:relevantSignals(),patterns:confirmedPatterns(),watch:watches(),structures:recentStructures(),history:recentHistory(),coverage:targets,recent:recentAnalyses().slice(0,24)});
+  if(state.rest==='connected')state.error='';
+  send('scan',{status:getStatus(),signals:relevantSignals(),patterns:[],watch:[],structures:[],history:[],coverage:targets,recent:recentAnalyses().slice(0,24)});
   console.log(`[SCAN] ${new Date().toISOString()} mode=${state.scanMode} checked=${targets.length}/${rows.length} success=${state.scanSuccess} failed=${state.scanFailed} candidates=${getScanFunnel().patternCount} qualityBlocks=${getScanFunnel().quality} quoteBlocks=${getScanFunnel().venue} actionable=${relevantSignals().length}`);
  }catch(e){state.error=e.message;state.marketError=e.message;state.marketRetryCount++;state.scanFailedAt=Date.now();console.error('[SCAN ERROR]',e.message);send('status',getStatus())}
  finally{state.scanActive=false;state.scanStartedAt=0;send('status',getStatus())}
+}
+async function translateArticle({text,signal}){
+ const endpoint=new URL(CONFIG.translationURL);if(!['https:','http:'].includes(endpoint.protocol)||endpoint.username||endpoint.password)throw Error('TRANSLATION_ENDPOINT_INVALID');
+ const r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'ko',format:'text'}),signal});
+ if(!r.ok)throw Error('TRANSLATION_HTTP');const result=await r.json();return {translatedText:result.translatedText};
 }
 let newsBootstrapped=false;
 async function pollNews(){
@@ -694,7 +683,8 @@ async function pollNews(){
  const failures=settled.filter(x=>x.status==='rejected').map((x,i)=>x.reason?.message||'feed rejected');
  state.newsError=failures.length?`${failures.length}/${FEEDS.length}개 소스 오류`:'';
  if(!feeds.length){state.newsStatus='offline';send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:0,error:'RSS 제공처 모두 연결 실패'});return}
- const incoming=prepareNews(feeds,state.newsChecked,[...state.ranked.map(x=>({symbol:x.baseAsset,name:x.variational?.name||''})),...tradfiState.swaps.map(x=>({symbol:x.base,name:x.name||''}))]);
+ const originalNews=prepareNews(feeds,state.newsChecked,[...state.ranked.map(x=>({symbol:x.baseAsset,name:x.variational?.name||''})),...tradfiState.swaps.map(x=>({symbol:x.base,name:x.name||''}))]);
+ const incoming=await translateNewsArticles(originalNews,{translate:CONFIG.translationURL?translateArticle:undefined,providerId:CONFIG.translationURL?'CONFIGURED_LIBRETRANSLATE':'UNCONFIGURED'});
  state.newsStatus=feeds.length===FEEDS.length?'connected':'partial';state.news=incoming;
  const newsSeen=new Set(Object.keys(persisted.newsSeen)),nextSeen={...persisted.newsSeen},notifications=[];let changed=false;
  for(const article of incoming){
@@ -727,6 +717,15 @@ const server=http.createServer(async(req,res)=>{
   const url=new URL(req.url,'http://localhost');const pathname=url.pathname;
   if(pathname==='/api/orangex'||pathname.startsWith('/api/orangex/')){
    if(req.method!=='GET')return response(res,405,{error:'ORANGEX_READ_ONLY',message:'OrangeX 1단계는 조회만 허용합니다.',orderSubmissionEnabled:false});
+   if(pathname==='/api/orangex/preflight'){
+    const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase();
+    if(!/^[A-Z0-9]+USDT$/.test(symbol))return response(res,400,{error:'INVALID_SYMBOL',liveOrdersEnabled:false});
+    const row=state.analyses.get(symbol),decision=row?assessAnalysis(row):null;
+    return response(res,200,{mode:'READ_ONLY',previewOnly:true,liveOrdersEnabled:false,orderSubmissionEnabled:false,
+     symbol,binanceSignalReady:decision?.ready===true,executionApproved:false,
+     missingEvidence:['ORANGEX_CONTRACT_AMOUNT_AND_MIN_NOTIONAL_UNITS','ACCOUNT_SPECIFIC_RISK_AND_FEES','PROTECTIVE_STOP_AND_SAFE_REPLACE','REDUCE_ONLY_AND_ORDER_STATE_RECONCILIATION'],
+     note:'Binance 분석과 OrangeX 주문 승인은 별개입니다. 공식 계약·보호 주문 근거가 없어 실제 주문을 허용하지 않습니다.'});
+   }
    if(pathname==='/api/orangex/paper')return response(res,200,orangeXPaper.snapshot());
    if(pathname==='/api/orangex/paper/replay')return response(res,200,orangeXReplayView());
    if(pathname==='/api/orangex/readiness')return response(res,200,evaluateOrangeXReadiness(orangeX.getStatus()));
@@ -761,7 +760,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:storageHealth.healthy,updatedByServer:true,...storageHealth,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
   if(pathname==='/api/paper'&&req.method==='GET')return response(res,200,{
    ...paper.snapshot(),storage:{...storageHealth},monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
-    scanner:{ws:state.ws,lastTickerAt:state.lastTickerAt,variational:state.variational,scanMode:state.scanMode,activeCount:state.activeSymbols.length},
+   scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,variational:state.variational,scanMode:state.scanMode,activeCount:state.activeSymbols.length},
     tradfi:{status:tradfiState.status,updatedAt:tradfiState.updatedAt,feedStatus:tradfiState.feedStatus,feedUpdatedAt:tradfiState.feedUpdatedAt}})
   });
   if(pathname==='/api/paper/notifications'&&req.method==='GET')return response(res,200,{enabled:persisted.paperNotify.enabled,
@@ -791,6 +790,10 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/scan'&&req.method==='POST'){if(state.scanActive)return response(res,202,{accepted:false,reason:'스캔 진행 중',status:getStatus()});void runScan();return response(res,202,{accepted:true,message:'백그라운드 스캔 시작',status:getStatus()})}
   if(pathname==='/api/update')return response(res,200,{...state.update,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
+  if(pathname==='/api/market-commentary'){
+   try{await refreshMarketStats()}catch{}
+   return response(res,200,buildMarketCommentary(rawMarketTickers,{now:Date.now(),receivedAt:marketStatsReceivedAt,eligibleSymbols:state.activeSymbols,dataSource:'BINANCE_FUTURES_PUBLIC_24H'}));
+  }
   if(pathname==='/api/news')return response(res,200,{status:state.newsStatus,checked:state.newsChecked,sourceCount:state.newsSources.length,error:state.newsError,articles:state.news});
   if(pathname==='/api/journal'&&req.method==='GET')return response(res,200,{entries:persisted.journal.slice(0,200),summary:journalSummary(persisted.journal)});
   if(pathname==='/api/journal/export'&&req.method==='GET'){
@@ -822,31 +825,38 @@ const server=http.createServer(async(req,res)=>{
    if(!state.activeSet.has(symbol))return response(res,404,{error:'공통 PERP 미확인 종목'});
    if(!['LONG','SHORT'].includes(side)||!Number.isFinite(amount)||amount<1||amount>10000)return response(res,400,{error:'방향이나 포지션 금액이 유효하지 않음'});
    const x=state.quotes.get(symbol);
-   const result=executionEstimate({listing:x?.variational,side,notional:amount,binancePrice:x?.price,binancePriceAt:x?.priceAt,statsReceivedAt:state.lastVariational,now:Date.now(),limits:CONFIG.limits});
-   if(state.variational!=='connected'){result.eligible=false;result.reasons.unshift('Variational 공식 데이터 연결 실패')}
+   const result=estimateBinanceExecution({signal:{...state.analyses.get(symbol),direction:side,symbol},book:await depth(symbol),market:x,maxNotionalUSD:amount,maxRiskUSD:CONFIG.maxRiskUSD});
    return response(res,200,{symbol,...result});
   }
   if(pathname==='/api/market')return response(res,200,{at:state.lastMarket,markets:state.ranked.map(x=>({...x,...state.quotes.get(x.symbol)})),research:state.variational==='connected'?[]:state.researchRanked.filter(x=>!state.activeSet.has(x.symbol)),watchlist:persisted.watchlist,variationalStatus:state.variational});
-  if(pathname==='/api/results')return response(res,200,{structures:recentStructures(),history:recentHistory(),signals:relevantSignals(),patterns:confirmedPatterns(),watch:watches(),alerts:persisted.alerts.filter(x=>state.activeSet.has(x.symbol)).slice(0,35).map(x=>({...x,lifecycle:signalLifecycle(x,{price:state.quotes.get(x.symbol)?.price,priceAt:state.quotes.get(x.symbol)?.priceAt})})),recent:recentAnalyses()});
+  if(pathname==='/api/results')return response(res,200,{structures:[],history:[],signals:relevantSignals(),patterns:[],watch:[],alerts:persisted.alerts.filter(x=>state.activeSet.has(x.symbol)).slice(0,35).map(x=>({...x,lifecycle:signalLifecycle(x,{price:state.quotes.get(x.symbol)?.price,priceAt:state.quotes.get(x.symbol)?.priceAt})})),recent:recentAnalyses()});
   if(pathname==='/api/klines'){
    const symbol=(url.searchParams.get('symbol')||'').toUpperCase();const interval=url.searchParams.get('interval')||'1h';
    if(!/^[A-Z0-9]{3,25}$/.test(symbol)||!['1h','4h','1d'].includes(interval))return response(res,400,{error:'Invalid symbol or interval'});
-   if(!state.activeSet.has(symbol))return response(res,404,{error:'바이낸스·Variational 공통 PERP 종목이 아니거나 상장 확인 대기 중입니다.'});
-   return response(res,200,{symbol,interval,rows:await klines(symbol,interval,180)});
+   if(!state.activeSet.has(symbol))return response(res,404,{error:'Binance TRADING USDT 무기한 선물 상장 확인 대기 중입니다.'});
+   return response(res,200,{symbol,interval,rows:await klines(symbol,interval,interval==='4h'?301:180)});
   }
   if(pathname==='/api/analyze'){
    const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase();
    if(!/^[A-Z0-9]{3,25}$/.test(symbol))return response(res,400,{error:'Invalid symbol'});
-   if(!state.activeSet.has(symbol))return response(res,404,{error:'바이낸스·Variational 공통 PERP 종목이 아니거나 상장 확인 대기 중입니다.'});
+   if(!state.activeSet.has(symbol))return response(res,404,{error:'Binance TRADING USDT 무기한 선물 상장 확인 대기 중입니다.'});
    const result=await checkSymbol(symbol,true);return response(res,200,result);
   }
   if(pathname==='/api/watchlist'&&req.method==='POST'){
    const {symbols}=await bodyJson(req);
    if(!Array.isArray(symbols))return response(res,400,{error:'Invalid symbols'});
    const next=[...new Set(symbols.map(x=>String(x).toUpperCase()))];
-   if(next.some(x=>!state.activeSet.has(x)))return response(res,400,{error:'현재 공통 상장 PERP가 아닌 종목이 포함되어 있습니다.'});
+   if(next.some(x=>!state.activeSet.has(x)))return response(res,400,{error:'현재 Binance USDT 무기한 선물이 아닌 종목이 포함되어 있습니다.'});
    persisted.watchlist=next.slice(0,35);
    save();refreshLiveSubscriptions();return response(res,200,{watchlist:persisted.watchlist});
+  }
+  if(pathname==='/api/paper/settings'&&req.method==='POST'){
+   const body=await bodyJson(req),hasToggle=Object.hasOwn(body||{},'TP1_MOVE_STOP_TO_BREAKEVEN'),hasMode=Object.hasOwn(body||{},'TP1_BREAKEVEN_MODE');
+   if(!hasToggle&&!hasMode||hasToggle&&typeof body.TP1_MOVE_STOP_TO_BREAKEVEN!=='boolean'||hasMode&&!['ENTRY_FILL','COST_COVERED'].includes(body.TP1_BREAKEVEN_MODE))
+    return response(res,400,{error:'본절 이동 ON/OFF 또는 ENTRY_FILL/COST_COVERED 모드 필요'});
+   const settings={...(persisted.paperSettings||{}),TP1_MOVE_STOP_TO_BREAKEVEN:hasToggle?body.TP1_MOVE_STOP_TO_BREAKEVEN:paper.settings.TP1_MOVE_STOP_TO_BREAKEVEN,
+    TP1_BREAKEVEN_MODE:hasMode?body.TP1_BREAKEVEN_MODE:paper.settings.TP1_BREAKEVEN_MODE};
+   save({...persisted,paperSettings:settings});Object.assign(paper.settings,settings);return response(res,200,{settings});
   }
   if(pathname==='/api/ping')return response(res,200,{ok:true,ts:Date.now()});
   if(pathname.startsWith('/api/'))return response(res,404,{error:'Not found'});
@@ -875,7 +885,7 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
    if(err) console.warn('Could not open browser automatically:',err.message);
   });
  }
- console.log(`Binance live ticks + candle-close event scans for verified Variational matches; background ${Math.round(CONFIG.scanMs/60000)} min / news ${Math.round(CONFIG.newsMs/1000)} sec. Telegram ${CONFIG.tgChat?'enabled':'disabled'}.`);
+ console.log(`Binance USDT perpetual live ticks + confirmed 1H/4H event scans; background ${Math.round(CONFIG.scanMs/60000)} min / news ${Math.round(CONFIG.newsMs/1000)} sec. Telegram ${CONFIG.tgChat?'enabled':'disabled'}.`);
  if(CONFIG.autoUpdate){setTimeout(()=>checkSoftwareUpdate().catch(()=>{}),8000);setInterval(()=>checkSoftwareUpdate().catch(()=>{}),6*3600000)}
  connectWS();setTimeout(runScan,1200);setInterval(()=>void runScan(),CONFIG.scanMs);
  setTimeout(()=>void refreshTradFi().then(()=>runTradFiScan()),2500);

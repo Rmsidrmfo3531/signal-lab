@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {PaperEngine,paperSummary} from '../paper.mjs';
 
 const initial=Date.parse('2026-10-19T14:59:00Z'); // Monday 23:59 KST
-const sample=(t,{direction='LONG',symbol='BTCUSDT',targets}={})=>({symbol,direction,pattern:'검증 패턴',entry:100,stop:direction==='LONG'?98:102,patternConfirmedAt:t-1000,...(targets?{targets}:{})});
+const sample=(t,{direction='LONG',symbol='BTCUSDT',targets}={})=>({managementVersion:'LEGACY_R_MULTIPLES',symbol,direction,pattern:'검증 패턴',entry:100,stop:direction==='LONG'?98:102,patternConfirmedAt:t-1000,...(targets?{targets}:{})});
 const near=(actual,expected)=>assert.ok(Math.abs(actual-expected)<1e-7,`${actual} != ${expected}`);
 function create({at=initial,seed={},settings={},onChange=()=>{},onEvent=()=>{}}={}){
  let t=at;const engine=new PaperEngine(seed,{now:()=>t,settings,onChange,onEvent});

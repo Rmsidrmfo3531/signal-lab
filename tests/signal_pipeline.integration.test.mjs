@@ -43,16 +43,16 @@ async function sandbox(config){
    PORT:String(port),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:data,SIGNAL_LAB_TEST_CONTROL:control,SIGNAL_LAB_TEST_REQUESTS:requests,
    AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:''},stdio:['ignore','pipe','pipe']});
   child.stdout.on('data',chunk=>{logs+=String(chunk)});child.stderr.on('data',chunk=>{logs+=String(chunk)});
-  await until(()=>get('/api/status'),s=>s.activeCount===Object.keys(cfg.scenarios).filter(symbol=>!cfg.unlisted?.includes(symbol)).length,{label:'market discovery '+logs});
+  await until(()=>get('/api/status'),s=>s.activeCount===(cfg.binanceOffline?0:Object.keys(cfg.scenarios).filter(symbol=>!cfg.unlisted?.includes(symbol)).length),{label:'market discovery '+logs});
   if(cfg.emit)await until(()=>get('/api/status'),s=>s.ws==='connected');
  }
  async function stop(){
   if(!child||child.exitCode!==null||child.signalCode!==null)return;
-  const exited=once(child,'exit');child.kill('SIGTERM');let timer;
+  const exited=once(child,'close');child.kill('SIGTERM');let timer;
   try{await Promise.race([exited,new Promise(resolve=>{timer=setTimeout(resolve,2500)})])}finally{clearTimeout(timer)}
   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await exited}
  }
- return {get,write,start,stop,data,requests,base,logs:()=>logs,async close(){await stop();await fs.rm(root,{recursive:true,force:true})}};
+ return {get,write,start,stop,data,requests,base,logs:()=>logs,async close(){await stop();await fs.rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}};
 }
 
 test('synthetic markets: rising/falling breakouts, retests and a 90-point setup reach the final signal; weak/range markets do not',{timeout:30000},async()=>{
@@ -60,12 +60,12 @@ test('synthetic markets: rising/falling breakouts, retests and a 90-point setup 
  try{
   await app.start();
   const matrix=[
-   ['breakout-long','LONG',100,'박스권 상단 돌파'],
-   ['breakout-short','SHORT',100,'박스권 하단 이탈'],
-   ['retest-long','LONG',100,'돌파 후 지지 재확인'],
-   ['retest-short','SHORT',100,'이탈 후 저항 재확인'],
+   ['breakout-long','LONG',90,'박스권 상단 돌파'],
+   ['breakout-short','SHORT',90,'박스권 하단 이탈'],
+   ['retest-long','LONG',90,'돌파 후 지지 재확인'],
+   ['retest-short','SHORT',90,'이탈 후 저항 재확인'],
    ['bonus-missing-long','LONG',90,'박스권 상단 돌파'],
-   ['weak-volume',null,85],['illiquid-hour',null,95],['range',null,undefined]
+   ['weak-volume',null,85],['illiquid-hour','LONG',90,'박스권 상단 돌파'],['range',null,null]
   ];
   for(const [scenario,direction,score,pattern] of matrix){
    await app.write({scenarios:{BTCUSDT:scenario},prices:{BTCUSDT:scenario==='range'?100:ENTRY}});
@@ -75,7 +75,7 @@ test('synthetic markets: rising/falling breakouts, retests and a 90-point setup 
    if(direction){
     assert.equal(analyzed.pattern,pattern,scenario+' pattern');
     assert.equal(analyzed.technicalQualified,true,scenario+' technical gate');
-    assert.equal(analyzed.execution.eligible,true,scenario+' venue gate');
+    assert.equal(analyzed.execution.eligible,true,scenario+' venue gate '+JSON.stringify({execution:analyzed.execution,targetPlan:analyzed.targetPlan}));
    }
    const results=await app.get('/api/results');
    const funnel=await app.get('/api/scan/diagnostics');
@@ -93,70 +93,89 @@ test('synthetic markets: rising/falling breakouts, retests and a 90-point setup 
  }finally{await app.close()}
 });
 
-test('synthetic end to end: LONG three targets, restart continuation, SHORT stop and durable PNL/OPEN/CLOSE events',{timeout:30000},async()=>{
- const app=await sandbox({scenarios:{BTCUSDT:'breakout-long',ETHUSDT:'breakout-short'},prices:{BTCUSDT:ENTRY,ETHUSDT:ENTRY},emit:true});
+test('synthetic end to end: LONG three profile targets with breakeven/restart, then SHORT stop and durable PNL/OPEN/CLOSE events',{timeout:30000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true});
  try{
-  await app.start();
-  await app.get('/api/analyze?symbol=BTCUSDT');await app.get('/api/analyze?symbol=ETHUSDT');
-  const results=await app.get('/api/results');assert.equal(results.signals.length,2);
-  assert.deepEqual(new Set(results.signals.map(s=>s.direction)),new Set(['LONG','SHORT']));
-  let paper=await until(()=>app.get('/api/paper'),p=>p.openCount===2,{label:'fresh final signals must open both paper positions'});
-  const long=paper.open.find(p=>p.symbol==='BTCUSDT'),short=paper.open.find(p=>p.symbol==='ETHUSDT');
-  assert.equal(long.direction,'LONG');assert.equal(short.direction,'SHORT');
-  assert.ok(long.entryFill>ENTRY,'long fill includes spread and slippage');assert.ok(short.entryFill<ENTRY,'short fill includes spread and slippage');
-  assert.ok(long.feesUSD>0);assert.ok(short.feesUSD>0);
-  await app.write({prices:{BTCUSDT:long.targets[0],ETHUSDT:ENTRY}});
-  paper=await until(()=>app.get('/api/paper'),p=>p.open.find(x=>x.symbol==='BTCUSDT')?.exitedPct===40);
-  const partial=paper.open.find(p=>p.symbol==='BTCUSDT');
-  assert.equal(partial.closeParts.length,1);assert.equal(partial.closeParts[0].targetNumber,1);
-  assert.ok(Math.abs(partial.qtyRemaining/partial.originalQty-.6)<1e-10);
-  assert.equal(partial.stop,partial.entryFill);assert.ok(partial.feesUSD>long.feesUSD);
-  let notices=await app.get('/api/paper/notifications');
-  assert.equal(notices.history.filter(e=>e.type==='OPEN').length,2);
+  await app.start();await app.get('/api/analyze?symbol=BTCUSDT');
+  const results=await app.get('/api/results');assert.equal(results.signals.length,1);assert.equal(results.signals[0].direction,'LONG');
+  let paper=await until(()=>app.get('/api/paper'),p=>p.openCount===1,{label:'fresh final LONG must open a profile-managed paper position'});
+  const long=paper.open[0];assert.equal(long.direction,'LONG');assert.equal(long.managementVersion,'VOLUME_PROFILE_V1');
+  assert.ok(long.entryFill>ENTRY,'long fill includes spread and slippage');assert.ok(long.feesUSD>0);
+  assert.ok(long.targetPlan?.profileEvidence,'the entry preserves actual supplied aggTrade profile evidence');
+  await app.write({prices:{BTCUSDT:long.targets[0]}});
+  paper=await until(()=>app.get('/api/paper'),p=>p.open[0]?.exitedPct===40);
+  const partial=paper.open[0];assert.equal(partial.closeParts.length,1);assert.equal(partial.closeParts[0].targetNumber,1);
+  assert.ok(Math.abs(partial.qtyRemaining/partial.originalQty-.6)<1e-10);assert.equal(partial.stop,partial.entryFill);
+  let notices=await app.get('/api/paper/notifications');assert.equal(notices.history.filter(e=>e.type==='OPEN').length,1);
   assert.equal(notices.history.filter(e=>e.type==='CLOSE').length,0,'partial targets do not send final CLOSE');
-  await app.stop();await app.start();
-  paper=await app.get('/api/paper');
-  const restored=paper.open.find(p=>p.key===long.key);
-  assert.equal(restored.exitedPct,40);assert.equal(restored.entryFill,long.entryFill);assert.equal(restored.qtyRemaining,partial.qtyRemaining);
-  assert.equal(restored.realizedPnLUSD,partial.realizedPnLUSD,'partial PNL survives restart');
-  await app.write({prices:{BTCUSDT:long.targets[1],ETHUSDT:ENTRY}});
-  paper=await until(()=>app.get('/api/paper'),p=>p.open.find(x=>x.symbol==='BTCUSDT')?.exitedPct===75);
-  assert.deepEqual(paper.open.find(x=>x.symbol==='BTCUSDT').closeParts.map(p=>p.targetNumber),[1,2]);
-  notices=await app.get('/api/paper/notifications');assert.equal(notices.history.filter(e=>e.type==='CLOSE').length,0);
-  await app.write({prices:{BTCUSDT:long.targets[2],ETHUSDT:ENTRY}});
+  await app.stop();await app.start();paper=await app.get('/api/paper');
+  const restored=paper.open.find(p=>p.key===long.key);assert.equal(restored.exitedPct,40);assert.equal(restored.entryFill,long.entryFill);
+  assert.equal(restored.qtyRemaining,partial.qtyRemaining);assert.equal(restored.realizedPnLUSD,partial.realizedPnLUSD);
+  await app.write({prices:{BTCUSDT:long.targets[1]}});
+  paper=await until(()=>app.get('/api/paper'),p=>p.open[0]?.exitedPct===75);
+  assert.deepEqual(paper.open[0].closeParts.map(p=>p.targetNumber),[1,2]);
+  await app.write({prices:{BTCUSDT:long.targets[2]}});
   paper=await until(()=>app.get('/api/paper'),p=>p.closed.some(x=>x.key===long.key));
-  const closedLong=paper.closed.find(x=>x.key===long.key);
-  assert.equal(closedLong.closeReason,'ALL_TARGETS');assert.equal(closedLong.qtyRemaining,0);
-  assert.deepEqual(closedLong.closeParts.map(p=>p.targetNumber),[1,2,3]);
-  assert.ok(closedLong.realizedPnLUSD>0);assert.ok(Math.abs(closedLong.realizedGrossUSD-closedLong.feesUSD-closedLong.realizedPnLUSD)<1e-7);
-  await app.write({prices:{BTCUSDT:long.targets[2],ETHUSDT:short.initialStop+.5}});
+  const closedLong=paper.closed.find(x=>x.key===long.key);assert.equal(closedLong.closeReason,'ALL_TARGETS');assert.equal(closedLong.qtyRemaining,0);
+  assert.deepEqual(closedLong.closeParts.map(p=>p.targetNumber),[1,2,3]);assert.ok(closedLong.realizedPnLUSD>0);
+  assert.ok(Math.abs(closedLong.realizedGrossUSD-closedLong.feesUSD-closedLong.realizedPnLUSD)<1e-7);
+  // A separate market regime uses BTC's own down-trending 4H context. An ETH
+  // short must not borrow a bullish BTC context merely to satisfy this test.
+  await app.write({scenarios:{BTCUSDT:'breakout-short'},prices:{BTCUSDT:ENTRY}});await nap(90);
+  const shortAnalysis=await app.get('/api/analyze?symbol=BTCUSDT');assert.equal(shortAnalysis.direction,'SHORT');assert.equal(shortAnalysis.qualified,true);
+  paper=await until(()=>app.get('/api/paper'),p=>p.openCount===1);const short=paper.open[0];assert.equal(short.direction,'SHORT');assert.ok(short.entryFill<ENTRY);
+  await app.write({prices:{BTCUSDT:short.initialStop+.5}});
   paper=await until(()=>app.get('/api/paper'),p=>p.closedCount===2&&p.openCount===0);
-  const closedShort=paper.closed.find(x=>x.key===short.key);
-  assert.equal(closedShort.closeReason,'STOP');assert.ok(closedShort.realizedPnLUSD<0);
+  const closedShort=paper.closed.find(x=>x.key===short.key);assert.equal(closedShort.closeReason,'STOP');assert.ok(closedShort.realizedPnLUSD<0);
   assert.equal(closedShort.closeParts[0].type,'STOP');assert.ok(closedShort.feesUSD>short.feesUSD);
   assert.ok(Math.abs(paper.netRealizedUSD-closedLong.realizedPnLUSD-closedShort.realizedPnLUSD)<1e-7);
-  notices=await app.get('/api/paper/notifications');
-  assert.equal(notices.history.filter(e=>e.type==='OPEN').length,2);assert.equal(notices.history.filter(e=>e.type==='CLOSE').length,2);
-  for(const row of paper.closed){assert.equal(notices.history.find(e=>e.type==='CLOSE'&&e.key===row.key).realizedPnLUSD,row.realizedPnLUSD)}
-  const stored=JSON.parse(await fs.readFile(path.join(app.data,'store.json'),'utf8'));
-  assert.equal(stored.paper.closed.length,2);assert.equal(stored.paper.open.length,0);
-  const pnl=paper.netRealizedUSD,historyLength=notices.history.length;
-  await app.stop();await app.start();
-  paper=await app.get('/api/paper');notices=await app.get('/api/paper/notifications');
+  notices=await app.get('/api/paper/notifications');assert.equal(notices.history.filter(e=>e.type==='OPEN').length,2);assert.equal(notices.history.filter(e=>e.type==='CLOSE').length,2);
+  for(const row of paper.closed)assert.equal(notices.history.find(e=>e.type==='CLOSE'&&e.key===row.key).realizedPnLUSD,row.realizedPnLUSD);
+  const stored=JSON.parse(await fs.readFile(path.join(app.data,'store.json'),'utf8'));assert.equal(stored.paper.closed.length,2);assert.equal(stored.paper.open.length,0);
+  const pnl=paper.netRealizedUSD,historyLength=notices.history.length;await app.stop();await app.start();paper=await app.get('/api/paper');notices=await app.get('/api/paper/notifications');
   assert.equal(paper.closedCount,2);assert.equal(paper.netRealizedUSD,pnl);assert.equal(notices.history.length,historyLength,'restart must not replay trade notifications');
  }finally{await app.close()}
 });
 
 
-test('synthetic venue rejection keeps a discovered 100-point pattern out of final signals and paper entries',{timeout:12000},async()=>{
+test('synthetic Binance book rejection keeps a discovered 90-point pattern out of final signals and paper entries',{timeout:12000},async()=>{
  const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true,invalidQuote:true});
  try{
   await app.start();const analyzed=await app.get('/api/analyze?symbol=BTCUSDT');
-  assert.equal(analyzed.patternConfirmed,true);assert.equal(analyzed.score,100);assert.equal(analyzed.technicalQualified,true);
+  assert.equal(analyzed.patternConfirmed,true);assert.equal(analyzed.score,90);assert.equal(analyzed.technicalQualified,true);
   assert.equal(analyzed.execution.eligible,false);
   const results=await app.get('/api/results'),funnel=await app.get('/api/scan/diagnostics'),paper=await app.get('/api/paper');
   assert.equal(funnel.patternCount,1);assert.equal(funnel.technicalPassed,1);assert.equal(funnel.venuePassed,0);assert.equal(funnel.ready,0);
   assert.equal(results.signals.length,0);assert.equal(paper.pendingCount,0);assert.equal(paper.openCount,0);
+ }finally{await app.close()}
+});
+
+test('a valid 90-point setup without three supplied volume-profile targets stays out of final signals and paper entries',{timeout:12000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true,profileUnavailable:true});
+ try{
+  await app.start();const analyzed=await app.get('/api/analyze?symbol=BTCUSDT');
+  assert.equal(analyzed.score,90);assert.equal(analyzed.technicalQualified,true);
+  assert.equal(analyzed.targetPlan.ok,false);assert.equal(analyzed.targetPlan.code,'TP_PROFILE_UNAVAILABLE');
+  assert.deepEqual(analyzed.targetPlan.targets,[],'no automatic R-multiple target replacement');
+  assert.equal(analyzed.qualified,false);
+  const results=await app.get('/api/results'),paper=await app.get('/api/paper');
+  assert.deepEqual(results.signals,[]);assert.deepEqual(results.patterns,[]);assert.deepEqual(results.watch,[]);
+  assert.equal(paper.pendingCount,0);assert.equal(paper.openCount,0);
+ }finally{await app.close()}
+});
+
+test('Binance public discovery outage blocks new entries and recovers without a Variational intersection',{timeout:15000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:false,binanceOffline:true,venueOffline:true});
+ try{
+  await app.start();await until(()=>app.get('/api/status'),s=>s.rest==='offline'&&!s.scanning);
+  assert.equal((await app.get('/api/status')).activeCount,0);
+  assert.deepEqual((await app.get('/api/results')).signals,[]);assert.equal((await app.get('/api/paper')).pendingCount,0);
+  await app.write({binanceOffline:false,emit:true});
+  const scan=await fetch(app.base+'/api/scan',{method:'POST'});assert.equal(scan.status,202);
+  await until(()=>app.get('/api/status'),s=>s.activeCount===1&&s.rest==='connected'&&!s.scanning);
+  const analyzed=await app.get('/api/analyze?symbol=BTCUSDT');assert.equal(analyzed.qualified,true);
+  assert.equal(analyzed.decision.analysisVenue,'BINANCE');assert.equal(analyzed.decision.tradeApproval,false);
+  assert.equal((await app.get('/api/results')).signals.length,1,'Variational outage cannot invalidate Binance evidence');
  }finally{await app.close()}
 });
 
@@ -169,7 +188,7 @@ test('restored open positions remain price-monitored outside both the verified l
   let at=Date.now()-10000;
   const seed=new PaperEngine({}, {now:()=>at});
   for(const symbol of ['BTCUSDT','LOWUSDT']){
-   assert.equal(seed.register({symbol,direction:'LONG',pattern:'restored-open-fixture',entry:100,stop:98,patternConfirmedAt:at-60000},{quoteEligible:true}),true);
+   assert.equal(seed.register({managementVersion:'LEGACY_R_MULTIPLES',symbol,direction:'LONG',pattern:'restored-open-fixture',entry:100,stop:98,patternConfirmedAt:at-60000},{quoteEligible:true}),true);
    at+=1000;seed.onPrice('CRYPTO',symbol,100,at);
   }
   assert.equal(seed.store.open.length,2);
@@ -185,7 +204,7 @@ test('restored open positions remain price-monitored outside both the verified l
 });
 
 test('pending entries recheck the current venue quote before the first simulated fill',{timeout:12000},async()=>{
- const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true,pauseWhenPending:true});
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true,pauseWhenPending:true,restPriceFresh:false});
  try{
   await app.start();
   await app.get('/api/analyze?symbol=BTCUSDT');
@@ -197,13 +216,13 @@ test('pending entries recheck the current venue quote before the first simulated
   assert.equal(paper.pendingCount,1,'the still-valid pending signal waits for renewed venue approval');
   assert.equal(paper.openCount,0,'a new tick alone cannot turn a stale venue quote into a fill');
   assert.equal(results.signals.length,0);assert.equal(funnel.technicalPassed,1);assert.equal(funnel.venuePassed,0);
-  assert.ok(results.recent[0].execution.reasons.some(reason=>/오래됨/.test(reason)));
+  assert.ok(results.recent[0].execution.reasons.some(reason=>/STALE|만료/.test(reason)));
   assert.equal((await app.get('/api/paper/notifications')).history.length,0,'no OPEN event for a rejected fill');
  }finally{await app.close()}
 });
 
 test('the first fresh ticker promotes an already analyzed setup and opens it without another scan',{timeout:12000},async()=>{
- const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:false});
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:false,restPriceFresh:false});
  try{
   await app.start();
   const analyzed=await app.get('/api/analyze?symbol=BTCUSDT');

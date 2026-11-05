@@ -1,8 +1,10 @@
-import {analyze} from '../../engine.mjs';
+import {analyze} from '../../research/legacy_v58/engine.mjs';
 import {evaluateSignal} from '../../signal_pipeline.mjs';
 import {marketSeries,ENTRY} from './pipeline_market.mjs';
 import {normalizeOrangeXPaperSignal,alignOrangeXPaperSignal} from '../../orangex_paper_signal.mjs';
 
+// Preserve the pre-Issue6 strategy as an explicitly named compatibility fixture.
+// Current VOLUME_PROFILE_V1 behavior has separate profile-management tests.
 // These parameters and books are deliberately synthetic, not OrangeX specs.
 export const syntheticSettings={capitalUSD:10000,leverage:3,maxRiskUSD:6,dailyLossLimitUSD:30,maxPositions:2,
  maxPositionNotionalUSD:500,maxTotalNotionalUSD:1000,maxSpreadBps:30,maxSlippageBps:100};
@@ -15,7 +17,8 @@ export function nativePaperSignal(direction='LONG'){
  const now=Date.now(),quote={bid:ENTRY-.005,ask:ENTRY+.005};
  const decision=evaluateSignal(result,{verified:true,venueConnected:true,listing:{markPrice:ENTRY,quoteUpdatedAt:now,
   quote1k:quote,quoteBase:quote},price:ENTRY,priceAt:now,statsReceivedAt:now,now});
- return {...result,decision,qualified:decision.ready,instrumentName:syntheticContract.instrumentName};
+ return {...result,decision,qualified:decision.ready,instrumentName:syntheticContract.instrumentName,
+  strategyVersion:'LEGACY_V58',managementVersion:'LEGACY_R_MULTIPLES'};
 }
 export function syntheticBook(at,bid,ask=Number((bid+.01).toFixed(2))){
  return {instrumentName:syntheticContract.instrumentName,dataSource:'SYNTHETIC_FIXTURE',timestamp:at,
@@ -26,7 +29,7 @@ export function paperScenario(){
  const plan=alignOrangeXPaperSignal(normalizeOrangeXPaperSignal(long,{now,source:'SYNTHETIC_FIXTURE'}).signal,syntheticContract);
  const shortPlan=alignOrangeXPaperSignal(normalizeOrangeXPaperSignal(short,{now,source:'SYNTHETIC_FIXTURE'}).signal,syntheticContract);
  if(!long.decision.ready||!short.decision.ready||!plan.ok||!shortPlan.ok)throw Error('SYNTHETIC_SCANNER_SETUP_FAILED');
- return {kind:'ORANGEX_PAPER_SCENARIO',dataSource:'SYNTHETIC_FIXTURE',settings:structuredClone(syntheticSettings),
+ return {kind:'ORANGEX_PAPER_SCENARIO',dataSource:'SYNTHETIC_FIXTURE',strategyVersion:'LEGACY_V58',settings:structuredClone(syntheticSettings),
   contracts:[structuredClone(syntheticContract)],events:[
    {type:'SIGNAL',at:now,signal:long},
    {type:'MARKET',at:now+1,market:syntheticBook(now+1,102.19,102.2)},

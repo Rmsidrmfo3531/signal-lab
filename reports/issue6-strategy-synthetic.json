@@ -1,0 +1,76 @@
+{
+  "source": "SYNTHETIC_TEST",
+  "actualMarketDatasetUsed": false,
+  "legacyCopiesByteIdenticalTo": "d5356dd",
+  "baselineCount": {
+    "evaluations": 8,
+    "evaluable": 8,
+    "unavailable": 0,
+    "patternCount": 1,
+    "technicalSignalCount": 1,
+    "finalOrderEligibleSignalCount": null,
+    "scope": "TECHNICAL_CANDIDATES_NOT_FINAL_EXECUTION_APPROVAL"
+  },
+  "issue6Count": {
+    "evaluations": 8,
+    "evaluable": 8,
+    "unavailable": 0,
+    "patternCount": 1,
+    "technicalSignalCount": 1,
+    "finalOrderEligibleSignalCount": null,
+    "scope": "TECHNICAL_CANDIDATES_NOT_FINAL_EXECUTION_APPROVAL"
+  },
+  "partitions": {
+    "inSample": 4,
+    "outOfSample": 4,
+    "walkForwardFolds": 2
+  },
+  "metrics": {
+    "LEGACY_V58": {
+      "status": "UNVERIFIED",
+      "reason": "EXECUTION_LEDGER_NOT_SUPPLIED",
+      "trades": null,
+      "wins": null,
+      "losses": null,
+      "winRate": null,
+      "netPnLUSD": null,
+      "grossReferencePnLUSD": null,
+      "profitFactor": null,
+      "maxDrawdownUSD": null,
+      "maxDrawdownPercent": null,
+      "feesUSD": null,
+      "slippageUSD": null,
+      "spreadUSD": null,
+      "fundingUSD": null,
+      "averageRealizedR": null,
+      "expectancyUSD": null
+    },
+    "ISSUE6_VOLUME": {
+      "status": "UNVERIFIED",
+      "reason": "EXECUTION_LEDGER_NOT_SUPPLIED",
+      "trades": null,
+      "wins": null,
+      "losses": null,
+      "winRate": null,
+      "netPnLUSD": null,
+      "grossReferencePnLUSD": null,
+      "profitFactor": null,
+      "maxDrawdownUSD": null,
+      "maxDrawdownPercent": null,
+      "feesUSD": null,
+      "slippageUSD": null,
+      "spreadUSD": null,
+      "fundingUSD": null,
+      "averageRealizedR": null,
+      "expectancyUSD": null
+    }
+  },
+  "performanceImprovement": "UNVERIFIED",
+  "codeSHA256": {
+    "strategy_validation.mjs": "d893f6736ce60c26b82ef04fce39c52da4586aba75b81c52ed54d9af8d253626",
+    "scripts/compare-issue6-strategies.mjs": "c3178a5af102fbede386be47e07feeb6c40b79188b9a1d986e1a0a8a570c5843",
+    "tests/strategy_validation.test.mjs": "beb72b20f2f3ea81cf1be3e0984bd0ce5fbc2c8d09a97d2061eed86b03cd7872",
+    "research/legacy_v58/engine.mjs": "024269222ed3655c437b3afb01ea0f7f44ce24cd31362551e2051c175b9641de",
+    "research/legacy_v58/quality.mjs": "6a19b4269f35f98ecfb3d6a7934b6e4c3a403266509d059d64ee46f596fdcad2"
+  }
+}

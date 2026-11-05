@@ -12,9 +12,9 @@ export function marketSeries(scenario='breakout-long',now=Date.now()){
   return candle(lastAt+(i-149)*HOUR,v,v+.35,v-.35,v);
  });
  h1.push(candle(lastAt,100,103,99.9,ENTRY,230,2_300_000));
- const h4=Array.from({length:110},(_,i)=>{
-  const v=70+i*.28;
-  return candle(now-(110-i)*4*HOUR-1000,v-.1,v+.35,v-.35,v,300,3_000_000,4*HOUR);
+ const h4=Array.from({length:300},(_,i)=>{
+  const v=70+i*.1;
+  return candle(now-(300-i)*4*HOUR-1000,v-.1,v+.35,v-.35,v,300,3_000_000,4*HOUR);
  });
  if(scenario==='retest-long'){
   // A distant established resistance is above 2R; the previous wick is not a confirmed pivot.

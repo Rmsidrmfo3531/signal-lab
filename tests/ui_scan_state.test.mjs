@@ -15,11 +15,11 @@ const noop=()=>{};
 function ui(){
  const nodes=new Map();
  const $=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',innerHTML:'',className:'',classList:{toggle:noop,add:noop,remove:noop}});return nodes.get(id)};
- const app={symbol:'BTCUSDT',market:[],marketMap:new Map(),signals:[],patterns:[],watch:[],alerts:[],watchlist:[],analysis:null,status:{variational:'connected'}};
+ const app={symbol:'BTCUSDT',market:[],marketMap:new Map(),signals:[],patterns:[],watch:[],alerts:[],watchlist:[],analysis:null,status:{rest:'connected',variational:'offline'}};
  const ctx=vm.createContext({app,$,Date,Number,Map,tradePlan,entryTiming,
   updateJournalSymbols:noop,loadChart:noop,loadAnalysis:noop,renderWatch:noop,renderPair:noop,renderSignals:noop,
   renderRecentCoverage:noop,renderAlerts:noop,renderMatched:noop,loadExecution:noop,renderTradingView:noop,drawChart:noop,
-  renderAnalysis:noop,levelRows:()=>'',fmt:String,money:String,escapeHtml:String});
+  renderAnalysis:noop,levelRows:()=>'',fmt:String,money:String,escapeHtml:String,dateClock:String,volumeTargetHTML:()=>'<p>매물대 목표 검증 대기</p>'});
  vm.runInContext(piece('function currentReadySignals(','function results('),ctx);
  return {app,ctx,$};
 }
@@ -71,21 +71,24 @@ test('empty authoritative results clear a selected stale signal and optionally r
  assert.equal(app.analysis,held);
 });
 
-test('detail badge uses current final eligibility and labels the 10-point slope bonus',()=>{
+test('selected indicator detail keeps canonical score separate from final readiness and never substitutes missing scores',()=>{
  const {app,ctx,$}=ui(),now=Date.now();
  vm.runInContext(piece('function renderAnalysis(','function scanPagination('),ctx);
  const signal={symbol:'BTCUSDT',status:'signal',qualified:true,patternConfirmed:true,patternConfirmedAt:now-1000,time:now-3600000,
-  direction:'LONG',pattern:'돌파',entry:100,stop:98,target1:104,target2:106,target3:108,atr:2,score:90,
-  execution:{eligible:true},quality:{checks:[{label:'기울기',required:false,weight:10,passed:false,value:'방향 불일치'}]}};
+  direction:'LONG',pattern:'돌파',entry:100,stop:98,atr:2,score:90,targetPlan:{ok:true,targets:[104,106,108]},
+  technicalValidation:{passed:true,reasons:[]},execution:{eligible:true},quality:{passed:true,checks:[{label:'4H EMA200',weight:15,earned:15,passed:true,value:99}]}};
  app.analysis=signal;app.signals=[signal];app.marketMap.set('BTCUSDT',market(100,now));
  ctx.renderAnalysis();
- assert.match($('analysisTag').textContent,/현재 진입 검증 통과/);
- assert.match($('currentCandidate').innerHTML,/\[가산점\].*기울기/);
- assert.match($('currentCandidate').innerHTML,/90점 이상/);
+ assert.match($('analysisTag').textContent,/최종 검증 통과/);
+ assert.match($('currentCandidate').innerHTML,/단일 종합점수 90\/100/);
+ assert.match($('currentCandidate').innerHTML,/기술 판정 별도/);
+ assert.doesNotMatch($('currentCandidate').innerHTML,/60:40|\[가산점\]/);
  app.signals=[];ctx.renderAnalysis();
- assert.doesNotMatch($('analysisTag').textContent,/검증 통과/,'stored signal status alone must not imply current eligibility');
- app.signals=[signal];app.marketMap.get('BTCUSDT').priceAt=now-100000;ctx.renderAnalysis();
- assert.doesNotMatch($('analysisTag').textContent,/검증 통과/,'fresh price is required');
+ assert.doesNotMatch($('analysisTag').textContent,/최종 검증 통과/,'stored signal status alone must not imply final readiness');
+ app.analysis={...signal,score:null};ctx.renderAnalysis();
+ assert.match($('currentCandidate').innerHTML,/평가 불가/);assert.doesNotMatch($('currentCandidate').innerHTML,/종합 0\/100|종합 100\/100|null\/100/);
+ app.analysis=signal;app.signals=[signal];app.marketMap.get('BTCUSDT').priceAt=now-100000;ctx.renderAnalysis();
+ assert.doesNotMatch($('analysisTag').textContent,/최종 검증 통과/,'fresh price is required');
 });
 
 test('diagnostics render four separate pass stages without substituting failure counts',()=>{
@@ -96,7 +99,7 @@ test('diagnostics render four separate pass stages without substituting failure 
   assert.equal($(id).textContent,count+'종');
   assert.match(html,new RegExp(`id="${id}"`));
  }
- assert.match(html,/필수 8개 조건/);assert.match(html,/추가 10점/);
+ assert.match(html,/단일 100점/);assert.match(html,/Binance 호가·위험 검증 통과/);assert.doesNotMatch(html,/필수 8개 조건|추가 10점/);
 });
 
 test('shared entry allowance retains price, risk and ATR guards for LONG and SHORT',()=>{
@@ -109,18 +112,20 @@ test('shared entry allowance retains price, risk and ATR guards for LONG and SHO
  assert.equal(entryAllowance({entry:NaN,stop:98}),0);
 });
 
-test('current entry display expires mandatory candle/analysis freshness and venue approval without a new scan',()=>{
+test('final display independently requires fresh candles, Binance prices and validated volume targets without Variational dependence',()=>{
  const {app,ctx}=ui(),now=Date.now();
  const signal={symbol:'BTCUSDT',direction:'LONG',pattern:'돌파',patternConfirmed:true,patternConfirmedAt:now-1000,
-  entry:100,stop:98,atr:2,qualified:true,execution:{eligible:true},scannedAt:now,quality:{validUntil:now+1000}};
+  entry:100,stop:98,atr:2,score:90,qualified:true,execution:{eligible:true},technicalValidation:{passed:true},targetPlan:{ok:true,targets:[104,106,108]},scannedAt:now,quality:{passed:true,validUntil:now+1000}};
  app.signals=[signal];app.marketMap.set('BTCUSDT',market(100,now));
  assert.equal(ctx.currentReadySignals(now).length,1);
  assert.equal(ctx.currentReadySignals(now+1001).length,0,'mandatory candle freshness expires before the two-hour pattern window');
  signal.quality.validUntil=now+3600000;signal.scannedAt=now-21*60000;
  assert.equal(ctx.currentReadySignals(now).length,0,'a cached final signal still needs recent analysis');
  signal.scannedAt=now;app.status.variational='offline';
- assert.equal(ctx.currentReadySignals(now).length,0,'offline venue cannot keep the cached final badge ready');
- app.status.variational='connected';app.marketMap.get('BTCUSDT').researchOnly=true;
+ assert.equal(ctx.currentReadySignals(now).length,1,'Variational failure does not block Binance-only analysis');
+ app.status.rest='offline';assert.equal(ctx.currentReadySignals(now).length,0,'Binance connection failure expires current final readiness');
+ app.status.rest='connected';signal.targetPlan.ok=false;assert.equal(ctx.currentReadySignals(now).length,0,'unavailable profile cannot become a final signal');
+ signal.targetPlan.ok=true;app.marketMap.get('BTCUSDT').researchOnly=true;
  assert.equal(ctx.currentReadySignals(now).length,0,'research-only metadata never permits an entry');
  app.marketMap.get('BTCUSDT').researchOnly=false;app.marketMap.get('BTCUSDT').priceAt=now-100000;
  assert.equal(ctx.currentReadySignals(now).length,0,'a stalled price feed expires the local ready list');
@@ -133,7 +138,7 @@ test('a saved watchlist remains renderable during research-only venue outages',(
  app.watchlist=['BTCUSDT'];app.status.variational='offline';
  app.marketMap.set('BTCUSDT',{symbol:'BTCUSDT',baseAsset:'BTC',price:100,researchOnly:true});
  ctx.renderWatch();
- assert.match($('watchlist').innerHTML,/상장 검증 대기/);
+ assert.match($('watchlist').innerHTML,/USDT 무기한/);
  assert.match($('watchlist').innerHTML,/BTCUSDT/);
 });
 

@@ -5,7 +5,7 @@ function row(time,open,high,low,close,volume,interval){return[time,String(open),
 const factor=81000/102;
 const h1=Array.from({length:149},(_,i)=>{const v=i<118?90+i*.07:100;return row(t+(i-149)*3600000,v*factor,(v+.35)*factor,(v-.35)*factor,v*factor,100,3600000)});
 h1.push(row(t,100*factor,103*factor,99.9*factor,102*factor,230,3600000));
-const h4=Array.from({length:110},(_,i)=>{const v=70+i*.28;return row(t+(i-110)*4*3600000,(v-.1)*factor,(v+.35)*factor,(v-.35)*factor,v*factor,300,4*3600000)});
+const h4=Array.from({length:300},(_,i)=>{const v=70+i*.1;return row(t+(i-300)*4*3600000,(v-.1)*factor,(v+.35)*factor,(v-.35)*factor,v*factor,300,4*3600000)});
 const m15=Array.from({length:100},(_,i)=>{const v=99+i*.03;return row(t+(i-99)*900000,(v-.1)*factor,(v+.3)*factor,(v-.3)*factor,v*factor,300,900000)});
 globalThis.fetch=async(input,options)=>{const url=String(input);
  if(url.includes('/klines?')){const interval=new URL(url).searchParams.get('interval');return new Response(JSON.stringify(interval==='1h'?h1:interval==='4h'?h4:m15),{headers:{'Content-Type':'application/json'}})}

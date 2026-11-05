@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, 'fix/**', 'feat/orangex-readonly']
+    branches: [main, 'fix/**', 'feat/orangex-readonly', 'feat/issue6-integrated']
   workflow_dispatch:
 
 permissions:

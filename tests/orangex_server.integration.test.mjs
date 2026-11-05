@@ -32,7 +32,7 @@ async function sandbox(configuration={}){
 
   let now=Date.now()-10000;
   const paper=new PaperEngine({}, {now:()=>now});
-  assert.equal(paper.register({symbol:'LEGACYUSDT',direction:'LONG',pattern:'existing fixture position',entry:100,stop:98,
+  assert.equal(paper.register({managementVersion:'LEGACY_R_MULTIPLES',symbol:'LEGACYUSDT',direction:'LONG',pattern:'existing fixture position',entry:100,stop:98,
    patternConfirmedAt:now-1000},{quoteEligible:true}),true);
   now+=1000;paper.onPrice('CRYPTO','LEGACYUSDT',100,now);
   assert.equal(paper.store.open.length,1);

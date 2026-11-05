@@ -3,7 +3,8 @@
 export function paperEngineHealth({paper, telemetry={}, scanner={}, tradfi={}, now=Date.now()}={}){
  const validRecent=(at,maxAge)=>Number.isFinite(Number(at))&&Number(at)>0&&now>=Number(at)&&now-Number(at)<=maxAge;
  const cryptoQuotesFresh=scanner.ws==='connected'&&validRecent(scanner.lastTickerAt,90000);
- const cryptoSignalReady=cryptoQuotesFresh&&scanner.variational==='connected'&&scanner.scanMode==='verified'&&scanner.activeCount>0;
+ const cryptoSignalReady=cryptoQuotesFresh&&scanner.activeCount>0&&(scanner.analysisVenue==='BINANCE'?
+  scanner.scanMode==='binance-usdt-perpetual':scanner.variational==='connected'&&scanner.scanMode==='verified');
  const tradfiQuoteFresh=tradfi.status==='connected'&&validRecent(tradfi.updatedAt,180000);
  const tradfiSignalReady=tradfiQuoteFresh&&['connected','partial'].includes(tradfi.feedStatus)&&validRecent(tradfi.feedUpdatedAt,1800000);
  const positions=[...(paper?.open||[])];

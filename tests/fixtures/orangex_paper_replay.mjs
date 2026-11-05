@@ -9,7 +9,7 @@ export function syntheticReplayBook(at,bid=102.19,ask=102.21,patch={}){
 }
 export function syntheticReplayInput({scenario='breakout-long',now=REPLAY_NOW,complete=false}={}){
  const series=marketSeries(scenario,now),at=now-1000,quote={bid:ENTRY-.005,ask:ENTRY+.005};
- const input={kind:'ORANGEX_PAPER_REPLAY',executionMode:'SYNTHETIC_TEST',dataSource:'SYNTHETIC_FIXTURE',
+ const input={kind:'ORANGEX_PAPER_REPLAY',executionMode:'SYNTHETIC_TEST',dataSource:'SYNTHETIC_FIXTURE',strategyVersion:'LEGACY_V58',
   symbol:'BTCUSDT',instrumentName:'BTC-USDT-PERPETUAL',h1:series.h1,h4:series.h4,metadata:[{at,quoteVolume:1e8}],
   venueSnapshots:[{at,dataSource:'SYNTHETIC_FIXTURE',verified:true,venueConnected:true,
    listing:{markPrice:ENTRY,quoteUpdatedAt:at,quote1k:quote,quoteBase:quote},price:ENTRY,priceAt:at,statsReceivedAt:at}],

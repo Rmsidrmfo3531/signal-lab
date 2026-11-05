@@ -1,3 +1,9 @@
+# Signal Lab v5.8.0 — Issue #6 통합 버전
+
+현재 통합 사양은 [Issue #6 구현·검증·Windows 안내](ISSUE6_INTEGRATION_KO.md)를 우선합니다. Binance USDT 무기한 단일 분석, 단일 100점, 실제 aggTrades 매물대 TP, TP1 체결 후 본절 관리와 한국어 뉴스·시황을 통합했습니다. OrangeX 실제 주문과 자동 활성화는 OFF입니다.
+
+PR #5에 #3·#4가 포함되어 한 번만 통합했습니다. 아래 문서는 기존 버전의 이력이며 60:40 배점·Variational 암호화폐 교집합·신규 거래의 고정 R 목표 설명은 현재 사양에 적용하지 않습니다. 기존 기록·설정·백업을 덮어쓰지 마세요.
+
 # Signal Lab v5.8 — 스캐너·자동 모의매매 수정
 
 OrangeX [2.9단계 검증 보완·남은 근거](ORANGEX_PAPER_29_KO.md)는 준비 검사의 펀딩 부호·종목별 종료 확인 오류 수정과 비용 구성 요소별 상태를 설명합니다. 최신 연속 JSON은 미전달로 실측 분석이 보류됐으며, READ_ONLY·실제 데이터 PAPER OFF·NOT_READY를 유지합니다.

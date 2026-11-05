@@ -27,7 +27,7 @@ test('real-time ticker, confirmed kline event, auto scan and manual scan work en
      try{const r=await fetch(`http://127.0.0.1:${port}/api/status`);info=await r.json()}catch{}
      if(info?.lastTickerCount>0&&info?.lastLiveDataAt>0&&info?.liveAnalyzed>0&&info?.scanSuccess>0)break;
    }
-   assert.ok(info?.activeCount===2,logs);
+   assert.ok(info?.activeCount===4,logs);
    assert.ok(info?.lastTickerAt>0,'actual ticker data must be received');
    assert.equal(info.ws,'connected');
    assert.ok(info?.lastLiveDataAt>0,'actual kline stream must be received');
@@ -41,10 +41,10 @@ test('real-time ticker, confirmed kline event, auto scan and manual scan work en
    const page=await (await fetch(`http://127.0.0.1:${port}/`)).text();
    assert.match(page,/id="runScanNow"/);
    assert.match(page,/id="sysLiveHealth"/);
-   assert.match(page,/id="scanRecentList"/);
+   assert.doesNotMatch(page,/id="scanRecentList"/);
    assert.match(page,/id="diagReasons"/);
-   assert.match(page,/id="structureList"/);
-   assert.match(page,/id="historyList"/);
+   assert.doesNotMatch(page,/id="structureList"/);
+   assert.doesNotMatch(page,/id="historyList"/);
    const funnel=await(await fetch(`http://127.0.0.1:${port}/api/scan/diagnostics`)).json();
    assert.ok(funnel.uniqueAnalyzed>=2);
    assert.ok(funnel.scannedSinceBoot>=funnel.uniqueAnalyzed);
@@ -52,8 +52,8 @@ test('real-time ticker, confirmed kline event, auto scan and manual scan work en
    assert.ok(results.recent.length>=2);
    assert.ok(Array.isArray(results.structures),'observation-only structures must be published');
    assert.ok(Array.isArray(results.history),'historical closed-bar patterns must be published');
-   assert.ok(results.structures.every(x=>x.tradeEligible===false));
-   assert.ok(results.history.every(x=>x.tradeEligible===false));
+   assert.deepEqual(results.structures,[],'retired structures are not rendered as main candidates');
+   assert.deepEqual(results.history,[],'retired historical patterns are not rendered as main candidates');
    assert.ok(results.recent.every(x=>x.symbol));
    const invalidShortBar=await fetch(`http://127.0.0.1:${port}/api/klines?symbol=BTCUSDT&interval=15m`);
    assert.equal(invalidShortBar.status,400,'sub-hour interval is disabled');
@@ -62,6 +62,6 @@ test('real-time ticker, confirmed kline event, auto scan and manual scan work en
      assert.equal(allowed.status,200,`${timeframe} chart must remain available`);
    }
    const markets=await(await fetch(`http://127.0.0.1:${port}/api/market`)).json();
-   assert.deepEqual(markets.markets.map(m=>m.symbol),['BTCUSDT','ETHUSDT']);
- } finally{child.kill('SIGTERM');await nap(100);if(child.exitCode===null)child.kill('SIGKILL');await fs.rm(sandbox,{recursive:true,force:true})}
+   assert.deepEqual(markets.markets.map(m=>m.symbol),['BTCUSDT','ETHUSDT','SOLUSDT','1000PEPEUSDT']);
+ } finally{const closed=once(child,'close');child.kill('SIGTERM');let timer;try{await Promise.race([closed,new Promise(r=>timer=setTimeout(r,2500))])}finally{clearTimeout(timer)}if(child.exitCode===null){child.kill('SIGKILL');await closed}await fs.rm(sandbox,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });

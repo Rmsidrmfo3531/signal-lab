@@ -20,7 +20,8 @@
     "test:orangex:operational": "node scripts/check-orangex-operational-stress.mjs",
     "review:orangex:evidence": "node scripts/review-orangex-evidence.mjs",
     "test:orangex:storage:scale": "node scripts/check-orangex-storage-scale.mjs",
-    "diagnose:orangex:continuous": "node scripts/diagnose-orangex-continuous.mjs"
+    "diagnose:orangex:continuous": "node scripts/diagnose-orangex-continuous.mjs",
+    "test:strategy:compare": "node scripts/compare-issue6-strategies.mjs"
   },
   "engines": {
     "node": ">=22"

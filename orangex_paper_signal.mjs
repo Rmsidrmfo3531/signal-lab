@@ -1,4 +1,4 @@
-import {STRICT_MIN_SCORE} from './quality.mjs';
+import {STRICT_MIN_SCORE,SCORE_VERSION} from './quality.mjs';
 import {signalKey} from './paper.mjs';
 import {createHash} from 'node:crypto';
 import {TP_R_MULTIPLES} from './public/trade_plan.js';
@@ -41,12 +41,15 @@ export function normalizeOrangeXPaperSignal(row,{now=Date.now(),source='UNOBSERV
   !Array.isArray(quality?.failed)||quality.failed.length>0)reasons.push('TECHNICAL_CHECK_FAILED');
  if(!positive(quality?.validUntil)||now>quality.validUntil||!positive(quality?.checkedAt)||quality.checkedAt>now)
   reasons.push('CONFIRMED_CANDLES_STALE');
- for(const key of REQUIRED){
-  const proof=checks.filter(check=>plain(check)&&check.key===key);
-  if(proof.length!==1||proof[0].required!==true||proof[0].passed!==true)reasons.push('REQUIRED_'+key.toUpperCase()+'_UNVERIFIED');
+ const modern=row.scoreVersion===SCORE_VERSION;
+ const required=modern?['scoreData','confirmedPattern','fresh1h','fresh4h','stopValid','chase','atrRisk','confirmedActivity','btc4h']:REQUIRED;
+ const proofChecks=modern?row.technicalValidation?.checks:checks;
+ for(const key of required){
+  const proof=(Array.isArray(proofChecks)?proofChecks:[]).filter(check=>plain(check)&&check.key===key);
+  if(proof.length!==1||!modern&&proof[0].required!==true||proof[0].passed!==true)reasons.push('REQUIRED_'+key.toUpperCase()+'_UNVERIFIED');
  }
  const aligned=row.direction==='LONG'?row.trend==='up':row.direction==='SHORT'?row.trend==='down':false;
- if(!aligned)reasons.push('CLOSED_4H_TREND_UNALIGNED');
+ if(!aligned&&!modern)reasons.push('CLOSED_4H_TREND_UNALIGNED');
  if(row.qualified!==true||row.decision?.ready!==true||row.decision?.pattern!==true||row.decision?.technical!==true||
   row.decision?.venue!==true||row.decision?.execution?.eligible!==true)reasons.push('FINAL_SIGNAL_NOT_APPROVED');
  const sign=row.direction==='LONG'?1:-1;
@@ -58,6 +61,7 @@ export function normalizeOrangeXPaperSignal(row,{now=Date.now(),source='UNOBSERV
  // the PAPER engine derives R2/R3/R4 after entry-grid validation.
  const hasAnyTarget=explicitTargets||suppliedTargets.some(value=>value!==undefined&&value!==null);
  const targets=hasAnyTarget?suppliedTargets:undefined;
+ if(modern&&(row.managementVersion!=='VOLUME_PROFILE_V1'||row.targetPlan?.ok!==true||!targets))reasons.push('TP_PROFILE_UNAVAILABLE');
  if(targets&&(targets.length!==3||targets.some((value,index)=>!positive(value)||sign*(value-row.entry)<=0||
   index>0&&sign*(value-targets[index-1])<=0)))reasons.push('TARGET_STRUCTURE_INVALID');
  if(confirmationEvidence!==undefined){
@@ -78,6 +82,8 @@ export function normalizeOrangeXPaperSignal(row,{now=Date.now(),source='UNOBSERV
   key:'ORANGEX_PAPER:'+createHash('sha256').update(sourceSignalKey).digest('hex'),sourceSignalKey,
   symbol:row.symbol,instrumentName:name,direction:row.direction,entry:row.entry,stop:row.stop,
   ...(targets?{targets:[...targets]}:{}),pattern:row.pattern,patternConfirmedAt:row.patternConfirmedAt,
+  ...(modern?{managementVersion:'VOLUME_PROFILE_V1',targetPlan:structuredClone(row.targetPlan),
+   moveStopToBreakeven:row.moveStopToBreakeven!==false,breakevenMode:row.breakevenMode==='COST_COVERED'?'COST_COVERED':'ENTRY'}:{}),
   timeframe:'1h',trendTimeframe:'4h',confirmed:true,trendConfirmed:true,signalSource:source,dataSource:source,
   confirmationEvidence:evidence,score:row.score,scoreMeaning:'RULE_COMPLETENESS_NOT_WIN_PROBABILITY',
   realDataAutoEntryEnabled:false,liveOrdersEnabled:false}};
@@ -97,6 +103,7 @@ export function alignOrangeXPaperSignal(signal,contract){
  if(reasons.length)return {ok:false,reasons};
  const dir=signal.direction==='LONG'?1:-1;
  if(dir*(signal.entry-signal.stop)<=0)return {ok:false,reasons:['PROTECTIVE_STOP_INVALID']};
+ if(signal.managementVersion==='VOLUME_PROFILE_V1'&&(signal.targetPlan?.ok!==true||!Array.isArray(signal.targets)))return {ok:false,reasons:['TP_PROFILE_UNAVAILABLE']};
  const rawTargets=signal.targets===undefined?TP_R_MULTIPLES.map(r=>signal.entry+dir*Math.abs(signal.entry-signal.stop)*r):signal.targets;
  if(!Array.isArray(rawTargets)||rawTargets.length!==3||rawTargets.some((price,index)=>!positive(price)||
   dir*(price-signal.entry)<=0||index>0&&dir*(price-rawTargets[index-1])<=0))return {ok:false,reasons:['TARGET_STRUCTURE_INVALID']};

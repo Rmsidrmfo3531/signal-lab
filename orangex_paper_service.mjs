@@ -58,8 +58,29 @@ export class OrangeXPaperService{
   const engine=this.#writer();
   if(!result.ok){engine.recordRejection({reason:'SIGNAL_NORMALIZATION_FAILED',stage:'SIGNAL'});return {accepted:false,code:'SIGNAL_VALIDATION_FAILED',reasons:result.reasons}}
   const contract=engine.exportState().contracts[result.signal.instrumentName];
-  const plan=alignOrangeXPaperSignal(result.signal,contract);
+  const candidate={...result.signal};
+  if(row.managementVersion==='VOLUME_PROFILE_V1'){
+   if(row.targetPlan?.ok!==true||!Array.isArray(row.targetPlan.targets)||row.targetPlan.targets.length!==3){
+    engine.recordRejection({key:result.signal.key,reason:'TP_PROFILE_UNAVAILABLE',stage:'contract'});
+    return {accepted:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['TP_PROFILE_UNAVAILABLE']};
+   }
+   // The shared signal normalizer historically omitted management metadata.
+   // Carry only the explicitly supplied new plan; never replace it with R levels.
+   candidate.managementVersion='VOLUME_PROFILE_V1';candidate.targetPlan=clone(row.targetPlan);
+   candidate.targets=Array.isArray(row.targetPlan?.targets)?[...row.targetPlan.targets]:[];
+   for(const key of ['moveStopToBreakeven','TP1_MOVE_STOP_TO_BREAKEVEN','breakevenMode','breakevenCostAssumptions'])
+    if(Object.hasOwn(row,key))candidate[key]=clone(row[key]);
+  }
+  const plan=alignOrangeXPaperSignal(candidate,contract);
   if(!plan.ok){engine.recordRejection({key:result.signal.key,reason:'CONTRACT_UNOBSERVED',stage:'CONTRACT'});return {accepted:false,code:'PLAN_VALIDATION_FAILED',reasons:plan.reasons}}
+  // Profile TP prices were already set before the liquidity zones. If venue tick
+  // alignment changes those prices, do not silently move them through a zone.
+  if(candidate.managementVersion==='VOLUME_PROFILE_V1'&&plan.signal.targets.some((price,i)=>
+   Math.abs(price-candidate.targets[i])>Math.max(1e-10,Math.abs(candidate.targets[i])*Number.EPSILON*16))){
+   engine.recordRejection({key:result.signal.key,reason:'TP_PROFILE_UNAVAILABLE',stage:'contract'});
+   return {accepted:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['TARGET_GRID_REQUIRES_REPLANNING']};
+  }
+  if(candidate.managementVersion==='VOLUME_PROFILE_V1')plan.signal.targets=[...candidate.targets];
   return engine.register(plan.signal,{dataSource,orderType,limitPrice});
  }
  onMarket(market){return this.#writer().onMarket(market)}
