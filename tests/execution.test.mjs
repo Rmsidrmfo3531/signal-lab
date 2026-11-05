@@ -1,43 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parsePerpExecution,executionEstimate,riskSizedEstimate} from '../execution.mjs';
+import {estimateBinanceExecution,BINANCE_PAPER_ASSUMPTIONS} from '../binance_execution.mjs';
+import {syntheticBinanceContext} from './fixtures/binance_signal.mjs';
 const T=Date.now();
-const listing=(changes={})=>parsePerpExecution({ticker:'BTC-PERP',contract_type:'perpetual',mark_price:'81000',volume_24h:'100000000',open_interest:{long_open_interest:'10000',short_open_interest:'9000'},funding:{last:{interval_rate:'0.00008'},next:{interval_rate:'0.0001'},interval_seconds:28800,next_timestamp:Math.floor(T/1000)+28000},quotes:{updated_at:new Date(T-10_000).toISOString(),base:{bid:'80997',ask:'81003'},size_1k:{bid:'80996',ask:'81004'}},...changes});
-const make=(v,more={})=>executionEstimate({listing:v,side:'LONG',notional:1000,binancePrice:81001,binancePriceAt:T-10000,statsReceivedAt:T-1000,now:T,...more});
-test('public indicative quote and funding parsing; rate in per-interval units',()=>{const v=listing();assert.equal(v.quote1k.ask,81004);assert.equal(v.fundingIntervalRate,.0001);assert.equal(v.fundingIntervalSeconds,28800);assert.ok(v.quoteUpdatedAt<T)});
-test('eligible: clear current two-sided quote with inexpensive spread',()=>{const x=make(listing());assert.equal(x.eligible,true);assert.ok(x.spreadBps>0);assert.ok(x.spreadCostUSD>0);assert.equal(x.fundingOneIntervalUSD,.1)});
-test('funding is direction dependent',()=>{const v=listing();const l=make(v),s=make(v,{side:'SHORT'});assert.equal(l.fundingOneIntervalUSD,-s.fundingOneIntervalUSD);assert.equal(s.fundingOneIntervalUSD,-.1)});
-test('strict fail closed if stale quote, missing timestamp, or missing bid',()=>{const old=listing({quotes:{updated_at:new Date(T-700_000).toISOString(),size_1k:{bid:'80996',ask:'81004'}}});assert.equal(make(old).eligible,false);const missing=listing({quotes:{size_1k:{bid:'80996',ask:'81004'}}});assert.equal(make(missing).eligible,false);const noAsk=listing({quotes:{updated_at:new Date(T).toISOString(),size_1k:{bid:'80996'}}});assert.equal(make(noAsk).eligible,false)});
-test('price mismatch and spread blocks alerts',()=>{assert.equal(make(listing({quotes:{updated_at:new Date(T).toISOString(),size_1k:{bid:'80000',ask:'82000'}}})).eligible,false);assert.equal(make(listing(),{binancePrice:80000}).eligible,false)});
-test('notional outside API sample band blocked',()=>{const v=listing();assert.equal(make(v,{notional:200}).eligible,false);assert.equal(make(v,{notional:2000}).eligible,false)});
-test('missing funding is unknown, never silently displayed as zero',()=>{const x=make(listing({funding:null}));assert.equal(x.fundingOneIntervalUSD,null);assert.equal(x.fundingIntervalRate,null)});
-test('fixed simulated notional is independent of account capital',()=>{const r=riskSizedEstimate({signal:{entry:81000,stop:80595,target1:81810,direction:'LONG'},listing:listing(),binancePrice:81001,binancePriceAt:T,statsReceivedAt:T,now:T});assert.equal(r.notional,500);assert.ok(r.estimatedStopLossUSD>0);assert.ok(r.estimatedNetRR>0)});
-test('must have Binance symbol-specific recent updates',()=>{const x=make(listing(),{binancePriceAt:T-300000});assert.equal(x.eligible,false);assert.ok(x.reasons.join(' ').includes('Binance'))});
-test('invalid execution limits fail closed instead of disabling freshness and risk guards',()=>{
- const stale=listing({quotes:{updated_at:new Date(T-700_000).toISOString(),size_1k:{bid:'80996',ask:'81004'}}});
- const malformedAge=make(stale,{limits:{maxQuoteAgeSeconds:Number('invalid')}});
- assert.equal(malformedAge.eligible,false,'a mistyped age setting must not approve an old venue quote');
- assert.match(malformedAge.reasons.join(' '),/설정 오류: maxQuoteAgeSeconds/);
- for(const limits of [{maxFeedAgeSeconds:NaN},{maxSpreadBps:Infinity},{maxAdverseVenueBps:undefined},{maxRoundTripBps:-1},{paperNotionalUSD:0}]){
-  const result=make(listing(),{limits});
-  assert.equal(result.eligible,false,JSON.stringify(limits));assert.match(result.reasons.join(' '),/설정 오류/);
- }
- assert.equal(make(listing(),{limits:{maxQuoteAgeSeconds:180,maxSpreadBps:20}}).eligible,true,'valid user settings remain unchanged');
+const input=()=>({signal:{symbol:'BTCUSDT',direction:'LONG',entry:100,stop:98},...syntheticBinanceContext('BTCUSDT',100,T)});
+test('public depth estimates retain explicit funding and fee assumptions without claiming observed settlements',()=>{
+ const result=estimateBinanceExecution(input());assert.equal(result.eligible,true);assert.equal(result.dataFrom,'BINANCE_PUBLIC_DEPTH');
+ assert.equal(result.costAssumptions.fundingStatus,'ASSUMED_RESERVE_NOT_ACTUAL_SETTLEMENT');assert.equal(result.actualAccountFeesVerified,false);
 });
-test('future quote, Binance and receipt timestamps fail closed',()=>{
- for(const field of ['quote','binance','stats']){
-  const v=listing(),extra={};
-  if(field==='quote')v.quoteUpdatedAt=T+86400000;
-  if(field==='binance')extra.binancePriceAt=T+86400000;
-  if(field==='stats')extra.statsReceivedAt=T+86400000;
-  const result=make(v,extra);assert.equal(result.eligible,false);assert.match(result.reasons.join(' '),/미래/);
+test('eligible two-sided depth uses positive spread and risk-bounded quantity',()=>{
+ const result=estimateBinanceExecution(input());assert.equal(result.eligible,true);assert.ok(result.spreadBps>0);assert.ok(result.quantity>0);
+ assert.ok(result.estimatedStopLossUSD<=6);assert.equal(result.ordersSubmitted,false);
+});
+test('LONG asks and SHORT bids determine entry independently of the displayed ticker',()=>{
+ const value=input(),long=estimateBinanceExecution(value);value.signal.direction='SHORT';value.signal.stop=102;
+ const short=estimateBinanceExecution(value);assert.equal(short.eligible,true);
+ assert.equal(long.executablePrice,100.005);assert.equal(short.executablePrice,99.995);assert.ok(long.entryBasis>=short.entryBasis);
+});
+test('stale quotes, missing source clocks and missing sides fail closed',()=>{
+ for(const mutate of [x=>{x.book.T=T-100000},x=>{delete x.book.T},x=>{delete x.book.asks}]){
+  const value=input();mutate(value);assert.equal(estimateBinanceExecution(value).eligible,false);
  }
 });
-test('risk and reward use the directional venue quote rather than an optimistic chart entry',()=>{
- const quote={bid:100.339966,ask:100.35},signal={direction:'LONG',entry:100,stop:99,target1:102};
- const result=riskSizedEstimate({signal,listing:{markPrice:100,quoteUpdatedAt:T,quote1k:quote,quoteBase:quote},binancePrice:100,binancePriceAt:T,statsReceivedAt:T,now:T});
- assert.equal(result.entryBasis,quote.ask);
- assert.equal(result.notional,500);
- assert.ok(result.estimatedStopLossUSD>6,'fixed trade size must not be silently reduced by $6 cap');
- assert.ok(result.estimatedNetRR<1.8);
+test('crossed, duplicate, reverse-sorted or excessive-spread depth blocks approval',()=>{
+ for(const asks of [[[99,1000]],[[100.005,1000],[100.005,1000]],[[100.01,1000],[100.005,1000]],[[103,1000]]]){
+  const value=input();value.book.asks=asks;assert.equal(estimateBinanceExecution(value).eligible,false);
+ }
+});
+test('risk sizing never raises quantity to satisfy a minimum notional above available risk',()=>{
+ const value=input();value.signal.stop=10;value.market.filters.MIN_NOTIONAL.notional='250';
+ const result=estimateBinanceExecution(value);assert.equal(result.eligible,false);assert.ok(result.reasons.includes('RISK_CAP_BELOW_MINIMUM_ORDER'));
+});
+test('missing funding cost assumption remains unknown and blocks instead of substituting zero',()=>{
+ const value=input();value.assumptions={...BINANCE_PAPER_ASSUMPTIONS,fundingReserveRate:undefined};
+ const result=estimateBinanceExecution(value);assert.equal(result.eligible,false);assert.ok(result.reasons.includes('COST_ASSUMPTION_UNVERIFIED'));
+});
+test('quantity is floored on the exchange step for exact three-way exits and bounded by exposure',()=>{
+ const value=input();value.maxNotionalUSD=100;const result=estimateBinanceExecution(value);
+ assert.equal(result.eligible,true);assert.ok(result.notional<=100);const units=result.quantity/(result.quantityStep*20);
+ assert.ok(Math.abs(units-Math.round(units))<1e-8);
+});
+test('market contract identity and exchange quantity filters are mandatory',()=>{
+ for(const mutate of [x=>{x.market.symbol='ETHUSDT'},x=>{x.market.status='BREAK'},x=>{delete x.market.filters.LOT_SIZE},
+  x=>{x.market.contractType='CURRENT_QUARTER'},x=>{x.market.quoteAsset='USDC'}]){
+  const value=input();mutate(value);assert.equal(estimateBinanceExecution(value).eligible,false);
+ }
+});
+test('invalid execution limits cannot disable freshness, loss or spread guards',()=>{
+ for(const limits of [{maxAgeMs:NaN},{maxAgeMs:90001},{maxRiskUSD:0},{maxNotionalUSD:Infinity},{maxSpreadBps:-1}])
+  assert.equal(estimateBinanceExecution({...input(),...limits}).eligible,false);
+});
+test('future depth clocks remain blocked even when receipt and displayed price are fresh',()=>{
+ const value=input();value.book.T=T+1;const result=estimateBinanceExecution(value);
+ assert.equal(result.eligible,false);assert.ok(result.reasons.includes('BOOK_CLOCK_INVALID_OR_STALE'));
+});
+test('insufficient depth cannot produce an approved full fill or silently ignore slippage',()=>{
+ const value=input();value.book.asks=[[100.005,.001]];let result=estimateBinanceExecution(value);
+ assert.equal(result.eligible,false);assert.ok(result.reasons.includes('BOOK_DEPTH_INSUFFICIENT'));
+ value.book.asks=[[100.005,.001],[100.09,1000]];result=estimateBinanceExecution(value);
+ assert.equal(result.eligible,false);assert.ok(result.reasons.includes('SLIPPAGE_LIMIT'));
 });

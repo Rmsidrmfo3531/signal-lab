@@ -1,3 +1,5 @@
+> 과거 개발 단계의 검증 이력입니다. 현재 버전은 Binance 단일 분석이며 이전 공급자 연결·설정·링크는 제거됐습니다. 대체 공급자가 없는 TradFi 수집·신규 신호·신규 모의 진입은 비활성입니다. 아래의 과거 기능 설명을 현재 사용 안내로 적용하지 마세요. 기존 PNL·포지션·설정·백업은 보존합니다.
+
 # OrangeX 공개 시장 데이터 연동 보완
 
 최신 Windows 8건 JSON 및 거래 영역 기본값 수정은 [거래 영역 보고서](ORANGEX_CURRENCY_DOMAIN_KO.md)를 우선 참고하세요. 아래 내용은 해당 후속 자료 수신 전의 기록입니다.
@@ -80,7 +82,7 @@ PAPER의 다음 설계는 기존 1H·4H 기술 분석과 LONG/SHORT, 진입·손
 
 **설계·Mock 검증 준비는 가능하지만 실제 데이터 기반 PAPER 활성화는 보류합니다.** Mark 시각, 계약 크기·주문 수량 단위·증분·최소량, 비용 해석의 확인이 먼저입니다. 모의 비용 가정은 실제 요율과 별도 표기하고 미검증 비용을 0으로 채우지 않아야 합니다.
 
-기존 Binance/Variational 분석·모의매매·PNL·텔레그램·TradingView·TradFi·뉴스·Windows 알림을 보존했습니다. `paper.mjs`, `persistence.mjs`, `engine.mjs`, `quality.mjs`를 변경하지 않았습니다. 기존 `.env`, 거래 기록과 백업을 초기화하거나 복사하지 않았고 테스트는 임시 데이터만 사용했습니다. main 수정·Merge·실제 주문·취소·출금은 하지 않았습니다.
+기존 Binance/이전 공급자 분석·모의매매·PNL·텔레그램·TradingView·TradFi·뉴스·Windows 알림을 보존했습니다. `paper.mjs`, `persistence.mjs`, `engine.mjs`, `quality.mjs`를 변경하지 않았습니다. 기존 `.env`, 거래 기록과 백업을 초기화하거나 복사하지 않았고 테스트는 임시 데이터만 사용했습니다. main 수정·Merge·실제 주문·취소·출금은 하지 않았습니다.
 
 ## 다음 단계 Codex 지시문
 

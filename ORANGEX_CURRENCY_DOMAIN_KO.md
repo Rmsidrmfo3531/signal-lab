@@ -1,8 +1,10 @@
+> 과거 개발 단계의 검증 이력입니다. 현재 버전은 Binance 단일 분석이며 이전 공급자 연결·설정·링크는 제거됐습니다. 대체 공급자가 없는 TradFi 수집·신규 신호·신규 모의 진입은 비활성입니다. 아래의 과거 기능 설명을 현재 사용 안내로 적용하지 마세요. 기존 PNL·포지션·설정·백업은 보존합니다.
+
 # OrangeX 상장 조회 영역 수정과 Windows 실측 재검증
 
 후속 [2단계 오프라인 PAPER 보고서](ORANGEX_PAPER_OFFLINE_KO.md)를 추가했습니다. 실제 API 검증은 여전히 미완료이며 합성 시뮬레이션만 구현했습니다. 아래는 `ae3f164`까지의 실측 대조·검증 기록입니다.
 
-대상은 `Rmsidrmfo3531/signal-lab`, 기준은 `feat/orangex-readonly`의 `205210b`입니다. 이번 변경은 상장 목록 조회·공개 시장 데이터 검증에 한정합니다. **READ_ONLY를 유지하고 OrangeX PAPER 자동 진입과 실제 주문은 모두 차단합니다.** 기존 Binance·Variational 분석이나 모의매매 기록을 OrangeX 기록으로 전환하지 않습니다.
+대상은 `Rmsidrmfo3531/signal-lab`, 기준은 `feat/orangex-readonly`의 `205210b`입니다. 이번 변경은 상장 목록 조회·공개 시장 데이터 검증에 한정합니다. **READ_ONLY를 유지하고 OrangeX PAPER 자동 진입과 실제 주문은 모두 차단합니다.** 기존 Binance·이전 공급자 분석이나 모의매매 기록을 OrangeX 기록으로 전환하지 않습니다.
 
 ## 원인과 확인 범위
 

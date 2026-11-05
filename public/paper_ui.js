@@ -6,6 +6,8 @@ const usd=value=>value!==null&&value!==undefined&&value!==''&&Number.isFinite(Nu
 const time=at=>at?new Date(at).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
 const resultClass=n=>Number(n)>=0?'paper-profit':'paper-loss';
 const paperEventLabel=e=>e.type==='OPEN'?'가상 진입':'가상 CLOSE';
+const providerUnavailable=row=>row.market==='TRADFI';
+const frozenPaperCaption='공급자 없음 · 기록 보존 · 자동처리 중지';
 const timeGap=(value,limit)=>!(Number.isFinite(Number(value))&&Date.now()-Number(value)<limit);
 function targets(row){return (row.targets||[]).map((p,i)=>`<span>${i+1}차 ${fmt(p)} / ${[40,35,25][i]}%</span>`).join(' · ')}
 function paperManagementCaption(row){
@@ -59,7 +61,7 @@ function renderMonitor(payload){
  find('paperMonitorTitle').textContent='● '+m.label;
  find('paperMonitorChecked').textContent='서버 확인 '+time(m.checkedAt)+' KST';
  find('paperMonitorMode').textContent=`진행 ${payload.openCount} · 대기 ${payload.pendingCount} · 종료 ${payload.closedCount}`;
- find('paperMonitorQuotes').textContent=`크립토 ${m.cryptoQuotesFresh?'수신 정상':'지연/미수신'} · TradFi ${m.tradfiQuoteFresh?'갱신':'미갱신'}`;
+ find('paperMonitorQuotes').textContent=`크립토 ${m.cryptoQuotesFresh?'수신 정상':'지연/미수신'} · TradFi 비활성 (기록 보존)`;
  find('paperMonitorTrades').textContent=`접수 ${Number.isFinite(m.acceptedSignals)?m.acceptedSignals:'미확인'}건 / 진입 ${Number.isFinite(m.openedCountSession)?m.openedCountSession:'미확인'}건 · 시세 확인 ${Number.isFinite(m.priceTickCount)?m.priceTickCount:'미확인'}회`;
  find('paperMonitorEvent').textContent=m.lastPositionEventAt?time(m.lastPositionEventAt):'이번 실행 중 신규 거래 없음';
  find('paperMonitorReason').textContent=m.reason+' · 실거래 주문 없음 · 접수/진입 횟수는 현재 서버 실행 이후 기준';
@@ -81,19 +83,22 @@ function render(payload){
  find('paperStatus').textContent=`시작자금·계좌잔고 가정 없음 · ${payload.newPositionSizing==='VALIDATED_PROFILE_QUANTITY'?'신규 거래는 검증된 매물대·위험 수량 사용 / 구버전 명목 기록 보존':'구버전 모의 기준 명목 $'+fmt(payload.paperNotionalUSD)} · 누적 평가손익 ${usd(payload.totalMarkedPnLUSD)} · 진행 ${payload.openCount}건 · 진입 대기 ${payload.pendingCount}건 · 오늘 ${usd(payload.dailyPnLUSD)} · 이번 주 ${usd(payload.weeklyPnLUSD)} · ${payload.assumptions}`;
  const open=[...(payload.open||[])];
  const cards=open.map(t=>{
-  const stale=timeGap(t.lastPriceAt,t.market==='TRADFI'?180000:90000);
+  const frozen=providerUnavailable(t),stale=frozen||timeGap(t.lastPriceAt,90000);
   const gain=t.qtyRemaining*(t.direction==='LONG'?1:-1)*(t.markPrice-t.entryFill);
   const rows=t.closeParts?.map(p=>`<small>${p.type==='STOP'?'손절':p.targetNumber+'차 익절'} ${fmt(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('')||'';
-  return `<article class="paper-trade"><header><strong>${esc(t.symbol)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><span>${esc(t.market)} · 진행 중</span></header>
-   <p>${esc(t.pattern)} · ${time(t.openedAt)} 진입</p><div class="paper-trade-values"><span>모의 진입 <b>${fmt(t.entryFill)}</b></span><span>기준 손절 <b>${fmt(t.stop)}</b></span><span>명목금액 <b>$${fmt(t.notionalUSD)}</b></span><span>미실현 <b class="${resultClass(gain)}">${usd(gain)}${stale?' (시세 지연)':''}</b></span></div>
+  return `<article class="paper-trade"><header><strong>${esc(t.symbol)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><span>${esc(t.market)} · ${frozen?frozenPaperCaption:'진행 중'}</span></header>
+   <p>${esc(t.pattern)} · ${time(t.openedAt)} 진입</p><div class="paper-trade-values"><span>모의 진입 <b>${fmt(t.entryFill)}</b></span><span>기준 손절 <b>${fmt(t.stop)}</b></span><span>명목금액 <b>$${fmt(t.notionalUSD)}</b></span><span>${frozen?'마지막 저장 시세 평가 (현재 평가 아님)':'미실현'} <b class="${resultClass(gain)}">${usd(gain)}${frozen?' (최신 시세 미검증)':stale?' (시세 지연)':''}</b></span></div>
    <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))}</small><p>남은 수량 ${fmt(t.qtyRemaining)} · 분할익절 ${t.exitedPct||0}% · 진입 수수료 등 $${fmt(t.feesUSD)}</p>
-   <div class="paper-partials">${rows||'<small>첫 익절 또는 손절 대기 중</small>'}</div></article>`;
+   <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div></article>`;
  });
- const pending=(payload.pending||[]).map(t=>`<article class="paper-trade paper-pending"><header><strong>${esc(t.symbol)} ${esc(t.direction)}</strong><span>첫 신규 시세 대기</span></header><p>${esc(t.pattern)} · ${time(t.signalAt)} 접수 · ${time(t.expiresAt)} 만료</p><p>과거 캔들 가격에서 소급 진입하지 않습니다.</p></article>`);
+ const pending=(payload.pending||[]).map(t=>{
+  const frozen=providerUnavailable(t);
+  return `<article class="paper-trade paper-pending"><header><strong>${esc(t.symbol)} ${esc(t.direction)}</strong><span>${frozen?frozenPaperCaption:'첫 신규 시세 대기'}</span></header><p>${esc(t.pattern)} · ${time(t.signalAt)} 접수 · ${frozen?'기록된 유효기한 ':' '}${time(t.expiresAt)}${frozen?'':' 만료'}</p>${frozen?`<p>진입·만료 처리를 중지하고 기존 대기 기록을 보존합니다. 최신 시세 미검증.</p><p>기록된 진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)}</p><p class="paper-targets">${targets(t)}</p>`:'<p>과거 캔들 가격에서 소급 진입하지 않습니다.</p>'}</article>`;
+ });
  find('paperOpen').innerHTML=[...pending,...cards].join('')||'<p class="empty-small">현재 열린 가상 포지션이 없습니다. 새 시그널 이후 자동 기록합니다.</p>';
  find('paperClosed').innerHTML=(payload.closed||[]).map(t=>{
   const parts=(t.closeParts||[]).map(p=>`<small>${p.type==='STOP'?'잔여 손절':p.targetNumber+'차 익절'} · ${time(p.at)} · ${fmt(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('');
-  return `<article class="paper-trade"><header><strong>${esc(t.symbol)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><strong class="${resultClass(t.realizedPnLUSD)}">${usd(t.realizedPnLUSD)}</strong></header><p>${esc(t.market)} · ${esc(t.pattern)}</p><div class="paper-trade-values"><span>진입 <b>${fmt(t.entryFill)}</b></span><span>종료 <b>${time(t.closedAt)}</b></span><span>명목 <b>$${fmt(t.notionalUSD)}</b></span><span>총 수수료 <b>$${fmt(t.feesUSD)}</b></span></div><p>종료 사유: ${esc(t.closeReason)}${t.quoteGaps?' · 가격 수신 공백 '+t.quoteGaps+'회':''}</p><div class="paper-partials">${parts}</div></article>`;
+  return `<article class="paper-trade"><header><strong>${esc(t.symbol)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><strong class="${resultClass(t.realizedPnLUSD)}">${usd(t.realizedPnLUSD)}</strong></header><p>${esc(t.market)} · ${esc(t.pattern)}${providerUnavailable(t)?' · '+frozenPaperCaption:''}</p><div class="paper-trade-values"><span>진입 <b>${fmt(t.entryFill)}</b></span><span>종료 <b>${time(t.closedAt)}</b></span><span>명목 <b>$${fmt(t.notionalUSD)}</b></span><span>총 수수료 <b>$${fmt(t.feesUSD)}</b></span></div><p>종료 사유: ${esc(t.closeReason)}${t.quoteGaps?' · 가격 수신 공백 '+t.quoteGaps+'회':''}</p><div class="paper-partials">${parts}</div></article>`;
  }).join('')||'<p class="empty-small">아직 자동으로 종료된 거래가 없습니다. 거래 내역은 앞으로 발생하는 신호부터 누적됩니다.</p>';
  find('paperSkipped').innerHTML=(payload.skipped||[]).map(t=>`<p>${time(t.at)} · ${esc(t.key)}<br><small>${esc(t.reason)}</small></p>`).join('')||'생략된 신호 없음';
 }

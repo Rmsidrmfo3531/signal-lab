@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {analyze} from '../research/legacy_v58/engine.mjs';
-import {evaluateSignal} from '../signal_pipeline.mjs';
+import {evaluateLegacySyntheticSignal} from '../research/legacy_v58/decision.mjs';
+import {syntheticBinanceContext} from './fixtures/binance_signal.mjs';
 import {marketSeries,ENTRY} from './fixtures/pipeline_market.mjs';
 import {normalizeOrangeXPaperSignal,alignOrangeXPaperSignal} from '../orangex_paper_signal.mjs';
 import {OrangeXPaperEngine} from '../orangex_paper.mjs';
@@ -11,9 +12,7 @@ import {OrangeXPaperEngine} from '../orangex_paper.mjs';
 // No live exchange response, authentication or user records are used here.
 function nativeFixture(scenario='breakout-long'){
  const at=Date.now(),series=marketSeries(scenario,at),row=analyze('BTCUSDT',series.h1,series.h4,[],ENTRY,{quoteVolume:1e8});
- const now=Date.now(),quote={bid:ENTRY-.005,ask:ENTRY+.005};
- const decision=evaluateSignal(row,{verified:true,venueConnected:true,listing:{markPrice:ENTRY,quoteUpdatedAt:now,
-  quote1k:quote,quoteBase:quote},price:ENTRY,priceAt:now,statsReceivedAt:now,now});
+ const now=Date.now(),decision=evaluateLegacySyntheticSignal(row,syntheticBinanceContext(row.symbol,ENTRY,now));
  return {series,row:{...row,decision,qualified:decision.ready,strategyVersion:'LEGACY_V58',managementVersion:'LEGACY_R_MULTIPLES'},now,
   options:{now,source:'SYNTHETIC_FIXTURE',instrumentName:'BTC-USDT-PERPETUAL'}};
 }
@@ -154,5 +153,15 @@ test('native confirmed LONG reaches aligned targets and CLOSE, while native SHOR
   const restored=new OrangeXPaperEngine(engine.exportState(),{now:()=>clock});
   assert.equal(restored.snapshot().closed[0].realizedPnLUSD,closed.realizedPnLUSD,'CLOSE PNL survives engine state recovery');
   assert.equal(snapshot.realDataEntryEnabled,false);
+ }
+});
+
+test('legacy research approval refuses observed or unspecified provenance even with otherwise valid quotes',()=>{
+ const {row,now}=nativeFixture(),context=syntheticBinanceContext(row.symbol,ENTRY,now);
+ for(const dataSource of [undefined,'REAL_PUBLIC_READ_ONLY','SIGNAL_LAB_SCANNER']){
+  const decision=evaluateLegacySyntheticSignal(row,{...context,dataSource});
+  assert.equal(decision.ready,false);assert.equal(decision.execution.eligible,false);
+  assert.ok(decision.reasons.includes('SYNTHETIC_RESEARCH_ONLY'));
+  assert.equal(decision.tradeApproval,false);assert.equal(decision.realDataAutoEntryEnabled,false);
  }
 });

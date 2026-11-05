@@ -15,11 +15,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {analyze} from './engine.mjs';
+import {configureSignalScorePolicy,getSignalScorePolicy} from './signal_policy.mjs';
 import {structureObservations,historicalPatternObservations} from './observation.mjs';
 import {describeScanFunnel} from './scan_diagnostics.mjs';
 import {binancePerpetualMarkets} from './markets.mjs';
 import {officialMarketLinks,telegramMessage} from './links.mjs';
-import {executionEstimate,EXEC_DEFAULTS,parsePerpExecution} from './execution.mjs';
 import {estimateBinanceExecution,BINANCE_PAPER_ASSUMPTIONS} from './binance_execution.mjs';
 import {VolumeProfileCollector} from './profile_collector.mjs';
 import {roundOrangeXDecimal} from './orangex_contract_validation.mjs';
@@ -29,9 +29,7 @@ import {translateNewsArticles} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
-import {extractTradFiMarkets,swapFundingUSD,tradfiQuoteVerdict} from './tradfi.mjs';
-import {analyzeTradFi} from './tradfi_signal.mjs';
-import {pullSeries} from './tradfi_feed.mjs';
+import {tradfiAvailability} from './tradfi.mjs';
 import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
@@ -46,6 +44,7 @@ if(fs.existsSync(envfile))for(const line of fs.readFileSync(envfile,'utf8').spli
  const match=line.match(/^\s*([A-Z][A-Z_0-9]*)\s*=\s*(.*)\s*$/);
  if(match&&!process.env[match[1]])process.env[match[1]]=match[2].replace(/^['"]|['"]$/g,'');
 }
+configureSignalScorePolicy(process.env);
 const CONFIG={
  port:Number(process.env.PORT||3000),host:process.env.HOST||'127.0.0.1',
  scanMs:Math.max(30000,Number(process.env.SCAN_INTERVAL_MS||60000)),
@@ -59,12 +58,8 @@ const CONFIG={
  watchEnabled:process.env.TELEGRAM_SCORE_WATCH_ENABLED!=='false',
  maxRiskUSD:Number(process.env.PAPER_MAX_RISK_USD||6),
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
- tradfiMs:Math.max(60000,Number(process.env.TRADFI_REFRESH_MS||60000)),
- tradfiScanMs:Math.max(300000,Number(process.env.TRADFI_SCAN_INTERVAL_MS||900000)),
- twelveKey:process.env.TWELVE_DATA_API_KEY||'',
- tradfiSymbols:(process.env.TRADFI_FEED_SYMBOLS||'XAU,XAG').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean).slice(0,4),
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
- limits:{...EXEC_DEFAULTS,maxQuoteAgeSeconds:Number(process.env.MAX_VARIATIONAL_QUOTE_AGE_SEC||180),maxSpreadBps:Number(process.env.MAX_VARIATIONAL_SPREAD_BPS||20),maxAdverseVenueBps:Number(process.env.MAX_ADVERSE_VENUE_BPS||35),maxRoundTripBps:Number(process.env.MAX_ROUNDTRIP_BPS||30)}
+ limits:{maxSpreadBps:20}
 };
 // OrangeX transport stays READ_ONLY. Stage 2 offline PAPER uses a separate store;
 // no setting, API key or browser request can enable actual-data auto entry.
@@ -118,7 +113,7 @@ persisted.paperNotify.enabled = persisted.paperNotify.enabled!==false;
 if(!Array.isArray(persisted.paperNotify.history))persisted.paperNotify.history=[];
 // Create the first shared store file even if no trading event occurs yet.
 save();
-const state={ws:'offline',rest:'connecting',variational:'independent-tradfi',lastVariational:0,lastMarketListings:0,executionRefreshAt:0,blockedSignals:0,lastBlockReason:'',binancePerps:0,variationalPerps:0,lastMarket:0,lastScan:0,scannedSinceBoot:0,cycleScanned:0,cycle:0,
+const state={ws:'offline',rest:'connecting',lastMarketListings:0,executionRefreshAt:0,blockedSignals:0,lastBlockReason:'',binancePerps:0,lastMarket:0,lastScan:0,scannedSinceBoot:0,cycleScanned:0,cycle:0,
  activeSymbols:[],activeSet:new Set(),researchSymbols:[],researchSet:new Set(),researchRanked:[],scanMode:'waiting',lastValidatedAt:0,ranked:[],quotes:new Map(),analyses:new Map(),scanCursor:0,scanActive:false,error:'',clients:new Set(),recentSignals:[],
  liveWS:'offline',liveWatched:0,lastLiveTrigger:0,livePending:0,liveAnalyzed:0,
  lastTickerAt:0,lastTickerCount:0,lastLiveDataAt:0,lastLiveCandleClose:0,liveSubscribeAcks:0,liveSubscribeErrors:0,liveLastError:'',lastScanAttempt:0,scanStartedAt:0,scanFailedAt:0,marketRetryCount:0,marketError:'',marketLastRetry:0,news:[],newsStatus:'connecting',newsChecked:0,newsSources:[],newsError:'',update:{state:'unconfigured',lastCheck:0,message:'업데이트 서버 미설정'},scanSuccess:0,scanFailed:0,lastScanFailures:[],lastScanSuccessAt:0};
@@ -132,8 +127,6 @@ const structureBySymbol=new Map();
 const historyBySymbol=new Map();
 function recentStructures(){return [...structureBySymbol.values()].flat().filter(x=>Date.now()-x.observedAt<2*3600000).sort((a,b)=>b.observedAt-a.observedAt).slice(0,100)}
 function recentHistory(){return [...historyBySymbol.values()].flat().filter(x=>Date.now()-x.confirmedAt<24*3600000).sort((a,b)=>b.confirmedAt-a.confirmedAt).slice(0,100)}
-const tradfiState={status:'connecting',updatedAt:0,error:'',swaps:[],patterns:[],feedStatus:CONFIG.twelveKey?'checking':'unconfigured',feedUpdatedAt:0,feedError:'',scanInProgress:false,feedScanned:0};
-const VARIATIONAL_URL='https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/v2/stats';
 const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.json':'application/json; charset=utf-8'};
 function response(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
 function send(event,obj){const msg=`event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;for(const client of state.clients){try{client.write(msg)}catch{state.clients.delete(client)}}}
@@ -164,101 +157,20 @@ async function binance(url,ttl=30000){
  if(apiCache.size>1200){for(const [key,value]of apiCache){if(!value.pending&&value.until<Date.now())apiCache.delete(key);if(apiCache.size<=1000)break}}
  try{return await task;}catch(e){apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
 }
-async function variationalStats(){
- const cached=apiCache.get(VARIATIONAL_URL);
- if(cached && cached.until>Date.now())return cached.data;
- if(cached?.pending)return cached.pending;
- const task=(async()=>{
-  const ctrl=new AbortController();const timeout=setTimeout(()=>ctrl.abort(),12000);
-  try{
-   const r=await fetch(VARIATIONAL_URL,{signal:ctrl.signal,headers:{Accept:'application/json','User-Agent':'SignalLab/2.0'}});
-   if(!r.ok)throw Error(`Variational API HTTP ${r.status}`);
-   const data=await r.json();if(!Array.isArray(data?.listings))throw Error('Variational v2 listings 응답이 올바르지 않음');
-   apiCache.set(VARIATIONAL_URL,{data,until:Date.now()+45000});return data;
-  }finally{clearTimeout(timeout)}
- })();
- apiCache.set(VARIATIONAL_URL,{data:null,until:0,pending:task});
- try{return await task}catch(e){apiCache.delete(VARIATIONAL_URL);throw e}
-}
-async function tgTradFi(pattern,row){
- if(!CONFIG.tgToken||!CONFIG.tgChat)return;
- const formatted=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:5});
- const message=[`📊 [TradFi 확정봉 패턴 · 참고 시그널] ${pattern.ticker} ${pattern.direction}`,
-  `패턴: ${pattern.pattern}`,`참조 진입 ${formatted(pattern.entry)} / 손절 ${formatted(pattern.stop)}`,
-  ...pattern.targets.map((p,i)=>`${i+1}차: ${formatted(p)} · 익절 ${pattern.takeProfitPercent[i]}%`),
-  `외부 데이터: Twelve Data (Variational 가격과 차이 가능)`,
-  `⚠️ 체결 확정 또는 수익 보장 아님 · 주문 전 실제 시장 운영·RFQ 호가·펀딩 확인`].join('\n');
- const keyboard=[[{text:'Variational 종목 확인 ↗',url:row.tradeUrl||row.marketsUrl}]];
- if(row.chartSymbol)keyboard.push([{text:'TradingView 참조 차트 ↗',url:`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(row.chartSymbol)}`}]);
- try{const res=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CONFIG.tgChat,text:message,disable_web_page_preview:true,reply_markup:{inline_keyboard:keyboard}}),signal:AbortSignal.timeout(10000)});if(!res.ok)console.warn('[TRADFI TG]',res.status)}
- catch(e){console.warn('[TRADFI TG]',e.message)}
-}
-async function refreshTradFi(){
- try{
-  const payload=await variationalStats();
-  tradfiState.swaps=extractTradFiMarkets(payload,{now:Date.now()});
-  tradfiState.updatedAt=Date.now();tradfiState.status='connected';tradfiState.error='';
-  for(const row of tradfiState.swaps){if(tradfiQuoteVerdict(row,{now:Date.now()}).eligible){
-   paper.onPrice('TRADFI',row.ticker,row.markPrice,row.quoteUpdatedAt,{halfSpreadBps:(row.spreadBps||0)/2,quoteFresh:true});
-  }}
-  // Removed/renamed SWAPs must not survive the next API refresh.
-  const usable=new Set(tradfiState.swaps.filter(x=>tradfiQuoteVerdict(x,{now:Date.now()}).eligible).map(x=>x.ticker));
-  tradfiState.patterns=tradfiState.patterns.filter(x=>usable.has(x.ticker)&&x.lastBarAt>Date.now()-90*60000);
-  send('tradfi',{...tradfiPublic()});
- }catch(e){
-  tradfiState.status='offline';tradfiState.error=e.message;
-  tradfiState.swaps=[];tradfiState.patterns=[];send('tradfi',tradfiPublic());
- }
-}
-function tradfiPublic(){return {status:tradfiState.status,updatedAt:tradfiState.updatedAt,error:tradfiState.error,
-  swaps:tradfiState.swaps.map(row=>({...row,quote:tradfiQuoteVerdict(row,{now:Date.now()}),
-   fundingExampleLongUSD:swapFundingUSD(row,'LONG'),fundingExampleShortUSD:swapFundingUSD(row,'SHORT')})),
-  patterns:tradfiState.patterns.filter(x=>tradfiState.swaps.some(row=>row.ticker===x.ticker&&tradfiQuoteVerdict(row,{now:Date.now()}).eligible)&&x.lastBarAt>Date.now()-90*60000),feedStatus:tradfiState.feedStatus,feedUpdatedAt:tradfiState.feedUpdatedAt,
-  feedError:tradfiState.feedError,scanInProgress:tradfiState.scanInProgress,feedScanned:tradfiState.feedScanned,
-  scanIntervalMinutes:CONFIG.tradfiScanMs/60000};}
-async function runTradFiScan(){
- if(tradfiState.scanInProgress)return;
- if(!CONFIG.twelveKey){tradfiState.feedStatus='unconfigured';send('tradfi',tradfiPublic());return}
- if(!tradfiState.swaps.length){tradfiState.feedStatus='waiting-listings';return}
- tradfiState.scanInProgress=true;tradfiState.feedStatus='checking';tradfiState.feedError='';
- try{
-  const targets=tradfiState.swaps.filter(x=>x.feedSymbol&&CONFIG.tradfiSymbols.includes(x.base)).slice(0,4);
-  const patterns=[];const failed=[];let scanned=0;const seriesCache=new Map();
-  if(!targets.length){tradfiState.feedStatus='unavailable';tradfiState.feedError='캔들 데이터 매핑이 확인된 대상 상품이 현재 상장 목록에 없습니다.';tradfiState.patterns=[];return}
-  for(const row of targets){
-   try{
-    // Never pass the API key to the UI, error response or logs.
-    const series=seriesCache.has(row.feedSymbol)?seriesCache.get(row.feedSymbol):await pullSeries(row.feedSymbol,CONFIG.twelveKey);
-    seriesCache.set(row.feedSymbol,series);
-    const result=analyzeTradFi(row,series,{now:Date.now()});scanned++;
-    if(result.status==='confirmed')patterns.push(result);
-    else if(result.reason)failed.push(`${row.base}: ${result.reason}`);
-   }catch(e){failed.push(`${row.base}: ${String(e.message||'feed error').slice(0,110)}`)}
-  }
-  // New alerts require a just-closed candle and fresh verified quote.
-  for(const pattern of patterns){
-   const row=tradfiState.swaps.find(x=>x.ticker===pattern.ticker);
-   const key=`${pattern.ticker}|${pattern.direction}|${pattern.lastBarAt}`;
-   if(!row||persisted.tradfiSeen[key]||Date.now()-pattern.lastBarAt>30*60000)continue;
-   if(!tradfiQuoteVerdict(row,{now:Date.now()}).eligible)continue;
-   // Persist the simulated pending entry first. A failed write must remain
-   // retryable rather than marking an unregistered pattern as already handled.
-   if(!paper.register(pattern,{market:'TRADFI',symbol:pattern.ticker,quoteEligible:true}))continue;
-   save({...persisted,tradfiSeen:{...persisted.tradfiSeen,[key]:Date.now()}});
-   send('tradfi-alert',{...pattern,tradeUrl:row.tradeUrl||row.marketsUrl,chartSymbol:row.chartSymbol});
-   void tgTradFi(pattern,row);
-  }
-  for(const [k,t] of Object.entries(persisted.tradfiSeen))if(t<Date.now()-7*86400000)delete persisted.tradfiSeen[k];
-  tradfiState.patterns=patterns;tradfiState.feedStatus=failed.length?'partial':'connected';
-  tradfiState.feedScanned=scanned;tradfiState.feedUpdatedAt=Date.now();
-  tradfiState.feedError=failed.slice(0,5).join(' | ');
- }catch(e){tradfiState.feedStatus='offline';tradfiState.feedError=e.message;tradfiState.patterns=[]}
- finally{tradfiState.scanInProgress=false;send('tradfi',tradfiPublic())}
+// No validated replacement market/contract feed is configured for TradFi.
+// Keep historical records intact; never mark stale positions as freshly tracked.
+function tradfiPublic(){
+ const retained=paper.store;
+ return {...tradfiAvailability(),retainedRecords:{
+  open:retained.open.filter(x=>x.market==='TRADFI').length,
+  pending:retained.pending.filter(x=>x.market==='TRADFI').length,
+  closed:retained.closed.filter(x=>x.market==='TRADFI').length
+ }};
 }
 const exchangeInfo=()=>binance('/fapi/v1/exchangeInfo',15*60*1000);
 const market24=()=>binance('/fapi/v1/ticker/24hr',75000);
 const klines=(symbol,interval,limit=150)=>binance(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`,interval==='4h'?170000:interval==='1h'?54000:20000);
-// Binance alone defines crypto listings, prices and analysis. TradFi remains independent.
+// Binance alone defines crypto listings, prices and analysis. TradFi collection is disabled.
 function marketFailure(error){
  state.rest='offline';state.marketError=String(error?.message||error);state.error='Binance 데이터 검증 지연: '+state.marketError;
  state.marketRetryCount++;state.marketLastRetry=Date.now();state.scanMode=state.activeSymbols.length?'binance-stale':'waiting';
@@ -355,7 +267,7 @@ async function checkSymbolInternal(symbol, force=false){
  const meta=state.quotes.get(symbol)||{};
  const [h1,h4,btcH4]=await Promise.all([klines(symbol,'1h',200),klines(symbol,'4h',301),symbol==='BTCUSDT'?Promise.resolve(null):klines('BTCUSDT','4h',301)]);
  const out=analyze(symbol,h1,h4,[],meta.price,{quoteVolume:meta.quoteVolume,priceChangePercent:meta.change,btcH4Rows:btcH4??h4});
- out.analysisVenue='BINANCE';out.tradeApproval=false;out.orangeXApproval=false;
+ out.analysisVenue='BINANCE';out.tradeApproval=false;out.orangeXApproval=false;out.scorePolicy=getSignalScorePolicy();
  if(out.pattern&&out.technicalQualified===true){
   try{
    const book=await depth(symbol),tick=Number(meta.filters?.PRICE_FILTER?.tickSize);
@@ -416,7 +328,7 @@ function publishCryptoSignal(row,decision,now=Date.now()){
 }
 // Event-driven scanner. The global mini-ticker stream supplies fast price updates;
 // per-symbol 1H + 4H kline close streams trigger re-analysis at candle completion.
-// Historical candles and Variational indicative prices remain REST snapshots, not tick-perfect.
+// Historical candles remain REST snapshots, not tick-perfect.
 const liveQueue=[];const queued=new Set();const lastTrigger=new Map();let liveWorkers=0;
 const liveSockets=[];let liveSubscriptionKey='';let streamRequestId=1;
 function invalidateCandles(symbol){for(const interval of ['1h','4h'])for(const suffix of [150,110,100,200,301])apiCache.delete(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${suffix}`)}
@@ -579,20 +491,20 @@ setInterval(()=>{
   try{marketWs.close()}catch{};send('status',getStatus());
  }
 },30000);
-function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.variational==='connected'?[]:state.researchSymbols,variational:state.variational,assess:row=>assessAnalysis(row)});}
-function getStatus(){return {storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,variational:state.variational,lastVariational:state.lastVariational,binancePerps:state.binancePerps,variationalPerps:state.variationalPerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
+function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.researchSymbols,assess:row=>assessAnalysis(row)});}
+function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
  intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:{maxQuoteAgeSeconds:15,maxFeedAgeSeconds:90,maxSpreadBps:20,maxRiskUSD:CONFIG.maxRiskUSD,minNetRR:1.8,analysisOnly:true},
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
  liveWS:state.liveWS,liveWatched:state.liveWatched,lastLiveDataAt:state.lastLiveDataAt,lastLiveCandleClose:state.lastLiveCandleClose,liveSubscribeAcks:state.liveSubscribeAcks,liveSubscribeErrors:state.liveSubscribeErrors,liveLastError:state.liveLastError,lastLiveTrigger:state.lastLiveTrigger,livePending:state.livePending,liveAnalyzed:state.liveAnalyzed,confirmedPatternCount:confirmedPatterns().length,newsStatus:state.newsStatus,newsChecked:state.newsChecked,newsCount:state.news.length,newsError:state.newsError,newsSources:state.newsSources,update:state.update};}
-function recentAnalyses(){return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)||(state.variational!=='connected'&&state.researchSet.has(x.symbol))).sort((a,b)=>b.scannedAt-a.scannedAt).slice(0,140).map(x=>currentAnalysis(x));}
+function recentAnalyses(){return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)||state.researchSet.has(x.symbol)).sort((a,b)=>b.scannedAt-a.scannedAt).slice(0,140).map(x=>currentAnalysis(x));}
 function confirmedPatterns(){
  // The user needs to see *all actually identified, closed-1H chart patterns*.
- // Strict quality and Variational order verification are deliberately displayed as
+ // Technical quality and Binance market/execution verification are displayed as
  // separate statuses. This function NEVER triggers an alert or paper trade.
  const now=Date.now();
  return [...state.analyses.values()].filter(x=>
-   (state.activeSet.has(x.symbol)||(state.variational!=='connected'&&state.researchSet.has(x.symbol)))&&x.patternConfirmed===true&&Boolean(x.pattern)&&
+   (state.activeSet.has(x.symbol)||state.researchSet.has(x.symbol))&&x.patternConfirmed===true&&Boolean(x.pattern)&&
    Number.isFinite(x.patternConfirmedAt)&&x.patternConfirmedAt<=now&&
    now-x.patternConfirmedAt<2*3600000&&now-x.scannedAt<120*60000
  ).sort((a,b)=>(b.patternConfirmedAt-a.patternConfirmedAt)||(b.score-a.score)).slice(0,65).map(x=>currentAnalysis(x));
@@ -606,7 +518,7 @@ function currentAnalysis(row,now=Date.now()){
  const decision=assessAnalysis(row,now);
  const quality=row.quality?{...row.quality,passed:decision.technical,failed:decision.technicalReasons,
   checks:row.quality.checks?.map(c=>c.key==='fresh'&&now>row.quality.validUntil?{...c,passed:false,value:'필수 봉 신선도 만료'}:c)}:row.quality;
- return {...row,quality,technicalQualified:decision.technical,decision,execution:decision.execution,qualified:decision.ready,
+ return {...row,scorePolicy:getSignalScorePolicy(),quality,technicalQualified:decision.technical,decision,execution:decision.execution,qualified:decision.ready,
   status:row.pattern?(decision.ready?'signal':'watch'):row.status,
   executionStatus:decision.execution.eligible?'호가·비용 기준 통과':'실매매 검증 보류'};
 }
@@ -683,7 +595,7 @@ async function pollNews(){
  const failures=settled.filter(x=>x.status==='rejected').map((x,i)=>x.reason?.message||'feed rejected');
  state.newsError=failures.length?`${failures.length}/${FEEDS.length}개 소스 오류`:'';
  if(!feeds.length){state.newsStatus='offline';send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:0,error:'RSS 제공처 모두 연결 실패'});return}
- const originalNews=prepareNews(feeds,state.newsChecked,[...state.ranked.map(x=>({symbol:x.baseAsset,name:x.variational?.name||''})),...tradfiState.swaps.map(x=>({symbol:x.base,name:x.name||''}))]);
+ const originalNews=prepareNews(feeds,state.newsChecked,state.ranked.map(x=>({symbol:x.baseAsset,name:x.baseAsset})));
  const incoming=await translateNewsArticles(originalNews,{translate:CONFIG.translationURL?translateArticle:undefined,providerId:CONFIG.translationURL?'CONFIGURED_LIBRETRANSLATE':'UNCONFIGURED'});
  state.newsStatus=feeds.length===FEEDS.length?'connected':'partial';state.news=incoming;
  const newsSeen=new Set(Object.keys(persisted.newsSeen)),nextSeen={...persisted.newsSeen},notifications=[];let changed=false;
@@ -756,12 +668,11 @@ const server=http.createServer(async(req,res)=>{
    return response(res,404,{error:'Not found'});
   }
   if(pathname==='/api/status')return response(res,200,getStatus());
-  if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,variational:state.variational,marketError:state.marketError});
+  if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,marketError:state.marketError});
   if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:storageHealth.healthy,updatedByServer:true,...storageHealth,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
   if(pathname==='/api/paper'&&req.method==='GET')return response(res,200,{
    ...paper.snapshot(),storage:{...storageHealth},monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
-   scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,variational:state.variational,scanMode:state.scanMode,activeCount:state.activeSymbols.length},
-    tradfi:{status:tradfiState.status,updatedAt:tradfiState.updatedAt,feedStatus:tradfiState.feedStatus,feedUpdatedAt:tradfiState.feedUpdatedAt}})
+   scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,scanMode:state.scanMode,activeCount:state.activeSymbols.length}})
   });
   if(pathname==='/api/paper/notifications'&&req.method==='GET')return response(res,200,{enabled:persisted.paperNotify.enabled,
    serverPlatform:process.platform,windowsSupported:process.platform==='win32',history:persisted.paperNotify.history.slice(0,50),
@@ -786,7 +697,7 @@ const server=http.createServer(async(req,res)=>{
    return res.end(paperCSV(paper.store.closed));
   }
   if(pathname==='/api/tradfi')return response(res,200,tradfiPublic());
-  if(pathname==='/api/tradfi/refresh'&&req.method==='POST'){void refreshTradFi();return response(res,202,{accepted:true});}
+  if(pathname==='/api/tradfi/refresh'&&req.method==='POST')return response(res,409,{accepted:false,...tradfiPublic()});
   if(pathname==='/api/scan'&&req.method==='POST'){if(state.scanActive)return response(res,202,{accepted:false,reason:'스캔 진행 중',status:getStatus()});void runScan();return response(res,202,{accepted:true,message:'백그라운드 스캔 시작',status:getStatus()})}
   if(pathname==='/api/update')return response(res,200,{...state.update,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
@@ -828,8 +739,8 @@ const server=http.createServer(async(req,res)=>{
    const result=estimateBinanceExecution({signal:{...state.analyses.get(symbol),direction:side,symbol},book:await depth(symbol),market:x,maxNotionalUSD:amount,maxRiskUSD:CONFIG.maxRiskUSD});
    return response(res,200,{symbol,...result});
   }
-  if(pathname==='/api/market')return response(res,200,{at:state.lastMarket,markets:state.ranked.map(x=>({...x,...state.quotes.get(x.symbol)})),research:state.variational==='connected'?[]:state.researchRanked.filter(x=>!state.activeSet.has(x.symbol)),watchlist:persisted.watchlist,variationalStatus:state.variational});
-  if(pathname==='/api/results')return response(res,200,{structures:[],history:[],signals:relevantSignals(),patterns:[],watch:[],alerts:persisted.alerts.filter(x=>state.activeSet.has(x.symbol)).slice(0,35).map(x=>({...x,lifecycle:signalLifecycle(x,{price:state.quotes.get(x.symbol)?.price,priceAt:state.quotes.get(x.symbol)?.priceAt})})),recent:recentAnalyses()});
+  if(pathname==='/api/market')return response(res,200,{at:state.lastMarket,markets:state.ranked.map(x=>({...x,...state.quotes.get(x.symbol)})),research:state.researchRanked.filter(x=>!state.activeSet.has(x.symbol)),watchlist:persisted.watchlist,analysisVenue:'BINANCE'});
+  if(pathname==='/api/results')return response(res,200,{scorePolicy:getSignalScorePolicy(),structures:[],history:[],signals:relevantSignals(),patterns:[],watch:[],alerts:persisted.alerts.filter(x=>state.activeSet.has(x.symbol)).slice(0,35).map(x=>({...x,lifecycle:signalLifecycle(x,{price:state.quotes.get(x.symbol)?.price,priceAt:state.quotes.get(x.symbol)?.priceAt})})),recent:recentAnalyses()});
   if(pathname==='/api/klines'){
    const symbol=(url.searchParams.get('symbol')||'').toUpperCase();const interval=url.searchParams.get('interval')||'1h';
    if(!/^[A-Z0-9]{3,25}$/.test(symbol)||!['1h','4h','1d'].includes(interval))return response(res,400,{error:'Invalid symbol or interval'});
@@ -888,9 +799,6 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
  console.log(`Binance USDT perpetual live ticks + confirmed 1H/4H event scans; background ${Math.round(CONFIG.scanMs/60000)} min / news ${Math.round(CONFIG.newsMs/1000)} sec. Telegram ${CONFIG.tgChat?'enabled':'disabled'}.`);
  if(CONFIG.autoUpdate){setTimeout(()=>checkSoftwareUpdate().catch(()=>{}),8000);setInterval(()=>checkSoftwareUpdate().catch(()=>{}),6*3600000)}
  connectWS();setTimeout(runScan,1200);setInterval(()=>void runScan(),CONFIG.scanMs);
- setTimeout(()=>void refreshTradFi().then(()=>runTradFiScan()),2500);
- setInterval(()=>void refreshTradFi(),CONFIG.tradfiMs);
- setInterval(()=>void runTradFiScan(),CONFIG.tradfiScanMs);
  // Retry market discovery quickly after an API failure rather than staying empty for 4 minutes.
  setInterval(()=>{if(!state.activeSymbols.length&&!state.researchSymbols.length&&!state.scanActive){state.marketLastRetry=Date.now();void runScan()}},20000);
  setInterval(refreshExecution,60000);

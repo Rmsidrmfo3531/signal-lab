@@ -14,12 +14,12 @@ test('diagnostics distinguish 1h+4h technical quality from venue execution block
  const d=base('DDDUSDT');
  const e={symbol:'EEEUSDT',scannedAt:now,status:'neutral'};
  const map=new Map([a,b,c,d,e].map(x=>[x.symbol,x]));
- const x=describeScanFunnel(map,{activeSymbols:[...map.keys()],variational:'connected',now});
+ const x=describeScanFunnel(map,{activeSymbols:[...map.keys()],now});
  assert.equal(x.patternCount,4);assert.equal(x.quality,2);assert.equal(x.venue,1);assert.equal(x.ready,1);assert.equal(x.noPattern,1);
  assert.equal(x.topReasons.find(q=>q.reason==='호가 시각 오래됨').count,1);
 });
 test('venue not verified never counted as ready even if internal status says signal',()=>{
- const a=base('AAAUSDT');const r=describeScanFunnel(new Map([[a.symbol,a]]),{researchSymbols:['AAAUSDT'],variational:'offline',now});
+ const a=base('AAAUSDT');const r=describeScanFunnel(new Map([[a.symbol,a]]),{researchSymbols:['AAAUSDT'],now});
  assert.equal(r.ready,0);assert.equal(r.venue,1);
 });
 test('expired scans are excluded',()=>{

@@ -6,6 +6,7 @@ import {createHmac,randomBytes,createHash} from 'node:crypto';
 import {orangeXBookIntegrity} from './orangex_listing_domains.mjs';
 import {roundOrangeXDecimal} from './orangex_contract_validation.mjs';
 import {isVolumeStepAligned,splitVolumeQuantity} from './volume_profile.mjs';
+import {FINAL_MIN_SCORE} from './signal_policy.mjs';
 export const ORANGEX_API='https://api.orangex.com/api/v1';
 const READ_METHODS=new Set(['/private/get_positions','/private/get_order_state']);
 const PUBLIC_METHODS=new Set(['/public/auth','/public/get_order_book','/public/get_instruments','/public/tickers','/public/coin_gecko_contracts']);
@@ -41,9 +42,9 @@ export function examineOrangeXBook(data,{now=Date.now(),maxAgeMs=10000,maxSpread
  * explicitly tagged. Their presence cannot activate a client or LIVE transport.
  */
 export function makeOrangeXOrderPlan({signal,binancePrice,binancePriceAt,orangexBook,instruments,contractVerification,
- executionCapabilities,tradeApproval,costAssumptions,now=Date.now(),minimumScore=90,maxPriceAgeMs=15000,maxBasisBps=30,
+ executionCapabilities,tradeApproval,costAssumptions,now=Date.now(),minimumScore=FINAL_MIN_SCORE,maxPriceAgeMs=15000,maxBasisBps=30,
  maxNotionalUSDT=100,maxRiskUSDT=2,maxSlippageBps=10}={}){
- if(!Number.isInteger(minimumScore)||minimumScore<90||minimumScore>100||signal?.scoreVersion!=='ISSUE6-100-V1'||
+ if(!Number.isInteger(minimumScore)||minimumScore<FINAL_MIN_SCORE||minimumScore>100||signal?.scoreVersion!=='ISSUE6-100-V1'||
   !finite(signal?.score)||signal.score<minimumScore||signal.score>100||signal.technicalQualified!==true||signal?.technicalValidation?.passed!==true||
   signal.status!=='signal'||signal.qualified!==true)throw Error('OrangeX: qualified canonical score and independent technical validation required');
  if(!['LONG','SHORT'].includes(signal.direction)||signal.patternConfirmed!==true||signal.patternTimeframe!=='1h'||

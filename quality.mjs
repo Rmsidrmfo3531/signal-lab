@@ -1,7 +1,8 @@
 import {seededEMA,evaluateIndicators} from './indicators.mjs';
+import {FINAL_MIN_SCORE as STRICT_MIN_SCORE,getSignalScorePolicy} from './signal_policy.mjs';
+export {FINAL_MIN_SCORE as STRICT_MIN_SCORE} from './signal_policy.mjs';
 
 /** Issue #6: one 100-point evidence score, never a probability or permission. */
-export const STRICT_MIN_SCORE=90; // Proposed threshold, not backtest-calibrated.
 export const WATCH_MIN_SCORE=80;
 export const MIN_CLOSED_4H_BARS=250;
 export const SCORE_VERSION='ISSUE6-100-V1';
@@ -79,7 +80,7 @@ export function gradeSetup({direction,h1,h4,atr1h,volumeRatio,entry,stop,price=e
     status:!btcObserved?'UNVERIFIED':btcAligned?'PASS':'FAIL'}
   ],failed=validationChecks.filter(check=>!check.passed).map(check=>check.label),thresholdPassed=finite(score)&&score>=STRICT_MIN_SCORE,
   validationPassed=failed.length===0;
- return {score,scoreVersion:SCORE_VERSION,minimumScore:STRICT_MIN_SCORE,passed:validationPassed&&thresholdPassed,
+ return {score,scoreVersion:SCORE_VERSION,minimumScore:STRICT_MIN_SCORE,scorePolicy:getSignalScorePolicy(),passed:validationPassed&&thresholdPassed,
   validationPassed,thresholdPassed,checkedAt:now,validUntil:finite(lastCloseAt)&&finite(fourCloseAt)?
    Math.min(lastCloseAt+75*60000,fourCloseAt+255*60000):null,
   failed:[...failed,...(!ready?['평가불가: 지표 또는 4H 이력 부족']:!thresholdPassed?['종합점수 '+STRICT_MIN_SCORE+'점 미만']:[])],

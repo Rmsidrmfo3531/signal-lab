@@ -164,8 +164,26 @@ test('a valid 90-point setup without three supplied volume-profile targets stays
  }finally{await app.close()}
 });
 
-test('Binance public discovery outage blocks new entries and recovers without a Variational intersection',{timeout:15000},async()=>{
- const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:false,binanceOffline:true,venueOffline:true});
+test('an existing data-directory score setting raises the final gate while disclosing unverified performance',{timeout:15000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true});
+ const envContent='SIGNAL_FINAL_MIN_SCORE=95\n';
+ await fs.writeFile(path.join(app.data,'.env'),envContent);
+ try{
+  await app.start();
+  const status=await app.get('/api/status');
+  assert.equal(status.scorePolicy.finalMinScore,95);assert.equal(status.scorePolicy.source,'CONFIGURED');
+  assert.equal(status.scorePolicy.performanceValidation,'UNVERIFIED');assert.equal(status.scorePolicy.liveApproval,false);
+  const row=await app.get('/api/analyze?symbol=BTCUSDT');
+  assert.equal(row.score,90);assert.equal(row.scorePolicy.finalMinScore,95);assert.equal(row.qualified,false);
+  assert.equal(row.quality.thresholdPassed,false);assert.equal(row.quality.validationPassed,true);
+  const results=await app.get('/api/results');assert.deepEqual(results.signals,[]);assert.equal(results.scorePolicy.finalMinScore,95);
+  const paper=await app.get('/api/paper');assert.equal(paper.pendingCount,0);assert.equal(paper.openCount,0);
+  await app.stop();assert.equal(await fs.readFile(path.join(app.data,'.env'),'utf8'),envContent);
+ }finally{await app.close()}
+});
+
+test('Binance public discovery outage blocks new entries and recovers without another provider intersection',{timeout:15000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:false,binanceOffline:true});
  try{
   await app.start();await until(()=>app.get('/api/status'),s=>s.rest==='offline'&&!s.scanning);
   assert.equal((await app.get('/api/status')).activeCount,0);
@@ -175,7 +193,7 @@ test('Binance public discovery outage blocks new entries and recovers without a 
   await until(()=>app.get('/api/status'),s=>s.activeCount===1&&s.rest==='connected'&&!s.scanning);
   const analyzed=await app.get('/api/analyze?symbol=BTCUSDT');assert.equal(analyzed.qualified,true);
   assert.equal(analyzed.decision.analysisVenue,'BINANCE');assert.equal(analyzed.decision.tradeApproval,false);
-  assert.equal((await app.get('/api/results')).signals.length,1,'Variational outage cannot invalidate Binance evidence');
+  assert.equal((await app.get('/api/results')).signals.length,1,'no secondary exchange exists to gate Binance evidence');
  }finally{await app.close()}
 });
 

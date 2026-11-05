@@ -16,21 +16,21 @@ test('TradingView browser link preserves future symbol and timeframe',()=>{
   assert.equal(tradingViewChartUrl('SOLUSDT','4h'),'https://www.tradingview.com/chart/?symbol=BINANCE%3ASOLUSDT.P&interval=240');
 });
 
-test('public TradingView chart is visible while both exchange APIs remain unverified',()=>{
+test('public TradingView chart is visible while listing metadata remains unverified',()=>{
   const x=tradingViewAccess('BTCUSDT','1h',false);
   assert.equal(x.canView,true);
-  assert.equal(x.canOpenVariational,false);
+  assert.deepEqual(Object.keys(x).sort(),['canView','chartUrl']);
   assert.match(x.chartUrl,/BTCUSDT.P/);
 });
 test('trade verification never controls chart URL availability',()=>{
   const before=tradingViewAccess('SOLUSDT','4h',false);
   const after=tradingViewAccess('SOLUSDT','4h',true);
   assert.equal(before.chartUrl,after.chartUrl);
-  assert.equal(after.canOpenVariational,true);
+  assert.equal(after.canView,true);assert.deepEqual(Object.keys(after).sort(),['canView','chartUrl']);
 });
 test('malformed chart symbol denied, including if someone claims it is verified',()=>{
   const x=tradingViewAccess('DOGEUSDT\" onclick=', '1h',true);
   assert.equal(x.canView,false);
-  assert.equal(x.canOpenVariational,false);
+  assert.deepEqual(Object.keys(x).sort(),['canView','chartUrl']);
   assert.equal(x.chartUrl,null);
 });

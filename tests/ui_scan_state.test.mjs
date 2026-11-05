@@ -15,7 +15,7 @@ const noop=()=>{};
 function ui(){
  const nodes=new Map();
  const $=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',innerHTML:'',className:'',classList:{toggle:noop,add:noop,remove:noop}});return nodes.get(id)};
- const app={symbol:'BTCUSDT',market:[],marketMap:new Map(),signals:[],patterns:[],watch:[],alerts:[],watchlist:[],analysis:null,status:{rest:'connected',variational:'offline'}};
+ const app={symbol:'BTCUSDT',market:[],marketMap:new Map(),signals:[],patterns:[],watch:[],alerts:[],watchlist:[],analysis:null,status:{rest:'connected'}};
  const ctx=vm.createContext({app,$,Date,Number,Map,tradePlan,entryTiming,
   updateJournalSymbols:noop,loadChart:noop,loadAnalysis:noop,renderWatch:noop,renderPair:noop,renderSignals:noop,
   renderRecentCoverage:noop,renderAlerts:noop,renderMatched:noop,loadExecution:noop,renderTradingView:noop,drawChart:noop,
@@ -23,7 +23,7 @@ function ui(){
  vm.runInContext(piece('function currentReadySignals(','function results('),ctx);
  return {app,ctx,$};
 }
-const market=(price=100,priceAt)=>({symbol:'BTCUSDT',baseAsset:'BTC',price,priceAt,variational:{ticker:'BTC-PERP',markPrice:100}});
+const market=(price=100,priceAt)=>({symbol:'BTCUSDT',baseAsset:'BTC',price,priceAt,exchangeFilters:{tickSize:.1}});
 
 test('market snapshots preserve newer live prices and timestamps on PC/mobile',()=>{
  const {app,ctx}=ui();
@@ -31,10 +31,10 @@ test('market snapshots preserve newer live prices and timestamps on PC/mobile',(
  const now=Date.now();
  ctx.applyMarket({markets:[market()]});
  ctx.onQuote([['BTCUSDT',100.1,now]]);
- ctx.applyMarket({markets:[{...market(100,now-10000),variational:{ticker:'BTC-PERP',markPrice:100.2}}]});
+ ctx.applyMarket({markets:[{...market(100,now-10000),exchangeFilters:{tickSize:.01}}]});
  assert.equal(app.marketMap.get('BTCUSDT').price,100.1);
  assert.equal(app.marketMap.get('BTCUSDT').priceAt,now);
- assert.equal(app.marketMap.get('BTCUSDT').variational.markPrice,100.2,'metadata still refreshes');
+ assert.equal(app.marketMap.get('BTCUSDT').exchangeFilters.tickSize,.01,'metadata still refreshes');
  assert.equal(app.market[0].price,100.1,'market table uses the same latest quote');
  ctx.onQuote([['BTCUSDT',99,now-20000]]);
  assert.equal(app.marketMap.get('BTCUSDT').price,100.1,'delayed tick must not overwrite newer quote');
@@ -112,7 +112,7 @@ test('shared entry allowance retains price, risk and ATR guards for LONG and SHO
  assert.equal(entryAllowance({entry:NaN,stop:98}),0);
 });
 
-test('final display independently requires fresh candles, Binance prices and validated volume targets without Variational dependence',()=>{
+test('final display independently requires fresh candles, Binance prices and validated volume targets using only Binance data',()=>{
  const {app,ctx}=ui(),now=Date.now();
  const signal={symbol:'BTCUSDT',direction:'LONG',pattern:'돌파',patternConfirmed:true,patternConfirmedAt:now-1000,
   entry:100,stop:98,atr:2,score:90,qualified:true,execution:{eligible:true},technicalValidation:{passed:true},targetPlan:{ok:true,targets:[104,106,108]},scannedAt:now,quality:{passed:true,validUntil:now+1000}};
@@ -121,8 +121,8 @@ test('final display independently requires fresh candles, Binance prices and val
  assert.equal(ctx.currentReadySignals(now+1001).length,0,'mandatory candle freshness expires before the two-hour pattern window');
  signal.quality.validUntil=now+3600000;signal.scannedAt=now-21*60000;
  assert.equal(ctx.currentReadySignals(now).length,0,'a cached final signal still needs recent analysis');
- signal.scannedAt=now;app.status.variational='offline';
- assert.equal(ctx.currentReadySignals(now).length,1,'Variational failure does not block Binance-only analysis');
+ signal.scannedAt=now;
+ assert.equal(ctx.currentReadySignals(now).length,1,'Binance-only analysis does not require another provider');
  app.status.rest='offline';assert.equal(ctx.currentReadySignals(now).length,0,'Binance connection failure expires current final readiness');
  app.status.rest='connected';signal.targetPlan.ok=false;assert.equal(ctx.currentReadySignals(now).length,0,'unavailable profile cannot become a final signal');
  signal.targetPlan.ok=true;app.marketMap.get('BTCUSDT').researchOnly=true;
@@ -135,7 +135,7 @@ test('a saved watchlist remains renderable during research-only venue outages',(
  const {app,ctx,$}=ui();
  ctx.document={querySelectorAll:()=>[]};ctx.pct=String;
  vm.runInContext(piece('function renderWatch(','function renderPair('),ctx);
- app.watchlist=['BTCUSDT'];app.status.variational='offline';
+ app.watchlist=['BTCUSDT'];
  app.marketMap.set('BTCUSDT',{symbol:'BTCUSDT',baseAsset:'BTC',price:100,researchOnly:true});
  ctx.renderWatch();
  assert.match($('watchlist').innerHTML,/USDT 무기한/);

@@ -2620,21 +2620,42 @@
       "dataSource": "SYNTHETIC_FIXTURE",
       "verified": true,
       "venueConnected": true,
-      "listing": {
-        "markPrice": 102.2,
-        "quoteUpdatedAt": 1793149199000,
-        "quote1k": {
-          "bid": 102.19500000000001,
-          "ask": 102.205
-        },
-        "quoteBase": {
-          "bid": 102.19500000000001,
-          "ask": 102.205
-        }
-      },
       "price": 102.2,
       "priceAt": 1793149199000,
-      "statsReceivedAt": 1793149199000
+      "market": {
+        "symbol": "BTCUSDT",
+        "status": "TRADING",
+        "contractType": "PERPETUAL",
+        "quoteAsset": "USDT",
+        "marginAsset": "USDT",
+        "filters": {
+          "PRICE_FILTER": {
+            "tickSize": ".001"
+          },
+          "LOT_SIZE": {
+            "stepSize": ".001",
+            "minQty": ".001"
+          },
+          "MIN_NOTIONAL": {
+            "notional": "1"
+          }
+        }
+      },
+      "book": {
+        "T": 1793149199000,
+        "bids": [
+          [
+            102.19500000000001,
+            1000
+          ]
+        ],
+        "asks": [
+          [
+            102.205,
+            1000
+          ]
+        ]
+      }
     }
   ],
   "markets": [
@@ -2771,5 +2792,6 @@
   ],
   "startAt": 1793149199000,
   "endAt": 1793149199004,
-  "description": "합성 1H·4H 캔들과 명시적 합성 호가를 시간순으로 재생합니다. 실제 과거 OrangeX 성과가 아닙니다."
+  "description": "SYNTHETIC_FIXTURE · LEGACY_V58 연구 전용 합성 재생 예제. 기존 110개 4H 봉·고정 R 전략 비교용이며 현행 Issue6 전략의 실측 또는 거래 승인 근거가 아닙니다. 시장 필터와 호가 잔량 1000은 tests/fixtures/binance_signal.mjs의 명시적 합성 조건이며 OrangeX 실제 계약 규격이 아닙니다.",
+  "strategyVersion": "LEGACY_V58"
 }

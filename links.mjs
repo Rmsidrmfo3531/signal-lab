@@ -3,14 +3,7 @@ export function officialBinanceLinks(symbol){
  if(typeof symbol!=='string'||!/^[A-Z0-9]{2,24}USDT$/.test(symbol))return null;
  return {binance:`https://www.binance.com/en/futures/${encodeURIComponent(symbol)}`};
 }
-// Retain explicit historical Variational link callers; the crypto scanner uses
-// Binance-only links and never requires Variational listing or book evidence.
-export function officialMarketLinks(symbol,variationalTicker){
- const links=officialBinanceLinks(symbol);if(!links)return null;
- if(variationalTicker===undefined)return links;
- const asset=symbol.slice(0,-4);if(typeof variationalTicker!=='string'||variationalTicker!==asset+'-PERP')return null;
- return {...links,variational:`https://omni.variational.io/perpetual/${encodeURIComponent(asset)}`};
-}
+export function officialMarketLinks(symbol){return officialBinanceLinks(symbol)}
 export function telegramMessage(signal,officialLinks,formatted=String){
  const official=officialBinanceLinks(signal?.symbol);
  if(!official||officialLinks?.binance!==official.binance)throw Error('Verified Binance market URL required for Telegram signal');
@@ -34,8 +27,6 @@ export function telegramMessage(signal,officialLinks,formatted=String){
   `⚠️ 점수는 예상 승률이 아닙니다. 공개 호가는 확정 체결이 아니며 수수료·펀딩·슬리피지·청산가를 별도 확인하세요. 자동 주문 없음.`
  ].filter(Boolean).join('\n');
  const keyboard=[];
- if(officialLinks.variational===officialMarketLinks(signal.symbol,signal.symbol.slice(0,-4)+'-PERP')?.variational)
-  keyboard.push([{text:`Variational ${signal.symbol.slice(0,-4)}-PERP ↗`,url:officialLinks.variational}]);
  keyboard.push([{text:`Binance ${signal.symbol} 선물 ↗`,url:official.binance}]);
  return {text,disable_web_page_preview:true,reply_markup:{inline_keyboard:keyboard}};
 }

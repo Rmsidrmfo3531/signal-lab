@@ -17,7 +17,7 @@ const pct=x=>(Number(x)>=0?'+':'')+Number(x||0).toFixed(2)+'%';
 const clock=t=>t?new Date(t).toLocaleTimeString('ko-KR',{timeZone:'Asia/Seoul',hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
 const dateClock=t=>t?new Date(t).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
 
-// Binance USDT perpetual listings are independent of Variational availability.
+// Crypto analysis uses only verified Binance USDT perpetual listings.
 function externalLinks(symbol){
  const m=app.marketMap.get(symbol);
  if(!m||!/^([A-Z0-9]+)USDT$/.test(symbol)||m.symbol!==m.baseAsset+'USDT')return null;
@@ -60,7 +60,14 @@ function renderScanDiagnostics(f){
    el.textContent=reasons.length?'주요 보류 사유: '+reasons.map(x=>`${x.reason} ${x.count}종`).join(' · '):'패턴 미발견 또는 진단 자료 집계 중';
  }
 }
-function setStatus(s){const previousVenue=app.status?.rest;app.status=s;renderScanDiagnostics(s.scanFunnel);
+function renderScorePolicy(policy){
+ const node=$('scorePolicyStatus');if(!node)return;
+ const value=policy?.finalMinScore;
+ if(typeof value!=='number'||!Number.isFinite(value)||value<0||value>100){node.textContent='최종 신호 점수 기준: 설정 조회 미완료 · 실전 성능 미검증 · 실거래 승인 아님';return}
+ const origin=policy.source==='CONFIGURED'?'환경설정':policy.source==='DEFAULT'?'기본 설정':'서버 설정';
+ node.textContent=`최종 신호 점수 기준: ${value}/100 (${origin}) · 실전 성능 미검증 (UNVERIFIED) · 점수는 승률이 아니며 실거래 승인 아님`;
+}
+function setStatus(s){const previousVenue=app.status?.rest;app.status=s;renderScanDiagnostics(s.scanFunnel);renderScorePolicy(s.scorePolicy);
  if(s.update)updateStatusText({...s.update,version:'5.8.0'});
  $('sysWS').textContent=s.ws==='connected'?'정상 연결':s.ws==='connecting'?'연결 중':'끊김 / 재접속';
  $('sysREST').textContent=s.rest==='connected'?'연결됨':s.rest==='connecting'?'연결 중':'접속 실패';
@@ -71,7 +78,7 @@ function setStatus(s){const previousVenue=app.status?.rest;app.status=s;renderSc
  $('sysScanErrors').textContent=(s.lastScanFailures||[]).slice(0,2).join(' | ')||'기록된 오류 없음';
  $('sysScanErrors').className='health-note';
  $('sysQuoteAge').textContent=s.lastTickerAt?Math.round((Date.now()-s.lastTickerAt)/1000)+'초 전 · '+(s.lastTickerCount||0)+'틱 수신':'실시간 틱 미수신';
- $('sysQuoteVAR').textContent='크립토 분석과 분리 · TradFi 전용';
+ $('sysTradFi').textContent='비활성 · 대체 시세 공급자 미설정 (기존 기록 보존)';
  $('sysNewsAge').textContent=s.newsChecked?Math.round((Date.now()-s.newsChecked)/1000)+'초 전':'조회 전';
  const storageEl=$('sysStorage');if(storageEl){storageEl.textContent=s.storage?.healthy===false?'저장 실패 · 모의매매 일시 중지':s.storage?.lastSavedAt?'정상 · '+clock(s.storage.lastSavedAt):'확인 중';storageEl.classList.toggle('negative',s.storage?.healthy===false);}
  $('sysTG').textContent=s.telegramConfigured?'서버 설정 완료':'설정 필요';
@@ -91,7 +98,7 @@ function setStatus(s){const previousVenue=app.status?.rest;app.status=s;renderSc
  app.watchlist=s.watchlist||app.watchlist;
  if(s.newsChecked && !app.newsMeta)loadNews();
  $('execLimits').textContent=`Binance 호가 스프레드 ≤${s.executionLimits?.maxSpreadBps??'미확인'}bp · 호가 나이 ≤${s.executionLimits?.maxQuoteAgeSeconds??'미확인'}초 · 모의 손실 한도 ${Number.isFinite(s.executionLimits?.maxRiskUSD)?money(s.executionLimits.maxRiskUSD):'미확인'} · 보류 신호 ${s.blockedSignals??'미확인'}건`;
- $('sysVAR').textContent=s.rest==='connected'?'Binance USDT 무기한 거래 대상 확인':'Binance 종목 조회 대기';
+ $('sysMarketUniverse').textContent=s.rest==='connected'?'Binance USDT 무기한 거래 대상 확인':'Binance 종목 조회 대기';
  $('matchVerified').textContent=(s.activeCount||0)+'종목 · TRADING / USDT / PERPETUAL · '+dateClock(s.lastMarketListings)+' KST';
  if(previousVenue!==s.rest){renderAnalysis();renderSignals();renderRecentCoverage()}
 }
@@ -360,7 +367,7 @@ function renderTradingView(){
  document.querySelectorAll('.legend-basic').forEach(n=>n.classList.toggle('hidden',tvMode));
  const symbol=tradingViewTicker(app.symbol)?app.symbol:'BTCUSDT';
  const verified=Boolean(externalLinks(symbol));
- const access=tradingViewAccess(symbol,app.interval,verified);
+ const access=tradingViewAccess(symbol,app.interval);
  const url=access.chartUrl;
  // Viewing a chart is safe while validation is pending; trading is not.
  for(const id of ['tvExternalLink','tvFallbackLink']){
@@ -544,7 +551,6 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('market',e=>{try{applyMarket(JSON.parse(e.data))}catch{}});
  es.addEventListener('quotes',e=>{try{const p=JSON.parse(e.data);app.lastSocketEvent=Date.now();onQuote(p.data||[])}catch{}});
  es.addEventListener('scan',e=>{try{const x=JSON.parse(e.data);setStatus(x.status);app.signals=x.signals||[];app.patterns=x.patterns||[];app.watch=x.watch||[];if(x.recent)app.recent=x.recent;renderSignals();renderRecentCoverage();json('/api/market').then(applyMarket).catch(()=>{});refreshSelectedAnalysis(x,{reloadMissing:true});drawChart() }catch{}});
- es.addEventListener('execution',e=>{try{const payload=JSON.parse(e.data);for(const item of payload.items||[]){const q=app.marketMap.get(item.symbol);if(q)q.variational=item.variational;}renderPair();renderMatched();loadExecution()}catch{}});
  es.addEventListener('alert',e=>{try{const a=JSON.parse(e.data);if(a.kind==='WATCH'||a.alertType==='WATCH'||a.observationOnly===true)return;app.alerts.unshift(a);app.alerts=app.alerts.slice(0,60);renderAlerts();notify(a);loadResults()}catch{}});
  es.addEventListener('live',e=>{try{const d=JSON.parse(e.data);if(d.signals)app.signals=d.signals;if(d.patterns)app.patterns=d.patterns;if(d.watch)app.watch=d.watch;renderSignals();if(d.symbol===app.symbol){loadAnalysis();if(d.reason?.includes('close'))loadChart()}}catch{}});
  es.addEventListener('news',e=>{try{applyNews(JSON.parse(e.data))}catch{}});
@@ -562,7 +568,7 @@ function refreshSelectedAnalysis(data,{reloadMissing=false}={}){
 }
 async function loadResults(){try{const data=await json('/api/results');app.signals=(data.signals||[]).filter(x=>app.marketMap.has(x.symbol));app.patterns=(data.patterns||[]).filter(x=>app.marketMap.has(x.symbol));app.watch=(data.watch||[]).filter(x=>app.marketMap.has(x.symbol));app.recent=(data.recent||[]).filter(x=>app.marketMap.has(x.symbol));app.alerts=(data.alerts||[]).filter(x=>app.marketMap.has(x.symbol));renderSignals();renderRecentCoverage();renderAlerts();refreshSelectedAnalysis(data)}catch(e){console.warn('Results:',e.message)}}
 async function loadAll(){
- // Failure to fetch Variational metadata must NEVER hide the public TV chart.
+ // Market metadata failures must never hide the public chart viewer.
  const [st,market]=await Promise.allSettled([json('/api/status'),json('/api/market')]);
  if(st.status==='fulfilled')setStatus(st.value);
  if(market.status==='fulfilled')applyMarket(market.value);

@@ -14,7 +14,7 @@ function fixture(){
  [row.target1,row.target2,row.target3]=row.targetPlan.targets;
  return {row,context:{analysisVenue:'BINANCE',market,book,verified:true,venueConnected:true,price:100.01,priceAt:NOW-100,now:NOW}};
 }
-test('single-score Binance final approval does not require Variational and never becomes live trade approval',()=>{
+test('single-score Binance final approval needs no other exchange and never becomes live trade approval',()=>{
  const {row,context}=fixture(),decision=evaluateSignal(row,context);
  assert.equal(decision.ready,true,decision.reasons.join());assert.equal(decision.analysisVenue,'BINANCE');
  assert.equal(decision.tradeApproval,false);assert.equal(decision.orangeXApproval,false);

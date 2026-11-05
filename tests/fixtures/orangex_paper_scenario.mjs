@@ -1,5 +1,6 @@
 import {analyze} from '../../research/legacy_v58/engine.mjs';
-import {evaluateSignal} from '../../signal_pipeline.mjs';
+import {evaluateLegacySyntheticSignal} from '../../research/legacy_v58/decision.mjs';
+import {syntheticBinanceContext} from './binance_signal.mjs';
 import {marketSeries,ENTRY} from './pipeline_market.mjs';
 import {normalizeOrangeXPaperSignal,alignOrangeXPaperSignal} from '../../orangex_paper_signal.mjs';
 
@@ -14,9 +15,7 @@ export const syntheticContract={instrumentName:'BTC-USDT-PERPETUAL',symbol:'BTCU
 export function nativePaperSignal(direction='LONG'){
  const series=marketSeries(direction==='LONG'?'breakout-long':'breakout-short',Date.now()),
   result=analyze('BTCUSDT',series.h1,series.h4,[],ENTRY,{quoteVolume:1e8});
- const now=Date.now(),quote={bid:ENTRY-.005,ask:ENTRY+.005};
- const decision=evaluateSignal(result,{verified:true,venueConnected:true,listing:{markPrice:ENTRY,quoteUpdatedAt:now,
-  quote1k:quote,quoteBase:quote},price:ENTRY,priceAt:now,statsReceivedAt:now,now});
+ const now=Date.now(),decision=evaluateLegacySyntheticSignal(result,syntheticBinanceContext(result.symbol,ENTRY,now));
  return {...result,decision,qualified:decision.ready,instrumentName:syntheticContract.instrumentName,
   strategyVersion:'LEGACY_V58',managementVersion:'LEGACY_R_MULTIPLES'};
 }

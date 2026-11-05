@@ -1,3 +1,5 @@
+> 과거 개발 단계의 검증 이력입니다. 현재 버전은 Binance 단일 분석이며 이전 공급자 연결·설정·링크는 제거됐습니다. 대체 공급자가 없는 TradFi 수집·신규 신호·신규 모의 진입은 비활성입니다. 아래의 과거 기능 설명을 현재 사용 안내로 적용하지 마세요. 기존 PNL·포지션·설정·백업은 보존합니다.
+
 # OrangeX PAPER 2.5단계 — 재생·성과·위험·장애 검증
 
 후속 저장·운영·진단 검증은 [2.6단계 보고서](ORANGEX_PAPER_26_KO.md)를 참고하세요. 아래 수치와 테스트 개수는 2.5단계 당시 기록입니다.
@@ -22,7 +24,7 @@
 
 기존 `analyze()`·`evaluateSignal()`·신호 연결 모듈·공통 목표 비율·PAPER 원자 저장·잠금·백업을 재사용했습니다. `engine.mjs`에는 재생용 선택 인자 `meta.now`만 추가했습니다. 인자가 없으면 기존 `Date.now()` 동작을 유지하고 기술 조건·점수·필터를 완화하지 않습니다. 전역 시계를 바꾸지 않습니다.
 
-`quality.mjs`, `execution.mjs`, `markets.mjs`, 기존 Binance·Variational `paper.mjs`, `persistence.mjs`, `signal_lifecycle.mjs`, `public/trade_plan.js`의 전략·PNL·저장 경로는 변경하지 않았습니다. OrangeX 거래소 어댑터도 READ_ONLY를 유지합니다.
+`quality.mjs`, `execution.mjs`, `markets.mjs`, 기존 Binance·이전 공급자 `paper.mjs`, `persistence.mjs`, `signal_lifecycle.mjs`, `public/trade_plan.js`의 전략·PNL·저장 경로는 변경하지 않았습니다. OrangeX 거래소 어댑터도 READ_ONLY를 유지합니다.
 
 | 주요 파일 | 역할 |
 |---|---|

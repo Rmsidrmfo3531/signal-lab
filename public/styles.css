@@ -75,7 +75,7 @@
 .update-note{margin:8px 0 0;color:#849db5;font-size:10px;line-height:1.6}.update-note.warn{color:#ffc588}
 @media(max-width:750px){.head-actions{flex-wrap:wrap}.head-actions button{flex:1 1 45%}}
 
-/* v4.6: chart viewing is independent of Variational listing verification */
+/* Chart viewing is independent of market eligibility checks. */
 .chart-lookup{display:flex;align-items:center;gap:5px}
 .chart-lookup input{width:122px;min-width:95px;background:#0c1d2c;border:1px solid #385671;border-radius:6px;color:#e7f3ff;padding:8px 9px;font:600 11px 'DM Mono',monospace;text-transform:uppercase}
 .chart-lookup input:focus{outline:2px solid #3a8fc1;outline-offset:1px}

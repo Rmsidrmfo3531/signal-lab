@@ -1,3 +1,5 @@
+> 과거 개발 단계의 검증 이력입니다. 현재 버전은 Binance 단일 분석이며 이전 공급자 연결·설정·링크는 제거됐습니다. 대체 공급자가 없는 TradFi 수집·신규 신호·신규 모의 진입은 비활성입니다. 아래의 과거 기능 설명을 현재 사용 안내로 적용하지 마세요. 기존 PNL·포지션·설정·백업은 보존합니다.
+
 # OrangeX 2.7단계 — 실측 검토와 저장 장기 설계
 
 대상: `Rmsidrmfo3531/signal-lab`, `feat/orangex-readonly`, 기준 `61d972f`.
@@ -170,7 +172,7 @@ npm run test:orangex:storage:scale
 
 중단 작업 재개 때 남아 있던 21개 파일은 `/workspace/signal-lab-orangex27-preserved-20261030T064914Z`에 diff·원본 파일·SHA256으로 보존했습니다. 아카이브 해시를 검증했으며 이후 보고서 완성 외에 기존 코드가 달라지지 않았음을 확인했습니다. 초기화·강제 checkout·재복제는 하지 않았습니다.
 
-실제 Windows·새 OrangeX 시장 응답·공식 계약/수수료/펀딩 단위·원격 CI 결과·정전 내구성은 미검증입니다. Linux의 제어 자식 프로세스·Mock·합성 기록 성과와 실제 Windows/거래소 결과를 섞지 않습니다. 기존 `engine.mjs`, Binance/Variational `paper.mjs`, PNL·설정·알림·백업 경로, 실험 Journal의 운영 미연결 상태를 유지합니다.
+실제 Windows·새 OrangeX 시장 응답·공식 계약/수수료/펀딩 단위·원격 CI 결과·정전 내구성은 미검증입니다. Linux의 제어 자식 프로세스·Mock·합성 기록 성과와 실제 Windows/거래소 결과를 섞지 않습니다. 기존 `engine.mjs`, Binance/이전 공급자 `paper.mjs`, PNL·설정·알림·백업 경로, 실험 Journal의 운영 미연결 상태를 유지합니다.
 
 개발 중 새 증거 리뷰 assertion 1개가 wrapper를 정상화하지 않고 내부 evaluator API에 전달해 실패했습니다. 실제 파일 CLI와 같은 정상화 단계를 통과시켜 동일한 FAIL 요구를 검사하도록 수정했습니다. 판정 조건을 완화하거나 테스트를 skip하지 않았습니다. 실제 발견 결함과 저장 한계 실패는 위에 구분해 남겼습니다.
 

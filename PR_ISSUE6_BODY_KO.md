@@ -1,4 +1,4 @@
-Binance 암호화폐 분석이 Variational 상장·호가와 별도 60:40 점수에 의존하던 구조를 단일 Binance USDT 무기한·100점 평가로 통합합니다. 신규 거래는 실제 aggTrades 매물대 TP 3개가 검증돼야 진입하고, TP1 40% 체결 완료 후 본절 손절을 한 번 이동합니다. 기존 거래의 TP/SL과 기록은 보존합니다.
+암호화폐 분석을 단일 Binance USDT 무기한·100점 평가로 통합하며 이전 공급자 서버·API·UI·링크·진단 의존성을 제거합니다. 대체 공급자가 없는 TradFi는 비활성화하되 기존 기록은 보존합니다. 신규 거래는 실제 aggTrades 매물대 TP 3개가 검증돼야 진입하고, TP1 40% 체결 완료 후 본절 손절을 한 번 이동합니다. 기존 거래의 TP/SL과 기록은 보존합니다.
 
 PR #5가 #3·#4를 포함하므로 한 번만 통합했습니다. Issue #6의 사용자 확인 최신 요구사항을 적용합니다. main/기존 PR은 병합하지 않았습니다.
 
@@ -16,3 +16,5 @@ PR #5가 #3·#4를 포함하므로 한 번만 통합했습니다. Issue #6의 �
 상세: ISSUE6_INTEGRATION_KO.md 및 reports/issue6-validation.json. 기존 Windows.env/store·PNL·설정·백업·Journal과 별도 미커밋 작업을 보존했습니다.
 
 Refs #6
+
+최종 점수 기준은 `SIGNAL_FINAL_MIN_SCORE=90`의 제안 기본값이며 실전 성능 검증 상태는 `UNVERIFIED`입니다. 설정 변경은 실계좌 승인이 아닙니다.

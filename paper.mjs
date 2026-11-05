@@ -8,8 +8,8 @@ import {quantizeVolumeStep} from './volume_profile.mjs';
 // Fixed simulation trade size, independent of any assumed account balance.
 // Signals must still pass pattern, quality, quote, entry-timing and stop checks.
 export const PAPER_DEFAULTS=Object.freeze({paperNotionalUSD:500,maxPositions:2,maxNotional:1500,minNotional:250,
- feeBps:5,slippageBps:2,cryptoHalfSpreadBps:1,entryTimeoutMs:20*60000,maxFreshMsCrypto:90000,maxFreshMsTradFi:180000,
- maxQuoteGapMsCrypto:120000,maxQuoteGapMsTradFi:240000,maxRiskUSD:6,TP1_MOVE_STOP_TO_BREAKEVEN:true,TP1_BREAKEVEN_MODE:'ENTRY_FILL'});
+ feeBps:5,slippageBps:2,cryptoHalfSpreadBps:1,entryTimeoutMs:20*60000,maxFreshMsCrypto:90000,
+ maxQuoteGapMsCrypto:120000,maxRiskUSD:6,TP1_MOVE_STOP_TO_BREAKEVEN:true,TP1_BREAKEVEN_MODE:'ENTRY_FILL'});
 const num=v=>Number(v);
 const validPrice=p=>Number.isFinite(p)&&p>0;
 const isoDay=(at)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
@@ -80,7 +80,7 @@ export class PaperEngine {
  }
  snapshot(){const summary=paperSummary(this.store,{now:this.now(),settings:this.settings});return {...summary,
   pending:this.store.pending.slice(0,20),open:this.store.open.slice(0,20),closed:this.store.closed.slice(-200).reverse(),skipped:this.store.skipped.slice(-30).reverse(),
-  updatedAt:this.now(),mode:'SIMULATION_ONLY',settings:{TP1_MOVE_STOP_TO_BREAKEVEN:this.settings.TP1_MOVE_STOP_TO_BREAKEVEN!==false,TP1_BREAKEVEN_MODE:this.settings.TP1_BREAKEVEN_MODE},sourceNotes:{CRYPTO:'Binance 실시간 시세 기준 모의 PNL. 실제 거래소 확정 체결·펀딩·계정 수수료와 다름',TRADFI:'Variational 공개 Mark Price/호가 스냅샷 기준. 갭·휴장·체결 가능성 검증 불가'}}}
+  updatedAt:this.now(),mode:'SIMULATION_ONLY',settings:{TP1_MOVE_STOP_TO_BREAKEVEN:this.settings.TP1_MOVE_STOP_TO_BREAKEVEN!==false,TP1_BREAKEVEN_MODE:this.settings.TP1_BREAKEVEN_MODE},sourceNotes:{CRYPTO:'Binance 실시간 시세 기준 모의 PNL. 실제 거래소 확정 체결·펀딩·계정 수수료와 다름',TRADFI:'대체 데이터 공급자 없음 · 신규 진입/시세 갱신 비활성 · 기존 기록 및 마지막 관측 PNL 보존'}}}
  // Only publish mutations after the persistence callback succeeds. A failed write
  // must not leave a phantom entry/CLOSE in memory or emit a Windows notification.
  #mutate(run){
@@ -95,18 +95,19 @@ export class PaperEngine {
   return this.#mutate(()=>this.#register(signal,{market,symbol,quoteEligible}));
  }
  #register(signal,{market,symbol,quoteEligible}){
+  if(market!=='CRYPTO')return false; // Disabled markets cannot mutate retained records.
   const now=this.now(),settings=this.settings;
   this.telemetry.signalChecks++;this.telemetry.lastSignalAt=now;
   const direction=signal?.direction;const entry=num(signal?.entry),stop=num(signal?.stop);
   const barAt=num(signal?.patternConfirmedAt||signal?.lastBarAt||0),pattern=String(signal?.pattern||'');
-  if(!['CRYPTO','TRADFI'].includes(market)||!symbol||!['LONG','SHORT'].includes(direction)||!pattern||!validPrice(entry)||!validPrice(stop)||
+  if(market!=='CRYPTO'||!symbol||!['LONG','SHORT'].includes(direction)||!pattern||!validPrice(entry)||!validPrice(stop)||
    (direction==='LONG'&&stop>=entry)||(direction==='SHORT'&&stop<=entry)||!Number.isFinite(barAt)||barAt<=0||barAt>now+60000||now-barAt>2*3600000)return false;
   const key=signalKey({market,symbol,direction,pattern,barAt});if(this.store.seen[key])return false;
   if(!quoteEligible)return this.reject(key,'상장/호가/진입 검증 실패');
   if(this.store.open.some(x=>x.symbol===symbol&&x.market===market)||this.store.pending.some(x=>x.symbol===symbol&&x.market===market))return this.reject(key,'동일 종목 중복 가상 포지션 방지');
   if(this.store.open.length+this.store.pending.length>=settings.maxPositions)return this.reject(key,'동시 포지션 상한');
   const managementVersion=signal.managementVersion,profile=managementVersion==='VOLUME_PROFILE_V1',
-   legacy=market==='TRADFI'||managementVersion==='LEGACY_R_MULTIPLES'||managementVersion==='LEGACY_R_V1',plan=signal.targetPlan;
+   legacy=managementVersion==='LEGACY_R_MULTIPLES'||managementVersion==='LEGACY_R_V1',plan=signal.targetPlan;
   if(!profile&&!legacy)return this.reject(key,'TP_PROFILE_UNAVAILABLE',{remember:false});
   if(profile&&(plan?.ok!==true||!plan.profileEvidence||!Array.isArray(plan.targets)||plan.targets.length!==3||
    !Array.isArray(plan.parts)||plan.parts.length!==3||plan.parts.some((part,i)=>!Number.isFinite(part?.fraction)||Math.abs(part.fraction-[.4,.35,.25][i])>1e-10)))
@@ -141,8 +142,9 @@ export class PaperEngine {
   return this.#mutate(()=>this.#onPrice(market,symbol,price,at,{halfSpreadBps,quoteFresh,entryAllowed,exitQuantityLimit}));
  }
  #onPrice(market,symbol,price,at,{halfSpreadBps,quoteFresh,entryAllowed,exitQuantityLimit}){
+  if(market!=='CRYPTO')return 0; // No replacement feed: freeze retained positions and pending entries.
   const settings=this.settings,now=this.now();price=num(price);at=num(at);
-  const maxFresh=market==='TRADFI'?settings.maxFreshMsTradFi:settings.maxFreshMsCrypto;
+  const maxFresh=settings.maxFreshMsCrypto;
   if(!quoteFresh||!validPrice(price)||!Number.isFinite(at)||at>now+5000||now-at>maxFresh)return 0;
   this.telemetry.priceTickCount++;this.telemetry.lastQuoteAt=now;
   let modified=0;const events=[];
@@ -167,8 +169,8 @@ export class PaperEngine {
    const entryFill=fillPrice(price,pending.direction==='LONG'?'BUY':'SELL',{halfSpreadBps:spread,slippageBps});
    const stopFill=fillPrice(pending.stop,pending.direction==='LONG'?'SELL':'BUY',{halfSpreadBps:spread,slippageBps});
    if(dir*(entryFill-pending.stop)<=0){this.store.skipped.push({key:pending.key,reason:'스프레드 반영 후 진입 가격 무효',at:now});modified++;continue}
-   // The fixed notional refers only to the synthetic trade; $250-$1500 is
-   // the band validated against Variational's public indicative quote sample.
+   // Legacy fixed sizing is retained only for historical/synthetic compatibility.
+   // New profile positions use explicit quantity, exchange filters and risk limits.
    const n=profile?pending.plannedQuantity*entryFill:settings.paperNotionalUSD,minimumNotional=profile?pending.targetPlan.minNotional:settings.minNotional;
    if(!Number.isFinite(n)||!Number.isFinite(minimumNotional)||minimumNotional<0||n<minimumNotional||n>settings.maxNotional){this.store.skipped.push({key:pending.key,reason:'모의 거래 명목금액이 호가 샘플 검증 범위를 벗어남',at:now});modified++;continue}
    const quantity=profile?pending.plannedQuantity:n/entryFill,feesUSD=n*feeBps/10000;
@@ -187,7 +189,7 @@ export class PaperEngine {
   }
   for(const position of [...this.store.open]){
    if(position.market!==market||position.symbol!==symbol||at<=position.lastPriceAt)continue;
-   const maxGap=market==='TRADFI'?settings.maxQuoteGapMsTradFi:settings.maxQuoteGapMsCrypto;
+   const maxGap=settings.maxQuoteGapMsCrypto;
    if(at-position.lastPriceAt>maxGap)position.quoteGaps++;
    position.lastPriceAt=at;position.markPrice=price;
    const dir=position.direction==='LONG'?1:-1;
@@ -268,7 +270,7 @@ export class PaperEngine {
     realizedPnLUSD:position.realizedPnLUSD,feesUSD:position.feesUSD};
  }
  expirePending(){return this.#mutate(()=>this.#expirePending())}
- #expirePending(){let count=0;const now=this.now();for(const p of [...this.store.pending])if(now>p.expiresAt){this.store.pending=this.store.pending.filter(x=>x.key!==p.key);this.store.skipped.push({key:p.key,reason:'20분 이내 새 시세가 없어 진입 생략',at:now});count++}
+ #expirePending(){let count=0;const now=this.now();for(const p of [...this.store.pending])if(p.market==='CRYPTO'&&now>p.expiresAt){this.store.pending=this.store.pending.filter(x=>x.key!==p.key);this.store.skipped.push({key:p.key,reason:'20분 이내 새 시세가 없어 진입 생략',at:now});count++}
   if(count){this.telemetry.lastPositionEventAt=now;this.notify()}return count}
 }
 export function paperCSV(rows=[]){const cols=['market','symbol','direction','pattern','openedAt','closedAt','entryFill','stop','notionalUSD','closeReason','realizedGrossUSD','feesUSD','realizedPnLUSD','quoteGaps'];

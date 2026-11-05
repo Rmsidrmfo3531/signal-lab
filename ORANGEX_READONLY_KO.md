@@ -1,3 +1,5 @@
+> 과거 개발 단계의 검증 이력입니다. 현재 버전은 Binance 단일 분석이며 이전 공급자 연결·설정·링크는 제거됐습니다. 대체 공급자가 없는 TradFi 수집·신규 신호·신규 모의 진입은 비활성입니다. 아래의 과거 기능 설명을 현재 사용 안내로 적용하지 마세요. 기존 PNL·포지션·설정·백업은 보존합니다.
+
 # OrangeX 1단계: 조회 전용 연결과 검증 기록
 
 후속 [2단계 오프라인 PAPER 보고서](ORANGEX_PAPER_OFFLINE_KO.md)에서 합성 전용 엔진·별도 기록·대시보드를 구현했습니다. 아래는 조회 전용 초기 단계의 기록이며 실제 데이터 PAPER 자동 진입은 계속 OFF입니다.
@@ -71,7 +73,7 @@ npm run test:orangex
 ## 기존 기능과 기록의 보존
 
 - `engine.mjs`·`quality.mjs`·`signal_pipeline.mjs`의 확정 1H·4H 분석과 기존 최종 판정을 그대로 사용합니다. OrangeX가 기존 최종 신호를 승인하거나 모의 진입을 발생시키는 연결은 추가하지 않았습니다.
-- `execution.mjs`·`markets.mjs`의 기존 Binance×Variational 교집합과 호가 검증은 그대로입니다. 검증되지 않은 OrangeX 종목을 교집합에 추가하지 않습니다.
+- `execution.mjs`·`markets.mjs`의 기존 Binance×이전 공급자 교집합과 호가 검증은 그대로입니다. 검증되지 않은 OrangeX 종목을 교집합에 추가하지 않습니다.
 - `paper.mjs`·`signal_lifecycle.mjs`·`public/trade_plan.js`의 기존 모의 진입·40/35/25% 익절·손절·CLOSE·PNL 계산을 유지합니다. 최신 기준 브랜치의 명목금액 $500·가정 자본 미설정도 유지합니다.
 - `persistence.mjs`와 중앙 `store.json`, 백업·복원 경로는 변경하지 않습니다. OrangeX 조회 상태는 별도 메모리에만 있으며 기존 PNL·포지션·설정에 저장하거나 합산하지 않습니다.
 - 텔레그램, Windows 모의 OPEN/CLOSE 알림, TradingView, TradFi, 뉴스, LONG/SHORT 진입 참고 카드와 기존 PC·모바일 화면을 유지합니다.
@@ -136,4 +138,4 @@ LIVE는 명시적 설정·거래 권한·사전 안전 점검·별도 승인 모
 
 ## 2단계를 위한 다음 Codex 지시문
 
-> `Rmsidrmfo3531/signal-lab`의 `feat/orangex-readonly`를 기준으로 OrangeX 2단계 PAPER만 구현하라. 먼저 `ORANGEX_READONLY_KO.md`를 읽고 공식 문서·실제 공개 응답·조회 전용 계좌 권한을 검증하라. 미검증 API·단위·수수료·펀딩은 추정하지 말고 필요한 기능을 차단하라. 기존 Binance/Variational 분석·PNL·가상 포지션·설정·백업을 보존하라. OrangeX PAPER는 별도 파일과 잠금·백업에 저장하고 기존 계정과 합산하지 마라. 실제 과거/순방향 데이터와 합성 데이터를 구분하여 LONG/SHORT 진입, 비용, 40/35/25% 익절, STOP, CLOSE, PNL, 재시작·저장 실패를 검증하라. UI에 단계별 거부 사유와 실제 검증 상태를 표시하라. 실제 주문·출금·LIVE 활성화·main 직접 수정·Merge는 하지 마라. 공식 명세의 누락과 테스트 실패를 숨기지 말고 한국어로 보고하라.
+> `Rmsidrmfo3531/signal-lab`의 `feat/orangex-readonly`를 기준으로 OrangeX 2단계 PAPER만 구현하라. 먼저 `ORANGEX_READONLY_KO.md`를 읽고 공식 문서·실제 공개 응답·조회 전용 계좌 권한을 검증하라. 미검증 API·단위·수수료·펀딩은 추정하지 말고 필요한 기능을 차단하라. 기존 Binance/이전 공급자 분석·PNL·가상 포지션·설정·백업을 보존하라. OrangeX PAPER는 별도 파일과 잠금·백업에 저장하고 기존 계정과 합산하지 마라. 실제 과거/순방향 데이터와 합성 데이터를 구분하여 LONG/SHORT 진입, 비용, 40/35/25% 익절, STOP, CLOSE, PNL, 재시작·저장 실패를 검증하라. UI에 단계별 거부 사유와 실제 검증 상태를 표시하라. 실제 주문·출금·LIVE 활성화·main 직접 수정·Merge는 하지 마라. 공식 명세의 누락과 테스트 실패를 숨기지 말고 한국어로 보고하라.

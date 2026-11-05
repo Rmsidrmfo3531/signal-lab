@@ -110,7 +110,7 @@ test('breakeven basis settings save only a future-position mode, restore rejecte
 });
 
 test('risk and quote details distinguish Binance PAPER assumptions from OrangeX permission without unsupported leverage advice',()=>{
- assert.doesNotMatch(html,/BTC 20~40x|ETH 10~25x|SOL 10~15x|Variational 주문창|모의 손익은 고정 명목금액/);
+ assert.doesNotMatch(html,/BTC 20~40x|ETH 10~25x|SOL 10~15x|모의 손익은 고정 명목금액/);
  assert.match(html,/OrangeX 실주문 OFF/);assert.match(html,/계산 명목 상한/);
  assert.match(source,/Binance TRADING USDT 무기한 상장 확인 · 실제 주문 OFF/);
  const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',className:''});return nodes.get(id)},ctx=vm.createContext({$,Number,fmt:String,dateClock:String,money:value=>'$'+value});
@@ -135,4 +135,52 @@ test('basic chart EMA200 uses the full closed history and never fabricates warmu
  const withForming=ctx.chartEMA([...bars,{time:301,close:1000000,closed:false}],200);
  assert.equal(withForming.at(-1),null);assert.deepEqual(Array.from(withForming.slice(0,-1)),Array.from(values));
  assert.match(source,/chartEMA\(app\.candles,n\)\.slice\(-95\)/);
+});
+
+
+test('disabled TradFi UI performs no requests, subscriptions, timers or external chart injection and keeps record links',()=>{
+ const tradfi=fs.readFileSync(new URL('../public/tradfi.js',import.meta.url),'utf8');
+ const nodes=new Map(),document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,{textContent:''});return nodes.get(id)}};
+ let remoteCalls=0;const forbidden=()=>{remoteCalls++;throw Error('disabled provider attempted an operation')};
+ const ctx=vm.createContext({document,fetch:forbidden,EventSource:forbidden,WebSocket:forbidden,setInterval:forbidden,setTimeout:forbidden});
+ vm.runInContext(tradfi.replaceAll('export function','function'),ctx);
+ ctx.initTradFi();ctx.refreshTradFi();
+ assert.equal(remoteCalls,0);assert.match(nodes.get('tradfiStatus').textContent,/DISABLED.*신규 분석·진입 OFF/);
+ const sectionHtml=section(html,'<section id="tradfi"','<section class="metrics"');
+ assert.match(sectionHtml,/href="#paper"/);assert.match(sectionHtml,/href="#journal"/);
+ assert.match(sectionHtml,/임의 청산/);assert.doesNotMatch(sectionHtml,/<script|https?:|data-tfchart|tradfiRefresh/);
+});
+
+test('final-score threshold display uses server configuration and always discloses unverified performance',()=>{
+ const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{textContent:''});return nodes.get(id)};
+ const ctx=vm.createContext({$,Number});vm.runInContext(section(source,'function renderScorePolicy(','function setStatus('),ctx);
+ ctx.renderScorePolicy(undefined);assert.match($('scorePolicyStatus').textContent,/設定|설정 조회 미완료/);
+ assert.doesNotMatch($('scorePolicyStatus').textContent,/90/);
+ for(const [value,origin]of [[90,'DEFAULT'],[95,'CONFIGURED']]){
+  ctx.renderScorePolicy({finalMinScore:value,source:origin,validationStatus:'UNVERIFIED',liveApproval:false});
+  const text=$('scorePolicyStatus').textContent;assert.match(text,new RegExp(value+'/100'));assert.match(text,/실전 성능 미검증.*UNVERIFIED/);assert.match(text,/실거래 승인 아님/);
+ }
+ ctx.renderScorePolicy({finalMinScore:null});assert.match($('scorePolicyStatus').textContent,/조회 미완료/);
+ ctx.renderScorePolicy({finalMinScore:0});assert.match($('scorePolicyStatus').textContent,/0\/100/);
+ assert.match(source,/renderScorePolicy\(s\.scorePolicy\)/);assert.match(html,/id="scorePolicyStatus"/);
+});
+
+
+test('disabled TradFi open and pending cards preserve stored levels and PNL without promising automatic fills or expiry',()=>{
+ const nodes=new Map(),find=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',innerHTML:''});return nodes.get(id)};
+ const ctx=vm.createContext({find,document:{getElementById:find},Number,Date});
+ vm.runInContext(section(paper,'const esc=','let lastBreakevenSetting='),ctx);
+ ctx.renderMonitor=()=>{};ctx.renderPaperManagementSetting=()=>{};
+ vm.runInContext(section(paper,'function render(payload)','let active=false;'),ctx);
+ const original={market:'TRADFI',symbol:'XAU-SWAP',direction:'LONG',pattern:'stored',entry:4000,entryFill:4000,stop:3900,targets:[4200,4300,4400],markPrice:4050,lastPriceAt:Date.now(),qtyRemaining:.1,notionalUSD:400,feesUSD:1,openedAt:1,signalAt:1,expiresAt:Date.now()-1000};
+ const payload={mode:'SIMULATION_ONLY',open:[{...original}],pending:[{...original}],closed:[{...original,realizedPnLUSD:12.34}],skipped:[],closedCount:1,winRatePct:null};
+ const before=JSON.stringify(payload);ctx.render(payload);assert.equal(JSON.stringify(payload),before);
+ const rendered=find('paperOpen').innerHTML;
+ assert.equal((rendered.match(/공급자 없음 · 기록 보존 · 자동처리 중지/g)||[]).length,3);
+ assert.match(rendered,/마지막 저장 시세 평가.*현재 평가 아님/);assert.match(rendered,/최신 시세 미검증/);
+ assert.match(rendered,/4,200/);assert.match(rendered,/3,900/);assert.match(rendered,/\+\$5.00/);
+ assert.doesNotMatch(rendered,/첫 신규 시세 대기|첫 익절 또는 손절 대기| 만료<\/p>/);
+ assert.match(find('paperClosed').innerHTML,/\+\$12.34/);assert.match(find('paperClosed').innerHTML,/공급자 없음 · 기록 보존 · 자동처리 중지/);
+ const crypto={...original,market:'CRYPTO'};ctx.render({...payload,open:[crypto],pending:[crypto],closed:[]});
+ assert.match(find('paperOpen').innerHTML,/첫 신규 시세 대기/);assert.match(find('paperOpen').innerHTML,/첫 익절 또는 손절 대기/);
 });

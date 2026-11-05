@@ -1,3 +1,5 @@
+> 과거 개발 단계의 검증 이력입니다. 현재 버전은 Binance 단일 분석이며 이전 공급자 연결·설정·링크는 제거됐습니다. 대체 공급자가 없는 TradFi 수집·신규 신호·신규 모의 진입은 비활성입니다. 아래의 과거 기능 설명을 현재 사용 안내로 적용하지 마세요. 기존 PNL·포지션·설정·백업은 보존합니다.
+
 # OrangeX 공개 API 재시도와 Windows 진단
 
 기준: `Rmsidrmfo3531/signal-lab`, `feat/orangex-readonly`, `3e51027`. 2026년 10월 27일에 확인했습니다. 기존 `ORANGEX_READONLY_KO.md`와 `ORANGEX_REVALIDATION_KO.md`를 먼저 읽었습니다.
@@ -75,7 +77,7 @@ Actions의 기존 Ubuntu/Windows × Node.js 22/24 행렬과 기능 브랜치 Pus
 
 ## 보존 범위와 다음 단계
 
-이번 변경은 별도 진단 도구·Mock 테스트·실행 명령·문서·공개 진단 결과뿐입니다. 기존 OrangeX 어댑터·서버·화면, Binance/Variational 분석, 시그널·모의매매·PNL·저장·백업·텔레그램 코드는 수정하지 않았습니다. 기존 Windows 기록과 다른 작업 폴더의 미완료 변경도 건드리지 않았습니다.
+이번 변경은 별도 진단 도구·Mock 테스트·실행 명령·문서·공개 진단 결과뿐입니다. 기존 OrangeX 어댑터·서버·화면, Binance/이전 공급자 분석, 시그널·모의매매·PNL·저장·백업·텔레그램 코드는 수정하지 않았습니다. 기존 Windows 기록과 다른 작업 폴더의 미완료 변경도 건드리지 않았습니다.
 
 클라우드에서는 환경 설정의 `openapi-docs.orangex.com`, `api.orangex.com` 허용을 저장한 뒤 **게시·적용**하고 현재 정책을 다시 확인해야 합니다. `api.github.com`은 Actions 조회가 필요할 때 별도 허용 대상입니다. 프록시 우회나 TLS 검증 해제는 하지 않습니다.
 

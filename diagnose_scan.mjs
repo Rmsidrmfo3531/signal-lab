@@ -22,12 +22,11 @@ async function inspect(name,url,limit=9000){
   const r=await fetch(url,{signal:AbortSignal.timeout(limit),headers:{Accept:'application/json'}});
   let msg=`${name}: HTTP ${r.status} (${Date.now()-started}ms)`;
   if(r.ok){const body=await r.json();
-   if(name==='Variational v2')msg+=` · 상장 데이터 ${Array.isArray(body?.listings)?body.listings.length+'건':'형식 확인 필요'}`;
-   else if(name==='Binance 선물')msg+=` · 상장 데이터 ${Array.isArray(body?.symbols)?body.symbols.length+'건':'형식 확인 필요'}`;
+   if(name==='Binance 선물')msg+=` · 상장 데이터 ${Array.isArray(body?.symbols)?body.symbols.length+'건':'형식 확인 필요'}`;
    else if(name==='내부 스캐너'){
-    msg+=` · 버전 ${body.version} · 조회모드 ${body.scanMode} · 기술분석 대상 ${body.researchCount||0} · 공통PERP ${body.activeCount||0}`;
+    msg+=` · 버전 ${body.version} · 조회모드 ${body.scanMode} · 기술분석 대상 ${body.researchCount||0} · Binance PERP ${body.activeCount||0}`;
     log(`   자동스캔 순환=${body.cycle||0}, 최근 성공=${body.scanSuccess||0}, 실패=${body.scanFailed||0}, 누적 검사=${body.scannedSinceBoot||0}`);
-    log(`   최근 스캔=${body.lastScan?new Date(body.lastScan).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}):'없음'}, BinanceWS=${body.ws}, 봉WS=${body.liveWS}, Variational=${body.variational}`);
+    log(`   최근 스캔=${body.lastScan?new Date(body.lastScan).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}):'없음'}, BinanceWS=${body.ws}, 봉WS=${body.liveWS}`);
     if(body.marketError)log(`   상장 연결 오류=${String(body.marketError).slice(0,250)}`);
     if(body.lastScanFailures?.length)log(`   캔들 조회 실패=${body.lastScanFailures.slice(0,4).join(' | ').slice(0,350)}`);
    }
@@ -36,16 +35,13 @@ async function inspect(name,url,limit=9000){
   return r.ok;
  }catch(e){log(`${name}: 실패 (${Date.now()-started}ms): ${String(e.message||e).slice(0,180)}`);return false}
 }
-log(`Signal Lab v5.3 스캐너 진단 · ${stamp()}`);
+log(`Signal Lab Binance 스캐너 진단 · ${stamp()}`);
 log('API 토큰, 개인 포지션·거래 내역은 보고서에 포함하지 않습니다.');
 log('로컬 서버 연결 확인:');
 const local=await inspect('내부 스캐너',`http://127.0.0.1:${port}/api/status`,3500);
 if(!local)log('→ 우선 start.bat으로 서버를 실행하고 127.0.0.1 포트 연결을 확인하세요.');
 log('공식 공용 데이터 API 연결 확인:');
-await Promise.all([
- inspect('Binance 선물','https://fapi.binance.com/fapi/v1/exchangeInfo'),
- inspect('Variational v2','https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/v2/stats')
-]);
+await inspect('Binance 선물','https://fapi.binance.com/fapi/v1/exchangeInfo');
 log('진단 완료. 시그널 0개는 엄격 필터 때문일 수도 있으므로 위 스캔 성공/실패 및 연결 상태를 먼저 확인하세요.');
 const out=path.join(dataDir,'scanner_diagnostics.txt');
 fs.writeFileSync(out,lines.join('\r\n')+'\r\n','utf8');

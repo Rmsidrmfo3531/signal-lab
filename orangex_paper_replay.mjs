@@ -3,6 +3,7 @@ import {analyze} from './engine.mjs';
 import {analyze as analyzeLegacyV58} from './research/legacy_v58/engine.mjs';
 import {SCORE_VERSION} from './quality.mjs';
 import {evaluateSignal} from './signal_pipeline.mjs';
+import {evaluateLegacySyntheticSignal} from './research/legacy_v58/decision.mjs';
 import {normalizeOrangeXPaperSignal,alignOrangeXPaperSignal} from './orangex_paper_signal.mjs';
 import {OrangeXPaperEngine} from './orangex_paper.mjs';
 
@@ -53,7 +54,7 @@ function executionOptions(input){
 /**
  * input: {kind:'ORANGEX_PAPER_REPLAY',executionMode,symbol,instrumentName,
  * h1,h4,markets:[{receivedAt,...book}],metadata:[{at,quoteVolume}],
- * venueSnapshots:[{at,dataSource,verified,venueConnected,listing,price,priceAt,statsReceivedAt}],
+ * venueSnapshots:[{at,dataSource,verified,venueConnected,market,book,price,priceAt}],
  * events?:[{at,type:'FUNDING'|'CONNECTION'|'CANCEL'|'CLOSE',...}],settings,contracts,
  * entry?:{orderType,limitPrice,latencyMs},startAt?,endAt?}.
  * The entire OHLC bar becomes visible only at availableAt, strictly after its
@@ -82,9 +83,9 @@ export function runOrangeXPaperReplay(input,{onProgress=()=>{},progressEvery=100
  for(const item of metadata)if(typeof item.quoteVolume!=='number'||!Number.isFinite(item.quoteVolume)||item.quoteVolume<0)
   throw Error('INVALID_REPLAY_METADATA');
  for(const venue of venues){
-  for(const field of ['priceAt','statsReceivedAt'])if(venue[field]!==undefined&&(!stamp(venue[field])||venue[field]>venue.at))
+  for(const field of ['priceAt'])if(venue[field]!==undefined&&(!stamp(venue[field])||venue[field]>venue.at))
    throw Error('REPLAY_VENUE_SOURCE_CLOCK_INVALID');
-  if(venue.listing?.quoteUpdatedAt!==undefined&&(!stamp(venue.listing.quoteUpdatedAt)||venue.listing.quoteUpdatedAt>venue.at))
+  if(venue.book?.T!==undefined&&(!stamp(venue.book.T)||venue.book.T>venue.at))
    throw Error('REPLAY_VENUE_SOURCE_CLOCK_INVALID');
  }
  for(const item of controls)if(!['FUNDING','CONNECTION','CANCEL','CLOSE'].includes(item.type))throw Error('INVALID_REPLAY_EVENT');
@@ -163,9 +164,9 @@ export function runOrangeXPaperReplay(input,{onProgress=()=>{},progressEvery=100
    const row=analyzeAt(input.symbol,hourly,fourHourly,[],price,{now,quoteVolume:latestMetadata?.quoteVolume??0});
    if(legacy){row.strategyVersion='LEGACY_V58';row.managementVersion='LEGACY_R_MULTIPLES'}
    const venueUsable=venueSourceUsable&&priceSourceFresh;
-   const decision=evaluateSignal(row,{verified:venueUsable&&venue.verified===true,venueConnected:venueUsable&&venue.venueConnected===true,
-    listing:venueUsable?venue.listing:undefined,price,priceAt,
-    statsReceivedAt:venueUsable?venue.statsReceivedAt:undefined,now});
+   const decision=(legacy?evaluateLegacySyntheticSignal:evaluateSignal)(row,{dataSource:venueUsable?venue.dataSource:undefined,
+    verified:venueUsable&&venue.verified===true,venueConnected:venueUsable&&venue.venueConnected===true,
+    market:venueUsable?venue.market:undefined,book:venueUsable?venue.book:undefined,price,priceAt,now});
    analysesCount++;if(row.patternConfirmed)patterns++;if(decision.technical)technical++;if(decision.ready)approved++;
    const observation={at:now,signalDetectedAt:row.patternConfirmed?now:null,entryEligibleAt:row.patternConfirmed?now+entry.latencyMs:null,
     patternConfirmedAt:row.patternConfirmedAt??null,last1hCloseAt:oneKnown.at(-1).closeAt,last4hCloseAt:fourKnown.at(-1)?.closeAt??null,

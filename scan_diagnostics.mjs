@@ -2,7 +2,7 @@
  * A chart pattern may be visible as research, but only an independently validated
  * actionable setup may produce alerts, paper positions, or order links.
  */
-export function describeScanFunnel(analyses, {activeSymbols=[],researchSymbols=[],variational='offline',now=Date.now(),maxAgeMs=2*60*60_000,assess}={}) {
+export function describeScanFunnel(analyses, {activeSymbols=[],researchSymbols=[],now=Date.now(),maxAgeMs=2*60*60_000,assess}={}) {
  const verified=new Set(activeSymbols),research=new Set(researchSymbols);
  const all=[...analyses.values()].filter(x=>x?.symbol&&(verified.has(x.symbol)||research.has(x.symbol))&&Number.isFinite(x.scannedAt)&&now-x.scannedAt<=maxAgeMs);
  const reasons=new Map(),categories={noPattern:0,quality:0,venue:0,entry:0,ready:0};
@@ -22,10 +22,10 @@ export function describeScanFunnel(analyses, {activeSymbols=[],researchSymbols=[
   recentPatterns.push(row);
   if(!row.quality?.passed){categories.quality++;(row.quality?.failed||['기술 평가 미확인']).forEach(add);continue}
   technicalPassed++;
-  if(!verified.has(row.symbol)||variational!=='connected'||row.execution?.eligible!==true){
+  if(!verified.has(row.symbol)||row.execution?.eligible!==true){
    categories.venue++;
-   if(!verified.has(row.symbol)||variational!=='connected')add('Variational 공통상장 검증 대기');
-   else (row.execution?.reasons?.length?row.execution.reasons:['Variational 체결 검증 미통과']).forEach(add);
+   if(!verified.has(row.symbol))add('Binance USDT 무기한 선물 상장 검증 대기');
+   else (row.execution?.reasons?.length?row.execution.reasons:['Binance 호가·위험 검증 미통과']).forEach(add);
    continue;
   }
   venuePassed++;

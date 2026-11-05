@@ -72,8 +72,8 @@ test('future OHLC or venue tails cannot alter an earlier immutable decision pref
  last[0]=Number(last[0])+HOUR;last[6]=Number(last[6])+HOUR;
  last[1]='102.2';last[2]='500';last[3]='1';last[4]='450';last[5]='999999999';
  future.h1.push(last);future.metadata.push({at:AT+HOUR,quoteVolume:9e14});
- future.venueSnapshots.push({...clone(future.venueSnapshots[0]),at:AT+HOUR,price:9000,priceAt:AT+HOUR,statsReceivedAt:AT+HOUR,
-  listing:{...clone(future.venueSnapshots[0].listing),quoteUpdatedAt:AT+HOUR}});
+ future.venueSnapshots.push({...clone(future.venueSnapshots[0]),at:AT+HOUR,price:9000,priceAt:AT+HOUR,
+  book:{...clone(future.venueSnapshots[0].book),T:AT+HOUR}});
  future.endAt=AT+HOUR;
  const full=runOrangeXPaperReplay(future);
  assert.deepEqual(full.analyses.filter(row=>row.at<=input.endAt),prefix.analyses);
@@ -168,7 +168,7 @@ test('real-data provenance, future quote clocks, duplicate candle times and unsu
   input=>{input.executionMode='LIVE_MARKET_PAPER'},input=>{delete input.dataSource},
   input=>{input.markets[0].dataSource='REAL_PUBLIC_READ_ONLY'},input=>{input.markets[0].timestamp=AT+1},
   input=>{input.markets[0].markPriceAt=AT+1},input=>{input.venueSnapshots[0].priceAt=AT+1},
-  input=>{input.venueSnapshots[0].listing.quoteUpdatedAt=AT+1},input=>{input.h1.push(clone(input.h1[0]))},
+  input=>{input.venueSnapshots[0].book.T=AT+1},input=>{input.h1.push(clone(input.h1[0]))},
   input=>{const duplicate=clone(input.h1[0]);duplicate[0]=String(duplicate[0]);input.h1.push(duplicate)},
   input=>{input.markets.reverse()}
  ];

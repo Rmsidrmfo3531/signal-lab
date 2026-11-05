@@ -38,7 +38,7 @@ test('watch key deduplicates the confirmed close despite repeated scans and muta
 test('watch message uses Binance-only links, the single score, indicators and explicit no-order labels',()=>{
  const urls={binance:'https://www.binance.com/en/futures/SOLUSDT'},payload=telegramWatchMessage(candidate,urls);
  assert.match(payload.text,/관찰 알림 · 최종 신호 아님/);assert.match(payload.text,/종합 평가 점수: 85\/100/);
- assert.doesNotMatch(payload.text,/60:40|보조지표:.*\/100|Variational/);assert.match(payload.text,/RSI/);
+ assert.doesNotMatch(payload.text,/60:40|보조지표:.*\/100/);assert.match(payload.text,/RSI/);
  assert.match(payload.text,/승률이 아닙니다/);assert.match(payload.text,/거래량 미달/);
  assert.equal(payload.reply_markup.inline_keyboard.length,1);assert.equal(payload.reply_markup.inline_keyboard[0][0].url,urls.binance);
  assert.throws(()=>telegramWatchMessage(candidate,null));assert.throws(()=>telegramWatchMessage(candidate,{binance:'https://evil.invalid'}));

@@ -205,7 +205,7 @@
             "nextFundingAt": null,
             "fundingOneIntervalUSD": null,
             "checkedAt": 1793172034851,
-            "dataFrom": "Variational public indicative quote (NOT firm / size-specific)",
+            "dataFrom": "SYNTHETIC_FIXTURE legacy indicative quote model",
             "lastCheckedQuoteAt": 1793172034851,
             "stopRate": 0.02340534080664198,
             "entryBasis": 102.205,
@@ -216,11 +216,11 @@
           "timing": {
             "code": "zone",
             "label": "진입 관찰 구간 도달 · 주문 전 확인",
-            "detail": "롱 기준 구간 내 가격. Variational 실제 Bid/Ask·청산가·포지션 위험을 재확인하세요.",
+            "detail": "롱 기준 구간 내 가격. 합성 Bid/Ask·가상 포지션 위험을 검증합니다.",
             "actionable": true,
             "zoneLow": 101.80785714285715,
             "zoneHigh": 102.59214285714286,
-            "confirmation": "1시간봉 박스권 상단 돌파 종가 확정 + 4시간봉 추세 확인 → 롱 101.80786~102.59214 재진입 → Variational 실제 주문 호가 확인"
+            "confirmation": "1시간봉 박스권 상단 돌파 종가 확정 + 4시간봉 추세 확인 → 롱 101.80786~102.59214 재진입 → 합성 시장 데이터 검증"
           },
           "technicalReasons": [],
           "entryReasons": [],
@@ -495,7 +495,7 @@
             "nextFundingAt": null,
             "fundingOneIntervalUSD": null,
             "checkedAt": 1793172034853,
-            "dataFrom": "Variational public indicative quote (NOT firm / size-specific)",
+            "dataFrom": "SYNTHETIC_FIXTURE legacy indicative quote model",
             "lastCheckedQuoteAt": 1793172034853,
             "stopRate": 0.02340763106945392,
             "entryBasis": 102.19500000000001,
@@ -506,11 +506,11 @@
           "timing": {
             "code": "zone",
             "label": "진입 관찰 구간 도달 · 주문 전 확인",
-            "detail": "숏 기준 구간 내 가격. Variational 실제 Bid/Ask·청산가·포지션 위험을 재확인하세요.",
+            "detail": "숏 기준 구간 내 가격. 합성 Bid/Ask·가상 포지션 위험을 검증합니다.",
             "actionable": true,
             "zoneLow": 101.80785714285715,
             "zoneHigh": 102.59214285714286,
-            "confirmation": "1시간봉 박스권 하단 이탈 종가 확정 + 4시간봉 추세 확인 → 숏 101.80786~102.59214 재진입 → Variational 실제 주문 호가 확인"
+            "confirmation": "1시간봉 박스권 하단 이탈 종가 확정 + 4시간봉 추세 확인 → 숏 101.80786~102.59214 재진입 → 합성 시장 데이터 검증"
           },
           "technicalReasons": [],
           "entryReasons": [],

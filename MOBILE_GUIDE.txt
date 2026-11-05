@@ -1,48 +1,31 @@
-v5.1 모바일 탭에 「자동 PNL」이 추가되었습니다. PC·모바일 모두 같은 자동 모의매매 기록을 보며, 서버는 PC에서 실행해야 합니다.
+Signal Lab — PC·Android·iPhone 접속 안내
+========================================
 
-Signal Lab v5.0 — Android / iPhone mobile access guide
-=======================================================
+1. 기존 서버 창을 종료하고 새 ZIP 전체를 별도 폴더에 압축 해제합니다.
+2. Node.js 22 또는 24를 설치하고 start_mobile.bat을 실행합니다.
+3. PC와 휴대폰을 같은 신뢰할 수 있는 사설 Wi-Fi에 연결합니다.
+4. 명령창에 표시된 PC 주소(예: http://192.168.0.15:3000)와 사용자명·암호로 접속합니다.
+5. 휴대폰에서 127.0.0.1을 입력하면 PC가 아니라 휴대폰 자신을 가리킵니다.
+6. PC에서는 http://127.0.0.1:3000으로 접속할 수 있습니다. PC 서버가 계속 실행돼야 합니다.
 
-[START]
-1. Connect PC and phone to the same trusted private Wi-Fi / home network.
-2. Stop the previously running start.bat (port 3000). Close its command window.
-3. Extract the entire ZIP to a new folder on the PC.
-4. Double-click start_mobile.bat (NOT start.bat).
-5. The black command window prints a URL like http://192.168.0.15:3000,
-   a username (signal), and a temporary password.
-6. On the phone open Chrome/Safari and type the printed PC URL. 127.0.0.1
-   on the PHONE points to the phone, not the PC.
-7. Enter the login credentials from the PC window.
-8. Use the bottom menu for signals, chart, news, alerts. TradingView is
-   embedded (external widget; internet still required).
+[연결·보안]
+- 게스트 Wi-Fi 또는 기기 격리가 있으면 같은 공유기여도 연결되지 않을 수 있습니다.
+- Windows 방화벽은 신뢰하는 사설 네트워크에서만 Node.js 접속을 허용하세요.
+- PC 네트워크가 바뀌면 접속 주소가 바뀔 수 있습니다.
+- 기본 암호는 서버 재시작 때 바뀝니다. 기존 비공개 .env의 MOBILE_ACCESS_PASSWORD로 별도 설정할 수 있습니다.
+- 이 LAN 서버는 HTTPS를 제공하지 않습니다. 공용 Wi-Fi·포트 포워딩·인터넷 직접 노출을 사용하지 마세요.
+- 외부 접속은 별도 인증 VPN 또는 HTTPS 배포가 필요하며 이 패키지가 자동 구성하지 않습니다.
 
-[CONNECTIVITY]
-* If the phone cannot connect, both devices must be on the same Wi-Fi/subnet.
-  Disable guest Wi-Fi/client isolation. Temporarily disconnect mobile-data/VPN
-  if it routes the browser unexpectedly. In Windows Defender Firewall allow
-  Node.js for PRIVATE networks only, or inbound TCP 3000 for the private profile.
-* When your PC changes Wi-Fi networks, the printed IP URL may change.
-* The server must keep running on your PC. This does not host the app online;
-  from 4G/5G or outside your home network it is not accessible without a
-  secure VPN (e.g. Tailscale) or an HTTPS-hosted deployment, which are NOT
-  included in this package.
-* Local access: open http://127.0.0.1:3000 on the PC. No login required on
-  localhost. Mobile access requires the credentials in the command window.
-* Password changes on every server restart unless MOBILE_ACCESS_PASSWORD is
-  set in the PC's private .env file (use a long, unique password).
-* No TLS is provided. Password and financial journal are transmitted over
-  unencrypted HTTP on your LAN. NEVER use public/shared Wi-Fi, port forwarding,
-  open TCP/3000 to the internet, or share this URL/password. For remote access,
-  use an authenticated VPN or HTTPS reverse proxy.
+[화면·알림]
+- PC와 모바일은 같은 최종 신호·차트·뉴스·PNL·매매일지·설정을 공유합니다.
+- TradingView는 외부 위젯이며 차단 시 Binance 데이터 기반 기본 차트 또는 새 탭 링크를 사용합니다.
+- TradFi는 대체 공급자 부재로 비활성입니다. 기존 기록·마지막 관측 PNL은 보존합니다.
+- 모바일 백그라운드 브라우저 알림은 보장되지 않습니다.
+- Telegram은 기존 봇 설정과 PC 서버가 필요합니다.
+- Windows 진입·CLOSE 알림은 서버 PC에서 요청됩니다. 실제 표시 여부는 Windows에서 확인해야 합니다.
 
-[MOBILE ALERTS]
-* The mobile browser can show the site while open. Background notifications
-  are NOT guaranteed, especially over non-HTTPS IP addresses.
-* Telegram alerts require your bot configuration and the PC/server running.
-* No automated trades; clicking Variational opens the manual order page.
-
-[WINDOWS DATA MIGRATION]
-* Keep your own .env / store.json safe, and copy from your previous install
-  if desired. Do not send private files or tokens to other people.
-
-PC와 모바일 모두 메인 화면의 TradFi 영역에서 SWAP/PERP 참고시세 및 차트를 확인할 수 있습니다.
+[기록·모드]
+- Windows 중앙 저장 경로 %LOCALAPPDATA%\SignalLab의 .env·store.json·백업을 유지합니다.
+- 예제 설정 파일을 기존 .env 위에 복사하지 마세요. 비밀 파일을 공유하거나 Git에 올리지 마세요.
+- 실제 거래소 주문은 전송하지 않습니다. OrangeX READ_ONLY, 실제 시세 PAPER 자동 진입 OFF를 유지합니다.
+- SIGNAL_FINAL_MIN_SCORE 기본 90점은 제안 기준이며 실전 성능 UNVERIFIED입니다.

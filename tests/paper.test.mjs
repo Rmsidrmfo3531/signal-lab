@@ -47,11 +47,17 @@ test('stale or duplicate quotes and reloaded observations never create artificia
  assert.equal(afterReload.onPrice('CRYPTO','BTCUSDT',108,current),0);
  assert.equal(afterReload.store.closed.length,0);
 });
-test('TradFi stale snapshot is not executed and is marked with correct market/source',()=>{
- const engine=create();engine.register({...signal('LONG','XAU-SWAP'),ticker:'XAU-SWAP'},{market:'TRADFI',quoteEligible:true});
- assert.equal(engine.onPrice('TRADFI','XAU-SWAP',100,current+1000,{quoteFresh:false}),0);
- quote(100,engine,'XAU-SWAP','TRADFI',{halfSpreadBps:5});
- assert.equal(engine.store.open[0].market,'TRADFI');assert.equal(engine.store.open[0].halfSpreadBps,5);
+test('disabled TradFi cannot register or process quotes and retained records remain byte-identical',()=>{
+ const prior={pending:[{key:'tradfi-pending',market:'TRADFI',symbol:'XAU-SWAP',expiresAt:current-1}],
+  open:[{key:'tradfi-open',market:'TRADFI',symbol:'XAU-SWAP',entryFill:100,stop:98,targets:[104,106,108],qtyRemaining:1,
+   realizedPnLUSD:0,feesUSD:0,markPrice:100,lastPriceAt:current-1000}],
+  closed:[{key:'tradfi-closed',market:'TRADFI',symbol:'XAU-SWAP',openedAt:current-20000,closedAt:current-10000,
+   realizedPnLUSD:5,feesUSD:.1}],seen:{'tradfi-original':current-1000}},before=structuredClone(prior);
+ let writes=0;const engine=new PaperEngine(prior,{now:()=>current,onChange:()=>{writes++}});
+ assert.equal(engine.register({...signal('LONG','XAU-SWAP'),ticker:'XAU-SWAP'},{market:'TRADFI',quoteEligible:true}),false);
+ assert.equal(engine.onPrice('TRADFI','XAU-SWAP',95,current+1000,{quoteFresh:true}),0);
+ engine.expirePending();assert.equal(writes,0);assert.deepEqual(engine.store,{...before,skipped:[]});
+ assert.equal(engine.snapshot().closedTradeRealizedUSD,5);assert.match(engine.snapshot().sourceNotes.TRADFI,/비활성/);
 });
 test('risk limits block further paper positions and it never places real orders',()=>{
  const engine=create({maxPositions:1});engine.register(signal(),{quoteEligible:true});

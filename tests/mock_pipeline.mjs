@@ -39,14 +39,6 @@ globalThis.fetch=async(input,options={})=>{
    return json(interval==='1h'?series.h1:interval==='4h'?series.h4:[]);
   }
  }
- if(url.hostname==='omni-client-api.prod.ap-northeast-1.variational.io'&&url.pathname==='/metadata/v2/stats'){
-  if(control().venueOffline)return new Response('fixture outage',{status:503});
-  return json({listings:symbols().filter(s=>!control().unlisted?.includes(s)).map(symbol=>{
-   const p=price(symbol),q={bid:String(p*(1-.00005)),ask:String(p*(1+.00005))};
-   return {ticker:symbol.slice(0,-4)+'-PERP',contract_type:'perpetual',mark_price:String(p),volume_24h:'100000000',
-    quotes:control().invalidQuote?undefined:{updated_at:new Date().toISOString(),base:q,size_1k:q},funding:{next:{interval_rate:'0'},interval_seconds:28800}};
-  })});
- }
  if(['decrypt.co','www.coindesk.com','cointelegraph.com'].includes(url.hostname))return new Response('<rss><channel></channel></rss>',{headers:{'content-type':'application/xml'}});
  throw Error('Test transport blocked external destination: '+url.hostname);
 };

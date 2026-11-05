@@ -266,7 +266,7 @@ test('OrangeX public-market HTTP reads stay separate from scanner, account crede
    assert.equal(request.hasAuthorization,false,'public market reads must not send account credentials');
   }
   const after=JSON.parse((await app.read('/api/status')).text);
-  for(const field of ['activeCount','binancePerps','variationalPerps','scanMode'])assert.equal(after[field],before[field]);
+  for(const field of ['activeCount','binancePerps','scanMode'])assert.equal(after[field],before[field]);
   assert.deepEqual((await app.disk()).paper,app.fixture.paper);
   assert.deepEqual((await app.disk()).paperNotify,app.fixture.paperNotify);
   assert.equal(await fs.readFile(app.retainedBackup,'utf8'),app.original);

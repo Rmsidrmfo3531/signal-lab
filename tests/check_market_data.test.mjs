@@ -15,20 +15,21 @@ async function check(mode){
  try{
   const series=marketSeries('breakout-long');
   const rows={exchangeInfo:{symbols:[market('BTC'),market('ETH')]},tickers:[{symbol:'BTCUSDT',lastPrice:String(ENTRY),quoteVolume:'100000000'},{symbol:'ETHUSDT',lastPrice:'100',quoteVolume:'100000000'}],
-   stats:{listings:[{ticker:'BTC-PERP',contract_type:'perpetual',mark_price:String(ENTRY)},{ticker:'ETH-PERP',contract_type:'perpetual',mark_price:'100'}]},h1:series.h1,h4:series.h4};
+   h1:series.h1,h4:series.h4};
   const preload=path.join(sandbox,'mock.mjs');
   await fs.writeFile(preload,`
    const mode=${JSON.stringify(mode)},rows=${JSON.stringify(rows)};
    globalThis.fetch=async(input,options)=>{
     if(options?.method!=='GET')throw Error('Only public read-only GET is allowed');
     const url=new URL(input);
+    if(url.origin!=='https://fapi.binance.com')throw Error('Unexpected public market provider');
+    if(url.pathname.endsWith('klines')&&url.searchParams.get('interval')==='4h'&&url.searchParams.get('limit')!=='301')throw Error('Closed EMA200 warm-up must request 301 bars');
     if(mode==='network')throw Object.assign(Error('synthetic network failure'),{cause:{code:'EAI_AGAIN'}});
     if(mode==='json')return new Response('invalid JSON');
     let data;
     if(url.pathname.endsWith('exchangeInfo'))data=mode==='bad-schema'?{symbols:'not-an-array'}:mode==='empty'?{symbols:[]}:rows.exchangeInfo;
     else if(url.pathname.endsWith('24hr'))data=mode==='missing-btc'?rows.tickers.filter(row=>row.symbol!=='BTCUSDT'):rows.tickers;
     else if(url.pathname.endsWith('klines'))data=url.searchParams.get('interval')==='1h'?rows.h1:rows.h4;
-    else if(url.pathname==='/metadata/v2/stats')data=rows.stats;
     else throw Error('Unexpected endpoint');
     return new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});
    };
@@ -42,7 +43,7 @@ async function check(mode){
 }
 
 test('public market smoke reports a valid synthetic response separately from real connectivity',async()=>{
- const {code,report}=await check('valid');assert.equal(code,0);assert.equal(report.status,'passed');assert.equal(report.validationPassed,true);
+ const {code,report}=await check('valid');assert.equal(code,0);assert.equal(report.status,'passed');assert.equal(report.validationPassed,true);assert.equal(report.listedContracts,2);assert.equal(report.checks.length,4);assert.ok(report.checks.every(row=>row.name.startsWith('binance')));
 });
 for(const mode of ['bad-schema','empty','json','missing-btc'])test(`public market smoke returns data failure 1 for ${mode}`,async()=>{
  const {code,report}=await check(mode);assert.equal(code,1);assert.equal(report.status,'failed');assert.equal(report.validationPassed,false);

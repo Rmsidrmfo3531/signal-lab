@@ -11,7 +11,7 @@ export const tradingViewChartUrl = (symbol,interval='1h') => {
 };
 
 // Chart viewing and trade verification are intentionally independent.
-export const tradingViewAccess = (symbol, interval='1h', commonPerpVerified=false) => {
+export const tradingViewAccess = (symbol, interval='1h') => {
   const chartUrl=tradingViewChartUrl(symbol,interval);
-  return {canView:Boolean(chartUrl),canOpenVariational:Boolean(chartUrl)&&commonPerpVerified===true,chartUrl};
+  return {canView:Boolean(chartUrl),chartUrl};
 };

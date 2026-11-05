@@ -1,3 +1,5 @@
+> 과거 개발 단계의 검증 이력입니다. 현재 버전은 Binance 단일 분석이며 이전 공급자 연결·설정·링크는 제거됐습니다. 대체 공급자가 없는 TradFi 수집·신규 신호·신규 모의 진입은 비활성입니다. 아래의 과거 기능 설명을 현재 사용 안내로 적용하지 마세요. 기존 PNL·포지션·설정·백업은 보존합니다.
+
 # OrangeX 2단계 — 오프라인 PAPER 구현과 사용 안내
 
 후속 [2.5단계 보고서](ORANGEX_PAPER_25_KO.md)에 재생·성과·위험·장기 장애 검증을 추가했습니다. 아래는 `dd5f041` 구현 당시 기록이며, 실제 시세 자동 진입은 계속 OFF입니다.
@@ -34,7 +36,7 @@ OrangeX의 거래소 연결은 계속 `READ_ONLY`입니다. 새 `PAPER_OFFLINE`�
 
 합성 계약의 호가 단위가 명시돼 있을 때 가격을 정렬합니다. LONG은 진입을 올리고 손절을 내리는 방향, SHORT은 진입을 내리고 손절을 올리는 방향으로 보수적으로 맞춥니다. 원 신호 가격은 `sourcePrices`에 보존하고, 넓어진 손절 거리로 위험 수량을 다시 계산합니다. 잘못된 가격 구조를 정렬로 덮어 통과시키지 않습니다.
 
-서버의 기존 최종 신호 발행부는 새 서비스의 `observeSignal()`에 관측 결과를 넘깁니다. 이 경로는 `REAL_DATA_AUTO_ENTRY_DISABLED`를 남기며 OrangeX 주문·가상 진입·파일 저장을 발생시키지 않습니다. 기존 Binance·Variational 모의매매 등록과 PNL은 원래 경로를 유지합니다. 합성 시나리오는 별도 쓰기 가능한 서비스에서만 실행합니다.
+서버의 기존 최종 신호 발행부는 새 서비스의 `observeSignal()`에 관측 결과를 넘깁니다. 이 경로는 `REAL_DATA_AUTO_ENTRY_DISABLED`를 남기며 OrangeX 주문·가상 진입·파일 저장을 발생시키지 않습니다. 기존 Binance·이전 공급자 모의매매 등록과 PNL은 원래 경로를 유지합니다. 합성 시나리오는 별도 쓰기 가능한 서비스에서만 실행합니다.
 
 ## 계약 규격과 비용은 합성 설정으로만 지정
 
@@ -126,7 +128,7 @@ PC·모바일 화면은 `GET /api/orangex/paper`를 표시합니다. 기본 서�
 | `server.mjs`, `public/orangex.js`, `public/index.html`, `public/styles.css` | 기존 기능을 유지하며 관측 연결과 GET 화면 추가 |
 | `tests/orangex_paper*.test.mjs` | 합성 기술 신호·엔진·저장·화면 검증. 실제 거래소 데이터 테스트와 구분 |
 
-실제 거래소 주문 클라이언트, 계좌 인증, 거래 권한 활성화, PAPER/LIVE 모드 전환 API는 추가하지 않았습니다. 기존 TradingView·TradFi·뉴스·Variational 바로가기·텔레그램·Windows 알림 기능을 OrangeX 주문 기능으로 바꾸지 않습니다. OrangeX PAPER의 별도 Telegram/Windows 체결 알림은 이번 단계의 검증 대상이 아닙니다.
+실제 거래소 주문 클라이언트, 계좌 인증, 거래 권한 활성화, PAPER/LIVE 모드 전환 API는 추가하지 않았습니다. 기존 TradingView·TradFi·뉴스·이전 공급자 바로가기·텔레그램·Windows 알림 기능을 OrangeX 주문 기능으로 바꾸지 않습니다. OrangeX PAPER의 별도 Telegram/Windows 체결 알림은 이번 단계의 검증 대상이 아닙니다.
 
 ## 검증 결과
 
@@ -173,4 +175,4 @@ PC·모바일 화면은 `GET /api/orangex/paper`를 표시합니다. 기본 서�
 
 ## 다음 Codex 지시문
 
-> `Rmsidrmfo3531/signal-lab`의 `feat/orangex-readonly` 최신 커밋에서 OrangeX PAPER 후속 검증을 진행하라. 먼저 `ORANGEX_PAPER_OFFLINE_KO.md`와 `ORANGEX_CURRENCY_DOMAIN_KO.md`를 읽고 현재 구현·검증 범위를 확인하라. 기존 Binance·Variational 시그널·모의매매·PNL·사용자 설정·백업과 별도 OrangeX PAPER 기록을 보존하라. 제공한 Windows 공개 GET 원자료를 기준으로 실제 상장 거래 영역, 계약 이름·활성, 계약 크기·수량 단위·최소량·증분·명목금액·호가 단위, Maker/Taker 단위, 펀딩 일정·부호·요율·Mark·원 시각을 공식 문서와 대조하라. 누락 값은 합성 가정으로 채우거나 비용 0으로 처리하지 마라. 관측과 Mock을 구분해 검증된 규격을 설계하되 명시적 후속 승인 전에는 실제 데이터 PAPER 자동 진입 OFF와 READ_ONLY를 유지하라. 오프라인 LONG/SHORT·시장가/지정가·40/35/25 익절·STOP·CLOSE·비용 포함 PNL·누락 펀딩·재시작·지연·저장 실패·기록 보존을 Node.js 22·24와 PC·모바일에서 회귀 검증하라. LIVE 주문 기능·실제 주문·취소·출금·main 직접 수정·Merge는 금지한다. 확인되지 않은 기능과 실패를 한국어로 보고하라.
+> `Rmsidrmfo3531/signal-lab`의 `feat/orangex-readonly` 최신 커밋에서 OrangeX PAPER 후속 검증을 진행하라. 먼저 `ORANGEX_PAPER_OFFLINE_KO.md`와 `ORANGEX_CURRENCY_DOMAIN_KO.md`를 읽고 현재 구현·검증 범위를 확인하라. 기존 Binance·이전 공급자 시그널·모의매매·PNL·사용자 설정·백업과 별도 OrangeX PAPER 기록을 보존하라. 제공한 Windows 공개 GET 원자료를 기준으로 실제 상장 거래 영역, 계약 이름·활성, 계약 크기·수량 단위·최소량·증분·명목금액·호가 단위, Maker/Taker 단위, 펀딩 일정·부호·요율·Mark·원 시각을 공식 문서와 대조하라. 누락 값은 합성 가정으로 채우거나 비용 0으로 처리하지 마라. 관측과 Mock을 구분해 검증된 규격을 설계하되 명시적 후속 승인 전에는 실제 데이터 PAPER 자동 진입 OFF와 READ_ONLY를 유지하라. 오프라인 LONG/SHORT·시장가/지정가·40/35/25 익절·STOP·CLOSE·비용 포함 PNL·누락 펀딩·재시작·지연·저장 실패·기록 보존을 Node.js 22·24와 PC·모바일에서 회귀 검증하라. LIVE 주문 기능·실제 주문·취소·출금·main 직접 수정·Merge는 금지한다. 확인되지 않은 기능과 실패를 한국어로 보고하라.

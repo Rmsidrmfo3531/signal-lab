@@ -19,9 +19,9 @@ async function eventually(url,predicate,{attempts=100,ms=120}={}){
  }
  throw Error('condition not reached; last='+JSON.stringify(value).slice(0,800));
 }
-test('Variational outage never gates the Binance-only scanner or changes its validated universe', {timeout:25000},async()=>{
+test('Binance outage blocks unavailable market discovery and recovers without another provider', {timeout:25000},async()=>{
  const sandbox=await fs.mkdtemp(path.join(os.tmpdir(),'signal-lab-recover-'));
- const project=path.join(sandbox,'project'),p=await port(),flag=path.join(sandbox,'VARIATIONAL_OFFLINE');
+ const project=path.join(sandbox,'project'),p=await port(),flag=path.join(sandbox,'BINANCE_OFFLINE');
  await fs.cp(root,project,{recursive:true,filter:src=>path.basename(src)!=='.env'});
  await fs.writeFile(flag,'blocked');
  const child=spawn(process.execPath,['--import','./tests/mock_outage.mjs','server.mjs'],{
@@ -29,6 +29,10 @@ test('Variational outage never gates the Binance-only scanner or changes its val
  let logs='';child.stdout.on('data',d=>logs+=String(d));child.stderr.on('data',d=>logs+=String(d));
  const base=`http://127.0.0.1:${p}`;
  try{
+  const blocked=await eventually(base+'/api/status',x=>x.activeCount===0&&x.marketError!=='');
+  assert.equal(blocked.actualOrdersEnabled,false);
+  await fs.rm(flag);
+  await fetch(base+'/api/scan',{method:'POST'});
   const down=await eventually(base+'/api/status',x=>x.scanMode==='binance-usdt-perpetual'&&x.scanSuccess>0&&!x.scanning);
   assert.equal(down.activeCount,4);
   assert.equal(down.researchCount,0);
@@ -48,7 +52,6 @@ test('Variational outage never gates the Binance-only scanner or changes its val
   assert.equal(accepted.accepted,true);
   const scanned=await eventually(base+'/api/status',x=>x.cycle>down.cycle&&x.scanSuccess>0&&!x.scanning);
   assert.equal(scanned.scanMode,'binance-usdt-perpetual');
-  await fs.rm(flag);
   const acceptedAgain=await(await fetch(base+'/api/scan',{method:'POST'})).json();
   assert.equal(acceptedAgain.accepted,true);
   const healthy=await eventually(base+'/api/status',x=>x.scanMode==='binance-usdt-perpetual'&&x.activeCount===4&&x.scanSuccess>0);

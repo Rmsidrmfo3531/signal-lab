@@ -7,7 +7,7 @@ const market=()=>({symbol:'SOLUSDT',baseAsset:'SOL',quoteAsset:'USDT',marginAsse
  PRICE_FILTER:{tickSize:'.01'},LOT_SIZE:{stepSize:'.01',minQty:'.01'},MIN_NOTIONAL:{notional:'5'}}});
 const input=()=>({signal:{symbol:'SOLUSDT',direction:'LONG',entry:100,stop:98},market:market(),now:NOW,
  book:{T:NOW-100,bids:[['99.99','100']],asks:[['100.01','100']]}});
-test('Binance crypto universe is TRADING USDT perpetual and independent of Variational membership',()=>{
+test('Binance crypto universe is TRADING USDT perpetual and independent of another exchange membership',()=>{
  const raw=market(),eligible={...raw,filters:Object.entries(raw.filters).map(([filterType,fields])=>({filterType,...fields}))},symbols=[eligible,{...eligible,symbol:'ETHUSDT',baseAsset:'ETH'},
   {...eligible,symbol:'BTCUSDC',baseAsset:'BTC',quoteAsset:'USDC'}, {...eligible,symbol:'XUSDT',baseAsset:'X',status:'BREAK'},
   {...eligible,symbol:'YUSDT',baseAsset:'Y',contractType:'CURRENT_QUARTER'}],tickers=symbols.map(s=>({symbol:s.symbol,lastPrice:'100',quoteVolume:'100000',priceChangePercent:'1',highPrice:'101',lowPrice:'99',closeTime:NOW}));
