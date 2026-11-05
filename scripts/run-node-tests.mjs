@@ -6,6 +6,7 @@ import os from 'node:os';
 import {spawn,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
+import {StringDecoder} from 'node:string_decoder';
 
 const exec=promisify(execFile),PROJECT=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const integer=(value,min,max)=>Number.isSafeInteger(value)&&value>=min&&value<=max;
@@ -52,15 +53,43 @@ export async function terminateOwnedTestTree(child,{platform=process.platform,ex
 
 async function runFile(file,index,options,onStart,onFinish){
  const startedAt=stamp(),start=performance.now(),counts=emptyCounts(),logName=String(index+1).padStart(3,'0')+'-'+path.basename(file)+'.tap',
-  row={file,startedAt,log:logName,status:'RUNNING'};
+  traceName=logName.replace(/\.tap$/,'.trace.jsonl'),traceFile=path.join(options.traceRoot,traceName),
+  row={file,startedAt,log:logName,trace:traceName,status:'RUNNING'};
  // Reporting can fail (for example ENOSPC). Do it before acquiring a process
  // or stream handle, so a failed START cannot strand an untracked worker.
  onStart(row);
+ fs.writeFileSync(traceFile,'',{flag:'wx',mode:0o600});
  const logFile=path.join(options.outputDir,logName),log=fs.createWriteStream(logFile,{flags:'wx'});
- let logError=null,spawnError=null,tail='',line='',timedOut=false,aborted=false,cleanupError=null,closed=false,deadline,onAbort;
- const summaryFields=new Set();
+ let logError=null,spawnError=null,tail='',line='',timedOut=false,aborted=false,cleanupError=null,closed=false,deadline,onAbort,
+  traceOffset=0,tracePending='',traceRecords=0,lastStoragePhase=null,traceTimer,traceCaptureError=null;
+ const summaryFields=new Set(),traceDecoder=new StringDecoder('utf8');
  log.on('error',error=>{logError=error});
- const env={...options.env};
+ // A sidecar remains observable even when a test or spawnSync worker blocks its
+ // own event loop and the native test reporter buffers all stdout/stderr.
+ const env={...options.env,SIGNAL_LAB_TEST_TRACE_FILE:traceFile};
+ const relayTrace=()=>{
+  const stat=fs.lstatSync(traceFile);
+  if(!stat.isFile()||stat.isSymbolicLink()||stat.nlink!==1||stat.size>8*1024*1024||stat.size<traceOffset)throw Error('TEST_TRACE_INVALID_OR_OVERSIZED');
+  if(stat.size===traceOffset)return;
+  const buffer=Buffer.alloc(stat.size-traceOffset),fd=fs.openSync(traceFile,'r');let read;
+  try{read=fs.readSync(fd,buffer,0,buffer.length,traceOffset)}finally{fs.closeSync(fd)}
+  traceOffset+=read;tracePending+=traceDecoder.write(buffer.subarray(0,read));
+  let at;
+  while((at=tracePending.indexOf('\n'))!==-1){
+   const line=tracePending.slice(0,at);tracePending=tracePending.slice(at+1);
+   if(!line.trim())continue;
+   let record;try{record=JSON.parse(line)}catch{throw Error('TEST_TRACE_INVALID_JSON')}
+   if(!record||typeof record!=='object'||Array.isArray(record)||typeof record.stage!=='string'||record.stage.length>240)
+    throw Error('TEST_TRACE_INVALID_RECORD');
+   traceRecords++;
+   // Show only stage metadata, never arbitrary record fields or file contents.
+   const visible=Object.fromEntries(['at','pid','scope','stage','elapsedMs','backend','tradeCount','operation','test','code','requested','returned',
+    'returnedFirst','directory','target','destination','firstCreatedDirectory','errorCode','customIO','fd','truncated']
+    .filter(key=>['string','number','boolean'].includes(typeof record[key])).map(key=>[key,record[key]]));
+   lastStoragePhase=visible;
+   options.print(`[STORAGE PHASE] ${file} ${JSON.stringify(visible)}`);
+  }
+ };
  // A nested native test runner must bootstrap its own IPC context.
  for(const key of ['NODE_TEST_CONTEXT','NODE_CHANNEL_FD','NODE_UNIQUE_ID'])delete env[key];
  const child=spawn(options.nodePath,['--test','--test-reporter=tap','--test-timeout=60000',file],{
@@ -81,12 +110,15 @@ async function runFile(file,index,options,onStart,onFinish){
  child.stdout.on('data',remember);child.stderr.on('data',remember);
  let outcome;
  try{
+  const traceFailure=new Promise((resolve,reject)=>{
+   traceTimer=setInterval(()=>{try{relayTrace()}catch(error){reject(error)}},1000);
+  });
   const limit=new Promise(resolve=>{deadline=setTimeout(()=>resolve(null),options.fileTimeoutMs)});
   const cancellation=new Promise(resolve=>{
    onAbort=()=>{aborted=true;resolve(null)};
    if(options.signal?.aborted)onAbort();else options.signal?.addEventListener('abort',onAbort,{once:true});
   });
-  outcome=await Promise.race([ended,limit,cancellation]);clearTimeout(deadline);
+  outcome=await Promise.race([ended,limit,cancellation,traceFailure]);clearTimeout(deadline);
   if(outcome===null){
    timedOut=!aborted;options.print(`[TEST ${aborted?'ABORT':'TIMEOUT'}] ${file}: terminating its owned process tree`);
    try{await terminateOwnedTestTree(child)}catch(error){cleanupError=error.code??error.name;}
@@ -103,16 +135,23 @@ async function runFile(file,index,options,onStart,onFinish){
   throw error;
  }finally{
   clearTimeout(deadline);
+  clearInterval(traceTimer);
   options.signal?.removeEventListener('abort',onAbort);
+  try{
+   relayTrace();tracePending+=traceDecoder.end();fs.copyFileSync(traceFile,path.join(options.outputDir,traceName));
+   if(tracePending.trim())throw Error('TEST_TRACE_PARTIAL_RECORD');
+  }
+  catch(error){traceCaptureError=error.code??error.message}
   // Do not let broken pipes obscure a failing, unconfirmed process cleanup.
   if(!closed){child.stdout.destroy();child.stderr.destroy();child.unref();}
   log.end();await new Promise(resolve=>{if(log.closed)return resolve();log.once('close',resolve)});
  }
- const failureCode=aborted?'RUN_ABORTED':timedOut?'FILE_TIMEOUT':spawnError?'SPAWN_ERROR':logError?'LOG_WRITE_FAILED':
+ const failureCode=aborted?'RUN_ABORTED':timedOut?'FILE_TIMEOUT':spawnError?'SPAWN_ERROR':logError?'LOG_WRITE_FAILED':traceCaptureError?'TRACE_CAPTURE_FAILED':
   outcome.code!==0?'TEST_PROCESS_FAILED':summaryFields.size!==6||counts.tests<1?'INCOMPLETE_TEST_SUMMARY':
    counts.fail||counts.cancelled||counts.skipped||counts.todo||counts.pass!==counts.tests?'TESTS_NOT_ALL_PASSED':null;
  const result={...row,status:failureCode||cleanupError?'FAIL':'PASS',completedAt:stamp(),durationMs:Math.round(performance.now()-start),
-  exitCode:outcome.code,signal:outcome.signal,timedOut,aborted,processClosed:closed,failureCode,cleanupError,...counts};
+  exitCode:outcome.code,signal:outcome.signal,timedOut,aborted,processClosed:closed,failureCode,cleanupError,
+  traceRecords,lastStoragePhase,traceCaptureError,...counts};
  onFinish(result);
  options.print(`[TEST ${result.status}] ${file} ${result.durationMs}ms (${counts.pass}/${counts.tests})${failureCode?' '+failureCode:''} log=${logName}`);
  if(result.status==='FAIL')options.print(tail);
@@ -128,8 +167,9 @@ export async function runNodeTests({root=PROJECT,files,concurrency=2,fileTimeout
  outputDir=path.resolve(outputDir??fs.mkdtempSync(path.join(os.tmpdir(),'signal-node-tests-')));
  fs.mkdirSync(outputDir,{recursive:true});
  if(fs.readdirSync(outputDir).length)throw Error('TEST_OUTPUT_DIRECTORY_NOT_EMPTY');
+ const traceRoot=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'signal-ci-trace-'));
  const cancellation=new AbortController(),combinedSignal=signal?AbortSignal.any([signal,cancellation.signal]):cancellation.signal,
-  startedAt=stamp(),running=new Map(),results=[],settings={root,concurrency,fileTimeoutMs,outputDir,nodePath,env,print,signal:combinedSignal};
+  startedAt=stamp(),running=new Map(),results=[],settings={root,concurrency,fileTimeoutMs,outputDir,traceRoot,nodePath,env,print,signal:combinedSignal};
  let cursor=0,fatalError=null;
  const fail=error=>{fatalError??=error;cancellation.abort();};
  const progress=()=>fs.writeFileSync(path.join(outputDir,'progress.json'),JSON.stringify({startedAt,updatedAt:stamp(),
@@ -153,7 +193,10 @@ export async function runNodeTests({root=PROJECT,files,concurrency=2,fileTimeout
   // tree cleanup before surfacing the original failure to the CLI.
   await Promise.allSettled(Array.from({length:Math.min(concurrency,files.length)},worker));
   if(fatalError)throw fatalError;
- }finally{clearInterval(heartbeat);}
+ }finally{
+  clearInterval(heartbeat);
+  fs.rmSync(traceRoot,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+ }
  const counts=results.reduce((sum,row)=>{for(const key of Object.keys(sum))sum[key]+=row[key];return sum},emptyCounts()),
   passed=!combinedSignal.aborted&&results.length===files.length&&results.every(row=>row.status==='PASS'),summary={kind:'NODE_TEST_FILE_RESULTS',
    passed,aborted:combinedSignal.aborted,pendingFiles:files.slice(cursor),startedAt,completedAt:stamp(),runtime:process.version,platform:process.platform,concurrency,fileTimeoutMs,

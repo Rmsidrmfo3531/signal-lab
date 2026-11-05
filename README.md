@@ -1,5 +1,7 @@
 # Signal Lab — Issue #6 통합 개발판
 
+최신 Windows 저장 실패 보완: [PR7_WINDOWS_STORAGE_KO.md](PR7_WINDOWS_STORAGE_KO.md).
+
 Windows CI 종료 문제 후속 검증: [PR7_WINDOWS_TEST_HANG_KO.md](PR7_WINDOWS_TEST_HANG_KO.md).
 
 PR #7 후속 수정·최신 테스트: [공급자 의존성 제거 및 점수 설정 검증](PR7_PROVIDER_REMOVAL_KO.md).

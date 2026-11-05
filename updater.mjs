@@ -24,7 +24,7 @@ const ALLOWED_ROOTS = new Set([
  'scripts/orangex-paper-offline.mjs','examples/orangex-paper-scenario.json',
  'scripts/orangex-paper-replay.mjs','scripts/check-orangex-paper-endurance.mjs','examples/orangex-paper-replay.json',
  'diagnose_orangex.bat','scripts/diagnose-orangex-windows.mjs','scripts/check-orangex-readiness.mjs',
- 'scripts/check-orangex-storage-performance.mjs','scripts/check-orangex-operational-stress.mjs',
+ 'scripts/check-orangex-storage-performance.mjs','scripts/storage-worker.mjs','scripts/check-orangex-operational-stress.mjs',
  'scripts/review-orangex-evidence.mjs','scripts/check-orangex-storage-scale.mjs','scripts/diagnose-orangex-continuous.mjs'
 ]);
 const VERSION=/^\d+\.\d+\.\d+$/;

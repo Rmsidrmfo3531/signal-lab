@@ -1,4 +1,4 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,6 +6,50 @@ import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {OrangeXPaperJournal} from '../orangex_paper_journal.mjs';
 import {killAcknowledgedJournalWriter} from './helpers/journal_writer.mjs';
+import {traceStorageStage} from '../scripts/storage-worker.mjs';
+
+let currentTest=null,ioBudget=96;
+const tracedMethods=new Set(['initialize','append','checkpoint','backup','restoreBackup','close']);
+const trace=(stage,details={})=>{
+ traceStorageStage('journal-test',stage,{test:currentTest,...details});
+ // The sidecar is read live by CI even while spawnSync blocks this process.
+ // stderr remains useful for running this file directly without the CI runner.
+ if(!stage.startsWith('io.'))fs.writeSync(2,'[STORAGE_PHASE] '+JSON.stringify({at:new Date().toISOString(),pid:process.pid,
+  scope:'journal-test',stage,test:currentTest,...details})+'\n');
+};
+function test(name,options,run){
+ if(typeof options==='function'){run=options;options={};}
+ return nodeTest(name,options,async(t)=>{
+  currentTest=name;trace('test.begin');
+  try{return await run(t)}catch(error){trace('test.failed',{code:error.code??error.name});throw error}
+  finally{trace('test.end');currentTest=null}
+ });
+}
+function tracedIO(target=fs){
+ const directories=new Map();let testBudget=12;
+ const emit=(stage,details)=>{if(ioBudget>0&&testBudget>0){ioBudget--;testBudget--;trace('io.'+stage,details)}};
+ return new Proxy(target,{get(io,key){
+  const fn=Reflect.get(io,key);if(typeof fn!=='function')return fn;
+  if(key==='mkdirSync')return(file,...args)=>{
+   emit('mkdir.begin',{requested:String(file),customIO:target!==fs});
+   try{const first=fn.call(io,file,...args);emit('mkdir.end',{requested:String(file),returnedFirst:first??null,customIO:target!==fs});return first}
+   catch(error){emit('mkdir.failed',{requested:String(file),code:error.code??error.name});throw error}
+  };
+  if(key==='openSync')return(file,...args)=>{
+   const directory=typeof file==='string'&&fs.existsSync(file)&&fs.statSync(file).isDirectory();
+   if(directory)emit('directory-open.begin',{directory:file});
+   try{const fd=fn.call(io,file,...args);if(directory){directories.set(fd,file);emit('directory-open.end',{directory:file,fd});}return fd}
+   catch(error){if(directory)emit('directory-open.failed',{directory:file,code:error.code??error.name});throw error}
+  };
+  if(key==='fsyncSync'||key==='closeSync')return(fd,...args)=>{
+   const directory=directories.get(fd);if(directory)emit(key+'.begin',{directory,fd});
+   try{const result=fn.call(io,fd,...args);if(directory)emit(key+'.end',{directory,fd});return result}
+   catch(error){if(directory)emit(key+'.failed',{directory,fd,code:error.code??error.name});throw error}
+   finally{if(key==='closeSync')directories.delete(fd)}
+  };
+  return fn;
+ }});
+}
 
 // Storage fixtures only. These are not exchange orders, balances or fees.
 const NOW=Date.parse('2026-10-29T00:00:00Z');
@@ -17,10 +61,71 @@ const funding={id:'funding:one',ops:[{op:'set',path:['fundingSeen','period:one']
 const injected=code=>Object.assign(Error('injected filesystem error'),{code});
 function sandbox(run){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'orangex-journal-')),directory=path.join(root,'experiment'),stores=[];
- const create=(options={})=>{const journal=new OrangeXPaperJournal({directory,now:()=>NOW,...options});stores.push(journal);return journal};
- try{return run({root,directory,create})}finally{for(const journal of stores)try{journal.close()}catch{}fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ const create=(options={})=>{
+  trace('journal.construct',{directory});
+  const journal=new OrangeXPaperJournal({directory,now:()=>NOW,...options,io:tracedIO(options.io??fs)});stores.push(journal);
+  return new Proxy(journal,{get(target,key){const fn=Reflect.get(target,key);if(typeof fn!=='function')return fn;
+   if(!tracedMethods.has(key))return fn.bind(target);
+   return(...args)=>{trace('journal.'+String(key)+'.begin');try{const result=fn.apply(target,args);trace('journal.'+String(key)+'.end');return result}
+    catch(error){trace('journal.'+String(key)+'.failed',{code:error.code??error.name});throw error}}
+  }});
+ };
+ try{return run({root,directory,create})}finally{
+  trace('sandbox.close.begin');for(const journal of stores)try{journal.close()}catch{}trace('sandbox.close.end');
+  trace('sandbox.remove.begin',{directory:root});fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});trace('sandbox.remove.end',{directory:root});
+ }
 }
 const files=directory=>fs.readdirSync(directory).sort();
+
+// Real file data/fsyncs, virtual directory handles: a bad ancestry walk fails
+// deterministically instead of hanging a test or syncing the filesystem root.
+function directoryTraceIO(returnFirst){
+ const directories=new Map(),syncs=[],mkdirReturns=[];let next=-100000,opens=0;
+ const io=new Proxy(fs,{get(target,key){
+  if(key==='mkdirSync')return(file,...args)=>{const first=fs.mkdirSync(file,...args),returned=returnFirst(first);
+   mkdirReturns.push({requested:String(file),actualFirst:first,returned});return returned};
+  if(key==='openSync')return(file,...args)=>{
+   if(fs.existsSync(file)&&fs.statSync(file).isDirectory()){
+    if(++opens>100)throw Object.assign(Error('unbounded directory ancestry traversal'),{code:'TEST_DIRECTORY_WALK_UNBOUNDED'});
+    const fd=next--;directories.set(fd,String(file));return fd;
+   }
+   return fs.openSync(file,...args);
+  };
+  if(key==='fsyncSync')return fd=>{if(directories.has(fd)){syncs.push(directories.get(fd));return}return fs.fsyncSync(fd)};
+  if(key==='closeSync')return fd=>{if(directories.delete(fd))return;return fs.closeSync(fd)};
+  return Reflect.get(target,key);
+ }});
+ return {io,syncs,mkdirReturns};
+}
+
+test('recursive mkdir return casing or alias spelling cannot cause an unbounded directory-fsync walk',()=>sandbox(({root,directory,create})=>{
+ const trace=directoryTraceIO(first=>typeof first==='string'?first.toUpperCase()+'-returned-alias':first),journal=create({io:trace.io});
+ journal.initialize(state());journal.append(fill);journal.append(funding);
+ const before=journal.read(),backup=journal.backup();journal.append({id:'after-backup',ops:[{op:'set',path:['updatedAt'],value:NOW+1}]});
+ assert.deepEqual(journal.restoreBackup(backup),before);assert.deepEqual(journal.read(),before);
+ assert.equal(journal.append(fill).duplicate,true);assert.equal(journal.append(funding).duplicate,true);
+ assert.equal(journal.read().closed[0].realizedPnLUSD,2.375);
+ assert.deepEqual(trace.syncs.slice(0,2),[directory,root],'leaf and existing parent still synchronize before publication');
+ assert.ok(trace.mkdirReturns.some(row=>typeof row.returned==='string'&&row.returned!==row.actualFirst));
+ assert.ok(trace.syncs.every(file=>file===root||file.startsWith(root+path.sep)),'do not wander above the first existing parent');
+}));
+
+test('new directory entries are synchronized even if recursive mkdir returns no first-created path',()=>sandbox(({root,directory,create})=>{
+ const trace=directoryTraceIO(()=>undefined),journal=create({io:trace.io});journal.initialize(state());journal.append(fill);
+ assert.deepEqual(trace.syncs.slice(0,2),[directory,root]);
+ const backup=journal.backup();assert.equal(journal.restoreBackup(backup).closed[0].realizedPnLUSD,2.5);
+}));
+
+test('a missing filesystem root fails before mkdir instead of walking the same root forever',()=>sandbox(({directory,create})=>{
+ let creates=0;
+ const io=new Proxy(fs,{get(target,key){
+  if(key==='lstatSync')return()=>{throw Object.assign(Error('injected missing filesystem ancestry'),{code:'ENOENT'})};
+  if(key==='mkdirSync')return()=>{creates++;throw Error('mkdir must not run without an existing ancestor')};
+  return Reflect.get(target,key);
+ }});
+ assert.throws(()=>create({io}).initialize(state()),{code:'JOURNAL_UNSAFE_PATH'});
+ assert.equal(creates,0);assert.equal(fs.existsSync(directory),false);
+}));
 
 test('experimental journal is opt-in and absent reads/backups never initialize or modify legacy records',()=>sandbox(({root,directory,create})=>{
  const journal=create();assert.equal(journal.read(),null);assert.equal(journal.backup(),null);assert.equal(fs.existsSync(directory),false);
@@ -180,13 +285,30 @@ test('backup and recovery directory entries are synchronized before acknowledgem
 
 test('Windows unsupported directory fsync is explicit and unrelated I/O errors still fail closed',()=>{
  const moduleURL=new URL('../orangex_paper_journal.mjs',import.meta.url).href;
+ const traceURL=new URL('../scripts/storage-worker.mjs',import.meta.url).href;
  const source=`import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {OrangeXPaperJournal} from ${JSON.stringify(moduleURL)};
-Object.defineProperty(process,'platform',{value:'win32'});const root=fs.mkdtempSync(path.join(os.tmpdir(),'orangex-windows-sync-'));const accepted=[];let refused=false;
-try{for(const code of ['EACCES','EPERM','EINVAL','EISDIR','ENOTSUP','ENOSPC']){const directory=path.join(root,code);let j;const io=new Proxy(fs,{get(target,key){if(key==='openSync')return(file,...args)=>{if(fs.existsSync(file)&&fs.statSync(file).isDirectory())throw Object.assign(Error('injected directory fsync error'),{code});return fs.openSync(file,...args)};return Reflect.get(target,key)}});
-try{j=new OrangeXPaperJournal({directory,io});j.initialize(${JSON.stringify(state())});j.append(${JSON.stringify(fill)});const backup=j.backup();j.restoreBackup(backup);if(j.read().closed.length!==1)throw Error('lost trade');accepted.push(code)}catch(error){if(code!=='ENOSPC'||error.code!=='ENOSPC')throw error;refused=true}finally{j?.close()}}
-console.log(JSON.stringify({accepted,refused}))}finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}`;
+import {traceStorageStage} from ${JSON.stringify(traceURL)};
+const trace=(stage,details={})=>traceStorageStage('journal-fsync-child',stage,details);
+trace('child.begin');Object.defineProperty(process,'platform',{value:'win32'});const root=fs.mkdtempSync(path.join(os.tmpdir(),'orangex-windows-sync-'));const accepted=[];let refused=false;
+try{for(const code of ['EACCES','EPERM','EINVAL','EISDIR','ENOTSUP','ENOSPC']){const directory=path.join(root,code);let j;trace('case.begin',{code});const io=new Proxy(fs,{get(target,key){
+if(key==='mkdirSync')return(file,...args)=>{trace('mkdir.begin',{code,requested:String(file)});const first=fs.mkdirSync(file,...args);trace('mkdir.end',{code,requested:String(file),returnedFirst:first??null});return first};
+if(key==='openSync')return(file,...args)=>{if(fs.existsSync(file)&&fs.statSync(file).isDirectory()){trace('directory.open.failed',{code,directory:String(file)});throw Object.assign(Error('injected directory fsync error'),{code})}return fs.openSync(file,...args)};
+return Reflect.get(target,key)}});
+try{trace('initialize.begin',{code});j=new OrangeXPaperJournal({directory,io});j.initialize(${JSON.stringify(state())});trace('initialize.end',{code});
+trace('append.begin',{code});j.append(${JSON.stringify(fill)});trace('append.end',{code});trace('backup.begin',{code});const backup=j.backup();trace('backup.end',{code});
+trace('restore.begin',{code});j.restoreBackup(backup);trace('restore.end',{code});if(j.read().closed.length!==1)throw Error('lost trade');accepted.push(code)}
+catch(error){trace('case.error',{code,errorCode:error.code??error.name});if(code!=='ENOSPC'||error.code!=='ENOSPC')throw error;refused=true}
+finally{trace('close.begin',{code});j?.close();trace('close.end',{code});trace('case.end',{code})}}
+console.log(JSON.stringify({accepted,refused}));trace('child.end')}
+finally{trace('cleanup.begin');fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});trace('cleanup.end')}`;
+ const env={PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})};
+ // Keep the same OS temp directory selectors; only the parent-owned diagnostic
+ // selector is forwarded beyond those. No account or user-store settings.
+ for(const key of ['TEMP','TMP','TMPDIR','SIGNAL_LAB_TEST_TRACE_FILE'])if(typeof process.env[key]==='string')env[key]=process.env[key];
+ trace('spawnSync.begin',{case:'windows-directory-fsync',timeoutMs:10000});
  const child=spawnSync(process.execPath,['--input-type=module','-e',source],{encoding:'utf8',timeout:10000,killSignal:'SIGKILL',windowsHide:true,
-  env:{PATH:process.env.PATH,...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})}});
+  env});
+ trace('spawnSync.end',{case:'windows-directory-fsync',exitCode:child.status,signal:child.signal??null,errorCode:child.error?.code??null});
  assert.equal(child.error,undefined,child.error?.message);assert.equal(child.status,0,child.stderr);assert.deepEqual(JSON.parse(child.stdout),{accepted:['EACCES','EPERM','EINVAL','EISDIR','ENOTSUP'],refused:true});
 });
 
@@ -216,8 +338,12 @@ test('a killed writer after durable ACK recovers its PID lock and does not apply
  const source=`import {OrangeXPaperJournal} from ${JSON.stringify(moduleURL)};const j=new OrangeXPaperJournal({directory:process.argv[1]});j.initialize(${JSON.stringify(state())});j.append(${JSON.stringify(fill)});j.append(${JSON.stringify(funding)});console.log('DURABLE_ACK');setInterval(()=>{},1000);`;
  const child=spawn(process.execPath,['--input-type=module','-e',source,directory],{stdio:['ignore','pipe','pipe'],windowsHide:true});let journal;
  try{
+  trace('writer.ack-kill-close.begin',{childPid:child.pid});
   await killAcknowledgedJournalWriter(child,{signal:t.signal});
+  trace('writer.ack-kill-close.end',{childPid:child.pid});
+  trace('writer.recovery.begin');
   journal=new OrangeXPaperJournal({directory});assert.equal(journal.read().closed[0].realizedPnLUSD,2.375);
   assert.equal(journal.append(fill).duplicate,true);assert.equal(journal.append(funding).duplicate,true);assert.equal(journal.inspect().seq,2);assert.equal(journal.read().closed.length,1);
- }finally{journal?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+  trace('writer.recovery.end');
+ }finally{trace('writer.cleanup.begin');journal?.close();fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100});trace('writer.cleanup.end')}
 });

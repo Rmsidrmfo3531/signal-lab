@@ -50,11 +50,11 @@ jobs:
         run: node --version && npm --version
       # package.json has no external dependencies or lockfile; no install is needed.
       # Real public-market checks are deliberately separate from offline CI.
-      - name: Check Journal lifecycle separately on Windows
+      - name: Check affected storage files separately on Windows
         if: runner.os == 'Windows'
         env:
           SIGNAL_LAB_DATA_DIR: ${{ runner.temp }}/signal-lab-journal-${{ matrix.node }}
-        run: npm run test:ci -- --file tests/orangex_paper_journal.test.mjs --concurrency 1 --file-timeout-ms 60000 --output-dir "${{ runner.temp }}/journal-tests-${{ matrix.os }}-${{ matrix.node }}"
+        run: npm run test:ci -- --file tests/orangex_paper_journal.test.mjs --file tests/orangex_storage_performance.test.mjs --file tests/orangex_storage_scale.test.mjs --concurrency 1 --file-timeout-ms 60000 --output-dir "${{ runner.temp }}/journal-tests-${{ matrix.os }}-${{ matrix.node }}"
       - name: Run unit and integration tests
         # A failed focused check must not silently skip the remaining test files.
         if: ${{ !cancelled() }}

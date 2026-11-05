@@ -2,16 +2,15 @@
 // The journal backend is opt-in and is never substituted into the running app.
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import {createHash} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
-import {spawnSync} from 'node:child_process';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
 import {OrangeXPaperEngine} from '../orangex_paper.mjs';
 import {OrangeXPaperStore} from '../orangex_paper_store.mjs';
 import {OrangeXPaperJournal} from '../orangex_paper_journal.mjs';
 import {auditOrangeXPaperAccounting} from '../orangex_paper_performance.mjs';
+import {traceStorageStage,traceStorageIO,createStorageWorkerScratch,storageWorkerEnvironment,storageWorkerBase,readStorageWorkerTrace,removeStorageWorkerScratch,runStorageWorkerSync} from './storage-worker.mjs';
 
 const START=Date.parse('2026-01-01T00:00:01Z'),INTERVAL=28800000,NAME='BTC-USDT-PERPETUAL';
 const SETTINGS={capitalUSD:1e9,leverage:3,maxRiskUSD:6,dailyLossLimitUSD:1000000,maxPositions:2,
@@ -35,7 +34,7 @@ const integer=(value,min,max)=>Number.isSafeInteger(value)&&value>=min&&value<=m
 const round=value=>Math.round(value*1000)/1000;
 const implementationDigests=()=>Object.fromEntries([
  ['engine','../orangex_paper.mjs'],['snapshotStore','../orangex_paper_store.mjs'],
- ['experimentalJournal','../orangex_paper_journal.mjs'],['benchmark','./check-orangex-storage-performance.mjs']
+ ['experimentalJournal','../orangex_paper_journal.mjs'],['benchmark','./check-orangex-storage-performance.mjs'],['workerLifecycle','./storage-worker.mjs']
 ].map(([key,relative])=>[key,createHash('sha256').update(fs.readFileSync(new URL(relative,import.meta.url))).digest('hex')]));
 
 /** Build large histories in O(N), from a genuine engine-generated funded trade.
@@ -136,8 +135,10 @@ function applyBenchmarkTransaction(state,transaction){
  */
 export function runOrangeXStorageCase({tradeCount=1000,backend='snapshot',mutations:mutationCount=5,mutationPattern='heartbeat'}={}){
  if(!integer(tradeCount,1,20000)||!BACKENDS.has(backend)||!integer(mutationCount,1,25)||!PATTERNS.has(mutationPattern))throw Error('INVALID_STORAGE_BENCHMARK_OPTIONS');
- const directory=fs.mkdtempSync(path.join(os.tmpdir(),'orangex-storage-performance-')),
-  {io,counters}=instrumentedIO(),cpuStart=process.cpuUsage(),started=performance.now();
+ const scope='storage.performance.'+backend+'.'+tradeCount;
+ traceStorageStage(scope,'phase:worker:begin',{backend,tradeCount});
+ const directory=fs.mkdtempSync(path.join(storageWorkerBase('performance'),'orangex-storage-performance-')),
+  instrumented=instrumentedIO(),io=traceStorageIO(instrumented.io,scope),counters=instrumented.counters,cpuStart=process.cpuUsage(),started=performance.now();
  let store=null,peakHeap=0,peakRss=0,phase='build',lastMemory;
  const implementation=implementationDigests();
  const memorySamples=[];
@@ -148,7 +149,8 @@ export function runOrangeXStorageCase({tradeCount=1000,backend='snapshot',mutati
  const baseline=sample('worker-start'),metrics={},checks={};
  const timed=(name,fn)=>{
   const cpu=process.cpuUsage(),at=performance.now();let value;
-  try{value=fn();return value}finally{const used=process.cpuUsage(cpu);metrics[name]={durationMs:round(performance.now()-at),cpuUserMicros:used.user,cpuSystemMicros:used.system};sample(name)}
+  traceStorageStage(scope,'phase:'+name+':begin',{backend,tradeCount});
+  try{value=fn();return value}finally{const used=process.cpuUsage(cpu);metrics[name]={durationMs:round(performance.now()-at),cpuUserMicros:used.user,cpuSystemMicros:used.system};sample(name);traceStorageStage(scope,'phase:'+name+':end',{backend,tradeCount,durationMs:metrics[name].durationMs})}
  };
  try{
   let seed=timed('generateSyntheticHistory',()=>buildSyntheticStorageLedger(tradeCount));
@@ -236,7 +238,7 @@ export function runOrangeXStorageCase({tradeCount=1000,backend='snapshot',mutati
    status:'FAILED',failure:{phase,code:typeof error.code==='string'?error.code:
     typeof error.message==='string'&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'BENCHMARK_INVARIANT_OR_IO_FAILURE'},
    scope:'SEEDED_HISTORY_STEADY_STATE_MUTATIONS_NOT_STRATEGY_TRADES',productionBackendChanged:false,metrics};
- }finally{if(store)store.close();fs.rmSync(directory,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }finally{traceStorageStage(scope,'phase:cleanup:begin',{backend,tradeCount,directory});if(store)store.close();fs.rmSync(directory,{recursive:true,force:true,maxRetries:8,retryDelay:100});traceStorageStage(scope,'phase:cleanup:end',{backend,tradeCount,directory})}
 }
 
 export function storagePerformanceOptions(args=[]){
@@ -256,26 +258,38 @@ export function storagePerformanceOptions(args=[]){
  }
  return options;
 }
-export function runOrangeXStorageComparison({tradeCounts=[1000,10000,10001],mutations:mutationCount=5,mutationPattern='heartbeat',nodePath=process.execPath}={}){
+export function runOrangeXStorageComparison({tradeCounts=[1000,10000,10001],mutations:mutationCount=5,mutationPattern='heartbeat',nodePath=process.execPath,workerTimeoutMs=180000}={}){
  if(!Array.isArray(tradeCounts)||!tradeCounts.length||tradeCounts.length>4||tradeCounts.some(n=>!integer(n,1,20000))||
-  new Set(tradeCounts).size!==tradeCounts.length||!integer(mutationCount,1,25)||!PATTERNS.has(mutationPattern)||typeof nodePath!=='string')throw Error('INVALID_STORAGE_BENCHMARK_OPTIONS');
+  new Set(tradeCounts).size!==tradeCounts.length||!integer(mutationCount,1,25)||!PATTERNS.has(mutationPattern)||typeof nodePath!=='string'||!integer(workerTimeoutMs,1000,180000))throw Error('INVALID_STORAGE_BENCHMARK_OPTIONS');
  const results=[];
  for(const tradeCount of tradeCounts)for(const backend of BACKENDS){
-  const workerEnv={PATH:process.env.PATH};
-  // Preserve only OS runtime/temp selectors, never .env/API/token settings.
-  // Windows otherwise falls back to a system temp directory unnecessarily.
-  for(const key of ['SystemRoot','TEMP','TMP','TMPDIR'])if(typeof process.env[key]==='string')workerEnv[key]=process.env[key];
-  const child=spawnSync(nodePath,['--expose-gc',fileURLToPath(import.meta.url),'--worker',backend,String(tradeCount),String(mutationCount),mutationPattern],
-   {encoding:'utf8',maxBuffer:8*1024*1024,timeout:180000,windowsHide:true,
-    env:workerEnv});
-  let value;try{value=JSON.parse(child.stdout)}catch{throw Error('STORAGE_BENCHMARK_WORKER_FAILED')}
-  if(child.status!==0||value.kind!=='ORANGEX_STORAGE_PERFORMANCE_CASE')throw Error('STORAGE_BENCHMARK_WORKER_FAILED');
-  results.push(value);
+  const scratch=createStorageWorkerScratch('performance'),workerEnv=storageWorkerEnvironment(scratch),at=performance.now();
+  traceStorageStage('storage.performance.parent','phase:spawn:begin',{backend,tradeCount,timeoutMs:workerTimeoutMs});
+  let row;
+  try{
+   const child=runStorageWorkerSync(nodePath,['--expose-gc',fileURLToPath(import.meta.url),'--worker',backend,String(tradeCount),String(mutationCount),mutationPattern],
+    {timeoutMs:workerTimeoutMs,env:workerEnv});
+   let value;try{value=JSON.parse(child.stdout)}catch{}
+   if(!child.error&&child.status===0&&value?.kind==='ORANGEX_STORAGE_PERFORMANCE_CASE')row=value;
+   else{
+    const timeout=child.error?.code==='ETIMEDOUT';
+    row={kind:'ORANGEX_STORAGE_PERFORMANCE_CASE',executionMode:'SYNTHETIC_TEST',backend,tradeCount,mutationCount,mutationPattern,implementation:implementationDigests(),
+     status:timeout?'TIMEOUT':'WORKER_FAILED',failure:{code:timeout?'WORKER_TIME_LIMIT':'WORKER_EXIT_OR_INVALID_OUTPUT',exitCode:child.status,signal:child.signal??null,timeoutMs:workerTimeoutMs,errorCode:child.error?.code??null},
+     measurementsUnavailable:true,productionBackendChanged:false};
+   }
+   row.workerElapsedMs=round(performance.now()-at);row.diagnostics=readStorageWorkerTrace(scratch);
+   traceStorageStage('storage.performance.parent','phase:spawn:end',{backend,tradeCount,status:row.status,elapsedMs:row.workerElapsedMs,lastPhase:row.diagnostics.lastPhase?.stage??null});
+   results.push(row);
+  }finally{
+   traceStorageStage('storage.performance.parent','phase:parentCleanup:begin',{backend,tradeCount,directory:scratch.directory});
+   removeStorageWorkerScratch(scratch);if(row)row.temporaryRootCleanupVerified=true;
+   traceStorageStage('storage.performance.parent','phase:parentCleanup:end',{backend,tradeCount});
+  }
  }
  const implementationConsistent=new Set(results.map(row=>JSON.stringify(row.implementation))).size===1;
  return {kind:'ORANGEX_STORAGE_PERFORMANCE_COMPARISON',executionMode:'SYNTHETIC_TEST',nodeVersion:process.version,
-  status:results.some(row=>row.status==='FAILED')?'FAILED':!implementationConsistent?'INCONSISTENT_IMPLEMENTATION':results.some(row=>row.status==='CAPACITY_LIMIT')?'COMPLETED_WITH_CAPACITY_LIMIT':'PASS',
-  platform:process.platform,architecture:process.arch,tradeCounts,mutationCount,mutationPattern,actualOrangeXRequestsRun:false,
+  status:results.some(row=>['FAILED','TIMEOUT','WORKER_FAILED'].includes(row.status))?'FAILED':!implementationConsistent?'INCONSISTENT_IMPLEMENTATION':results.some(row=>row.status==='CAPACITY_LIMIT')?'COMPLETED_WITH_CAPACITY_LIMIT':'PASS',
+  platform:process.platform,architecture:process.arch,tradeCounts,mutationCount,mutationPattern,workerTimeoutMs,allTemporaryRootsCleaned:results.every(row=>row.temporaryRootCleanupVerified===true),diagnosticTracingIncludedInWallTime:true,actualOrangeXRequestsRun:false,
   existingUserRecordsTouched:false,productionStorageChanged:false,implementationConsistent,results,
   capacityLimits:results.filter(row=>row.status==='CAPACITY_LIMIT').map(row=>({backend:row.backend,tradeCount:row.tradeCount,code:row.failure.code})),
   comparablePairs:tradeCounts.map(tradeCount=>{

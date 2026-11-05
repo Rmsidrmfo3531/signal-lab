@@ -139,7 +139,9 @@ test('isolated same-workload workers preserve equal accounting across unchanged 
  assert.equal(report.status,'PASS',JSON.stringify(report.results.map(row=>row.failure)));assert.equal(report.results.length,3);
  assert.equal(report.implementationConsistent,true);assert.equal(report.checks[0].sameHistoryAmongCompleted,true);assert.equal(report.checks[0].allThreeDurablyCompleted,true);
  for(const row of report.results){assert.equal(row.status,'PASS');assert.equal(row.actual.tradeCount,9);assert.equal(row.checks.allTradeSignalFundingIdsPreserved,true);
-  assert.equal(row.checks.backupAndRestoreVerified,true);assert.equal(row.actual.accountingValid,true);assert.ok(row.metrics.restartAndFullIntegrityRead.durationMs>=0)}
+  assert.equal(row.checks.backupAndRestoreVerified,true);assert.equal(row.actual.accountingValid,true);assert.ok(row.metrics.restartAndFullIntegrityRead.durationMs>=0);
+  assert.equal(row.diagnostics.status,'OBSERVED');assert.equal(row.diagnostics.lastPhase.stage,'phase:cleanup:end');
+  assert.equal(row.temporaryRootCleanupVerified,true);assert.ok(row.workerElapsedMs>=0)}
  assert.equal(report.actualOrangeXRequestsRun,false);assert.equal(report.productionStorageChanged,false);assert.equal(report.userDataMigrationRun,false);assert.equal(report.allTemporaryRootsCleaned,true);
  const archive=report.results.find(row=>row.backend==='segmented_lab');assert.equal(archive.actual.closedRowsRetainedInActiveMemory,0);
  assert.ok(archive.limitations.includes('HEARTBEAT_WAL_ONLY_NO_CLOSED_TRADE_APPEND_ENGINE_ADAPTER'));

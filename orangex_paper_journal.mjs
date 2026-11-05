@@ -95,13 +95,21 @@ export class OrangeXPaperJournal{
   }finally{if(fd!==undefined)this.#io.closeSync(fd)}
  }
  #directory(directory){
-  this.#ancestors(directory);const first=this.#io.mkdirSync(directory,{recursive:true,mode:0o700});this.#ancestors(directory);
-  // Persist newly created directory entries up to the first pre-existing parent.
-  // Windows' documented directory-fsync limitations are handled in #syncDir.
-  if(typeof first==='string'){
-   let current=path.resolve(directory),created=path.resolve(first);
-   for(;;){this.#syncDir(current);this.#syncDir(path.dirname(current));if(current===created)break;current=path.dirname(current)}
+  this.#ancestors(directory);
+  // Capture a finite chain before creating it. Windows may return a differently
+  // cased/aliased path from recursive mkdir; comparing that string while walking
+  // parents can otherwise get stuck forever at a drive root.
+  const missing=[];let current=path.resolve(directory);
+  while(!this.#stat(current)){
+   missing.push(current);const parent=path.dirname(current);
+   if(parent===current)throw problem('JOURNAL_UNSAFE_PATH');
+   current=parent;
   }
+  this.#io.mkdirSync(directory,{recursive:true,mode:0o700});this.#ancestors(directory);
+  // Persist every newly created entry and its parent in the same leaf-first
+  // order; a concurrent creator can only cause an additional safe sync.
+  // Windows' documented directory-fsync limitations remain in #syncDir.
+  for(const created of missing){this.#syncDir(created);this.#syncDir(path.dirname(created))}
  }
  #writeNew(file,bytes){
   const fd=this.#io.openSync(file,this.#io.constants.O_WRONLY|this.#io.constants.O_CREAT|this.#io.constants.O_EXCL|(this.#io.constants.O_NOFOLLOW??0),0o600);

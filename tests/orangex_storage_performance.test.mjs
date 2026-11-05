@@ -21,16 +21,17 @@ test('seeded storage histories preserve real engine accounting and signal/fundin
 });
 
 test('isolated paired storage cases compare identical histories and restore every record and identity',()=>{
- const report=runOrangeXStorageComparison({tradeCounts:[12,32],mutations:2});
+ const report=runOrangeXStorageComparison({tradeCounts:[12,32],mutations:2,workerTimeoutMs:20000});
  assert.equal(report.executionMode,'SYNTHETIC_TEST');assert.equal(report.productionStorageChanged,false);
  assert.equal(report.existingUserRecordsTouched,false);assert.equal(report.actualOrangeXRequestsRun,false);
- assert.equal(report.results.length,4);
+ assert.equal(report.results.length,4);assert.equal(report.allTemporaryRootsCleaned,true);
  for(const pair of report.comparablePairs){
   assert.equal(pair.identicalSeed,true);assert.equal(pair.bothDurablyCompleted,true);
   const rows=report.results.filter(row=>row.tradeCount===pair.tradeCount),snapshot=rows.find(row=>row.backend==='snapshot'),journal=rows.find(row=>row.backend==='journal');
   assert.equal(snapshot.seededHistory.finalHash,journal.seededHistory.finalHash);
   for(const result of rows){
-   assert.equal(result.status,'PASS',JSON.stringify(result.failure));
+   assert.equal(result.status,'PASS',JSON.stringify({failure:result.failure,diagnostics:result.diagnostics}));
+   assert.equal(result.diagnostics.status,'OBSERVED');assert.equal(result.diagnostics.lastPhase.stage,'phase:cleanup:end');assert.equal(result.temporaryRootCleanupVerified,true);
    for(const value of Object.values(result.checks))assert.equal(value,true);
    assert.ok(result.metrics.restartRead.durationMs>=0);assert.ok(result.metrics.backup.durationMs>=0);assert.ok(result.metrics.restoreBackup.durationMs>=0);
    assert.ok(result.storage.fsyncCalls>0);assert.ok(result.storage.logicalBytesWritten>0);
@@ -47,10 +48,12 @@ test('performance options cannot select a production store, mode or implicit mig
  for(const args of [['--data-dir','existing'],['--mode','LIVE'],['--trades','0'],['--trades','10,10'],
   ['--mutations','0'],['--trades','20001'],['--migrate'],['--trades','10','--trades','20']])
   assert.throws(()=>storagePerformanceOptions(args),/INVALID_STORAGE_BENCHMARK_OPTIONS/);
+ for(const workerTimeoutMs of [0,NaN,Infinity,180001])
+  assert.throws(()=>runOrangeXStorageComparison({tradeCounts:[1],workerTimeoutMs}),/INVALID_STORAGE_BENCHMARK_OPTIONS/);
 });
 
 test('appended closed trades preserve matching funding and signal identities through both storage backends',()=>{
- const report=runOrangeXStorageComparison({tradeCounts:[16],mutations:3,mutationPattern:'append_trade'});
+ const report=runOrangeXStorageComparison({tradeCounts:[16],mutations:3,mutationPattern:'append_trade',workerTimeoutMs:20000});
  assert.equal(report.status,'PASS');assert.equal(report.mutationPattern,'append_trade');assert.equal(report.comparablePairs[0].identicalSeed,true);
  const [snapshot,journal]=report.results;
  assert.equal(snapshot.finalTradeCount,19);assert.equal(journal.finalTradeCount,19);

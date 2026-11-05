@@ -121,3 +121,50 @@ test('START, completion and progress-report failures cannot strand active worker
   }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
  }
 });
+
+test('storage phase sidecars remain visible while spawnSync blocks and survive timeout as an artifact',{timeout:15000},async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-phase-live-')),tests=path.join(root,'tests'),out=path.join(root,'logs'),events=[];
+ fs.mkdirSync(tests);
+ fs.writeFileSync(path.join(tests,'blocked.test.mjs'),`
+  import test from 'node:test';import fs from 'node:fs';import path from 'node:path';import {spawnSync} from 'node:child_process';
+  test('synchronous storage worker is blocked',()=>{
+   const file=process.env.SIGNAL_LAB_TEST_TRACE_FILE;
+   fs.appendFileSync(file,JSON.stringify({scope:'sync-fixture',stage:'phase:spawnSync:begin',pid:process.pid,
+    at:new Date().toISOString(),backend:'journal',directory:path.dirname(file),firstCreatedDirectory:'C:/TEMP/ALIASED',
+    unrelatedDetail:'not-for-the-live-console'})+'\\n');
+   spawnSync(process.execPath,['-e','Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,15000)'],
+    {stdio:'ignore',timeout:15000,killSignal:'SIGKILL'});
+  });
+ `);
+ try{
+  const result=await runNodeTests({root,outputDir:out,concurrency:1,fileTimeoutMs:4500,heartbeatMs:200,
+   print:value=>events.push({value,at:Date.now()})});
+  assert.equal(result.passed,false);assert.equal(result.completedFiles,1);
+  const row=result.results[0];assert.equal(row.failureCode,'FILE_TIMEOUT');assert.equal(row.processClosed,true);
+  assert.equal(row.traceRecords,1);assert.equal(row.lastStoragePhase.stage,'phase:spawnSync:begin');
+  assert.equal(row.lastStoragePhase.backend,'journal');assert.equal(row.traceCaptureError,null);
+  const phase=events.find(event=>event.value.startsWith('[STORAGE PHASE]')),
+   timeout=events.find(event=>event.value.startsWith('[TEST TIMEOUT]'));
+  assert.ok(phase&&timeout);assert.ok(events.indexOf(phase)<events.indexOf(timeout),'the phase must be relayed before the watchdog terminates the worker');
+  assert.match(phase.value,/firstCreatedDirectory/);assert.doesNotMatch(phase.value,/unrelatedDetail|not-for-the-live-console/);
+  const record=JSON.parse(fs.readFileSync(path.join(out,row.trace),'utf8'));
+  assert.equal(record.stage,'phase:spawnSync:begin');
+  assert.equal(fs.existsSync(record.directory),false,'only the owned temporary sidecar directory is removed after capture');
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test('a successful body with a truncated storage trace fails diagnostics while preserving the original trace',{timeout:10000},async()=>{
+ for(const partial of [Buffer.from('{"stage":'),Buffer.from([0xe3,0x85])]){
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-phase-partial-')),out=path.join(root,'logs');
+ fs.mkdirSync(path.join(root,'tests'));
+ fs.writeFileSync(path.join(root,'tests','partial.test.mjs'),`import test from 'node:test';import fs from 'node:fs';
+  test('body succeeds but diagnostics are incomplete',()=>fs.appendFileSync(process.env.SIGNAL_LAB_TEST_TRACE_FILE,Buffer.from(${JSON.stringify([...partial])})));`);
+ try{
+  const result=await runNodeTests({root,outputDir:out,print:()=>{}}),row=result.results[0];
+  assert.equal(row.pass,1);assert.equal(row.exitCode,0);assert.equal(row.processClosed,true);
+  assert.equal(result.passed,false);assert.equal(row.status,'FAIL');assert.equal(row.failureCode,'TRACE_CAPTURE_FAILED');
+  assert.equal(row.traceCaptureError,'TEST_TRACE_PARTIAL_RECORD');
+  assert.deepEqual(fs.readFileSync(path.join(out,row.trace)),partial);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }
+});
