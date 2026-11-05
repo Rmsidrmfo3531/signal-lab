@@ -1,0 +1,18 @@
+{
+  "attemptedAtUTC": "2026-11-05T05:18:41.382793+00:00",
+  "exitCode": 1,
+  "created": false,
+  "url": null,
+  "branch": "feat/issue6-integrated",
+  "commit": "65b61c628913b90cb542ed2e14b94997a5cbb5ce",
+  "error": "Post \"https://api.github.com/graphql\": Forbidden\n",
+  "compareURL": "https://github.com/Rmsidrmfo3531/signal-lab/compare/main...feat/issue6-integrated?expand=1",
+  "bodyFile": "/workspace/signal-integration-evidence/pr-body.md",
+  "mergePerformed": false,
+  "runtimeApiGithubAllowed": false,
+  "savedDraftAlreadyIncludesApiGithub": true,
+  "savedDraftAndRuntimeDiffer": true,
+  "configurationChangedByThisSubmission": false,
+  "nextAction": "APPLY_EXISTING_NETWORK_CONFIGURATION_THEN_RETRY_PR_CREATION_OR_USE_REVIEW_URL",
+  "prCreationPage": "https://github.com/Rmsidrmfo3531/signal-lab/pull/new/feat/issue6-integrated"
+}

@@ -241,6 +241,7 @@
     ".env.issue6.example",
     ".github/workflows/node-tests.yml",
     "ISSUE6_INTEGRATION_KO.md",
+    "PR_ISSUE6_BODY_KO.md",
     "README.md",
     "binance_execution.mjs",
     "engine.mjs",
@@ -268,7 +269,9 @@
     "public_read_budget.mjs",
     "quality.mjs",
     "reports/issue6-strategy-synthetic.json",
+    "reports/issue6-submission.json",
     "reports/issue6-ui.json",
+    "reports/issue6-validation.json",
     "research/legacy_v58/engine.mjs",
     "research/legacy_v58/quality.mjs",
     "scripts/compare-issue6-strategies.mjs",
@@ -317,8 +320,7 @@
     "tests/volume_targets.test.mjs",
     "updater.mjs",
     "volume_profile.mjs",
-    "volume_targets.mjs",
-    "reports/issue6-validation.json"
+    "volume_targets.mjs"
   ],
   "sourceSHA256": {
     "binance_execution.mjs": "bbdaf6f4c1321c3b29b4f8947fae5eef1c2506cc027a2eae0329f43da6823aa3",
@@ -509,8 +511,18 @@
     "windows_paper_notify.mjs": "326a9bdc88f4a5c10f4d302758cf13e1aa6ae2b824f6128e1e8cb1130f216a85"
   },
   "reportSHA256": {
-    "ISSUE6_INTEGRATION_KO.md": "5ce646667a7e534156c4375c2beaeab64866a4e84ab3eb5cb23963abf71df30f",
+    "ISSUE6_INTEGRATION_KO.md": "a91225a9b8a355cb29381a8c03fb8d365a5f3d7339c0c860f4f85a9054ecea4a",
     "reports/issue6-ui.json": "251c6550130651f70fa0ebafe98178f73768bf7436e4a4874bb3e5285f3b3c2b",
-    "reports/issue6-strategy-synthetic.json": "8dae647c7e64a8f8d54a9b917f1c2018dcd16e7b304277e38d781fd2ad0f254a"
+    "reports/issue6-strategy-synthetic.json": "8dae647c7e64a8f8d54a9b917f1c2018dcd16e7b304277e38d781fd2ad0f254a",
+    "reports/issue6-submission.json": "fc2702f936781d705652f7683c14fb7c74d56d6df5a72528b2a8d2a1d251463a",
+    "PR_ISSUE6_BODY_KO.md": "4bcb3adf5efad52e1dc3c845916956e5714ae3569516d8d3381c2cf75c459f5a"
+  },
+  "githubPullRequestSubmission": {
+    "implementationCommit": "65b61c628913b90cb542ed2e14b94997a5cbb5ce",
+    "created": false,
+    "error": "Post \"https://api.github.com/graphql\": Forbidden\n",
+    "evidence": "issue6-submission.json",
+    "manualReviewURL": "https://github.com/Rmsidrmfo3531/signal-lab/compare/main...feat/issue6-integrated?expand=1",
+    "mainAndExistingPRsUnchangedConfirmed": true
   }
 }

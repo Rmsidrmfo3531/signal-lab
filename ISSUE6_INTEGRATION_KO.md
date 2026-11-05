@@ -141,3 +141,12 @@ npm run test:strategy:compare -- --input 과거데이터.json
 ## 남은 실제 운영 조건
 
 실시장 기간 외 성능, 계약별 amount/contract_size/min_notional·결제 통화, 실제 계정 비용·잔고·포지션/체결, 보호 손절·안전 교체·reduce-only·재동기화와 장애 시나리오를 실제 거래소에서 별도 확인해야 합니다. 공식 기능이 확인되지 않으면 LIVE 진입은 차단합니다. 모의 테스트 통과나 높은 점수는 이 승인을 대신하지 않습니다.
+
+
+## 제출 상태
+
+구현 커밋 `65b61c6`을 `feat/issue6-integrated`에 Push했고 원격 해시를 확인했습니다. main과 기존 PR #3·#4·#5는 변경·병합하지 않았습니다.
+
+새 PR 생성은 실제로 시도했지만 `Post https://api.github.com/graphql: Forbidden`으로 실패했습니다. **새 PR은 생성되지 않았습니다.** [PR 작성 화면](https://github.com/Rmsidrmfo3531/signal-lab/pull/new/feat/issue6-integrated)에서 [준비된 한국어 본문](PR_ISSUE6_BODY_KO.md)을 사용할 수 있습니다. [코드 비교](https://github.com/Rmsidrmfo3531/signal-lab/compare/main...feat/issue6-integrated?expand=1)는 이미 Push된 통합 버전입니다.
+
+환경설정 초안에는 api.github.com 허용이 이미 있지만 현재 실행 환경의 적용 정책에는 없습니다. 동일한 초안을 다시 만들거나 우회하지 않았습니다. 설정을 검토·저장해 실행 환경에 적용한 뒤 GitHub API 작업을 재검증해야 합니다. Git Push 성공은 GitHub API 접근·PR 생성 성공을 의미하지 않습니다. 이 상태는 `reports/issue6-submission.json`에 기록했습니다.
