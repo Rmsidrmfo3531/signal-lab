@@ -91,6 +91,106 @@ test('mid-line ENOSPC rolls back bytes before ACK, then one retry remains idempo
  assert.equal(restarted.summary().updatedAt,delta.updatedAt);
 }));
 
+test('Windows append-only truncate restrictions use a separately writable WAL recovery handle before permitting retry',()=>sandbox(({directory,create})=>{
+ let fail=false,partial=false,appendTruncates=0,recoveryTruncates=0;const handles=new Map(),trace=[];
+ const io=new Proxy(fs,{get(target,key){
+  if(key==='openSync')return(file,flags,...args)=>{const fd=fs.openSync(file,flags,...args);if(path.basename(String(file))==='delta.jsonl')handles.set(fd,flags);return fd};
+  if(key==='closeSync')return fd=>{fs.closeSync(fd);handles.delete(fd)};
+  if(key==='writeSync')return(fd,buffer,offset,length,position)=>{
+   if(fail&&(handles.get(fd)&fs.constants.O_APPEND)){if(!partial){partial=true;return fs.writeSync(fd,buffer,offset,Math.min(17,length),position)}throw injected('ENOSPC')}
+   return fs.writeSync(fd,buffer,offset,length,position);
+  };
+  if(key==='ftruncateSync')return(fd,size)=>{
+   const flags=handles.get(fd);if(flags&fs.constants.O_APPEND){appendTruncates++;throw Object.assign(injected('EPERM'),{syscall:'ftruncate'})}
+   assert.equal(flags&fs.constants.O_RDWR,fs.constants.O_RDWR);assert.equal(flags&(fs.constants.O_APPEND|fs.constants.O_TRUNC|fs.constants.O_CREAT),0);
+   recoveryTruncates++;trace.push('truncate');return fs.ftruncateSync(fd,size);
+  };
+  if(key==='fsyncSync')return fd=>{if(fail&&handles.has(fd)&&!(handles.get(fd)&fs.constants.O_APPEND))trace.push('recovery-sync');return fs.fsyncSync(fd)};
+  return Reflect.get(target,key);
+ }});
+ const fixture=storageScaleFixture(3),store=create({io});store.initialize(fixture);
+ store.heartbeat({id:'committed-prefix',updatedAt:fixture.active.updatedAt+1});
+ const file=path.join(directory,'delta.jsonl'),before=fs.readFileSync(file),delta={id:'windows-retry',updatedAt:fixture.active.updatedAt+2};
+ fail=true;assert.throws(()=>store.heartbeat(delta),{code:'ENOSPC'});
+ assert.equal(appendTruncates,0);assert.equal(recoveryTruncates,1);assert.deepEqual(trace,['truncate','recovery-sync']);
+ assert.ok(fs.readFileSync(file).equals(before));assert.equal(handles.size,0);
+ fail=false;assert.equal(store.summary().seq,1);assert.equal(store.heartbeat(delta).seq,2);store.checkpoint();store.close();
+ const restarted=create();assert.equal(restarted.summary().seq,2);assert.equal(restarted.heartbeat(delta).duplicate,true);
+ assert.equal(restarted.summary().updatedAt,delta.updatedAt);assert.equal(handles.size,0);
+}));
+
+for(const scenario of [
+ {name:'open',stage:'recovery-open',code:'EACCES'},
+ {name:'identity',stage:'identity-before',code:'DURABLE_ROLLBACK_IDENTITY_CHANGED'},
+ {name:'prefix',stage:'prefix-before',code:'DURABLE_ROLLBACK_PREFIX_MISMATCH'},
+ {name:'tail',stage:'tail-before',code:'DURABLE_ROLLBACK_TAIL_MISMATCH'},
+ {name:'truncate',stage:'truncate',code:'EPERM'},
+ {name:'sync',stage:'sync',code:'EIO'},
+ {name:'length',stage:'identity-after',code:'DURABLE_ROLLBACK_LENGTH_MISMATCH'},
+ {name:'close',stage:'recovery-close',code:'EIO'},
+])test(`unverified ${scenario.name} rollback preserves its cause and permanently freezes the synthetic WAL`,()=>sandbox(({directory,create})=>{
+ let fail=false,partial=false,file,committedBytes;const handles=new Map();
+ const tamper=offset=>{const fd=fs.openSync(file,'r+');try{fs.writeSync(fd,Buffer.from('!'),0,1,offset)}finally{fs.closeSync(fd)}};
+ const io=new Proxy(fs,{get(target,key){
+  if(key==='openSync')return(targetFile,flags,...args)=>{
+   const wal=path.basename(String(targetFile))==='delta.jsonl',recovery=fail&&wal&&Boolean(flags&fs.constants.O_RDWR)&&!(flags&fs.constants.O_APPEND);
+   if(recovery&&scenario.name==='open')throw Object.assign(injected('EACCES'),{syscall:'open'});
+   const fd=fs.openSync(targetFile,flags,...args);if(wal)handles.set(fd,{flags,recovery});return fd;
+  };
+  if(key==='closeSync')return fd=>{const recovery=handles.get(fd)?.recovery;fs.closeSync(fd);handles.delete(fd);
+   if(fail&&recovery&&scenario.name==='close')throw Object.assign(injected('EIO'),{syscall:'close'});
+  };
+  if(key==='fstatSync')return fd=>{const stat=fs.fstatSync(fd);
+   if(fail&&handles.get(fd)?.recovery&&scenario.name==='identity')return Object.assign(Object.create(Object.getPrototypeOf(stat)),stat,{ino:Number(stat.ino)+1});
+   return stat;
+  };
+  if(key==='writeSync')return(fd,buffer,offset,length,position)=>{
+   if(fail&&(handles.get(fd)?.flags&fs.constants.O_APPEND)){
+    if(!partial){partial=true;const wrote=fs.writeSync(fd,buffer,offset,Math.min(17,length),position);
+     if(scenario.name==='prefix')tamper(0);if(scenario.name==='tail')tamper(committedBytes);return wrote;
+    }throw Object.assign(injected('ENOSPC'),{syscall:'write'});
+   }return fs.writeSync(fd,buffer,offset,length,position);
+  };
+  if(key==='ftruncateSync')return(fd,size)=>{
+   if(fail&&handles.get(fd)?.recovery){if(scenario.name==='truncate')throw Object.assign(injected('EPERM'),{syscall:'ftruncate'});if(scenario.name==='length')return}
+   return fs.ftruncateSync(fd,size);
+  };
+  if(key==='fsyncSync')return fd=>{if(fail&&handles.get(fd)?.recovery&&scenario.name==='sync')throw Object.assign(injected('EIO'),{syscall:'fsync'});return fs.fsyncSync(fd)};
+  return Reflect.get(target,key);
+ }});
+ const fixture=storageScaleFixture(3),store=create({io});store.initialize(fixture);store.heartbeat({id:'prior-committed',updatedAt:fixture.active.updatedAt+1});
+ file=path.join(directory,'delta.jsonl');committedBytes=fs.statSync(file).size;
+ let caught;fail=true;assert.throws(()=>store.heartbeat({id:'must-not-ack',updatedAt:fixture.active.updatedAt+2}),error=>{
+  caught=error;assert.equal(error.code,'SCALE_COMMIT_UNCERTAIN');assert.equal(error.cause.code,'ENOSPC');
+  assert.equal(error.appendFailure.original.stage,'append-write');assert.equal(error.appendFailure.original.syscall,'write');
+  assert.equal(error.rollback.verified,false);assert.equal(error.rollback.stage,scenario.stage);assert.equal(error.rollback.code,scenario.code);return true;
+ });
+ assert.equal(handles.size,0);const after=fs.readFileSync(file);fail=false;
+ assert.throws(()=>store.heartbeat({id:'cannot-bypass-freeze',updatedAt:fixture.active.updatedAt+3}),error=>{
+  assert.equal(error.code,'SCALE_COMMIT_UNCERTAIN');assert.deepEqual(error.rollback,caught.rollback);assert.deepEqual(error.appendFailure,caught.appendFailure);return true;
+ });
+ assert.ok(fs.readFileSync(file).equals(after));assert.equal(handles.size,0);
+}));
+
+test('an append close that releases its handle then errors is never retried or truncated and remains recoverable without a duplicate ACK',()=>sandbox(({directory,create})=>{
+ let fail=false,appendCloseCalls=0,truncates=0;const appendHandles=new Set();
+ const io=new Proxy(fs,{get(target,key){
+  if(key==='openSync')return(file,flags,...args)=>{const fd=fs.openSync(file,flags,...args);if(path.basename(String(file))==='delta.jsonl'&&(flags&fs.constants.O_APPEND))appendHandles.add(fd);return fd};
+  if(key==='closeSync')return fd=>{if(fail&&appendHandles.has(fd)){appendCloseCalls++;fs.closeSync(fd);appendHandles.delete(fd);throw Object.assign(injected('EIO'),{syscall:'close'})}fs.closeSync(fd);appendHandles.delete(fd)};
+  if(key==='ftruncateSync')return(fd,size)=>{truncates++;return fs.ftruncateSync(fd,size)};
+  return Reflect.get(target,key);
+ }});
+ const fixture=storageScaleFixture(3),store=create({io});store.initialize(fixture);const delta={id:'closed-but-unacknowledged',updatedAt:fixture.active.updatedAt+1};
+ fail=true;assert.throws(()=>store.heartbeat(delta),error=>{
+  assert.equal(error.code,'SCALE_COMMIT_UNCERTAIN');assert.equal(error.cause.code,'EIO');assert.equal(error.appendFailure.original.stage,'append-close');assert.equal(error.rollback.verified,false);return true;
+ });
+ assert.equal(appendCloseCalls,1);assert.equal(truncates,0);assert.equal(appendHandles.size,0);
+ const bytes=fs.readFileSync(path.join(directory,'delta.jsonl'));assert.equal(JSON.parse(bytes).id,delta.id);
+ fail=false;assert.throws(()=>store.heartbeat(delta),{code:'SCALE_COMMIT_UNCERTAIN'});assert.equal(appendCloseCalls,1);assert.equal(truncates,0);
+ store.close();const restarted=create();assert.equal(restarted.summary().seq,1);assert.equal(restarted.heartbeat(delta).duplicate,true);
+ assert.ok(fs.readFileSync(path.join(directory,'delta.jsonl')).equals(bytes));
+}));
+
 test('uncertain WAL sync and rollback freeze writes rather than acknowledging an unverified mutation',()=>sandbox(({create})=>{
  let fail=false;const io=new Proxy(fs,{get(target,key){
   if(key==='fsyncSync')return fd=>{if(fail)throw injected('EIO');return fs.fsyncSync(fd)};

@@ -9,6 +9,7 @@ import path from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
 import {buildSyntheticStorageLedger} from './scripts/check-orangex-storage-performance.mjs';
 import {auditOrangeXPaperAccounting} from './orangex_paper_performance.mjs';
+import {rollbackDurableAppend} from './durable_append_recovery.mjs';
 
 const KIND='ORANGEX_SYNTHETIC_SEGMENTED_STORAGE_LAB',VERSION=1,INTERVAL=28800000,MAX=50000;
 const HASH=/^[a-f0-9]{64}$/;const SAFE=/^(?:segment-\d{5}|active-\d+-[a-f0-9]{12}|genesis-active)\.json$/;
@@ -17,6 +18,7 @@ const json=value=>JSON.stringify(value);
 const bytes=value=>Buffer.from(json(value)+'\n');
 const clone=value=>structuredClone(value);
 const failure=code=>Object.assign(Error(code),{code});
+const appendFailure=(error,stage)=>({stage,code:typeof error?.code==='string'?error.code:'SCALE_APPEND_FAILED',syscall:typeof error?.syscall==='string'?error.syscall:null});
 const ensure=(condition,code)=>{if(!condition)throw failure(code)};
 const integer=(value,min,max)=>Number.isSafeInteger(value)&&value>=min&&value<=max;
 const inside=(candidate,parent)=>{const relative=path.relative(parent,candidate);return relative!==''&&relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative)};
@@ -69,7 +71,7 @@ export function summarizeStorageScaleState(state,{segmentRows=1000}={}){
 }
 
 export class OrangeXSyntheticSegmentedStorageLab{
- #io;#manifest=null;#active=null;#seq=0;#hash=null;#ids=new Map();#loaded=false;#lease=null;#uncertain=false;#closed=false;#logBytes=0;
+ #io;#manifest=null;#active=null;#seq=0;#hash=null;#ids=new Map();#loaded=false;#lease=null;#uncertain=false;#closed=false;#logBytes=0;#logDigest=null;#lastAppendFailure=null;
  constructor({directory,io=fs,segmentRows=1000}={}){
   ensure(typeof directory==='string'&&integer(segmentRows,1,1000),'SCALE_INVALID_CONFIG');
   this.#io=io;this.segmentRows=segmentRows;const requested=path.resolve(directory);this.#ancestors(requested);
@@ -86,7 +88,8 @@ export class OrangeXSyntheticSegmentedStorageLab{
    let stat;try{stat=this.#io.lstatSync(current)}catch(error){if(error.code!=='ENOENT')throw error}
    ensure(!stat||stat.isDirectory()&&!stat.isSymbolicLink(),'SCALE_UNSAFE_PATH')}
  }
- #assert(){ensure(!this.#closed,'SCALE_CLOSED');ensure(!this.#uncertain,'SCALE_COMMIT_UNCERTAIN')}
+ #assert(){ensure(!this.#closed,'SCALE_CLOSED');if(this.#uncertain)throw Object.assign(failure('SCALE_COMMIT_UNCERTAIN'),
+  this.#lastAppendFailure?{rollback:clone(this.#lastAppendFailure.rollback),appendFailure:clone(this.#lastAppendFailure)}:{})}
  #read(name,limit=16*1024*1024){
   ensure(name==='manifest.json'||name==='delta.jsonl'||name==='writer.lock'||SAFE.test(name),'SCALE_UNSAFE_FILE');
   this.#ancestors(this.directory);const file=path.join(this.directory,name),stat=this.#io.lstatSync(file);
@@ -175,7 +178,7 @@ export class OrangeXSyntheticSegmentedStorageLab{
    if(seq===cp.seq){ensure(hash===cp.hash&&json(active)===json(cp.active)&&json([...ids])===json(cp.ids),'SCALE_CHECKPOINT_PREFIX_MISMATCH');boundary=true}
   }
   ensure(boundary&&seq>=cp.seq,'SCALE_CHECKPOINT_PREFIX_MISSING');
-  this.#manifest=m;this.#active=active;this.#seq=seq;this.#hash=hash;this.#ids=ids;this.#loaded=true;this.#logBytes=log.length;
+  this.#manifest=m;this.#active=active;this.#seq=seq;this.#hash=hash;this.#ids=ids;this.#loaded=true;this.#logBytes=log.length;this.#logDigest=createHash('sha256').update(log);
   return {historySHA256:m.historySHA256,tradeCount:count,signalCount:count,fundingCount:count,realizedPnLUSD,
    accountingValid:true,accountingComplete:true,syntheticSequentialIdentityVerified:true,updatedAt:active.updatedAt,seq,
    activeBytes:Buffer.byteLength(json(active)),closedRowsRetainedInActiveMemory:0,fullArchiveVerification:true};
@@ -186,15 +189,33 @@ export class OrangeXSyntheticSegmentedStorageLab{
   const acquired=this.#acquire();if(acquired||!this.#loaded)this.#load();const content=digest(bytes({id,updatedAt}));
   if(this.#ids.has(id)){ensure(this.#ids.get(id)===content,'SCALE_TRANSACTION_ID_CONFLICT');return {seq:this.#seq,duplicate:true}}
   ensure(updatedAt>this.#active.updatedAt,'SCALE_TIME_ORDER');const payload={seq:this.#seq+1,previousHash:this.#hash,id,updatedAt},hash=digest(bytes(payload)),line=bytes({...payload,hash});
-  ensure(this.#logBytes+line.length<=8*1024*1024,'SCALE_DELTA_LIMIT');let fd,writeStarted=false;
+  ensure(this.#logBytes+line.length<=8*1024*1024,'SCALE_DELTA_LIMIT');const file=path.join(this.directory,'delta.jsonl');let fd,opened,writeStarted=false,stage='append-open';
   try{
-   fd=this.#io.openSync(path.join(this.directory,'delta.jsonl'),this.#io.constants.O_WRONLY|this.#io.constants.O_APPEND|(this.#io.constants.O_NOFOLLOW??0));
-   const opened=this.#io.fstatSync(fd);ensure(opened.isFile()&&opened.nlink===1&&opened.size===this.#logBytes,'SCALE_LOG_CHANGED');let offset=0;writeStarted=true;
-   while(offset<line.length){const n=this.#io.writeSync(fd,line,offset,line.length-offset,null);ensure(Number.isInteger(n)&&n>0,'SCALE_SHORT_WRITE');offset+=n}
-   this.#io.fsyncSync(fd);this.#io.closeSync(fd);fd=undefined;
-   this.#seq++;this.#hash=hash;this.#logBytes+=line.length;this.#ids.set(id,content);this.#active.updatedAt=updatedAt;this.#active.connection={connected:true,at:updatedAt};return {seq:this.#seq,duplicate:false};
-  }catch(error){if(fd!==undefined){try{if(writeStarted){this.#io.ftruncateSync(fd,this.#logBytes);this.#io.fsyncSync(fd)}}catch{this.#uncertain=true}finally{this.#io.closeSync(fd)}}
-   if(this.#uncertain)throw failure('SCALE_COMMIT_UNCERTAIN');throw error}
+   fd=this.#io.openSync(file,this.#io.constants.O_WRONLY|this.#io.constants.O_APPEND|(this.#io.constants.O_NOFOLLOW??0));
+   stage='append-open-stat';opened=this.#io.fstatSync(fd);ensure(opened.isFile()&&opened.nlink===1&&opened.size===this.#logBytes,'SCALE_LOG_CHANGED');let offset=0;
+   while(offset<line.length){stage='append-write';writeStarted=true;const n=this.#io.writeSync(fd,line,offset,line.length-offset,null);ensure(Number.isInteger(n)&&n>0,'SCALE_SHORT_WRITE');offset+=n}
+   stage='append-fsync';this.#io.fsyncSync(fd);stage='append-commit-stat';ensure(this.#io.fstatSync(fd).size===this.#logBytes+line.length,'SCALE_LOG_CHANGED');
+   // close may release the descriptor before reporting an error. Transfer
+   // ownership first so an ambiguous close is never retried on a reused fd.
+   stage='append-close';const closing=fd;fd=undefined;this.#io.closeSync(closing);stage='append-memory-commit';
+   this.#seq++;this.#hash=hash;this.#logBytes+=line.length;this.#logDigest.update(line);this.#lastAppendFailure=null;this.#ids.set(id,content);
+   this.#active.updatedAt=updatedAt;this.#active.connection={connected:true,at:updatedAt};return {seq:this.#seq,duplicate:false};
+  }catch(error){
+   this.#lastAppendFailure={original:appendFailure(error,stage),rollback:{required:writeStarted,verified:!writeStarted}};
+   if(fd===undefined&&writeStarted){this.#uncertain=true;this.#lastAppendFailure.rollback={required:true,verified:false,...appendFailure(error,stage)}}
+   if(fd!==undefined){const appendFd=fd;fd=undefined;
+    if(writeStarted)try{
+     // An append-only Windows handle can reject ftruncate. Reopen without
+     // append permissions only after preserving its identity and trusted WAL
+     // hash; retry requires a fully proved, flushed and closed rollback.
+     this.#lastAppendFailure.rollback=rollbackDurableAppend({io:this.#io,file,appendFd,openedStat:opened,
+      committedBytes:this.#logBytes,recordBytes:line,prefixHash:this.#logDigest.copy().digest('hex')});
+    }catch(rollbackError){this.#uncertain=true;this.#lastAppendFailure.rollback=rollbackError.rollback??{verified:false,...appendFailure(rollbackError,'rollback-unknown')}}
+    else try{this.#io.closeSync(appendFd)}catch(closeError){this.#uncertain=true;this.#lastAppendFailure.rollback={verified:false,...appendFailure(closeError,'append-close-before-write')}}
+   }
+   if(this.#uncertain)throw Object.assign(failure('SCALE_COMMIT_UNCERTAIN'),{cause:error,rollback:clone(this.#lastAppendFailure.rollback),appendFailure:clone(this.#lastAppendFailure)});
+   throw error;
+  }
  }
  checkpoint(){
   this.#assert();this.#acquire();this.#load();const file=`active-${this.#seq}-${randomBytes(6).toString('hex')}.json`,data=bytes({active:this.#active,seq:this.#seq,hash:this.#hash,ids:[...this.#ids]});

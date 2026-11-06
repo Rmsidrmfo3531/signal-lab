@@ -13,7 +13,7 @@ const ALLOWED_ROOTS = new Set([
  'signal_policy.mjs','research/legacy_v58/decision.mjs','markets.mjs','news.mjs','links.mjs','journal.mjs','signal_lifecycle.mjs','orangex.mjs','orangex_comparison.mjs','orangex_listing_domains.mjs',
  'orangex_paper.mjs','orangex_paper_service.mjs','orangex_paper_signal.mjs','orangex_paper_store.mjs',
  'orangex_paper_performance.mjs','orangex_paper_replay.mjs','orangex_paper_replay_store.mjs',
- 'orangex_readiness.mjs','orangex_paper_journal.mjs',
+ 'orangex_readiness.mjs','orangex_paper_journal.mjs','durable_append_recovery.mjs',
  'orangex_evidence_review.mjs','orangex_paper_storage_lab.mjs',
  'orangex_contract_validation.mjs','orangex_cost_validation.mjs','orangex_market_monitor.mjs',
  'orangex_official_sources.mjs','orangex_funding_observation.mjs',

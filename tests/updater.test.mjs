@@ -20,7 +20,7 @@ test('all local runtime imports and Windows notifier are eligible without allowi
   for(const [,name] of code.matchAll(/from\s+['"]\.\/([^'"]+)['"]/g))assert.equal(allowedFile(name),true,name);
  }
  for(const name of ['signal_pipeline.mjs','quality.mjs','windows_paper_notify.ps1','paper.mjs',
-  'orangex_readiness.mjs','orangex_paper_journal.mjs','diagnose_orangex.bat','scripts/diagnose-orangex-windows.mjs',
+  'orangex_readiness.mjs','orangex_paper_journal.mjs','durable_append_recovery.mjs','diagnose_orangex.bat','scripts/diagnose-orangex-windows.mjs',
   'scripts/check-orangex-readiness.mjs','scripts/check-orangex-storage-performance.mjs','scripts/check-orangex-operational-stress.mjs',
   'public/orangex_operational.js'])assert.equal(allowedFile(name),true,name);
  for(const name of ['orangex_evidence_review.mjs','orangex_paper_storage_lab.mjs','scripts/review-orangex-evidence.mjs',

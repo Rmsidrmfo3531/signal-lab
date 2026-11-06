@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash,randomBytes} from 'node:crypto';
 import {validateOrangeXPaperState} from './orangex_paper_store.mjs';
+import {rollbackDurableAppend} from './durable_append_recovery.mjs';
 
 const KIND='ORANGEX_PAPER_JOURNAL_EXPERIMENT',VERSION=1;
 const FORBIDDEN=new Set(['__proto__','prototype','constructor']);
@@ -22,6 +23,7 @@ const plain=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)&
 const clone=value=>structuredClone(value);
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const problem=code=>Object.assign(Error(code),{code});
+const appendFailure=(error,stage)=>({stage,code:typeof error?.code==='string'?error.code:'JOURNAL_APPEND_FAILED',syscall:typeof error?.syscall==='string'?error.syscall:null});
 function json(value,parents=new Set()){
  if(value===null||typeof value==='string'||typeof value==='boolean')return;
  if(typeof value==='number'&&Number.isFinite(value))return;
@@ -52,7 +54,7 @@ function transaction(input){
 
 export class OrangeXPaperJournal{
  #io;#now;#lease=null;#closed=false;#loaded=false;#uncertain=false;#state=null;#manifest=null;
- #seq=0;#hash=null;#ids=new Map();#closedKeys=new Set();#logBytes=0;#logMtime=null;#lastError=null;#lastRestoreBackup=null;
+ #seq=0;#hash=null;#ids=new Map();#closedKeys=new Set();#logBytes=0;#logMtime=null;#logDigest=null;#lastError=null;#lastAppendFailure=null;#lastRestoreBackup=null;
  #stateBytes=0;#counts=new WeakMap();
  constructor({directory,now=()=>Date.now(),io=fs,maxRecordBytes=8*1024*1024,maxStateBytes=128*1024*1024,maxJournalBytes=512*1024*1024}={}){
   if(typeof directory!=='string'||!directory.trim()||directory.includes('\0')||typeof now!=='function'||
@@ -191,16 +193,16 @@ export class OrangeXPaperJournal{
  }
  #scan(file,onRecord){
   this.#regular(file,{limit:this.maxJournalBytes});const fd=this.#io.openSync(file,this.#io.constants.O_RDONLY|(this.#io.constants.O_NOFOLLOW??0)),chunk=Buffer.allocUnsafe(65536);
-  let carry=Buffer.alloc(0),total=0;
+  let carry=Buffer.alloc(0),total=0;const checksum=createHash('sha256');
   try{let read;while((read=this.#io.readSync(fd,chunk,0,chunk.length,null))>0){
-   total+=read;if(total>this.maxJournalBytes)throw problem('JOURNAL_SIZE_LIMIT');
+   total+=read;if(total>this.maxJournalBytes)throw problem('JOURNAL_SIZE_LIMIT');checksum.update(chunk.subarray(0,read));
    const block=carry.length?Buffer.concat([carry,chunk.subarray(0,read)]):Buffer.from(chunk.subarray(0,read));let start=0,index;
    while((index=block.indexOf(10,start))!==-1){if(index-start>this.maxRecordBytes)throw problem('JOURNAL_RECORD_TOO_LARGE');
     if(index===start)throw problem('JOURNAL_EMPTY_RECORD');onRecord(this.#parse(block.subarray(start,index)));start=index+1;
    }
    carry=Buffer.from(block.subarray(start));if(carry.length>this.maxRecordBytes)throw problem('JOURNAL_RECORD_TOO_LARGE');
   }
-  if(carry.length)throw problem('JOURNAL_PARTIAL_TAIL');return total;
+  if(carry.length)throw problem('JOURNAL_PARTIAL_TAIL');return {bytes:total,checksum};
   }finally{this.#io.closeSync(fd)}
  }
  #load(){
@@ -229,7 +231,7 @@ export class OrangeXPaperJournal{
   this.#index();this.#stateBytes=this.#jsonBytes(this.#state);this.#counts=new WeakMap();
   if(this.#stateBytes>this.maxStateBytes)throw problem('JOURNAL_STATE_TOO_LARGE');
   let seq=0,head=m.genesis.stateHash;const ids=new Map();let checkpointSeen=!checkpoint;
-  const bytes=this.#scan(path.join(this.directory,m.journal),record=>{
+  const scanned=this.#scan(path.join(this.directory,m.journal),record=>{
    if(!plain(record)||Object.keys(record).sort().join(',')!==['kind','version','seq','previousHash','id','ops','hash'].sort().join(','))throw problem('JOURNAL_INVALID_RECORD');
    if(!Array.isArray(record.ops)||record.ops.some(op=>!plain(op)||Object.keys(op).sort().join(',')!==
     (op.op==='delete'?['op','path']:['op','path','value']).sort().join(',')))throw problem('JOURNAL_INVALID_RECORD');
@@ -245,7 +247,7 @@ export class OrangeXPaperJournal{
   });
   if(checkpoint&&checkpoint.seq===0){if(checkpoint.hash!==m.genesis.stateHash||checkpoint.ids.length)throw problem('JOURNAL_CHECKPOINT_ANCHOR_MISMATCH');checkpointSeen=true}
   if(!checkpointSeen)throw problem('JOURNAL_CHECKPOINT_AHEAD_OF_LOG');
-  this.#manifest=m;this.#seq=seq;this.#hash=head;this.#ids=ids;this.#logBytes=bytes;this.#logMtime=this.#regular(path.join(this.directory,m.journal),{limit:this.maxJournalBytes}).mtimeMs;this.#loaded=true;
+  this.#manifest=m;this.#seq=seq;this.#hash=head;this.#ids=ids;this.#logBytes=scanned.bytes;this.#logDigest=scanned.checksum;this.#logMtime=this.#regular(path.join(this.directory,m.journal),{limit:this.maxJournalBytes}).mtimeMs;this.#loaded=true;
   return this.#state;
  }
  initialize(state){
@@ -257,7 +259,7 @@ export class OrangeXPaperJournal{
    this.#writeNew(path.join(this.directory,'genesis.json'),genesis);this.#writeNew(path.join(this.directory,'journal.jsonl'),Buffer.alloc(0));
    const manifest={kind:KIND,version:VERSION,genesis:{file:'genesis.json',fileHash:digest(genesis),stateHash},journal:'journal.jsonl',checkpoint:null};
    this.#manifestWrite(manifest);this.#manifest=manifest;this.#state=clone(state);this.#seq=0;this.#hash=stateHash;this.#ids=new Map();this.#index();this.#logBytes=0;
-   this.#stateBytes=stateBytes.length;this.#counts=new WeakMap();
+   this.#stateBytes=stateBytes.length;this.#counts=new WeakMap();this.#logDigest=createHash('sha256');
    this.#logMtime=this.#regular(path.join(this.directory,'journal.jsonl'),{limit:this.maxJournalBytes}).mtimeMs;this.#loaded=true;return {seq:0,hash:stateHash};
   }catch(error){this.#lastError=error.code??'JOURNAL_INITIALIZE_FAILED';throw error}
  }
@@ -275,19 +277,37 @@ export class OrangeXPaperJournal{
   if(tx.expectedSeq!==undefined&&tx.expectedSeq!==this.#seq)throw problem('JOURNAL_SEQUENCE_CONFLICT');
   const payload={kind:'ORANGEX_JOURNAL_TRANSACTION',version:VERSION,seq:this.#seq+1,previousHash:this.#hash,id:tx.id,ops:tx.ops},hash=digest(canonical(payload)),bytes=Buffer.from(JSON.stringify({...payload,hash})+'\n');
   if(bytes.length>this.maxRecordBytes||this.#logBytes+bytes.length>this.maxJournalBytes)throw problem('JOURNAL_SIZE_LIMIT');
-  const undo=this.#apply(tx.ops);let fd=null;
+  const undo=this.#apply(tx.ops);let fd=null,opened=null,writeStarted=false,stage='append-open';
   try{
    fd=this.#io.openSync(file,this.#io.constants.O_WRONLY|this.#io.constants.O_APPEND|(this.#io.constants.O_NOFOLLOW??0));
-   const opened=this.#io.fstatSync(fd);if(!opened.isFile()||opened.nlink!==1||opened.size!==this.#logBytes)throw problem('JOURNAL_LOG_CHANGED');
-   let offset=0;while(offset<bytes.length){const wrote=this.#io.writeSync(fd,bytes,offset,bytes.length-offset,null);if(!Number.isInteger(wrote)||wrote<=0)throw problem('JOURNAL_SHORT_WRITE');offset+=wrote}
-   this.#io.fsyncSync(fd);const committed=this.#io.fstatSync(fd);if(committed.size!==this.#logBytes+bytes.length)throw problem('JOURNAL_LOG_CHANGED');
-   this.#io.closeSync(fd);fd=null;
-   this.#seq=payload.seq;this.#hash=hash;this.#ids.set(tx.id,content);this.#logBytes+=bytes.length;this.#logMtime=committed.mtimeMs;this.#lastError=null;
+   stage='append-open-stat';opened=this.#io.fstatSync(fd);if(!opened.isFile()||opened.nlink!==1||opened.size!==this.#logBytes)throw problem('JOURNAL_LOG_CHANGED');
+   let offset=0;while(offset<bytes.length){stage='append-write';writeStarted=true;const wrote=this.#io.writeSync(fd,bytes,offset,bytes.length-offset,null);if(!Number.isInteger(wrote)||wrote<=0)throw problem('JOURNAL_SHORT_WRITE');offset+=wrote}
+   stage='append-fsync';this.#io.fsyncSync(fd);stage='append-commit-stat';const committed=this.#io.fstatSync(fd);if(committed.size!==this.#logBytes+bytes.length)throw problem('JOURNAL_LOG_CHANGED');
+   stage='append-close';const closing=fd;fd=null;this.#io.closeSync(closing);
+   stage='append-memory-commit';this.#logDigest.update(bytes);
+   this.#seq=payload.seq;this.#hash=hash;this.#ids.set(tx.id,content);this.#logBytes+=bytes.length;this.#logMtime=committed.mtimeMs;this.#lastError=null;this.#lastAppendFailure=null;
    return {seq:this.#seq,hash,duplicate:false};
   }catch(error){
-   undo();if(fd!==null){try{this.#io.ftruncateSync(fd,this.#logBytes);this.#io.fsyncSync(fd);this.#io.closeSync(fd);fd=null}catch{this.#uncertain=true;try{this.#io.closeSync(fd)}catch{}fd=null}}
+   undo();this.#lastAppendFailure={original:appendFailure(error,stage),rollback:{required:writeStarted,verified:!writeStarted}};
+   if(fd!==null){
+    const appendFd=fd;fd=null;
+    if(writeStarted){
+     try{
+      // Windows append handles need not permit truncation. A separate writable
+      // descriptor may roll back only this record after proving the old bytes
+      // and file identity; every proof, flush and close must succeed before retry.
+      this.#lastAppendFailure.rollback=rollbackDurableAppend({io:this.#io,file,appendFd,openedStat:opened,
+       committedBytes:this.#logBytes,recordBytes:bytes,prefixHash:this.#logDigest.copy().digest('hex')});
+     }catch(rollbackError){this.#uncertain=true;this.#lastAppendFailure.rollback=rollbackError.rollback??{verified:false,...appendFailure(rollbackError,'rollback-unknown')}}
+    }else try{this.#io.closeSync(appendFd)}catch(closeError){this.#uncertain=true;this.#lastAppendFailure.rollback={verified:false,...appendFailure(closeError,'append-close-before-write')}}
+   }else if(writeStarted){
+    // A close may have released its descriptor before reporting an error. It
+    // must never be closed again or used for truncation; retain the durable
+    // bytes and freeze this writer until explicit recovery resolves the ACK.
+    this.#uncertain=true;this.#lastAppendFailure.rollback={verified:false,...appendFailure(error,stage),appendCloseUncertain:stage==='append-close'};
+   }
    this.#lastError=this.#uncertain?'JOURNAL_COMMIT_UNCERTAIN':error.code??'JOURNAL_APPEND_FAILED';
-   if(this.#uncertain)throw problem('JOURNAL_COMMIT_UNCERTAIN');throw error;
+   if(this.#uncertain)throw Object.assign(problem('JOURNAL_COMMIT_UNCERTAIN'),{cause:error,rollback:clone(this.#lastAppendFailure.rollback),appendFailure:clone(this.#lastAppendFailure)});throw error;
   }
  }
  read(){this.#assert();try{const value=this.#load();this.#lastError=null;return value===null?null:clone(value)}catch(error){this.#lastError=error.code??'JOURNAL_READ_FAILED';throw error}}
@@ -335,14 +355,14 @@ export class OrangeXPaperJournal{
    this.#copyFile(path.join(directory,m.genesis.file),path.join(this.directory,genesis));this.#copyFile(path.join(directory,m.journal),path.join(this.directory,journal));
    if(cp)this.#copyFile(path.join(directory,m.checkpoint.file),path.join(this.directory,cp));
    this.#manifestWrite({...m,genesis:{...m.genesis,file:genesis},journal,checkpoint:cp?{...m.checkpoint,file:cp}:null});
-   this.#loaded=false;this.#load();this.#uncertain=false;this.#lastError=null;this.#lastRestoreBackup=recovery;return clone(state);
+   this.#loaded=false;this.#load();this.#uncertain=false;this.#lastError=null;this.#lastAppendFailure=null;this.#lastRestoreBackup=recovery;return clone(state);
   }catch(error){this.#uncertain=true;this.#lastError='JOURNAL_RESTORE_FAILED';throw error}
  }
  status(){
   let exists=false,healthy=!this.#uncertain,error=this.#lastError;
   try{exists=this.#regular(this.manifestFile,{missing:true,limit:1024*1024})!==null}catch(cause){healthy=false;error=cause.code??'JOURNAL_READ_FAILED'}
   return {experimental:true,productionSelected:false,exists,healthy:healthy&&this.#lastError===null,integrityVerified:this.#loaded&&this.#lastError===null&&!this.#uncertain,writerLocked:this.#lease!==null,uncertain:this.#uncertain,
-   lastError:error,seq:this.#seq,transactionCount:this.#ids.size,lastRestoreBackup:this.#lastRestoreBackup};
+   lastError:error,lastAppendFailure:clone(this.#lastAppendFailure),seq:this.#seq,transactionCount:this.#ids.size,lastRestoreBackup:this.#lastRestoreBackup};
  }
  close(){
   if(this.#closed)return;if(this.#lease){const bytes=this.#bytes(this.lockFile,{missing:true,limit:4096});if(bytes?.equals(this.#lease))this.#io.unlinkSync(this.lockFile);this.#lease=null}this.#closed=true;

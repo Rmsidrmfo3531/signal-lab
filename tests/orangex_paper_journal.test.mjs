@@ -67,7 +67,8 @@ function sandbox(run){
   return new Proxy(journal,{get(target,key){const fn=Reflect.get(target,key);if(typeof fn!=='function')return fn;
    if(!tracedMethods.has(key))return fn.bind(target);
    return(...args)=>{trace('journal.'+String(key)+'.begin');try{const result=fn.apply(target,args);trace('journal.'+String(key)+'.end');return result}
-    catch(error){trace('journal.'+String(key)+'.failed',{code:error.code??error.name});throw error}}
+    catch(error){trace('journal.'+String(key)+'.failed',{code:error.code??error.name,
+     ...(error.appendFailure?{appendFailure:error.appendFailure}:{})});throw error}}
   }});
  };
  try{return run({root,directory,create})}finally{
@@ -285,18 +286,104 @@ test('partial tail and altered chain records are preserved and rejected instead 
 }));
 
 test('mid-record ENOSPC rolls back bytes and memory before acknowledgement and permits a safe single retry',()=>sandbox(({directory,create})=>{
- let fail=false,partial=false;
+ let fail=false,partial=false;const handles=new Map(),truncates=[];
  const io=new Proxy(fs,{get(target,key){
+  if(key==='openSync')return(file,flags,...args)=>{const fd=fs.openSync(file,flags,...args);handles.set(fd,{file:String(file),flags});return fd};
+  if(key==='closeSync')return fd=>{try{return fs.closeSync(fd)}finally{handles.delete(fd)}};
+  if(key==='ftruncateSync')return(fd,size)=>{
+   const handle=handles.get(fd);truncates.push({...handle,size});
+   // Windows append handles can append bytes but lack FILE_WRITE_DATA, which
+   // SetEndOfFile needs. O_RDWR | O_APPEND is still an append handle there.
+   if(handle?.flags&fs.constants.O_APPEND)throw Object.assign(injected('EPERM'),{syscall:'ftruncate'});
+   return fs.ftruncateSync(fd,size);
+  };
   if(key==='writeSync')return (fd,buffer,offset,length,position)=>{
-   if(fail){if(!partial){partial=true;return fs.writeSync(fd,buffer,offset,Math.min(23,length),position)}throw injected('ENOSPC')}
+   if(fail){if(!partial){partial=true;return fs.writeSync(fd,buffer,offset,Math.min(23,length),position)}throw Object.assign(injected('ENOSPC'),{syscall:'write'})}
    return fs.writeSync(fd,buffer,offset,length,position);
   };return Reflect.get(target,key);
  }});
  const journal=create({io});journal.initialize(state());journal.append(fill);const before=journal.read(),logFile=path.join(directory,'journal.jsonl'),bytes=fs.readFileSync(logFile);
  fail=true;assert.throws(()=>journal.append(funding),{code:'ENOSPC'});assert.ok(fs.readFileSync(logFile).equals(bytes));
+ assert.equal(journal.status().lastAppendFailure.original.code,'ENOSPC');assert.equal(journal.status().lastAppendFailure.original.syscall,'write');
+ assert.equal(journal.status().lastAppendFailure.rollback.verified,true);assert.equal(journal.status().lastAppendFailure.rollback.recoveryClosed,true);
  fail=false;assert.deepEqual(journal.read(),before);assert.equal(journal.inspect().seq,1);assert.equal(journal.append(funding).seq,2);
  assert.equal(journal.append(funding).duplicate,true);assert.equal(journal.read().closed[0].realizedPnLUSD,2.375);
+ assert.equal(truncates.length,1);assert.equal(truncates[0].flags&fs.constants.O_APPEND,0);
+ assert.notEqual(truncates[0].flags&fs.constants.O_RDWR,0);assert.equal(handles.size,0);
+ journal.checkpoint();journal.close();const restarted=create({io});
+ assert.equal(restarted.read().closed[0].realizedPnLUSD,2.375);assert.equal(restarted.append(funding).duplicate,true);
+ assert.equal(restarted.inspect().seq,2);assert.equal(restarted.read().fundingSeen['period:one'],NOW);
 }));
+
+test('an append close error after releasing its handle freezes ACK without closing it twice or truncating durable bytes',()=>sandbox(({directory,create})=>{
+ let fail=false,failedCloses=0,recoveries=0,truncates=0;const handles=new Map();
+ const io=new Proxy(fs,{get(target,key){
+  if(key==='openSync')return(file,flags,...args)=>{
+   if(fail&&(flags&fs.constants.O_RDWR)!==0&&(flags&fs.constants.O_APPEND)===0)recoveries++;
+   const fd=fs.openSync(file,flags,...args);handles.set(fd,flags);return fd;
+  };
+  if(key==='closeSync')return fd=>{
+   const shouldFail=fail&&(handles.get(fd)&fs.constants.O_APPEND)!==0;
+   try{fs.closeSync(fd)}finally{handles.delete(fd)}
+   if(shouldFail){failedCloses++;throw Object.assign(injected('EIO'),{syscall:'close'})}
+  };
+  if(key==='ftruncateSync')return(fd,size)=>{truncates++;return fs.ftruncateSync(fd,size)};
+  return Reflect.get(target,key);
+ }});
+ const journal=create({io});journal.initialize(state());journal.append(fill);
+ const before=fs.readFileSync(path.join(directory,'journal.jsonl'));fail=true;
+ assert.throws(()=>journal.append(funding),error=>{
+  assert.equal(error.code,'JOURNAL_COMMIT_UNCERTAIN');assert.equal(error.cause.code,'EIO');assert.equal(error.cause.syscall,'close');
+  assert.equal(error.rollback.stage,'append-close');assert.equal(error.rollback.appendCloseUncertain,true);return true;
+ });
+ assert.equal(failedCloses,1);assert.equal(recoveries,0);assert.equal(truncates,0);assert.equal(handles.size,0);
+ assert.equal(journal.status().uncertain,true);assert.equal(journal.status().lastAppendFailure.original.stage,'append-close');
+ assert.throws(()=>journal.append(funding),{code:'JOURNAL_COMMIT_UNCERTAIN'});
+ const after=fs.readFileSync(path.join(directory,'journal.jsonl'));assert.ok(after.subarray(0,before.length).equals(before));
+ assert.equal(after.toString('utf8').trimEnd().split('\n').length,2);
+ fail=false;journal.close();const recovered=create({io});
+ assert.equal(recovered.read().closed[0].realizedPnLUSD,2.375);assert.equal(recovered.append(funding).duplicate,true);
+}));
+
+for(const fault of [{stage:'truncate',method:'ftruncateSync',code:'EPERM',syscall:'ftruncate'},
+ {stage:'sync',method:'fsyncSync',code:'EIO',syscall:'fsync'},
+ {stage:'recovery-close',method:'closeSync',code:'EIO',syscall:'close'}]){
+ test('partial ENOSPC preserves original and '+fault.stage+' failure diagnostics and blocks unsafe retry',()=>sandbox(({directory,create})=>{
+  let fail=false,partial=false;const handles=new Map();
+  const recovery=fd=>{const flags=handles.get(fd);return flags!==undefined&&(flags&fs.constants.O_RDWR)!==0&&(flags&fs.constants.O_APPEND)===0};
+  const io=new Proxy(fs,{get(target,key){
+   if(key==='openSync')return(file,flags,...args)=>{const fd=fs.openSync(file,flags,...args);handles.set(fd,flags);return fd};
+   if(key==='writeSync')return(fd,buffer,offset,length,position)=>{
+    if(fail){if(!partial){partial=true;return fs.writeSync(fd,buffer,offset,Math.min(23,length),position)}throw Object.assign(injected('ENOSPC'),{syscall:'write'})}
+    return fs.writeSync(fd,buffer,offset,length,position);
+   };
+   if(key==='closeSync')return fd=>{
+    const shouldFail=fail&&fault.method===key&&recovery(fd);
+    try{fs.closeSync(fd)}finally{handles.delete(fd)}
+    if(shouldFail)throw Object.assign(injected(fault.code),{syscall:fault.syscall});
+   };
+   if(key===fault.method)return(fd,...args)=>{
+    if(fail&&recovery(fd))throw Object.assign(injected(fault.code),{syscall:fault.syscall});
+    return fs[key](fd,...args);
+   };
+   return Reflect.get(target,key);
+  }});
+  const journal=create({io});journal.initialize(state());journal.append(fill);
+  const original=fs.readFileSync(path.join(directory,'journal.jsonl'));fail=true;
+  assert.throws(()=>journal.append(funding),error=>{
+   assert.equal(error.code,'JOURNAL_COMMIT_UNCERTAIN');assert.equal(error.cause.code,'ENOSPC');assert.equal(error.cause.syscall,'write');
+   assert.equal(error.rollback.stage,fault.stage);assert.equal(error.rollback.code,fault.code);assert.equal(error.rollback.syscall,fault.syscall);
+   assert.equal(error.rollback.verified,false);return true;
+  });
+  assert.equal(journal.status().uncertain,true);assert.equal(journal.status().lastAppendFailure.original.code,'ENOSPC');
+  assert.equal(journal.status().lastAppendFailure.rollback.stage,fault.stage);
+  assert.throws(()=>journal.append(funding),{code:'JOURNAL_COMMIT_UNCERTAIN'});
+  const after=fs.readFileSync(path.join(directory,'journal.jsonl'));
+  assert.ok(after.subarray(0,original.length).equals(original));
+  assert.equal(after.length,original.length+(fault.stage==='truncate'?23:0));
+  fail=false;assert.equal(handles.size,0);
+ }));
+}
 
 test('an uncertain append freezes writes until explicit own-backup recovery while preserving damaged original bytes',()=>sandbox(({directory,create})=>{
  let fail=false;
