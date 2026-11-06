@@ -37,6 +37,11 @@ test('main shows only current final signals and sorts canonical score before con
  assert.ok(rendered.indexOf('BBBUSDT')<rendered.indexOf('ZZZUSDT'));
  for(const symbol of ['HELDUSDT','NULLUSDT','NOPROFILEUSDT','BADORDERUSDT','TELEGRAMONLYUSDT'])assert.doesNotMatch(rendered,new RegExp(symbol));
  assert.equal($('metricSignals').textContent,4);assert.match($('scanSummary').textContent,/점수 내림차순/);
+ assert.match($('scanSummary').textContent,/Telegram은 동일한 최종 검증 신호만 발송/);
+ assert.doesNotMatch($('scanSummary').textContent,/관찰 알림은 Telegram 전용/);
+ app.signals=[];ctx.renderSignals();
+ assert.match($('signalsBody').innerHTML,/관찰·뉴스 발송은 OFF/);
+ assert.doesNotMatch($('signalsBody').innerHTML,/관찰 알림은 Telegram에서만 전달/);
 });
 
 test('volume target display preserves exact fractions, provenance window and net-R without manufacturing missing targets',()=>{

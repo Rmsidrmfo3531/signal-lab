@@ -283,10 +283,10 @@ function renderSignals(){
   const market=app.marketMap.get(a.symbol),timing=entryTiming(a,{price:market.price,priceAt:market.priceAt,venueReady:true});
   const change=market.change??a.priceChangePercent??0;
   return `<tr><td><strong>${escapeHtml(a.symbol)}</strong><small class="signal-score">종합 ${a.score}/100 · 승률 아님</small></td><td class="monospace">${fmt(market.price)}</td><td class="monospace ${change>=0?'positive':'negative'}">${pct(change)}</td><td><span class="dir ${a.direction==='LONG'?'long':'short'}">${a.direction}</span><strong class="signal-pattern-name">${escapeHtml(a.pattern)}</strong><small>1H 확정 ${dateClock(a.patternConfirmedAt)} KST</small></td><td><span class="pattern-label pattern-ready">최종 검증 통과</span><small>기술·호가·위험·매물대 목표 확인<br>실제 주문 승인은 별도</small></td><td><div class="entry-price-ref"><strong>${fmt(a.entry)}</strong><small>손절 ${fmt(a.stop)}</small></div></td><td><div class="entry-timing entry-now"><strong>${escapeHtml(timing.label)}</strong><div>${fmt(timing.zoneLow)} ~ ${fmt(timing.zoneHigh)}</div><small>${escapeHtml(timing.detail)}</small></div></td><td>${volumeTargetHTML(a,{compact:true})}</td><td class="monospace">${fmt(a.supports?.[0]?.price)} / ${fmt(a.resistances?.[0]?.price)}</td><td class="monospace">${clock(a.scannedAt)}</td><td><div class="action-stack"><button class="table-link" data-symbol="${escapeHtml(a.symbol)}">차트·지표 상세 ↗</button><button class="table-link" data-journal="${escapeHtml(a.symbol)}">매매일지에 입력 ↗</button>${linkButtons(a.symbol)}</div></td></tr>`;
- }).join(''):'<tr><td colspan="11" class="table-empty">현재 모든 최종 검증을 통과한 신호가 없습니다. 미달·평가 불가 사유는 스캔 진단에서 확인하세요. 80점 이상 관찰 알림은 Telegram에서만 전달하며 자동주문에 사용하지 않습니다.</td></tr>';
+ }).join(''):'<tr><td colspan="11" class="table-empty">현재 모든 최종 검증을 통과한 신호가 없습니다. 미달·평가 불가 사유는 스캔 진단에서 확인하세요. Telegram은 동일한 최종 검증 신호만 발송하며 관찰·뉴스 발송은 OFF입니다.</td></tr>';
  document.querySelectorAll('#signalsBody button[data-symbol]').forEach(b=>b.addEventListener('click',()=>focusSignal(b.dataset.symbol)));
  document.querySelectorAll('#signalsBody button[data-journal]').forEach(b=>b.addEventListener('click',()=>fillJournalFromSignal(b.dataset.journal)));
- $('scanSummary').textContent=`최종 검증 ${approved.length}종 · 점수 내림차순 → 최신 확정봉 → 종목명 · 관찰 알림은 Telegram 전용`;
+ $('scanSummary').textContent=`최종 검증 ${approved.length}종 · 점수 내림차순 → 최신 확정봉 → 종목명 · Telegram은 동일한 최종 검증 신호만 발송`;
  renderDirectionalEntries();
 }
 

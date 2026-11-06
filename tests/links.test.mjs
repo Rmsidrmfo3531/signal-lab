@@ -4,10 +4,13 @@ import {officialMarketLinks,telegramMessage} from '../links.mjs';
 
 const valid={
  symbol:'SOLUSDT',direction:'LONG',pattern:'리테스트',score:95,scoreVersion:'ISSUE6-100-V1',
- status:'signal',qualified:true,entry:100,stop:98,
+ status:'signal',qualified:true,entry:100,stop:98,patternConfirmedAt:1762400000000,
  risk:{leverage:3},targetPlan:{ok:true,targets:[106,110,115],
  quantity:1.25,quantityUnit:'BASE_ASSET'}
 };
+const paperPosition={market:'CRYPTO',symbol:valid.symbol,direction:valid.direction,pattern:valid.pattern,
+ barAt:valid.patternConfirmedAt,openedAt:valid.patternConfirmedAt+1000,entryFill:100,
+ leverage:3,originalQty:1.25,qtyRemaining:1.25,targetPlan:{quantityUnit:'BASE_ASSET'}};
 
 test('official links only expose validated Binance futures symbols',()=>{
  assert.deepEqual(officialMarketLinks('BTCUSDT'),{binance:'https://www.binance.com/en/futures/BTCUSDT'});
@@ -17,7 +20,7 @@ test('official links only expose validated Binance futures symbols',()=>{
 });
 
 test('final Telegram alert contains only four requested concise fields',()=>{
- const message=telegramMessage(valid,officialMarketLinks('SOLUSDT'));
+ const message=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition});
  assert.deepEqual(message.text.split('\n'),[
   '종목: SOLUSDT','방향: 롱 (LONG)','배율: 3배 (모의 기준)','포지션 수량(모의): 1.25 SOL'
  ]);
@@ -34,6 +37,16 @@ test('unconfigured leverage and position quantity are explicitly unknown, never 
  assert.match(message.text,/배율: 미설정/);
  assert.match(message.text,/포지션 수량\(모의\): 미확인/);
  assert.doesNotMatch(message.text,/3배|500 SOL/);
+ const plannedOnly=telegramMessage(valid,officialMarketLinks('SOLUSDT'));
+ assert.match(plannedOnly.text,/배율: 미설정/);assert.match(plannedOnly.text,/포지션 수량\(모의\): 미확인/);
+ for(const altered of [{...paperPosition,barAt:paperPosition.barAt-3600000},{...paperPosition,openedAt:null},
+  {...paperPosition,qtyRemaining:0},{...paperPosition,direction:'SHORT'},
+  {...paperPosition,targetPlan:{quantityUnit:'CONTRACT'}}]){
+  const text=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition:altered}).text;
+  assert.match(text,/배율: 미설정/);assert.match(text,/포지션 수량\(모의\): 미확인/);
+ }
+ const partial=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition:{...paperPosition,qtyRemaining:.75,leverage:undefined}});
+ assert.match(partial.text,/배율: 미설정/);assert.match(partial.text,/포지션 수량\(모의\): 0.75 SOL/);
 });
 
 test('final alert rejects observation, unverified scores, stale validation and invalid target plans',()=>{

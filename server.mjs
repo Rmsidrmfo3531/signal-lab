@@ -207,20 +207,20 @@ async function refreshExecution(){
 }
 async function tgNotify(s){
  if(!CONFIG.tgToken||!CONFIG.tgChat)return;
+ try{
  // Final-results API is the source of truth. Any later quote/venue rejection
  // suppresses delivery even if an earlier scan approved the same candle.
  const matched=finalTelegramMatch(s,relevantSignals(),getSignalScorePolicy().finalMinScore);
  if(!matched)return;
  const urls=state.activeSet.has(matched.symbol)?officialMarketLinks(matched.symbol):null;
  if(!urls){console.warn('Telegram suppressed: market link not verified',s.symbol);return}
- const F=p=>p>0?p.toLocaleString('en-US',{maximumFractionDigits:p>=1000?2:7}):String(p);
- const payload={chat_id:CONFIG.tgChat,...telegramMessage(matched,urls,F)};
- try{
+ const paperPosition=paper.store.open.find(p=>p.key===signalKey({market:'CRYPTO',symbol:matched.symbol,direction:matched.direction,pattern:matched.pattern,barAt:matched.patternConfirmedAt}));
+ const payload={chat_id:CONFIG.tgChat,...telegramMessage(matched,urls,{paperPosition})};
   const r=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)
   });
   if(!r.ok)console.error('Telegram HTTP',r.status);
- }catch(e){console.error('Telegram error:',e.message)}
+ }catch{console.error('Telegram delivery unconfirmed')}
 }
 
 let updateCheckPromise=null;
@@ -285,7 +285,7 @@ async function checkSymbolInternal(symbol, force=false){
  // No shorter than 1H timeframe is queried or required for a confirmed setup.
  out.confirmedTimeframes=['1h','4h'];
  // Historical/approaching observations never affect actual signals, alerts or simulated PNL.
- // Observation candidates are Telegram-only; main view receives final signals only.
+ // Browser and Telegram both receive final signals only.
  if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))return null;
  const decision=assessAnalysis(out);
  out.execution=decision.execution;out.decision=decision;

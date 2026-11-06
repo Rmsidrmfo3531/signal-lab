@@ -26,7 +26,7 @@ test('server contains a single Telegram delivery path guarded by live final resu
  const server=fs.readFileSync(new URL('../server.mjs',import.meta.url),'utf8');
  assert.equal((server.match(/api\.telegram\.org\/bot/g)||[]).length,1,'only final signals may call Telegram');
  assert.match(server,/finalTelegramMatch\(s,relevantSignals\(\),getSignalScorePolicy\(\)\.finalMinScore\)/);
- assert.match(server,/telegramMessage\(matched,urls,F\)/);
+ assert.match(server,/telegramMessage\(matched,urls,\{paperPosition\}\)/);
  assert.doesNotMatch(server,/tgWatch\(|tgNews\(|telegramWatchMessage\(/);
  assert.doesNotMatch(server,/TELEGRAM_NEWS_ALERTS|TELEGRAM_SCORE_WATCH_ENABLED/);
 });
