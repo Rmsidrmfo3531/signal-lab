@@ -302,7 +302,16 @@ export class OrangeXPaperJournal{
  }
  #copyFile(source,target){
   this.#regular(source,{limit:this.maxJournalBytes});this.#io.copyFileSync(source,target,this.#io.constants.COPYFILE_EXCL);
-  const fd=this.#io.openSync(target,this.#io.constants.O_RDONLY);try{this.#io.fsyncSync(fd)}finally{this.#io.closeSync(fd)}
+  this.#regular(target,{limit:this.maxJournalBytes});
+  // Windows FlushFileBuffers requires write access for ordinary files. Open
+  // the exclusive copy without create/truncate flags; sync errors must still
+  // reject backup/restore rather than use the directory-fsync exception policy.
+  const fd=this.#io.openSync(target,this.#io.constants.O_RDWR|(this.#io.constants.O_NOFOLLOW??0));
+  try{
+   const stat=this.#io.fstatSync(fd);if(!stat.isFile()||stat.nlink!==1)throw problem('JOURNAL_UNSAFE_PATH');
+   if(stat.size>this.maxJournalBytes)throw problem('JOURNAL_SIZE_LIMIT');
+   this.#io.fsyncSync(fd);
+  }finally{this.#io.closeSync(fd)}
  }
  #backupName(prefix){return `${prefix}-${String(Math.trunc(this.#now())).padStart(13,'0')}-${randomBytes(6).toString('hex')}`}
  backup(){

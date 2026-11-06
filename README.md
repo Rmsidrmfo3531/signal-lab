@@ -1,5 +1,7 @@
 # Signal Lab — Issue #6 통합 개발판
 
+최신 백업 fsync·종료 확인 보완: [PR7_WINDOWS_FSYNC_EXIT_KO.md](PR7_WINDOWS_FSYNC_EXIT_KO.md).
+
 최신 Windows 저장 실패 보완: [PR7_WINDOWS_STORAGE_KO.md](PR7_WINDOWS_STORAGE_KO.md).
 
 Windows CI 종료 문제 후속 검증: [PR7_WINDOWS_TEST_HANG_KO.md](PR7_WINDOWS_TEST_HANG_KO.md).

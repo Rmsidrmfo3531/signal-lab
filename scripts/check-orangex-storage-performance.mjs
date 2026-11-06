@@ -10,7 +10,7 @@ import {OrangeXPaperEngine} from '../orangex_paper.mjs';
 import {OrangeXPaperStore} from '../orangex_paper_store.mjs';
 import {OrangeXPaperJournal} from '../orangex_paper_journal.mjs';
 import {auditOrangeXPaperAccounting} from '../orangex_paper_performance.mjs';
-import {traceStorageStage,traceStorageIO,createStorageWorkerScratch,storageWorkerEnvironment,storageWorkerBase,readStorageWorkerTrace,removeStorageWorkerScratch,runStorageWorkerSync} from './storage-worker.mjs';
+import {traceStorageStage,traceStorageIO,createStorageWorkerScratch,storageWorkerEnvironment,storageWorkerBase,readStorageWorkerTrace,removeStorageWorkerScratch,runStorageWorkerSync,parseStorageWorkerResult} from './storage-worker.mjs';
 
 const START=Date.parse('2026-01-01T00:00:01Z'),INTERVAL=28800000,NAME='BTC-USDT-PERPETUAL';
 const SETTINGS={capitalUSD:1e9,leverage:3,maxRiskUSD:6,dailyLossLimitUSD:1000000,maxPositions:2,
@@ -269,8 +269,8 @@ export function runOrangeXStorageComparison({tradeCounts=[1000,10000,10001],muta
   try{
    const child=runStorageWorkerSync(nodePath,['--expose-gc',fileURLToPath(import.meta.url),'--worker',backend,String(tradeCount),String(mutationCount),mutationPattern],
     {timeoutMs:workerTimeoutMs,env:workerEnv});
-   let value;try{value=JSON.parse(child.stdout)}catch{}
-   if(!child.error&&child.status===0&&value?.kind==='ORANGEX_STORAGE_PERFORMANCE_CASE')row=value;
+   const value=parseStorageWorkerResult(child,{kind:'ORANGEX_STORAGE_PERFORMANCE_CASE',backend,tradeCount,mutationCount,mutationPattern});
+   if(value)row=value;
    else{
     const timeout=child.error?.code==='ETIMEDOUT';
     row={kind:'ORANGEX_STORAGE_PERFORMANCE_CASE',executionMode:'SYNTHETIC_TEST',backend,tradeCount,mutationCount,mutationPattern,implementation:implementationDigests(),

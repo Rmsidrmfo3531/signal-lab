@@ -7,7 +7,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {OrangeXPaperStore} from '../orangex_paper_store.mjs';
 import {OrangeXPaperJournal} from '../orangex_paper_journal.mjs';
 import {OrangeXSyntheticSegmentedStorageLab,storageScaleFixture,materializeStorageScaleFixture,summarizeStorageScaleState} from '../orangex_paper_storage_lab.mjs';
-import {traceStorageStage,traceStorageIO,createStorageWorkerScratch,storageWorkerEnvironment,storageWorkerBase,readStorageWorkerTrace,removeStorageWorkerScratch,runStorageWorkerSync} from './storage-worker.mjs';
+import {traceStorageStage,traceStorageIO,createStorageWorkerScratch,storageWorkerEnvironment,storageWorkerBase,readStorageWorkerTrace,removeStorageWorkerScratch,runStorageWorkerSync,parseStorageWorkerResult} from './storage-worker.mjs';
 
 const BACKENDS=['snapshot','journal','segmented_lab'];
 const validInt=(value,min,max)=>Number.isSafeInteger(value)&&value>=min&&value<=max;
@@ -132,8 +132,8 @@ export function runOrangeXStorageScaleComparison({tradeCounts=[1000,10000,50000]
   traceStorageStage('storage.scale.parent','phase:spawn:begin',{backend,tradeCount,timeoutMs});
   try{const child=runStorageWorkerSync(nodePath,['--expose-gc','--max-old-space-size='+heapMiB,fileURLToPath(import.meta.url),'--worker',backend,String(tradeCount),String(mutations),String(segmentRows)],
    {env,timeoutMs});
-   let row;try{row=JSON.parse(child.stdout)}catch{}
-   if(!child.error&&child.status===0&&row?.kind==='ORANGEX_STORAGE_SCALE_CASE')results.push(row);
+   const row=parseStorageWorkerResult(child,{kind:'ORANGEX_STORAGE_SCALE_CASE',backend,tradeCount,mutations,segmentRows});
+   if(row)results.push(row);
    else{
    const memory=/heap out of memory|reached heap limit|allocation failed/i.test(child.stderr??''),timeout=child.error?.code==='ETIMEDOUT';
    results.push({kind:'ORANGEX_STORAGE_SCALE_CASE',executionMode:'SYNTHETIC_TEST',dataSource:'SYNTHETIC_FIXTURE',backend,tradeCount,mutations,segmentRows,

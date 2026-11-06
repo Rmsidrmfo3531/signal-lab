@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
  createStorageWorkerScratch,storageWorkerEnvironment,storageWorkerBase,
- traceStorageStage,traceStorageIO,readStorageWorkerTrace,removeStorageWorkerScratch,runStorageWorkerSync
+ traceStorageStage,traceStorageIO,readStorageWorkerTrace,removeStorageWorkerScratch,runStorageWorkerSync,parseStorageWorkerResult
 } from '../scripts/storage-worker.mjs';
 
 function withEnvironment(values,run){
@@ -104,4 +104,34 @@ test('a timed-out real storage child is killed and reaped while preserving its l
 
 test('worker deadlines cannot be disabled or silently expanded by invalid arguments',()=>{
  for(const timeoutMs of [0,-1,NaN,Infinity,300001])assert.throws(()=>runStorageWorkerSync(process.execPath,[],{timeoutMs}),/INVALID_STORAGE_WORKER_OPTIONS/);
+});
+
+test('explicit failed worker results retain the fsync cause and exit code for the requested workload',()=>{
+ for(const expected of [
+  {kind:'ORANGEX_STORAGE_PERFORMANCE_CASE',backend:'journal',tradeCount:12,mutationCount:2,mutationPattern:'heartbeat'},
+  {kind:'ORANGEX_STORAGE_SCALE_CASE',backend:'journal',tradeCount:9,mutations:2,segmentRows:3}
+ ]){
+  const failed={...expected,status:'FAILED',failure:{phase:'backup',code:'EPERM'}},
+   result=parseStorageWorkerResult({status:1,signal:null,stdout:JSON.stringify(failed)},expected);
+  assert.equal(result.status,'FAILED');assert.deepEqual(result.failure,failed.failure);assert.equal(result.workerExitCode,1);
+  const passed=parseStorageWorkerResult({status:0,signal:null,stdout:JSON.stringify({...expected,status:'PASS'})},expected);
+  assert.equal(passed.status,'PASS');assert.equal(passed.workerExitCode,0);
+ }
+});
+
+test('timeout, malformed or mismatched results and nonzero PASS cannot be accepted as completed workers',()=>{
+ const expected={kind:'ORANGEX_STORAGE_SCALE_CASE',backend:'journal',tradeCount:9,mutations:2,segmentRows:3},
+  failed={...expected,status:'FAILED',failure:{phase:'backup',code:'EPERM'}},
+  child={status:1,signal:null,stdout:JSON.stringify(failed)};
+ for(const rejected of [
+  {...child,error:Object.assign(Error('worker expired'),{code:'ETIMEDOUT'})},
+  {...child,signal:'SIGKILL'},
+  {...child,status:null},
+  {...child,stdout:'not JSON'},
+  ...Object.entries({kind:'OTHER_CASE',backend:'snapshot',tradeCount:10,mutations:3,segmentRows:4})
+   .map(([key,value])=>({...child,stdout:JSON.stringify({...failed,[key]:value})})),
+  {...child,stdout:JSON.stringify({...expected,status:'PASS'})},
+  {...child,stdout:JSON.stringify({...failed,failure:{phase:'backup'}})},
+  {...child,status:0}
+ ])assert.equal(parseStorageWorkerResult(rejected,expected),null);
 });

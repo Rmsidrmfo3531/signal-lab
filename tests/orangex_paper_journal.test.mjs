@@ -77,6 +77,80 @@ function sandbox(run){
 }
 const files=directory=>fs.readdirSync(directory).sort();
 
+// Model the Windows ordinary-file flush access requirement on every platform.
+// Directory handles are virtual because their supported fsync policy is separate;
+// all ordinary file copies, writes, reads and successful fsyncs remain real I/O.
+function windowsCopySyncIO(){
+ const copied=new Set(),handles=new Map(),directories=new Set(),syncs=[];let directoryFd=-200000,failCode=null;
+ const io=new Proxy(fs,{get(target,key){
+  if(key==='copyFileSync')return(source,destination,...args)=>{const result=fs.copyFileSync(source,destination,...args);copied.add(String(destination));return result};
+  if(key==='openSync')return(file,flags,...args)=>{
+   if(fs.existsSync(file)&&fs.statSync(file).isDirectory()){const fd=directoryFd--;directories.add(fd);return fd}
+   const fd=fs.openSync(file,flags,...args);handles.set(fd,{file:String(file),flags,copied:copied.has(String(file))});return fd;
+  };
+  if(key==='fsyncSync')return fd=>{
+   if(directories.has(fd))return;
+   const row=handles.get(fd);
+   if(row?.copied){
+    syncs.push({...row,fd});
+    if((row.flags&(fs.constants.O_WRONLY|fs.constants.O_RDWR))===0)throw Object.assign(Error('Windows read-only file flush denied'),{code:'EPERM',syscall:'fsync'});
+    if(failCode)throw Object.assign(Error('injected copied-file flush failure'),{code:failCode,syscall:'fsync'});
+   }
+   return fs.fsyncSync(fd);
+  };
+  if(key==='closeSync')return fd=>{if(directories.delete(fd))return;try{return fs.closeSync(fd)}finally{handles.delete(fd)}};
+  return Reflect.get(target,key);
+ }});
+ return {io,copied,handles,syncs,setFailure:code=>{failCode=code}};
+}
+const regularBytes=directory=>Object.fromEntries(fs.readdirSync(directory,{withFileTypes:true})
+ .filter(entry=>entry.isFile()).map(entry=>[entry.name,fs.readFileSync(path.join(directory,entry.name))]));
+
+test('Windows copied regular files are flushed through writable nontruncating handles before backup and restore succeed',()=>sandbox(({directory,create})=>{
+ const model=windowsCopySyncIO(),journal=create({io:model.io});journal.initialize(state());journal.append(fill);journal.append(funding);journal.checkpoint();
+ const expected=journal.read(),backup=journal.backup();
+ journal.append({id:'after-backed-up-state',ops:[{op:'set',path:['updatedAt'],value:NOW+1}]});
+ assert.deepEqual(journal.restoreBackup(backup),expected);assert.deepEqual(journal.read(),expected);
+ assert.equal(journal.append(fill).duplicate,true);assert.equal(journal.append(funding).duplicate,true);
+ assert.equal(journal.read().closed[0].realizedPnLUSD,2.375);
+ assert.ok(model.syncs.length>=8,'backup, recovery and restored regular files must actually reach fsync');
+ assert.deepEqual(new Set(model.syncs.map(row=>row.file)),model.copied,'every copied file is synchronized');
+ for(const row of model.syncs){
+  assert.ok(row.flags&(fs.constants.O_WRONLY|fs.constants.O_RDWR),'ordinary-file flush needs write access');
+  assert.equal(row.flags&(fs.constants.O_TRUNC|fs.constants.O_CREAT),0,'opening the copied file must not truncate or create it');
+ }
+ assert.equal(model.handles.size,0,'all regular-file flush descriptors close after success');
+ assert.equal(JSON.parse(fs.readFileSync(path.join(directory,'journal-manifest.json'))).version,1);
+}));
+
+test('copied regular-file EPERM and EIO reject backup, close descriptors and preserve original PNL and history',()=>{
+ for(const code of ['EPERM','EIO'])sandbox(({directory,create})=>{
+  const model=windowsCopySyncIO(),journal=create({io:model.io});journal.initialize(state());journal.append(fill);journal.append(funding);
+  const expected=journal.read(),before=regularBytes(directory);model.setFailure(code);
+  assert.throws(()=>journal.backup(),error=>error.code===code&&error.syscall==='fsync');
+  assert.equal(model.handles.size,0,'a failed ordinary-file fsync must still close its handle');
+  assert.deepEqual(regularBytes(directory),before);assert.deepEqual(journal.read(),expected);
+  assert.equal(journal.read().closed[0].realizedPnLUSD,2.375);
+  const failed=path.basename(path.dirname([...model.copied].at(-1)));
+  assert.throws(()=>journal.restoreBackup(failed),'an incomplete backup cannot be accepted as a valid restore source');
+  assert.deepEqual(regularBytes(directory),before);
+ });
+});
+
+test('copied regular-file flush failure prevents restore publication and retains the recoverable funded ledger',()=>{
+ for(const code of ['EPERM','EIO'])sandbox(({directory,create})=>{
+  const model=windowsCopySyncIO(),journal=create({io:model.io});journal.initialize(state());journal.append(fill);const backup=journal.backup();
+  journal.append(funding);const expected=journal.read(),before=regularBytes(directory);model.setFailure(code);
+  assert.throws(()=>journal.restoreBackup(backup),error=>error.code===code&&error.syscall==='fsync');
+  assert.equal(model.handles.size,0);assert.deepEqual(regularBytes(directory),before);
+  assert.equal(journal.status().uncertain,true);assert.throws(()=>journal.append(fill),/COMMIT_UNCERTAIN/);
+  const reader=create();assert.deepEqual(reader.read(),expected);reader.close();
+  model.setFailure(null);assert.equal(journal.restoreBackup(backup).closed[0].realizedPnLUSD,2.5);
+  assert.equal(journal.append(funding).duplicate,false);assert.equal(journal.append(funding).duplicate,true);
+  assert.equal(journal.read().closed[0].realizedPnLUSD,2.375);assert.equal(model.handles.size,0);
+ });
+});
+
 // Real file data/fsyncs, virtual directory handles: a bad ancestry walk fails
 // deterministically instead of hanging a test or syncing the filesystem root.
 function directoryTraceIO(returnFirst){

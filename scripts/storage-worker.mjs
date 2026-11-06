@@ -91,6 +91,19 @@ export function runStorageWorkerSync(nodePath,args,{env,timeoutMs,maxBuffer=8*10
  if(typeof nodePath!=='string'||!Array.isArray(args)||!Number.isSafeInteger(timeoutMs)||timeoutMs<100||timeoutMs>300000)throw Error('INVALID_STORAGE_WORKER_OPTIONS');
  return spawnSync(nodePath,args,{env,encoding:'utf8',windowsHide:true,timeout:timeoutMs,killSignal:'SIGKILL',maxBuffer});
 }
+// Preserve an explicit storage failure, including the original fsync phase/code,
+// without mistaking output from a timed-out or mismatched worker for a result.
+export function parseStorageWorkerResult(child,expected){
+ if(child?.error||!Number.isInteger(child?.status)||child.status<0||child.signal)return null;
+ let value;try{value=JSON.parse(child.stdout)}catch{return null}
+ if(!value||typeof value!=='object'||Array.isArray(value)||
+  !expected||typeof expected.kind!=='string'||Object.entries(expected).some(([key,item])=>value[key]!==item))return null;
+ if(child.status===0&&['PASS','CAPACITY_LIMIT'].includes(value.status))return {...value,workerExitCode:0};
+ if(child.status!==0&&value.status==='FAILED'&&value.failure&&typeof value.failure==='object'&&
+  !Array.isArray(value.failure)&&typeof value.failure.phase==='string'&&value.failure.phase.length>0&&
+  typeof value.failure.code==='string'&&value.failure.code.length>0)return {...value,workerExitCode:child.status};
+ return null;
+}
 export function traceStorageIO(io,scope){
  const traced=Object.create(io),descriptors=new Map();
  for(const method of ['mkdirSync','openSync','fsyncSync','closeSync','renameSync','unlinkSync']){

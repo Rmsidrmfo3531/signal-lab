@@ -1,0 +1,1855 @@
+{
+  "kind": "PR7_FSYNC_EXIT_VALIDATION",
+  "baseCommit": "3b7ffe577b9672e13ccbdd757512d61a1ab447a3",
+  "branch": "feat/issue6-integrated",
+  "pullRequest": 7,
+  "originalActionsRun": {
+    "id": 42121369005,
+    "source": "USER_PROVIDED_LOGS",
+    "windows22": "FAIL",
+    "windows24": "FAIL",
+    "journalPassed": 11,
+    "journalTests": 19,
+    "performancePassed": 2,
+    "performanceTests": 4,
+    "scalePassed": 11,
+    "scaleTests": 13,
+    "storageFailure": {
+      "code": "EPERM",
+      "syscall": "fsync",
+      "method": "OrangeXPaperJournal.backup/#copyFile"
+    },
+    "linux24Failure": "immediate process state assertion observed R instead of Z"
+  },
+  "postFixWindows22": "UNVERIFIED",
+  "postFixWindows24": "UNVERIFIED",
+  "remoteFourEnvironmentResult": "UNVERIFIED",
+  "actualWindowsExecuted": false,
+  "githubApiAccess": "BLOCKED_BY_RUNTIME_POLICY",
+  "mode": "READ_ONLY",
+  "actualOrdersSubmitted": false,
+  "liveOrdersActivated": false,
+  "actualMarketPaperAutoEntryEnabled": false,
+  "productionJournalSelected": false,
+  "mainMerged": false,
+  "nativeFullRegressions": [
+    {
+      "runtime": "node24",
+      "version": "v24.19.0",
+      "exitCode": 0,
+      "seconds": 36.921,
+      "tests": 767,
+      "pass": 767,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "log": "/workspace/signal-pr7-fsync-race-evidence/final-native/node24.log",
+      "failedNames": []
+    },
+    {
+      "runtime": "node22",
+      "version": "v22.23.4",
+      "exitCode": 0,
+      "seconds": 36.634,
+      "tests": 767,
+      "pass": 767,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "log": "/workspace/signal-pr7-fsync-race-evidence/final-native/node22.log",
+      "failedNames": []
+    }
+  ],
+  "ciFullRegressions": [
+    {
+      "runtime": "v24.19.0",
+      "platform": "linux",
+      "passed": true,
+      "aborted": false,
+      "totalFiles": 99,
+      "completedFiles": 99,
+      "failedFiles": 0,
+      "tests": 767,
+      "pass": 767,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "seconds": 39.057,
+      "consoleLog": "/workspace/signal-pr7-fsync-race-evidence/final-ci/node24-console.log",
+      "reportDirectory": "/workspace/signal-pr7-fsync-race-evidence/final-ci/node24-reports",
+      "reportSHA256": "7e095f01a255ef0cedd8150ad2f427f4a91b786566821d1827e423b36c036199",
+      "affectedFiles": [
+        {
+          "file": "tests/ci_runner.test.mjs",
+          "startedAt": "2026-11-05T23:58:19.543Z",
+          "log": "006-ci_runner.test.mjs.tap",
+          "trace": "006-ci_runner.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:58:30.738Z",
+          "durationMs": 11195,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 0,
+          "lastStoragePhase": null,
+          "traceCaptureError": null,
+          "tests": 8,
+          "pass": 8,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "file": "tests/orangex_paper_journal.test.mjs",
+          "startedAt": "2026-11-05T23:58:31.050Z",
+          "log": "047-orangex_paper_journal.test.mjs.tap",
+          "trace": "047-orangex_paper_journal.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:58:31.618Z",
+          "durationMs": 568,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 743,
+          "lastStoragePhase": {
+            "at": "2026-11-05T23:58:31.594Z",
+            "pid": 323608,
+            "scope": "journal-test",
+            "stage": "test.end",
+            "elapsedMs": 461,
+            "test": "a killed writer after durable ACK recovers its PID lock and does not apply acknowledged fill or funding again"
+          },
+          "traceCaptureError": null,
+          "tests": 22,
+          "pass": 22,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "file": "tests/orangex_storage_performance.test.mjs",
+          "startedAt": "2026-11-05T23:58:35.124Z",
+          "log": "062-orangex_storage_performance.test.mjs.tap",
+          "trace": "062-orangex_storage_performance.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:58:36.053Z",
+          "durationMs": 928,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 2282,
+          "lastStoragePhase": {
+            "at": "2026-11-05T23:58:36.019Z",
+            "pid": 323961,
+            "scope": "storage.performance.parent",
+            "stage": "phase:parentCleanup:end",
+            "elapsedMs": 819,
+            "backend": "journal",
+            "tradeCount": 16
+          },
+          "traceCaptureError": null,
+          "tests": 4,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "file": "tests/orangex_storage_scale.test.mjs",
+          "startedAt": "2026-11-05T23:58:36.053Z",
+          "log": "063-orangex_storage_scale.test.mjs.tap",
+          "trace": "063-orangex_storage_scale.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:58:36.568Z",
+          "durationMs": 516,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 1306,
+          "lastStoragePhase": {
+            "at": "2026-11-05T23:58:36.542Z",
+            "pid": 324024,
+            "scope": "storage.scale.parent",
+            "stage": "phase:parentCleanup:end",
+            "elapsedMs": 411,
+            "backend": "segmented_lab",
+            "tradeCount": 9
+          },
+          "traceCaptureError": null,
+          "tests": 13,
+          "pass": 13,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "file": "tests/process_termination.test.mjs",
+          "startedAt": "2026-11-05T23:58:40.270Z",
+          "log": "077-process_termination.test.mjs.tap",
+          "trace": "077-process_termination.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:58:40.486Z",
+          "durationMs": 217,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 0,
+          "lastStoragePhase": null,
+          "traceCaptureError": null,
+          "tests": 4,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        }
+      ]
+    },
+    {
+      "runtime": "v22.23.4",
+      "platform": "linux",
+      "passed": true,
+      "aborted": false,
+      "totalFiles": 99,
+      "completedFiles": 99,
+      "failedFiles": 0,
+      "tests": 767,
+      "pass": 767,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "seconds": 38.42,
+      "consoleLog": "/workspace/signal-pr7-fsync-race-evidence/final-ci/node22-console.log",
+      "reportDirectory": "/workspace/signal-pr7-fsync-race-evidence/final-ci/node22-reports",
+      "reportSHA256": "117ab617d0239a5638ec72510e10461f0c6b1e527a8374b13d30906c6ad86e42",
+      "affectedFiles": [
+        {
+          "file": "tests/ci_runner.test.mjs",
+          "startedAt": "2026-11-05T23:58:58.537Z",
+          "log": "006-ci_runner.test.mjs.tap",
+          "trace": "006-ci_runner.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:59:09.485Z",
+          "durationMs": 10949,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 0,
+          "lastStoragePhase": null,
+          "traceCaptureError": null,
+          "tests": 8,
+          "pass": 8,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "file": "tests/orangex_paper_journal.test.mjs",
+          "startedAt": "2026-11-05T23:59:09.745Z",
+          "log": "047-orangex_paper_journal.test.mjs.tap",
+          "trace": "047-orangex_paper_journal.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:59:10.212Z",
+          "durationMs": 467,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 743,
+          "lastStoragePhase": {
+            "at": "2026-11-05T23:59:10.190Z",
+            "pid": 325827,
+            "scope": "journal-test",
+            "stage": "test.end",
+            "elapsedMs": 383,
+            "test": "a killed writer after durable ACK recovers its PID lock and does not apply acknowledged fill or funding again"
+          },
+          "traceCaptureError": null,
+          "tests": 22,
+          "pass": 22,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "file": "tests/orangex_storage_performance.test.mjs",
+          "startedAt": "2026-11-05T23:59:14.085Z",
+          "log": "062-orangex_storage_performance.test.mjs.tap",
+          "trace": "062-orangex_storage_performance.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:59:14.941Z",
+          "durationMs": 855,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 2282,
+          "lastStoragePhase": {
+            "at": "2026-11-05T23:59:14.901Z",
+            "pid": 326180,
+            "scope": "storage.performance.parent",
+            "stage": "phase:parentCleanup:end",
+            "elapsedMs": 750,
+            "backend": "journal",
+            "tradeCount": 16
+          },
+          "traceCaptureError": null,
+          "tests": 4,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "file": "tests/orangex_storage_scale.test.mjs",
+          "startedAt": "2026-11-05T23:59:14.941Z",
+          "log": "063-orangex_storage_scale.test.mjs.tap",
+          "trace": "063-orangex_storage_scale.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:59:15.470Z",
+          "durationMs": 529,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 1306,
+          "lastStoragePhase": {
+            "at": "2026-11-05T23:59:15.446Z",
+            "pid": 326243,
+            "scope": "storage.scale.parent",
+            "stage": "phase:parentCleanup:end",
+            "elapsedMs": 437,
+            "backend": "segmented_lab",
+            "tradeCount": 9
+          },
+          "traceCaptureError": null,
+          "tests": 13,
+          "pass": 13,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        },
+        {
+          "file": "tests/process_termination.test.mjs",
+          "startedAt": "2026-11-05T23:59:19.011Z",
+          "log": "077-process_termination.test.mjs.tap",
+          "trace": "077-process_termination.test.mjs.trace.jsonl",
+          "status": "PASS",
+          "completedAt": "2026-11-05T23:59:19.218Z",
+          "durationMs": 207,
+          "exitCode": 0,
+          "signal": null,
+          "timedOut": false,
+          "aborted": false,
+          "processClosed": true,
+          "failureCode": null,
+          "cleanupError": null,
+          "traceRecords": 0,
+          "lastStoragePhase": null,
+          "traceCaptureError": null,
+          "tests": 4,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0,
+          "todo": 0
+        }
+      ]
+    }
+  ],
+  "syntax": {
+    "passed": true,
+    "files": 203,
+    "results": [
+      {
+        "file": "binance_execution.mjs",
+        "sha256": "bbdaf6f4c1321c3b29b4f8947fae5eef1c2506cc027a2eae0329f43da6823aa3",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "data-cli.mjs",
+        "sha256": "76897efc949f7e1153c18eb5dca22155771ee457406c6869ecfe564a5f45cbaa",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "diagnose_scan.mjs",
+        "sha256": "4178854a476d87f05b234f6619fb0308b0d42076b41cf0446b99e82e882e215f",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "engine.mjs",
+        "sha256": "f896398e3fd05642818f2fbc33a71296ca2cd27a78eaccc313aa8a0b619b99dc",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "indicators.mjs",
+        "sha256": "5c6fc696a627a62d9d399dac459acd3497f9fe05d942889d63fec44093a7195e",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "journal.mjs",
+        "sha256": "80f6a30f34eaf74da0938d22b9a64621d5f19d736a216e2fb1c4e716a84b0508",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "links.mjs",
+        "sha256": "3fbdabe08f565777215f3c87584cea55596accd4186b23e305b1023b9e992017",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "market_commentary.mjs",
+        "sha256": "0eb409a17c67e8c7994f75f55af540e4c8834834bd1f3c40bfe643288ae29a5c",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "markets.mjs",
+        "sha256": "95b94ec9b150bbb35be53589e330449d5f43228d9958f45c6aa7675563d319db",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "mobile_access.mjs",
+        "sha256": "c990169730031d654ba13c7d6c07597ad041bbf1f19575d8c6062ce7dc915eb2",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "news.mjs",
+        "sha256": "cf38654856d68a152dd82fb86d55f9548df2ee92b4fefa261646fd3a96755cdd",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "news_translation.mjs",
+        "sha256": "6a31adc70b2174af6ad9669fc688836e3e771f3ed33ece3488fd94a71a3020ec",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "observation.mjs",
+        "sha256": "6c590480dc56549145a9b489832b35303bf19aa6827302c7c5607ced304b3cc2",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex.mjs",
+        "sha256": "f0c44115637b218b056843fe4c7db5bd987c5ea08468a170764bc1752206c739",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_adapter.mjs",
+        "sha256": "13725f7db5b0848a11025f3ba0bf668722d1b84dc241451f0d8e732261e08c24",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_comparison.mjs",
+        "sha256": "686fe3d851910fc310545f6b820048dbd49e2f4e1ddf7c62f3492b5e6ce813d9",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_contract_validation.mjs",
+        "sha256": "011096f82bda42efc66494245e9f1378ea12ad369f13a6e6e341c4a556ebe080",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_cost_validation.mjs",
+        "sha256": "8001712f798c23840a14166cc3cd8a5c3e2ae537c57114ee7508bdd7fd2037f0",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_evidence_review.mjs",
+        "sha256": "e772139b35b3fe00646bb30f99240dcf829db6e47972d43368893cfadccf4052",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_funding_observation.mjs",
+        "sha256": "22c80fc0940a4a8579a2744dd3fd1aa57067063f9ef4d261deb4136b6849dc91",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_listing_domains.mjs",
+        "sha256": "1cfd1f6b767a3c04bba428d6569846d56cd8edf895e39a0b35d550afb2f94776",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_market_monitor.mjs",
+        "sha256": "62c2dc75e007e4435773cb49c68be48346b596fe5b58f9301373e1570c8f7905",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_official_sources.mjs",
+        "sha256": "966b244e36f6534f2eb62ba6fb1bd9d188f86965c3358444bd226dfc7cf1219f",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_order_safety.mjs",
+        "sha256": "fc22266269a83908dd824a4c5c87881fb46322875ce83061a7d54f76b53ce80c",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper.mjs",
+        "sha256": "7ee4db89341c56c96f1d6f6bbcec300bd0841b5ffd57568537863e4278e4959d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper_journal.mjs",
+        "sha256": "7fdf24ff4796dd5dcf59122f1a79ddafddeb3e87d74ce8e4c2f6cc30c4c7bb3a",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper_performance.mjs",
+        "sha256": "8396f6c920a39b89a821f911ea37506095d65fd72e938b7a028f9801c7fe71ea",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper_replay.mjs",
+        "sha256": "2d5858c3076f8f5af235d4f04eb825bfe5a1a4ea0fc64afd96b9d03e1632168d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper_replay_store.mjs",
+        "sha256": "1b247abfbc29e1c722e799bcaae748307644b38435af89e2ecedb41c645f01ab",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper_service.mjs",
+        "sha256": "7ae27131c83eade60181b20c50288f19b35ed11be5b88e17e161953413ac9016",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper_signal.mjs",
+        "sha256": "78c5c49c8583a7b132b8a2f98ee66128b7d4d2d3a1f4b6b2f028712ab5fe1a00",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper_storage_lab.mjs",
+        "sha256": "70800e3f748decdbbb4ef80529679efd2bbac004138de9535b8722f08023b7f5",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_paper_store.mjs",
+        "sha256": "968965752efbad135fe54ae3ac51b640eeb7686a5309660769e432940afce4f4",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "orangex_readiness.mjs",
+        "sha256": "c8d9c6b92973d8e58fc81861ddd2ebc55915fee8012359187331630e55bec4ff",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "paper.mjs",
+        "sha256": "fa1d20c6a9fd562879cdff4b08aee79a8bd031f88e95fe2dfe289ace783bbd22",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "paper_health.mjs",
+        "sha256": "b1bc485bec5b97e83a4f2915a956f1a68f93bbeff2b415d02d6f7147888d3803",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "persistence.mjs",
+        "sha256": "b96913471c4fe8dd815b3b7155a2d1598462523d1d1687c677e2b116ccd54514",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "profile_collector.mjs",
+        "sha256": "129d09d34aba7affce7891af555a3a59234dc155ebefeba08f81bcc79a0fd6a8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/app.js",
+        "sha256": "7c6deb8c8f0748da301741204119ca25ea528af3cf89841c5d26c9ba19a24898",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/directional_entries.js",
+        "sha256": "5e8bc12164c3ac5b8ec40fd4704773b44efa89ae2bd27151d56a3d22950626e2",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/news_pagination.js",
+        "sha256": "eca4fd86303ec3af57ea477d6a2865ac68199ff98b085ffd507f9b08919cf68a",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/orangex.js",
+        "sha256": "6c80742edbd49810f34e5422f029d7322b3562f72c43da3362be35c07bd38c32",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/orangex_operational.js",
+        "sha256": "dae2d1a3326f6f5b88988fd52ff1e7532872bac2060ad46c8e3c079d4dac2722",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/orangex_paper.js",
+        "sha256": "9dbf66dd24f05bd390dc9414324683264718700ba81525676d7ce5cb9a249d52",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/paper_ui.js",
+        "sha256": "6287ac17bfa98518973b6ed0cbcdbf06ba82416fbb142cf2a5ef5817414c14f5",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/scan_pagination.js",
+        "sha256": "86c398f2897aac593f11eed176d579865084e28d2b2dfb45af4eeb3c6302ae1c",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/trade_plan.js",
+        "sha256": "2c2238ed9016755b32b52884df7c6f7231f2ee02f6da450c22cc6bac35cb1d51",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/tradfi.js",
+        "sha256": "563e22ee5d0e3e5e74e6d8b7dae56de937b1fb79dbd3b6052cb8e3b30876ec87",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public/tradingview.js",
+        "sha256": "d44aee5cef72b671114c81b65415bf2c66433e4de739e9290e75c70342389e37",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "public_read_budget.mjs",
+        "sha256": "8e1c2787e99334ea9c7b6c0ea7affa306d4a0126a1726683a652a8982bc7296a",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "quality.mjs",
+        "sha256": "d9dd28f1b9e8f21ae163f3b668f102e22636fa945e76437c6970cdbf341156b7",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "research/legacy_v58/decision.mjs",
+        "sha256": "86c4c1b11d039dd30bf28a07a11f8a059d588bf37daa0c2576d230731e11ebe9",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "research/legacy_v58/engine.mjs",
+        "sha256": "024269222ed3655c437b3afb01ea0f7f44ce24cd31362551e2051c175b9641de",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "research/legacy_v58/quality.mjs",
+        "sha256": "6a19b4269f35f98ecfb3d6a7934b6e4c3a403266509d059d64ee46f596fdcad2",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scan_diagnostics.mjs",
+        "sha256": "8e96cb3e2f9edd674f5f91187ff05a39008e7f869c82e5b2bc8409ad06daac79",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/check-market-data.mjs",
+        "sha256": "3b7c3aba54ab99fa26505cbf0893d580bacada919194de84ad7b2cea410de5e8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/check-orangex-operational-stress.mjs",
+        "sha256": "7fd1d22c6117e9d99a72493369a873eedc6e54696e94d6d7bbf4b28ad5e671c6",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/check-orangex-paper-endurance.mjs",
+        "sha256": "7f98c2d79278ef1132e952a2a4630c13647eaaeeb173b3448993d3f3a59b9c5f",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/check-orangex-readiness.mjs",
+        "sha256": "8039ba4ee26a16fb47cb13a69420cf91bc8408455ac640a5a366d55cd21644a8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/check-orangex-readonly.mjs",
+        "sha256": "5384486448f20d360dc39dd84374a7132daf3f9e38934f0cb6fc49a97d0f59f2",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/check-orangex-storage-performance.mjs",
+        "sha256": "b1489bf89570ad4ca76bc98d4673126faa964608c8ba10ea184f75256e20b3ce",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/check-orangex-storage-scale.mjs",
+        "sha256": "3317e5d4e073eac3dd67c58b51f0d4a1d1b8c9fef9ed546129455cdf493db540",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/check-orangex-ui.mjs",
+        "sha256": "c0b82ffcec815102338bdcbee391c8b1fe8cf44d498034b8240346fa25cda688",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/compare-issue6-strategies.mjs",
+        "sha256": "c3178a5af102fbede386be47e07feeb6c40b79188b9a1d986e1a0a8a570c5843",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/diagnose-orangex-continuous.mjs",
+        "sha256": "2411d8c15276ba99d8c261505f87bcf09fd6a48936bdc5c348acd9a5c26282de",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/diagnose-orangex-currencies.mjs",
+        "sha256": "f744439c210281942da34725eea0c2d0c179901f9fad5ca5359045904b9c626a",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/diagnose-orangex-public.mjs",
+        "sha256": "28c032df2bdfdbcc5dd04c57e57be1e2104dce1453f37dfc0878c423b79c5a33",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/diagnose-orangex-windows.mjs",
+        "sha256": "363fa417080a29ac11d8b9fe4f3b31cc700a2df77e1ed067c5fae3039db34f68",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/orangex-paper-offline.mjs",
+        "sha256": "eabe94f08abd327e8e78afac2e95235b737ce6d234711d6d44bfe258b6159b43",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/orangex-paper-replay.mjs",
+        "sha256": "87c82d9f3b0a92e40ad1ee20636676cd29de1be78143eda79663857c9f9a0ad8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/review-orangex-evidence.mjs",
+        "sha256": "55cd153fc2f0861ad8eba1b4cb8606b28cbda50699555101c189af0df1675755",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/run-node-tests.mjs",
+        "sha256": "1ffb9dc184054951232cf9f81eae01b3c85739fa3930319fa64eda185ad5c490",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "scripts/storage-worker.mjs",
+        "sha256": "d5cd6e86bae5061799bf65542f8bd5d66421d04661031d65127e5fba4753554d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "server.mjs",
+        "sha256": "4f0a1745294e97ccfe360a3c41ca0f517b0ae08a59a1400dd58c63c4f0e2f759",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "signal_lifecycle.mjs",
+        "sha256": "26d2c26bb534c7733acf065de63e699f2cbdf6154ef7137e08f55108796bfd0b",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "signal_pipeline.mjs",
+        "sha256": "5dbebb477829a9c7ad7b59c98fd8f53480ff51ead90d5f78f9cca55267b7081f",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "signal_policy.mjs",
+        "sha256": "8eedff938ec0b4724a5b5ee8fedb9c87e1d9c834fadf1401b8d510fd920e3d4e",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "strategy_validation.mjs",
+        "sha256": "d893f6736ce60c26b82ef04fce39c52da4586aba75b81c52ed54d9af8d253626",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "telegram_watch.mjs",
+        "sha256": "c9e6dcd1beb6442b2d1c116b61a846ffa2dfd573580f4e91c13d07e7340a84af",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/binance_execution.test.mjs",
+        "sha256": "f487b08209c06d1267b6095ea027f113a26ecbcf28367c8117c1332c12285def",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/binance_signal_pipeline.test.mjs",
+        "sha256": "85ee9f5fd931a43933a36d7339fbbefad1a6e3905a8f13db99b0552a01c1c374",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/candle_validation.test.mjs",
+        "sha256": "0a6420952afcee1e68f4d9859ff640ea2e30d1d6f3d7fa4e277b0c9ced5e61c0",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/check_market_data.test.mjs",
+        "sha256": "818546b71adebe42b932fe5adc37c4fe30cf7d79d58c06f9ae2ebcc075d90748",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/child_process_cleanup.test.mjs",
+        "sha256": "854605e16741b2383253d459a23ec951e55efaeb76b551910760f2cd0bb63beb",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/ci_runner.test.mjs",
+        "sha256": "25645d3dedf20e173b61806b757383b217d7d1e22a0e9a34e586b146db9b38b3",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/diagnose_scan.test.mjs",
+        "sha256": "c462e252df5f73191c6c3f6a35533221511bb119ea6c48f64718f060c3c8acec",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/directional_entries.test.mjs",
+        "sha256": "7cacba44a71e20adc43739af9eb28ba0487d4303f1da22e1e6e2bcffddfe0cb6",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/engine.test.mjs",
+        "sha256": "be0cac1d5ed533c916ad7fd15b4615593eab962af21683fa1607ad8317a69373",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/exchange_isolation.test.mjs",
+        "sha256": "64033d6a30f5dab9e719da288b8b0920b18095f2feed33b252b52835c4f9a31d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/execution.test.mjs",
+        "sha256": "5a4f598dd7164902e78fa261195710a993029920a75ef1fc06f6b9ed2fce50f8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/fixtures/binance_signal.mjs",
+        "sha256": "b590addf4260d8c30928568fcbb93701f2c75f5b791a693f481a0d25fb9344fe",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/fixtures/orangex_paper_replay.mjs",
+        "sha256": "fc4b0e7680223490f790031880dce6d485ea09c0ffd9742f8963557c464fbd52",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/fixtures/orangex_paper_scenario.mjs",
+        "sha256": "0547bc6d7fe33712501025e3829ccd122bc993198192da42e6c5edc2d228b63d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/fixtures/pipeline_market.mjs",
+        "sha256": "c185144bf9aa849f4ee8ac8edd794fccbe973da9aef29f20514afe479df9fc75",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/helpers/child_process.mjs",
+        "sha256": "7d89415b5f74a98cdc0246012a3141b5f10bbe18d64f0f703f952d7fa3368cc1",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/helpers/http_request.mjs",
+        "sha256": "4005f81c7ab555e8e957d2cf1a5320ffcdd88b4edafd61616a944975e721b16f",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/helpers/journal_writer.mjs",
+        "sha256": "a05b299dd9d8ebd3fe9aee25d08f7f964523c627310516ed49bedc089e017650",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/helpers/process_termination.mjs",
+        "sha256": "20faa658c10e6099b1a8bea7cd1a7c03b1f4c7c1dda5a350ff64e70fda90c37b",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/http_request_cleanup.test.mjs",
+        "sha256": "68a35dbd83f821f3206c1a7d5d3e794d3765b1b19ba6bb40a2c030aaf864048a",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/indicators.test.mjs",
+        "sha256": "c77a7e9f072fdd0e77685357687af9643ff02841dae29f4fe06efdf6268cc1b4",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/issue6_ui.test.mjs",
+        "sha256": "61cbf76b462ebf0014cd530e84c58301e3a901c39271811cf628747ecfd6c89f",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/journal.test.mjs",
+        "sha256": "243784c47763b78d6a08eb8f48d5de6cc7c4b252e40a8d1c82b19a6c6840951c",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/journal_writer_cleanup.test.mjs",
+        "sha256": "55b129333fe49127b3121532b9fcb1f6c3982906585d752755d7a67c37d5c2b9",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/layout_v56.test.mjs",
+        "sha256": "846a3fec5546079996a0a5fa5725c5c8c873f030d59c48f3af35e44f4aae6449",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/lifecycle.test.mjs",
+        "sha256": "d61640dc93f601b95f764045deea4d6511b3aada91277255bd3d459b2dbfa0a0",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/links.test.mjs",
+        "sha256": "42dd467b08634d12db9c11ce7f519e79b87e1f3c9332c4540c5c9d2e09943d55",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/market_commentary.test.mjs",
+        "sha256": "95ce34170564ffe25d087b430a0d07f2d1e06c0c7611c22500fd4437cbb9dd2d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/markets.test.mjs",
+        "sha256": "0b74bb174a44d7ce3f78037d9ba53a2000368277ae0a40ee81e27185e0b44e04",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/mobile_access.test.mjs",
+        "sha256": "739131c101b03feac9e76bfe93bdef4a8936ab437ac9374250364f4a671b4d80",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/mock_network.mjs",
+        "sha256": "45675230b54bc20c42b5354aeed15ff40969adde220af3e4f250105864149bc6",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/mock_orangex_readonly.mjs",
+        "sha256": "6118a7905b780fbd69e14fd25831f3523c33c04050087eae10a670af74492751",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/mock_outage.mjs",
+        "sha256": "7c97e161a9e5c1539eff9b7dba33157a9007f23e44b535078f60c190e686dd64",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/mock_pipeline.mjs",
+        "sha256": "cf6b0dc3285dde9112bfd2c38c9a9e35a256e1d1c0fdf3eac3544cb24deeeca1",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/mock_realtime.mjs",
+        "sha256": "3a2c8aaa16b11f1e78c9a7e887344aba439f1a695c9248f0d5f791037ef70906",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/mock_runtime.mjs",
+        "sha256": "a9afdfea82845632c3f9bcdffbf9e6ba6b181306558d92820d60b945f935cf13",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/mock_storage_failure.mjs",
+        "sha256": "41fd176a8beead6bab5e3deebf03d716ed6916acba997bda041f710f777c6bb3",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/news.test.mjs",
+        "sha256": "8cc5d7e4374f455a5074c42931bf4ff47b37b47306a7aa6fe19d817e3bfed65b",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/news_pagination.test.mjs",
+        "sha256": "a2044821ba76320289e83929ea6c1340353e08724369b3a0798adbf086ae3ec2",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/news_storage.test.mjs",
+        "sha256": "98ab590776ce2f4b79b2b44721ae2d36944df167cc8fcf311da2c2d831775590",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/news_translation.test.mjs",
+        "sha256": "148800b7722709739e8bb76b029c3e2b405f239292f7857cf068601070b94a77",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/observation_v58.test.mjs",
+        "sha256": "023e2e62d20c61e23cc849c8b76edd61b412f7ab520646c5fca4126a03651193",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex.test.mjs",
+        "sha256": "35026e0a2223aa33e3b824dbf6fd2d7326d423c7a32b8e556925a497e7b4a1c3",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_adapter.test.mjs",
+        "sha256": "2027c56b18de07bd9f808abb73b9d166666010950e535b429e7702b8eaad3949",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_comparison.test.mjs",
+        "sha256": "c42b323be42e353b9ecd568cf2a9f91ec2f07019188ccd4311b3ec59853c8dc3",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_contract_validation.test.mjs",
+        "sha256": "ba642965029b8b0a32b6fa1e03bb5d4cf1b4a79d0952a7703c70a94031fd5c12",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_cost_validation.test.mjs",
+        "sha256": "42303b780e165c220bef0209c99fa26c5bac650c7e8d3ae2675a314235d8da43",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_currency_diagnostic.test.mjs",
+        "sha256": "a4242f2b019b6a9aee5f78c32e0f5a320b7dcd05d09090bcd249527cf5bac6e3",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_evidence_review.test.mjs",
+        "sha256": "cc5703134c2ff5614b4ef6e2a9dc8ef59bfefabc54c50744a81e152746f166c6",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_funding_observation.test.mjs",
+        "sha256": "084159d8cb22d6f7eed1a7448050369000af67b5e9a759875b234df1df5416fa",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_listing_domains.test.mjs",
+        "sha256": "a9f3c39fdce6b2c242b9de5eb1c3a86e5002e68de58f0a76f3c3c2a56190b74d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_market_monitor.test.mjs",
+        "sha256": "8760ed2fbf7477daeeddd3719b795f193be7ef033f10c12e84e4c7f3918a398c",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_market_ui.test.mjs",
+        "sha256": "e519e0d397c1e7b18d5627e4bc46d47ed20184c5c44b077747adbdb0d60f9504",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_official_sources.test.mjs",
+        "sha256": "e304f115f9413e05dc281f766c5e097919562fd66cef5122ada5585cb1d4c2d6",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_operational_integration.test.mjs",
+        "sha256": "8abeafc1f907bf8e148dab7833bef62e1ab9da3e5fb802569c688474f5465ac7",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_operational_stress.test.mjs",
+        "sha256": "92546d7a0a633a080a93598e68d3deb0eb3101b529bdfb1dd29e3539d6155c34",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_order_safety.test.mjs",
+        "sha256": "68aba099d3aae1fe5441750b03a28edc7af46bf3c45db39b2214975b3a18eb87",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_archive25.test.mjs",
+        "sha256": "1170c0e1c14d8e95ea48e514b2b45eb9b9ceded23c557f5b2403771b457b7b1a",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_endurance.test.mjs",
+        "sha256": "46a902e0b85957c2b10c8ac1f32a020d4472dd6e516c45f431f6de63f81bad60",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_engine.test.mjs",
+        "sha256": "5f53a19eb80805ee8e96cce73c164d90f7bd9a3a8332f26834c66a46cda9cad0",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_fault_recovery25.test.mjs",
+        "sha256": "6b3f020c1e989d05059c755af9700a93da2f629ea7eb26cd7b589bc7c4847b3a",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_journal.test.mjs",
+        "sha256": "6d44d91f92d3683a3dae74304e3029e60654200305ec42cda3afa7c759f4b8cf",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_performance.test.mjs",
+        "sha256": "8a7d9d956145bf01f548df1f2a2e392f1da960ea08671628a8566854a504deb9",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_replay.test.mjs",
+        "sha256": "48c19522464863820b9c0b224cf59765e803617fe0b0ce34dbe6b004a6d848b7",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_risk25.test.mjs",
+        "sha256": "55bb274d5ff75f8772545e9fc762bd6925207d4d8160df509263a77cd661b6ea",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_service.test.mjs",
+        "sha256": "c926abe4610e2e688bc9eb010e66f005de8ca9868e0a3253242b5b80b6e75fd8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_signal.test.mjs",
+        "sha256": "0b7bea4535283e0905f4588e50de2fa75f561878286a944b62205a1c365c8f51",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_store.test.mjs",
+        "sha256": "e1833f859b9be54fb95093f839429696dcb7fc1d2e3aec7e1a7928b8a95b6fce",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_ui.test.mjs",
+        "sha256": "451b1734234895907e98855e2efa72ecc8ae41e043d5f1077788d8753967a32c",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_paper_ui25.test.mjs",
+        "sha256": "82795060e303ede6408d1d15823195885e7cfa2612c325bcadce658e1b015d15",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_process_cleanup27.test.mjs",
+        "sha256": "496f17cbbb43ff760e065bf05c06513b2470667fc91ecc7d27b5f06ab4baf850",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_profile_management.test.mjs",
+        "sha256": "0e2af2b3d28b47e93d7390d85b284e1a5d7a436a463b91c2797c8315bb61e0ab",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_public_diagnostic.test.mjs",
+        "sha256": "ceee317788a3adb8bd05b2c02a59d2e68b59aeb2193754212a8e8fe70cddaa86",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_readiness.test.mjs",
+        "sha256": "33ab6ac32ba9b19b6017110ab54aa849c2648e701d1aeb54ec2e90cff7cb4d25",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_server.integration.test.mjs",
+        "sha256": "9efa033e74d83935982107e13f1b9c4d58ee4c964e432ccd2b8496baac7899af",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_smoke.test.mjs",
+        "sha256": "2e6b6342ad97985fd208dc9be359b7db38c9b1b480b2b9307714a078dd1a9916",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_storage_performance.test.mjs",
+        "sha256": "eff624985cc0fdc6a2f015f7fb6ea492891e04e282a6fd08edf7dc481eaa9951",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_storage_scale.test.mjs",
+        "sha256": "9cefe4f36b49788f1deb6ce99627d6f893ee84dab17f6b57779b1170d735020f",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_ui.test.mjs",
+        "sha256": "ad50a8f070f7b54ce2d3940dcce4b157a0779ee627a637fe141329430ba25a83",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_windows_mark_observation.test.mjs",
+        "sha256": "4b6c183fb9c333eadc9bfe4f95ba28ac3c8cb61d8096f4da19f2596ce2103ece",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_windows_observation.test.mjs",
+        "sha256": "72dafe8a150aa20bdc55ae3d39e776fbd33402885072db33c6bd3377d00e98ee",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/orangex_windows_oneclick.test.mjs",
+        "sha256": "9f9691757d222b73016de8f2c2e2f840ad0196fd4b7fa9baa9b252d5b9edff01",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/outage.integration.test.mjs",
+        "sha256": "ef4cee872c9bf344fb222950e6a9beeaf7aa100d80184c696625e987378d15ff",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/paper.test.mjs",
+        "sha256": "e824955ee20f53d6d68dfa6ef1f76fac5e4639a87948b7b9893317caab4d2f6d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/paper_accounting.test.mjs",
+        "sha256": "9a9df40d263eb13681ec975b13b97671a554f8e2e7f19df0e9d98aac4dff2f97",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/paper_health_v56.test.mjs",
+        "sha256": "1b467cc09a4a46b9bcd675e98748ce9eb26ed6d1dc5ea7ca2731c6662f402bb0",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/paper_notifications_api_v57.test.mjs",
+        "sha256": "fbd9bd913e53fd2b5c0c4ecbc7e83b75c90063e0ceed395aa89e3987c54bcbc1",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/paper_notifications_v57.test.mjs",
+        "sha256": "44d19d9eb6a7cf0d7a0bb42ddf4ce3c5243ae7f81d262b6822477fce45f01414",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/paper_profile_management.test.mjs",
+        "sha256": "a644406e7a3f5f2b83824307d57f8e7c24644bf1fb85ed048b4c67203b879a1c",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/paper_server.test.mjs",
+        "sha256": "47c583b7717a159ef0f6e88590292bdd1e01c75a3915f45bb9e5116077415f74",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/persistence.test.mjs",
+        "sha256": "f47adf430a09bf8e7a4e5beed1cc39ace5c3258756b88401a00c6c83b2941d2e",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/process_termination.test.mjs",
+        "sha256": "90c183b035983ebf2675cd506bd5450297adf576989329b86a97d5ac2bb076d9",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/profile_collector.test.mjs",
+        "sha256": "a3aaba1ab8306218ad1297aa3ff4d44d97d3b810d82c97170769e1b502fc15f7",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/public_read_budget.test.mjs",
+        "sha256": "9723642181b8686b2461e0a2854816baa9d379eb8f0fa62d13b01780159dee13",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/quality.test.mjs",
+        "sha256": "038a51e1288379f356095ccfea11403c536afd5e2bd936263703f653d2d1aa39",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/realtime.integration.test.mjs",
+        "sha256": "3f0a9f0f52f6429344f16ec308c96b21a6d633c36bac6172d63902810572dd1b",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/scan_diagnostics.test.mjs",
+        "sha256": "e8de0890bf832d517ef67a2e55c42e31bd5bbe96a3774cdcef453bdedd959e6d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/scan_pagination_v56.test.mjs",
+        "sha256": "49104d1a7c1dc16ad3c4b0cbd08ae44eb6eb3abceae96fe2541503a6418d79ea",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/signal_pipeline.integration.test.mjs",
+        "sha256": "811c26857ed1c7d8b020375544c1f4976061485ac8fbc173a3b13c3af16b78ad",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/signal_pipeline.test.mjs",
+        "sha256": "9a63ed0aa717bd9a8bb307af72e17614b99351962db97c2eb7ce53147eb30853",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/signal_policy.test.mjs",
+        "sha256": "6665926048e16629a55173dd7a8d743f450b6a1fb8a61b3b0b52938a62edff88",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/storage_failure.integration.test.mjs",
+        "sha256": "52adb85e8bd1661cd39651fb966f7a2497df73b7ec6a4bc9fd6b67535b342adf",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/storage_worker.test.mjs",
+        "sha256": "28757343f82460d2ba21f46eb2df929c1f50ddd36c00c3d457ac9981d242ecb8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/strategy_validation.test.mjs",
+        "sha256": "beb72b20f2f3ea81cf1be3e0984bd0ce5fbc2c8d09a97d2061eed86b03cd7872",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/telegram_watch.test.mjs",
+        "sha256": "76562f2daa28e9bef22b6bd217b484d42a94066c16a8663b61528ff61d6ab615",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/timeframe_v55.test.mjs",
+        "sha256": "f6f36474a1e6d3efdfb051e9d5a978defb5e64e5e3f6277a161e9b9518f50924",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/tradfi.test.mjs",
+        "sha256": "98d6bcb9a74caec0baf0dd992a4fb40f87406983f1ae170fb7b970edbf4a67a7",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/tradfi_integration.test.mjs",
+        "sha256": "739b9bfa27e6c095aadd04e1578ad802dc84f2241d91d7eabade5de2499d0b3d",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/tradingview.test.mjs",
+        "sha256": "9987060a6dab5e3572a0e5a6fcb109c022a84b2ff6eaba2670cdc1e3283568bf",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/ui_scan_state.test.mjs",
+        "sha256": "49d638666a557ea4ca27fa30b50deaf124864434bbf41c82ec0121226ebddaf6",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/updater.test.mjs",
+        "sha256": "754b591ef7793fbb3b992176e4596084bd2008188e13fc4d14daefd5a7b3e9c8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/volume_profile.test.mjs",
+        "sha256": "ead43be88db96785729287c2c9c9129660b21415e45a939b5806f3a210d8829b",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/volume_targets.test.mjs",
+        "sha256": "7e73ffeecb181ffad1ef86b7caa4ddb9161b375623231873bbe077d17c1182c8",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tests/windows_supervisor.test.mjs",
+        "sha256": "1fe59ce4c95edb13f9a2101dcdd32cab648ca509c723007d13d3809f98e37c61",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tradfi.mjs",
+        "sha256": "b8c5ead27a1ca07fd3d2c104e192bf2f49fe618ee345f49de75ca6568bee796b",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tradfi_feed.mjs",
+        "sha256": "105008bdc2431fa0204f89305477b7a0aa28f7944b74691a0f2e95eeb5b220a3",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "tradfi_signal.mjs",
+        "sha256": "5eb53dd17e8b99ef6fc8a9f386898be9e6d79264b1f58a197e0ff5209d94ec91",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "update-cli.mjs",
+        "sha256": "38eaa2944aba9049fed08d624a986163d78c5f0fdbddf6ba484aeb30a3a14489",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "updater.mjs",
+        "sha256": "00093064d77c2440e1eb5bd513cea2f89392ba3286926c166ef9f8625a98958e",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "volume_profile.mjs",
+        "sha256": "d84ebda2b6de4cab830bae5b66f87cfd0c814805f6070c2b49ed6d19e4e6ea11",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "volume_targets.mjs",
+        "sha256": "bb541fc33edd6d6495ad998834fccc220dd9acf33f7bfe59f785c36d69d7a8db",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "windows-supervisor.mjs",
+        "sha256": "1eae3fb72af43c4dfdb13f3250a88fd2411e1d3b4e8bad18d5c79063367ca974",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "windows-update-source.mjs",
+        "sha256": "d4f5a209f2587c5a76d04e4f3ee111a7b5cba3ad4e9abc883b6ae2c9803c03de",
+        "passed": true,
+        "error": null
+      },
+      {
+        "file": "windows_paper_notify.mjs",
+        "sha256": "326a9bdc88f4a5c10f4d302758cf13e1aa6ae2b824f6128e1e8cb1130f216a85",
+        "passed": true,
+        "error": null
+      }
+    ]
+  },
+  "preservation": {
+    "passed": true,
+    "unchangedRuntimeModules": {
+      "server.mjs": true,
+      "engine.mjs": true,
+      "quality.mjs": true,
+      "signal_policy.mjs": true,
+      "paper.mjs": true,
+      "persistence.mjs": true,
+      "orangex_paper_store.mjs": true,
+      "orangex_paper.mjs": true,
+      "data-cli.mjs": true,
+      "backup_data.bat": true,
+      "restore_data.bat": true,
+      "start.bat": true,
+      "start_mobile.bat": true
+    },
+    "originalUncommittedFiles": 28,
+    "originalUncommittedFilesUnchanged": true,
+    "actualUserRecordsAccessed": false,
+    "mainMerged": false,
+    "liveOrdersActivated": false,
+    "journalFormatMigrationRun": false
+  },
+  "copyFlushModel": {
+    "kind": "INJECTED_WINDOWS_ORDINARY_FILE_FLUSH_REPRODUCTION",
+    "baseCommit": "3b7ffe5",
+    "hostPlatform": "linux",
+    "modeledPlatform": "win32",
+    "actualWindowsExecuted": false,
+    "before": {
+      "status": "FAILED",
+      "code": "EPERM",
+      "syscall": "fsync"
+    },
+    "after": {
+      "status": "PASS",
+      "restoredPnl": 2.375,
+      "copiedFiles": 8,
+      "syncCalls": 8
+    },
+    "regularFileEpermStillPropagates": true,
+    "directoryPolicyUnchanged": true,
+    "actualUserDataUsed": false
+  },
+  "workerFailureModel": {
+    "kind": "WINDOWS_READONLY_FILE_FSYNC_MODEL",
+    "baseCommit": "3b7ffe5",
+    "hostPlatform": "linux",
+    "actualWindowsExecuted": false,
+    "actualUserRecordsUsed": false,
+    "cases": [
+      {
+        "version": "before",
+        "script": "performance",
+        "backend": "journal",
+        "exitCode": 1,
+        "status": "FAILED",
+        "failure": {
+          "phase": "backup",
+          "code": "EPERM"
+        },
+        "actualWindows": false
+      },
+      {
+        "version": "before",
+        "script": "scale",
+        "backend": "journal",
+        "exitCode": 1,
+        "status": "FAILED",
+        "failure": {
+          "phase": "backup",
+          "code": "EPERM"
+        },
+        "actualWindows": false
+      },
+      {
+        "version": "before",
+        "script": "performance",
+        "backend": "snapshot",
+        "exitCode": 0,
+        "status": "PASS",
+        "failure": null,
+        "actualWindows": false
+      },
+      {
+        "version": "before",
+        "script": "scale",
+        "backend": "snapshot",
+        "exitCode": 0,
+        "status": "PASS",
+        "failure": null,
+        "actualWindows": false
+      },
+      {
+        "version": "before",
+        "script": "scale",
+        "backend": "segmented_lab",
+        "exitCode": 0,
+        "status": "PASS",
+        "failure": null,
+        "actualWindows": false
+      },
+      {
+        "version": "after",
+        "script": "performance",
+        "backend": "journal",
+        "exitCode": 0,
+        "status": "PASS",
+        "failure": null,
+        "actualWindows": false
+      },
+      {
+        "version": "after",
+        "script": "scale",
+        "backend": "journal",
+        "exitCode": 0,
+        "status": "PASS",
+        "failure": null,
+        "actualWindows": false
+      },
+      {
+        "version": "after",
+        "script": "performance",
+        "backend": "snapshot",
+        "exitCode": 0,
+        "status": "PASS",
+        "failure": null,
+        "actualWindows": false
+      },
+      {
+        "version": "after",
+        "script": "scale",
+        "backend": "snapshot",
+        "exitCode": 0,
+        "status": "PASS",
+        "failure": null,
+        "actualWindows": false
+      },
+      {
+        "version": "after",
+        "script": "scale",
+        "backend": "segmented_lab",
+        "exitCode": 0,
+        "status": "PASS",
+        "failure": null,
+        "actualWindows": false
+      }
+    ]
+  },
+  "focusedJournal": [
+    {
+      "runtime": "v24.19.0",
+      "exitCode": 0,
+      "elapsedMs": 520,
+      "log": "/workspace/signal-pr7-fsync-evidence/node24-journal.tap",
+      "tests": 22,
+      "pass": 22,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "failedNames": []
+    },
+    {
+      "runtime": "v22.23.4",
+      "exitCode": 0,
+      "elapsedMs": 469,
+      "log": "/workspace/signal-pr7-fsync-evidence/node22-journal.tap",
+      "tests": 22,
+      "pass": 22,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "failedNames": []
+    }
+  ],
+  "processConfirmation": [
+    {
+      "runtime": "v24.19.0",
+      "exitCode": 0,
+      "elapsedMs": 221,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "log": "/workspace/signal-pr7-fsync-exit-evidence/node24-process-confirmation-final.tap"
+    },
+    {
+      "runtime": "v22.23.4",
+      "exitCode": 0,
+      "elapsedMs": 218,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "log": "/workspace/signal-pr7-fsync-exit-evidence/node22-process-confirmation-final.tap"
+    }
+  ],
+  "workerFailurePreservation": [
+    {
+      "runtime": "node24",
+      "version": "v24.19.0",
+      "exitCode": 0,
+      "elapsedMs": 4380,
+      "tests": 25,
+      "pass": 25,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "log": "/workspace/signal-pr7-fsync-race-evidence/worker-failure-preservation-node24.tap"
+    },
+    {
+      "runtime": "node22",
+      "version": "v22.23.4",
+      "exitCode": 0,
+      "elapsedMs": 4281,
+      "tests": 25,
+      "pass": 25,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "log": "/workspace/signal-pr7-fsync-race-evidence/worker-failure-preservation-node22.tap"
+    }
+  ],
+  "workflowLimitsIncreased": false,
+  "evidenceDirectory": "/workspace/signal-pr7-fsync-race-evidence"
+}

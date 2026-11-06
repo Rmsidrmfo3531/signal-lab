@@ -4,13 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {runNodeTests,testRunnerOptions,discoverTestFiles,terminateOwnedTestTree} from '../scripts/run-node-tests.mjs';
-function assertTerminated(pid){
- let gone=false;
- try{process.kill(pid,0)}catch(error){if(error.code==='ESRCH')gone=true;else throw error;}
- if(!gone&&process.platform==='linux'){
-  // Container PID 1 may defer reaping, but a zombie has exited with no handles.
-  assert.match(fs.readFileSync('/proc/'+pid+'/stat','utf8'),/\) Z /);
- }else assert.equal(gone,true,'the owned descendant must have terminated before the runner returns');
+import {waitForProcessTermination} from './helpers/process_termination.mjs';
+async function assertTerminated(pid){
+ const result=await waitForProcessTermination(pid);
+ assert.equal(result.terminated,true,'the owned descendant must actually terminate after signal delivery');
+ assert.ok(['EXITED','Z'].includes(result.state));
 }
 
 test('CI discovers exactly the same test files and rejects disabled or unbounded runner limits',()=>{
@@ -59,7 +57,7 @@ test('completed bodies with leaked handles fail the file deadline; pending Promi
    assert.ok(row.durationMs<12000);
   }
   assert.equal(fs.readFileSync(bodyDone,'utf8'),'finished','the leaked handle must not turn a completed test body into CI success');
-  assertTerminated(Number(fs.readFileSync(pidFile,'utf8')));
+  await assertTerminated(Number(fs.readFileSync(pidFile,'utf8')));
   assert.ok(events.some(value=>value.startsWith('[TEST ACTIVE]')));assert.equal(events.filter(value=>value.startsWith('[TEST START]')).length,6);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out,'summary.json'))).failedFiles,4);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out,'progress.json'))).active.length,0);
@@ -116,7 +114,7 @@ test('START, completion and progress-report failures cannot strand active worker
     await new Promise(resolve=>setTimeout(resolve,200));
     assert.equal(fs.existsSync(pidFile),false,'a failing START callback must run before spawning a process');
    }else{
-    assertTerminated(Number(fs.readFileSync(pidFile,'utf8')));
+    await assertTerminated(Number(fs.readFileSync(pidFile,'utf8')));
    }
   }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
  }
