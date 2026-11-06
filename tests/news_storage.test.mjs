@@ -8,7 +8,7 @@ import {translateNewsArticles} from '../news_translation.mjs';
 // network delivery. The failing persistence callback models a real disk error.
 test('news bootstrap and new alerts are committed before delivery and remain retryable after a failed save',async()=>{
  const source=fs.readFileSync(new URL('../server.mjs',import.meta.url),'utf8');
- const polling=source.slice(source.indexOf('let newsBootstrapped=false;'),source.indexOf('async function tgNews('));
+ const polling=source.slice(source.indexOf('let newsBootstrapped=false;'),source.indexOf('function bodyJson(req)'));
  assert.ok(polling.includes('async function pollNews()'));
  const sent=[],telegram=[],now=Date.now();let fail=true,articles=[{id:'old',published:now}];
  const context=vm.createContext({Date,AbortController,setTimeout,clearTimeout,CONFIG:{translationURL:''},translateNewsArticles,
@@ -38,5 +38,5 @@ test('news bootstrap and new alerts are committed before delivery and remain ret
  fail=false;await context.pollNews();await context.pollNews();
  assert.equal(context.persisted.newsSeen.new,now);
  assert.equal(sent.filter(x=>x.event==='news-alert').length,1);
- assert.deepEqual(telegram,['new']);
+ assert.deepEqual(telegram,[],'news updates may still reach the browser but never Telegram');
 });
