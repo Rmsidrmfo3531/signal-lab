@@ -29,7 +29,7 @@ function linkButtons(symbol){const links=externalLinks(symbol);if(!links)return 
 }
 function focusSignal(symbol){
  if(!app.marketMap.has(symbol)){toast('해당 종목이 현재 Binance 거래 가능 목록에 없습니다. 다시 조회해 주세요.',true);return}
- selectSymbol(symbol);document.getElementById('overview').scrollIntoView({behavior:'smooth'});
+ selectSymbol(symbol);window.location.hash='#overview';window.setTimeout(()=>document.getElementById('chartPanel')?.scrollIntoView({behavior:'smooth'}),0);
 }
 function signalToast(alert){
  const holder=$('toastHolder'),node=document.createElement('div');node.className='toast signal-toast';
