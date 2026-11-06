@@ -24,7 +24,7 @@ import {estimateBinanceExecution,BINANCE_PAPER_ASSUMPTIONS} from './binance_exec
 import {VolumeProfileCollector} from './profile_collector.mjs';
 import {roundOrangeXDecimal} from './orangex_contract_validation.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
-import {shouldNotifyWatch,watchMinScore,watchAlertKey,telegramWatchMessage} from './telegram_watch.mjs';
+import {finalTelegramMatch} from './telegram_final.mjs';
 import {translateNewsArticles} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {PublicReadBudget} from './public_read_budget.mjs';
@@ -53,9 +53,6 @@ const CONFIG={
  quoteVolume:Math.max(0,Number(process.env.MIN_DAILY_VOLUME_USDT||5000000)),
  tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
  newsMs:Math.max(60000,Number(process.env.NEWS_POLL_MS||90000)),
- newsTelegram:process.env.TELEGRAM_NEWS_ALERTS!=='false',
- watchMinScore:watchMinScore(process.env.TELEGRAM_WATCH_MIN_SCORE),
- watchEnabled:process.env.TELEGRAM_SCORE_WATCH_ENABLED!=='false',
  maxRiskUSD:Number(process.env.PAPER_MAX_RISK_USD||6),
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
@@ -208,20 +205,16 @@ async function refreshExecution(){
   await Promise.allSettled(symbols.map(symbol=>depth(symbol)));state.executionRefreshAt=Date.now();send('status',getStatus());
  })();try{return await refreshPromise}finally{refreshPromise=null}
 }
-async function tgWatch(row){
- if(!CONFIG.watchEnabled||!CONFIG.tgToken||!CONFIG.tgChat||!shouldNotifyWatch(row,{minScore:CONFIG.watchMinScore,verified:state.activeSet.has(row.symbol),altOnly:true,now:Date.now()}))return;
- const key=watchAlertKey(row);if(persisted.watchSeen?.[key]||persisted.watchSeen?.[`watch:${row.symbol}:${row.direction}:${row.pattern}:${row.time}`])return;
- // Save deduplication before delivery; retry after an uncertain remote ACK cannot duplicate an alert.
- save({...persisted,watchSeen:{...(persisted.watchSeen||{}),[key]:Date.now()}});
- const urls=officialMarketLinks(row.symbol),payload={chat_id:CONFIG.tgChat,...telegramWatchMessage(row,urls)};
- try{const r=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});if(!r.ok)console.warn('[TG WATCH] HTTP',r.status)}catch{console.warn('[TG WATCH] delivery unconfirmed')}
-}
 async function tgNotify(s){
  if(!CONFIG.tgToken||!CONFIG.tgChat)return;
- const urls=state.activeSet.has(s.symbol)?officialMarketLinks(s.symbol):null;
+ // Final-results API is the source of truth. Any later quote/venue rejection
+ // suppresses delivery even if an earlier scan approved the same candle.
+ const matched=finalTelegramMatch(s,relevantSignals(),getSignalScorePolicy().finalMinScore);
+ if(!matched)return;
+ const urls=state.activeSet.has(matched.symbol)?officialMarketLinks(matched.symbol):null;
  if(!urls){console.warn('Telegram suppressed: market link not verified',s.symbol);return}
  const F=p=>p>0?p.toLocaleString('en-US',{maximumFractionDigits:p>=1000?2:7}):String(p);
- const payload={chat_id:CONFIG.tgChat,...telegramMessage(s,urls,F)};
+ const payload={chat_id:CONFIG.tgChat,...telegramMessage(matched,urls,F)};
  try{
   const r=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)
@@ -305,7 +298,6 @@ async function checkSymbolInternal(symbol, force=false){
  }
  if(decision.technical&&!decision.venue){state.blockedSignals++;state.lastBlockReason=decision.reasons.join(' / ')}
  state.analyses.set(symbol,out);
- void tgWatch(out).catch(()=>{});
  publishCryptoSignal(out,decision);
  return out;
 }
@@ -609,15 +601,8 @@ async function pollNews(){
  if(changed)save({...persisted,newsSeen:nextSeen});
  // Failed writes must neither complete bootstrap nor deliver unrecorded news.
  newsBootstrapped=true;
- for(const article of notifications){send('news-alert',article);void tgNews(article)}
+ for(const article of notifications)send('news-alert',article);
  send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:feeds.length,error:state.newsError});
-}
-async function tgNews(article){
- if(!CONFIG.newsTelegram||!CONFIG.tgToken||!CONFIG.tgChat)return;
- const lines=['📰 [속보 후보 · 자동 분류] '+article.title,`출처: ${article.source} / 발행 ${new Date(article.published).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})}`,`분류: ${article.tone==='risk'?'부정 이슈 가능성':article.tone==='opportunity'?'긍정 이슈 가능성':'영향 방향 불명'} · 기사 원문 확인 필수`,article.link];
- try{const res=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CONFIG.tgChat,text:lines.join('\n'),disable_web_page_preview:true,reply_markup:{inline_keyboard:[[{text:'기사 원문 열기 ↗',url:article.link}]]}}),signal:AbortSignal.timeout(10000)});
- if(!res.ok)console.warn('[NEWS TG]',res.status);
- }catch(e){console.warn('[NEWS TG]',e.message)}
 }
 function bodyJson(req){return new Promise((resolve,reject)=>{let buf='';req.on('data',c=>{buf+=c;if(buf.length>30000){reject(Error('Body too large'));req.destroy()}});req.on('end',()=>{try{resolve(JSON.parse(buf))}catch{reject(Error('Invalid JSON'))}})})}
 const server=http.createServer(async(req,res)=>{
