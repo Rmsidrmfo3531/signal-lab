@@ -1,0 +1,346 @@
+{
+  "kind": "PR7_WINDOWS_NODE22_VALIDATION",
+  "baselineCommit": "7bece82f7acc484e06dda4025cafffb48de1d855",
+  "checkedAt": "2026-11-06T05:16:36.340542+00:00",
+  "branch": "feat/issue6-integrated",
+  "pullRequest": "https://github.com/Rmsidrmfo3531/signal-lab/pull/7",
+  "nativeLinuxTests": [
+    {
+      "runtime": "node24",
+      "version": "v24.19.0",
+      "exitCode": 0,
+      "seconds": 36.998,
+      "tests": 800,
+      "pass": 800,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "log": "/workspace/signal-pr7-node22-evidence/final-native/node24.log",
+      "failedNames": []
+    },
+    {
+      "runtime": "node22",
+      "version": "v22.23.4",
+      "exitCode": 0,
+      "seconds": 36.957,
+      "tests": 800,
+      "pass": 800,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "log": "/workspace/signal-pr7-node22-evidence/final-native/node22.log",
+      "failedNames": []
+    }
+  ],
+  "linuxCiRunnerTests": [
+    {
+      "kind": "NODE_TEST_FILE_RESULTS",
+      "passed": true,
+      "aborted": false,
+      "pendingFiles": [],
+      "startedAt": "2026-11-06T05:14:17.570Z",
+      "completedAt": "2026-11-06T05:14:56.593Z",
+      "runtime": "v24.19.0",
+      "platform": "linux",
+      "concurrency": 2,
+      "fileTimeoutMs": 120000,
+      "totalFiles": 101,
+      "completedFiles": 101,
+      "failedFiles": 0,
+      "tests": 800,
+      "pass": 800,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "exitCode": 0,
+      "seconds": 39.101,
+      "consoleLog": "/workspace/signal-pr7-node22-evidence/final-ci/node24-console.log",
+      "reportDirectory": "/workspace/signal-pr7-node22-evidence/final-ci/node24-reports"
+    },
+    {
+      "kind": "NODE_TEST_FILE_RESULTS",
+      "passed": true,
+      "aborted": false,
+      "pendingFiles": [],
+      "startedAt": "2026-11-06T05:14:56.661Z",
+      "completedAt": "2026-11-06T05:15:35.331Z",
+      "runtime": "v22.23.4",
+      "platform": "linux",
+      "concurrency": 2,
+      "fileTimeoutMs": 120000,
+      "totalFiles": 101,
+      "completedFiles": 101,
+      "failedFiles": 0,
+      "tests": 800,
+      "pass": 800,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "exitCode": 0,
+      "seconds": 38.744,
+      "consoleLog": "/workspace/signal-pr7-node22-evidence/final-ci/node22-console.log",
+      "reportDirectory": "/workspace/signal-pr7-node22-evidence/final-ci/node22-reports"
+    }
+  ],
+  "focusedCiResults": [
+    {
+      "runtime": "v24.19.0",
+      "files": [
+        {
+          "file": "tests/ci_runner.test.mjs",
+          "status": "PASS",
+          "durationMs": 11253,
+          "exitCode": 0,
+          "tests": 8,
+          "pass": 8,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/durable_append_recovery.test.mjs",
+          "status": "PASS",
+          "durationMs": 124,
+          "exitCode": 0,
+          "tests": 14,
+          "pass": 14,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/orangex_paper_journal.test.mjs",
+          "status": "PASS",
+          "durationMs": 498,
+          "exitCode": 0,
+          "tests": 26,
+          "pass": 26,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/orangex_storage_performance.test.mjs",
+          "status": "PASS",
+          "durationMs": 876,
+          "exitCode": 0,
+          "tests": 4,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/orangex_storage_scale.test.mjs",
+          "status": "PASS",
+          "durationMs": 556,
+          "exitCode": 0,
+          "tests": 24,
+          "pass": 24,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/owned_directory_cleanup.test.mjs",
+          "status": "PASS",
+          "durationMs": 153,
+          "exitCode": 0,
+          "tests": 4,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      ]
+    },
+    {
+      "runtime": "v22.23.4",
+      "files": [
+        {
+          "file": "tests/ci_runner.test.mjs",
+          "status": "PASS",
+          "durationMs": 11003,
+          "exitCode": 0,
+          "tests": 8,
+          "pass": 8,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/durable_append_recovery.test.mjs",
+          "status": "PASS",
+          "durationMs": 140,
+          "exitCode": 0,
+          "tests": 14,
+          "pass": 14,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/orangex_paper_journal.test.mjs",
+          "status": "PASS",
+          "durationMs": 538,
+          "exitCode": 0,
+          "tests": 26,
+          "pass": 26,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/orangex_storage_performance.test.mjs",
+          "status": "PASS",
+          "durationMs": 806,
+          "exitCode": 0,
+          "tests": 4,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/orangex_storage_scale.test.mjs",
+          "status": "PASS",
+          "durationMs": 512,
+          "exitCode": 0,
+          "tests": 24,
+          "pass": 24,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        },
+        {
+          "file": "tests/owned_directory_cleanup.test.mjs",
+          "status": "PASS",
+          "durationMs": 147,
+          "exitCode": 0,
+          "tests": 4,
+          "pass": 4,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      ]
+    }
+  ],
+  "workerClosureVerification": [
+    {
+      "runtime": "v24.19.0",
+      "workers": 101,
+      "allProcessesPipesAndLogsClosed": true,
+      "cleanupErrors": 0
+    },
+    {
+      "runtime": "v22.23.4",
+      "workers": 101,
+      "allProcessesPipesAndLogsClosed": true,
+      "cleanupErrors": 0
+    }
+  ],
+  "identityVerification": {
+    "exactBigIntAnchorAndRecovery": true,
+    "deviceAndInodeCollisionModel": true,
+    "baselineFullWalCollisionReproduced": "Expected SCALE_COMMIT_UNCERTAIN; actual ENOSPC",
+    "replacementFaultGuaranteedDistinct": true,
+    "unverifiedIdentityTruncationAllowed": false,
+    "unverifiedIdentityRetryAllowed": false,
+    "nanosecondTimestampChecks": true,
+    "numberStatAdapterRejected": true,
+    "actualWindowsExecutedLocally": false
+  },
+  "cleanupVerification": {
+    "asynchronousBoundedRetry": true,
+    "retryBudgetChanged": false,
+    "maxRetries": 8,
+    "retryDelayMs": 100,
+    "liveChildBlocksRemoval": true,
+    "processStdoutStderrLogProofRequired": true,
+    "permanentBusyRemainsFailure": true,
+    "originalWindowsLockOwner": "UNVERIFIED; full path and lock-owner evidence unavailable"
+  },
+  "initialDiagnosticFailure": {
+    "observed": true,
+    "description": "Added identity diagnostic used args instead of options; ReferenceError made rollback diagnostic UNKNOWN; corrected and all tests rerun",
+    "nativeInitialPass": 799,
+    "nativeInitialTests": 800,
+    "logsRetainedIn": "initial-native and initial-ci under evidence directory"
+  },
+  "actualGithubActions": {
+    "candidateFourEnvironmentSuccess": "UNVERIFIED",
+    "blocker": "api.github.com absent from enforced egress rules; gh run view returned Forbidden",
+    "previousRun": "https://github.com/Rmsidrmfo3531/signal-lab/actions/runs/42164799345",
+    "previousRunUserReported": {
+      "linux22": "PASS",
+      "linux24": "PASS",
+      "windows24": {
+        "focused": "53/53",
+        "full": "792/792"
+      },
+      "windows22": {
+        "focused": "52/53",
+        "full": "791/792"
+      }
+    },
+    "branchActions": "https://github.com/Rmsidrmfo3531/signal-lab/actions?query=branch%3Afeat%2Fissue6-integrated"
+  },
+  "syntax": {
+    "files": 208,
+    "passed": true
+  },
+  "preservation": {
+    "passed": true,
+    "unchangedRuntimeModules": {
+      "server.mjs": true,
+      "engine.mjs": true,
+      "quality.mjs": true,
+      "signal_policy.mjs": true,
+      "paper.mjs": true,
+      "persistence.mjs": true,
+      "orangex_paper_store.mjs": true,
+      "orangex_paper.mjs": true,
+      "data-cli.mjs": true,
+      "backup_data.bat": true,
+      "restore_data.bat": true,
+      "start.bat": true,
+      "start_mobile.bat": true,
+      ".github/workflows/node-tests.yml": true,
+      "public/app.js": true,
+      "public/index.html": true,
+      "public/styles.css": true
+    },
+    "originalUncommittedFiles": 28,
+    "originalUncommittedFilesUnchanged": true,
+    "actualUserRecordsAccessed": false,
+    "mainMerged": false,
+    "liveOrdersActivated": false,
+    "journalFormatMigrationRun": false
+  },
+  "existingTestsRemovedOrSkipped": false,
+  "timeoutsIncreased": false,
+  "actualOrangeXRequests": false,
+  "syntheticTemporaryDataOnly": true,
+  "mode": "READ_ONLY",
+  "liveMarketPaperEntryEnabled": false,
+  "liveOrdersEnabled": false,
+  "journalProductionSelected": false,
+  "sourceSHA256": {
+    "durable_append_recovery.mjs": "322718874392674f1a092412ad237bc83bbdb25cad3af44266369cc73a52ceca",
+    "orangex_paper_journal.mjs": "f966a04b1908189a05bd19f24d92690901050b68aeb0ea532865738bd6e6cf70",
+    "orangex_paper_storage_lab.mjs": "3361c8d24d2d2793039f011ad9405dc1c2a47e9808bbf1887e0b1ea9ea7a5374",
+    "scripts/run-node-tests.mjs": "a19018c94e45ee562ab958f2e055f8b0ad6cdcf1b3b3e39ddd39a1b52d9121c9",
+    "tests/ci_runner.test.mjs": "ede8ff62b812565317fa74de61c9f0190a7d3589e9fe05433f1f02d857d47444",
+    "tests/durable_append_recovery.test.mjs": "42267097a52de1d8b585a3ab290bd67092bb8643d2e44a84ac5213b581a8a60b",
+    "tests/orangex_storage_scale.test.mjs": "1bea314af93b1fceb2416eccd20fd5029c9f811956d2211e896e527f8572fd5f",
+    "tests/helpers/stat_identity.mjs": "44b02072aa17c5db671f25d37963caf00a80af7919b8da739eb18f1e0aa61c86",
+    "tests/helpers/owned_directory.mjs": "4a15e23a86adcee910d1be40413c6eeac580c1bf5294983d150af0e970a3e529",
+    "tests/owned_directory_cleanup.test.mjs": "b357523ae3c35b87f1ebfabd0bba92902f93e6b5eb5fcd3879cd0c2fba749b56"
+  },
+  "evidenceDirectory": "/workspace/signal-pr7-node22-evidence"
+}

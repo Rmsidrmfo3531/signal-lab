@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {rollbackDurableAppend} from '../durable_append_recovery.mjs';
+import {distinctStatIdentity} from './helpers/stat_identity.mjs';
 
 const injected=(code,syscall)=>Object.assign(new Error(`injected ${code}`),{code,syscall});
 const hash=value=>createHash('sha256').update(value).digest('hex');
@@ -20,7 +21,7 @@ function fixture(run){
   if(key==='fsyncSync')return fd=>{calls.push(['sync',fd]);return fs.fsyncSync(fd)};
   return Reflect.get(target,key);
  }});
- fs.writeFileSync(file,prefix);const appendFd=io.openSync(file,fs.constants.O_WRONLY|fs.constants.O_APPEND),openedStat=fs.fstatSync(appendFd);
+ fs.writeFileSync(file,prefix);const appendFd=io.openSync(file,fs.constants.O_WRONLY|fs.constants.O_APPEND),openedStat=fs.fstatSync(appendFd,{bigint:true});
  fs.writeSync(appendFd,recordBytes,0,23,null);
  const input={io,file,appendFd,openedStat,committedBytes:prefix.length,recordBytes,prefixHash:hash(prefix)};
  const override=handlers=>new Proxy(io,{get(target,key){return Object.hasOwn(handlers,key)?handlers[key]:Reflect.get(target,key)}});
@@ -80,8 +81,8 @@ test('a final close failure freezes recovery even after truncate and fsync and d
 }));
 
 test('changed pathname identity, symlink or hardlink is refused before any truncation',()=>{
- for(const change of [stat=>({...stat,ino:stat.ino+1,isFile:()=>true,isSymbolicLink:()=>false}),stat=>({...stat,isFile:()=>true,isSymbolicLink:()=>true}),stat=>({...stat,nlink:2,isFile:()=>true,isSymbolicLink:()=>false})])fixture(({input,io,override,calls,file})=>{
-  const before=fs.readFileSync(file);input.io=override({lstatSync:target=>change(io.lstatSync(target))});
+ for(const change of [distinctStatIdentity,stat=>({...stat,isFile:()=>true,isSymbolicLink:()=>true}),stat=>({...stat,nlink:2n,isFile:()=>true,isSymbolicLink:()=>false})])fixture(({input,io,override,calls,file})=>{
+  const before=fs.readFileSync(file);input.io=override({lstatSync:(...args)=>change(io.lstatSync(...args))});
   uncertain(()=>rollbackDurableAppend(input),{stage:'identity-before',code:'DURABLE_ROLLBACK_IDENTITY_CHANGED'});
   assert.equal(calls.some(call=>call[0]==='truncate'),false);assert.deepEqual(fs.readFileSync(file),before);
  });
@@ -115,5 +116,38 @@ test('cleanup close failures preserve the original rollback error instead of mas
 
 test('a short committed-prefix read is not treated as an empty or valid prefix',()=>fixture(({input,override,calls})=>{
  input.io=override({readSync:()=>0});uncertain(()=>rollbackDurableAppend(input),{stage:'prefix-before',code:'DURABLE_ROLLBACK_SHORT_READ'});
+ assert.equal(calls.some(call=>call[0]==='truncate'),false);
+}));
+
+test('adjacent large device and inode IDs that round to the same Number remain distinct during rollback',()=>{
+ const original=2n**60n,changed=original+1n;
+ assert.equal(Number(original),Number(changed),'the fixture must reproduce the unsafe Number comparison');
+ for(const field of ['dev','ino'])fixture(({input,io,override,calls,file})=>{
+  const before=fs.readFileSync(file),anchor=Object.assign(Object.create(Object.getPrototypeOf(input.openedStat)),input.openedStat,{[field]:original});
+  input.openedStat=anchor;
+  const altered=stat=>Object.assign(Object.create(Object.getPrototypeOf(stat)),stat,{[field]:changed});
+  input.io=override({
+   fstatSync:(fd,options)=>{assert.equal(options?.bigint,true);return altered(io.fstatSync(fd,options))},
+   lstatSync:(target,options)=>{assert.equal(options?.bigint,true);return altered(io.lstatSync(target,options))}
+  });
+  uncertain(()=>rollbackDurableAppend(input),{stage:'identity-before',code:'DURABLE_ROLLBACK_IDENTITY_CHANGED'});
+  assert.equal(calls.some(call=>call[0]==='truncate'),false);assert.deepEqual(fs.readFileSync(file),before);
+ });
+});
+
+test('a filesystem adapter that drops exact BigInt identity is refused rather than trusted for retry',()=>fixture(({input,override,calls})=>{
+ input.io=override({fstatSync:fd=>fs.fstatSync(fd)});
+ uncertain(()=>rollbackDurableAppend(input),{stage:'identity-before',code:'DURABLE_ROLLBACK_IDENTITY_CHANGED'});
+ assert.equal(calls.some(call=>call[0]==='truncate'),false);
+}));
+
+test('a submillisecond identity timestamp change prevents truncate even when integer milliseconds agree',()=>fixture(({input,io,override,calls})=>{
+ let observations=0;
+ input.io=override({fstatSync:(fd,options)=>{
+  const stat=io.fstatSync(fd,options);observations++;
+  if(observations===2)return Object.assign(Object.create(Object.getPrototypeOf(stat)),stat,{ctimeNs:stat.ctimeNs+1n});
+  return stat;
+ }});
+ uncertain(()=>rollbackDurableAppend(input),{stage:'identity-before-truncate',code:'DURABLE_ROLLBACK_FILE_CHANGED'});
  assert.equal(calls.some(call=>call[0]==='truncate'),false);
 }));

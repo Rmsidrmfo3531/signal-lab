@@ -145,6 +145,8 @@ async function runFile(file,index,options,onStart,onFinish){
   // Do not let broken pipes obscure a failing, unconfirmed process cleanup.
   if(!closed){child.stdout.destroy();child.stderr.destroy();child.unref();}
   log.end();await new Promise(resolve=>{if(log.closed)return resolve();log.once('close',resolve)});
+  options.onWorkerCleanup({file,pid:child.pid??null,processClosed:closed,stdoutClosed:child.stdout.closed,
+   stderrClosed:child.stderr.closed,logClosed:log.closed,cleanupError});
  }
  const failureCode=aborted?'RUN_ABORTED':timedOut?'FILE_TIMEOUT':spawnError?'SPAWN_ERROR':logError?'LOG_WRITE_FAILED':traceCaptureError?'TRACE_CAPTURE_FAILED':
   outcome.code!==0?'TEST_PROCESS_FAILED':summaryFields.size!==6||counts.tests<1?'INCOMPLETE_TEST_SUMMARY':
@@ -169,7 +171,8 @@ export async function runNodeTests({root=PROJECT,files,concurrency=2,fileTimeout
  if(fs.readdirSync(outputDir).length)throw Error('TEST_OUTPUT_DIRECTORY_NOT_EMPTY');
  const traceRoot=fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()),'signal-ci-trace-'));
  const cancellation=new AbortController(),combinedSignal=signal?AbortSignal.any([signal,cancellation.signal]):cancellation.signal,
-  startedAt=stamp(),running=new Map(),results=[],settings={root,concurrency,fileTimeoutMs,outputDir,traceRoot,nodePath,env,print,signal:combinedSignal};
+  startedAt=stamp(),running=new Map(),results=[],workerCleanup=[],settings={root,concurrency,fileTimeoutMs,outputDir,traceRoot,nodePath,env,print,signal:combinedSignal,
+   onWorkerCleanup:row=>workerCleanup.push(row)};
  let cursor=0,fatalError=null;
  const fail=error=>{fatalError??=error;cancellation.abort();};
  const progress=()=>fs.writeFileSync(path.join(outputDir,'progress.json'),JSON.stringify({startedAt,updatedAt:stamp(),
@@ -193,15 +196,30 @@ export async function runNodeTests({root=PROJECT,files,concurrency=2,fileTimeout
   // tree cleanup before surfacing the original failure to the CLI.
   await Promise.allSettled(Array.from({length:Math.min(concurrency,files.length)},worker));
   if(fatalError)throw fatalError;
+ }catch(error){
+  // Preserve the original reporting failure while recording whether every
+  // owned process, pipe and log actually closed before a caller removes cwd.
+  fatalError??=error;error.workerCleanup=workerCleanup;throw error;
  }finally{
   clearInterval(heartbeat);
-  fs.rmSync(traceRoot,{recursive:true,force:true,maxRetries:8,retryDelay:100});
+  if(workerCleanup.some(row=>!row.processClosed||!row.stdoutClosed||!row.stderrClosed||!row.logClosed||row.cleanupError)){
+   const error=fatalError??Object.assign(Error('Owned worker cleanup is unconfirmed; traces retained'),{code:'TEST_WORKER_CLEANUP_UNCONFIRMED'});
+   error.workerCleanup=workerCleanup;error.traceDirectoryRetained=traceRoot;throw error;
+  }
+  // Yield during transient Windows lock retry so pending native close callbacks
+  // can run. The retry count/delay are unchanged; a persistent lock still fails.
+  try{await fs.promises.rm(traceRoot,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+  catch(error){
+   if(!fatalError)throw error;
+   fatalError.traceCleanupError={code:error.code??error.name,syscall:error.syscall??null};
+   fatalError.traceDirectoryRetained=traceRoot;throw fatalError;
+  }
  }
  const counts=results.reduce((sum,row)=>{for(const key of Object.keys(sum))sum[key]+=row[key];return sum},emptyCounts()),
   passed=!combinedSignal.aborted&&results.length===files.length&&results.every(row=>row.status==='PASS'),summary={kind:'NODE_TEST_FILE_RESULTS',
    passed,aborted:combinedSignal.aborted,pendingFiles:files.slice(cursor),startedAt,completedAt:stamp(),runtime:process.version,platform:process.platform,concurrency,fileTimeoutMs,
    totalFiles:files.length,completedFiles:results.length,failedFiles:results.filter(row=>row.status!=='PASS').length,...counts,
-   results:results.sort((a,b)=>a.file.localeCompare(b.file))};
+   workerCleanup,results:results.sort((a,b)=>a.file.localeCompare(b.file))};
  fs.writeFileSync(path.join(outputDir,'summary.json'),JSON.stringify(summary,null,2)+'\n');
  print(`[TEST SUMMARY] ${passed?'PASS':'FAIL'}: ${counts.pass}/${counts.tests} tests; ${summary.failedFiles}/${files.length} failed files; reports=${outputDir}`);
  return summary;

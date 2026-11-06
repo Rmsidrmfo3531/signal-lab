@@ -280,7 +280,7 @@ export class OrangeXPaperJournal{
   const undo=this.#apply(tx.ops);let fd=null,opened=null,writeStarted=false,stage='append-open';
   try{
    fd=this.#io.openSync(file,this.#io.constants.O_WRONLY|this.#io.constants.O_APPEND|(this.#io.constants.O_NOFOLLOW??0));
-   stage='append-open-stat';opened=this.#io.fstatSync(fd);if(!opened.isFile()||opened.nlink!==1||opened.size!==this.#logBytes)throw problem('JOURNAL_LOG_CHANGED');
+   stage='append-open-stat';opened=this.#io.fstatSync(fd,{bigint:true});if(!opened.isFile()||opened.nlink!==1n||opened.size!==BigInt(this.#logBytes)||typeof opened.dev!=='bigint'||typeof opened.ino!=='bigint')throw problem('JOURNAL_LOG_CHANGED');
    let offset=0;while(offset<bytes.length){stage='append-write';writeStarted=true;const wrote=this.#io.writeSync(fd,bytes,offset,bytes.length-offset,null);if(!Number.isInteger(wrote)||wrote<=0)throw problem('JOURNAL_SHORT_WRITE');offset+=wrote}
    stage='append-fsync';this.#io.fsyncSync(fd);stage='append-commit-stat';const committed=this.#io.fstatSync(fd);if(committed.size!==this.#logBytes+bytes.length)throw problem('JOURNAL_LOG_CHANGED');
    stage='append-close';const closing=fd;fd=null;this.#io.closeSync(closing);

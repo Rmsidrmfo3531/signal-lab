@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import {storageScaleFixture,materializeStorageScaleFixture,summarizeStorageScaleState,OrangeXSyntheticSegmentedStorageLab} from '../orangex_paper_storage_lab.mjs';
 import {buildSyntheticStorageLedger} from '../scripts/check-orangex-storage-performance.mjs';
 import {runOrangeXStorageScaleComparison,storageScaleOptions} from '../scripts/check-orangex-storage-scale.mjs';
+import {distinctStatIdentity} from './helpers/stat_identity.mjs';
 
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const encoded=value=>Buffer.from(JSON.stringify(value)+'\n');
@@ -129,7 +130,7 @@ for(const scenario of [
  {name:'length',stage:'identity-after',code:'DURABLE_ROLLBACK_LENGTH_MISMATCH'},
  {name:'close',stage:'recovery-close',code:'EIO'},
 ])test(`unverified ${scenario.name} rollback preserves its cause and permanently freezes the synthetic WAL`,()=>sandbox(({directory,create})=>{
- let fail=false,partial=false,file,committedBytes;const handles=new Map();
+ let fail=false,partial=false,file,committedBytes,truncates=0,identityFaults=0;const handles=new Map();
  const tamper=offset=>{const fd=fs.openSync(file,'r+');try{fs.writeSync(fd,Buffer.from('!'),0,1,offset)}finally{fs.closeSync(fd)}};
  const io=new Proxy(fs,{get(target,key){
   if(key==='openSync')return(targetFile,flags,...args)=>{
@@ -140,8 +141,13 @@ for(const scenario of [
   if(key==='closeSync')return fd=>{const recovery=handles.get(fd)?.recovery;fs.closeSync(fd);handles.delete(fd);
    if(fail&&recovery&&scenario.name==='close')throw Object.assign(injected('EIO'),{syscall:'close'});
   };
-  if(key==='fstatSync')return fd=>{const stat=fs.fstatSync(fd);
-   if(fail&&handles.get(fd)?.recovery&&scenario.name==='identity')return Object.assign(Object.create(Object.getPrototypeOf(stat)),stat,{ino:Number(stat.ino)+1});
+  if(key==='fstatSync')return(fd,...options)=>{const stat=fs.fstatSync(fd,...options);
+   if(fail&&handles.get(fd)?.recovery&&scenario.name==='identity'){
+    identityFaults++;const altered=distinctStatIdentity(stat);
+    console.error('[STORAGE_IDENTITY_FAULT] '+JSON.stringify({runtime:process.version,platform:process.platform,
+     bigintRequested:options[0]?.bigint===true,originalType:typeof stat.ino,dev:String(stat.dev),originalIno:String(stat.ino),injectedIno:String(altered.ino)}));
+    return altered;
+   }
    return stat;
   };
   if(key==='writeSync')return(fd,buffer,offset,length,position)=>{
@@ -152,6 +158,7 @@ for(const scenario of [
    }return fs.writeSync(fd,buffer,offset,length,position);
   };
   if(key==='ftruncateSync')return(fd,size)=>{
+   truncates++;
    if(fail&&handles.get(fd)?.recovery){if(scenario.name==='truncate')throw Object.assign(injected('EPERM'),{syscall:'ftruncate'});if(scenario.name==='length')return}
    return fs.ftruncateSync(fd,size);
   };
@@ -165,11 +172,51 @@ for(const scenario of [
   assert.equal(error.appendFailure.original.stage,'append-write');assert.equal(error.appendFailure.original.syscall,'write');
   assert.equal(error.rollback.verified,false);assert.equal(error.rollback.stage,scenario.stage);assert.equal(error.rollback.code,scenario.code);return true;
  });
+ if(scenario.name==='identity'){assert.equal(identityFaults,1);assert.equal(truncates,0,'an identity mismatch must be rejected before destructive rollback')}
  assert.equal(handles.size,0);const after=fs.readFileSync(file);fail=false;
  assert.throws(()=>store.heartbeat({id:'cannot-bypass-freeze',updatedAt:fixture.active.updatedAt+3}),error=>{
   assert.equal(error.code,'SCALE_COMMIT_UNCERTAIN');assert.deepEqual(error.rollback,caught.rollback);assert.deepEqual(error.appendFailure,caught.appendFailure);return true;
  });
  assert.ok(fs.readFileSync(file).equals(after));assert.equal(handles.size,0);
+}));
+
+test('adjacent Windows inode identities above Number precision cannot become a verified WAL rollback',()=>sandbox(({directory,create})=>{
+ const originalIno=2n**60n,replacedIno=originalIno+1n;
+ assert.equal(Number(originalIno),Number(replacedIno),'the fixture must reproduce the lossy Number identity collision');
+ for(const ino of [0,1,Number(originalIno),0n,originalIno,'0',String(originalIno)])
+  assert.notEqual(String(distinctStatIdentity({ino}).ino),String(ino));
+ let fail=false,partial=false,truncates=0,exactChecks=0;const handles=new Map();
+ const observed=(stat,replaced,options)=>{
+  const exact=options?.bigint===true,ino=exact?(replaced?replacedIno:originalIno):Number(replaced?replacedIno:originalIno);
+  if(exact)exactChecks++;
+  return Object.assign(Object.create(Object.getPrototypeOf(stat)),stat,{ino});
+ };
+ const io=new Proxy(fs,{get(target,key){
+  if(key==='openSync')return(file,flags,...args)=>{const fd=fs.openSync(file,flags,...args);if(path.basename(String(file))==='delta.jsonl')handles.set(fd,flags);return fd};
+  if(key==='closeSync')return fd=>{fs.closeSync(fd);handles.delete(fd)};
+  if(key==='fstatSync')return(fd,...args)=>{
+   const stat=fs.fstatSync(fd,...args),flags=handles.get(fd);
+   return flags===undefined?stat:observed(stat,fail&&Boolean(flags&fs.constants.O_RDWR)&&!(flags&fs.constants.O_APPEND),args[0]);
+  };
+  if(key==='lstatSync')return(file,...args)=>{const stat=fs.lstatSync(file,...args);return path.basename(String(file))==='delta.jsonl'?observed(stat,false,args[0]):stat};
+  if(key==='writeSync')return(fd,buffer,offset,length,position)=>{
+   if(fail&&(handles.get(fd)&fs.constants.O_APPEND)){
+    if(!partial){partial=true;return fs.writeSync(fd,buffer,offset,Math.min(17,length),position)}
+    throw Object.assign(injected('ENOSPC'),{syscall:'write'});
+   }return fs.writeSync(fd,buffer,offset,length,position);
+  };
+  if(key==='ftruncateSync')return(fd,size)=>{truncates++;return fs.ftruncateSync(fd,size)};
+  return Reflect.get(target,key);
+ }});
+ const fixture=storageScaleFixture(3),store=create({io});store.initialize(fixture);store.heartbeat({id:'prior-committed',updatedAt:fixture.active.updatedAt+1});
+ fail=true;assert.throws(()=>store.heartbeat({id:'identity-must-not-ack',updatedAt:fixture.active.updatedAt+2}),error=>{
+  assert.equal(error.code,'SCALE_COMMIT_UNCERTAIN');assert.equal(error.cause.code,'ENOSPC');
+  assert.equal(error.rollback.stage,'identity-before');assert.equal(error.rollback.code,'DURABLE_ROLLBACK_IDENTITY_CHANGED');assert.equal(error.rollback.verified,false);return true;
+ });
+ assert.ok(exactChecks>=2,'the append and recovery handles must be compared with exact BigInt identities');assert.equal(truncates,0);assert.equal(handles.size,0);
+ const file=path.join(directory,'delta.jsonl'),uncertainBytes=fs.readFileSync(file);fail=false;
+ assert.throws(()=>store.heartbeat({id:'cannot-retry-uncertain-identity',updatedAt:fixture.active.updatedAt+3}),{code:'SCALE_COMMIT_UNCERTAIN'});
+ assert.deepEqual(fs.readFileSync(file),uncertainBytes);assert.equal(truncates,0);
 }));
 
 test('an append close that releases its handle then errors is never retried or truncated and remains recoverable without a duplicate ACK',()=>sandbox(({directory,create})=>{

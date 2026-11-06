@@ -192,7 +192,7 @@ export class OrangeXSyntheticSegmentedStorageLab{
   ensure(this.#logBytes+line.length<=8*1024*1024,'SCALE_DELTA_LIMIT');const file=path.join(this.directory,'delta.jsonl');let fd,opened,writeStarted=false,stage='append-open';
   try{
    fd=this.#io.openSync(file,this.#io.constants.O_WRONLY|this.#io.constants.O_APPEND|(this.#io.constants.O_NOFOLLOW??0));
-   stage='append-open-stat';opened=this.#io.fstatSync(fd);ensure(opened.isFile()&&opened.nlink===1&&opened.size===this.#logBytes,'SCALE_LOG_CHANGED');let offset=0;
+   stage='append-open-stat';opened=this.#io.fstatSync(fd,{bigint:true});ensure(opened.isFile()&&opened.nlink===1n&&opened.size===BigInt(this.#logBytes)&&typeof opened.dev==='bigint'&&typeof opened.ino==='bigint','SCALE_LOG_CHANGED');let offset=0;
    while(offset<line.length){stage='append-write';writeStarted=true;const n=this.#io.writeSync(fd,line,offset,line.length-offset,null);ensure(Number.isInteger(n)&&n>0,'SCALE_SHORT_WRITE');offset+=n}
    stage='append-fsync';this.#io.fsyncSync(fd);stage='append-commit-stat';ensure(this.#io.fstatSync(fd).size===this.#logBytes+line.length,'SCALE_LOG_CHANGED');
    // close may release the descriptor before reporting an error. Transfer

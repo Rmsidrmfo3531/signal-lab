@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {runNodeTests,testRunnerOptions,discoverTestFiles,terminateOwnedTestTree} from '../scripts/run-node-tests.mjs';
 import {waitForProcessTermination} from './helpers/process_termination.mjs';
+import {removeOwnedTestDirectory} from './helpers/owned_directory.mjs';
 async function assertTerminated(pid){
  const result=await waitForProcessTermination(pid);
  assert.equal(result.terminated,true,'the owned descendant must actually terminate after signal delivery');
@@ -105,18 +106,30 @@ test('START, completion and progress-report failures cannot strand active worker
    if(!fs.existsSync(${JSON.stringify(pidFile)}))throw Error('active sibling did not start');
    ${mode==='PROGRESS_FAILURE'?`fs.unlinkSync(${JSON.stringify(progressFile)});fs.mkdirSync(${JSON.stringify(progressFile)});`:''}
   });`);
+  let failure;
   try{
    await assert.rejects(runNodeTests({root,outputDir:out,concurrency:2,fileTimeoutMs:6000,print:value=>{
     if(mode==='START_PRINT'&&value.startsWith('[TEST START]'))throw injected;
     if(mode==='FINISH_PRINT'&&value.startsWith('[TEST PASS]')&&value.includes('b-finished.test.mjs'))throw injected;
-   }}),error=>mode==='PROGRESS_FAILURE'?error.path===progressFile:error===injected);
+   }}),error=>{failure=error;return mode==='PROGRESS_FAILURE'?error.path===progressFile:error===injected});
+   assert.equal(failure.traceCleanupError,undefined,'a reporting failure must not hide persistent trace-directory cleanup failure');
+   assert.equal(failure.traceDirectoryRetained,undefined);
+   assert.ok(Array.isArray(failure.workerCleanup));
+   assert.equal(failure.workerCleanup.length,mode==='START_PRINT'?0:2);
+   for(const worker of failure.workerCleanup){
+    assert.equal(worker.processClosed,true);assert.equal(worker.stdoutClosed,true);assert.equal(worker.stderrClosed,true);
+    assert.equal(worker.logClosed,true);assert.equal(worker.cleanupError,null);
+   }
    if(mode==='START_PRINT'){
     await new Promise(resolve=>setTimeout(resolve,200));
     assert.equal(fs.existsSync(pidFile),false,'a failing START callback must run before spawning a process');
    }else{
     await assertTerminated(Number(fs.readFileSync(pidFile,'utf8')));
    }
-  }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+  }finally{
+   const ownedPids=fs.existsSync(pidFile)?[Number(fs.readFileSync(pidFile,'utf8'))]:[];
+   await removeOwnedTestDirectory(root,{workerCleanup:failure?.workerCleanup??[],ownedPids});
+  }
  }
 });
 

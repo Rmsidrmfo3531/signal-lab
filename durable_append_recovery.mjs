@@ -3,11 +3,15 @@
 // proof. This helper owns appendFd, including when it throws.
 import {createHash} from 'node:crypto';
 
-const CHUNK_BYTES=64*1024;
+const CHUNK_BYTES=64*1024,MAX_SAFE_BYTES=BigInt(Number.MAX_SAFE_INTEGER);
 const fault=code=>Object.assign(new Error(code),{code});
 const ensure=(value,code)=>{if(!value)throw fault(code)};
-const regular=stat=>stat?.isFile()&&!stat.isSymbolicLink()&&Number(stat.nlink)===1&&Number.isSafeInteger(stat.size)&&stat.size>=0;
-const identity=(left,right)=>String(left.dev)===String(right.dev)&&String(left.ino)===String(right.ino);
+// Windows file IDs can exceed Number's exact integer range. Never compare
+// rounded IDs, or downgrade exact stat timestamps to integer milliseconds.
+const regular=stat=>stat?.isFile()&&!stat.isSymbolicLink()&&stat.nlink===1n&&
+ typeof stat.dev==='bigint'&&typeof stat.ino==='bigint'&&typeof stat.size==='bigint'&&stat.size>=0n&&stat.size<=MAX_SAFE_BYTES&&
+ typeof stat.mtimeNs==='bigint'&&typeof stat.ctimeNs==='bigint';
+const identity=(left,right)=>left.dev===right.dev&&left.ino===right.ino;
 const details=error=>({code:typeof error?.code==='string'?error.code:'UNKNOWN',syscall:typeof error?.syscall==='string'?error.syscall:null});
 
 function prefixSHA256(io,fd,length){
@@ -40,27 +44,27 @@ export function rollbackDurableAppend({io,file,appendFd,openedStat,committedByte
   stage='validate-input';
   ensure(typeof file==='string'&&Number.isSafeInteger(committedBytes)&&committedBytes>=0&&Buffer.isBuffer(recordBytes)&&
    recordBytes.length>0&&Number.isSafeInteger(committedBytes+recordBytes.length)&&typeof prefixHash==='string'&&/^[a-f0-9]{64}$/.test(prefixHash)&&
-   regular(openedStat)&&openedStat.size===committedBytes,'DURABLE_ROLLBACK_INVALID_INPUT');
+   regular(openedStat)&&openedStat.size===BigInt(committedBytes),'DURABLE_ROLLBACK_INVALID_INPUT');
   stage='recovery-open';
   fd=io.openSync(file,io.constants.O_RDWR|(io.constants.O_NOFOLLOW??0));proof.recoveryOpened=true;
   const verifyIdentity=()=>{
-   const actual=io.fstatSync(fd),entry=io.lstatSync(file);
+   const actual=io.fstatSync(fd,{bigint:true}),entry=io.lstatSync(file,{bigint:true});
    ensure(regular(actual)&&regular(entry)&&identity(actual,openedStat)&&identity(entry,openedStat)&&actual.size===entry.size,'DURABLE_ROLLBACK_IDENTITY_CHANGED');
    return actual;
   };
-  stage='identity-before';const before=verifyIdentity();proof.bytesBefore=before.size;
-  ensure(before.size>=committedBytes&&before.size<=committedBytes+recordBytes.length,'DURABLE_ROLLBACK_SIZE_CHANGED');proof.identityVerified=true;
+  stage='identity-before';const before=verifyIdentity();proof.bytesBefore=Number(before.size);
+  ensure(before.size>=BigInt(committedBytes)&&before.size<=BigInt(committedBytes+recordBytes.length),'DURABLE_ROLLBACK_SIZE_CHANGED');proof.identityVerified=true;
   stage='prefix-before';ensure(prefixSHA256(io,fd,committedBytes)===prefixHash,'DURABLE_ROLLBACK_PREFIX_MISMATCH');proof.prefixVerifiedBefore=true;
-  stage='tail-before';verifyTail(io,fd,committedBytes,before.size-committedBytes,recordBytes);proof.tailVerified=true;
+  stage='tail-before';verifyTail(io,fd,committedBytes,Number(before.size)-committedBytes,recordBytes);proof.tailVerified=true;
   stage='identity-before-truncate';const checked=verifyIdentity();
-  ensure(checked.size===before.size&&checked.mtimeMs===before.mtimeMs&&checked.ctimeMs===before.ctimeMs,'DURABLE_ROLLBACK_FILE_CHANGED');
+  ensure(checked.size===before.size&&checked.mtimeNs===before.mtimeNs&&checked.ctimeNs===before.ctimeNs,'DURABLE_ROLLBACK_FILE_CHANGED');
   stage='truncate';io.ftruncateSync(fd,committedBytes);proof.truncateCompleted=true;
   stage='sync';io.fsyncSync(fd);proof.syncCompleted=true;
-  stage='identity-after';const after=verifyIdentity();proof.bytesAfter=after.size;
-  ensure(after.size===committedBytes,'DURABLE_ROLLBACK_LENGTH_MISMATCH');
+  stage='identity-after';const after=verifyIdentity();proof.bytesAfter=Number(after.size);
+  ensure(after.size===BigInt(committedBytes),'DURABLE_ROLLBACK_LENGTH_MISMATCH');
   stage='prefix-after';ensure(prefixSHA256(io,fd,committedBytes)===prefixHash,'DURABLE_ROLLBACK_PREFIX_MISMATCH');proof.prefixVerifiedAfter=true;
   stage='identity-final';const final=verifyIdentity();
-  ensure(final.size===committedBytes&&final.mtimeMs===after.mtimeMs&&final.ctimeMs===after.ctimeMs,'DURABLE_ROLLBACK_FILE_CHANGED');
+  ensure(final.size===BigInt(committedBytes)&&final.mtimeNs===after.mtimeNs&&final.ctimeNs===after.ctimeNs,'DURABLE_ROLLBACK_FILE_CHANGED');
   stage='recovery-close';const closing=fd;fd=null;io.closeSync(closing);proof.recoveryClosed=true;
   return {...proof,verified:true,stage:'complete',code:null,syscall:null};
  }catch(cause){
