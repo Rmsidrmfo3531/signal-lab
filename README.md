@@ -29,13 +29,17 @@ macOS/Linux에서는 `node server.mjs`로 실행합니다. 기본 데이터 경�
 
 기존 관심종목, Telegram `.env`와 발송 이력, PNL, 미청산 포지션, 매매일지, Windows 알림, 백업·복원 경로를 유지합니다. 과거 포지션의 TP/SL은 신규 규칙으로 다시 계산하지 않습니다. 데이터 복원은 서버를 종료한 뒤 `node data-cli.mjs restore "백업 JSON 경로"`로 수행하며, 현재 파일은 먼저 보존됩니다. 실험 Journal은 운영 저장에 연결하지 않습니다.
 
+## 기능별 페이지
+
+좌측 메뉴와 모바일 하단 메뉴에서 **대시보드·차트 / 최종 신호 / 자동 모의매매 PNL / OrangeX 조회 / TradFi 기록 / 시황·뉴스 / 알림·시스템 / 매매일지**로 페이지를 전환합니다. 주소의 `#scanner`, `#paper` 등으로 직접 접근할 수 있으며, 페이지 이동 시 시세 스트림·차트 선택·저장 데이터는 다시 시작하거나 초기화하지 않습니다.
+
 ## 분석·최종 신호
 
 - 스캔 대상은 Binance의 `TRADING`·`USDT`·`PERPETUAL` 계약입니다. 완전히 마감된 4H 250개 이상이 필요하며 서버는 미확정봉을 제외할 수 있도록 301개를 요청합니다.
 - 단일 100점: 4H EMA200 15, EMA100 5, 1H EMA20 10, 패턴·확정봉 강도 25, ADX/DMI 15, RSI 10, MACD 5, 패턴 거래량 10, ATR 5점입니다. 평가 불가능하면 점수는 `null / 평가 불가`입니다.
 - **`SIGNAL_FINAL_MIN_SCORE=90`은 제안 기본 임계값이며 검증 상태는 `UNVERIFIED`입니다.** 실측 수익률·기간 외·워킹 포워드 결과로 최적화된 값이 아닙니다. 점수 통과와 기술·신선도·손절·호가·위험·매물대 검증 및 실거래 승인은 별개입니다. 설정은 90~100의 정수만 허용하며 잘못된 값이면 서버 시작을 차단합니다. 기존보다 낮은 기준으로 완화하거나 설정 변경으로 OrangeX 주문을 승인하지 않습니다.
 - 기본 60초 보완 스캔은 관심종목·거래대금 상위 12개·순환 18개와 확정봉 이벤트를 처리합니다. 전체 종목을 매초 재분석하는 시스템이 아닙니다. 화면의 실제 처리 건수와 연결 상태를 확인하세요.
-- 메인에는 검증 완료된 최종 신호만 점수 내림차순 → 최신 확정봉 → 종목명 순으로 표시합니다. Telegram 전용 80점 이상 알트 관찰 알림은 BTC 제외·중복 차단하며 신규 진입을 생성하지 않습니다.
+- 메인에는 검증 완료된 최종 신호만 점수 내림차순 → 최신 확정봉 → 종목명 순으로 표시합니다. **Telegram은 현재 화면의 최종 판단 목록(`/api/results.signals`)에 남아 있는 검증 신호만 전송합니다.** 발송 직전에 최신 호가·기술·진입·매물대 조건을 다시 확인하며, 동일 조건으로 매칭되지 않으면 전송하지 않습니다. 기존 80점 관찰 알림과 뉴스 Telegram 발송은 중지되며, 브라우저 뉴스와 기존 Telegram 설정/발송 이력은 보존합니다.
 
 ## 매물대 TP·모의매매
 
@@ -67,8 +71,7 @@ OrangeX는 기본 비활성·`READ_ONLY`이며 공개 진단과 별도 합성 PA
 | `TP1_MOVE_STOP_TO_BREAKEVEN` | `true` | 신규 거래 TP1 완료 후 본절 이동 |
 | `TP1_BREAKEVEN_MODE` | `ENTRY_FILL` | 평균 진입가 또는 `COST_COVERED` 가정 |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 없음 | 기존 비공개 Telegram 설정 |
-| `TELEGRAM_WATCH_MIN_SCORE` | `80` | 관찰 알림 기준, `0`은 비활성 |
-| `TELEGRAM_SCORE_WATCH_ENABLED` | `true` | 관찰 알림 허용 |
+| `TELEGRAM_WATCH_MIN_SCORE` / `TELEGRAM_SCORE_WATCH_ENABLED` | 적용 안 함 | 과거 관찰 알림 설정은 데이터에 남아 있어도 Telegram 발송에 사용하지 않음 |
 | `NEWS_TRANSLATION_URL` | 없음 | 선택 LibreTranslate 호환 서비스 |
 | `ORANGEX_ENABLED` / `ORANGEX_MODE` | `false` / `READ_ONLY` | OrangeX 공개 조회 |
 
