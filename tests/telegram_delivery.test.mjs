@@ -1,6 +1,7 @@
 // Offline transport verification of production server functions. No Telegram
 // connection, credentials, account API or user file is used by this harness.
 import test from 'node:test';
+import {venueSizingInputs} from '../venue_execution.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -18,13 +19,17 @@ const code=[section('async function tgNotify(s){','let updateCheckPromise='),
  section('function assessAnalysis(','function watches()')].join('\n');
 function harness(){
  const now=Date.now(),{row,context:marketContext}=syntheticFinalSignalContext(now);
- Object.assign(row,{scoreVersion:'ISSUE6-100-V1',risk:{leverage:20}});
+ Object.assign(row,{scoreVersion:'ISSUE6-100-V1',risk:{leverage:20},executionVenue:'BINGX'});
  row.targetPlan.quantityUnit='BASE_ASSET';
  const deliveries=[],logs=[],events=[],observations=[],registrations=[];
  let transport='ok',formatFailure=false,saveFailure=false;
  class Clock extends Date{static now(){return now}}
  const sandbox={Date:Clock,AbortSignal,console:{log(){},warn:(...args)=>logs.push(args.join(' ')),error:(...args)=>logs.push(args.join(' '))},
-  CONFIG:{tgToken:'offline-test-token',tgChat:'offline-test-chat',maxRiskUSD:6,limits:{}},
+  CONFIG:{tgToken:'offline-test-token',tgChat:'offline-test-chat',maxRiskUSD:6,limits:{},paperVenues:['BINGX']},
+  // The execution venue view is derived from the same synthetic book, so a stale book stays stale.
+  venueEntry:(_venue,symbol)=>{const book=sandbox.books.get(symbol),f=marketContext.market.filters;return {contract:{symbol,tradable:true,tickSize:f.PRICE_FILTER.tickSize,quantityStep:f.LOT_SIZE.stepSize,
+   minQuantityBase:f.LOT_SIZE.minQty,minNotionalUSDT:Number(f.MIN_NOTIONAL?.notional??f.NOTIONAL?.minNotional),quantityUnit:'BASE_ASSET',contractSizeBase:'1'},
+   book:{ok:true,sourceTime:Number(book.T),ask:Number(book.asks[0][0]),levels:{bids:book.bids.map(x=>x.map(Number)),asks:book.asks.map(x=>x.map(Number))}}}},venueSizingInputs,
   state:{activeSet:new Set([row.symbol]),rest:'connected',quotes:new Map([[row.symbol,{...marketContext.market,price:marketContext.price,priceAt:now}]]),analyses:new Map([[row.symbol,row]])},
   books:new Map([[row.symbol,marketContext.book]]),storageHealth:{healthy:true},persisted:{seen:{},alerts:[]},
   paper:{store:{open:[],seen:{}},register(value){registrations.push(value);sandbox.paper.store.seen[key(value)]=now}},

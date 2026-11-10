@@ -43,7 +43,7 @@ async function sandbox(config){
  async function start(){
   child=trackChild(spawn(process.execPath,['--import','./tests/mock_pipeline.mjs','server.mjs'],{cwd:app,env:{PATH:process.env.PATH,
    PORT:String(port),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:data,SIGNAL_LAB_TEST_CONTROL:control,SIGNAL_LAB_TEST_REQUESTS:requests,
-   AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',
+   AUTO_UPDATE:'false',PAPER_VENUE_REFRESH_MS:'1000',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',
    ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})},stdio:['ignore','pipe','pipe']}));
   child.stdout.on('data',chunk=>{logs+=String(chunk)});child.stderr.on('data',chunk=>{logs+=String(chunk)});
   await until(()=>get('/api/status'),s=>s.activeCount===(cfg.binanceOffline?0:Object.keys(cfg.scenarios).filter(symbol=>!cfg.unlisted?.includes(symbol)).length),{label:'market discovery '+logs});
@@ -89,7 +89,9 @@ test('synthetic markets: rising/falling breakouts, retests and a 90-point setup 
   const requests=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(requests.some(r=>r.interval==='1h'));assert.ok(requests.some(r=>r.interval==='4h'));
   assert.ok(requests.filter(r=>r.interval).every(r=>['1h','4h','1d'].includes(r.interval)),'no sub-hour candle requests');
-  assert.ok(requests.every(r=>!r.path.includes('order')),'no exchange order endpoint');
+  // Order-book reads (Gate.io /order_book) are market data; any order placement path is forbidden.
+  assert.ok(requests.every(r=>!/\/orders?(?:\/|$)|\/trade\/order/.test(r.path)),'no exchange order endpoint');
+  assert.ok(requests.some(r=>r.host==='open-api.bingx.com')&&requests.some(r=>r.host==='api.gateio.ws'),'execution venues quoted');
  }finally{await app.close()}
 });
 
@@ -99,7 +101,7 @@ test('synthetic end to end: LONG three profile targets with breakeven/restart, t
   await app.start();await app.get('/api/analyze?symbol=BTCUSDT');
   const results=await app.get('/api/results');assert.equal(results.signals.length,1);assert.equal(results.signals[0].direction,'LONG');
   let paper=await until(()=>app.get('/api/paper'),p=>p.openCount===1,{label:'fresh final LONG must open a profile-managed paper position'});
-  const long=paper.open[0];assert.equal(long.direction,'LONG');assert.equal(long.managementVersion,'VOLUME_PROFILE_V1');
+  const long=paper.open[0];assert.equal(long.direction,'LONG');assert.equal(long.executionVenue,'BINGX','tie on price keeps the first configured venue');assert.equal(long.venueSymbol,'BTC-USDT');assert.equal(long.managementVersion,'VOLUME_PROFILE_V1');
   assert.ok(long.entryFill>ENTRY,'long fill includes spread and slippage');assert.ok(long.feesUSD>0);
   assert.ok(long.targetPlan?.profileEvidence,'the entry preserves actual supplied aggTrade profile evidence');
   await app.write({prices:{BTCUSDT:long.targets[0]}});

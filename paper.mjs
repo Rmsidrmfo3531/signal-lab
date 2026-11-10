@@ -9,8 +9,12 @@ import {quantizeVolumeStep} from './volume_profile.mjs';
 // Signals must still pass pattern, quality, quote, entry-timing and stop checks.
 export const PAPER_DEFAULTS=Object.freeze({paperNotionalUSD:500,maxPositions:2,maxNotional:1500,minNotional:250,
  feeBps:5,slippageBps:2,cryptoHalfSpreadBps:1,entryTimeoutMs:20*60000,maxFreshMsCrypto:90000,
- maxQuoteGapMsCrypto:120000,maxRiskUSD:6,TP1_MOVE_STOP_TO_BREAKEVEN:true,TP1_BREAKEVEN_MODE:'ENTRY_FILL'});
+ maxQuoteGapMsCrypto:120000,maxRiskUSD:6,requireExecutionVenue:false,TP1_MOVE_STOP_TO_BREAKEVEN:true,TP1_BREAKEVEN_MODE:'ENTRY_FILL'});
 const num=v=>Number(v);
+// Execution venue whose quotes drive a record. Records from before the venue
+// switch carry none and stay on the Binance price feed they were opened with.
+export const EXECUTION_VENUES=Object.freeze(['BINGX','GATEIO']);
+export const venueOf=record=>EXECUTION_VENUES.includes(record?.executionVenue)?record.executionVenue:'BINANCE';
 const validPrice=p=>Number.isFinite(p)&&p>0;
 const isoDay=(at)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
 const isoWeek=(at)=>{const d=new Date(at+9*3600000);let dow=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-dow);return d.toISOString().slice(0,10)};
@@ -112,6 +116,8 @@ export class PaperEngine {
   if(profile&&(plan?.ok!==true||!plan.profileEvidence||!Array.isArray(plan.targets)||plan.targets.length!==3||
    !Array.isArray(plan.parts)||plan.parts.length!==3||plan.parts.some((part,i)=>!Number.isFinite(part?.fraction)||Math.abs(part.fraction-[.4,.35,.25][i])>1e-10)))
    return this.reject(key,'TP_PROFILE_UNAVAILABLE',{remember:false});
+  const executionVenue=EXECUTION_VENUES.includes(signal.executionVenue)?signal.executionVenue:null;
+  if(settings.requireExecutionVenue===true&&!executionVenue)return this.reject(key,'EXECUTION_VENUE_UNAVAILABLE',{remember:false});
   const breakevenMode=signal.breakevenMode??settings.TP1_BREAKEVEN_MODE;
   if(profile&&!['ENTRY_FILL','COST_COVERED'].includes(breakevenMode))return this.reject(key,'BREAKEVEN_COST_MODEL_UNVERIFIED',{remember:false});
   const targets=(profile?plan.targets:Array.isArray(signal.targets)&&signal.targets.length===3?signal.targets:[2,3,4].map(r=>entry+(direction==='LONG'?1:-1)*Math.abs(entry-stop)*r)).map(num);
@@ -132,16 +138,19 @@ export class PaperEngine {
   if(targets.some(p=>!validPrice(p))||targets.some((p,i)=>direction==='LONG'?p<=entry||(i>0&&p<=targets[i-1]):p>=entry||(i>0&&p>=targets[i-1])))return this.reject(key,'목표가 데이터 불일치',{remember:false});
   this.store.seen={...this.store.seen,[key]:now};
   this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+settings.entryTimeoutMs,
+   ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),
    ...(profile?{managementVersion:'VOLUME_PROFILE_V1',targetPlan:structuredClone(plan),plannedQuantity,
     moveStopToBreakeven:typeof signal.moveStopToBreakeven==='boolean'?signal.moveStopToBreakeven:settings.TP1_MOVE_STOP_TO_BREAKEVEN!==false,
     breakevenMode,breakevenMoved:false,costAssumptions:structuredClone(costs)}: {managementVersion:'LEGACY_R_MULTIPLES'})});
   this.telemetry.acceptedSignals++;this.telemetry.lastAcceptedAt=now;this.telemetry.lastPositionEventAt=now;
   this.notify();return true;
  }
- onPrice(market,symbol,price,at,{halfSpreadBps=null,quoteFresh=true,entryAllowed=true,exitQuantityLimit=null}={}){
-  return this.#mutate(()=>this.#onPrice(market,symbol,price,at,{halfSpreadBps,quoteFresh,entryAllowed,exitQuantityLimit}));
+ onPrice(market,symbol,price,at,{halfSpreadBps=null,quoteFresh=true,entryAllowed=true,exitQuantityLimit=null,venue=null}={}){
+  return this.#mutate(()=>this.#onPrice(market,symbol,price,at,{halfSpreadBps,quoteFresh,entryAllowed,exitQuantityLimit,venue}));
  }
- #onPrice(market,symbol,price,at,{halfSpreadBps,quoteFresh,entryAllowed,exitQuantityLimit}){
+ #onPrice(market,symbol,price,at,{halfSpreadBps,quoteFresh,entryAllowed,exitQuantityLimit,venue}){
+  // A venue price only moves records executed on that venue (null = any, for callers without venues).
+  const otherVenue=record=>venue!==null&&venueOf(record)!==venue;
   if(market!=='CRYPTO')return 0; // No replacement feed: freeze retained positions and pending entries.
   const settings=this.settings,now=this.now();price=num(price);at=num(at);
   const maxFresh=settings.maxFreshMsCrypto;
@@ -152,7 +161,7 @@ export class PaperEngine {
    // Losing listing/quote approval blocks new entries, never risk monitoring of
    // positions that were already opened under a previously approved listing.
    if(!entryAllowed)continue;
-   if(pending.market!==market||pending.symbol!==symbol)continue;
+   if(pending.market!==market||pending.symbol!==symbol||otherVenue(pending))continue;
    // A first real observation AFTER signal detection is required. No past price is replayed.
    if(at<=pending.signalAt)continue;
    this.store.pending=this.store.pending.filter(x=>x.key!==pending.key);
@@ -188,7 +197,7 @@ export class PaperEngine {
    this.telemetry.openedCountSession++;this.telemetry.lastPositionEventAt=now;modified++;
   }
   for(const position of [...this.store.open]){
-   if(position.market!==market||position.symbol!==symbol||at<=position.lastPriceAt)continue;
+   if(position.market!==market||position.symbol!==symbol||otherVenue(position)||at<=position.lastPriceAt)continue;
    const maxGap=settings.maxQuoteGapMsCrypto;
    if(at-position.lastPriceAt>maxGap)position.quoteGaps++;
    position.lastPriceAt=at;position.markPrice=price;
@@ -273,5 +282,5 @@ export class PaperEngine {
  #expirePending(){let count=0;const now=this.now();for(const p of [...this.store.pending])if(p.market==='CRYPTO'&&now>p.expiresAt){this.store.pending=this.store.pending.filter(x=>x.key!==p.key);this.store.skipped.push({key:p.key,reason:'20분 이내 새 시세가 없어 진입 생략',at:now});count++}
   if(count){this.telemetry.lastPositionEventAt=now;this.notify()}return count}
 }
-export function paperCSV(rows=[]){const cols=['market','symbol','direction','pattern','openedAt','closedAt','entryFill','stop','notionalUSD','closeReason','realizedGrossUSD','feesUSD','realizedPnLUSD','quoteGaps'];
- return '\uFEFF'+cols.join(',')+'\r\n'+rows.map(x=>cols.map(k=>{let v=x[k]??'';if(k.endsWith('At')&&Number(v))v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\r\n');}
+export function paperCSV(rows=[]){const cols=['market','executionVenue','symbol','direction','pattern','openedAt','closedAt','entryFill','stop','notionalUSD','closeReason','realizedGrossUSD','feesUSD','realizedPnLUSD','quoteGaps'];
+ return '\uFEFF'+cols.join(',')+'\r\n'+rows.map(x=>cols.map(k=>{let v=k==='executionVenue'?venueOf(x):x[k]??'';if(k.endsWith('At')&&Number(v))v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\r\n');}

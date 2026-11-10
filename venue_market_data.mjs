@@ -89,9 +89,13 @@ export function normalizeBook(venue,raw,{receivedAt=Date.now(),now=Date.now(),ma
  if(!positive(sourceTime))reasons.push('BOOK_TIME_MISSING');
  else if(sourceTime>receivedAt+2000||now-sourceTime>maxAgeMs)reasons.push('BOOK_STALE');
  const mid=bid&&ask?(bid[0]+ask[0])/2:null;
+ // Depth levels kept best-first in the venue's own size unit (Gate.io: contracts;
+ // BingX linear swap: base asset, as parsed by ccxt; BingX docs do not name the unit).
+ const sorted=(rows,dir)=>rows.filter(Boolean).sort((a,b)=>dir*(a[0]-b[0])).slice(0,20);
  return {venue,ok:reasons.length===0,reasons,bid:bid?.[0]??null,ask:ask?.[0]??null,mid,
   spreadBps:mid&&bid&&ask?(ask[0]-bid[0])/mid*10000:null,sourceTime:positive(sourceTime)?sourceTime:null,receivedAt,
-  ageMs:positive(sourceTime)?Math.max(0,now-sourceTime):null};
+  ageMs:positive(sourceTime)?Math.max(0,now-sourceTime):null,
+  levels:{bids:sorted(bids,-1),asks:sorted(asks,1),sizeUnit:venue==='GATEIO'?'CONTRACT':'BASE_ASSET'}};
 }
 
 const bps=(a,b)=>positive(a)&&positive(b)?(a-b)/b*10000:null;
