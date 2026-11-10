@@ -38,14 +38,36 @@ export function prepareData(root,{env=process.env,platform=process.platform,home
  if(fs.existsSync(storePath))readStore(storePath);
  return {dir,storePath,envPath,migratedStore,migratedEnv};
 }
+// rename() only swaps a directory entry. Without flushing the new file first, a
+// power cut or OS crash shortly after a save can leave store.json empty or
+// truncated even though the swap itself was atomic. The handle is opened for
+// writing because Windows refuses to flush a read-only handle.
+function writeFlushed(file,text){
+ const fd=fs.openSync(file,'wx',0o600);
+ let failure;
+ try{fs.writeFileSync(fd,text,'utf8');fs.fsyncSync(fd)}catch(error){failure=error}
+ try{fs.closeSync(fd)}catch(error){failure??=error}
+ if(failure)throw failure;
+}
+// Persist the rename itself where the platform allows it. Windows and some
+// network/container file systems expose no directory flush; the file data is
+// already flushed, so only those "not supported" answers are ignored.
+const DIRECTORY_SYNC_UNSUPPORTED=new Set(['EPERM','EACCES','EINVAL','EISDIR','ENOTSUP','EBADF']);
+function flushDirectory(directory){
+ let fd;
+ try{fd=fs.openSync(directory,'r');fs.fsyncSync(fd)}
+ catch(error){if(!DIRECTORY_SYNC_UNSUPPORTED.has(error?.code))throw error}
+ finally{if(fd!==undefined)try{fs.closeSync(fd)}catch{}}
+}
 export function atomicWriteStore(storePath,value){
  if(!isObject(value))throw Error('저장할 기록 구조가 올바르지 않습니다');
  const tmp=storePath+'.tmp-'+process.pid+'-'+randomBytes(5).toString('hex');
  try{
-  fs.writeFileSync(tmp,JSON.stringify(value,null,2),{encoding:'utf8',mode:0o600,flag:'wx'});
+  writeFlushed(tmp,JSON.stringify(value,null,2));
   // Validate BEFORE swapping in to avoid replacing a recoverable file with invalid data.
   readStore(tmp);
   fs.renameSync(tmp,storePath);
+  flushDirectory(path.dirname(storePath));
  }finally{try{fs.rmSync(tmp,{force:true})}catch{}}
 }
 export function backupStore(storePath,{maxBackups=30}={}){

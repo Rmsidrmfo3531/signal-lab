@@ -66,6 +66,7 @@ OrangeX는 기본 비활성·`READ_ONLY`이며 공개 진단과 별도 합성 PA
 | 이름 | 기본값 | 의미 |
 |---|---:|---|
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | 로컬 서버 |
+| `ALLOWED_HOSTS` | 없음 | IP 주소·`localhost`·PC 이름 외에 직접 정한 접속 이름(예: `signal.lan`)을 쉼표로 추가. 목록에 없는 이름으로 들어온 요청과 다른 웹사이트에서 보낸 요청은 403으로 차단 |
 | `SCAN_INTERVAL_MS` | `60000` | 보완 스캔 간격, 최소 30000ms |
 | `SCAN_HOT_BATCH` / `SCAN_ROTATING_BATCH` | `12` / `18` | 스캔 범위 |
 | `SIGNAL_FINAL_MIN_SCORE` | `90` | 제안 분석 임계값, 실전 성능 `UNVERIFIED` |

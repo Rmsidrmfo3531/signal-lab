@@ -57,7 +57,10 @@ function renderScanDiagnostics(f){
  for(const [id,value] of Object.entries(vals)){const el=$(id);if(el)el.textContent=Number(value||0).toLocaleString('ko-KR')+'종';}
  const el=$('diagReasons');if(el){
    const reasons=(f.topReasons||[]).slice(0,5);
-   el.textContent=reasons.length?'주요 보류 사유: '+reasons.map(x=>`${x.reason} ${x.count}종`).join(' · '):'패턴 미발견 또는 진단 자료 집계 중';
+   // Detail behind the generic TP_PROFILE_UNAVAILABLE (plain text only, never HTML).
+   const planBlocks=Array.isArray(f.targetPlan?.blocked)?f.targetPlan.blocked.slice(0,3):[];
+   el.textContent=(reasons.length?'주요 보류 사유: '+reasons.map(x=>`${x.reason} ${x.count}종`).join(' · '):'패턴 미발견 또는 진단 자료 집계 중')+
+    (planBlocks.length?' | 매물대 목표가 보류 상세: '+planBlocks.map(x=>`${x.reason} ${x.count}종`).join(' · '):'');
  }
 }
 function renderScorePolicy(policy){
