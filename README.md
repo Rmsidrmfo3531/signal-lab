@@ -92,7 +92,8 @@ PNL은 모의 체결·명시된 비용 가정이며 실제 거래소 체결·실
 |---|---:|---|
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | 로컬 서버 |
 | `PAPER_VENUE_REFRESH_MS` | `4000` | 모의 포지션용 거래소 호가 갱신 주기(1000~60000). BingX 1.1초 요청 간격은 항상 유지 |
-| `TARGET_MODE` | `HVN_THEN_R` | 목표가 방식. `HVN_THEN_R`: 15분봉 3일 매물대(HVN)를 목표로 쓰고, 매물대가 부족하면 그 뒤를 1R 단위로 채움. TP1 전에 강한 매물대(POC의 50% 이상)가 있으면 진입 안 함. `HVN_ONLY`: 매물대 3개가 모두 있어야만 진입(이전 방식) |
+| `TARGET_MODE` | `HVN_THEN_R` | 목표가 방식. `HVN_THEN_R`: 15분봉 3일 매물대(HVN)를 목표로 쓰고, 매물대가 부족하면 그 뒤를 1R 단위로 채움. TP1 전에 강한 매물대(기본: POC 자체, `TARGET_OBSTACLE_FRACTION`)가 있으면 진입 안 함. `HVN_ONLY`: 매물대 3개가 모두 있어야만 진입(이전 방식) |
+| `TARGET_OBSTACLE_FRACTION` | `1` | TP1 앞 매물대가 가장 큰 매물대(POC)의 이 비율 이상이면 진입 안 함. 1 = POC 자체만 차단. 백테스트(60일·6종목)에서 0.5는 수익 거래를 막아 기본값을 1로 변경 |
 | `PAPER_VENUES` | `BINGX,GATEIO` | 모의 체결에 쓸 거래소(쉼표). 예: `GATEIO`만 쓰려면 `PAPER_VENUES=GATEIO` |
 | `LIVE_TRADING_MODE` | `OFF` | 실주문 모드 `OFF`·`TESTNET`·`LIVE` (LIVE는 `LIVE_TRADING_CONFIRM=REAL_MONEY` 필요) |
 | `LIVE_MAX_RISK_USD` / `LIVE_DAILY_MAX_RISK_USD` / `LIVE_MAX_OPEN_POSITIONS` | `2` / `6` / `1` | 실주문 위험 한도 |
@@ -111,7 +112,7 @@ PNL은 모의 체결·명시된 비용 가정이며 실제 거래소 체결·실
 
 `backtest.bat`을 더블클릭하면 최근 60일 Binance 공개 캔들(1시간·4시간·15분·5분봉, 6개 종목)을 받아 서버와 같은 판단 함수로 다시 돌리고 `backtest-results\report.txt`에 결과를 씁니다. 키는 필요 없습니다. 처음엔 캔들을 받느라 몇 분 걸리고, 다음부터는 `backtest-cache`에 저장된 캔들을 재사용합니다.
 
-- 기간·종목 바꾸기: `backtest.bat --days 90 --symbols BTCUSDT,ETHUSDT,SOLUSDT` (분할 설정: `--leverage 20 --unit-pct 0.19 --max-loss-pct 30 --balance 1000`)
+- 기간·종목 바꾸기: `backtest.bat --days 90 --symbols BTCUSDT,ETHUSDT,SOLUSDT` (분할 설정: `--leverage 20 --unit-pct 0.19 --max-loss-pct 30 --balance 1000`, 매물대 차단 기준: `--obstacle 0.5`, 단타 4H 추세 필터: `--trend-filter`)
 - 보고서 항목: ① 1시간봉 현재 기준(90점+) 패턴별 성과 ② 점수 구간별(90+/85~89/80~84/80 미만) 성과 — 90점 기준이 맞는지 판단용 ③ 5분봉 단타(고정 위험) ④ 단타 + 매물대 분할(잔고 대비 손익·최악 거래·보유 중 최대 평가손)
 - 체결 가정(보수적): 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결, 매 체결 수수료 0.06% + 슬리피지 0.02%. 펀딩비·실제 호가 깊이는 반영하지 않습니다.
 - `trades.csv`에 모든 거래가, `summary.json`에 신호 흐름과 설정이 남습니다.

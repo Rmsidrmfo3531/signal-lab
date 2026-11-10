@@ -64,6 +64,10 @@ const CONFIG={
  venueRefreshMs:Math.max(1000,Math.min(60000,Number(process.env.PAPER_VENUE_REFRESH_MS)||4000)),
  // HVN_THEN_R (default): volume-profile targets, open air beyond them filled in whole R steps. HVN_ONLY: strict.
  targetMode:process.env.TARGET_MODE==='HVN_ONLY'?'HVN_ONLY':'HVN_THEN_R',
+ // Skip a trade when the zone before TP1 holds at least this share of the POC volume.
+ // 1 = only the POC itself blocks. Backtest (60 days, 6 symbols): 0.5 blocked profitable trades
+ // in both halves of the period (+$41 -> +$100 at 1.0), so the default is 1.
+ targetObstacleFraction:Math.max(.1,Math.min(1,Number(process.env.TARGET_OBSTACLE_FRACTION)||1)),
  // 5m reversal scalp mode: paper trading only, never routed to live orders.
  scalpMode:String(process.env.SCALP_MODE||'ON').toUpperCase()!=='OFF',
  scalpMinMovePct:Math.max(1,Math.min(20,Number(process.env.SCALP_MIN_MOVE_PCT)||SCALP_DEFAULTS.minMovePct)),
@@ -336,7 +340,7 @@ async function checkSymbolInternal(symbol, force=false){
     const profileResult=await profiles.get(symbol,{tickSize:chartTick,eligible:true}),costs=venueCosts(contract,estimate.spreadBps);
     const targetPlan=planVolumeTargets({profileResult,direction:out.direction,entry:estimate.entryBasis,stop:out.stop,quantity:estimate.quantity,
      tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,
-     contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',unitsVerified:true,costs,minNetRR:1.8,targetMode:CONFIG.targetMode},{now:Date.now()});
+     contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',unitsVerified:true,costs,minNetRR:1.8,targetMode:CONFIG.targetMode,obstacleFraction:CONFIG.targetObstacleFraction},{now:Date.now()});
     out.targetPlan={...targetPlan,quantity:estimate.quantity,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',
      minNotional:estimate.minNotional,minQuantity:estimate.minQuantity,quantityStep:estimate.quantityStep,tickSize:estimate.tickSize,costAssumptions:costs,
      // Diagnostics only: keep the collector's own reason, which planVolumeTargets wraps as VOLUME_PROFILE_NOT_AVAILABLE.
