@@ -109,6 +109,8 @@ test('preflight blocks every unsafe condition with a named reason',()=>{
   [{records:[{status:'CLOSED',day:'2026-11-10',plannedRiskUSD:5}]},'DAILY_RISK_LIMIT'],
   [{row:row('GATEIO',{venueContract:{...row('GATEIO').venueContract,decimalSizes:true}})},'GATEIO_DECIMAL_SIZE_UNVERIFIED']];
  for(const [patch,reason] of cases)assert.ok(preflight({...base,...patch}).reasons.includes(reason),reason);
+ const whole=preflight({...base,config:config({venues:['BINGX','GATEIO']}),row:row('GATEIO',{venueContract:{...row('GATEIO').venueContract,decimalSizes:true,decimalStepFallback:true,contractStep:'1'}})});
+ assert.ok(!whole.reasons.includes('GATEIO_DECIMAL_SIZE_UNVERIFIED'),'whole contracts on a decimal contract are allowed');
 });
 
 test('BingX: entry carries the stop, three reduce-only targets follow, a repeated signal is never resent',async()=>{

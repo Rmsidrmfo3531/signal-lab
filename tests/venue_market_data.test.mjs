@@ -80,3 +80,11 @@ test('Gate.io decimal-size contracts step by order_size_min contracts; a missing
  const integer=normalizeGateContract(gate());assert.equal(integer.decimalSizes,false);assert.equal(integer.contractStep,'1');assert.equal(integer.quantityStep,'0.0001');
  const missing=normalizeGateContract(gate({order_size_min:undefined}));assert.ok(missing.reasons.includes('VENUE_MIN_QUANTITY_INVALID'));
 });
+
+test('Gate.io decimal contract reporting order_size_min 0 (real ETH_USDT) trades in whole contracts',()=>{
+ const c=normalizeGateContract(gate({name:'ETH_USDT',quanto_multiplier:'0.01',order_size_min:0,enable_decimal:true}));
+ assert.equal(c.tradable,true);assert.deepEqual(c.reasons,[]);assert.equal(c.decimalStepFallback,true);
+ assert.equal(c.contractStep,'1');assert.equal(c.quantityStep,'0.01');assert.equal(c.minContracts,1);assert.equal(c.minQuantityBase,'0.01');
+ assert.deepEqual(venueQuantity(c,0.12345),{orderQuantity:'12',unit:'CONTRACT',baseQuantity:0.12});
+ assert.equal(normalizeGateContract(gate({order_size_min:0})).tradable,false,'an integer contract with minimum 0 stays invalid');
+});
