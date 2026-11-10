@@ -137,7 +137,11 @@ export class PaperEngine {
    return this.reject(key,'BREAKEVEN_COST_MODEL_UNVERIFIED',{remember:false});
   if(targets.some(p=>!validPrice(p))||targets.some((p,i)=>direction==='LONG'?p<=entry||(i>0&&p<=targets[i-1]):p>=entry||(i>0&&p>=targets[i-1])))return this.reject(key,'목표가 데이터 불일치',{remember:false});
   this.store.seen={...this.store.seen,[key]:now};
-  this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+settings.entryTimeoutMs,
+  // Optional per-signal limits (scalp mode): a shorter entry window and a time stop.
+  const entryTimeoutMs=Number.isFinite(signal.entryTimeoutMs)&&signal.entryTimeoutMs>=60000?Math.min(signal.entryTimeoutMs,settings.entryTimeoutMs):settings.entryTimeoutMs;
+  const maxHoldMs=Number.isFinite(signal.maxHoldMs)&&signal.maxHoldMs>=5*60000&&signal.maxHoldMs<=7*86400000?signal.maxHoldMs:null;
+  this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+entryTimeoutMs,
+   ...(maxHoldMs?{maxHoldMs}:{}),...(typeof signal.strategy==='string'&&/^[A-Z0-9_]{1,40}$/.test(signal.strategy)?{strategy:signal.strategy}:{}),
    ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),
    ...(profile?{managementVersion:'VOLUME_PROFILE_V1',targetPlan:structuredClone(plan),plannedQuantity,
     moveStopToBreakeven:typeof signal.moveStopToBreakeven==='boolean'?signal.moveStopToBreakeven:settings.TP1_MOVE_STOP_TO_BREAKEVEN!==false,
@@ -210,6 +214,14 @@ export class PaperEngine {
     const quantity=Math.min(position.qtyRemaining,budget);
     if(quantity>tolerance){this.#exitPart(position,quantity,price,'STOP',at,spread);modified++;
      if(position.qtyRemaining<=tolerance)events.push(this.#finalize(position,at,'STOP'));
+    }
+    continue;
+   }
+   // Time stop (scalp mode): whatever is left closes at the current price.
+   if(Number.isFinite(position.maxHoldMs)&&at-position.openedAt>=position.maxHoldMs){
+    const quantity=Math.min(position.qtyRemaining,budget);
+    if(quantity>tolerance){this.#exitPart(position,quantity,price,'TIME',at,spread);modified++;
+     if(position.qtyRemaining<=tolerance)events.push(this.#finalize(position,at,'TIME_STOP'));
     }
     continue;
    }
