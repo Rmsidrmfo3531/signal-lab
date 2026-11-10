@@ -95,6 +95,11 @@ export function buildVolumeProfile(input={},options={}){
   bins.push({index:Number(index),priceLow:low,priceHigh:high,price:priceForTicks(lowTicks+(highTicks-lowTicks)/2n),
    volume:raw?.volume??0,quoteVolume:raw?.quoteVolume??0,trades:raw?.trades??0});
  }
+ return summarizeBins({bins,symbol,tick,bucketTicks,totalVolume,totalQuoteVolume,evidence,valueAreaFraction,hvnMinFractionOfPoc,
+  limitations:['BUCKETED_EXECUTED_VOLUME_NOT_ORDER_BOOK_OR_GUARANTEED_RESISTANCE','HVN_THRESHOLD_IS_MODEL_CONFIGURATION_NOT_VALIDATED_WIN_RATE']});
+}
+
+function summarizeBins({bins,symbol,tick,bucketTicks,totalVolume,totalQuoteVolume,evidence,valueAreaFraction,hvnMinFractionOfPoc,limitations}){
  let pocIndex=0;for(let i=1;i<bins.length;i++)if(bins[i].volume>bins[pocIndex].volume)pocIndex=i;
  const poc={...bins[pocIndex]},hvn=[],threshold=poc.volume*hvnMinFractionOfPoc;
  for(let i=0;i<bins.length;){let end=i;while(end+1<bins.length&&bins[end+1].volume===bins[i].volume)end++;
@@ -110,7 +115,74 @@ export function buildVolumeProfile(input={},options={}){
   if(left>=right){vaLeft--;vaVolume+=bins[vaLeft].volume}else{vaRight++;vaVolume+=bins[vaRight].volume}
  }
  const valueArea={low:bins[vaLeft].priceLow,high:bins[vaRight].priceHigh,volume:vaVolume,fraction:vaVolume/totalVolume,requestedFraction:valueAreaFraction};
- const profile={symbol,tickSize:tick,bucketTicks,bins,poc,hvn,valueArea,totalVolume,totalQuoteVolume,
-  limitations:['BUCKETED_EXECUTED_VOLUME_NOT_ORDER_BOOK_OR_GUARANTEED_RESISTANCE','HVN_THRESHOLD_IS_MODEL_CONFIGURATION_NOT_VALIDATED_WIN_RATE']};
+ const profile={symbol,tickSize:tick,bucketTicks,bins,poc,hvn,valueArea,totalVolume,totalQuoteVolume,limitations};
  return {ok:true,code:'TP_PROFILE_READY',profile,evidence:{...evidence,poc,hvn,valueArea},reasons:[],fixedRRReplacementEnabled:false,executionApproved:false};
+}
+
+export const KLINE_PROFILE_SOURCE='BINANCE_KLINES_15M';
+export const KLINE_INTERVAL_MS=900000;
+/** Multi-day volume profile from closed and in-progress 15-minute candles.
+ * Each candle's base volume is spread evenly over its low-high range, the usual
+ * lower-timeframe approximation of a visible-range profile. It covers the same
+ * price scale as 1H/4H stops, which a few minutes of trades cannot. */
+export function buildKlineVolumeProfile(input={},options={}){
+ const {now=Date.now(),maxAgeMs=90000,minCandles=96,targetBins=120,valueAreaFraction=.7,hvnMinFractionOfPoc=.1,intervalMs=KLINE_INTERVAL_MS}=options,
+  {symbol,klines,receivedAt,tickSize,dataSource=KLINE_PROFILE_SOURCE}=input??{};
+ const evidence={symbol:typeof symbol==='string'&&/^[A-Z0-9]{2,24}USDT$/.test(symbol)?symbol:null,dataSource:[KLINE_PROFILE_SOURCE,'SYNTHETIC_TEST'].includes(dataSource)?dataSource:'UNVERIFIED',
+  windowStart:null,windowEnd:null,receivedAt:stamp(receivedAt)?receivedAt:null,generatedAt:stamp(now)?now:null,
+  coverage:{complete:false,ratio:null,pages:1,truncated:false},candles:Array.isArray(klines)?klines.length:null,interval:'15m',
+  originIndependentlyVerified:false,methodology:'BINANCE_15M_KLINES_RANGE_SPREAD_BASE_VOLUME',version:'KLINE_VOLUME_PROFILE_V1'};
+ if(!stamp(now)||!Number.isSafeInteger(maxAgeMs)||maxAgeMs<1||maxAgeMs>90000||!Number.isSafeInteger(minCandles)||minCandles<24||
+  !Number.isSafeInteger(targetBins)||targetBins<20||targetBins>MAX_BINS)return fail(['PROFILE_SETTINGS_INVALID'],evidence);
+ if(!evidence.symbol||evidence.dataSource==='UNVERIFIED')return fail(['PROFILE_SYMBOL_OR_SOURCE_UNVERIFIED'],evidence);
+ if(!stamp(receivedAt)||receivedAt>now||now-receivedAt>maxAgeMs)return fail(['PROFILE_STALE'],evidence);
+ if(!Array.isArray(klines)||klines.length<minCandles||klines.length>1500)return fail(['PROFILE_CANDLES_INSUFFICIENT_OR_UNBOUNDED'],evidence);
+ const rows=[];
+ for(const k of klines){
+  if(!Array.isArray(k)||!stamp(k[0]))return fail(['KLINE_SCHEMA_INVALID'],evidence);
+  const [open,high,low,close,volume]=[k[1],k[2],k[3],k[4],k[5]].map(Number);
+  if(![open,high,low,close].every(positive)||!finite(volume)||volume<0||high<low||open>high||open<low||close>high||close<low)return fail(['KLINE_VALUE_INVALID'],evidence);
+  if(rows.length&&k[0]-rows.at(-1).openTime!==intervalMs)return fail(['KLINE_SEQUENCE_GAP_OR_REGRESSION'],evidence);
+  if(k[0]>now)return fail(['KLINE_FROM_FUTURE'],evidence);
+  rows.push({openTime:k[0],high,low,volume,typical:(high+low+close)/3});
+ }
+ evidence.windowStart=rows[0].openTime;evidence.windowEnd=Math.min(now,rows.at(-1).openTime+intervalMs-1,receivedAt);
+ if(now-rows.at(-1).openTime>intervalMs+maxAgeMs)return fail(['PROFILE_LAST_CANDLE_STALE'],evidence);
+ evidence.coverage={complete:true,ratio:1,pages:1,truncated:false};
+ const tick=Number(tickSize);if(!positive(tick))return fail(['PROFILE_PRICE_GRID_INVALID'],evidence);
+ const lowAll=Math.min(...rows.map(r=>r.low)),highAll=Math.max(...rows.map(r=>r.high));
+ const bucketTicks=Math.max(1,Math.ceil((highAll-lowAll)/tick/targetBins)),width=tick*bucketTicks;
+ let tickDecimal;try{tickDecimal=decimal(tickSize)}catch{return fail(['PROFILE_PRICE_GRID_INVALID'],evidence)}
+ const priceForTicks=ticks=>Number(format({units:tickDecimal.units*BigInt(ticks),scale:tickDecimal.scale}));
+ const first=Math.floor(lowAll/width+1e-9),last=Math.floor(highAll/width+1e-9);
+ if(last-first+1>MAX_BINS)return fail(['PROFILE_PRICE_RANGE_TOO_WIDE'],evidence);
+ const volumes=new Array(last-first+1).fill(0);let totalVolume=0,totalQuoteVolume=0;
+ for(const r of rows){
+  if(r.volume===0)continue;totalVolume+=r.volume;totalQuoteVolume+=r.volume*r.typical;
+  const a=Math.floor(r.low/width+1e-9)-first,b=Math.floor(r.high/width+1e-9)-first;
+  if(a===b||r.high===r.low){volumes[a]+=r.volume;continue}
+  for(let i=a;i<=b;i++){const lo=Math.max(r.low,(i+first)*width),hi=Math.min(r.high,(i+first+1)*width);if(hi>lo)volumes[i]+=r.volume*(hi-lo)/(r.high-r.low)}
+ }
+ if(!positive(totalVolume))return fail(['PROFILE_VOLUME_EMPTY'],evidence);
+ evidence.uniqueTrades=null;evidence.tradeCount=null;
+ // Light 1-2-3-2-1 smoothing so candle-edge noise does not create fake peaks.
+ const weights=[1,2,3,2,1],smooth=volumes.map((_,i)=>{let sum=0,w=0;weights.forEach((k,j)=>{const v=volumes[i+j-2];if(v!==undefined){sum+=v*k;w+=k}});return sum/w});
+ const bins=smooth.map((volume,i)=>{const lowTicks=Math.max(1,(i+first)*bucketTicks),highTicks=(i+first)*bucketTicks+bucketTicks-1;
+  return {index:i+first,priceLow:priceForTicks(lowTicks),priceHigh:priceForTicks(highTicks),price:priceForTicks(Math.round(lowTicks+(highTicks-lowTicks)/2)),volume,quoteVolume:null,trades:null}});
+ bins.forEach((bin,i)=>{bin.rawVolume=volumes[i]});
+ const result=summarizeBins({bins,symbol,tick,bucketTicks,totalVolume:smooth.reduce((a,b)=>a+b,0),totalQuoteVolume,evidence,valueAreaFraction,hvnMinFractionOfPoc,
+  limitations:['CANDLE_RANGE_SPREAD_APPROXIMATION_NOT_TICK_LEVEL_VOLUME','HVN_THRESHOLD_IS_MODEL_CONFIGURATION_NOT_VALIDATED_WIN_RATE']});
+ // Keep only peaks that stand out from the valleys around them (topographic prominence).
+ const pocVolume=result.profile.poc.volume,minProminence=pocVolume*(options.minProminenceOfPoc??.1);
+ const hvn=result.profile.hvn.filter(zone=>{
+  const from=zone.fromIndex-first,to=zone.toIndex-first,peak=zone.peakVolume,limit=peak*(1-1e-6);
+  if(zone.fromIndex<=result.profile.poc.index&&result.profile.poc.index<=zone.toIndex)return true;
+  // Walk out to the first bin at least as high as this peak; the deepest valley on the way is the base.
+  let left=peak,leftOpen=true;for(let i=from-1;i>=0;i--){if(smooth[i]>=limit){leftOpen=false;break}left=Math.min(left,smooth[i])}
+  let right=peak,rightOpen=true;for(let i=to+1;i<smooth.length;i++){if(smooth[i]>=limit){rightOpen=false;break}right=Math.min(right,smooth[i])}
+  const base=leftOpen&&rightOpen?Math.min(left,right):leftOpen?right:rightOpen?left:Math.max(left,right);
+  return zone.peakVolume-base>=minProminence;
+ });
+ result.profile.hvn=hvn;result.evidence={...result.evidence,hvn};
+ return result;
 }
