@@ -56,7 +56,7 @@ export function entryTiming(signal,{price=null,priceAt=null,now=Date.now(),venue
   const dir=side==='LONG'?1:-1;
   const width=entry*entryAllowance(signal);
   const zoneLow=entry-width, zoneHigh=entry+width;
-  const trigger=`1시간봉 ${signal.pattern||'패턴'} 종가 확정 + 4시간봉 추세 확인 → ${formatTriggerSide(side)} ${zoneLow.toPrecision(8)}~${zoneHigh.toPrecision(8)} 재진입 → Binance 선물 호가 확인 · OrangeX 주문 조건 별도 검증`;
+  const trigger=`1시간봉 ${signal.pattern||'패턴'} 종가 확정 + 4시간봉 추세 확인 → ${formatTriggerSide(side)} ${zoneLow.toPrecision(8)}~${zoneHigh.toPrecision(8)} 재진입 → Binance 차트 기준 · 실제 주문 없음`;
   const extra={zoneLow,zoneHigh,confirmation:trigger};
   const confirmed=Number(signal.patternConfirmedAt??signal.time+3600000);
   if(!signal.patternConfirmed||!Number.isFinite(confirmed)||confirmed>now+60000)return result('unconfirmed','패턴 확정 대기','1시간봉 마감 확정 전 진입 판단 보류',false,extra);

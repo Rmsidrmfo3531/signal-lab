@@ -114,15 +114,15 @@ test('breakeven basis settings save only a future-position mode, restore rejecte
  assert.match(html,/id="paperBreakevenMode"/);assert.match(html,/value="ENTRY_FILL" selected/);
 });
 
-test('risk and quote details distinguish Binance PAPER assumptions from OrangeX permission without unsupported leverage advice',()=>{
+test('risk and quote details distinguish Binance PAPER assumptions from order permission without unsupported leverage advice',()=>{
  assert.doesNotMatch(html,/BTC 20~40x|ETH 10~25x|SOL 10~15x|모의 손익은 고정 명목금액/);
- assert.match(html,/OrangeX 실주문 OFF/);assert.match(html,/계산 명목 상한/);
+ assert.match(html,/실주문 OFF/);assert.doesNotMatch(html,/OrangeX/i);assert.match(html,/계산 명목 상한/);
  assert.match(source,/Binance TRADING USDT 무기한 상장 확인 · 실제 주문 OFF/);
  const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',className:''});return nodes.get(id)},ctx=vm.createContext({$,Number,fmt:String,dateClock:String,money:value=>'$'+value});
  vm.runInContext(section(source,'function setExecutionView(','async function loadExecution('),ctx);
  ctx.setExecutionView({eligible:true,bid:100,ask:100.01,spreadBps:1,quantity:2,notional:200,estimatedStopLossUSD:5,maxRiskUSD:6,
   slippageBps:0.2,quoteUpdatedAt:Date.now(),quoteAgeSeconds:1,costAssumptions:{takerRate:.0006}});
- assert.match($('executionVerdict').textContent,/OrangeX 주문 승인 아님/);
+ assert.match($('executionVerdict').textContent,/주문 승인 아님/);
  assert.match($('execCost').textContent,/가정 손절손실 \$5 \/ 한도 \$6/);
  assert.equal($('execVenue').textContent,'0.20 bp');assert.match($('execMark').textContent,/모의 수량 2/);
  assert.match($('execFunding').textContent,/6.00 bp 가정/);assert.match($('execFundingTime').textContent,/실제 계정 요율·펀딩 정산 미검증/);

@@ -4,7 +4,7 @@ const workspaceRoutes = Object.freeze({
   overview: '대시보드 · 차트',
   scanner: '최종 신호 · 스캐너',
   paper: '자동 모의매매 PNL',
-  orangex: 'OrangeX 조회 전용',
+  venues: 'BingX · Gate.io 시세 조회',
   tradfi: 'TradFi 기록 · 비활성',
   news: '시황 · 뉴스',
   alerts: '알림 · 시스템 상태',

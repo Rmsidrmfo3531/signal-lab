@@ -25,5 +25,5 @@ export function evaluateLegacySyntheticSignal(row,{dataSource,market,book,verifi
  execution.eligible=execution.eligible&&verified&&venueConnected&&dataSource==='SYNTHETIC_FIXTURE';
  return {pattern,technical,venue:technical&&execution.eligible,ready:reasons.length===0,
   stage:!pattern?'noPattern':!technical?'quality':reasons.length?'venue':'ready',execution,timing,reasons,
-  tradeApproval:false,orangeXApproval:false,realDataAutoEntryEnabled:false,checkedAt:now};
+  tradeApproval:false,realDataAutoEntryEnabled:false,checkedAt:now};
 }

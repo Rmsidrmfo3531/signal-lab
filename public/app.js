@@ -109,7 +109,7 @@ function setExecutionView(x){
  const e=$('executionVerdict');
  if(!x){e.className='execution-banner blocked';e.textContent='현재 공개 호가 확인 불가 · 신호 알림 제한';['execBidAsk','execSpread','execCost','execVenue','execMark','execFunding','execFundingTime','execQuoteTime'].forEach(id=>$(id).textContent='—');return}
  e.className='execution-banner '+(x.eligible?'good':'blocked');
- e.textContent=x.eligible?'✓ Binance 호가·모의 위험 계산 통과 · OrangeX 주문 승인 아님':'⚠ 진입 보류: '+(x.reasons?.join(' · ')||'데이터 미확인');
+ e.textContent=x.eligible?'✓ Binance 호가·모의 위험 계산 통과 · 주문 승인 아님':'⚠ 진입 보류: '+(x.reasons?.join(' · ')||'데이터 미확인');
  $('execBidAsk').textContent=fmt(x.bid)+' / '+fmt(x.ask);
  $('execQuoteTime').textContent=x.quoteUpdatedAt?'호가 기준 '+dateClock(x.quoteUpdatedAt)+' KST · '+Math.round(x.quoteAgeSeconds||0)+'초 경과':'호가 갱신 시각 없음';
  $('execSpread').textContent=x.spreadBps==null?'—':(x.spreadBps.toFixed(2)+' bp');
@@ -170,7 +170,7 @@ function renderPair(){
  $('assetLogo').style.background=base==='BTC'?'#db9b39':base==='ETH'?'#8299ca':base==='SOL'?'#7d78b4':'#41799c';
  $('pairPrice').textContent=fmt(m.price);$('pairChange').textContent='24H '+(m.price?pct(m.change||0):'—');
  $('pairChange').className='change '+(Number(m.change)>0?'positive':Number(m.change)<0?'negative':'neutral');
- $('pairCompare').textContent=app.marketMap.has(app.symbol)?'Binance USDT 무기한 · 실제 주문 및 OrangeX 활성화는 별도 검증':'TradingView 차트 열람 가능 · Binance 상장 데이터 확인 대기';
+ $('pairCompare').textContent=app.marketMap.has(app.symbol)?'Binance USDT 무기한 차트 · 실제 주문 없음':'TradingView 차트 열람 가능 · Binance 상장 데이터 확인 대기';
  $('pairTradeLinks').innerHTML=linkButtons(app.symbol);
 }
 let matchedPage=0;
@@ -210,7 +210,7 @@ function renderAnalysis(){const a=app.analysis;
  const breakdown=Array.isArray(checks)?checks:Object.values(checks);
  const qualityInfo=`<div class="quality-checks"><h4>단일 종합점수 ${escapeHtml(score)} · 기술 판정 별도</h4>${breakdown.map(c=>`<div class="quality-row"><span class="${c.passed?'quality-ok':'quality-bonus'}">${c.passed?'✓':'○'}</span><span>${escapeHtml(c.label||c.key)} · ${Number.isFinite(c.earned)?c.earned:Number.isFinite(c.points)?c.points:'평가 불가'}/${escapeHtml(c.weight??'—')}점</span><small>${escapeHtml(String(c.value??c.reason??'미확인'))}</small></div>`).join('')}<small>4H EMA200 15 · EMA100 5 · 1H EMA20 10 · 패턴·확정 강도 25 · ADX/DMI 15 · RSI 10 · MACD 5 · 패턴별 거래량 10 · ATR 5. 점수는 승률이 아닙니다.</small></div>`;
  const validation=`<div class="signal-check ${technical?'':'blocked'}">기술 검증 ${technical?'완료':'미완료'}<small>${escapeHtml(reasons.join(' · ')||'기술 결과와 호가·위험·매물대 목표·현재 진입 조건을 별도로 확인합니다.')}</small></div>`;
- const execution=a.execution?`<div class="signal-check ${a.execution.eligible?'':'blocked'}">Binance 호가·위험 ${a.execution.eligible?'검증 통과':'검증 보류'}<small>${escapeHtml(a.execution.reasons?.join(' · ')||'실제 OrangeX 주문 승인은 별도이며 현재 OFF입니다.')}</small></div>`:'';
+ const execution=a.execution?`<div class="signal-check ${a.execution.eligible?'':'blocked'}">Binance 호가·위험 ${a.execution.eligible?'검증 통과':'검증 보류'}<small>${escapeHtml(a.execution.reasons?.join(' · ')||'실제 거래소 주문 승인은 별도이며 현재 OFF입니다.')}</small></div>`:'';
  $('currentCandidate').innerHTML=`<div class="signal-heading">${a.direction?`<span class="dir ${a.direction==='LONG'?'long':'short'}">${escapeHtml(a.direction)}</span>`:''}<span class="subtle-tag">종합 ${escapeHtml(score)} · 승률 아님</span></div><div class="signal-pattern">${escapeHtml(a.pattern||'확정 패턴 없음')}</div><div class="signal-comment">선택 종목의 지표 상세입니다. 메인 신호 목록에는 최종 검증 통과 결과만 표시합니다.</div>${qualityInfo}${validation}${a.entry?`<div class="signal-grid"><div><span>패턴 기준 진입가</span><strong>${fmt(a.entry)}</strong></div><div><span>손절 무효화</span><strong>${fmt(a.stop)}</strong></div></div>`:''}${volumeTargetHTML(a)}${execution}`;
 }
 function scanPagination(hostId,infoId,paged,onPage){

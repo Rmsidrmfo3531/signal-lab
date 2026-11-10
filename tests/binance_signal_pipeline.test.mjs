@@ -17,7 +17,7 @@ function fixture(){
 test('single-score Binance final approval needs no other exchange and never becomes live trade approval',()=>{
  const {row,context}=fixture(),decision=evaluateSignal(row,context);
  assert.equal(decision.ready,true,decision.reasons.join());assert.equal(decision.analysisVenue,'BINANCE');
- assert.equal(decision.tradeApproval,false);assert.equal(decision.orangeXApproval,false);
+ assert.equal(decision.tradeApproval,false);assert.equal('orangeXApproval' in decision,false);
  row.technicalValidation.passed=false;assert.equal(evaluateSignal(row,context).technical,false);
  row.technicalValidation.passed=true;row.score=null;const unavailable=evaluateSignal(row,context);
  assert.equal(unavailable.ready,false);assert.match(unavailable.reasons.join(),/평가 불가/);

@@ -38,7 +38,7 @@ test('Disabled TradFi API preserves old open/pending/closed records, settings an
   const launch=()=>{
    const processHandle=trackChild(spawn(process.execPath,['--import',pathToFileURL(guard).href,'server.mjs'],{cwd:sandbox,env:{...process.env,
     SIGNAL_LAB_DATA_DIR:data,PORT:String(port),HOST:'127.0.0.1',AUTO_UPDATE:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',
-    TELEGRAM_NEWS_ALERTS:'false',ORANGEX_ENABLED:'false',ORANGEX_MODE:'READ_ONLY',SIGNAL_LAB_OPEN_BROWSER:'0'},stdio:'pipe'}));
+    TELEGRAM_NEWS_ALERTS:'false',SIGNAL_LAB_OPEN_BROWSER:'0'},stdio:'pipe'}));
    let logs='';processHandle.stdout.on('data',d=>logs+=d);processHandle.stderr.on('data',d=>logs+=d);return {processHandle,logs:()=>logs};
   };
   for(let pass=0;pass<2;pass++){

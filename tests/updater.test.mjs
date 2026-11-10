@@ -19,17 +19,11 @@ test('all local runtime imports and Windows notifier are eligible without allowi
   const code=fs.readFileSync(new URL('../'+source,import.meta.url),'utf8');
   for(const [,name] of code.matchAll(/from\s+['"]\.\/([^'"]+)['"]/g))assert.equal(allowedFile(name),true,name);
  }
- for(const name of ['signal_pipeline.mjs','quality.mjs','windows_paper_notify.ps1','paper.mjs',
-  'orangex_readiness.mjs','orangex_paper_journal.mjs','durable_append_recovery.mjs','diagnose_orangex.bat','scripts/diagnose-orangex-windows.mjs',
-  'scripts/check-orangex-readiness.mjs','scripts/check-orangex-storage-performance.mjs','scripts/check-orangex-operational-stress.mjs',
-  'public/orangex_operational.js'])assert.equal(allowedFile(name),true,name);
- for(const name of ['orangex_evidence_review.mjs','orangex_paper_storage_lab.mjs','scripts/review-orangex-evidence.mjs',
-  'scripts/check-orangex-storage-scale.mjs'])assert.equal(allowedFile(name),true,name);
- for(const name of ['orangex_contract_validation.mjs','orangex_cost_validation.mjs','orangex_market_monitor.mjs',
-  'scripts/diagnose-orangex-continuous.mjs'])assert.equal(allowedFile(name),true,name);
- for(const name of ['orangex_official_sources.mjs','orangex_funding_observation.mjs'])assert.equal(allowedFile(name),true,name);
+ for(const name of ['signal_pipeline.mjs','quality.mjs','windows_paper_notify.ps1','paper.mjs','decimal_grid.mjs',
+  'venue_market_data.mjs','bingx_market.mjs','gateio_market.mjs','venue_service.mjs','public/venues.js','scripts/check-venue-market-data.mjs'])assert.equal(allowedFile(name),true,name);
+ for(const name of ['orangex.mjs','orangex_paper_journal.mjs','scripts/diagnose-orangex-windows.mjs','durable_append_recovery.mjs'])assert.equal(allowedFile(name),false,'removed: '+name);
  for(const name of ['store.json','.env','recovery/store-corrupt.json','backups/store-any.json','arbitrary.ps1',
-  'orangex-paper/orangex-paper.json','orangex-paper-journal/manifest.json','scripts/unreviewed-diagnostic.mjs'])assert.equal(allowedFile(name),false,name);
+  'scripts/unreviewed-diagnostic.mjs'])assert.equal(allowedFile(name),false,name);
 });
 test('runtime-module update is verified, applied, and retains both current and backup trade records',async()=>{
  const dir=root();try{

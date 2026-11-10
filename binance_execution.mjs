@@ -1,9 +1,9 @@
-import {roundOrangeXDecimal} from './orangex_contract_validation.mjs';
+import {roundDecimalToStep} from './decimal_grid.mjs';
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
 const finite=x=>typeof x==='number'&&Number.isFinite(x);
 export const BINANCE_PAPER_ASSUMPTIONS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:5,fundingReserveRate:.0003,
  basis:'EXPLICIT_CONSERVATIVE_PAPER_SCENARIO_NOT_ACCOUNT_FEES_OR_FUNDING_OBSERVATION'});
-// Public book sizing only. Passing this review never authorizes OrangeX or an
+// Public book sizing only. Passing this review never authorizes an exchange or an
 // account order. Quote/contract values come from Binance exchangeInfo/depth.
 export function estimateBinanceExecution({signal,book,market,now=Date.now(),maxRiskUSD=6,maxNotionalUSD=1500,
  maxAgeMs=15000,maxSpreadBps=20,assumptions=BINANCE_PAPER_ASSUMPTIONS}={}){
@@ -30,21 +30,21 @@ export function estimateBinanceExecution({signal,book,market,now=Date.now(),maxR
  if(positive(quote)&&positive(originalEntry)&&Math.abs(quote-originalEntry)>allowance)reasons.push('EXECUTABLE_BOOK_OUTSIDE_ENTRY_ZONE');
  let quantity=null,notional=null,entryBasis=null,estimatedStopLossUSD=null,slippageBps=null;
  if(!reasons.length){
-  const worstEntry=Number(roundOrangeXDecimal(quote*(1+sign*assumptions.slippageBps/10000),tickSize,sign===1?'UP':'DOWN')),worstStop=signal.stop*(1-sign*assumptions.slippageBps/10000),
+  const worstEntry=Number(roundDecimalToStep(quote*(1+sign*assumptions.slippageBps/10000),tickSize,sign===1?'UP':'DOWN')),worstStop=signal.stop*(1-sign*assumptions.slippageBps/10000),
    perUnit=sign*(worstEntry-worstStop)+(worstEntry+worstStop)*Math.max(assumptions.takerRate,assumptions.makerRate)+worstEntry*assumptions.fundingReserveRate;
   if(!(perUnit>0))reasons.push('RISK_MODEL_INVALID');
   else{
    // Twenty lot steps let the 40/35/25% split land on the lot grid. The grid is
    // built in exact decimal arithmetic: step*20 in binary floating point is not
    // always a multiple of step (0.07*20 === 1.4000000000000001).
-   const splitGrid=roundOrangeXDecimal(step*20.5,step,'DOWN');
-   quantity=Number(roundOrangeXDecimal(Math.min(maxRiskUSD/perUnit,maxNotionalUSD/worstEntry),splitGrid,'DOWN'));
+   const splitGrid=roundDecimalToStep(step*20.5,step,'DOWN');
+   quantity=Number(roundDecimalToStep(Math.min(maxRiskUSD/perUnit,maxNotionalUSD/worstEntry),splitGrid,'DOWN'));
    if(!positive(quantity)||quantity<minQuantity||quantity*quote<minNotional)reasons.push('RISK_CAP_BELOW_MINIMUM_ORDER');
    let remaining=quantity,cost=0;
    for(const [price,size]of side==='LONG'?asks:bids){const take=Math.min(remaining,size);cost+=take*price;remaining-=take;if(remaining<=1e-12)break}
    if(remaining>Math.max(1e-12,quantity*1e-12))reasons.push('BOOK_DEPTH_INSUFFICIENT');
    else if(positive(quantity)){
-    const average=cost/quantity;entryBasis=Number(roundOrangeXDecimal(average,tickSize,sign===1?'UP':'DOWN'));slippageBps=Math.max(0,sign*(average-quote)/quote*10000);
+    const average=cost/quantity;entryBasis=Number(roundDecimalToStep(average,tickSize,sign===1?'UP':'DOWN'));slippageBps=Math.max(0,sign*(average-quote)/quote*10000);
     if(slippageBps>assumptions.slippageBps)reasons.push('SLIPPAGE_LIMIT');
     estimatedStopLossUSD=quantity*perUnit;notional=quantity*entryBasis;
     if(estimatedStopLossUSD>maxRiskUSD+1e-8)reasons.push('MAX_LOSS_EXCEEDED');
@@ -56,5 +56,5 @@ export function estimateBinanceExecution({signal,book,market,now=Date.now(),maxR
   minQuantity:positive(minQuantity)?minQuantity:null,minNotional:positive(minNotional)?minNotional:null,contractSizeBase:1,quantityUnit:'BASE_ASSET',
   quoteUpdatedAt:positive(sourceTime)?sourceTime:null,quoteAgeSeconds:positive(sourceTime)?(now-sourceTime)/1000:null,
   costAssumptions:{...assumptions,fundingStatus:'ASSUMED_RESERVE_NOT_ACTUAL_SETTLEMENT'},dataFrom:'BINANCE_PUBLIC_DEPTH',
-  actualAccountFeesVerified:false,orangeXContractVerified:false,tradeApproval:false,ordersSubmitted:false,checkedAt:now};
+  actualAccountFeesVerified:false,tradeApproval:false,ordersSubmitted:false,checkedAt:now};
 }
