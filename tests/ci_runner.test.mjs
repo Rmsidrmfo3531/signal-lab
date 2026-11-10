@@ -6,6 +6,9 @@ import path from 'node:path';
 import {runNodeTests,testRunnerOptions,discoverTestFiles,terminateOwnedTestTree} from '../scripts/run-node-tests.mjs';
 import {waitForProcessTermination} from './helpers/process_termination.mjs';
 import {removeOwnedTestDirectory} from './helpers/owned_directory.mjs';
+// Windows can hold a just-killed child's handles on its temp folder for a few
+// seconds; a leftover temp folder there is harmless, so cleanup never fails a test.
+function removeTemp(root){try{fs.rmSync(root,{recursive:true,force:true,maxRetries:20,retryDelay:250})}catch(error){if(process.platform==='win32'&&['EBUSY','EPERM','ENOTEMPTY'].includes(error.code))return;throw error}}
 async function assertTerminated(pid){
  const result=await waitForProcessTermination(pid);
  assert.equal(result.terminated,true,'the owned descendant must actually terminate after signal delivery');
@@ -21,7 +24,7 @@ test('CI discovers exactly the same test files and rejects disabled or unbounded
   assert.deepEqual(testRunnerOptions(),{concurrency:2,fileTimeoutMs:120000,outputDir:null,files:[]});
   for(const args of [['--file-timeout-ms','0'],['--file-timeout-ms','120001'],['--file-timeout-ms','NaN'],['--concurrency','0'],['--concurrency','5'],['--unknown','x'],['--file']])
    assert.throws(()=>testRunnerOptions(args),/INVALID_TEST_RUNNER_OPTIONS/);
- }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }finally{removeTemp(root)}
 });
 
 test('Windows timeout terminates the complete owned tree before separately killing a worker could orphan it',async()=>{
@@ -63,7 +66,7 @@ test('completed bodies with leaked handles fail the file deadline; pending Promi
   assert.equal(JSON.parse(fs.readFileSync(path.join(out,'summary.json'))).failedFiles,4);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out,'progress.json'))).active.length,0);
   for(const row of result.results)assert.ok(fs.statSync(path.join(out,row.log)).size>0);
- }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }finally{removeTemp(root)}
 });
 
 test('explicit cancellation stops active processes, preserves partial reports and never starts queued files',{timeout:10000},async()=>{
@@ -78,7 +81,7 @@ test('explicit cancellation stops active processes, preserves partial reports an
   assert.deepEqual(result.pendingFiles,['tests/z-queued.test.mjs']);
   assert.equal(result.results[0].failureCode,'RUN_ABORTED');assert.equal(result.results[0].processClosed,true);
   assert.equal(result.results[0].cleanupError,null);
- }finally{clearTimeout(timer);fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }finally{clearTimeout(timer);removeTemp(root)}
 });
 
 test('cancellation from the last PASS callback cannot publish a successful run',{timeout:10000},async()=>{
@@ -92,7 +95,7 @@ test('cancellation from the last PASS callback cannot publish a successful run',
   assert.equal(result.passed,false);assert.equal(result.aborted,true);
   const stored=JSON.parse(fs.readFileSync(path.join(root,'logs','summary.json')));
   assert.equal(stored.passed,false);assert.equal(stored.aborted,true);
- }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }finally{removeTemp(root)}
 });
 
 test('START, completion and progress-report failures cannot strand active workers',{timeout:20000},async()=>{
@@ -161,7 +164,7 @@ test('storage phase sidecars remain visible while spawnSync blocks and survive t
   const record=JSON.parse(fs.readFileSync(path.join(out,row.trace),'utf8'));
   assert.equal(record.stage,'phase:spawnSync:begin');
   assert.equal(fs.existsSync(record.directory),false,'only the owned temporary sidecar directory is removed after capture');
- }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }finally{removeTemp(root)}
 });
 
 test('a successful body with a truncated storage trace fails diagnostics while preserving the original trace',{timeout:10000},async()=>{
@@ -176,6 +179,6 @@ test('a successful body with a truncated storage trace fails diagnostics while p
   assert.equal(result.passed,false);assert.equal(row.status,'FAIL');assert.equal(row.failureCode,'TRACE_CAPTURE_FAILED');
   assert.equal(row.traceCaptureError,'TEST_TRACE_PARTIAL_RECORD');
   assert.deepEqual(fs.readFileSync(path.join(out,row.trace)),partial);
- }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }finally{removeTemp(root)}
  }
 });
