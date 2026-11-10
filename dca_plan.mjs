@@ -1,0 +1,68 @@
+// Zone-based scale-in plan (paper only).
+// The first entry is 1 unit; each further add sits on the next volume zone (HVN)
+// against the position and doubles the size: 1, 1, 2, 4, 8, ... units (10 entries max).
+// The stop sits just beyond the last zone used. Cross margin: the whole balance backs
+// the position, so the plan drops the farthest adds until
+//   - the margin of every entry fits in the balance, and
+//   - the stop is reached clearly before the cross-margin liquidation price, and
+//   - the loss at the stop with every add filled stays within maxLossPct of the balance.
+import {roundDecimalToStep} from './decimal_grid.mjs';
+
+export const DCA_UNITS=Object.freeze([1,1,2,4,8,16,32,64,128,256]);
+// maxLossPct: loss at the stop with every add filled may not exceed this share of the balance.
+export const DCA_DEFAULTS=Object.freeze({leverage:10,unitPct:.19,maintenanceRate:.005,stopAtr:.25,minSpacingAtr:.5,liquidationBufferPct:1,maxLossPct:30});
+const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
+
+/** Cross-margin liquidation price for one position backed by `balance`. */
+export function crossLiquidationPrice({direction,quantity,cost,balance,maintenanceRate=DCA_DEFAULTS.maintenanceRate}){
+ if(!positive(quantity)||!positive(cost)||!(balance>0))return null;
+ const x=direction==='LONG'?(cost-balance)/(quantity*(1-maintenanceRate)):(balance+cost)/(quantity*(1+maintenanceRate));
+ return x>0?x:null; // LONG with more balance than cost: no liquidation price above zero
+}
+
+export function planZoneDca({direction,entry,atr,zones=[],balanceUSD,leverage=DCA_DEFAULTS.leverage,unitPct=DCA_DEFAULTS.unitPct,
+ tickSize,quantityStep,minQuantity=0,minNotional=0,takerRate=.0006,units=DCA_UNITS,settings={}}={}){
+ const s={...DCA_DEFAULTS,...settings},dir=direction==='LONG'?1:-1,reasons=[];
+ if(!['LONG','SHORT'].includes(direction)||!positive(entry)||!positive(atr))reasons.push('DCA_INPUT_INVALID');
+ if(!positive(balanceUSD))reasons.push('DCA_BALANCE_INVALID');
+ if(!(leverage>=1&&leverage<=125))reasons.push('DCA_LEVERAGE_INVALID');
+ if(!(unitPct>0&&unitPct<=100))reasons.push('DCA_UNIT_PCT_INVALID');
+ if(!positive(tickSize)||!positive(quantityStep))reasons.push('DCA_GRID_INVALID');
+ if(reasons.length)return {ok:false,reasons};
+ // One unit: balance x unitPct margin at the leverage, on a 20-lot grid so 40/35/25 splits stay exact.
+ const unitNotional=balanceUSD*unitPct/100*leverage;
+ let unitQty;try{unitQty=Number(roundDecimalToStep(unitNotional/entry,roundDecimalToStep(quantityStep*20.5,quantityStep,'DOWN'),'DOWN'))}catch{unitQty=0}
+ if(!positive(unitQty)||unitQty<minQuantity||unitQty*entry<minNotional)return {ok:false,reasons:['DCA_UNIT_BELOW_MINIMUM_ORDER'],unitNotional};
+ // Zones against the position, nearest first, at least minSpacing apart (and from the entry).
+ const spacing=s.minSpacingAtr*atr,edge=z=>dir===1?z.priceHigh:z.priceLow,far=z=>dir===1?z.priceLow:z.priceHigh;
+ const against=zones.filter(z=>positive(z?.priceLow)&&positive(z?.priceHigh)&&dir*(entry-edge(z))>=spacing)
+  .sort((a,b)=>dir*(edge(b)-edge(a)));
+ const picked=[];
+ for(const z of against){if(picked.length>=units.length-1)break;if(picked.length&&dir*(edge(picked.at(-1))-edge(z))<spacing)continue;picked.push(z)}
+ const round=(p,mode)=>Number(roundDecimalToStep(p,tickSize,mode));
+ const build=count=>{
+  const levels=picked.slice(0,count).map((z,i)=>({price:round(edge(z),dir===1?'DOWN':'UP'),units:units[i+1],quantity:Number((units[i+1]*unitQty).toFixed(12)),zone:{priceLow:z.priceLow,priceHigh:z.priceHigh,volume:z.peakVolume??z.volume}}));
+  // Stop: beyond the last zone used (or beyond the first zone if there is no add yet).
+  const stopZone=count?picked[count-1]:picked[0];
+  if(!stopZone)return null;
+  const stop=round(far(stopZone)-dir*s.stopAtr*atr,dir===1?'DOWN':'UP');
+  const fills=[{price:entry,quantity:unitQty},...levels];
+  const quantity=fills.reduce((a,f)=>a+f.quantity,0),cost=fills.reduce((a,f)=>a+f.quantity*f.price,0);
+  const margin=fills.reduce((a,f)=>a+f.quantity*f.price/leverage,0);
+  const fees=cost*takerRate+quantity*stop*takerRate;
+  const maxLossUSD=dir*(cost-quantity*stop)+fees;
+  const liquidationPrice=crossLiquidationPrice({direction,quantity,cost,balance:balanceUSD,maintenanceRate:s.maintenanceRate});
+  const safe=liquidationPrice===null||dir*(stop-liquidationPrice*(1+dir*s.liquidationBufferPct/100))>0;
+  return {levels,stop,quantity,cost,averageEntry:cost/quantity,marginUSD:margin,maxLossUSD,maxLossPct:maxLossUSD/balanceUSD*100,liquidationPrice,
+   fits:margin<=balanceUSD&&maxLossUSD<=balanceUSD*s.maxLossPct/100&&safe,
+   limits:{marginFits:margin<=balanceUSD,lossWithinCap:maxLossUSD<=balanceUSD*s.maxLossPct/100,stopBeforeLiquidation:safe}};
+ };
+ if(!picked.length)return {ok:false,reasons:['DCA_NO_VOLUME_ZONE_AGAINST_ENTRY']};
+ let plan=null,count=picked.length;
+ for(;count>=0;count--){plan=build(count);if(plan?.fits)break}
+ if(!plan?.fits)return {ok:false,reasons:['DCA_LOSS_OR_LIQUIDATION_LIMIT'],unitQty};
+ return {ok:true,direction,entry,unitQty,unitNotional:unitQty*entry,leverage,unitPct,balanceUSD,
+  adds:plan.levels,addsDropped:picked.length-count,stop:plan.stop,
+  full:{quantity:plan.quantity,averageEntry:plan.averageEntry,marginUSD:plan.marginUSD,maxLossUSD:plan.maxLossUSD,maxLossPct:plan.maxLossPct,liquidationPrice:plan.liquidationPrice},
+  marginMode:'CROSS',maintenanceRate:s.maintenanceRate,maxLossPctCap:s.maxLossPct,method:'HVN_ZONES_1_1_2_4',calculationOnly:true};
+}

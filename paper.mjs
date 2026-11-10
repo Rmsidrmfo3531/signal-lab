@@ -140,7 +140,17 @@ export class PaperEngine {
   // Optional per-signal limits (scalp mode): a shorter entry window and a time stop.
   const entryTimeoutMs=Number.isFinite(signal.entryTimeoutMs)&&signal.entryTimeoutMs>=60000?Math.min(signal.entryTimeoutMs,settings.entryTimeoutMs):settings.entryTimeoutMs;
   const maxHoldMs=Number.isFinite(signal.maxHoldMs)&&signal.maxHoldMs>=5*60000&&signal.maxHoldMs<=7*86400000?signal.maxHoldMs:null;
+  // Zone scale-in plan (paper): adds against the position, each beyond the previous, all before the stop.
+  let dca=null;
+  if(signal.dca){
+   const d=signal.dca,dir=direction==='LONG'?1:-1,adds=Array.isArray(d.adds)?d.adds:[];
+   const valid=profile&&d.ok===true&&adds.length<=9&&adds.every((a,i)=>validPrice(a?.price)&&validPrice(a?.quantity)&&dir*(entry-a.price)>0&&(i===0||dir*(adds[i-1].price-a.price)>0)&&dir*(a.price-stop)>0)&&
+    num(d.stop)===stop&&validPrice(d.unitQty)&&Math.abs(d.unitQty-plan.quantity)<=plan.quantity*1e-9;
+   if(!valid)return this.reject(key,'DCA_PLAN_INVALID',{remember:false});
+   dca={...structuredClone(d),adds:adds.map(a=>({...structuredClone(a),filled:false})),filledAdds:0};
+  }
   this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+entryTimeoutMs,
+   ...(dca?{dca}:{}),
    ...(maxHoldMs?{maxHoldMs}:{}),...(typeof signal.strategy==='string'&&/^[A-Z0-9_]{1,40}$/.test(signal.strategy)?{strategy:signal.strategy}:{}),
    ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),
    ...(profile?{managementVersion:'VOLUME_PROFILE_V1',targetPlan:structuredClone(plan),plannedQuantity,
@@ -188,7 +198,8 @@ export class PaperEngine {
    if(!Number.isFinite(n)||!Number.isFinite(minimumNotional)||minimumNotional<0||n<minimumNotional||n>settings.maxNotional){this.store.skipped.push({key:pending.key,reason:'모의 거래 명목금액이 호가 샘플 검증 범위를 벗어남',at:now});modified++;continue}
    const quantity=profile?pending.plannedQuantity:n/entryFill,feesUSD=n*feeBps/10000;
    const plannedLossUSD=quantity*(dir*(entryFill-stopFill)+(entryFill+stopFill)*feeBps/10000);
-   if(profile&&(!validPrice(settings.maxRiskUSD)||!Number.isFinite(plannedLossUSD)||plannedLossUSD>settings.maxRiskUSD+1e-9)){
+   // A zone scale-in plan carries its own balance-based loss check instead of the per-trade cap.
+   if(profile&&!pending.dca&&(!validPrice(settings.maxRiskUSD)||!Number.isFinite(plannedLossUSD)||plannedLossUSD>settings.maxRiskUSD+1e-9)){
     this.store.skipped.push({key:pending.key,reason:'체결 비용 반영 최대 손실 한도 초과',at:now});modified++;continue;
    }
    if(profile&&pending.targets.some((p,i)=>dir*(p-entryFill)<=0||i>0&&dir*(p-pending.targets[i-1])<=0)){
@@ -208,6 +219,23 @@ export class PaperEngine {
    const dir=position.direction==='LONG'?1:-1;
    const spread=halfSpreadBps===null?position.halfSpreadBps:Math.max(0,num(halfSpreadBps)||0);
    const crossedStop=dir*(price-position.stop)<=0;
+   // Zone scale-in: before any target fill, each zone reached adds its size at the zone price.
+   if(position.dca&&!crossedStop&&!position.closeParts.some(x=>x.type==='TARGET')){
+    for(const level of position.dca.adds){
+     if(level.filled)continue;
+     if(dir*(price-level.price)>0)break;
+     const fill=fillPrice(level.price,dir===1?'BUY':'SELL',{halfSpreadBps:spread,slippageBps:position.slippageBps}),q=level.quantity,fee=q*fill*position.feeBps/10000;
+     const total=position.qtyRemaining+q;
+     position.entryFill=(position.entryFill*position.qtyRemaining+fill*q)/total;
+     position.originalQty+=q;position.qtyRemaining=total;position.notionalUSD=rounded(position.notionalUSD+q*fill);
+     position.feesUSD+=fee;position.realizedPnLUSD-=fee;
+     position.targetQuantities=[position.originalQty*.4,position.originalQty*.35,position.originalQty-position.originalQty*.4-position.originalQty*.35];
+     Object.assign(level,{filled:true,fill,at});position.dca.filledAdds++;
+     position.plannedLossUSD=rounded(position.qtyRemaining*Math.max(0,dir*(position.entryFill-position.stop)));
+     position.managementEvents=[...(position.managementEvents??[]),{type:'DCA_ADD',at,number:position.dca.filledAdds,units:level.units,price:level.price,fill,quantity:q,averageEntry:position.entryFill}];
+     modified++;
+    }
+   }
    let budget=exitQuantityLimit===null?Infinity:Number.isFinite(exitQuantityLimit)&&exitQuantityLimit>0?exitQuantityLimit:0;
    const tolerance=Math.max(1e-12,position.originalQty*1e-10);
    if(crossedStop){

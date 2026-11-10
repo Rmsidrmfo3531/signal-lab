@@ -20,6 +20,11 @@ const levelReason=r=>LEVEL_REASONS[r]||(/^TP(\d)_ALREADY_FILLED$/.test(r)?r[2]+'
  /^TP(\d)_NOT_BEYOND_ENTRY$/.test(r)?r[2]+'차 목표가 진입가보다 수익 방향에 있어야 합니다':/^TP(\d)_ORDER$/.test(r)?r[2]+'차 목표 순서가 맞지 않습니다':r);
 function filledTargets(t){const q=t.targetQuantities,f=(t.closeParts||[]).filter(x=>x.type==='TARGET');
  return [0,1,2].map(i=>q?f.filter(x=>x.targetNumber===i+1).reduce((a,x)=>a+x.qty,0)>=q[i]*(1-1e-9):f.some(x=>x.targetNumber===i+1))}
+function dcaCaption(t){
+ const d=t.dca;if(!d||!Array.isArray(d.adds))return '';
+ const next=d.adds.find(a=>!a.filled),full=d.full||{};
+ return `<small class="paper-management-mode">매물대 분할 ${d.filledAdds||0}/${d.adds.length}회 추가${next?` · 다음 ${fmt(next.price)} (${esc(next.units)}단위)`:''} · 손절(매물대) ${fmt(t.stop)} · 교차 ${esc(d.leverage)}배 · 전부 체결 후 손절 시 손실 약 $${Number.isFinite(full.maxLossUSD)?full.maxLossUSD.toFixed(2):"—"} (잔고 ${Number.isFinite(full.maxLossPct)?full.maxLossPct.toFixed(1):'—'}%)${Number.isFinite(full.liquidationPrice)?' · 추정 청산가 '+fmt(full.liquidationPrice):''}</small>`;
+}
 function levelsEditor(t){
  if(providerUnavailable(t))return '';const filled=filledTargets(t);
  return `<details class="paper-levels" data-levels-key="${esc(t.key)}"><summary>손절·TP 직접 수정</summary>
@@ -129,11 +134,11 @@ function render(payload){
   return `<article class="paper-trade"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><span>${esc(t.market)} · ${frozen?frozenPaperCaption:'진행 중'}</span></header>
    <p>${esc(t.pattern)} · ${time(t.openedAt)} 진입</p><div class="paper-trade-values"><span>모의 진입 <b>${fmt(t.entryFill)}</b></span><span>기준 손절 <b>${fmt(t.stop)}</b></span><span>명목금액 <b>$${fmt(t.notionalUSD)}</b></span><span>${frozen?'마지막 저장 시세 평가 (현재 평가 아님)':'미실현'} <b class="${resultClass(gain)}">${usd(gain)}${frozen?' (최신 시세 미검증)':stale?' (시세 지연)':''}</b></span></div>
    <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))}</small><p>남은 수량 ${fmt(t.qtyRemaining)} · 분할익절 ${t.exitedPct||0}% · 진입 수수료 등 $${fmt(t.feesUSD)}</p>
-   <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div>${t.manualLevels?'<small class="paper-management-mode">손절·TP 직접 수정됨</small>':''}${levelsEditor(t)}</article>`;
+   <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div>${t.manualLevels?'<small class="paper-management-mode">손절·TP 직접 수정됨</small>':''}${dcaCaption(t)}${levelsEditor(t)}</article>`;
  });
  const pending=(payload.pending||[]).map(t=>{
   const frozen=providerUnavailable(t);
-  return `<article class="paper-trade paper-pending"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} ${esc(t.direction)}</strong><span>${frozen?frozenPaperCaption:'첫 신규 시세 대기'}</span></header><p>${esc(t.pattern)} · ${time(t.signalAt)} 접수 · ${frozen?'기록된 유효기한 ':' '}${time(t.expiresAt)}${frozen?'':' 만료'}</p>${frozen?`<p>진입·만료 처리를 중지하고 기존 대기 기록을 보존합니다. 최신 시세 미검증.</p><p>기록된 진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)}</p><p class="paper-targets">${targets(t)}</p>`:`<p>과거 캔들 가격에서 소급 진입하지 않습니다.</p><p>손절 ${fmt(t.stop)} · <span class="paper-targets">${targets(t)}</span></p>${levelsEditor(t)}`}</article>`;
+  return `<article class="paper-trade paper-pending"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} ${esc(t.direction)}</strong><span>${frozen?frozenPaperCaption:'첫 신규 시세 대기'}</span></header><p>${esc(t.pattern)} · ${time(t.signalAt)} 접수 · ${frozen?'기록된 유효기한 ':' '}${time(t.expiresAt)}${frozen?'':' 만료'}</p>${frozen?`<p>진입·만료 처리를 중지하고 기존 대기 기록을 보존합니다. 최신 시세 미검증.</p><p>기록된 진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)}</p><p class="paper-targets">${targets(t)}</p>`:`<p>과거 캔들 가격에서 소급 진입하지 않습니다.</p><p>손절 ${fmt(t.stop)} · <span class="paper-targets">${targets(t)}</span></p>${dcaCaption(t)}${levelsEditor(t)}`}</article>`;
  });
  const drafts=captureLevelDrafts();
  find('paperOpen').innerHTML=[...pending,...cards].join('')||'<p class="empty-small">현재 열린 가상 포지션이 없습니다. 새 시그널 이후 자동 기록합니다.</p>';
