@@ -207,3 +207,32 @@ test('order builders: SHORT sides and trigger rules are mirrored',()=>{
  const b=bingxOrders({symbol:'ETH-USDT',direction:'SHORT',stop:102,targets:[95,92,88],qty:{total:0.2,parts:[0.08,0.07,0.05]},clientOrderId:'x'});
  assert.equal(b.entry.side,'SELL');assert.ok(b.targets.every(t=>t.side==='BUY'));
 });
+
+test('manual levels: new stop before old cancel, wider stop capped by the risk limit, targets replaced after cancel',async()=>{
+ const m=mockBingX(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(row(),{signalKey:'m1'});const rec=ex.store.records[0],oldStop=rec.stopOrderId,oldTp2=rec.targetOrderIds[1];
+ assert.deepEqual(await ex.setLevels('other',{stop:99}),{ok:true,live:false},'no live record: paper only');
+ const wide=await ex.setLevels('m1',{stop:97,targets:rec.targets});assert.equal(wide.ok,false);assert.deepEqual(wide.reasons,['MANUAL_STOP_EXCEEDS_RISK_LIMIT']);
+ assert.equal(rec.stopOrderId,oldStop,'refused change leaves the venue untouched');
+ const before=m.calls.length;const r=await ex.setLevels('m1',{stop:99,targets:[105,109,112]});assert.equal(r.ok,true);assert.equal(r.stopMoved,true);assert.deepEqual(r.targetsMoved,[2]);
+ const after=m.calls.slice(before),place=after.findIndex(c=>c.method==='POST'&&c.params.type==='STOP_MARKET'),cancel=after.findIndex(c=>c.method==='DELETE'&&c.params.orderId===oldStop);
+ assert.ok(place>=0&&cancel>place,'new stop first');assert.equal(after[place].params.stopPrice,'99');assert.equal(after[place].params.quantity,'0.2');
+ const tpCancel=after.findIndex(c=>c.method==='DELETE'&&c.params.orderId===oldTp2),tpPlace=after.findIndex(c=>c.method==='POST'&&c.params.type==='TAKE_PROFIT_MARKET');
+ assert.ok(tpCancel>=0&&tpPlace>tpCancel,'old target cancelled before the new one');assert.equal(after[tpPlace].params.stopPrice,'109');assert.equal(after[tpPlace].params.quantity,'0.07');
+ assert.equal(rec.stop,99);assert.deepEqual(rec.targets,[105,109,112]);
+ // A stop already past the entry is not pulled back by the automatic break-even step.
+ await ex.setLevels('m1',{stop:101,targets:rec.targets});
+ const g=mockGate(),gx=new LiveExecutor({config:config(),clients:{GATEIO:g.client},now:()=>NOW});gx.arm();
+ await gx.onSignal(row('GATEIO'),{signalKey:'m2'});const n=g.calls.length;
+ const gr=await gx.setLevels('m2',{stop:99,targets:[106,108,112]});assert.equal(gr.ok,true);
+ const ga=g.calls.slice(n),gStop=ga.findIndex(c=>c.method==='POST'&&c.body?.order_type==='close-long-position'),gDel=ga.findIndex(c=>c.method==='DELETE');
+ assert.ok(gStop>=0&&gDel>gStop);assert.equal(ga[gStop].body.trigger.price,'99');
+ const gTp=ga.find(c=>c.method==='POST'&&c.body?.order_type==='plan-close-long-position');assert.equal(gTp.body.trigger.price,'106');assert.equal(gTp.body.initial.size,-8);
+});
+
+test('reconcile keeps a manual stop that is already better than break-even',async()=>{
+ let amt='0.20';const m=mockBingX({positionAmt:()=>amt}),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(row(),{signalKey:'m3'});await ex.setLevels('m3',{stop:101,targets:[105,108,112]});
+ amt='0.12';const before=m.calls.length;await ex.reconcile();
+ assert.ok(!m.calls.slice(before).some(c=>c.method==='POST'),'no break-even stop placed');assert.equal(ex.store.records[0].stop,101);assert.equal(ex.store.records[0].breakevenMoved,true);
+});

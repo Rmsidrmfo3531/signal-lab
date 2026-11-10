@@ -454,3 +454,8 @@
 .venues-table{width:100%;border-collapse:collapse;font-size:12px}.venues-table th,.venues-table td{padding:9px 12px;border-bottom:1px solid #1e3247;text-align:left;white-space:nowrap}.venues-table td small{display:block;color:#97adc5}
 .venues-details{padding:6px 20px 12px}.venues-details summary{cursor:pointer;color:#97adc5;font-size:12px;padding:8px 0}.venues-footnote{font-size:11px}
 .live-control{border-top:1px solid #1e3247;margin-top:8px}.live-actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px 20px}.live-kill{border-color:#a3403a;color:#ffb4ab}
+
+.paper-levels{margin-top:8px}.paper-levels summary{cursor:pointer;font-size:.85rem;color:var(--accent,#4f8cff)}
+.paper-levels form{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-top:6px;align-items:end}
+.paper-levels label{display:flex;flex-direction:column;font-size:.75rem;gap:2px}.paper-levels input{min-width:0;padding:4px 6px}
+.paper-levels input:disabled{opacity:.5}.paper-levels small{grid-column:1/-1}

@@ -278,6 +278,52 @@ export class PaperEngine {
     at,entryFill:position.entryFill,lastExitFill:position.closeParts.at(-1)?.fill,closeReason:reason,
     realizedPnLUSD:position.realizedPnLUSD,feesUSD:position.feesUSD};
  }
+ /** Manual stop/target change for a pending or open position. Prices are rounded to
+  * the position's tick. Filled targets are locked. Returns {ok,levels|reasons}; with
+  * dryRun nothing changes (used to validate before touching a live order). */
+ setLevels(key,{stop=null,targets=null}={},{dryRun=false,source='MANUAL'}={}){
+  const run=()=>{
+   const position=this.store.open.find(x=>x.key===key),pending=position?null:this.store.pending.find(x=>x.key===key),record=position??pending;
+   if(!record)return {ok:false,reasons:['POSITION_NOT_FOUND']};
+   const dir=record.direction==='LONG'?1:-1,tick=Number(record.targetPlan?.tickSize??record.venueContract?.tickSize)||null;
+   const round=value=>{const n=num(value);if(!validPrice(n))return NaN;if(!tick)return n;try{const down=quantizeVolumeStep(n,tick,'DOWN'),up=quantizeVolumeStep(n,tick,'UP');return n-down<=up-n&&down>0?down:up}catch{return NaN}};
+   const reference=position?num(position.markPrice):num(pending.signalPrice),entry=position?num(position.entryFill):num(pending.signalPrice);
+   const quantities=position?.targetQuantities??null,fills=position?position.closeParts.filter(x=>x.type==='TARGET'):[];
+   const tolerance=position?Math.max(1e-12,position.originalQty*1e-10):0;
+   const filled=[0,1,2].map(i=>Boolean(position)&&(quantities?fills.filter(x=>x.targetNumber===i+1).reduce((a,x)=>a+x.qty,0)>=quantities[i]-tolerance:fills.some(x=>x.targetNumber===i+1)));
+   const nextStop=stop===null||stop===undefined||stop===''?record.stop:round(stop);
+   const reasons=[];
+   if(!validPrice(nextStop))reasons.push('STOP_INVALID');
+   else if(!(dir*(reference-nextStop)>0))reasons.push('STOP_ALREADY_CROSSED');
+   let nextTargets=[...record.targets];
+   if(targets!==null&&targets!==undefined){
+    if(!Array.isArray(targets)||targets.length!==3)reasons.push('TARGETS_NEED_THREE');
+    else targets.forEach((value,i)=>{
+     if(value===null||value===undefined||value==='')return;
+     const price=round(value);
+     if(filled[i]){if(Math.abs(price-record.targets[i])>(tick||1e-12)/2)reasons.push(`TP${i+1}_ALREADY_FILLED`);return}
+     if(!validPrice(price))reasons.push(`TP${i+1}_INVALID`);else nextTargets[i]=price;
+    });
+   }
+   nextTargets.forEach((price,i)=>{
+    if(filled[i])return;
+    if(!(dir*(price-reference)>0))reasons.push(`TP${i+1}_NOT_BEYOND_PRICE`);
+    if(!(dir*(price-entry)>0))reasons.push(`TP${i+1}_NOT_BEYOND_ENTRY`);
+    if(i>0&&!(dir*(price-nextTargets[i-1])>0))reasons.push(`TP${i+1}_ORDER`);
+   });
+   if(validPrice(nextStop)&&nextTargets.some((price,i)=>!filled[i]&&!(dir*(price-nextStop)>0)))reasons.push('STOP_BEYOND_TARGET');
+   if(reasons.length)return {ok:false,reasons:[...new Set(reasons)]};
+   const levels={key,stop:nextStop,targets:nextTargets,previousStop:record.stop,previousTargets:[...record.targets],filled,state:position?'OPEN':'PENDING',
+    changed:nextStop!==record.stop||nextTargets.some((p,i)=>p!==record.targets[i])};
+   if(dryRun||!levels.changed)return {ok:true,levels};
+   const at=this.now();record.stop=nextStop;record.targets=nextTargets;record.manualLevels=true;
+   record.managementEvents=[...(record.managementEvents??[]),{type:'MANUAL_LEVELS',at,source,previousStop:levels.previousStop,stop:nextStop,previousTargets:levels.previousTargets,targets:nextTargets}];
+   if(position&&validPrice(position.originalQty)&&validPrice(position.entryFill))position.plannedLossUSD=rounded(position.qtyRemaining*Math.max(0,dir*(position.entryFill-nextStop)));
+   this.telemetry.lastPositionEventAt=at;this.notify();
+   return {ok:true,levels};
+  };
+  return dryRun?run():this.#mutate(run);
+ }
  expirePending(){return this.#mutate(()=>this.#expirePending())}
  #expirePending(){let count=0;const now=this.now();for(const p of [...this.store.pending])if(p.market==='CRYPTO'&&now>p.expiresAt){this.store.pending=this.store.pending.filter(x=>x.key!==p.key);this.store.skipped.push({key:p.key,reason:'20분 이내 새 시세가 없어 진입 생략',at:now});count++}
   if(count){this.telemetry.lastPositionEventAt=now;this.notify()}return count}

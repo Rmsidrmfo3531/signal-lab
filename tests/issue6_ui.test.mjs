@@ -188,4 +188,8 @@ test('disabled TradFi open and pending cards preserve stored levels and PNL with
  assert.match(find('paperClosed').innerHTML,/\+\$12.34/);assert.match(find('paperClosed').innerHTML,/공급자 없음 · 기록 보존 · 자동처리 중지/);
  const crypto={...original,market:'CRYPTO'};ctx.render({...payload,open:[crypto],pending:[crypto],closed:[]});
  assert.match(find('paperOpen').innerHTML,/첫 신규 시세 대기/);assert.match(find('paperOpen').innerHTML,/첫 익절 또는 손절 대기/);
+ assert.equal((find('paperOpen').innerHTML.match(/손절·TP 직접 수정/g)||[]).length,2,'crypto open and pending cards offer the stop/TP editor');
+ assert.doesNotMatch(rendered,/손절·TP 직접 수정/,'frozen TradFi records cannot be edited');
+ const tp1Filled={...crypto,targetQuantities:[.04,.035,.025],closeParts:[{type:'TARGET',targetNumber:1,qty:.04}]};ctx.render({...payload,open:[tp1Filled],pending:[],closed:[]});
+ assert.match(find('paperOpen').innerHTML,/name="tp0"[^>]*disabled/,'a filled TP1 is locked');assert.doesNotMatch(find('paperOpen').innerHTML,/name="tp1"[^>]*disabled/);
 });
