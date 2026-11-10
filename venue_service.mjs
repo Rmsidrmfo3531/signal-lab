@@ -22,7 +22,7 @@ export class VenueQuoteService{
  async #venueRow(venue,symbol){
   const client=this.clients[venue],status=this.status[venue];
   let contracts;
-  try{contracts=await client.loadContracts();status.contractsAt=client.contractsAt;status.contractCount=contracts.size}
+  try{contracts=await client.loadContracts();status.contractsAt=client.contractsAt;status.contractCount=contracts.size;status.clockOffsetMs=client.clockOffsetMs??0}
   catch(error){status.state='error';status.error=error.code||'CONTRACTS_UNAVAILABLE';return {contract:null,book:null,error:status.error}}
   const contract=contracts.get(symbol)??null;
   if(!contract)return {contract:null,book:null,error:'NOT_LISTED'};

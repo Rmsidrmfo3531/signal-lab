@@ -131,8 +131,10 @@ const LIVE=liveConfig(process.env);
 function liveClients(){
  if(LIVE.mode==='OFF')return {};
  const mode=LIVE.mode==='LIVE'?'LIVE':'TESTNET',clients={};
- if(process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET)clients.BINGX=new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode});
- if(process.env.GATEIO_API_KEY&&process.env.GATEIO_API_SECRET)clients.GATEIO=new GateTradeClient({apiKey:process.env.GATEIO_API_KEY,secret:process.env.GATEIO_API_SECRET,mode});
+ // Signed timestamps use the venue clock measured by the public clients (PC clocks drift).
+ const venueNow=venue=>()=>Date.now()+(venueQuotes.clients[venue]?.clockOffsetMs||0);
+ if(process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET)clients.BINGX=new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode,now:venueNow('BINGX')});
+ if(process.env.GATEIO_API_KEY&&process.env.GATEIO_API_SECRET)clients.GATEIO=new GateTradeClient({apiKey:process.env.GATEIO_API_KEY,secret:process.env.GATEIO_API_SECRET,mode,now:venueNow('GATEIO')});
  return clients;
 }
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status)});
@@ -309,7 +311,8 @@ async function checkSymbolInternal(symbol, force=false){
    if(chosen){
     const contract=venueEntry(chosen.venue,symbol).contract;
     out.executionVenue=chosen.venue;out.venueSymbol=contract.venueSymbol;
-    out.venueContract={tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase};
+    out.venueContract={tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
+     decimalSizes:contract.decimalSizes===true,contractStep:contract.contractStep??null};
     out.rawStop=out.stop;out.stop=chosen.stop;
    }
    if(estimate.eligible&&Number.isFinite(chartTick)&&chartTick>0){

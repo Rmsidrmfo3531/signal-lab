@@ -71,3 +71,12 @@ test('decimal grid helpers are exact',()=>{
  assert.equal(roundDecimalToStep(1.05,0.1,'UP'),'1.1');assert.equal(multiplyDecimal('0.0001','1234'),'0.1234');assert.equal(decimalPlaces('0.001'),3);
  assert.throws(()=>roundDecimalToStep(-1,0.1),/INVALID_DECIMAL/);assert.throws(()=>roundDecimalToStep(0,0.1),/POSITIVE_DECIMAL_REQUIRED/);
 });
+
+test('Gate.io decimal-size contracts step by order_size_min contracts; a missing minimum stays invalid',()=>{
+ const c=normalizeGateContract(gate({name:'ETH_USDT',quanto_multiplier:'0.01',order_size_min:'0.1',enable_decimal:true}));
+ assert.equal(c.tradable,true);assert.equal(c.decimalSizes,true);assert.equal(c.contractStep,'0.1');
+ assert.equal(c.quantityStep,'0.001','0.1 contract x 0.01 ETH');assert.equal(c.minQuantityBase,'0.001');
+ assert.deepEqual(venueQuantity(c,0.12345),{orderQuantity:'12.3',unit:'CONTRACT',baseQuantity:0.123});
+ const integer=normalizeGateContract(gate());assert.equal(integer.decimalSizes,false);assert.equal(integer.contractStep,'1');assert.equal(integer.quantityStep,'0.0001');
+ const missing=normalizeGateContract(gate({order_size_min:undefined}));assert.ok(missing.reasons.includes('VENUE_MIN_QUANTITY_INVALID'));
+});

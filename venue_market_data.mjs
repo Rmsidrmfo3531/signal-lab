@@ -53,6 +53,9 @@ export function normalizeBingXContract(raw){
 export function normalizeGateContract(raw){
  const symbol=canonicalSymbol('GATEIO',raw?.name);
  if(!symbol)return null;
+ // enable_decimal contracts accept fractional contract sizes; their size step is
+ // order_size_min (as ccxt does). Integer contracts step by one contract.
+ const decimalSizes=raw.enable_decimal===true||raw.enable_decimal==='true';
  const multiplier=text(raw.quanto_multiplier),tickSize=text(raw.order_price_round),minContracts=text(raw.order_size_min);
  const reasons=[];
  if(raw.status!==undefined&&raw.status!=='trading')reasons.push('VENUE_STATUS_INACTIVE');
@@ -63,14 +66,19 @@ export function normalizeGateContract(raw){
  let minQuantityBase=null;
  try{if(!reasons.includes('VENUE_PRECISION_INVALID')&&positive(num(minContracts)))minQuantityBase=multiplyDecimal(minContracts,multiplier)}catch{reasons.push('VENUE_PRECISION_INVALID')}
  return {venue:'GATEIO',symbol,venueSymbol:raw.name,baseAsset:symbol.slice(0,-4),quoteAsset:'USDT',
-  tickSize:positive(num(tickSize))?tickSize:null,quantityStep:positive(num(multiplier))?multiplier:null,quantityUnit:'CONTRACT',
+  tickSize:positive(num(tickSize))?tickSize:null,quantityUnit:'CONTRACT',decimalSizes,
+  contractStep:decimalSizes&&positive(num(minContracts))?minContracts:'1',
+  quantityStep:positive(num(multiplier))?(()=>{try{return decimalSizes&&positive(num(minContracts))?multiplyDecimal(minContracts,multiplier):multiplier}catch{return null}})():null,
   contractSizeBase:positive(num(multiplier))?multiplier:null,minContracts:positive(num(minContracts))?num(minContracts):null,minQuantityBase,
   minNotionalUSDT:null,markPrice:positive(num(raw.mark_price))?num(raw.mark_price):null,tradable:reasons.length===0,reasons};
 }
 
 const level=(price,size)=>{const p=num(price),s=num(size);return positive(p)&&Number.isFinite(s)&&s>=0?[p,s]:null};
 /** Top of book from a venue depth response, validated and time-stamped. */
-export function normalizeBook(venue,raw,{receivedAt=Date.now(),now=Date.now(),maxAgeMs=MAX_BOOK_AGE_MS}={}){
+/** clockOffsetMs = venue clock - local clock (measured from the venue's server time).
+ * Source times are converted to the local clock so every freshness check downstream
+ * stays correct on a PC whose clock is a few seconds off. */
+export function normalizeBook(venue,raw,{receivedAt=Date.now(),now=Date.now(),maxAgeMs=MAX_BOOK_AGE_MS,clockOffsetMs=0}={}){
  const reasons=[];let bids=[],asks=[],sourceTime=null;
  if(venue==='BINGX'){
   bids=(Array.isArray(raw?.bids)?raw.bids:[]).map(x=>Array.isArray(x)?level(x[0],x[1]):null);
@@ -86,6 +94,7 @@ export function normalizeBook(venue,raw,{receivedAt=Date.now(),now=Date.now(),ma
  // Best bid = highest, best ask = lowest, whatever order the venue returns.
  const bid=bids.filter(Boolean).reduce((best,x)=>!best||x[0]>best[0]?x:best,null),ask=asks.filter(Boolean).reduce((best,x)=>!best||x[0]<best[0]?x:best,null);
  if(bid&&ask&&bid[0]>=ask[0])reasons.push('BOOK_CROSSED');
+ if(positive(sourceTime)&&Number.isFinite(clockOffsetMs))sourceTime-=clockOffsetMs;
  if(!positive(sourceTime))reasons.push('BOOK_TIME_MISSING');
  else if(sourceTime>receivedAt+2000||now-sourceTime>maxAgeMs)reasons.push('BOOK_STALE');
  const mid=bid&&ask?(bid[0]+ask[0])/2:null;
@@ -120,6 +129,7 @@ export function compareVenues(symbol,{bingx,gateio,binancePrice}={}){
 export function venueQuantity(contract,baseQuantity){
  if(!contract?.tradable||!positive(baseQuantity))return null;
  if(contract.quantityUnit==='BASE_ASSET'){const q=roundDecimalToStep(baseQuantity,contract.quantityStep,'DOWN');return {orderQuantity:q,unit:'BASE_ASSET',baseQuantity:Number(q)}}
- const contracts=Math.floor(baseQuantity/Number(contract.contractSizeBase)+1e-9);
- return {orderQuantity:String(contracts),unit:'CONTRACT',baseQuantity:Number(multiplyDecimal(String(Math.max(contracts,0)),contract.contractSizeBase))};
+ // Whole contracts, or multiples of order_size_min for decimal-size contracts.
+ const contracts=roundDecimalToStep(baseQuantity/Number(contract.contractSizeBase)*(1+1e-9),contract.contractStep||'1','DOWN');
+ return {orderQuantity:contracts,unit:'CONTRACT',baseQuantity:Number(multiplyDecimal(contracts,contract.contractSizeBase))};
 }

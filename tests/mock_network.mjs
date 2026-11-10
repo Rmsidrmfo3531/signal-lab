@@ -21,6 +21,8 @@ globalThis.fetch=async(input,options)=>{
   if(url.includes('/klines?'))return respond([]);
  }
 // Execution-venue public data, shaped as in the official BingX and Gate.io API documentation.
+ if(url==='https://open-api.bingx.com/openApi/swap/v2/server/time')return respond({code:0,msg:'',data:{serverTime:Date.now()}});
+ if(url==='https://api.gateio.ws/api/v4/spot/time')return respond({server_time:Date.now()});
  if(url.startsWith('https://open-api.bingx.com/openApi/swap/v2/quote/')){
   const u=new URL(url);
   if(u.pathname.endsWith('/contracts'))return respond({code:0,msg:'',data:[
