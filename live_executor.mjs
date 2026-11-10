@@ -98,11 +98,12 @@ export class LiveExecutor{
     this.kill('NO_PROTECTIVE_STOP');return;
    }
   }
-  for(const params of plan.targets){
-   try{const t=await client.placeOrder(params);record.targetOrderIds.push(bingxOrderId(t))}
-   catch(error){this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})} // the stop still protects the position
+  record.targetParts=[...record.quantity.parts];
+  for(const [i,params] of plan.targets.entries()){
+   try{const t=await client.placeOrder(params);record.targetOrderIds[i]=bingxOrderId(t)}
+   catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})} // the stop still protects the position
   }
-  this.#event(record,'PROTECTED',{targets:record.targetOrderIds.length});
+  this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});
  }
 
  async #openGate(record){
@@ -135,11 +136,12 @@ export class LiveExecutor{
   let parts=record.quantity.parts;
   if(filled!==record.quantity.total){const first=Math.floor(filled*.4),second=Math.floor(filled*.35);parts=[first,second,filled-first-second]}
   plan.targets.forEach((t,i)=>{t.initial.size=Math.sign(t.initial.size)*parts[i]});
-  for(const t of plan.targets){if(!t.initial.size)continue;
-   try{const o=await client.placeTrigger(t);record.targetOrderIds.push(String(o.id))}
-   catch(error){this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})}
+  record.targetParts=[...parts];
+  for(const [i,t] of plan.targets.entries()){if(!t.initial.size){record.targetOrderIds[i]=null;continue}
+   try{const o=await client.placeTrigger(t);record.targetOrderIds[i]=String(o.id)}
+   catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})}
   }
-  this.#event(record,'PROTECTED',{targets:record.targetOrderIds.length});
+  this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});
  }
 
  /** Compare open records with the venue: detect closed positions and move the stop to
@@ -154,19 +156,71 @@ export class LiveExecutor{
      this.#event(record,'CLOSED');continue;
     }
     const original=record.venue==='GATEIO'?(record.filledContracts??record.quantity.total):record.quantity.total;
+    const lockedIn=entryPrice>0&&(record.direction==='LONG'?record.stop>=entryPrice:record.stop<=entryPrice);
+    if(!record.breakevenMoved&&lockedIn&&size<=original*0.6+1e-9){record.breakevenMoved=true;this.#event(record,'BREAKEVEN_SKIPPED_STOP_ALREADY_BETTER',{stop:record.stop})}
     if(!record.breakevenMoved&&size<=original*0.6+1e-9&&entryPrice>0){
      const client=this.clients[record.venue];let placed;
      if(record.venue==='BINGX'){const plan=bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
       placed=bingxOrderId(await client.placeOrder(plan.breakeven(entryPrice,size)))}
      else{const plan=gateOrders({contract:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
       placed=String((await client.placeTrigger(plan.breakeven(entryPrice))).id)}
-     const old=record.stopOrderId;record.stopOrderId=placed;record.breakevenMoved=true;record.breakevenPrice=entryPrice;
+     const old=record.stopOrderId;record.stopOrderId=placed;record.breakevenMoved=true;record.breakevenPrice=entryPrice;record.stop=entryPrice;
      if(old)await this.#cancel(record,old);
      this.#event(record,'STOP_TO_BREAKEVEN',{price:entryPrice,orderId:placed});
     }
    }catch(error){this.#event(record,'RECONCILE_ERROR',{reason:error.code||error.message})}
   }
   this.#save();
+ }
+ /** Manual stop/target change on an open live position. The new stop is placed before
+  * the old one is cancelled, so the position is never unprotected. A wider stop may not
+  * push the position's risk above the per-trade cap. A target is replaced only after its
+  * old order was cancelled, so a target can never be doubled. */
+ async setLevels(signalKey,{stop,targets}){
+  const record=this.store.records.find(r=>r.signalKey===signalKey&&r.status==='OPEN');
+  if(!record)return {ok:true,live:false};
+  if(this.busy.has(record.symbol))return {ok:false,live:true,reasons:['SYMBOL_BUSY']};
+  this.busy.add(record.symbol);
+  const client=this.clients[record.venue],dir=record.direction==='LONG'?1:-1,result={ok:true,live:true,stopMoved:false,targetsMoved:[],errors:[]};
+  try{
+   const {size,entryPrice}=await this.#position(record);
+   if(size===0)return {ok:false,live:true,reasons:['LIVE_POSITION_FLAT']};
+   const qty=record.quantity,original=record.venue==='GATEIO'?(record.filledContracts??qty.total):qty.total;
+   const plan=record.venue==='BINGX'?bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop,targets,qty,clientOrderId:record.clientOrderId})
+    :gateOrders({contract:record.venueSymbol,direction:record.direction,stop,targets,qty,clientOrderId:record.clientOrderId});
+   if(Number.isFinite(stop)&&stop!==record.stop){
+    const reference=entryPrice>0?entryPrice:null,wider=dir*(record.stop-stop)>0;
+    if(wider&&reference){
+     const initial=Math.abs(reference-(record.initialStop??record.stop))||Math.abs(reference-record.stop),risk=qty.riskUSD*Math.max(0,dir*(reference-stop))/initial*(size/original);
+     if(risk>this.config.maxRiskUSD*(1+1e-6))return {ok:false,live:true,reasons:['MANUAL_STOP_EXCEEDS_RISK_LIMIT'],riskUSD:risk,maxRiskUSD:this.config.maxRiskUSD};
+    }
+    let placed;
+    try{placed=record.venue==='BINGX'?bingxOrderId(await client.placeOrder(plan.breakeven(stop,size))):String((await client.placeTrigger(plan.breakeven(stop))).id)}
+    catch(error){this.#event(record,'MANUAL_STOP_FAILED',{reason:error.code||error.message});return {ok:false,live:true,reasons:['LIVE_STOP_NOT_PLACED'],detail:error.code||error.message}}
+    const old=record.stopOrderId;record.initialStop??=record.stop;record.stopOrderId=placed;record.stop=stop;result.stopMoved=true;
+    if(old)await this.#cancel(record,old);
+    this.#event(record,'MANUAL_STOP',{price:stop,orderId:placed});
+   }
+   if(Array.isArray(targets))for(let i=0;i<3;i++){
+    if(!Number.isFinite(targets[i])||targets[i]===record.targets[i])continue;
+    const old=record.targetOrderIds?.[i];
+    if(old){
+     try{if(record.venue==='BINGX')await client.cancelOrder(record.venueSymbol,old);else await client.cancelTrigger(old)}
+     catch(error){result.errors.push(`TP${i+1}_CANCEL_FAILED`);this.#event(record,'MANUAL_TARGET_CANCEL_FAILED',{target:i+1,reason:error.code||error.message});continue}
+    }
+    const part=record.targetParts?.[i]??qty.parts[i];
+    if(!part){record.targets[i]=targets[i];continue}
+    try{
+     const params=plan.targets[i];
+     if(record.venue==='BINGX')params.quantity=String(part);else params.initial.size=Math.sign(params.initial.size)*part;
+     const o=record.venue==='BINGX'?await client.placeOrder(params):await client.placeTrigger(params);
+     record.targetOrderIds[i]=record.venue==='BINGX'?bingxOrderId(o):String(o.id);record.targets[i]=targets[i];result.targetsMoved.push(i+1);
+     this.#event(record,'MANUAL_TARGET',{target:i+1,price:targets[i],orderId:record.targetOrderIds[i]});
+    }catch(error){record.targetOrderIds[i]=null;record.targets[i]=targets[i];result.errors.push(`TP${i+1}_NOT_PLACED`);this.#event(record,'TARGET_FAILED',{target:i+1,reason:error.code||error.message})}
+   }
+  }catch(error){this.#event(record,'MANUAL_LEVELS_ERROR',{reason:error.code||error.message});return {ok:false,live:true,reasons:['LIVE_LEVELS_ERROR'],detail:error.code||error.message}}
+  finally{this.busy.delete(record.symbol);this.#save()}
+  return result;
  }
  async #position(record){
   const client=this.clients[record.venue];

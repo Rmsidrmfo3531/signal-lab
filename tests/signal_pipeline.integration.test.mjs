@@ -106,6 +106,12 @@ test('synthetic end to end: LONG three profile targets with breakeven/restart, t
   const long=paper.open[0];assert.equal(long.direction,'LONG');assert.equal(long.executionVenue,'BINGX','tie on price keeps the first configured venue');assert.equal(long.venueSymbol,'BTC-USDT');assert.equal(long.managementVersion,'VOLUME_PROFILE_V1');
   assert.ok(long.entryFill>ENTRY,'long fill includes spread and slippage');assert.ok(long.feesUSD>0);
   assert.ok(long.targetPlan?.profileEvidence,'the entry preserves the supplied 15m-candle profile evidence');
+  // Manual stop/TP edit through the API: a wrong-side stop is refused, a tighter stop is stored and survives.
+  const post=async body=>{const r=await fetchLocal(app.base+'/api/paper/levels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,body:await r.json()}};
+  const refused=await post({key:long.key,stop:long.entryFill+5});assert.equal(refused.status,400);assert.deepEqual(refused.body.reasons,['STOP_ALREADY_CROSSED']);
+  const tighter=Number((long.stop+0.5).toFixed(2)),edited=await post({key:long.key,stop:tighter,targets:long.targets});
+  assert.equal(edited.status,200,JSON.stringify(edited.body));assert.equal(edited.body.changed,true);assert.equal(edited.body.live.live,false,'live trading is off');
+  assert.equal((await app.get('/api/paper')).open[0].stop,tighter);
   await app.write({prices:{BTCUSDT:long.targets[0]+.02}});
   paper=await until(()=>app.get('/api/paper'),p=>p.open[0]?.exitedPct===40);
   const partial=paper.open[0];assert.equal(partial.closeParts.length,1);assert.equal(partial.closeParts[0].targetNumber,1);

@@ -819,6 +819,23 @@ const server=http.createServer(async(req,res)=>{
    persisted.watchlist=next.slice(0,35);
    save();refreshLiveSubscriptions();return response(res,200,{watchlist:persisted.watchlist});
   }
+  if(pathname==='/api/paper/levels'&&req.method==='POST'){
+   // Manual stop/TP change: validated on the paper position first, then applied to a
+   // linked live order (new stop before old cancel), then recorded on the paper position.
+   const body=await bodyJson(req);
+   if(typeof body?.key!=='string'||body.key.length>300)return response(res,400,{ok:false,reasons:['KEY_REQUIRED']});
+   const wanted={stop:body.stop??null,targets:Array.isArray(body.targets)?body.targets:null};
+   const check=paper.setLevels(body.key,wanted,{dryRun:true});
+   if(!check.ok)return response(res,400,check);
+   if(!check.levels.changed)return response(res,200,{ok:true,changed:false,levels:check.levels});
+   let liveResult={live:false};
+   if(LIVE.mode!=='OFF'){
+    liveResult=await live.setLevels(body.key,{stop:check.levels.stop,targets:check.levels.targets});
+    if(!liveResult.ok)return response(res,409,{ok:false,reasons:liveResult.reasons,live:liveResult});
+   }
+   const applied=paper.setLevels(body.key,wanted,{source:liveResult.live?'MANUAL_PAPER_AND_LIVE':'MANUAL'});
+   return response(res,applied.ok?200:409,{...applied,changed:true,live:liveResult});
+  }
   if(pathname==='/api/paper/settings'&&req.method==='POST'){
    const body=await bodyJson(req),hasToggle=Object.hasOwn(body||{},'TP1_MOVE_STOP_TO_BREAKEVEN'),hasMode=Object.hasOwn(body||{},'TP1_BREAKEVEN_MODE');
    if(!hasToggle&&!hasMode||hasToggle&&typeof body.TP1_MOVE_STOP_TO_BREAKEVEN!=='boolean'||hasMode&&!['ENTRY_FILL','COST_COVERED'].includes(body.TP1_BREAKEVEN_MODE))

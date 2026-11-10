@@ -1,4 +1,5 @@
-// PC/mobile paper dashboard. Only an explicit click changes new-position settings; no order or activation API exists.
+// PC/mobile paper dashboard. Only an explicit click changes settings or a position's stop/TP;
+// a stop/TP change also moves the linked live order when live trading is on.
 const find=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=value=>value!==null&&value!==undefined&&value!==''&&Number.isFinite(Number(value))?Number(value).toLocaleString('en-US',{maximumFractionDigits:8}):'—';
@@ -11,6 +12,26 @@ const frozenPaperCaption='공급자 없음 · 기록 보존 · 자동처리 중�
 const timeGap=(value,limit)=>!(Number.isFinite(Number(value))&&Date.now()-Number(value)<limit);
 // Execution venue of a paper record; records before the venue switch used Binance prices.
 const PAPER_VENUE_LABELS={BINGX:'BingX',GATEIO:'Gate.io'};
+// Manual stop/TP editor. Filled targets are locked; the server validates and rounds to the tick.
+const LEVEL_REASONS={STOP_ALREADY_CROSSED:'손절가가 이미 현재가를 넘었습니다',STOP_INVALID:'손절가 숫자 오류',STOP_BEYOND_TARGET:'손절가가 목표가보다 바깥에 있습니다',
+ MANUAL_STOP_EXCEEDS_RISK_LIMIT:'실주문 1회 손실 한도를 넘는 손절폭입니다',LIVE_STOP_NOT_PLACED:'거래소에 새 손절 주문을 넣지 못했습니다(기존 손절 유지)',
+ POSITION_NOT_FOUND:'포지션이 이미 종료되었습니다',SYMBOL_BUSY:'거래소 주문 처리 중입니다. 잠시 후 다시 시도하세요',LIVE_POSITION_FLAT:'거래소 포지션이 이미 없습니다'};
+const levelReason=r=>LEVEL_REASONS[r]||(/^TP(\d)_ALREADY_FILLED$/.test(r)?r[2]+'차 목표는 이미 체결되어 바꿀 수 없습니다':/^TP(\d)_NOT_BEYOND_PRICE$/.test(r)?r[2]+'차 목표가 현재가보다 수익 방향에 있어야 합니다':
+ /^TP(\d)_NOT_BEYOND_ENTRY$/.test(r)?r[2]+'차 목표가 진입가보다 수익 방향에 있어야 합니다':/^TP(\d)_ORDER$/.test(r)?r[2]+'차 목표 순서가 맞지 않습니다':r);
+function filledTargets(t){const q=t.targetQuantities,f=(t.closeParts||[]).filter(x=>x.type==='TARGET');
+ return [0,1,2].map(i=>q?f.filter(x=>x.targetNumber===i+1).reduce((a,x)=>a+x.qty,0)>=q[i]*(1-1e-9):f.some(x=>x.targetNumber===i+1))}
+function levelsEditor(t){
+ if(providerUnavailable(t))return '';const filled=filledTargets(t);
+ return `<details class="paper-levels" data-levels-key="${esc(t.key)}"><summary>손절·TP 직접 수정</summary>
+  <form data-levels-form="${esc(t.key)}"><label>손절 <input name="stop" inputmode="decimal" value="${esc(t.stop)}"></label>
+  ${[0,1,2].map(i=>`<label>${i+1}차 TP <input name="tp${i}" inputmode="decimal" value="${esc(t.targets?.[i])}" ${filled[i]?'disabled title="이미 체결됨"':''}></label>`).join('')}
+  <button type="submit">적용</button><small data-levels-msg>현재가 기준으로 검사하고 거래소 가격 단위로 맞춥니다. 실주문이 켜져 있으면 거래소 주문도 함께 바뀝니다.</small></form></details>`;
+}
+function captureLevelDrafts(){const drafts=new Map();if(typeof document.querySelectorAll!=='function')return drafts;document.querySelectorAll('[data-levels-key]').forEach(d=>{
+ const form=d.querySelector('form'),values={};form?.querySelectorAll('input').forEach(i=>{values[i.name]=i.value});
+ drafts.set(d.dataset.levelsKey,{open:d.open,values,focus:document.activeElement?.closest?.('[data-levels-key]')===d?document.activeElement.name:null})});return drafts}
+function restoreLevelDrafts(drafts){if(typeof document.querySelectorAll!=='function')return;document.querySelectorAll('[data-levels-key]').forEach(d=>{const draft=drafts.get(d.dataset.levelsKey);if(!draft?.open)return;
+ d.open=true;d.querySelectorAll('input').forEach(i=>{if(!i.disabled&&draft.values[i.name]!==undefined)i.value=draft.values[i.name]});if(draft.focus)d.querySelector(`input[name="${draft.focus}"]`)?.focus()})}
 function paperVenueBadge(t){const label=PAPER_VENUE_LABELS[t?.executionVenue];return `<small class="paper-venue">${label?esc(label)+' 호가':'Binance 시세(이전 기록)'}</small>`}
 function targets(row){return (row.targets||[]).map((p,i)=>`<span>${i+1}차 ${fmt(p)} / ${[40,35,25][i]}%</span>`).join(' · ')}
 function paperManagementCaption(row){
@@ -52,6 +73,21 @@ breakevenModeControl?.addEventListener('change',async()=>{
  const mode=breakevenModeControl.value;if(!['ENTRY_FILL','COST_COVERED'].includes(mode)||lastBreakevenMode===null||paperManagementSaving)return;
  await savePaperManagementSetting({TP1_BREAKEVEN_MODE:mode});
 });
+
+async function submitLevels(form){
+ const key=form.dataset.levelsForm,msg=form.querySelector('[data-levels-msg]'),button=form.querySelector('button');
+ const value=name=>{const i=form.querySelector(`input[name="${name}"]`);return !i||i.disabled||i.value.trim()===''?null:Number(i.value)};
+ const body={key,stop:value('stop'),targets:[value('tp0'),value('tp1'),value('tp2')]};
+ if([body.stop,...body.targets].some(v=>v!==null&&!(Number.isFinite(v)&&v>0))){msg.textContent='가격은 0보다 큰 숫자로 입력하세요.';return}
+ button.disabled=true;msg.textContent='적용 중…';
+ try{const resp=await fetch('/api/paper/levels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await resp.json().catch(()=>({}));
+  if(!resp.ok||!data.ok){msg.textContent='적용 안 됨: '+(data.reasons||['HTTP_'+resp.status]).map(levelReason).join(' · ');return}
+  const live=data.live?.live?(data.live.errors?.length?' · 거래소 일부 실패: '+data.live.errors.join(', '):' · 거래소 주문도 변경됨'):'';
+  msg.textContent=data.changed?`적용됨: 손절 ${fmt(data.levels.stop)} · TP ${data.levels.targets.map(fmt).join(' / ')}${live}`:'바뀐 값이 없습니다.';
+  form.closest('details').open=false;loadPaper();
+ }catch(e){msg.textContent='적용 실패: '+e.message}finally{button.disabled=false}
+}
+find('paperOpen')?.addEventListener('submit',e=>{const form=e.target.closest?.('[data-levels-form]');if(!form)return;e.preventDefault();submitLevels(form)});
 function renderMonitor(payload){
  const m=payload.monitor;
  if(!m){find('paperMonitorTitle').textContent='● 모의매매 상태 정보를 받지 못했습니다';return}
@@ -92,13 +128,15 @@ function render(payload){
   return `<article class="paper-trade"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><span>${esc(t.market)} · ${frozen?frozenPaperCaption:'진행 중'}</span></header>
    <p>${esc(t.pattern)} · ${time(t.openedAt)} 진입</p><div class="paper-trade-values"><span>모의 진입 <b>${fmt(t.entryFill)}</b></span><span>기준 손절 <b>${fmt(t.stop)}</b></span><span>명목금액 <b>$${fmt(t.notionalUSD)}</b></span><span>${frozen?'마지막 저장 시세 평가 (현재 평가 아님)':'미실현'} <b class="${resultClass(gain)}">${usd(gain)}${frozen?' (최신 시세 미검증)':stale?' (시세 지연)':''}</b></span></div>
    <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))}</small><p>남은 수량 ${fmt(t.qtyRemaining)} · 분할익절 ${t.exitedPct||0}% · 진입 수수료 등 $${fmt(t.feesUSD)}</p>
-   <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div></article>`;
+   <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div>${t.manualLevels?'<small class="paper-management-mode">손절·TP 직접 수정됨</small>':''}${levelsEditor(t)}</article>`;
  });
  const pending=(payload.pending||[]).map(t=>{
   const frozen=providerUnavailable(t);
-  return `<article class="paper-trade paper-pending"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} ${esc(t.direction)}</strong><span>${frozen?frozenPaperCaption:'첫 신규 시세 대기'}</span></header><p>${esc(t.pattern)} · ${time(t.signalAt)} 접수 · ${frozen?'기록된 유효기한 ':' '}${time(t.expiresAt)}${frozen?'':' 만료'}</p>${frozen?`<p>진입·만료 처리를 중지하고 기존 대기 기록을 보존합니다. 최신 시세 미검증.</p><p>기록된 진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)}</p><p class="paper-targets">${targets(t)}</p>`:'<p>과거 캔들 가격에서 소급 진입하지 않습니다.</p>'}</article>`;
+  return `<article class="paper-trade paper-pending"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} ${esc(t.direction)}</strong><span>${frozen?frozenPaperCaption:'첫 신규 시세 대기'}</span></header><p>${esc(t.pattern)} · ${time(t.signalAt)} 접수 · ${frozen?'기록된 유효기한 ':' '}${time(t.expiresAt)}${frozen?'':' 만료'}</p>${frozen?`<p>진입·만료 처리를 중지하고 기존 대기 기록을 보존합니다. 최신 시세 미검증.</p><p>기록된 진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)}</p><p class="paper-targets">${targets(t)}</p>`:`<p>과거 캔들 가격에서 소급 진입하지 않습니다.</p><p>손절 ${fmt(t.stop)} · <span class="paper-targets">${targets(t)}</span></p>${levelsEditor(t)}`}</article>`;
  });
+ const drafts=captureLevelDrafts();
  find('paperOpen').innerHTML=[...pending,...cards].join('')||'<p class="empty-small">현재 열린 가상 포지션이 없습니다. 새 시그널 이후 자동 기록합니다.</p>';
+ restoreLevelDrafts(drafts);
  find('paperClosed').innerHTML=(payload.closed||[]).map(t=>{
   const parts=(t.closeParts||[]).map(p=>`<small>${p.type==='STOP'?'잔여 손절':p.targetNumber+'차 익절'} · ${time(p.at)} · ${fmt(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('');
   return `<article class="paper-trade"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><strong class="${resultClass(t.realizedPnLUSD)}">${usd(t.realizedPnLUSD)}</strong></header><p>${esc(t.market)} · ${esc(t.pattern)}${providerUnavailable(t)?' · '+frozenPaperCaption:''}</p><div class="paper-trade-values"><span>진입 <b>${fmt(t.entryFill)}</b></span><span>종료 <b>${time(t.closedAt)}</b></span><span>명목 <b>$${fmt(t.notionalUSD)}</b></span><span>총 수수료 <b>$${fmt(t.feesUSD)}</b></span></div><p>종료 사유: ${esc(t.closeReason)}${t.quoteGaps?' · 가격 수신 공백 '+t.quoteGaps+'회':''}</p><div class="paper-partials">${parts}</div></article>`;
