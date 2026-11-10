@@ -30,6 +30,8 @@ function harness(){
   venueEntry:(_venue,symbol)=>{const book=sandbox.books.get(symbol),f=marketContext.market.filters;return {contract:{symbol,tradable:true,tickSize:f.PRICE_FILTER.tickSize,quantityStep:f.LOT_SIZE.stepSize,
    minQuantityBase:f.LOT_SIZE.minQty,minNotionalUSDT:Number(f.MIN_NOTIONAL?.notional??f.NOTIONAL?.minNotional),quantityUnit:'BASE_ASSET',contractSizeBase:'1'},
    book:{ok:true,sourceTime:Number(book.T),ask:Number(book.asks[0][0]),levels:{bids:book.bids.map(x=>x.map(Number)),asks:book.asks.map(x=>x.map(Number))}}}},venueSizingInputs,
+  // Live orders stay OFF here; a live call would be a test failure.
+  LIVE:{mode:'OFF'},live:{onSignal:async()=>{throw Error('live order attempted in Telegram test')}},
   state:{activeSet:new Set([row.symbol]),rest:'connected',quotes:new Map([[row.symbol,{...marketContext.market,price:marketContext.price,priceAt:now}]]),analyses:new Map([[row.symbol,row]])},
   books:new Map([[row.symbol,marketContext.book]]),storageHealth:{healthy:true},persisted:{seen:{},alerts:[]},
   paper:{store:{open:[],seen:{}},register(value){registrations.push(value);sandbox.paper.store.seen[key(value)]=now}},

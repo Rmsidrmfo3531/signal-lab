@@ -26,6 +26,9 @@ import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {tradfiAvailability} from './tradfi.mjs';
 import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
+import {liveConfig} from './live_orders.mjs';
+import {LiveExecutor} from './live_executor.mjs';
+import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
 import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues} from './venue_execution.mjs';
 import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
@@ -123,6 +126,16 @@ function emitPaperNotice(event,{test=false}={}){
 // BingX/Gate.io are the execution venues: public quotes only, fetched on demand.
 // Binance remains the chart/analysis source and is shown only as a reference price.
 const venueQuotes=new VenueQuoteService();
+// ---- Live / testnet orders (OFF unless LIVE_TRADING_MODE is set; armed per start) -----
+const LIVE=liveConfig(process.env);
+function liveClients(){
+ if(LIVE.mode==='OFF')return {};
+ const mode=LIVE.mode==='LIVE'?'LIVE':'TESTNET',clients={};
+ if(process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET)clients.BINGX=new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode});
+ if(process.env.GATEIO_API_KEY&&process.env.GATEIO_API_SECRET)clients.GATEIO=new GateTradeClient({apiKey:process.env.GATEIO_API_KEY,secret:process.env.GATEIO_API_SECRET,mode});
+ return clients;
+}
+const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status)});
 const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
 
 // ---- Execution venue books (BingX / Gate.io) -------------------------------------
@@ -345,7 +358,11 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  const paperKey=signalKey({market:'CRYPTO',symbol,direction,pattern,barAt:row.patternConfirmedAt});
  // The same fresh approval may be observed by a scan and many ticker events.
  // Persist each paper registration and alert once, including after a restart.
- if(!paper.store.seen[paperKey])paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
+ if(!paper.store.seen[paperKey]){
+  paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
+  // The same first publication may also open a live/testnet position (its own checks decide).
+  if(LIVE.mode!=='OFF')void live.onSignal({...row,decision,execution:decision.execution},{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
+ }
  const key=`${symbol}:${direction}:${pattern}:${row.time}`;
  if(persisted.seen[key])return;
  const item={...row,decision,execution:decision.execution,qualified:true,status:'signal',id:key};
@@ -518,7 +535,7 @@ setInterval(()=>{
  }
 },30000);
 function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.researchSymbols,assess:row=>assessAnalysis(row)});}
-function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
+function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',live:{mode:LIVE.mode,armed:live.armed,killSwitch:live.store.killSwitch},paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
  intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:{maxQuoteAgeSeconds:15,maxFeedAgeSeconds:90,maxSpreadBps:20,maxRiskUSD:CONFIG.maxRiskUSD,minNetRR:1.8,analysisOnly:true},
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
@@ -713,6 +730,15 @@ const server=http.createServer(async(req,res)=>{
    res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename=signal-lab-auto-paper-trades.csv','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(paperCSV(paper.store.closed));
   }
+  if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
+  if(pathname.startsWith('/api/live/')&&req.method==='POST'){
+   const body=await bodyJson(req);
+   if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.arm())}
+   if(pathname==='/api/live/disarm')return response(res,200,live.disarm());
+   if(pathname==='/api/live/kill')return response(res,200,live.kill('MANUAL'));
+   if(pathname==='/api/live/reset-kill'){if(body.confirm!=='RESET')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.resetKill())}
+   return response(res,404,{error:'LIVE_ROUTE_NOT_FOUND'});
+  }
   if(pathname==='/api/venues'){
    if(req.method!=='GET')return response(res,405,{error:'VENUES_READ_ONLY',ordersEnabled:false});
    const symbols=parseVenueSymbols(url.searchParams.get('symbols'),persisted.watchlist);
@@ -814,6 +840,7 @@ const server=http.createServer(async(req,res)=>{
   response(res,status,{error:e.message});
  }
 });
+if(LIVE.mode!=='OFF')setInterval(()=>{void live.reconcile().catch(e=>console.error('[LIVE RECONCILE]',e.message))},15000).unref?.();
 server.listen(CONFIG.port,CONFIG.host,()=>{
  console.log(`\nSignal Lab (PC) → http://127.0.0.1:${CONFIG.port}`);
  console.log(`[DATA] Records & settings: ${storage.dir}`);
