@@ -2,23 +2,35 @@ import http from 'node:http';
 import {exec} from 'node:child_process';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
+import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
 import {stageUpdate,pendingInfo} from './updater.mjs';
 import {normalizeTrade,closeTrade,journalSummary,exportTradesCSV} from './journal.mjs';
 import {signalLifecycle} from './signal_lifecycle.mjs';
+import {evaluateSignal} from './signal_pipeline.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {analyze} from './engine.mjs';
+import {configureSignalScorePolicy,getSignalScorePolicy} from './signal_policy.mjs';
 import {structureObservations,historicalPatternObservations} from './observation.mjs';
 import {describeScanFunnel} from './scan_diagnostics.mjs';
-import {intersectPerpetualMarkets} from './markets.mjs';
+import {binancePerpetualMarkets} from './markets.mjs';
 import {officialMarketLinks,telegramMessage} from './links.mjs';
-import {executionEstimate,riskSizedEstimate,EXEC_DEFAULTS,parsePerpExecution} from './execution.mjs';
+import {estimateBinanceExecution} from './binance_execution.mjs';
+import {VolumeProfileCollector} from './profile_collector.mjs';
+import {planVolumeTargets} from './volume_targets.mjs';
+import {finalTelegramMatch} from './telegram_final.mjs';
+import {translateNewsArticles} from './news_translation.mjs';
+import {buildMarketCommentary} from './market_commentary.mjs';
+import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
-import {extractTradFiMarkets,swapFundingUSD,tradfiQuoteVerdict} from './tradfi.mjs';
-import {analyzeTradFi} from './tradfi_signal.mjs';
-import {pullSeries} from './tradfi_feed.mjs';
-import {PaperEngine,paperCSV} from './paper.mjs';
+import {tradfiAvailability} from './tradfi.mjs';
+import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
+import {liveConfig} from './live_orders.mjs';
+import {LiveExecutor} from './live_executor.mjs';
+import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
+import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues} from './venue_execution.mjs';
+import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
@@ -30,8 +42,11 @@ process.on('exit',releaseDataLock);
 const envfile=storage.envPath;
 if(fs.existsSync(envfile))for(const line of fs.readFileSync(envfile,'utf8').split(/\r?\n/)){
  const match=line.match(/^\s*([A-Z][A-Z_0-9]*)\s*=\s*(.*)\s*$/);
- if(match&&!process.env[match[1]])process.env[match[1]]=match[2].replace(/^['"]|['"]$/g,'');
+ // The greedy value group keeps trailing blanks (e.g. "HOST=127.0.0.1 " from a
+ // text editor). Trim first so the value is not silently different from what was typed.
+ if(match&&!process.env[match[1]])process.env[match[1]]=match[2].trim().replace(/^['"]|['"]$/g,'');
 }
+configureSignalScorePolicy(process.env);
 const CONFIG={
  port:Number(process.env.PORT||3000),host:process.env.HOST||'127.0.0.1',
  scanMs:Math.max(30000,Number(process.env.SCAN_INTERVAL_MS||60000)),
@@ -40,24 +55,41 @@ const CONFIG={
  quoteVolume:Math.max(0,Number(process.env.MIN_DAILY_VOLUME_USDT||5000000)),
  tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
  newsMs:Math.max(60000,Number(process.env.NEWS_POLL_MS||90000)),
- newsTelegram:process.env.TELEGRAM_NEWS_ALERTS!=='false',
- tradfiMs:Math.max(60000,Number(process.env.TRADFI_REFRESH_MS||60000)),
- tradfiScanMs:Math.max(300000,Number(process.env.TRADFI_SCAN_INTERVAL_MS||900000)),
- twelveKey:process.env.TWELVE_DATA_API_KEY||'',
- tradfiSymbols:(process.env.TRADFI_FEED_SYMBOLS||'XAU,XAG').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean).slice(0,4),
+ maxRiskUSD:Number(process.env.PAPER_MAX_RISK_USD||6),
+ // Paper fills use these venues' quotes and contract rules (best entry wins). Binance = chart only.
+ paperVenues:parsePaperVenues(process.env.PAPER_VENUES),
+ // Venue book refresh for paper records; BingX's 1.1 s request spacing applies regardless.
+ venueRefreshMs:Math.max(1000,Math.min(60000,Number(process.env.PAPER_VENUE_REFRESH_MS)||4000)),
+ translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
- limits:{...EXEC_DEFAULTS,maxQuoteAgeSeconds:Number(process.env.MAX_VARIATIONAL_QUOTE_AGE_SEC||180),maxSpreadBps:Number(process.env.MAX_VARIATIONAL_SPREAD_BPS||20),maxAdverseVenueBps:Number(process.env.MAX_ADVERSE_VENUE_BPS||35),maxRoundTripBps:Number(process.env.MAX_ROUNDTRIP_BPS||30)}
+ limits:{maxSpreadBps:20}
 };
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
-const lanMode=CONFIG.host==='0.0.0.0'||CONFIG.host==='::';
+const lanMode=!['127.0.0.1','::1','localhost'].includes(CONFIG.host);
 const lanPassword=lanMode?(process.env.MOBILE_ACCESS_PASSWORD||randomBytes(6).toString('hex')):'';
+// Loopback peers skip the password, so every request is first checked for a
+// foreign Host name (DNS rebinding) and for cross-site browser origins.
+const allowedHosts=allowedHostNames();
 const dataPath=storage.storePath;
 let persisted={watchlist:['BTCUSDT','ETHUSDT','SOLUSDT'],seen:{},alerts:[],newsSeen:{},journal:[],tradfiSeen:{}};
 const historical=readStore(dataPath);
 if(historical)persisted={...persisted,...historical};
 // Atomic writes protect the latest persisted simulation from a partial save.
-function save(){try{atomicWriteStore(dataPath,persisted)}catch(e){console.error('[CRITICAL STORE ERROR]',e.message)}}
+const storageHealth={healthy:true,lastSavedAt:0,error:''};
+let committed=structuredClone(persisted);
+function save(candidate=persisted){
+ try{
+  atomicWriteStore(dataPath,candidate);
+  committed=structuredClone(candidate);persisted=candidate;
+  Object.assign(storageHealth,{healthy:true,lastSavedAt:Date.now(),error:''});
+ }catch(e){
+  persisted=structuredClone(committed);
+  Object.assign(storageHealth,{healthy:false,error:'기록 저장 실패. 디스크 공간·권한을 확인하세요.'});
+  console.error('[CRITICAL STORE ERROR]',e.message);
+  const error=Error(storageHealth.error);error.code='STORE_WRITE_FAILED';throw error;
+ }
+}
 // Each launch creates a restorable snapshot before the running server modifies records.
 try{backupStore(dataPath)}catch(e){console.error('[BACKUP ERROR]',e.message);throw e}
 persisted.newsSeen ||= {};persisted.tradfiSeen ||= {};persisted.seen ||= {};persisted.journal=Array.isArray(persisted.journal)?persisted.journal:[];
@@ -67,19 +99,21 @@ persisted.paperNotify.enabled = persisted.paperNotify.enabled!==false;
 if(!Array.isArray(persisted.paperNotify.history))persisted.paperNotify.history=[];
 // Create the first shared store file even if no trading event occurs yet.
 save();
-const state={ws:'offline',rest:'connecting',variational:'connecting',lastVariational:0,lastMarketListings:0,executionRefreshAt:0,blockedSignals:0,lastBlockReason:'',binancePerps:0,variationalPerps:0,lastMarket:0,lastScan:0,scannedSinceBoot:0,cycleScanned:0,cycle:0,
+const state={ws:'offline',rest:'connecting',lastMarketListings:0,executionRefreshAt:0,blockedSignals:0,lastBlockReason:'',binancePerps:0,lastMarket:0,lastScan:0,scannedSinceBoot:0,cycleScanned:0,cycle:0,
  activeSymbols:[],activeSet:new Set(),researchSymbols:[],researchSet:new Set(),researchRanked:[],scanMode:'waiting',lastValidatedAt:0,ranked:[],quotes:new Map(),analyses:new Map(),scanCursor:0,scanActive:false,error:'',clients:new Set(),recentSignals:[],
  liveWS:'offline',liveWatched:0,lastLiveTrigger:0,livePending:0,liveAnalyzed:0,
  lastTickerAt:0,lastTickerCount:0,lastLiveDataAt:0,lastLiveCandleClose:0,liveSubscribeAcks:0,liveSubscribeErrors:0,liveLastError:'',lastScanAttempt:0,scanStartedAt:0,scanFailedAt:0,marketRetryCount:0,marketError:'',marketLastRetry:0,news:[],newsStatus:'connecting',newsChecked:0,newsSources:[],newsError:'',update:{state:'unconfigured',lastCheck:0,message:'업데이트 서버 미설정'},scanSuccess:0,scanFailed:0,lastScanFailures:[],lastScanSuccessAt:0};
 const apiCache=new Map();
+const publicReadBudget=new PublicReadBudget();
+let rawMarketTickers=[];
+let marketStatsReceivedAt=0,marketStatsPending=null;
+const profiles=new VolumeProfileCollector({request:url=>binance(url,0)});
 const structureBySymbol=new Map();
 const historyBySymbol=new Map();
 function recentStructures(){return [...structureBySymbol.values()].flat().filter(x=>Date.now()-x.observedAt<2*3600000).sort((a,b)=>b.observedAt-a.observedAt).slice(0,100)}
 function recentHistory(){return [...historyBySymbol.values()].flat().filter(x=>Date.now()-x.confirmedAt<24*3600000).sort((a,b)=>b.confirmedAt-a.confirmedAt).slice(0,100)}
-const tradfiState={status:'connecting',updatedAt:0,error:'',swaps:[],patterns:[],feedStatus:CONFIG.twelveKey?'checking':'unconfigured',feedUpdatedAt:0,feedError:'',scanInProgress:false,feedScanned:0};
-const VARIATIONAL_URL='https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/v2/stats';
 const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.json':'application/json; charset=utf-8'};
-function response(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
+function response(res,status,body,extraHeaders={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS,...extraHeaders});res.end(JSON.stringify(body))}
 function send(event,obj){const msg=`event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;for(const client of state.clients){try{client.write(msg)}catch{state.clients.delete(client)}}}
 function emitPaperNotice(event,{test=false}={}){
   const item={...event,id:randomUUID(),recordedAt:Date.now(),test};
@@ -89,229 +123,139 @@ function emitPaperNotice(event,{test=false}={}){
   console.log(`[PAPER ${test?'TEST':event.type}]`,event.symbol,event.direction,delivery.reason);
   return {event:item,delivery};
 }
-const paper=new PaperEngine(persisted.paper,{onChange:store=>{persisted.paper=store;save();send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
+// BingX/Gate.io are the execution venues: public quotes only, fetched on demand.
+// Binance remains the chart/analysis source and is shown only as a reference price.
+const venueQuotes=new VenueQuoteService();
+// ---- Live / testnet orders (OFF unless LIVE_TRADING_MODE is set; armed per start) -----
+const LIVE=liveConfig(process.env);
+function liveClients(){
+ if(LIVE.mode==='OFF')return {};
+ const mode=LIVE.mode==='LIVE'?'LIVE':'TESTNET',clients={};
+ if(process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET)clients.BINGX=new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode});
+ if(process.env.GATEIO_API_KEY&&process.env.GATEIO_API_SECRET)clients.GATEIO=new GateTradeClient({apiKey:process.env.GATEIO_API_KEY,secret:process.env.GATEIO_API_SECRET,mode});
+ return clients;
+}
+const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status)});
+const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
+
+// ---- Execution venue books (BingX / Gate.io) -------------------------------------
+// Latest validated book per venue+symbol. Refreshed for technically qualified setups
+// and for every paper record executed on a venue; each refresh also moves those records.
+const venueBooks=new Map();
+function venueEntry(venue,symbol){
+ return {contract:venueQuotes.clients[venue]?.contracts?.get(symbol)??null,book:venueBooks.get(venue+':'+symbol)??null};
+}
+// Concurrent callers share one request per venue+symbol, and a book younger than
+// maxAgeMs is reused, so analysis and the paper loop do not queue duplicate calls.
+const venueBookPending=new Map();
+async function refreshVenueBook(venue,symbol,{maxAgeMs=0}={}){
+ const key=venue+':'+symbol,cached=venueBooks.get(key);
+ if(maxAgeMs>0&&cached&&Date.now()-cached.receivedAt<maxAgeMs)return cached;
+ if(venueBookPending.has(key))return venueBookPending.get(key);
+ const task=(async()=>{
+  const client=venueQuotes.clients[venue];
+  try{
+   const contracts=await client.loadContracts();if(!contracts.has(symbol))return null;
+   const book=await client.book(symbol);venueBooks.set(key,book);return book;
+  }catch(error){state.venueError=`${venue} ${symbol}: ${error.code||error.message}`;return null}
+ })();
+ venueBookPending.set(key,task);
+ try{return await task}finally{venueBookPending.delete(key)}
+}
+function feedPaperFromVenue(venue,symbol,book){
+ if(!book?.ok||!Number.isFinite(book.mid))return;
+ paper.onPrice('CRYPTO',symbol,book.mid,book.sourceTime,{venue,halfSpreadBps:book.spreadBps/2,quoteFresh:true,
+  entryAllowed:cryptoEntryAllowed(symbol,Date.now())});
+}
+let venueRefreshActive=false;
+async function refreshVenueExecution(){
+ if(venueRefreshActive)return;venueRefreshActive=true;
+ try{
+  const now=Date.now(),wanted=new Map(CONFIG.paperVenues.map(v=>[v,new Set()]));
+  for(const record of [...paper.store.pending,...paper.store.open])if(wanted.has(record.executionVenue))wanted.get(record.executionVenue).add(record.symbol);
+  for(const row of state.analyses.values())if(row.technicalQualified===true&&row.executionVenue&&wanted.has(row.executionVenue)&&now-row.scannedAt<2*3600000)
+   wanted.get(row.executionVenue).add(row.symbol);
+  // BingX allows one public request per second: at most 4 symbols per venue per cycle.
+  await Promise.all([...wanted].map(async([venue,symbols])=>{
+   for(const symbol of [...symbols].slice(0,4)){const book=await refreshVenueBook(venue,symbol);if(book)feedPaperFromVenue(venue,symbol,book)}
+  }));
+  state.venueRefreshAt=Date.now();state.executionRefreshAt=state.venueRefreshAt;
+ }finally{venueRefreshActive=false}
+}
+setInterval(()=>{void refreshVenueExecution()},CONFIG.venueRefreshMs).unref?.();
 
 async function binance(url,ttl=30000){
  const cache=apiCache.get(url);
  if(cache && cache.until>Date.now())return cache.data;
  if(cache?.pending)return cache.pending;
  const task=(async()=>{
+  const budget=publicReadBudget.reserve(url);if(!budget.ok)throw Error(budget.code);
   const ctrl=new AbortController();const timeout=setTimeout(()=>ctrl.abort(),12000);
   try {
    const r=await fetch('https://fapi.binance.com'+url,{signal:ctrl.signal,headers:{'User-Agent':'SignalLab/1.0','Accept':'application/json'}});
-   if(!r.ok)throw Error(`Binance HTTP ${r.status}: ${(await r.text()).slice(0,140)}`);
+   if(!r.ok){publicReadBudget.rateLimited(r.status,r.headers?.get?.('retry-after'));throw Error(`Binance HTTP ${r.status}: 공개 조회 일시 보류`);}
    const data=await r.json();apiCache.set(url,{data,until:Date.now()+ttl});state.rest='connected';return data;
   } finally{clearTimeout(timeout)}
  })();
  apiCache.set(url,{data:cache?.data,until:0,pending:task});
+ if(apiCache.size>1200){for(const [key,value]of apiCache){if(!value.pending&&value.until<Date.now())apiCache.delete(key);if(apiCache.size<=1000)break}}
  try{return await task;}catch(e){apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
 }
-async function variationalStats(){
- const cached=apiCache.get(VARIATIONAL_URL);
- if(cached && cached.until>Date.now())return cached.data;
- if(cached?.pending)return cached.pending;
- const task=(async()=>{
-  const ctrl=new AbortController();const timeout=setTimeout(()=>ctrl.abort(),12000);
-  try{
-   const r=await fetch(VARIATIONAL_URL,{signal:ctrl.signal,headers:{Accept:'application/json','User-Agent':'SignalLab/2.0'}});
-   if(!r.ok)throw Error(`Variational API HTTP ${r.status}`);
-   const data=await r.json();if(!Array.isArray(data?.listings))throw Error('Variational v2 listings 응답이 올바르지 않음');
-   apiCache.set(VARIATIONAL_URL,{data,until:Date.now()+45000});return data;
-  }finally{clearTimeout(timeout)}
- })();
- apiCache.set(VARIATIONAL_URL,{data:null,until:0,pending:task});
- try{return await task}catch(e){apiCache.delete(VARIATIONAL_URL);throw e}
-}
-async function tgTradFi(pattern,row){
- if(!CONFIG.tgToken||!CONFIG.tgChat)return;
- const formatted=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:5});
- const message=[`📊 [TradFi 확정봉 패턴 · 참고 시그널] ${pattern.ticker} ${pattern.direction}`,
-  `패턴: ${pattern.pattern}`,`참조 진입 ${formatted(pattern.entry)} / 손절 ${formatted(pattern.stop)}`,
-  ...pattern.targets.map((p,i)=>`${i+1}차: ${formatted(p)} · 익절 ${pattern.takeProfitPercent[i]}%`),
-  `외부 데이터: Twelve Data (Variational 가격과 차이 가능)`,
-  `⚠️ 체결 확정 또는 수익 보장 아님 · 주문 전 실제 시장 운영·RFQ 호가·펀딩 확인`].join('\n');
- const keyboard=[[{text:'Variational 종목 확인 ↗',url:row.tradeUrl||row.marketsUrl}]];
- if(row.chartSymbol)keyboard.push([{text:'TradingView 참조 차트 ↗',url:`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(row.chartSymbol)}`}]);
- try{const res=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CONFIG.tgChat,text:message,disable_web_page_preview:true,reply_markup:{inline_keyboard:keyboard}}),signal:AbortSignal.timeout(10000)});if(!res.ok)console.warn('[TRADFI TG]',res.status)}
- catch(e){console.warn('[TRADFI TG]',e.message)}
-}
-async function refreshTradFi(){
- try{
-  const payload=await variationalStats();
-  tradfiState.swaps=extractTradFiMarkets(payload,{now:Date.now()});
-  tradfiState.updatedAt=Date.now();tradfiState.status='connected';tradfiState.error='';
-  for(const row of tradfiState.swaps){if(tradfiQuoteVerdict(row,{now:Date.now()}).eligible){
-   paper.onPrice('TRADFI',row.ticker,row.markPrice,row.quoteUpdatedAt,{halfSpreadBps:(row.spreadBps||0)/2,quoteFresh:true});
-  }}
-  // Removed/renamed SWAPs must not survive the next API refresh.
-  const usable=new Set(tradfiState.swaps.filter(x=>tradfiQuoteVerdict(x,{now:Date.now()}).eligible).map(x=>x.ticker));
-  tradfiState.patterns=tradfiState.patterns.filter(x=>usable.has(x.ticker)&&x.lastBarAt>Date.now()-90*60000);
-  send('tradfi',{...tradfiPublic()});
- }catch(e){
-  tradfiState.status='offline';tradfiState.error=e.message;
-  tradfiState.swaps=[];tradfiState.patterns=[];send('tradfi',tradfiPublic());
- }
-}
-function tradfiPublic(){return {status:tradfiState.status,updatedAt:tradfiState.updatedAt,error:tradfiState.error,
-  swaps:tradfiState.swaps.map(row=>({...row,quote:tradfiQuoteVerdict(row,{now:Date.now()}),
-   fundingExampleLongUSD:swapFundingUSD(row,'LONG'),fundingExampleShortUSD:swapFundingUSD(row,'SHORT')})),
-  patterns:tradfiState.patterns.filter(x=>tradfiState.swaps.some(row=>row.ticker===x.ticker&&tradfiQuoteVerdict(row,{now:Date.now()}).eligible)&&x.lastBarAt>Date.now()-90*60000),feedStatus:tradfiState.feedStatus,feedUpdatedAt:tradfiState.feedUpdatedAt,
-  feedError:tradfiState.feedError,scanInProgress:tradfiState.scanInProgress,feedScanned:tradfiState.feedScanned,
-  scanIntervalMinutes:CONFIG.tradfiScanMs/60000};}
-async function runTradFiScan(){
- if(tradfiState.scanInProgress)return;
- if(!CONFIG.twelveKey){tradfiState.feedStatus='unconfigured';send('tradfi',tradfiPublic());return}
- if(!tradfiState.swaps.length){tradfiState.feedStatus='waiting-listings';return}
- tradfiState.scanInProgress=true;tradfiState.feedStatus='checking';tradfiState.feedError='';
- try{
-  const targets=tradfiState.swaps.filter(x=>x.feedSymbol&&CONFIG.tradfiSymbols.includes(x.base)).slice(0,4);
-  const patterns=[];const failed=[];let scanned=0;const seriesCache=new Map();
-  if(!targets.length){tradfiState.feedStatus='unavailable';tradfiState.feedError='캔들 데이터 매핑이 확인된 대상 상품이 현재 상장 목록에 없습니다.';tradfiState.patterns=[];return}
-  for(const row of targets){
-   try{
-    // Never pass the API key to the UI, error response or logs.
-    const series=seriesCache.has(row.feedSymbol)?seriesCache.get(row.feedSymbol):await pullSeries(row.feedSymbol,CONFIG.twelveKey);
-    seriesCache.set(row.feedSymbol,series);
-    const result=analyzeTradFi(row,series,{now:Date.now()});scanned++;
-    if(result.status==='confirmed')patterns.push(result);
-    else if(result.reason)failed.push(`${row.base}: ${result.reason}`);
-   }catch(e){failed.push(`${row.base}: ${String(e.message||'feed error').slice(0,110)}`)}
-  }
-  // New alerts require a just-closed candle and fresh verified quote.
-  for(const pattern of patterns){
-   const row=tradfiState.swaps.find(x=>x.ticker===pattern.ticker);
-   const key=`${pattern.ticker}|${pattern.direction}|${pattern.lastBarAt}`;
-   if(!row||persisted.tradfiSeen[key]||Date.now()-pattern.lastBarAt>30*60000)continue;
-   if(!tradfiQuoteVerdict(row,{now:Date.now()}).eligible)continue;
-   persisted.tradfiSeen[key]=Date.now();save();
-   paper.register(pattern,{market:'TRADFI',symbol:pattern.ticker,quoteEligible:true});
-   send('tradfi-alert',{...pattern,tradeUrl:row.tradeUrl||row.marketsUrl,chartSymbol:row.chartSymbol});
-   void tgTradFi(pattern,row);
-  }
-  for(const [k,t] of Object.entries(persisted.tradfiSeen))if(t<Date.now()-7*86400000)delete persisted.tradfiSeen[k];
-  tradfiState.patterns=patterns;tradfiState.feedStatus=failed.length?'partial':'connected';
-  tradfiState.feedScanned=scanned;tradfiState.feedUpdatedAt=Date.now();
-  tradfiState.feedError=failed.slice(0,5).join(' | ');
- }catch(e){tradfiState.feedStatus='offline';tradfiState.feedError=e.message;tradfiState.patterns=[]}
- finally{tradfiState.scanInProgress=false;send('tradfi',tradfiPublic())}
+// No validated replacement market/contract feed is configured for TradFi.
+// Keep historical records intact; never mark stale positions as freshly tracked.
+function tradfiPublic(){
+ const retained=paper.store;
+ return {...tradfiAvailability(),retainedRecords:{
+  open:retained.open.filter(x=>x.market==='TRADFI').length,
+  pending:retained.pending.filter(x=>x.market==='TRADFI').length,
+  closed:retained.closed.filter(x=>x.market==='TRADFI').length
+ }};
 }
 const exchangeInfo=()=>binance('/fapi/v1/exchangeInfo',15*60*1000);
 const market24=()=>binance('/fapi/v1/ticker/24hr',75000);
 const klines=(symbol,interval,limit=150)=>binance(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`,interval==='4h'?170000:interval==='1h'?54000:20000);
-// Two independent discovery stages: Binance price/candle scanning must not stop simply
-// because Variational's listing endpoint is slow or temporarily unavailable.  Exploratory
-// results are NEVER actionable and cannot open paper positions or emit order signals.
-function binanceResearchMarkets(info,tickers){
- const excludeTradFi=new Set(['XAU','XAG','US100','US500','US30','US400','DXI','UKOIL','USOIL','VXI','SPCX','CL','COPP']);
- const bySymbol=new Map((info?.symbols||[]).filter(x=>x.contractType==='PERPETUAL'&&x.status==='TRADING'&&x.quoteAsset==='USDT'&&
-  x.symbol===x.baseAsset+'USDT'&&!excludeTradFi.has(x.baseAsset)&&/^[A-Z0-9]+$/.test(x.baseAsset)).map(x=>[x.symbol,x]));
- return (Array.isArray(tickers)?tickers:[]).filter(x=>bySymbol.has(x.symbol)).map(x=>({
-  symbol:x.symbol,baseAsset:bySymbol.get(x.symbol).baseAsset,price:Number(x.lastPrice),
-  quoteVolume:Number(x.quoteVolume)||0,change:Number(x.priceChangePercent)||0
- })).filter(x=>Number.isFinite(x.price)&&x.price>0).sort((a,b)=>b.quoteVolume-a.quoteVolume).slice(0,45);
-}
-function useResearchMarkets(info,tickers){
- const fresh=binanceResearchMarkets(info,tickers);
- state.researchRanked=fresh;
- state.researchSymbols=fresh.map(x=>x.symbol);
- state.researchSet=new Set(state.researchSymbols);
- for(const row of fresh){
-  if(state.activeSet.has(row.symbol))continue;
-  const old=state.quotes.get(row.symbol);
-  state.quotes.set(row.symbol,{...row,price:old?.price||row.price,priceAt:old?.priceAt||0});
- }
- state.scanMode=state.activeSymbols.length?'verified-stale':'research-only';
-}
+// Binance alone defines crypto listings, prices and analysis. TradFi collection is disabled.
 function marketFailure(error){
- state.variational='offline';state.marketError=String(error.message||error);
- state.error='공통 상장 검증 지연: '+state.marketError;
- state.marketRetryCount++;state.marketLastRetry=Date.now();
- // Preserve previously verified matches, watchlists and paper trading state; no
- // fresh alerts are permitted while the venue verification is offline.
- state.scanMode=state.activeSymbols.length?'verified-stale':state.researchSymbols.length?'research-only':'waiting';
- refreshLiveSubscriptions();
- send('status',getStatus());
+ state.rest='offline';state.marketError=String(error?.message||error);state.error='Binance 데이터 검증 지연: '+state.marketError;
+ state.marketRetryCount++;state.marketLastRetry=Date.now();state.scanMode=state.activeSymbols.length?'binance-stale':'waiting';
+ refreshLiveSubscriptions();send('status',getStatus());
 }
 async function loadMarket(){
- const settled=await Promise.allSettled([exchangeInfo(),market24(),variationalStats()]);
- const [infoResult,tickersResult,variationalResult]=settled;
- if(infoResult.status==='fulfilled'&&tickersResult.status==='fulfilled'){
-  useResearchMarkets(infoResult.value,tickersResult.value);
-  state.rest='connected';
- }else{
-  const failures=settled.slice(0,2).filter(x=>x.status==='rejected').map(x=>x.reason?.message||String(x.reason));
-  state.rest='offline';marketFailure('Binance 상장/24시간 시세 API: '+failures.join(' / '));
-  if(!state.activeSymbols.length&&!state.researchSymbols.length)throw Error(state.marketError);
-  return state.ranked;
- }
- if(variationalResult.status==='rejected'){
-  marketFailure('Variational API: '+(variationalResult.reason?.message||String(variationalResult.reason)));
-  return state.ranked;
- }
- let joined;
- try{joined=intersectPerpetualMarkets(infoResult.value,tickersResult.value,variationalResult.value)}
- catch(e){marketFailure('상장 교집합 검증: '+e.message);return state.ranked}
- if(!joined.markets.length){marketFailure('응답은 정상이나 공통 PERP 0종목: 종목 형식 및 상장정보 확인 필요');return state.ranked}
- state.variational='connected';state.lastVariational=Date.now();state.lastMarketListings=Date.now();state.lastValidatedAt=Date.now();
- state.binancePerps=joined.binancePerps;state.variationalPerps=joined.variationalPerps;
- state.ranked=joined.markets;
- state.activeSymbols=state.ranked.map(x=>x.symbol);
- state.activeSet=new Set(state.activeSymbols);
- state.analyses.forEach((_,symbol)=>{if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))state.analyses.delete(symbol)});
- for(const row of state.ranked){
-  const old=state.quotes.get(row.symbol);state.quotes.set(row.symbol,{...row,price:old?.price||row.price,priceAt:old?.priceAt||0});
- }
- // Do not delete a user's saved watchlist when a venue is temporarily down.
- // It can contain symbols from past releases; only active contracts are selected for scanning.
- state.lastMarket=Date.now();state.executionRefreshAt=Date.now();state.rest='connected';
- state.scanMode='verified';state.error='';state.marketError='';state.marketRetryCount=0;
- refreshLiveSubscriptions();
- send('market',{at:state.lastMarket,markets:state.ranked,watchlist:persisted.watchlist,variationalStatus:state.variational});
- send('status',getStatus());
- return state.ranked;
+ try{
+  const [info,tickers]=await Promise.all([exchangeInfo(),market24()]),joined=binancePerpetualMarkets(info,tickers);
+  if(!joined.markets.length)throw Error('TRADING USDT 무기한 선물 목록 없음');
+  rawMarketTickers=tickers;marketStatsReceivedAt=Date.now();state.ranked=joined.markets;state.binancePerps=joined.binancePerps;
+  state.researchRanked=[];state.researchSymbols=[];state.researchSet=new Set();
+  state.activeSymbols=joined.markets.map(x=>x.symbol);state.activeSet=new Set(state.activeSymbols);
+  for(const row of joined.markets){const old=state.quotes.get(row.symbol);state.quotes.set(row.symbol,{...row,
+   price:old?.priceAt>row.priceAt?old.price:row.price,priceAt:old?.priceAt>row.priceAt?old.priceAt:row.priceAt});}
+  state.lastMarket=Date.now();state.lastMarketListings=Date.now();state.lastValidatedAt=Date.now();
+  state.rest='connected';state.scanMode='binance-usdt-perpetual';state.error='';state.marketError='';state.marketRetryCount=0;
+  refreshLiveSubscriptions();send('market',{at:state.lastMarket,markets:state.ranked,watchlist:persisted.watchlist,analysisVenue:'BINANCE'});send('status',getStatus());return state.ranked;
+ }catch(error){marketFailure(error);if(!state.ranked.length)throw error;return state.ranked}
 }
-// Keep indicative quotes fresh without calling the rate-limited public endpoint for every symbol.
-// If an API read fails, alert screening must fail closed rather than trusting stale quotes.
-let refreshPromise=null;
-async function refreshExecution(){
- if(refreshPromise)return refreshPromise;
- refreshPromise=(async()=>{
-  try{
-   if(!state.activeSymbols.length)return;
-   const payload=await variationalStats();
-   const byTicker=new Map((payload.listings||[]).filter(x=>x.contract_type==='perpetual').map(x=>[x.ticker,x]));
-   const updated=[];
-   for(const [symbol,record] of state.quotes){
-    if(!state.activeSet.has(symbol))continue;
-    const x=byTicker.get(record.variational?.ticker);
-    if(!x){throw Error('공통 상장 종목 삭제/변경 감지: 목록 재검증 필요')}
-    const info=parsePerpExecution(x);if(!info){throw Error('Variational 공개 데이터 파싱 실패')}
-    record.variational={...record.variational,...info};
-    updated.push({symbol,variational:record.variational});
-   }
-   state.lastVariational=Date.now();state.executionRefreshAt=Date.now();
-   // A quote refresh alone does not revalidate the complete instrument universe.
-   if(Date.now()-state.lastMarketListings<12*60000){state.variational='connected';state.scanMode='verified'}
-   else{state.variational='offline';state.scanMode='verified-stale'};
-   send('execution',{at:state.executionRefreshAt,items:updated});send('status',getStatus());
-  }catch(e){marketFailure('Variational 호가 갱신 실패: '+e.message);console.warn('[EXECUTION]',e.message)}
- })();
- try{return await refreshPromise}finally{refreshPromise=null}
+async function refreshMarketStats(){
+ if(marketStatsReceivedAt&&Date.now()-marketStatsReceivedAt<60000)return;
+ if(marketStatsPending)return marketStatsPending;
+ marketStatsPending=(async()=>{rawMarketTickers=await market24();marketStatsReceivedAt=Date.now()})();
+ try{await marketStatsPending}finally{marketStatsPending=null}
 }
 async function tgNotify(s){
  if(!CONFIG.tgToken||!CONFIG.tgChat)return;
- const verified=state.quotes.get(s.symbol);
- const urls=verified?.variational?.ticker&&state.activeSet.has(s.symbol)
-  ?officialMarketLinks(s.symbol,verified.variational.ticker):null;
- if(!urls){console.warn('Telegram suppressed: market link not verified',s.symbol);return}
- const F=p=>p>0?p.toLocaleString('en-US',{maximumFractionDigits:p>=1000?2:7}):String(p);
- const payload={chat_id:CONFIG.tgChat,...telegramMessage(s,urls,F)};
  try{
+ // Final-results API is the source of truth. Any later quote/venue rejection
+ // suppresses delivery even if an earlier scan approved the same candle.
+ const matched=finalTelegramMatch(s,relevantSignals(),getSignalScorePolicy().finalMinScore);
+ if(!matched)return;
+ const urls=state.activeSet.has(matched.symbol)?officialMarketLinks(matched.symbol):null;
+ if(!urls){console.warn('Telegram suppressed: market link not verified',s.symbol);return}
+ const paperPosition=paper.store.open.find(p=>p.key===signalKey({market:'CRYPTO',symbol:matched.symbol,direction:matched.direction,pattern:matched.pattern,barAt:matched.patternConfirmedAt}));
+ const payload={chat_id:CONFIG.tgChat,...telegramMessage(matched,urls,{paperPosition})};
   const r=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)
   });
   if(!r.ok)console.error('Telegram HTTP',r.status);
- }catch(e){console.error('Telegram error:',e.message)}
+ }catch{console.error('Telegram delivery unconfirmed')}
 }
 
 let updateCheckPromise=null;
@@ -349,62 +293,89 @@ async function checkSymbol(symbol, force=false){
 async function checkSymbolInternal(symbol, force=false){
  if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))return null;
  const meta=state.quotes.get(symbol)||{};
- const [h1,h4]=await Promise.all([klines(symbol,'1h',150),klines(symbol,'4h',110)]);
- const out=analyze(symbol,h1,h4,[],meta.price,{quoteVolume:meta.quoteVolume,priceChangePercent:meta.change});
+ const [h1,h4,btcH4]=await Promise.all([klines(symbol,'1h',200),klines(symbol,'4h',301),symbol==='BTCUSDT'?Promise.resolve(null):klines('BTCUSDT','4h',301)]);
+ const out=analyze(symbol,h1,h4,[],meta.price,{quoteVolume:meta.quoteVolume,priceChangePercent:meta.change,btcH4Rows:btcH4??h4});
+ out.analysisVenue='BINANCE';out.tradeApproval=false;out.scorePolicy=getSignalScorePolicy();
+ if(out.pattern&&out.technicalQualified===true){
+  try{
+   // Binance = chart analysis. Size and entry come from the execution venue (BingX / Gate.io).
+   const chartTick=Number(meta.filters?.PRICE_FILTER?.tickSize);
+   await Promise.all(CONFIG.paperVenues.map(venue=>refreshVenueBook(venue,symbol,{maxAgeMs:3000})));
+   const selection=selectExecutionVenue({signal:out,venues:Object.fromEntries(CONFIG.paperVenues.map(v=>[v,venueEntry(v,symbol)])),
+    allowed:CONFIG.paperVenues,maxRiskUSD:CONFIG.maxRiskUSD});
+   out.venueCandidates=selection.candidates;
+   const chosen=selection.chosen,estimate=chosen?.estimate??{eligible:false,reasons:['EXECUTION_VENUE_UNAVAILABLE']};
+   out.venueExecution=estimate;
+   if(chosen){
+    const contract=venueEntry(chosen.venue,symbol).contract;
+    out.executionVenue=chosen.venue;out.venueSymbol=contract.venueSymbol;
+    out.venueContract={tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase};
+    out.rawStop=out.stop;out.stop=chosen.stop;
+   }
+   if(estimate.eligible&&Number.isFinite(chartTick)&&chartTick>0){
+    const contract=venueEntry(chosen.venue,symbol).contract;
+    out.venueOrder=venueOrderQuantity(contract,estimate.quantity);
+    // The profile is built from Binance trades on Binance's tick grid; targets use the venue tick.
+    const profileResult=await profiles.get(symbol,{tickSize:chartTick,eligible:true}),costs=venueCosts(contract,estimate.spreadBps);
+    const targetPlan=planVolumeTargets({profileResult,direction:out.direction,entry:estimate.entryBasis,stop:out.stop,quantity:estimate.quantity,
+     tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,
+     contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',unitsVerified:true,costs,minNetRR:1.8},{now:Date.now()});
+    out.targetPlan={...targetPlan,quantity:estimate.quantity,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',
+     minNotional:estimate.minNotional,minQuantity:estimate.minQuantity,quantityStep:estimate.quantityStep,tickSize:estimate.tickSize,costAssumptions:costs,
+     // Diagnostics only: keep the collector's own reason, which planVolumeTargets wraps as VOLUME_PROFILE_NOT_AVAILABLE.
+     ...(targetPlan.ok?{}:{profileReasons:Array.isArray(profileResult?.reasons)?profileResult.reasons.slice(0,6):[]})};
+    if(targetPlan.ok){out.referenceEntry=out.entry;out.entry=estimate.entryBasis;[out.target1,out.target2,out.target3]=targetPlan.targets;out.targets=targetPlan.targets;}
+   }
+   else if(!chosen)out.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['EXECUTION_VENUE_UNAVAILABLE']};
+  }catch{out.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['PUBLIC_EXECUTION_OR_PROFILE_UNAVAILABLE']};}
+ }
+
  // 1H closed-candle pattern and 4H trend are already validated in analyze().
  // No shorter than 1H timeframe is queried or required for a confirmed setup.
  out.confirmedTimeframes=['1h','4h'];
  // Historical/approaching observations never affect actual signals, alerts or simulated PNL.
- structureBySymbol.set(symbol,structureObservations(symbol,h1,h4));
- historyBySymbol.set(symbol,historicalPatternObservations(symbol,h1,h4));
+ // Browser and Telegram both receive final signals only.
  if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))return null;
- if(!state.activeSet.has(symbol)||state.variational!=='connected'){
-  out.qualified=false;out.status=out.pattern?'watch':out.status;out.executionStatus='상장 검증 대기 · 주문 금지';
-  if(out.pattern)out.reason+=' · Variational 공통 PERP 재검증 전까지 매매 시그널·자동 모의진입 차단';
+ const decision=assessAnalysis(out);
+ out.execution=decision.execution;out.decision=decision;
+ out.qualified=decision.ready;
+ if(out.pattern)out.status=decision.ready?'signal':'watch';
+ out.executionStatus=decision.execution.eligible?'호가·비용 기준 통과':'실매매 검증 보류';
+ if(decision.execution.eligible){
+  const e=decision.execution;
+  out.risk={...(out.risk||{}),nominal:e.notional,margin:e.notional/(out.risk?.leverage||3),riskUSD:e.estimatedStopLossUSD,costUSD:e.spreadCostUSD};
  }
- if(out.pattern&&out.entry&&out.stop){
-  const latest=state.quotes.get(symbol);
-  const assessment=riskSizedEstimate({signal:out,listing:latest?.variational,binancePrice:latest?.price,binancePriceAt:latest?.priceAt,statsReceivedAt:state.lastVariational,now:Date.now(),limits:CONFIG.limits});
-  out.execution=assessment;
-  out.executionStatus=assessment.eligible?'호가·비용 기준 통과':'실매매 검증 보류';
-  if(Number.isFinite(assessment.notional)&&Number.isFinite(assessment.estimatedStopLossUSD)&&assessment.eligible){
-   out.risk={...(out.risk||{}),nominal:assessment.notional,margin:assessment.notional/(out.risk?.leverage||3),riskUSD:assessment.estimatedStopLossUSD,costUSD:assessment.spreadCostUSD};
-  }
-  if(out.qualified&&(!Number.isFinite(assessment.estimatedNetRR)||assessment.estimatedNetRR<1.8)){
-   assessment.eligible=false;assessment.reasons.push('거래비용 반영 후 1차 목표 손익비 1.8 미만/검증 불가');
-  }
-  if(out.qualified && (state.variational!=='connected'||!assessment.eligible)){
-   out.qualified=false;out.status='watch';
-   const reason=state.variational!=='connected'?'Variational API 연결 실패':assessment.reasons.join(' / ');
-   out.reason+=' · Variational 체결가능성 검증 보류: '+reason;
-   out.executionStatus='실매매 검증 보류';
-   state.blockedSignals++;state.lastBlockReason=reason;
-  }
- }
+ if(decision.technical&&!decision.venue){state.blockedSignals++;state.lastBlockReason=decision.reasons.join(' / ')}
  state.analyses.set(symbol,out);
- if(out.status==='signal'&&out.qualified&&relevantSignals().some(x=>x.symbol===symbol&&x.time===out.time&&x.direction===out.direction&&x.pattern===out.pattern)){
-   paper.register(out,{market:'CRYPTO',symbol,quoteEligible:true});
- }
- if(out.status==='signal'&&out.qualified){
-   const age=Date.now()-out.time;
-   // prevent delivery of stale candles or repeat signals from the same 1h candle.
-   const key=`${symbol}:${out.direction}:${out.pattern}:${out.time}`;
-   const prior=persisted.seen[key];
-   if(age<2*3600000&&!prior){
-     persisted.seen[key]=Date.now();
-     const item={...out,id:key};persisted.alerts.unshift(item);// Keep full signal-alert history in shared storage; API still limits visible recent rows.
-     save();send('alert',item);tgNotify(item);
-     console.log('[SIGNAL]',symbol,out.direction,out.pattern,out.score);
-   }
- }
+ publishCryptoSignal(out,decision);
  return out;
+}
+function publishCryptoSignal(row,decision,now=Date.now()){
+ if(!decision.ready||!storageHealth.healthy)return;
+ // Observe the validated scanner output, but never route actual market data to
+ // the offline simulation engine or alter the existing paper registration.
+ const {symbol,direction,pattern}=row;
+ const paperKey=signalKey({market:'CRYPTO',symbol,direction,pattern,barAt:row.patternConfirmedAt});
+ // The same fresh approval may be observed by a scan and many ticker events.
+ // Persist each paper registration and alert once, including after a restart.
+ if(!paper.store.seen[paperKey]){
+  paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
+  // The same first publication may also open a live/testnet position (its own checks decide).
+  if(LIVE.mode!=='OFF')void live.onSignal({...row,decision,execution:decision.execution},{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
+ }
+ const key=`${symbol}:${direction}:${pattern}:${row.time}`;
+ if(persisted.seen[key])return;
+ const item={...row,decision,execution:decision.execution,qualified:true,status:'signal',id:key};
+ save({...persisted,seen:{...persisted.seen,[key]:now},alerts:[item,...persisted.alerts]});
+ send('alert',item);void tgNotify(item);
+ console.log('[SIGNAL]',symbol,direction,pattern,row.score);
 }
 // Event-driven scanner. The global mini-ticker stream supplies fast price updates;
 // per-symbol 1H + 4H kline close streams trigger re-analysis at candle completion.
-// Historical candles and Variational indicative prices remain REST snapshots, not tick-perfect.
+// Historical candles remain REST snapshots, not tick-perfect.
 const liveQueue=[];const queued=new Set();const lastTrigger=new Map();let liveWorkers=0;
 const liveSockets=[];let liveSubscriptionKey='';let streamRequestId=1;
-function invalidateCandles(symbol){for(const interval of ['1h','4h'])for(const suffix of [150,110,100])apiCache.delete(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${suffix}`)}
+function invalidateCandles(symbol){for(const interval of ['1h','4h'])for(const suffix of [150,110,100,200,301])apiCache.delete(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${suffix}`)}
 function queueLive(symbol,reason='stream'){
  if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))return false;
  const candleClose=reason.endsWith('-close');
@@ -429,7 +400,7 @@ async function drainLive(){
    try{while(liveQueue.length){const item=liveQueue.shift();queued.delete(item.symbol);
     if(!state.activeSet.has(item.symbol)&&!state.researchSet.has(item.symbol))continue;
     try{const output=await checkSymbol(item.symbol,item.reason.includes('close'));if(output){state.liveAnalyzed++;state.lastLiveTrigger=Date.now()}else{state.liveLastError=item.symbol+': 분석 결과 없음'};
-      send('live',{symbol:item.symbol,reason:item.reason,at:state.lastLiveTrigger,signals:relevantSignals(),patterns:confirmedPatterns(),watch:watches()});
+      send('live',{symbol:item.symbol,reason:item.reason,at:state.lastLiveTrigger,signals:relevantSignals(),patterns:[],watch:[]});
     }catch(e){console.warn('[LIVE]',item.symbol,item.reason,e.message)}
     await new Promise(r=>setTimeout(r,180));state.livePending=liveQueue.length;
    }}finally{liveWorkers--;if(liveQueue.length)void drainLive()}
@@ -445,7 +416,7 @@ function priceLevelTrigger(symbol,prev,price){
  if(relevant)queueLive(symbol,'price-level');
 }
 function refreshLiveSubscriptions(){
- const monitored=state.variational==='connected'?state.activeSymbols:(state.researchSymbols.length?state.researchSymbols:state.activeSymbols);
+ const monitored=state.activeSymbols;
  if(!monitored.length){for(const ws of liveSockets){try{ws.close()}catch{}}liveSockets.length=0;liveSubscriptionKey='';state.liveWS='offline';state.liveWatched=0;return}
  const streams=[...monitored.map(s=>s.toLowerCase()+'@kline_1h'),...monitored.map(s=>s.toLowerCase()+'@kline_4h')];
  const key=streams.join('|');if(key===liveSubscriptionKey&&liveSockets.some(ws=>ws.readyState===WebSocket.OPEN))return;
@@ -493,6 +464,22 @@ const _refreshSubscriptions=refreshLiveSubscriptions;
 function recoverLive(){if(state.activeSet.size||state.researchSet.size){liveSubscriptionKey='';_refreshSubscriptions()}}
 
 let marketWs, retryMs=1500; const changed=new Map();
+function cryptoEntryAllowed(symbol,now=Date.now()){
+ if(!storageHealth.healthy||!state.activeSet.has(symbol)||state.rest!=='connected')return false;
+ const analysis=state.analyses.get(symbol);
+ if(!analysis?.patternConfirmed||!analysis.technicalQualified)return false;
+ const decision=assessAnalysis(analysis,now);
+ // An analysis can precede its first live price. Publish when the complete
+ // approval becomes ready; registering on this tick still requires a later tick
+ // for the fill, as enforced by PaperEngine's signalAt guard.
+ publishCryptoSignal(analysis,decision,now);
+ const pending=paper.store.pending.filter(x=>x.market==='CRYPTO'&&x.symbol===symbol);
+ // An entry approval belongs to this exact completed candle/pattern. Do not
+ // reuse approval for another analysis, or after its public quote has expired.
+ if(pending.length!==1||analysis.pattern!==pending[0].pattern||analysis.direction!==pending[0].direction||
+  analysis.patternConfirmedAt!==pending[0].barAt)return false;
+ return decision.ready;
+}
 function connectWS(){
  let endpoint=0;let retryTimer=null;
  const urls=['wss://fstream.binance.com/market/ws/!miniTicker@arr','wss://fstream.binance.com/market/stream?streams=!miniTicker@arr'];
@@ -516,11 +503,15 @@ function connectWS(){
    if(ws!==marketWs)return;
    try{const payload=JSON.parse(e.data);const arr=Array.isArray(payload)?payload:(Array.isArray(payload.data)?payload.data:[]);
     let valid=0;
-    for(const q of arr){if(!q.s||!q.c||Number(q.st||1)!==1||!state.activeSet.has(q.s)&&!state.researchSet.has(q.s))continue;
+    for(const q of arr){
+     const tracked=paper.store.open.some(x=>x.market==='CRYPTO'&&x.symbol===q.s)||paper.store.pending.some(x=>x.market==='CRYPTO'&&x.symbol===q.s);
+     if(!q.s||!q.c||Number(q.st||1)!==1||!state.activeSet.has(q.s)&&!state.researchSet.has(q.s)&&!tracked)continue;
      const price=Number(q.c);if(!Number.isFinite(price)||price<=0)continue;
      const p=state.quotes.get(q.s)||{symbol:q.s},previous=p.price;p.price=price;p.priceAt=Date.now();
-     if(q.q)p.quoteVolume=Number(q.q);state.quotes.set(q.s,p);changed.set(q.s,[q.s,p.price]);
-     paper.onPrice('CRYPTO',q.s,p.price,p.priceAt);priceLevelTrigger(q.s,previous,p.price);valid++;
+     // Keep Binance's source event clock next to the receipt time.
+     p.exchangePriceAt=typeof q.E==='number'&&Number.isFinite(q.E)&&q.E>0?q.E:null;
+     if(q.q)p.quoteVolume=Number(q.q);state.quotes.set(q.s,p);changed.set(q.s,[q.s,p.price,p.priceAt]);
+     paper.onPrice('CRYPTO',q.s,p.price,p.priceAt,{venue:'BINANCE',entryAllowed:cryptoEntryAllowed(q.s,p.priceAt)});priceLevelTrigger(q.s,previous,p.price);valid++;
     }
     if(valid){received=true;state.ws='connected';state.lastTickerAt=Date.now();state.lastTickerCount+=valid;send('status',getStatus())}
     else if(payload.code || payload.error)state.error='바이낸스 시세 스트림 오류: '+JSON.stringify(payload).slice(0,140);
@@ -535,40 +526,52 @@ setInterval(()=>{if(changed.size){send('quotes',{t:Date.now(),data:[...changed.v
 // A live TCP/WebSocket connection can remain open while its market feed has stalled.
 // Reconnect rather than continuing to mark an idle feed as real-time.
 setInterval(()=>{
- if(!state.activeSet.size&&!state.researchSet.size||!marketWs||marketWs.readyState!==WebSocket.OPEN)return;
- if((state.lastTickerAt && Date.now()-state.lastTickerAt>90000)||(!state.lastTickerAt && marketWs.readyState===WebSocket.OPEN && (state.activeSymbols.length||state.researchSymbols.length) && Date.now()-state.lastMarket>90000)){
+ const tracking=paper.store.open.some(x=>x.market==='CRYPTO')||paper.store.pending.some(x=>x.market==='CRYPTO');
+ if(!state.activeSet.size&&!state.researchSet.size&&!tracking||!marketWs||marketWs.readyState!==WebSocket.OPEN)return;
+ if((state.lastTickerAt && Date.now()-state.lastTickerAt>90000)||(!state.lastTickerAt && marketWs.readyState===WebSocket.OPEN && (state.activeSymbols.length||state.researchSymbols.length||tracking) && Date.now()-state.lastMarket>90000)){
   state.ws='offline';state.error='실시간 유효 시세가 90초 이상 수신되지 않아 WebSocket을 재연결합니다';
   console.warn('[WEBSOCKET] Stale market feed; forcing reconnect');
   try{marketWs.close()}catch{};send('status',getStatus());
  }
 },30000);
-function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.variational==='connected'?[]:state.researchSymbols,variational:state.variational});}
-function getStatus(){return {version:'5.8.0',scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,variational:state.variational,lastVariational:state.lastVariational,binancePerps:state.binancePerps,variationalPerps:state.variationalPerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
+function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.researchSymbols,assess:row=>assessAnalysis(row)});}
+function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',live:{mode:LIVE.mode,armed:live.armed,killSwitch:live.store.killSwitch},paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
- intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:CONFIG.limits,
+ intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:{maxQuoteAgeSeconds:15,maxFeedAgeSeconds:90,maxSpreadBps:20,maxRiskUSD:CONFIG.maxRiskUSD,minNetRR:1.8,analysisOnly:true},
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
  liveWS:state.liveWS,liveWatched:state.liveWatched,lastLiveDataAt:state.lastLiveDataAt,lastLiveCandleClose:state.lastLiveCandleClose,liveSubscribeAcks:state.liveSubscribeAcks,liveSubscribeErrors:state.liveSubscribeErrors,liveLastError:state.liveLastError,lastLiveTrigger:state.lastLiveTrigger,livePending:state.livePending,liveAnalyzed:state.liveAnalyzed,confirmedPatternCount:confirmedPatterns().length,newsStatus:state.newsStatus,newsChecked:state.newsChecked,newsCount:state.news.length,newsError:state.newsError,newsSources:state.newsSources,update:state.update};}
-function recentAnalyses(){return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)||(state.variational!=='connected'&&state.researchSet.has(x.symbol))).sort((a,b)=>b.scannedAt-a.scannedAt).slice(0,140);}
+function recentAnalyses(){return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)||state.researchSet.has(x.symbol)).sort((a,b)=>b.scannedAt-a.scannedAt).slice(0,140).map(x=>currentAnalysis(x));}
 function confirmedPatterns(){
  // The user needs to see *all actually identified, closed-1H chart patterns*.
- // Strict quality and Variational order verification are deliberately displayed as
+ // Technical quality and Binance market/execution verification are displayed as
  // separate statuses. This function NEVER triggers an alert or paper trade.
  const now=Date.now();
  return [...state.analyses.values()].filter(x=>
-   (state.activeSet.has(x.symbol)||(state.variational!=='connected'&&state.researchSet.has(x.symbol)))&&x.patternConfirmed===true&&Boolean(x.pattern)&&
+   (state.activeSet.has(x.symbol)||state.researchSet.has(x.symbol))&&x.patternConfirmed===true&&Boolean(x.pattern)&&
    Number.isFinite(x.patternConfirmedAt)&&x.patternConfirmedAt<=now&&
    now-x.patternConfirmedAt<2*3600000&&now-x.scannedAt<120*60000
- ).sort((a,b)=>(b.patternConfirmedAt-a.patternConfirmedAt)||(b.score-a.score)).slice(0,65);
+ ).sort((a,b)=>(b.patternConfirmedAt-a.patternConfirmedAt)||(b.score-a.score)).slice(0,65).map(x=>currentAnalysis(x));
+}
+function assessAnalysis(row,now=Date.now()){
+ const m=state.quotes.get(row.symbol);
+ // Chart analysis is Binance; the executable check uses the selected venue's rules and book.
+ const venue=CONFIG.paperVenues.includes(row.executionVenue)?row.executionVenue:null,entry=venue?venueEntry(venue,row.symbol):null,
+  inputs=entry?.contract&&entry.book?venueSizingInputs(entry.contract,entry.book):null;
+ return evaluateSignal(row,{analysisVenue:'BINANCE',verified:state.activeSet.has(row.symbol),venueConnected:state.rest==='connected'&&entry?.book?.ok===true,
+  market:inputs?.market,book:inputs?.book,price:m?.price,priceAt:m?.priceAt,now,limits:{...CONFIG.limits,maxRiskUSD:CONFIG.maxRiskUSD}});
+}
+function currentAnalysis(row,now=Date.now()){
+ const decision=assessAnalysis(row,now);
+ const quality=row.quality?{...row.quality,passed:decision.technical,failed:decision.technicalReasons,
+  checks:row.quality.checks?.map(c=>c.key==='fresh'&&now>row.quality.validUntil?{...c,passed:false,value:'필수 봉 신선도 만료'}:c)}:row.quality;
+ return {...row,scorePolicy:getSignalScorePolicy(),quality,technicalQualified:decision.technical,decision,execution:decision.execution,qualified:decision.ready,
+  status:row.pattern?(decision.ready?'signal':'watch'):row.status,
+  executionStatus:decision.execution.eligible?'호가·비용 기준 통과':'실매매 검증 보류'};
 }
 function relevantSignals(){
- return [...state.analyses.values()].filter(x=>{
-   if(!state.activeSet.has(x.symbol)||x.status!=='signal'||x.technicalQualified!==true||x.score<100||Date.now()-x.scannedAt>20*60*1000||state.variational!=='connected')return false;
-   const m=state.quotes.get(x.symbol);
-   const e=riskSizedEstimate({signal:x,listing:m?.variational,binancePrice:m?.price,binancePriceAt:m?.priceAt,statsReceivedAt:state.lastVariational,now:Date.now(),limits:CONFIG.limits});
-   const farFromEntry=Math.abs((m?.price||0)-x.entry)/x.entry>Math.min(.004,(x.atr||0)/x.entry*.45);
-   const lifecycle=signalLifecycle(x,{now:Date.now(),price:m?.price,priceAt:m?.priceAt});
-   return e.eligible&&!farFromEntry&&lifecycle.actionable&&Number.isFinite(e.estimatedNetRR)&&e.estimatedNetRR>=1.8;
- }).sort((a,b)=>b.score-a.score).slice(0,24);
+ const now=Date.now();
+ return [...state.analyses.values()].filter(x=>state.activeSet.has(x.symbol)).map(x=>currentAnalysis(x,now))
+  .filter(x=>x.decision.ready).sort((a,b)=>b.score-a.score||(b.patternConfirmedAt-a.patternConfirmedAt)||a.symbol.localeCompare(b.symbol));
 }
 function watches(){
  // Watch candidates are observations, NOT ready-to-trade signals.
@@ -583,10 +586,10 @@ async function runScan(){
  try{
   // Always try rebuilding the verified universe, but never block candle checks for
   // previously discovered Binance markets if one venue's metadata API fails.
-  if((!state.ranked.length&&!state.researchRanked.length)||state.variational!=='connected'||Date.now()-state.lastMarketListings>10*60000){
+  if(!state.ranked.length||state.rest!=='connected'||Date.now()-state.lastMarketListings>10*60000){
    try{await loadMarket()}catch(e){state.marketError=e.message}
   }
-  const rows=state.variational==='connected'?state.ranked:(state.researchRanked.length?state.researchRanked:state.ranked);
+  const rows=state.ranked;
   if(!rows.length){
    state.lastScan=Date.now();state.scanMode='waiting';state.scanFailed++;
    if(state.lastScanFailures.length<12)state.lastScanFailures.push('시장 데이터 조회 실패: '+(state.marketError||'재시도 대기'));
@@ -613,11 +616,16 @@ async function runScan(){
   }
   await Promise.all(Array.from({length:3},()=>worker()));
   state.lastScan=Date.now();state.scanFailedAt=0;
-  if(state.variational==='connected')state.error='';
-  send('scan',{status:getStatus(),signals:relevantSignals(),patterns:confirmedPatterns(),watch:watches(),structures:recentStructures(),history:recentHistory(),coverage:targets,recent:recentAnalyses().slice(0,24)});
+  if(state.rest==='connected')state.error='';
+  send('scan',{status:getStatus(),signals:relevantSignals(),patterns:[],watch:[],structures:[],history:[],coverage:targets,recent:recentAnalyses().slice(0,24)});
   console.log(`[SCAN] ${new Date().toISOString()} mode=${state.scanMode} checked=${targets.length}/${rows.length} success=${state.scanSuccess} failed=${state.scanFailed} candidates=${getScanFunnel().patternCount} qualityBlocks=${getScanFunnel().quality} quoteBlocks=${getScanFunnel().venue} actionable=${relevantSignals().length}`);
  }catch(e){state.error=e.message;state.marketError=e.message;state.marketRetryCount++;state.scanFailedAt=Date.now();console.error('[SCAN ERROR]',e.message);send('status',getStatus())}
  finally{state.scanActive=false;state.scanStartedAt=0;send('status',getStatus())}
+}
+async function translateArticle({text,signal}){
+ const endpoint=new URL(CONFIG.translationURL);if(!['https:','http:'].includes(endpoint.protocol)||endpoint.username||endpoint.password)throw Error('TRANSLATION_ENDPOINT_INVALID');
+ const r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'ko',format:'text'}),signal});
+ if(!r.ok)throw Error('TRANSLATION_HTTP');const result=await r.json();return {translatedText:result.translatedText};
 }
 let newsBootstrapped=false;
 async function pollNews(){
@@ -633,49 +641,72 @@ async function pollNews(){
  const failures=settled.filter(x=>x.status==='rejected').map((x,i)=>x.reason?.message||'feed rejected');
  state.newsError=failures.length?`${failures.length}/${FEEDS.length}개 소스 오류`:'';
  if(!feeds.length){state.newsStatus='offline';send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:0,error:'RSS 제공처 모두 연결 실패'});return}
- const incoming=prepareNews(feeds,state.newsChecked,[...state.ranked.map(x=>({symbol:x.baseAsset,name:x.variational?.name||''})),...tradfiState.swaps.map(x=>({symbol:x.base,name:x.name||''}))]);
+ const originalNews=prepareNews(feeds,state.newsChecked,state.ranked.map(x=>({symbol:x.baseAsset,name:x.baseAsset})));
+ const incoming=await translateNewsArticles(originalNews,{translate:CONFIG.translationURL?translateArticle:undefined,providerId:CONFIG.translationURL?'CONFIGURED_LIBRETRANSLATE':'UNCONFIGURED'});
  state.newsStatus=feeds.length===FEEDS.length?'connected':'partial';state.news=incoming;
- const newsSeen=new Set(Object.keys(persisted.newsSeen));let changed=false;
+ const newsSeen=new Set(Object.keys(persisted.newsSeen)),nextSeen={...persisted.newsSeen},notifications=[];let changed=false;
  for(const article of incoming){
-  if(!newsBootstrapped){persisted.newsSeen[article.id]=article.published;changed=true;continue}
+  if(!newsBootstrapped){nextSeen[article.id]=article.published;changed=true;continue}
   if(shouldNotifyArticle(article,newsSeen,state.newsChecked)){
-   persisted.newsSeen[article.id]=article.published;changed=true;
-   send('news-alert',article);void tgNews(article);
+   nextSeen[article.id]=article.published;changed=true;notifications.push(article);
   }
  }
+ for(const [id,date] of Object.entries(nextSeen))if(date<state.newsChecked-7*86400000){delete nextSeen[id];changed=true}
+ if(changed)save({...persisted,newsSeen:nextSeen});
+ // Failed writes must neither complete bootstrap nor deliver unrecorded news.
  newsBootstrapped=true;
- for(const [id,date] of Object.entries(persisted.newsSeen))if(date<state.newsChecked-7*86400000){delete persisted.newsSeen[id];changed=true}
- if(changed)save();
+ for(const article of notifications)send('news-alert',article);
  send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:feeds.length,error:state.newsError});
 }
-async function tgNews(article){
- if(!CONFIG.newsTelegram||!CONFIG.tgToken||!CONFIG.tgChat)return;
- const lines=['📰 [속보 후보 · 자동 분류] '+article.title,`출처: ${article.source} / 발행 ${new Date(article.published).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})}`,`분류: ${article.tone==='risk'?'부정 이슈 가능성':article.tone==='opportunity'?'긍정 이슈 가능성':'영향 방향 불명'} · 기사 원문 확인 필수`,article.link];
- try{const res=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({chat_id:CONFIG.tgChat,text:lines.join('\n'),disable_web_page_preview:true,reply_markup:{inline_keyboard:[[{text:'기사 원문 열기 ↗',url:article.link}]]}}),signal:AbortSignal.timeout(10000)});
- if(!res.ok)console.warn('[NEWS TG]',res.status);
- }catch(e){console.warn('[NEWS TG]',e.message)}
-}
-function bodyJson(req){return new Promise((resolve,reject)=>{let buf='';req.on('data',c=>{buf+=c;if(buf.length>30000){reject(Error('Body too large'));req.destroy()}});req.on('end',()=>{try{resolve(JSON.parse(buf))}catch{reject(Error('Invalid JSON'))}})})}
+// A malformed, oversized or interrupted request body is the caller's error
+// (400/413). 502 stays reserved for failures of an upstream data source.
+const clientError=(message,httpStatus)=>Object.assign(Error(message),{httpStatus});
+function bodyJson(req){return new Promise((resolve,reject)=>{
+ let buf='',settled=false;
+ const settle=(fn,value)=>{if(settled)return;settled=true;fn(value)};
+ req.on('data',chunk=>{if(settled)return;buf+=chunk;if(buf.length>30000){req.pause();settle(reject,clientError('Body too large',413))}});
+ req.on('end',()=>{
+  let value;try{value=JSON.parse(buf)}catch{return settle(reject,clientError('Invalid JSON',400))}
+  if(value===null||typeof value!=='object'||Array.isArray(value))return settle(reject,clientError('JSON object required',400));
+  settle(resolve,value);
+ });
+ // Without these a client that disconnects mid-body leaves the handler waiting forever.
+ req.on('error',()=>settle(reject,clientError('Request aborted',400)));
+ req.on('close',()=>settle(reject,clientError('Request aborted',400)));
+})}
 const server=http.createServer(async(req,res)=>{
  try{
+  let url;
+  try{url=new URL(req.url,'http://localhost')}catch{return response(res,400,{error:'Invalid request URL'})}
+  const pathname=url.pathname;
+  const guard=evaluateRequest({method:req.method,path:pathname,headers:req.headers},{hostNames:allowedHosts});
+  if(!guard.ok)return response(res,guard.status,{error:guard.code,message:guard.message});
   if(lanMode && !authorizedRequest(req.socket.remoteAddress,req.headers.authorization,lanPassword)){
-   res.writeHead(401,{'WWW-Authenticate':'Basic realm="Signal Lab mobile - username signal", charset="UTF-8"','Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+   res.writeHead(401,{'WWW-Authenticate':'Basic realm="Signal Lab mobile - username signal", charset="UTF-8"','Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS});
    res.end('Signal Lab: 모바일 접속 인증이 필요합니다. PC 실행 창에 표시된 사용자명(signal)과 접속 암호를 입력하세요.');return;
   }
-  const url=new URL(req.url,'http://localhost');const pathname=url.pathname;
   if(pathname==='/events'){
-   res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});
+   res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no',...SECURITY_HEADERS});
    state.clients.add(res);res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);
    const pulse=setInterval(()=>{try{res.write(': heartbeat\n\n')}catch{}},20000);
    req.on('close',()=>{clearInterval(pulse);state.clients.delete(res)});return;
   }
+  if(pathname.startsWith('/api/internal/supervisor/')){
+   const loopback=['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
+   if(!loopback||!process.env.SIGNAL_LAB_SUPERVISOR_TOKEN||req.headers['x-signal-lab-supervisor']!==process.env.SIGNAL_LAB_SUPERVISOR_TOKEN)return response(res,403,{error:'supervisor authentication required'});
+   if(pathname==='/api/internal/supervisor/ping'&&req.method==='GET')return response(res,200,{ok:true,storageHealthy:storageHealth.healthy});
+   if(pathname==='/api/internal/supervisor/shutdown'&&req.method==='POST'){
+    try{save()}catch(e){return response(res,503,{error:'저장 실패로 안전 종료 거부'})}
+    response(res,200,{ok:true});setImmediate(()=>gracefulShutdown());return;
+   }
+   return response(res,404,{error:'Not found'});
+  }
   if(pathname==='/api/status')return response(res,200,getStatus());
-  if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,variational:state.variational,marketError:state.marketError});
-  if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:true,updatedByServer:true,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
+  if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,marketError:state.marketError});
+  if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:storageHealth.healthy,updatedByServer:true,...storageHealth,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
   if(pathname==='/api/paper'&&req.method==='GET')return response(res,200,{
-   ...paper.snapshot(),monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
-    scanner:{ws:state.ws,lastTickerAt:state.lastTickerAt,variational:state.variational,scanMode:state.scanMode,activeCount:state.activeSymbols.length},
-    tradfi:{status:tradfiState.status,updatedAt:tradfiState.updatedAt,feedStatus:tradfiState.feedStatus,feedUpdatedAt:tradfiState.feedUpdatedAt}})
+   ...paper.snapshot(),storage:{...storageHealth},monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
+   scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,scanMode:state.scanMode,activeCount:state.activeSymbols.length}})
   });
   if(pathname==='/api/paper/notifications'&&req.method==='GET')return response(res,200,{enabled:persisted.paperNotify.enabled,
    serverPlatform:process.platform,windowsSupported:process.platform==='win32',history:persisted.paperNotify.history.slice(0,50),
@@ -696,31 +727,50 @@ const server=http.createServer(async(req,res)=>{
    return response(res,200,{...result,warning:'모의 테스트 알림. 실제 포지션이 생성되지 않고 PNL 기록에 저장되지 않음'});
   }
   if(pathname==='/api/paper/export'&&req.method==='GET'){
-   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename=signal-lab-auto-paper-trades.csv','Cache-Control':'no-store'});
+   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename=signal-lab-auto-paper-trades.csv','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(paperCSV(paper.store.closed));
   }
+  if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
+  if(pathname.startsWith('/api/live/')&&req.method==='POST'){
+   const body=await bodyJson(req);
+   if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.arm())}
+   if(pathname==='/api/live/disarm')return response(res,200,live.disarm());
+   if(pathname==='/api/live/kill')return response(res,200,live.kill('MANUAL'));
+   if(pathname==='/api/live/reset-kill'){if(body.confirm!=='RESET')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.resetKill())}
+   return response(res,404,{error:'LIVE_ROUTE_NOT_FOUND'});
+  }
+  if(pathname==='/api/venues'){
+   if(req.method!=='GET')return response(res,405,{error:'VENUES_READ_ONLY',ordersEnabled:false});
+   const symbols=parseVenueSymbols(url.searchParams.get('symbols'),persisted.watchlist);
+   if(!symbols.length)return response(res,400,{error:'INVALID_SYMBOLS',ordersEnabled:false});
+   return response(res,200,await venueQuotes.snapshot(symbols,{binancePrice:symbol=>state.quotes.get(symbol)?.price??null}));
+  }
   if(pathname==='/api/tradfi')return response(res,200,tradfiPublic());
-  if(pathname==='/api/tradfi/refresh'&&req.method==='POST'){void refreshTradFi();return response(res,202,{accepted:true});}
+  if(pathname==='/api/tradfi/refresh'&&req.method==='POST')return response(res,409,{accepted:false,...tradfiPublic()});
   if(pathname==='/api/scan'&&req.method==='POST'){if(state.scanActive)return response(res,202,{accepted:false,reason:'스캔 진행 중',status:getStatus()});void runScan();return response(res,202,{accepted:true,message:'백그라운드 스캔 시작',status:getStatus()})}
   if(pathname==='/api/update')return response(res,200,{...state.update,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
+  if(pathname==='/api/market-commentary'){
+   try{await refreshMarketStats()}catch{}
+   return response(res,200,buildMarketCommentary(rawMarketTickers,{now:Date.now(),receivedAt:marketStatsReceivedAt,eligibleSymbols:state.activeSymbols,dataSource:'BINANCE_FUTURES_PUBLIC_24H'}));
+  }
   if(pathname==='/api/news')return response(res,200,{status:state.newsStatus,checked:state.newsChecked,sourceCount:state.newsSources.length,error:state.newsError,articles:state.news});
   if(pathname==='/api/journal'&&req.method==='GET')return response(res,200,{entries:persisted.journal.slice(0,200),summary:journalSummary(persisted.journal)});
   if(pathname==='/api/journal/export'&&req.method==='GET'){
-   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-trade-journal.csv"','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-trade-journal.csv"','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(exportTradesCSV(persisted.journal));
   }
   if(pathname==='/api/journal'&&req.method==='POST'){
    const body=await bodyJson(req);
    try{if(persisted.journal.length>=500)throw Error('기록이 500개를 초과했습니다. CSV 백업 후 오래된 기록을 삭제하세요.');
     const item={...normalizeTrade(body,{allowedSymbols:state.activeSet}),id:randomUUID()};persisted.journal.unshift(item);save();send('journal',{summary:journalSummary(persisted.journal)});return response(res,201,{item,summary:journalSummary(persisted.journal)});
-   }catch(e){return response(res,400,{error:e.message})}
+   }catch(e){return response(res,e.code==='STORE_WRITE_FAILED'?503:400,{error:e.message})}
   }
   if(pathname==='/api/journal/close'&&req.method==='POST'){
    const body=await bodyJson(req);const row=persisted.journal.find(x=>x.id===body?.id);
    if(!row)return response(res,404,{error:'거래 기록을 찾지 못함'});
    try{const updated=closeTrade(row,{exit:body.exit,fees:body.fees,funding:body.funding});Object.assign(row,updated);save();send('journal',{summary:journalSummary(persisted.journal)});return response(res,200,{item:row,summary:journalSummary(persisted.journal)});
-   }catch(e){return response(res,400,{error:e.message})}
+   }catch(e){return response(res,e.code==='STORE_WRITE_FAILED'?503:400,{error:e.message})}
   }
   if(pathname==='/api/journal/delete'&&req.method==='POST'){
    const body=await bodyJson(req);const count=persisted.journal.length;
@@ -734,32 +784,43 @@ const server=http.createServer(async(req,res)=>{
    const amount=Number(url.searchParams.get('size')||1000);
    if(!state.activeSet.has(symbol))return response(res,404,{error:'공통 PERP 미확인 종목'});
    if(!['LONG','SHORT'].includes(side)||!Number.isFinite(amount)||amount<1||amount>10000)return response(res,400,{error:'방향이나 포지션 금액이 유효하지 않음'});
-   const x=state.quotes.get(symbol);
-   const result=executionEstimate({listing:x?.variational,side,notional:amount,binancePrice:x?.price,binancePriceAt:x?.priceAt,statsReceivedAt:state.lastVariational,now:Date.now(),limits:CONFIG.limits});
-   if(state.variational!=='connected'){result.eligible=false;result.reasons.unshift('Variational 공식 데이터 연결 실패')}
-   return response(res,200,{symbol,...result});
+   // Executable check on the trading venues; the Binance chart only supplies the setup.
+   await Promise.all(CONFIG.paperVenues.map(venue=>refreshVenueBook(venue,symbol,{maxAgeMs:3000})));
+   const selection=selectExecutionVenue({signal:{...state.analyses.get(symbol),direction:side,symbol},allowed:CONFIG.paperVenues,
+    venues:Object.fromEntries(CONFIG.paperVenues.map(v=>[v,venueEntry(v,symbol)])),maxNotionalUSD:amount,maxRiskUSD:CONFIG.maxRiskUSD});
+   if(!selection.chosen)return response(res,200,{symbol,eligible:false,executionVenue:null,venueCandidates:selection.candidates,
+    reasons:[...new Set(selection.candidates.flatMap(c=>c.reasons.map(r=>`${c.venue}: ${r}`)))].slice(0,6)});
+   return response(res,200,{symbol,...selection.chosen.estimate,executionVenue:selection.chosen.venue,venueCandidates:selection.candidates});
   }
-  if(pathname==='/api/market')return response(res,200,{at:state.lastMarket,markets:state.ranked,research:state.variational==='connected'?[]:state.researchRanked.filter(x=>!state.activeSet.has(x.symbol)),watchlist:persisted.watchlist,variationalStatus:state.variational});
-  if(pathname==='/api/results')return response(res,200,{structures:recentStructures(),history:recentHistory(),signals:relevantSignals(),patterns:confirmedPatterns(),watch:watches(),alerts:persisted.alerts.filter(x=>state.activeSet.has(x.symbol)).slice(0,35).map(x=>({...x,lifecycle:signalLifecycle(x,{price:state.quotes.get(x.symbol)?.price,priceAt:state.quotes.get(x.symbol)?.priceAt})})),recent:recentAnalyses()});
+  if(pathname==='/api/market')return response(res,200,{at:state.lastMarket,markets:state.ranked.map(x=>({...x,...state.quotes.get(x.symbol)})),research:state.researchRanked.filter(x=>!state.activeSet.has(x.symbol)),watchlist:persisted.watchlist,analysisVenue:'BINANCE'});
+  if(pathname==='/api/results')return response(res,200,{scorePolicy:getSignalScorePolicy(),structures:[],history:[],signals:relevantSignals(),patterns:[],watch:[],alerts:persisted.alerts.filter(x=>state.activeSet.has(x.symbol)).slice(0,35).map(x=>({...x,lifecycle:signalLifecycle(x,{price:state.quotes.get(x.symbol)?.price,priceAt:state.quotes.get(x.symbol)?.priceAt})})),recent:recentAnalyses()});
   if(pathname==='/api/klines'){
    const symbol=(url.searchParams.get('symbol')||'').toUpperCase();const interval=url.searchParams.get('interval')||'1h';
    if(!/^[A-Z0-9]{3,25}$/.test(symbol)||!['1h','4h','1d'].includes(interval))return response(res,400,{error:'Invalid symbol or interval'});
-   if(!state.activeSet.has(symbol))return response(res,404,{error:'바이낸스·Variational 공통 PERP 종목이 아니거나 상장 확인 대기 중입니다.'});
-   return response(res,200,{symbol,interval,rows:await klines(symbol,interval,180)});
+   if(!state.activeSet.has(symbol))return response(res,404,{error:'Binance TRADING USDT 무기한 선물 상장 확인 대기 중입니다.'});
+   return response(res,200,{symbol,interval,rows:await klines(symbol,interval,interval==='4h'?301:180)});
   }
   if(pathname==='/api/analyze'){
    const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase();
    if(!/^[A-Z0-9]{3,25}$/.test(symbol))return response(res,400,{error:'Invalid symbol'});
-   if(!state.activeSet.has(symbol))return response(res,404,{error:'바이낸스·Variational 공통 PERP 종목이 아니거나 상장 확인 대기 중입니다.'});
+   if(!state.activeSet.has(symbol))return response(res,404,{error:'Binance TRADING USDT 무기한 선물 상장 확인 대기 중입니다.'});
    const result=await checkSymbol(symbol,true);return response(res,200,result);
   }
   if(pathname==='/api/watchlist'&&req.method==='POST'){
    const {symbols}=await bodyJson(req);
    if(!Array.isArray(symbols))return response(res,400,{error:'Invalid symbols'});
    const next=[...new Set(symbols.map(x=>String(x).toUpperCase()))];
-   if(next.some(x=>!state.activeSet.has(x)))return response(res,400,{error:'현재 공통 상장 PERP가 아닌 종목이 포함되어 있습니다.'});
+   if(next.some(x=>!state.activeSet.has(x)))return response(res,400,{error:'현재 Binance USDT 무기한 선물이 아닌 종목이 포함되어 있습니다.'});
    persisted.watchlist=next.slice(0,35);
    save();refreshLiveSubscriptions();return response(res,200,{watchlist:persisted.watchlist});
+  }
+  if(pathname==='/api/paper/settings'&&req.method==='POST'){
+   const body=await bodyJson(req),hasToggle=Object.hasOwn(body||{},'TP1_MOVE_STOP_TO_BREAKEVEN'),hasMode=Object.hasOwn(body||{},'TP1_BREAKEVEN_MODE');
+   if(!hasToggle&&!hasMode||hasToggle&&typeof body.TP1_MOVE_STOP_TO_BREAKEVEN!=='boolean'||hasMode&&!['ENTRY_FILL','COST_COVERED'].includes(body.TP1_BREAKEVEN_MODE))
+    return response(res,400,{error:'본절 이동 ON/OFF 또는 ENTRY_FILL/COST_COVERED 모드 필요'});
+   const settings={...(persisted.paperSettings||{}),TP1_MOVE_STOP_TO_BREAKEVEN:hasToggle?body.TP1_MOVE_STOP_TO_BREAKEVEN:paper.settings.TP1_MOVE_STOP_TO_BREAKEVEN,
+    TP1_BREAKEVEN_MODE:hasMode?body.TP1_BREAKEVEN_MODE:paper.settings.TP1_BREAKEVEN_MODE};
+   save({...persisted,paperSettings:settings});Object.assign(paper.settings,settings);return response(res,200,{settings});
   }
   if(pathname==='/api/ping')return response(res,200,{ok:true,ts:Date.now()});
   if(pathname.startsWith('/api/'))return response(res,404,{error:'Not found'});
@@ -767,11 +828,19 @@ const server=http.createServer(async(req,res)=>{
   const safe=path.resolve(path.join(__dirname,'public'),'.'+file), root=path.resolve(__dirname,'public');
   if(!safe.startsWith(root+path.sep)&&safe!==root)return response(res,403,{error:'Forbidden'});
   fs.readFile(safe,(err,buf)=>{
-   if(err){res.writeHead(404);res.end('Not Found');return}
-   res.writeHead(200,{'Content-Type':MIME[path.extname(safe)]||'application/octet-stream','Cache-Control':'no-cache'});res.end(buf);
+   if(err){res.writeHead(404,SECURITY_HEADERS);res.end('Not Found');return}
+   res.writeHead(200,{'Content-Type':MIME[path.extname(safe)]||'application/octet-stream','Cache-Control':'no-cache',...SECURITY_HEADERS});res.end(buf);
   });
- }catch(e){response(res,502,{error:e.message})}
+ }catch(e){
+  // A second writeHead would throw inside this async handler and take the process down.
+  if(res.headersSent||res.writableEnded){if(!res.writableEnded)try{res.end()}catch{}return}
+  const status=Number.isInteger(e?.httpStatus)?e.httpStatus:e?.code==='STORE_WRITE_FAILED'?503:502;
+  // Stop reading an oversized upload once the refusal has been delivered.
+  if(status===413){res.once('finish',()=>req.destroy());return response(res,413,{error:e.message},{Connection:'close'})}
+  response(res,status,{error:e.message});
+ }
 });
+if(LIVE.mode!=='OFF')setInterval(()=>{void live.reconcile().catch(e=>console.error('[LIVE RECONCILE]',e.message))},15000).unref?.();
 server.listen(CONFIG.port,CONFIG.host,()=>{
  console.log(`\nSignal Lab (PC) → http://127.0.0.1:${CONFIG.port}`);
  console.log(`[DATA] Records & settings: ${storage.dir}`);
@@ -788,16 +857,12 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
    if(err) console.warn('Could not open browser automatically:',err.message);
   });
  }
- console.log(`Binance live ticks + candle-close event scans for verified Variational matches; background ${Math.round(CONFIG.scanMs/60000)} min / news ${Math.round(CONFIG.newsMs/1000)} sec. Telegram ${CONFIG.tgChat?'enabled':'disabled'}.`);
+ console.log(`Binance USDT perpetual live ticks + confirmed 1H/4H event scans; background ${Math.round(CONFIG.scanMs/60000)} min / news ${Math.round(CONFIG.newsMs/1000)} sec. Telegram ${CONFIG.tgChat?'enabled':'disabled'}.`);
  if(CONFIG.autoUpdate){setTimeout(()=>checkSoftwareUpdate().catch(()=>{}),8000);setInterval(()=>checkSoftwareUpdate().catch(()=>{}),6*3600000)}
  connectWS();setTimeout(runScan,1200);setInterval(()=>void runScan(),CONFIG.scanMs);
- setTimeout(()=>void refreshTradFi().then(()=>runTradFiScan()),2500);
- setInterval(()=>void refreshTradFi(),CONFIG.tradfiMs);
- setInterval(()=>void runTradFiScan(),CONFIG.tradfiScanMs);
  // Retry market discovery quickly after an API failure rather than staying empty for 4 minutes.
  setInterval(()=>{if(!state.activeSymbols.length&&!state.researchSymbols.length&&!state.scanActive){state.marketLastRetry=Date.now();void runScan()}},20000);
- setInterval(refreshExecution,60000);
- setInterval(()=>paper.expirePending(),15000);
+ setInterval(()=>{try{if(!storageHealth.healthy)save();paper.expirePending()}catch(e){console.warn('[PAPER STORAGE]',e.message)}},15000);
  setTimeout(()=>pollNews().catch(e=>console.warn('[NEWS]',e.message)),2000);setInterval(()=>pollNews().catch(e=>{state.newsStatus='offline';state.newsError=e.message;console.warn('[NEWS]',e.message)}),CONFIG.newsMs);
 });
 server.on('error',err=>{
@@ -806,5 +871,5 @@ server.on('error',err=>{
  else if(err.code==='EACCES') console.error('Access denied to local port. Try another PORT in .env.');
  process.exit(1);
 });
-const gracefulShutdown=()=>{save();server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),2000)};
+const gracefulShutdown=()=>{try{save()}catch(e){console.error('[SHUTDOWN STORE]',e.message)}server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),2000)};
 process.on('SIGINT',gracefulShutdown);process.on('SIGTERM',gracefulShutdown);

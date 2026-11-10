@@ -35,7 +35,7 @@ export function journalSummary(entries=[],now=Date.now()){
  const p=arr=>arr.reduce((s,t)=>s+t.realizedPnLUSD,0);
  const currentWeek=closed.filter(x=>kstDate(x.closedAt)>=weekStart);
  const currentDay=closed.filter(x=>kstDate(x.closedAt)===today);
- return {count:entries.length,open:entries.filter(x=>x.status==='OPEN').length,closed:closed.length,winRate:closed.length?closed.filter(x=>x.realizedPnLUSD>0).length/closed.length:null,totalPnL:p(closed),todayPnL:p(currentDay),weekPnL:p(currentWeek),lossLimitDay:15,lossLimitWeek:40,dayExceeded:p(currentDay)<=-15,weekExceeded:p(currentWeek)<=-40,stopRiskOpen:entries.filter(x=>x.status==='OPEN').reduce((s,x)=>s+(Number(x.stopRiskUSD)||0),0),manualOnly:true};
+ return {count:entries.length,open:entries.filter(x=>x.status==='OPEN').length,closed:closed.length,winRate:closed.length?closed.filter(x=>x.realizedPnLUSD>0).length/closed.length:null,totalPnL:p(closed),todayPnL:p(currentDay),weekPnL:p(currentWeek),lossLimitDay:null,lossLimitWeek:null,dayExceeded:false,weekExceeded:false,stopRiskOpen:entries.filter(x=>x.status==='OPEN').reduce((s,x)=>s+(Number(x.stopRiskUSD)||0),0),manualOnly:true};
 }
 export function exportTradesCSV(entries){
  const cols=['id','createdAt','closedAt','symbol','side','status','entry','stop','exit','notional','leverage','fees','funding','stopRiskUSD','realizedPnLUSD','note'];

@@ -2,14 +2,43 @@
  * No trading credentials, no venue orders, no backfills. Indicative prices are NOT fills.
  * Long/short PNL: signed quantity * (exit - entry) minus synthetic taker fees.
  */
-export const PAPER_DEFAULTS=Object.freeze({startingBalance:1000,riskUSD:6,maxPositions:2,maxNotional:1500,minNotional:100,maxDailyLoss:15,maxWeeklyLoss:40,
- feeBps:5,slippageBps:2,cryptoHalfSpreadBps:1,entryTimeoutMs:20*60000,maxFreshMsCrypto:90000,maxFreshMsTradFi:180000,
- maxQuoteGapMsCrypto:120000,maxQuoteGapMsTradFi:240000});
+import {entryAllowance} from './public/trade_plan.js';
+import {quantizeVolumeStep} from './volume_profile.mjs';
+
+// Fixed simulation trade size, independent of any assumed account balance.
+// Signals must still pass pattern, quality, quote, entry-timing and stop checks.
+export const PAPER_DEFAULTS=Object.freeze({paperNotionalUSD:500,maxPositions:2,maxNotional:1500,minNotional:250,
+ feeBps:5,slippageBps:2,cryptoHalfSpreadBps:1,entryTimeoutMs:20*60000,maxFreshMsCrypto:90000,
+ maxQuoteGapMsCrypto:120000,maxRiskUSD:6,requireExecutionVenue:false,TP1_MOVE_STOP_TO_BREAKEVEN:true,TP1_BREAKEVEN_MODE:'ENTRY_FILL'});
 const num=v=>Number(v);
+// Execution venue whose quotes drive a record. Records from before the venue
+// switch carry none and stay on the Binance price feed they were opened with.
+export const EXECUTION_VENUES=Object.freeze(['BINGX','GATEIO']);
+export const venueOf=record=>EXECUTION_VENUES.includes(record?.executionVenue)?record.executionVenue:'BINANCE';
 const validPrice=p=>Number.isFinite(p)&&p>0;
 const isoDay=(at)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
 const isoWeek=(at)=>{const d=new Date(at+9*3600000);let dow=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-dow);return d.toISOString().slice(0,10)};
 const rounded=v=>Math.round(v*100000000)/100000000;
+const onGrid=(value,step)=>{if(!validPrice(value)||!validPrice(step))return false;const n=value/step,near=Math.round(n);return Number.isSafeInteger(near)&&Math.abs(n-near)<=Math.max(1,Math.abs(n))*Number.EPSILON*16};
+// Reconstruct cash flows without rewriting historical records. Fees have already
+// been charged in each trade, so changing today's fee settings must not restate PNL.
+function realizedCashFlows(trade,closed=false){
+ const total=Number(trade.realizedPnLUSD)||0;
+ const openedAt=Number(trade.openedAt),parts=trade.closeParts;
+ if(Number.isFinite(openedAt)&&openedAt>0&&Array.isArray(parts)&&(!closed||parts.length>0)&&Number.isFinite(Number(trade.feesUSD))&&
+   parts.every(p=>Number.isFinite(Number(p.at))&&Number(p.at)>0&&Number.isFinite(Number(p.profitUSD))&&Number.isFinite(Number(p.feeUSD)))){
+  const exitFees=parts.reduce((sum,p)=>sum+Number(p.feeUSD),0);
+  const entryFee=Math.max(0,Number(trade.feesUSD)-exitFees);
+  const flows=[{at:openedAt,amount:-entryFee},...parts.map(p=>({at:Number(p.at),amount:Number(p.profitUSD)-Number(p.feeUSD)}))];
+  // Stored part values use eight decimals. Attribute only the rounding remainder
+  // to the latest event, keeping the lifetime PNL exactly as it was recorded.
+  const remainder=total-flows.reduce((sum,p)=>sum+p.amount,0);
+  flows.at(-1).amount+=remainder;
+  return {flows,approximate:false};
+ }
+ const at=Number(trade.closedAt)||Number(trade.lastPriceAt)||openedAt;
+ return {flows:Number.isFinite(at)&&at>0?[{at,amount:total}]:[],approximate:true};
+}
 export function fillPrice(reference,orderSide,{halfSpreadBps=1,slippageBps=2}={}){
  if(!validPrice(reference)||!['BUY','SELL'].includes(orderSide))throw Error('유효한 모의 체결 조건이 아님');
  return reference*(1+(orderSide==='BUY'?1:-1)*(Math.max(0,halfSpreadBps)+Math.max(0,slippageBps))/10000);
@@ -23,61 +52,116 @@ export function paperSummary(store,{now=Date.now(),settings=PAPER_DEFAULTS}={}){
  const total=closedRealized+openPartRealized,winning=done.filter(x=>x.realizedPnLUSD>0);
  const grossWinning=done.reduce((s,x)=>s+Math.max(x.realizedPnLUSD,0),0),grossLosing=done.reduce((s,x)=>s+Math.max(-x.realizedPnLUSD,0),0);
  const unrealized=active.reduce((s,x)=>s+(validPrice(x.markPrice)?x.qtyRemaining*(x.direction==='LONG'?1:-1)*(x.markPrice-x.entryFill):0),0);
- const marketValue=settings.startingBalance+total+unrealized;
- let peak=settings.startingBalance,maxDrawdownUSD=0,running=settings.startingBalance;
+ // Cumulative PNL is centered at zero, without assuming initial deposit.
+ let peak=0,maxDrawdownUSD=0,running=0;
  for(const r of [...done].sort((a,b)=>a.closedAt-b.closedAt)) {running+=r.realizedPnLUSD;peak=Math.max(peak,running);maxDrawdownUSD=Math.max(maxDrawdownUSD,peak-running)}
- const today=isoDay(now),week=isoWeek(now);
- const daily=done.filter(t=>isoDay(t.closedAt)===today).reduce((s,x)=>s+x.realizedPnLUSD,0);
- const weekly=done.filter(t=>isoWeek(t.closedAt)===week).reduce((s,x)=>s+x.realizedPnLUSD,0);
- return {startingBalance:settings.startingBalance,closedCount:done.length,openCount:active.length,pendingCount:(store.pending||[]).length,
-  netRealizedUSD:rounded(total),closedTradeRealizedUSD:rounded(closedRealized),openPartialRealizedUSD:rounded(openPartRealized),unrealizedUSD:rounded(unrealized),indicativeEquityUSD:rounded(marketValue),winRatePct:done.length?rounded(winning.length/done.length*100):null,
-  profitFactor:grossLosing>0?rounded(grossWinning/grossLosing):null,maxClosedTradeDrawdownUSD:rounded(maxDrawdownUSD),dailyPnLUSD:rounded(daily),weeklyPnLUSD:rounded(weekly),
+ const today=isoDay(now),week=isoWeek(now),cashFlows=[...done.map(t=>realizedCashFlows(t,true)),...active.map(t=>realizedCashFlows(t))];
+ const daily=cashFlows.flatMap(x=>x.flows).filter(t=>isoDay(t.at)===today).reduce((s,x)=>s+x.amount,0);
+ const weekly=cashFlows.flatMap(x=>x.flows).filter(t=>isoWeek(t.at)===week).reduce((s,x)=>s+x.amount,0);
+ return {startingBalance:null,indicativeEquityUSD:null,paperNotionalUSD:settings.paperNotionalUSD,closedCount:done.length,openCount:active.length,pendingCount:(store.pending||[]).length,
+  netRealizedUSD:rounded(total),closedTradeRealizedUSD:rounded(closedRealized),openPartialRealizedUSD:rounded(openPartRealized),unrealizedUSD:rounded(unrealized),totalMarkedPnLUSD:rounded(total+unrealized),winRatePct:done.length?rounded(winning.length/done.length*100):null,
+  profitFactor:grossLosing>0?rounded(grossWinning/grossLosing):null,maxClosedTradeDrawdownUSD:rounded(maxDrawdownUSD),dailyPnLUSD:rounded(daily),weeklyPnLUSD:rounded(weekly),periodPnLApproximate:cashFlows.some(x=>x.approximate),
   totalFeesUSD:rounded(done.reduce((s,x)=>s+x.feesUSD,0)+active.reduce((s,x)=>s+x.feesUSD,0)),
-  assumptions:`모의 시장가 · 수수료 편도 ${settings.feeBps}bp + 슬리피지 편도 ${settings.slippageBps}bp + 스프레드 가정 · 펀딩/청산/차입비용 미반영`,fundingIncluded:false};
+  newPositionSizing:'VALIDATED_PROFILE_QUANTITY',legacyPaperNotionalUSD:settings.paperNotionalUSD,
+  assumptions:`신규 매물대 거래는 검증된 수량·거래별 명시 비용 가정을 저장합니다. 구버전 모의 기준: 수수료 편도 ${settings.feeBps}bp + 슬리피지 편도 ${settings.slippageBps}bp + 스프레드 가정. 실제 체결 보장 없음 · 펀딩/청산/차입비용은 이 원장 PNL에 미반영`,fundingIncluded:false};
 }
 export class PaperEngine {
  constructor(seed={}, {now=()=>Date.now(),onChange=()=>{},onEvent=()=>{},settings={}}={}) {
+  // A missing collection belongs to an older store format. A present but
+  // malformed collection must never turn into [] and overwrite recoverable data.
+  if(seed===null||typeof seed!=='object'||Array.isArray(seed))throw Error('모의매매 기록 구조 오류: paper는 객체여야 합니다. 기존 기록을 초기화하지 않습니다.');
+  for(const key of ['pending','open','closed','skipped']){
+   if(Object.hasOwn(seed,key)&&!Array.isArray(seed[key]))throw Error(`모의매매 기록 구조 오류: ${key}는 배열이어야 합니다. 기존 기록을 초기화하지 않습니다.`);
+  }
+  if(Object.hasOwn(seed,'seen')&&(seed.seen===null||typeof seed.seen!=='object'||Array.isArray(seed.seen)))throw Error('모의매매 기록 구조 오류: seen은 객체여야 합니다. 기존 기록을 초기화하지 않습니다.');
   this.now=now;this.onChange=onChange;this.onEvent=onEvent;this.settings={...PAPER_DEFAULTS,...settings};
   // Session-only activity counters. Historical PNL records remain in shared store.
   this.telemetry={sessionStartedAt:this.now(),priceTickCount:0,signalChecks:0,acceptedSignals:0,
     lastQuoteAt:0,lastSignalAt:0,lastAcceptedAt:0,lastPositionEventAt:0,openedCountSession:0,closedCountSession:0};
   this.store={pending:[],open:[],closed:[],skipped:[],seen:{}};
-  if(seed&&typeof seed==='object')for(const key of ['pending','open','closed','skipped'])if(Array.isArray(seed[key]))this.store[key]=seed[key];
-  if(seed?.seen&&typeof seed.seen==='object'&&!Array.isArray(seed.seen))this.store.seen=seed.seen;
+  if(seed&&typeof seed==='object')for(const key of ['pending','open','closed','skipped'])if(Array.isArray(seed[key]))this.store[key]=structuredClone(seed[key]);
+  if(seed?.seen&&typeof seed.seen==='object'&&!Array.isArray(seed.seen))this.store.seen={...seed.seen};
  }
  snapshot(){const summary=paperSummary(this.store,{now:this.now(),settings:this.settings});return {...summary,
   pending:this.store.pending.slice(0,20),open:this.store.open.slice(0,20),closed:this.store.closed.slice(-200).reverse(),skipped:this.store.skipped.slice(-30).reverse(),
-  updatedAt:this.now(),mode:'SIMULATION_ONLY',sourceNotes:{CRYPTO:'Binance 실시간 시세 기준 모의 PNL. Variational 확정 체결·펀딩·수수료와 다름',TRADFI:'Variational 공개 Mark Price/호가 스냅샷 기준. 갭·휴장·체결 가능성 검증 불가'}}}
+  updatedAt:this.now(),mode:'SIMULATION_ONLY',settings:{TP1_MOVE_STOP_TO_BREAKEVEN:this.settings.TP1_MOVE_STOP_TO_BREAKEVEN!==false,TP1_BREAKEVEN_MODE:this.settings.TP1_BREAKEVEN_MODE},sourceNotes:{CRYPTO:'Binance 실시간 시세 기준 모의 PNL. 실제 거래소 확정 체결·펀딩·계정 수수료와 다름',TRADFI:'대체 데이터 공급자 없음 · 신규 진입/시세 갱신 비활성 · 기존 기록 및 마지막 관측 PNL 보존'}}}
+ // Only publish mutations after the persistence callback succeeds. A failed write
+ // must not leave a phantom entry/CLOSE in memory or emit a Windows notification.
+ #mutate(run){
+  const before=this.store,telemetry={...this.telemetry};
+  this.store={...before,pending:structuredClone(before.pending),open:structuredClone(before.open),
+   closed:before.closed,skipped:[...before.skipped],seen:before.seen};
+  try{return run()}catch(error){this.store=before;this.telemetry=telemetry;throw error}
+ }
  notify(){this.onChange(this.store)}
- reject(key,reason){if(this.store.seen[key])return false;this.store.seen[key]=this.now();this.store.skipped.push({key,reason,at:this.now()});this.store.skipped=this.store.skipped.slice(-100);this.notify();return false}
+ reject(key,reason,{remember=true}={}){if(this.store.seen[key])return false;if(remember)this.store.seen={...this.store.seen,[key]:this.now()};this.store.skipped.push({key,reason,at:this.now()});this.store.skipped=this.store.skipped.slice(-100);this.notify();return false}
  register(signal,{market='CRYPTO',symbol=signal?.symbol||signal?.ticker,quoteEligible=false}={}){
+  return this.#mutate(()=>this.#register(signal,{market,symbol,quoteEligible}));
+ }
+ #register(signal,{market,symbol,quoteEligible}){
+  if(market!=='CRYPTO')return false; // Disabled markets cannot mutate retained records.
   const now=this.now(),settings=this.settings;
   this.telemetry.signalChecks++;this.telemetry.lastSignalAt=now;
   const direction=signal?.direction;const entry=num(signal?.entry),stop=num(signal?.stop);
   const barAt=num(signal?.patternConfirmedAt||signal?.lastBarAt||0),pattern=String(signal?.pattern||'');
-  if(!['CRYPTO','TRADFI'].includes(market)||!symbol||!['LONG','SHORT'].includes(direction)||!pattern||!validPrice(entry)||!validPrice(stop)||
+  if(market!=='CRYPTO'||!symbol||!['LONG','SHORT'].includes(direction)||!pattern||!validPrice(entry)||!validPrice(stop)||
    (direction==='LONG'&&stop>=entry)||(direction==='SHORT'&&stop<=entry)||!Number.isFinite(barAt)||barAt<=0||barAt>now+60000||now-barAt>2*3600000)return false;
   const key=signalKey({market,symbol,direction,pattern,barAt});if(this.store.seen[key])return false;
   if(!quoteEligible)return this.reject(key,'상장/호가/진입 검증 실패');
   if(this.store.open.some(x=>x.symbol===symbol&&x.market===market)||this.store.pending.some(x=>x.symbol===symbol&&x.market===market))return this.reject(key,'동일 종목 중복 가상 포지션 방지');
-  const summary=paperSummary(this.store,{now,settings});
   if(this.store.open.length+this.store.pending.length>=settings.maxPositions)return this.reject(key,'동시 포지션 상한');
-  if(summary.dailyPnLUSD<=-settings.maxDailyLoss||summary.weeklyPnLUSD<=-settings.maxWeeklyLoss)return this.reject(key,'일간/주간 손실 경고 상한');
-  this.store.seen[key]=now;
-  const targets=(Array.isArray(signal.targets)&&signal.targets.length===3?signal.targets:[2,3,4].map(r=>entry+(direction==='LONG'?1:-1)*Math.abs(entry-stop)*r)).map(num);
-  if(targets.some(p=>!validPrice(p))||targets.some((p,i)=>direction==='LONG'?p<=entry||(i>0&&p<=targets[i-1]):p>=entry||(i>0&&p>=targets[i-1])))return this.reject(key,'목표가 데이터 불일치');
-  this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,signalAt:now,expiresAt:now+settings.entryTimeoutMs});
+  const managementVersion=signal.managementVersion,profile=managementVersion==='VOLUME_PROFILE_V1',
+   legacy=managementVersion==='LEGACY_R_MULTIPLES'||managementVersion==='LEGACY_R_V1',plan=signal.targetPlan;
+  if(!profile&&!legacy)return this.reject(key,'TP_PROFILE_UNAVAILABLE',{remember:false});
+  if(profile&&(plan?.ok!==true||!plan.profileEvidence||!Array.isArray(plan.targets)||plan.targets.length!==3||
+   !Array.isArray(plan.parts)||plan.parts.length!==3||plan.parts.some((part,i)=>!Number.isFinite(part?.fraction)||Math.abs(part.fraction-[.4,.35,.25][i])>1e-10)))
+   return this.reject(key,'TP_PROFILE_UNAVAILABLE',{remember:false});
+  const executionVenue=EXECUTION_VENUES.includes(signal.executionVenue)?signal.executionVenue:null;
+  if(settings.requireExecutionVenue===true&&!executionVenue)return this.reject(key,'EXECUTION_VENUE_UNAVAILABLE',{remember:false});
+  const breakevenMode=signal.breakevenMode??settings.TP1_BREAKEVEN_MODE;
+  if(profile&&!['ENTRY_FILL','COST_COVERED'].includes(breakevenMode))return this.reject(key,'BREAKEVEN_COST_MODEL_UNVERIFIED',{remember:false});
+  const targets=(profile?plan.targets:Array.isArray(signal.targets)&&signal.targets.length===3?signal.targets:[2,3,4].map(r=>entry+(direction==='LONG'?1:-1)*Math.abs(entry-stop)*r)).map(num);
+  const plannedQuantity=profile?(validPrice(plan.quantity)?plan.quantity:plan.parts.every(part=>validPrice(part?.quantity))?plan.parts.reduce((sum,part)=>sum+part.quantity,0):null):null;
+  if(profile&&(!validPrice(plannedQuantity)||plan.quantityUnit!=='BASE_ASSET'||plan.notionalCurrency!=='USDT'||!Number.isFinite(plan.minNotional)||plan.minNotional<0||
+   plan.parts.some((part,i)=>!validPrice(part.quantity)||Math.abs(part.quantity-plannedQuantity*[.4,.35,.25][i])>Math.max(1e-12,plannedQuantity*1e-9))))
+   return this.reject(key,'TP_QUANTITY_UNVERIFIED',{remember:false});
+  if(profile&&(!validPrice(plan.quantityStep)||!validPrice(plan.minQuantity)||!validPrice(plan.tickSize)||
+   !onGrid(plannedQuantity,plan.quantityStep)||plannedQuantity<plan.minQuantity||
+   plan.parts.some((part,i)=>part.quantity<plan.minQuantity||!onGrid(part.quantity,plan.quantityStep)||!onGrid(targets[i],plan.tickSize)||
+    part.quantity*targets[i]<plan.minNotional)))return this.reject(key,'TP_QUANTITY_OR_NOTIONAL_INVALID',{remember:false});
+  const costs=profile?plan.costAssumptions:null;
+  if(profile&&(!costs||!['EXPLICIT_PAPER_ASSUMPTIONS','SYNTHETIC_TEST','VERIFIED_VENUE'].includes(costs.assumption)||
+   !Number.isFinite(costs.takerRate)||costs.takerRate<0||costs.takerRate>.01||!Number.isFinite(costs.slippageBps)||costs.slippageBps<0||
+   !Number.isFinite(costs.spreadBps)||costs.spreadBps<0))return this.reject(key,'TP_COSTS_UNVERIFIED',{remember:false});
+  if(profile&&breakevenMode==='COST_COVERED'&&(costs.spreadBps/2+costs.slippageBps)/10000>=1)
+   return this.reject(key,'BREAKEVEN_COST_MODEL_UNVERIFIED',{remember:false});
+  if(targets.some(p=>!validPrice(p))||targets.some((p,i)=>direction==='LONG'?p<=entry||(i>0&&p<=targets[i-1]):p>=entry||(i>0&&p>=targets[i-1])))return this.reject(key,'목표가 데이터 불일치',{remember:false});
+  this.store.seen={...this.store.seen,[key]:now};
+  this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+settings.entryTimeoutMs,
+   ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),
+   ...(profile?{managementVersion:'VOLUME_PROFILE_V1',targetPlan:structuredClone(plan),plannedQuantity,
+    moveStopToBreakeven:typeof signal.moveStopToBreakeven==='boolean'?signal.moveStopToBreakeven:settings.TP1_MOVE_STOP_TO_BREAKEVEN!==false,
+    breakevenMode,breakevenMoved:false,costAssumptions:structuredClone(costs)}: {managementVersion:'LEGACY_R_MULTIPLES'})});
   this.telemetry.acceptedSignals++;this.telemetry.lastAcceptedAt=now;this.telemetry.lastPositionEventAt=now;
   this.notify();return true;
  }
- onPrice(market,symbol,price,at,{halfSpreadBps=null,quoteFresh=true}={}){
+ onPrice(market,symbol,price,at,{halfSpreadBps=null,quoteFresh=true,entryAllowed=true,exitQuantityLimit=null,venue=null}={}){
+  return this.#mutate(()=>this.#onPrice(market,symbol,price,at,{halfSpreadBps,quoteFresh,entryAllowed,exitQuantityLimit,venue}));
+ }
+ #onPrice(market,symbol,price,at,{halfSpreadBps,quoteFresh,entryAllowed,exitQuantityLimit,venue}){
+  // A venue price only moves records executed on that venue (null = any, for callers without venues).
+  const otherVenue=record=>venue!==null&&venueOf(record)!==venue;
+  if(market!=='CRYPTO')return 0; // No replacement feed: freeze retained positions and pending entries.
   const settings=this.settings,now=this.now();price=num(price);at=num(at);
-  const maxFresh=market==='TRADFI'?settings.maxFreshMsTradFi:settings.maxFreshMsCrypto;
+  const maxFresh=settings.maxFreshMsCrypto;
   if(!quoteFresh||!validPrice(price)||!Number.isFinite(at)||at>now+5000||now-at>maxFresh)return 0;
   this.telemetry.priceTickCount++;this.telemetry.lastQuoteAt=now;
   let modified=0;const events=[];
   for(const pending of [...this.store.pending]){
-   if(pending.market!==market||pending.symbol!==symbol)continue;
+   // Losing listing/quote approval blocks new entries, never risk monitoring of
+   // positions that were already opened under a previously approved listing.
+   if(!entryAllowed)continue;
+   if(pending.market!==market||pending.symbol!==symbol||otherVenue(pending))continue;
    // A first real observation AFTER signal detection is required. No past price is replayed.
    if(at<=pending.signalAt)continue;
    this.store.pending=this.store.pending.filter(x=>x.key!==pending.key);
@@ -85,66 +169,118 @@ export class PaperEngine {
    const dir=pending.direction==='LONG'?1:-1;
    if(dir*(price-pending.stop)<=0||dir*(price-pending.targets[0])>=0){this.store.skipped.push({key:pending.key,reason:'첫 실시간 관측 시 손절선/목표가 이미 통과',at:now});modified++;continue}
    const deviation=Math.abs(price-pending.signalPrice)/pending.signalPrice;
-   if(deviation>Math.min(.004,Math.abs(pending.signalPrice-pending.stop)/pending.signalPrice*.25)){
+   if(deviation>entryAllowance({entry:pending.signalPrice,stop:pending.stop,atr:pending.atr})){
     this.store.skipped.push({key:pending.key,reason:'신호 진입 기준가 대비 가격 이탈',at:now});modified++;continue;
    }
-   const spread=Number.isFinite(num(halfSpreadBps))&&halfSpreadBps!==null?num(halfSpreadBps):settings.cryptoHalfSpreadBps;
-   const entryFill=fillPrice(price,pending.direction==='LONG'?'BUY':'SELL',{halfSpreadBps:spread,slippageBps:settings.slippageBps});
-   const stopFill=fillPrice(pending.stop,pending.direction==='LONG'?'SELL':'BUY',{halfSpreadBps:spread,slippageBps:settings.slippageBps});
+   const profile=pending.managementVersion==='VOLUME_PROFILE_V1',feeBps=profile?pending.costAssumptions.takerRate*10000:settings.feeBps,
+    slippageBps=profile?pending.costAssumptions.slippageBps:settings.slippageBps;
+   const spread=Number.isFinite(num(halfSpreadBps))&&halfSpreadBps!==null?num(halfSpreadBps):profile?pending.costAssumptions.spreadBps/2:settings.cryptoHalfSpreadBps;
+   const entryFill=fillPrice(price,pending.direction==='LONG'?'BUY':'SELL',{halfSpreadBps:spread,slippageBps});
+   const stopFill=fillPrice(pending.stop,pending.direction==='LONG'?'SELL':'BUY',{halfSpreadBps:spread,slippageBps});
    if(dir*(entryFill-pending.stop)<=0){this.store.skipped.push({key:pending.key,reason:'스프레드 반영 후 진입 가격 무효',at:now});modified++;continue}
-   // Size against modeled stop INCLUDING two fees, spread and slippage, but not gaps.
-   const costPerDollar=(Math.abs(entryFill-stopFill)+settings.feeBps/10000*(entryFill+stopFill))/entryFill;
-   const n=Math.min(settings.maxNotional,settings.riskUSD/costPerDollar);
-   if(!Number.isFinite(n)||n<settings.minNotional){this.store.skipped.push({key:pending.key,reason:'비용 포함 위험 한도에 맞는 최소 명목금액 미충족',at:now});modified++;continue}
-   const quantity=n/entryFill,feesUSD=n*settings.feeBps/10000;
+   // Legacy fixed sizing is retained only for historical/synthetic compatibility.
+   // New profile positions use explicit quantity, exchange filters and risk limits.
+   const n=profile?pending.plannedQuantity*entryFill:settings.paperNotionalUSD,minimumNotional=profile?pending.targetPlan.minNotional:settings.minNotional;
+   if(!Number.isFinite(n)||!Number.isFinite(minimumNotional)||minimumNotional<0||n<minimumNotional||n>settings.maxNotional){this.store.skipped.push({key:pending.key,reason:'모의 거래 명목금액이 호가 샘플 검증 범위를 벗어남',at:now});modified++;continue}
+   const quantity=profile?pending.plannedQuantity:n/entryFill,feesUSD=n*feeBps/10000;
+   const plannedLossUSD=quantity*(dir*(entryFill-stopFill)+(entryFill+stopFill)*feeBps/10000);
+   if(profile&&(!validPrice(settings.maxRiskUSD)||!Number.isFinite(plannedLossUSD)||plannedLossUSD>settings.maxRiskUSD+1e-9)){
+    this.store.skipped.push({key:pending.key,reason:'체결 비용 반영 최대 손실 한도 초과',at:now});modified++;continue;
+   }
+   if(profile&&pending.targets.some((p,i)=>dir*(p-entryFill)<=0||i>0&&dir*(p-pending.targets[i-1])<=0)){
+    this.store.skipped.push({key:pending.key,reason:'실제 가상 진입체결 후 목표가 방향 무효',at:now});modified++;continue;
+   }
    this.store.open.push({...pending,openedAt:at,entryRefPrice:price,entryFill,initialStop:pending.stop,notionalUSD:rounded(n),originalQty:quantity,qtyRemaining:quantity,
      exitedPct:0,realizedGrossUSD:0,feesUSD,realizedPnLUSD:-feesUSD,closeParts:[],markPrice:price,lastPriceAt:at,
-     halfSpreadBps:spread,quoteGaps:0});
+     halfSpreadBps:spread,quoteGaps:0,...(profile?{plannedLossUSD,feeBps,slippageBps,managementEvents:[],targetQuantities:[quantity*.4,quantity*.35,quantity-quantity*.4-quantity*.35]}:{})});
    events.push({type:'OPEN',key:pending.key,market,symbol,direction:pending.direction,at,entryFill,notionalUSD:rounded(n),stop:pending.stop});
    this.telemetry.openedCountSession++;this.telemetry.lastPositionEventAt=now;modified++;
   }
   for(const position of [...this.store.open]){
-   if(position.market!==market||position.symbol!==symbol||at<=position.lastPriceAt)continue;
-   const maxGap=market==='TRADFI'?settings.maxQuoteGapMsTradFi:settings.maxQuoteGapMsCrypto;
+   if(position.market!==market||position.symbol!==symbol||otherVenue(position)||at<=position.lastPriceAt)continue;
+   const maxGap=settings.maxQuoteGapMsCrypto;
    if(at-position.lastPriceAt>maxGap)position.quoteGaps++;
    position.lastPriceAt=at;position.markPrice=price;
    const dir=position.direction==='LONG'?1:-1;
    const spread=halfSpreadBps===null?position.halfSpreadBps:Math.max(0,num(halfSpreadBps)||0);
    const crossedStop=dir*(price-position.stop)<=0;
-   if(crossedStop){this.#exitPart(position,position.qtyRemaining,price,'STOP',at,spread);events.push(this.#finalize(position,at,'STOP'));modified++;continue}
-   while(position.exitedPct<100){
-    const next=position.closeParts.filter(x=>x.type==='TARGET').length;
+   let budget=exitQuantityLimit===null?Infinity:Number.isFinite(exitQuantityLimit)&&exitQuantityLimit>0?exitQuantityLimit:0;
+   const tolerance=Math.max(1e-12,position.originalQty*1e-10);
+   if(crossedStop){
+    const quantity=Math.min(position.qtyRemaining,budget);
+    if(quantity>tolerance){this.#exitPart(position,quantity,price,'STOP',at,spread);modified++;
+     if(position.qtyRemaining<=tolerance)events.push(this.#finalize(position,at,'STOP'));
+    }
+    continue;
+   }
+   const quantities=position.targetQuantities??[position.originalQty*.4,position.originalQty*.35,position.originalQty-position.originalQty*.4-position.originalQty*.35];
+   while(position.qtyRemaining>tolerance&&budget>tolerance){
+    const fills=position.closeParts.filter(x=>x.type==='TARGET');
+    let next=0;
+    while(next<3&&fills.filter(x=>x.targetNumber===next+1).reduce((sum,x)=>sum+x.qty,0)>=quantities[next]-tolerance)next++;
     if(next>=3||dir*(price-position.targets[next])<0)break;
-    const quantity=next===2?position.qtyRemaining:position.originalQty*[.4,.35,.25][next];
-    this.#exitPart(position,quantity,position.targets[next],`TARGET`,at,spread,next+1);
-    position.exitedPct=[40,75,100][next];modified++;
-    if(next===0)position.stop=position.entryFill; // after TP1, remaining stop moves to break-even (reference)
-    if(next===2){events.push(this.#finalize(position,at,'ALL_TARGETS'));break}
+    const already=fills.filter(x=>x.targetNumber===next+1).reduce((sum,x)=>sum+x.qty,0),
+     quantity=Math.min(quantities[next]-already,position.qtyRemaining,budget);
+    if(quantity<=tolerance)break;
+    this.#exitPart(position,quantity,position.targets[next],'TARGET',at,spread,next+1);budget-=quantity;
+    position.exitedPct=rounded((position.originalQty-position.qtyRemaining)/position.originalQty*100);modified++;
+    const completed=already+quantity>=quantities[next]-tolerance;
+    if(next===0&&completed)this.#moveStopAfterTP1(position,at);
+    if(position.qtyRemaining<=tolerance){position.exitedPct=100;events.push(this.#finalize(position,at,'ALL_TARGETS'));break}
    }
   }
   if(modified){this.telemetry.lastPositionEventAt=now;this.store.skipped=this.store.skipped.slice(-100);this.notify();for(const event of events){try{this.onEvent(event)}catch(e){console.warn('[PAPER EVENT CALLBACK]',e.message)}}}
   return modified;
  }
+ #moveStopAfterTP1(position,at){
+  if(position.managementVersion!=='VOLUME_PROFILE_V1'){position.stop=position.entryFill;return}
+  if(position.moveStopToBreakeven!==true||position.breakevenMoved===true)return;
+  const dir=position.direction==='LONG'?1:-1;
+  let next=position.entryFill,costModel=null;
+  if(position.breakevenMode==='COST_COVERED'){
+   const fee=position.feeBps/10000,friction=(position.halfSpreadBps+position.slippageBps)/10000,tick=position.targetPlan?.tickSize;
+   if(!Number.isFinite(fee)||fee<0||fee>=1||!Number.isFinite(friction)||friction<0||friction>=1||!validPrice(tick))return;
+   // Cover only the remaining position's allocated entry fee and expected exit
+   // costs. TP1 proceeds are never used to claim a lower break-even price.
+   const raw=dir===1?position.entryFill*(1+fee)/((1-friction)*(1-fee)):
+    position.entryFill*(1-fee)/((1+friction)*(1+fee));
+   try{next=quantizeVolumeStep(raw,tick,dir===1?'UP':'DOWN')}catch{return}
+   costModel={basis:'EXPLICIT_SIMULATION_ASSUMPTIONS_NOT_ACCOUNT_COST_PROOF',feeRate:fee,exitFrictionRate:friction,
+    entryFill:position.entryFill,tickSize:tick,rawPrice:raw,accountRateVerified:position.costAssumptions?.accountRateVerified===true,
+    fundingCovered:false,tp1ProceedsUsed:false};
+  }
+  if(!validPrice(next)||dir*(next-position.stop)<0)return;
+  const filled=position.closeParts.filter(x=>x.type==='TARGET'&&x.targetNumber===1).reduce((sum,x)=>sum+x.qty,0),
+   required=position.originalQty*.4,tolerance=Math.max(1e-12,position.originalQty*1e-10);
+  if(filled<required-tolerance)return;
+  const previousStop=position.stop;position.stop=next;position.breakevenMoved=true;position.breakevenMovedAt=at;
+  position.managementEvents??=[];
+  position.managementEvents.push({type:'STOP_TO_BREAKEVEN',at,previousStop,stop:next,source:'CONFIRMED_SIMULATED_TP1_FILLS',filledTP1Quantity:filled,requiredTP1Quantity:required,
+   mode:position.breakevenMode??'ENTRY_FILL',...(costModel?{costModel}: {})});
+ }
  #exitPart(position,qty,reference,type,at,halfSpreadBps,targetNumber=null){
-  const executed=fillPrice(reference,position.direction==='LONG'?'SELL':'BUY',{halfSpreadBps,slippageBps:this.settings.slippageBps});
+  const executed=fillPrice(reference,position.direction==='LONG'?'SELL':'BUY',{halfSpreadBps,slippageBps:Number.isFinite(position.slippageBps)?position.slippageBps:this.settings.slippageBps});
   const profit=qty*(position.direction==='LONG'?1:-1)*(executed-position.entryFill);
-  const fee=qty*executed*this.settings.feeBps/10000;
+  const fee=qty*executed*(Number.isFinite(position.feeBps)?position.feeBps:this.settings.feeBps)/10000;
   position.qtyRemaining=Math.max(0,position.qtyRemaining-qty);position.realizedGrossUSD+=profit;
   position.feesUSD+=fee;position.realizedPnLUSD=position.realizedGrossUSD-position.feesUSD;
-  position.closeParts.push({type,targetNumber,at,reference,fill:executed,qty,profitUSD:rounded(profit),feeUSD:rounded(fee)});
+  position.closeParts.push({type,targetNumber,at,reference,fill:executed,qty,profitUSD:rounded(profit),feeUSD:rounded(fee),
+   ...(type==='STOP'?{stopReference:position.stop,observedStopGapUSD:rounded(qty*Math.max(0,(position.direction==='LONG'?1:-1)*(position.stop-reference))),
+    executionBeyondStopUSD:rounded(qty*Math.max(0,(position.direction==='LONG'?1:-1)*(position.stop-executed)))}:{})});
  }
  #finalize(position,at,reason){
   this.store.open=this.store.open.filter(x=>x.key!==position.key);
   position.status='CLOSED';position.closedAt=at;position.closeReason=reason;position.realizedPnLUSD=rounded(position.realizedPnLUSD);
   position.feesUSD=rounded(position.feesUSD);position.realizedGrossUSD=rounded(position.realizedGrossUSD);
-  this.store.closed.push(position); // no history cap: keep lifetime PNL across updates
+  this.store.closed=[...this.store.closed,position]; // no history cap: keep lifetime PNL across updates
   this.telemetry.closedCountSession++;this.telemetry.lastPositionEventAt=this.now();
   return {type:'CLOSE',key:position.key,market:position.market,symbol:position.symbol,direction:position.direction,
     at,entryFill:position.entryFill,lastExitFill:position.closeParts.at(-1)?.fill,closeReason:reason,
     realizedPnLUSD:position.realizedPnLUSD,feesUSD:position.feesUSD};
  }
- expirePending(){let count=0;const now=this.now();for(const p of [...this.store.pending])if(now>p.expiresAt){this.store.pending=this.store.pending.filter(x=>x.key!==p.key);this.store.skipped.push({key:p.key,reason:'20분 이내 새 시세가 없어 진입 생략',at:now});count++}
+ expirePending(){return this.#mutate(()=>this.#expirePending())}
+ #expirePending(){let count=0;const now=this.now();for(const p of [...this.store.pending])if(p.market==='CRYPTO'&&now>p.expiresAt){this.store.pending=this.store.pending.filter(x=>x.key!==p.key);this.store.skipped.push({key:p.key,reason:'20분 이내 새 시세가 없어 진입 생략',at:now});count++}
   if(count){this.telemetry.lastPositionEventAt=now;this.notify()}return count}
 }
-export function paperCSV(rows=[]){const cols=['market','symbol','direction','pattern','openedAt','closedAt','entryFill','stop','notionalUSD','closeReason','realizedGrossUSD','feesUSD','realizedPnLUSD','quoteGaps'];
- return '\uFEFF'+cols.join(',')+'\r\n'+rows.map(x=>cols.map(k=>{let v=x[k]??'';if(k.endsWith('At')&&Number(v))v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\r\n');}
+export function paperCSV(rows=[]){const cols=['market','executionVenue','symbol','direction','pattern','openedAt','closedAt','entryFill','stop','notionalUSD','closeReason','realizedGrossUSD','feesUSD','realizedPnLUSD','quoteGaps'];
+ return '\uFEFF'+cols.join(',')+'\r\n'+rows.map(x=>cols.map(k=>{let v=k==='executionVenue'?venueOf(x):x[k]??'';if(k.endsWith('At')&&Number(v))v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\r\n');}

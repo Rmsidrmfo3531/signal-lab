@@ -14,6 +14,33 @@ test('semantic version comparison and safe file list',()=>{
  for(const name of ['.env','store.json','../../store.json','public/../../.env','/tmp/evil','C:\\Windows\\x','public/a.js/../../.env'])assert.equal(allowedFile(name),false,name);
  assert.equal(allowedFile('public/app.js'),true);assert.equal(allowedFile('server.mjs'),true);
 });
+test('all local runtime imports and Windows notifier are eligible without allowing user data',()=>{
+ for(const source of ['server.mjs','engine.mjs']){
+  const code=fs.readFileSync(new URL('../'+source,import.meta.url),'utf8');
+  for(const [,name] of code.matchAll(/from\s+['"]\.\/([^'"]+)['"]/g))assert.equal(allowedFile(name),true,name);
+ }
+ for(const name of ['signal_pipeline.mjs','quality.mjs','windows_paper_notify.ps1','paper.mjs','decimal_grid.mjs',
+  'venue_market_data.mjs','bingx_market.mjs','gateio_market.mjs','venue_service.mjs','public/venues.js','scripts/check-venue-market-data.mjs'])assert.equal(allowedFile(name),true,name);
+ for(const name of ['orangex.mjs','orangex_paper_journal.mjs','scripts/diagnose-orangex-windows.mjs','durable_append_recovery.mjs'])assert.equal(allowedFile(name),false,'removed: '+name);
+ for(const name of ['store.json','.env','recovery/store-corrupt.json','backups/store-any.json','arbitrary.ps1',
+  'scripts/unreviewed-diagnostic.mjs'])assert.equal(allowedFile(name),false,name);
+});
+test('runtime-module update is verified, applied, and retains both current and backup trade records',async()=>{
+ const dir=root();try{
+  const records=JSON.stringify({paper:{open:[{key:'keep-open'}],closed:[{key:'keep-pnl',realizedPnLUSD:13.5}]}});
+  fs.writeFileSync(path.join(dir,'store.json'),records);fs.mkdirSync(path.join(dir,'backups'));
+  fs.writeFileSync(path.join(dir,'backups','store-existing.json'),records);
+  const names=['paper.mjs','quality.mjs','signal_pipeline.mjs','tradfi_feed.mjs','windows_paper_notify.ps1','scripts/check-market-data.mjs'];
+  const files=names.map(name=>({path:name,url:'./'+name,sha256:hex('verified '+name)}));
+  const docs={[manifestUrl]:JSON.stringify({version:'6.0.0',files})};
+  for(const name of names)docs['https://releases.example.test/'+name]='verified '+name;
+  const staged=await stageUpdate({root:dir,manifestURL:manifestUrl,currentVersion:'5.8.0',fetcher:fakeFetcher(docs)});
+  assert.equal(staged.fileCount,names.length);assert.equal(applyPending({root:dir,currentVersion:'5.8.0'}).state,'applied');
+  for(const name of names)assert.equal(fs.readFileSync(path.join(dir,name),'utf8'),'verified '+name);
+  assert.equal(fs.readFileSync(path.join(dir,'store.json'),'utf8'),records);
+  assert.equal(fs.readFileSync(path.join(dir,'backups','store-existing.json'),'utf8'),records);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
 test('updater rejects cross-origin download and non-HTTPS manifests',()=>{
  const item={path:'public/app.js',url:'https://other.example/app.js',sha256:hex('x')};
  assert.throws(()=>validateManifest({version:'4.5.0',files:[item]},manifestUrl),/HTTPS 출처/);

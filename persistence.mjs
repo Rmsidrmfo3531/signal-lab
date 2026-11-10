@@ -12,12 +12,13 @@ export function resolveDataDir({env=process.env,platform=process.platform,home=o
 }
 const stamp=()=>new Date().toISOString().replace(/[:.]/g,'-');
 function isObject(x){return x!==null&&typeof x==='object'&&!Array.isArray(x)}
+function invalidStore(message){const error=new Error(message);error.code='SIGNAL_LAB_INVALID_STORE';return error}
 export function readStore(file){
  if(!fs.existsSync(file))return null;
  // Do not reset records to defaults if a user file is invalid/corrupted.
  const content=fs.readFileSync(file,'utf8');
- let record;try{record=JSON.parse(content)}catch(e){throw Error('기록 파일 JSON 오류: '+file+' (자동으로 초기화하지 않습니다): '+e.message)}
- if(!isObject(record)||record.paper!==undefined&&!isObject(record.paper)||record.journal!==undefined&&!Array.isArray(record.journal))throw Error('기록 파일 구조 오류: '+file);
+ let record;try{record=JSON.parse(content)}catch(e){throw invalidStore('기록 파일 JSON 오류: '+file+' (자동으로 초기화하지 않습니다): '+e.message)}
+ if(!isObject(record)||record.paper!==undefined&&!isObject(record.paper)||record.journal!==undefined&&!Array.isArray(record.journal))throw invalidStore('기록 파일 구조 오류: '+file);
  return record;
 }
 function copyExclusive(source,target){
@@ -29,21 +30,44 @@ export function prepareData(root,{env=process.env,platform=process.platform,home
  fs.mkdirSync(dir,{recursive:true,mode:0o700});
  const storePath=path.join(dir,'store.json'),envPath=path.join(dir,'.env');
  const legacyStore=path.join(root,'store.json'),legacyEnv=path.join(root,'.env');
- // The very first launch can adopt a store from this release's folder.
- if(fs.existsSync(legacyStore))readStore(legacyStore);
+ // A shared store is authoritative. Inspect the release's legacy copy only
+ // when it will actually be migrated; an unused damaged copy must not block it.
+ if(!fs.existsSync(storePath)&&fs.existsSync(legacyStore))readStore(legacyStore);
  const migratedStore=copyExclusive(legacyStore,storePath);
  const migratedEnv=copyExclusive(legacyEnv,envPath);
  if(fs.existsSync(storePath))readStore(storePath);
  return {dir,storePath,envPath,migratedStore,migratedEnv};
 }
+// rename() only swaps a directory entry. Without flushing the new file first, a
+// power cut or OS crash shortly after a save can leave store.json empty or
+// truncated even though the swap itself was atomic. The handle is opened for
+// writing because Windows refuses to flush a read-only handle.
+function writeFlushed(file,text){
+ const fd=fs.openSync(file,'wx',0o600);
+ let failure;
+ try{fs.writeFileSync(fd,text,'utf8');fs.fsyncSync(fd)}catch(error){failure=error}
+ try{fs.closeSync(fd)}catch(error){failure??=error}
+ if(failure)throw failure;
+}
+// Persist the rename itself where the platform allows it. Windows and some
+// network/container file systems expose no directory flush; the file data is
+// already flushed, so only those "not supported" answers are ignored.
+const DIRECTORY_SYNC_UNSUPPORTED=new Set(['EPERM','EACCES','EINVAL','EISDIR','ENOTSUP','EBADF']);
+function flushDirectory(directory){
+ let fd;
+ try{fd=fs.openSync(directory,'r');fs.fsyncSync(fd)}
+ catch(error){if(!DIRECTORY_SYNC_UNSUPPORTED.has(error?.code))throw error}
+ finally{if(fd!==undefined)try{fs.closeSync(fd)}catch{}}
+}
 export function atomicWriteStore(storePath,value){
  if(!isObject(value))throw Error('저장할 기록 구조가 올바르지 않습니다');
  const tmp=storePath+'.tmp-'+process.pid+'-'+randomBytes(5).toString('hex');
  try{
-  fs.writeFileSync(tmp,JSON.stringify(value,null,2),{encoding:'utf8',mode:0o600,flag:'wx'});
+  writeFlushed(tmp,JSON.stringify(value,null,2));
   // Validate BEFORE swapping in to avoid replacing a recoverable file with invalid data.
   readStore(tmp);
   fs.renameSync(tmp,storePath);
+  flushDirectory(path.dirname(storePath));
  }finally{try{fs.rmSync(tmp,{force:true})}catch{}}
 }
 export function backupStore(storePath,{maxBackups=30}={}){
@@ -56,6 +80,30 @@ export function backupStore(storePath,{maxBackups=30}={}){
  const files=fs.readdirSync(backupDir).filter(x=>/^store-.*\.json$/.test(x)).sort().reverse();
  for(const file of files.slice(Math.max(1,maxBackups)))fs.rmSync(path.join(backupDir,file),{force:true});
  return target;
+}
+export function restoreStore(sourcePath,dir){
+ const source=path.resolve(sourcePath),record=readStore(source);
+ if(!record)throw Error('백업 파일을 찾지 못했습니다.');
+ fs.mkdirSync(dir,{recursive:true,mode:0o700});
+ // Hold the same exclusive lock as the server during preservation and restore.
+ const release=acquireDataLock(dir);
+ try{
+  const storePath=path.join(dir,'store.json');let previous=null,preservedCorrupt=null;
+  if(fs.existsSync(storePath)){
+   let damaged=false;
+   try{readStore(storePath)}catch(e){if(e.code!=='SIGNAL_LAB_INVALID_STORE')throw e;damaged=true}
+   if(damaged){
+    // Preserve the original bytes, even when they cannot be parsed as JSON.
+    // Recovery copies have no automatic retention limit: never delete them here.
+    const recoveryDir=path.join(dir,'recovery');fs.mkdirSync(recoveryDir,{recursive:true,mode:0o700});
+    preservedCorrupt=path.join(recoveryDir,`store-corrupt-${stamp()}-${randomBytes(3).toString('hex')}.json`);
+    fs.copyFileSync(storePath,preservedCorrupt,fs.constants.COPYFILE_EXCL);
+    if(!fs.readFileSync(preservedCorrupt).equals(fs.readFileSync(storePath)))throw Error('손상 기록 보존 확인 실패. 복원을 중단했습니다.');
+   }else previous=backupStore(storePath);
+  }
+  atomicWriteStore(storePath,record);
+  return {storePath,previous,preservedCorrupt};
+ }finally{release()}
 }
 export function hasTradeRecords(store){
  return Boolean((store?.journal?.length||0)||(store?.alerts?.length||0)||(store?.paper?.open?.length||0)||(store?.paper?.pending?.length||0)||(store?.paper?.closed?.length||0)||(store?.paper?.skipped?.length||0));

@@ -4,7 +4,7 @@ import {PaperEngine} from '../paper.mjs';
 import {paperNotificationText,windowsPaperNotify} from '../windows_paper_notify.mjs';
 
 const initial=Date.parse('2026-10-20T08:00:00Z');
-const signal=(direction='LONG',symbol='BTCUSDT')=>({symbol,direction,entry:100,stop:direction==='LONG'?98:102,pattern:'1h confirmed',patternConfirmedAt:initial-60000});
+const signal=(direction='LONG',symbol='BTCUSDT')=>({managementVersion:'LEGACY_R_MULTIPLES',symbol,direction,entry:100,stop:direction==='LONG'?98:102,pattern:'1h confirmed',patternConfirmedAt:initial-60000});
 function tester(seed={}){
  let t=initial;const events=[];const engine=new PaperEngine(seed,{now:()=>t,onEvent:ev=>events.push(ev)});
  return {engine,events,quote:(p,symbol='BTCUSDT',market='CRYPTO')=>{t+=1000;engine.onPrice(market,symbol,p,t)},time:()=>t};

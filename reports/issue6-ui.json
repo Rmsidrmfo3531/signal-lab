@@ -1,0 +1,147 @@
+{
+  "passed": true,
+  "actualExchangeRequests": 0,
+  "actualAccountOrOrderCalls": 0,
+  "results": [
+    {
+      "name": "desktop",
+      "width": 1440,
+      "height": 1000,
+      "symbols": [
+        "BTCUSDT",
+        "AAAUSDT",
+        "ZZZUSDT"
+      ],
+      "viewport": 1440,
+      "document": 1440,
+      "pageErrors": [],
+      "settingsPosts": 2,
+      "modePosts": 1,
+      "initialBreakevenMode": "ENTRY_FILL",
+      "selectedBreakevenMode": "COST_COVERED",
+      "externalRequestsBlocked": [
+        "fonts.googleapis.com",
+        "s3.tradingview.com"
+      ],
+      "dataSource": "SYNTHETIC_UI_FIXTURES_ONLY_NOT_ACTUAL_EXCHANGE",
+      "basicChartChecked": true
+    },
+    {
+      "name": "mobile390",
+      "width": 390,
+      "height": 844,
+      "symbols": [
+        "BTCUSDT",
+        "AAAUSDT",
+        "ZZZUSDT"
+      ],
+      "viewport": 390,
+      "document": 390,
+      "pageErrors": [],
+      "settingsPosts": 2,
+      "modePosts": 1,
+      "initialBreakevenMode": "ENTRY_FILL",
+      "selectedBreakevenMode": "COST_COVERED",
+      "externalRequestsBlocked": [
+        "fonts.googleapis.com",
+        "s3.tradingview.com"
+      ],
+      "dataSource": "SYNTHETIC_UI_FIXTURES_ONLY_NOT_ACTUAL_EXCHANGE",
+      "basicChartChecked": true
+    },
+    {
+      "name": "mobile360",
+      "width": 360,
+      "height": 800,
+      "symbols": [
+        "BTCUSDT",
+        "AAAUSDT",
+        "ZZZUSDT"
+      ],
+      "viewport": 360,
+      "document": 360,
+      "pageErrors": [],
+      "settingsPosts": 2,
+      "modePosts": 1,
+      "initialBreakevenMode": "ENTRY_FILL",
+      "selectedBreakevenMode": "COST_COVERED",
+      "externalRequestsBlocked": [
+        "fonts.googleapis.com",
+        "s3.tradingview.com"
+      ],
+      "dataSource": "SYNTHETIC_UI_FIXTURES_ONLY_NOT_ACTUAL_EXCHANGE",
+      "basicChartChecked": true
+    },
+    {
+      "name": "tablet",
+      "width": 720,
+      "height": 1024,
+      "symbols": [
+        "BTCUSDT",
+        "AAAUSDT",
+        "ZZZUSDT"
+      ],
+      "viewport": 720,
+      "document": 720,
+      "pageErrors": [],
+      "settingsPosts": 2,
+      "modePosts": 1,
+      "initialBreakevenMode": "ENTRY_FILL",
+      "selectedBreakevenMode": "COST_COVERED",
+      "externalRequestsBlocked": [
+        "fonts.googleapis.com",
+        "s3.tradingview.com"
+      ],
+      "dataSource": "SYNTHETIC_UI_FIXTURES_ONLY_NOT_ACTUAL_EXCHANGE",
+      "basicChartChecked": true
+    }
+  ],
+  "checkedAtUTC": "2026-11-05T05:09:44.562358+00:00",
+  "browserVersion": "Chromium 154.0.8037.57 built on Debian GNU/Linux 13 (trixie)",
+  "actualWindowsExecution": false,
+  "actualTradingViewExternalConnection": false,
+  "focusedUITests": {
+    "tests": 18,
+    "pass": 18,
+    "fail": 0,
+    "skipped": 0,
+    "cancelled": 0,
+    "files": [
+      "tests/issue6_ui.test.mjs",
+      "tests/layout_v56.test.mjs",
+      "tests/ui_scan_state.test.mjs"
+    ]
+  },
+  "sourceSHA256": {
+    "public/index.html": "231df31887846f9fb0814bbf4f3a8b503d3e564109e0fc5d88defc7554661310",
+    "public/app.js": "1734ae24350341c744b426c7eec11c4ae23efa2681079f5010b5adfa83f84fcf",
+    "public/paper_ui.js": "c0dc7c419dea3d5695513f09c807ef4c826f4cf2111807294f3df4988ec0e7db",
+    "public/styles.css": "e9e31f7ccf7a2e062adcee6c6969de724f32dfed6ccf0feecf213f26a139bb0b",
+    "public/trade_plan.js": "2c2238ed9016755b32b52884df7c6f7231f2ee02f6da450c22cc6bac35cb1d51",
+    "public/tradingview.js": "c39644144d0ef83f104fa6a0857056213c9fd86e4f9f54516ee1df4f6f4445c5",
+    "public/news_pagination.js": "eca4fd86303ec3af57ea477d6a2865ac68199ff98b085ffd507f9b08919cf68a",
+    "public/scan_pagination.js": "86c398f2897aac593f11eed176d579865084e28d2b2dfb45af4eeb3c6302ae1c",
+    "public/directional_entries.js": "5e8bc12164c3ac5b8ec40fd4704773b44efa89ae2bd27151d56a3d22950626e2",
+    "tests/issue6_ui.test.mjs": "77864006d7cb0852b6edec9ceb709b0313d1b85124b6c26b752ef1caf0a1906a"
+  },
+  "runnerSHA256": "65cbfeb5ceb2e0eb641e17fe2311c0a1d09d7ee7b9471ccf95e23b6d7185a1df",
+  "sourceHashCapture": "POST_RUN_WITH_NO_PRODUCTION_UI_EDITS_DURING_THIS_VERIFICATION_TASK",
+  "visualInspection": [
+    "desktop-management.png",
+    "mobile390-management.png"
+  ],
+  "screenshotSHA256": {
+    "desktop-basic.png": "258cc012c38f08aec12f42c2457a0bf12bfc3c02abe58217a19c3630551ad80b",
+    "desktop-management.png": "e8f49f615b3a546114bdc094d323b5251798231707903266d076440efe55b77f",
+    "desktop.png": "345659a77f9c880a11cd457ca2fb64a69a78dd8f3e2d8e6b8dbf8a5956bf2444",
+    "mobile360-basic.png": "a6fbe569f7bec92f9aa7d86c0ec705075a661da54eecf153b6b939ff03ea796f",
+    "mobile360-management.png": "a7fdfa1be857f2fb2ba9618328a73a9717cf18eb87a9333bd8cb131968c9b03f",
+    "mobile360.png": "1653d95b0d21727912d73dd3ab461cd459075cc36bfdfed820b6633c80af4e08",
+    "mobile390-basic.png": "a467c4d8cbda43b79d9c96e17a110bff8ab80d0eecb82de6020b7c67d20f45f5",
+    "mobile390-management.png": "39ce28ad0c855f8a281c77a3bee22e0b177bb46cdd78ccccde3c60703be3af26",
+    "mobile390.png": "2d1113f71b27c2466e9b6ac8191a55778b604e3b9b2e42ba107237d1e2c080c4",
+    "tablet-basic.png": "ccaca005eb8c08072fb24f424fa160341c9c2a5e59f2d94fd26197022c8de6f2",
+    "tablet-management.png": "d68cb730f0b632a8b266f47772e76d5c822ca2b4fe4079ebffeb0a1f2a63e109",
+    "tablet.png": "4a394e3428730c97419196b61fdab50547c09be08f13d9b876f6b475a1688fa4"
+  }
+}

@@ -6,19 +6,19 @@ test('candlestick parsing drops invalid entries',()=>{const ts=Date.now()-900000
 test('pivots find symmetric extrema',()=>{const vals=[9,7,4,7,10,6,3,6,10,9].map((x,i)=>({high:x+1,low:x-1,time:i}));const p=recentPivots(vals,2);assert.ok(p.lows.length>=1);assert.ok(p.highs.length>=1)});
 test('scanner never emits signal from insufficient candles or zero volume',()=>{const r=analyze('BTCUSDT',[],[],[],80000,{quoteVolume:100000000});assert.equal(r.status,'insufficient')});
 test('format small token prices',()=>{assert.equal(formatPrice(0),'—');assert.ok(formatPrice(.00000045).includes('0.'))});
-test('finished breakout plus 4h trend can produce a legitimate 2R long setup',()=>{
+test('finished breakout with warmed4H history creates a technical setup without invented targets',()=>{
  const t=Date.now()-3600000;
  const h1=Array.from({length:149},(_,i)=>{const v=i<118?90+i*.07:100;return{time:t+(i-149)*3600000,open:v,high:v+.35,low:v-.35,close:v,volume:100,closed:true}});
  h1.push({time:t,open:100,high:103,low:99.9,close:102,volume:230,closed:true});
- const h4=Array.from({length:110},(_,i)=>{const v=70+i*.28;return{time:t+(i-110)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
- const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8});assert.equal(r.status,'watch');assert.equal(r.direction,'LONG');assert.ok(r.target1-r.entry>=2*(r.entry-r.stop)-1e-6);assert.equal(r.technicalQualified,false);assert.ok(r.quality.failed.length>=1);
+ const h4=Array.from({length:260},(_,i)=>{const v=50+i*.2;return{time:t+(i-260)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
+ const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8});assert.equal(r.status,'watch');assert.equal(r.direction,'LONG');assert.equal(r.target1,null);assert.equal(r.targetPlan,null);assert.equal(r.technicalQualified,false);assert.ok(r.quality.failed.length>=1);
 });
 
 test('completed candle breakout is labelled a confirmed chart pattern even if execution is not checked',()=>{
  const t=Date.now()-3600000;
  const h1=Array.from({length:149},(_,i)=>{const v=i<118?90+i*.07:100;return{time:t+(i-149)*3600000,open:v,high:v+.35,low:v-.35,close:v,volume:100,closed:true}});
  h1.push({time:t,open:100,high:103,low:99.9,close:102,volume:230,closed:true});
- const h4=Array.from({length:110},(_,i)=>{const v=70+i*.28;return{time:t+(i-110)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
+ const h4=Array.from({length:260},(_,i)=>{const v=50+i*.2;return{time:t+(i-260)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
  const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8});
  assert.equal(r.patternConfirmed,true);
  assert.equal(r.patternTimeframe,'1h');
@@ -30,7 +30,7 @@ test('unfinished last 1h candle cannot create confirmed signal',()=>{
  const t=Date.now()-3600000;
  const h1=Array.from({length:149},(_,i)=>{const v=i<118?90+i*.07:100;return{time:t+(i-149)*3600000,open:v,high:v+.35,low:v-.35,close:v,volume:100,closed:true}});
  h1.push({time:Date.now(),open:100,high:103,low:99.9,close:102,volume:230,closed:false});
- const h4=Array.from({length:110},(_,i)=>{const v=70+i*.28;return{time:t+(i-110)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
+ const h4=Array.from({length:260},(_,i)=>{const v=50+i*.2;return{time:t+(i-260)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
  const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8});
  assert.equal(r.patternConfirmed,false);
  assert.equal(r.status,'neutral');

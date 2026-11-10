@@ -2,23 +2,65 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {officialMarketLinks,telegramMessage} from '../links.mjs';
 
-test('validated Binance and Variational deep links for same PERP',()=>{
- assert.deepEqual(officialMarketLinks('BTCUSDT','BTC-PERP'),{
-  binance:'https://www.binance.com/en/futures/BTCUSDT',variational:'https://omni.variational.io/perpetual/BTC'
- });
- assert.deepEqual(officialMarketLinks('LINKUSDT','LINK-PERP'),{
-  binance:'https://www.binance.com/en/futures/LINKUSDT',variational:'https://omni.variational.io/perpetual/LINK'
- });
+const valid={
+ symbol:'SOLUSDT',direction:'LONG',pattern:'리테스트',score:95,scoreVersion:'ISSUE6-100-V1',
+ status:'signal',qualified:true,entry:100,stop:98,patternConfirmedAt:1762400000000,
+ risk:{leverage:3},targetPlan:{ok:true,targets:[106,110,115],
+ quantity:1.25,quantityUnit:'BASE_ASSET'}
+};
+const paperPosition={market:'CRYPTO',symbol:valid.symbol,direction:valid.direction,pattern:valid.pattern,
+ barAt:valid.patternConfirmedAt,openedAt:valid.patternConfirmedAt+1000,entryFill:100,
+ leverage:3,originalQty:1.25,qtyRemaining:1.25,targetPlan:{quantityUnit:'BASE_ASSET'}};
+
+test('official links only expose validated Binance futures symbols',()=>{
+ assert.deepEqual(officialMarketLinks('BTCUSDT'),{binance:'https://www.binance.com/en/futures/BTCUSDT'});
+ assert.deepEqual(officialMarketLinks('LINKUSDT'),{binance:'https://www.binance.com/en/futures/LINKUSDT'});
+ for(const symbol of ['BTC/USDT','https://evil.test','BTCUSDC','../BTCUSDT','btcUSDT','USDT'])
+  assert.equal(officialMarketLinks(symbol),null);
 });
-test('refuse unmatched markets, aliases, SWAP, and malicious paths',()=>{
- for(const [b,v] of [['1000PEPEUSDT','PEPE-PERP'],['BTCUSDT','BTC-SWAP'],['BTCUSDT','ETH-PERP'],['BTC/USDT','BTC-PERP'],['https://evil.test','BTC-PERP'],['BTCUSDC','BTC-PERP']]) {
-  assert.equal(officialMarketLinks(b,v),null);
+
+test('final Telegram alert contains only four requested concise fields',()=>{
+ const message=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition});
+ assert.deepEqual(message.text.split('\n'),[
+  '종목: SOLUSDT','방향: 롱 (LONG)','배율: 3배 (모의 기준)','포지션 수량(모의): 1.25 SOL'
+ ]);
+ assert.equal(message.reply_markup,undefined,'do not include links or order buttons');
+ assert.doesNotMatch(message.text,/점수|패턴|RSI|EMA|TP1|거래 승인|http|손절|승률/);
+ const short=telegramMessage({...valid,direction:'SHORT',entry:100,targetPlan:{...valid.targetPlan,targets:[95,90,85]}},
+   officialMarketLinks('SOLUSDT'));
+ assert.match(short.text,/방향: 숏 \(SHORT\)/);
+});
+
+test('unconfigured leverage and position quantity are explicitly unknown, never invented',()=>{
+ const noLeverage={...valid,risk:{nominal:500},targetPlan:{...valid.targetPlan,quantity:null}};
+ const message=telegramMessage(noLeverage,officialMarketLinks('SOLUSDT'));
+ assert.match(message.text,/배율: 미설정/);
+ assert.match(message.text,/포지션 수량\(모의\): 미확인/);
+ assert.doesNotMatch(message.text,/3배|500 SOL/);
+ const plannedOnly=telegramMessage(valid,officialMarketLinks('SOLUSDT'));
+ assert.match(plannedOnly.text,/배율: 미설정/);assert.match(plannedOnly.text,/포지션 수량\(모의\): 미확인/);
+ for(const altered of [{...paperPosition,barAt:paperPosition.barAt-3600000},{...paperPosition,openedAt:null},
+  {...paperPosition,qtyRemaining:0},{...paperPosition,direction:'SHORT'},
+  {...paperPosition,targetPlan:{quantityUnit:'CONTRACT'}}]){
+  const text=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition:altered}).text;
+  assert.match(text,/배율: 미설정/);assert.match(text,/포지션 수량\(모의\): 미확인/);
  }
+ const partial=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition:{...paperPosition,qtyRemaining:.75,leverage:undefined}});
+ assert.match(partial.text,/배율: 미설정/);assert.match(partial.text,/포지션 수량\(모의\): 0.75 SOL/);
 });
-test('Telegram message contains inline deep-link buttons and risk disclosure',()=>{
- const links=officialMarketLinks('ETHUSDT','ETH-PERP');
- const payload=telegramMessage({symbol:'ETHUSDT',direction:'SHORT',pattern:'돌파 후 리테스트',score:83,scannedAt:1792150000000,entry:2800,stop:2820,target1:2760,target2:2740,supports:[{price:2780}],resistances:[{price:2830}],volumeRatio:2.1},links,x=>String(x));
- assert.match(payload.text,/청산가/);
- assert.equal(payload.reply_markup.inline_keyboard[0][0].url,links.variational);
- assert.equal(payload.reply_markup.inline_keyboard[1][0].url,links.binance);
+
+test('final alert rejects observation, unverified scores, stale validation and invalid target plans',()=>{
+ const url=officialMarketLinks('SOLUSDT');
+ for(const altered of [
+  {...valid,status:'watch'},
+  {...valid,qualified:false},
+  {...valid,score:85},
+  {...valid,score:null},
+  {...valid,scoreVersion:'LEGACY'},
+  {...valid,targetPlan:undefined},
+  {...valid,targetPlan:{ok:false,targets:[]}},
+  {...valid,targetPlan:{ok:true,targets:[106,106,110]}},
+  {...valid,targetPlan:{ok:true,targets:[99,106,110]}}
+ ])assert.throws(()=>telegramMessage(altered,url),/validation/);
+ assert.throws(()=>telegramMessage(valid,{binance:'https://invalid.example'}),/Verified Binance/);
 });

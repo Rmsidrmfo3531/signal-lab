@@ -36,7 +36,7 @@ export function tagNews(news,availableMarkets=[]){
   });
   if(pattern)symbols.push(symbol);
  }
- // Enhance symbol discovery from the *currently verified* Variational markets.
+ // Enhance symbol discovery from the supplied current Binance/TradFi universe.
  // For ambiguous tickers use $SYMBOL or a meaningful asset name, not generic English words.
  for(const market of availableMarkets){
   const sym=String(market.symbol||'').toUpperCase(),name=String(market.name||'').trim();

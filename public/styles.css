@@ -75,7 +75,7 @@
 .update-note{margin:8px 0 0;color:#849db5;font-size:10px;line-height:1.6}.update-note.warn{color:#ffc588}
 @media(max-width:750px){.head-actions{flex-wrap:wrap}.head-actions button{flex:1 1 45%}}
 
-/* v4.6: chart viewing is independent of Variational listing verification */
+/* Chart viewing is independent of market eligibility checks. */
 .chart-lookup{display:flex;align-items:center;gap:5px}
 .chart-lookup input{width:122px;min-width:95px;background:#0c1d2c;border:1px solid #385671;border-radius:6px;color:#e7f3ff;padding:8px 9px;font:600 11px 'DM Mono',monospace;text-transform:uppercase}
 .chart-lookup input:focus{outline:2px solid #3a8fc1;outline-offset:1px}
@@ -154,7 +154,7 @@
 .quality-row{display:grid;grid-template-columns:16px minmax(0,1fr) minmax(65px,auto);gap:8px;align-items:start;padding:5px 0;border-bottom:1px solid #253e53;font-size:11px}
 .quality-row:last-child{border-bottom:none}
 .quality-row small{font-size:10px;color:#8eb1c9;text-align:right}
-.quality-ok{color:#62dca7}.quality-bad{color:#ff9099}
+.quality-ok{color:#62dca7}.quality-bad{color:#ff9099}.quality-bonus{color:#e9c07a}
 @media(max-width:690px){.quality-row{grid-template-columns:16px 1fr}.quality-row small{grid-column:2;text-align:left}}
 
 /* v4.9 MOBILE: use readable vertical signal cards instead of a 1450px-wide grid. */
@@ -415,3 +415,42 @@
 .scan-history summary{cursor:pointer;color:#b7cde2;font-size:12px}
 .scan-history summary small{color:#8b9eb3;font-size:10px}
 @media(max-width:640px){.scan-observation-item{align-items:flex-start;flex-direction:column;gap:7px}.scan-observation-item>div:last-child{min-width:0;display:flex;text-align:left;gap:14px}.scan-observation{padding:12px}}
+
+
+/* Confirmed directional chart-entry references: clearly separate from executable quotes. */
+.direction-entry-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:15px 22px 7px;color:#cfe4f5;font-size:12px}
+.direction-entry-heading small{font-size:10px;color:#8ba4ba;line-height:1.6}
+.direction-entry-board,.pair-direction-entries{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:8px 22px 20px}
+.pair-direction-entries{padding:10px 15px;border-top:1px solid #243b50;border-bottom:1px solid #243b50}
+.direction-entry-box{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:14px;border:1px solid #30516a;border-radius:10px;background:#132539;min-width:0}
+.direction-entry-box.long{border-color:#2e6a5a}
+.direction-entry-box.short{border-color:#754457}
+.direction-entry-caption{display:flex;align-items:center;gap:10px}
+.direction-entry-caption b{font-size:12px;overflow-wrap:anywhere}
+.direction-entry-box>strong,.direction-entry-value{font:700 21px 'DM Mono',monospace;overflow-wrap:anywhere;color:#e0efff}
+.direction-entry-box>small{font-size:10px;color:#90a8bc;line-height:1.5}
+.direction-entry-box p{font-size:11px;line-height:1.5;color:#c0d2df;margin:0}
+.direction-entry-stage{font-size:10px;color:#f4b58b}
+.direction-entry-stage.entry-safe{color:#80e7c6}
+.entry-price-ref{display:grid;gap:7px;min-width:112px}
+.entry-price-ref strong{font:700 13px 'DM Mono',monospace;color:#e2eeff}
+.entry-price-ref small{font-size:10px;color:#8297aa;line-height:1.5}
+@media(max-width:690px){.direction-entry-heading{display:grid;padding:12px 14px 6px}.direction-entry-board,.pair-direction-entries{grid-template-columns:1fr 1fr;gap:7px;padding:8px 10px 15px}.direction-entry-box{padding:11px;gap:6px}.direction-entry-box>strong,.direction-entry-value{font-size:15px}.direction-entry-box p,.direction-entry-box>small{font-size:9px}}
+
+
+@media(max-width:760px){.mobile-bottom-nav{grid-template-columns:repeat(5,minmax(0,1fr))}}
+/* Issue #6: a single final-signal list and explicit source/cost evidence. */
+.signal-score,.signal-pattern-name{display:block;margin-top:6px}.signal-score{font-size:11px;color:#9fbbd8}.volume-targets{min-width:180px}.volume-targets .tp-line{display:grid;gap:3px;margin:5px 0}.volume-evidence{white-space:normal;max-width:360px;font-size:11px;color:#a9bed3;overflow-wrap:anywhere}.volume-evidence summary{cursor:pointer;color:#89bded}.volume-evidence p{line-height:1.7}.target-unavailable{display:block;color:#f3bc77;line-height:1.7;font-size:12px}.paper-management-settings{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0;padding:14px;border:1px solid #294356;border-radius:10px;background:#101d29}.paper-management-settings label{display:flex;align-items:center;gap:8px;color:#dce8f6;font-weight:600}.paper-management-settings input{width:18px;height:18px;accent-color:#58c6a7}.paper-management-settings small{flex-basis:100%;font-size:11px;line-height:1.7;color:#9eb2c8}.paper-management-settings [role=status]{font-size:12px;color:#b6cce2}.market-commentary{margin:0 20px 16px;padding:14px;border:1px solid #284052;border-radius:8px;background:#101d29;color:#b8d2e9;font-size:13px;line-height:1.8}.news-translation-state{color:#9fcae7}.news-translation-error{color:#ffc180}.news-original{font-size:12px;color:#adc0d1;margin-top:12px}.news-original summary{cursor:pointer}.news-original p{white-space:pre-line}.paper-management-mode{display:block;margin-top:6px;color:#b4cadc;font-size:11px}
+@media(max-width:600px){.paper-management-settings{align-items:flex-start;gap:8px;padding:12px}.paper-management-settings label{font-size:12px;line-height:1.5}.market-commentary{margin:0 12px 12px;padding:12px;font-size:12px}.volume-evidence{max-width:260px}.volume-targets{min-width:155px}}
+.paper-management-settings .paper-mode-label{flex-wrap:wrap;max-width:100%}.paper-management-settings select{max-width:100%;min-width:0;padding:7px 9px;border:1px solid #365269;border-radius:6px;background:#112435;color:#dce8f6;font:inherit}.paper-management-settings select:disabled{opacity:.65}
+
+/* Workspace page routing: preserve mounted DOM/stream subscriptions while hiding other panels. */
+.content > [data-workspace-route][hidden]{display:none!important}
+.navlink[aria-current="page"],.mobile-bottom-nav a[aria-current="page"]{color:#c9e7ff;background:#1c3952}
+
+/* BingX / Gate.io public quote panel (read only). */
+.venues-panel{margin:16px 0 20px;min-width:0;scroll-margin-top:15px;overflow:hidden}.venues-heading{flex-wrap:wrap;gap:12px}
+.venues-status{padding:12px 20px;border-block:1px solid #2c4357;background:#102236;color:#c9d8e8;font-size:12px;line-height:1.7;overflow-wrap:anywhere}.venues-status.warn{background:#362a21;color:#f1c18d;border-color:#71553b}
+.venues-table{width:100%;border-collapse:collapse;font-size:12px}.venues-table th,.venues-table td{padding:9px 12px;border-bottom:1px solid #1e3247;text-align:left;white-space:nowrap}.venues-table td small{display:block;color:#97adc5}
+.venues-details{padding:6px 20px 12px}.venues-details summary{cursor:pointer;color:#97adc5;font-size:12px;padding:8px 0}.venues-footnote{font-size:11px}
+.live-control{border-top:1px solid #1e3247;margin-top:8px}.live-actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px 20px}.live-kill{border-color:#a3403a;color:#ffb4ab}

@@ -1,0 +1,181 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {runNodeTests,testRunnerOptions,discoverTestFiles,terminateOwnedTestTree} from '../scripts/run-node-tests.mjs';
+import {waitForProcessTermination} from './helpers/process_termination.mjs';
+import {removeOwnedTestDirectory} from './helpers/owned_directory.mjs';
+async function assertTerminated(pid){
+ const result=await waitForProcessTermination(pid);
+ assert.equal(result.terminated,true,'the owned descendant must actually terminate after signal delivery');
+ assert.ok(['EXITED','Z'].includes(result.state));
+}
+
+test('CI discovers exactly the same test files and rejects disabled or unbounded runner limits',()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-discovery-'));
+ try{
+  fs.mkdirSync(path.join(root,'tests'));
+  for(const name of ['z.test.mjs','a.test.mjs','fixture.mjs'])fs.writeFileSync(path.join(root,'tests',name),'');
+  assert.deepEqual(discoverTestFiles(root),['tests/a.test.mjs','tests/z.test.mjs']);
+  assert.deepEqual(testRunnerOptions(),{concurrency:2,fileTimeoutMs:120000,outputDir:null,files:[]});
+  for(const args of [['--file-timeout-ms','0'],['--file-timeout-ms','120001'],['--file-timeout-ms','NaN'],['--concurrency','0'],['--concurrency','5'],['--unknown','x'],['--file']])
+   assert.throws(()=>testRunnerOptions(args),/INVALID_TEST_RUNNER_OPTIONS/);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test('Windows timeout terminates the complete owned tree before separately killing a worker could orphan it',async()=>{
+ const commands=[],signals=[],child={pid:12345,exitCode:null,signalCode:null,kill:signal=>signals.push(signal)};
+ await terminateOwnedTestTree(child,{platform:'win32',execFileFn:async(...args)=>commands.push(args)});
+ assert.deepEqual(commands,[['taskkill',['/PID','12345','/T','/F'],{windowsHide:true,timeout:5000,killSignal:'SIGKILL'}]]);
+ assert.deepEqual(signals,[]);
+ await assert.rejects(terminateOwnedTestTree(child,{platform:'win32',execFileFn:async()=>{throw Object.assign(Error('denied'),{code:'EPERM'})}}),{code:'EPERM'});
+});
+
+test('completed bodies with leaked handles fail the file deadline; pending Promises and assertion errors do not hide remaining files',{timeout:25000},async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-lifecycle-')),events=[],tests=path.join(root,'tests'),out=path.join(root,'results');
+ fs.mkdirSync(tests);
+ const bodyDone=path.join(root,'body-finished'),pidFile=path.join(root,'descendant.pid');
+ const source={
+  'a-pass':"import test from 'node:test';test('first passes',()=>{});",
+  'b-fail':"import test from 'node:test';import assert from 'node:assert/strict';test('real assertion failure',()=>assert.equal(1,2));",
+  'c-pending':"import test from 'node:test';test('promise cannot resolve without active resources',{timeout:100},()=>new Promise(()=>{}));",
+  'd-leaked':`import test from 'node:test';import fs from 'node:fs';test('body passes but timer leaks',()=>{fs.writeFileSync(${JSON.stringify(bodyDone)},'finished');setInterval(()=>{},1000)});`,
+  'e-last':"import test from 'node:test';test('later file still executes',()=>{});",
+  'f-descendant':`import test from 'node:test';import fs from 'node:fs';import {spawn} from 'node:child_process';test('owned descendant keeps pipes open',()=>{const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});fs.writeFileSync(${JSON.stringify(pidFile)},String(c.pid));});`
+ };
+ for(const [name,code] of Object.entries(source))fs.writeFileSync(path.join(tests,name+'.test.mjs'),code);
+ try{
+  const result=await runNodeTests({root,outputDir:out,concurrency:2,fileTimeoutMs:5000,heartbeatMs:200,print:value=>events.push(value)});
+  assert.equal(result.passed,false);assert.equal(result.totalFiles,6);assert.equal(result.completedFiles,6);
+  const rows=new Map(result.results.map(row=>[path.basename(row.file),row]));
+  assert.equal(rows.get('a-pass.test.mjs').status,'PASS');assert.equal(rows.get('e-last.test.mjs').status,'PASS');
+  assert.equal(rows.get('b-fail.test.mjs').failureCode,'TEST_PROCESS_FAILED');
+  assert.equal(rows.get('c-pending.test.mjs').status,'FAIL');assert.ok(rows.get('c-pending.test.mjs').cancelled>0,JSON.stringify(rows.get('c-pending.test.mjs')));
+  for(const file of ['d-leaked.test.mjs','f-descendant.test.mjs']){
+   const row=rows.get(file);assert.equal(row.failureCode,'FILE_TIMEOUT');assert.equal(row.status,'FAIL');
+   assert.equal(row.processClosed,true);assert.equal(row.cleanupError,null);
+   assert.ok(row.durationMs<12000);
+  }
+  assert.equal(fs.readFileSync(bodyDone,'utf8'),'finished','the leaked handle must not turn a completed test body into CI success');
+  await assertTerminated(Number(fs.readFileSync(pidFile,'utf8')));
+  assert.ok(events.some(value=>value.startsWith('[TEST ACTIVE]')));assert.equal(events.filter(value=>value.startsWith('[TEST START]')).length,6);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(out,'summary.json'))).failedFiles,4);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(out,'progress.json'))).active.length,0);
+  for(const row of result.results)assert.ok(fs.statSync(path.join(out,row.log)).size>0);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test('explicit cancellation stops active processes, preserves partial reports and never starts queued files',{timeout:10000},async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-cancel-')),controller=new AbortController();
+ fs.mkdirSync(path.join(root,'tests'));
+ fs.writeFileSync(path.join(root,'tests','a-active.test.mjs'),"import test from 'node:test';test('active process',()=>{setInterval(()=>{},1000)});");
+ fs.writeFileSync(path.join(root,'tests','z-queued.test.mjs'),"throw Error('must not start after cancellation');");
+ const timer=setTimeout(()=>controller.abort(),500);
+ try{
+  const result=await runNodeTests({root,outputDir:path.join(root,'logs'),concurrency:1,fileTimeoutMs:5000,signal:controller.signal,print:()=>{}});
+  assert.equal(result.passed,false);assert.equal(result.aborted,true);assert.equal(result.completedFiles,1);
+  assert.deepEqual(result.pendingFiles,['tests/z-queued.test.mjs']);
+  assert.equal(result.results[0].failureCode,'RUN_ABORTED');assert.equal(result.results[0].processClosed,true);
+  assert.equal(result.results[0].cleanupError,null);
+ }finally{clearTimeout(timer);fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test('cancellation from the last PASS callback cannot publish a successful run',{timeout:10000},async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-late-cancel-')),controller=new AbortController();
+ fs.mkdirSync(path.join(root,'tests'));
+ fs.writeFileSync(path.join(root,'tests','pass.test.mjs'),"import test from 'node:test';test('body succeeds',()=>{});");
+ try{
+  const result=await runNodeTests({root,outputDir:path.join(root,'logs'),signal:controller.signal,
+   print:value=>{if(value.startsWith('[TEST PASS]'))controller.abort();}});
+  assert.equal(result.results[0].status,'PASS');assert.equal(result.completedFiles,1);
+  assert.equal(result.passed,false);assert.equal(result.aborted,true);
+  const stored=JSON.parse(fs.readFileSync(path.join(root,'logs','summary.json')));
+  assert.equal(stored.passed,false);assert.equal(stored.aborted,true);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test('START, completion and progress-report failures cannot strand active workers',{timeout:20000},async()=>{
+ for(const mode of ['START_PRINT','FINISH_PRINT','PROGRESS_FAILURE']){
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-report-failure-')),tests=path.join(root,'tests'),out=path.join(root,'logs'),
+   pidFile=path.join(root,'active.pid'),progressFile=path.join(out,'progress.json'),injected=Error('injected reporting failure');
+  fs.mkdirSync(tests);
+  fs.writeFileSync(path.join(tests,'a-active.test.mjs'),`import test from 'node:test';import fs from 'node:fs';test('active sibling',()=>{fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000)});`);
+  if(mode!=='START_PRINT')fs.writeFileSync(path.join(tests,'b-finished.test.mjs'),`import test from 'node:test';import fs from 'node:fs';test('finishing sibling',async()=>{
+   for(let n=0;n<150&&!fs.existsSync(${JSON.stringify(pidFile)});n++)await new Promise(resolve=>setTimeout(resolve,20));
+   if(!fs.existsSync(${JSON.stringify(pidFile)}))throw Error('active sibling did not start');
+   ${mode==='PROGRESS_FAILURE'?`fs.unlinkSync(${JSON.stringify(progressFile)});fs.mkdirSync(${JSON.stringify(progressFile)});`:''}
+  });`);
+  let failure;
+  try{
+   await assert.rejects(runNodeTests({root,outputDir:out,concurrency:2,fileTimeoutMs:6000,print:value=>{
+    if(mode==='START_PRINT'&&value.startsWith('[TEST START]'))throw injected;
+    if(mode==='FINISH_PRINT'&&value.startsWith('[TEST PASS]')&&value.includes('b-finished.test.mjs'))throw injected;
+   }}),error=>{failure=error;return mode==='PROGRESS_FAILURE'?error.path===progressFile:error===injected});
+   assert.equal(failure.traceCleanupError,undefined,'a reporting failure must not hide persistent trace-directory cleanup failure');
+   assert.equal(failure.traceDirectoryRetained,undefined);
+   assert.ok(Array.isArray(failure.workerCleanup));
+   assert.equal(failure.workerCleanup.length,mode==='START_PRINT'?0:2);
+   for(const worker of failure.workerCleanup){
+    assert.equal(worker.processClosed,true);assert.equal(worker.stdoutClosed,true);assert.equal(worker.stderrClosed,true);
+    assert.equal(worker.logClosed,true);assert.equal(worker.cleanupError,null);
+   }
+   if(mode==='START_PRINT'){
+    await new Promise(resolve=>setTimeout(resolve,200));
+    assert.equal(fs.existsSync(pidFile),false,'a failing START callback must run before spawning a process');
+   }else{
+    await assertTerminated(Number(fs.readFileSync(pidFile,'utf8')));
+   }
+  }finally{
+   const ownedPids=fs.existsSync(pidFile)?[Number(fs.readFileSync(pidFile,'utf8'))]:[];
+   await removeOwnedTestDirectory(root,{workerCleanup:failure?.workerCleanup??[],ownedPids});
+  }
+ }
+});
+
+test('storage phase sidecars remain visible while spawnSync blocks and survive timeout as an artifact',{timeout:15000},async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-phase-live-')),tests=path.join(root,'tests'),out=path.join(root,'logs'),events=[];
+ fs.mkdirSync(tests);
+ fs.writeFileSync(path.join(tests,'blocked.test.mjs'),`
+  import test from 'node:test';import fs from 'node:fs';import path from 'node:path';import {spawnSync} from 'node:child_process';
+  test('synchronous storage worker is blocked',()=>{
+   const file=process.env.SIGNAL_LAB_TEST_TRACE_FILE;
+   fs.appendFileSync(file,JSON.stringify({scope:'sync-fixture',stage:'phase:spawnSync:begin',pid:process.pid,
+    at:new Date().toISOString(),backend:'journal',directory:path.dirname(file),firstCreatedDirectory:'C:/TEMP/ALIASED',
+    unrelatedDetail:'not-for-the-live-console'})+'\\n');
+   spawnSync(process.execPath,['-e','Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,15000)'],
+    {stdio:'ignore',timeout:15000,killSignal:'SIGKILL'});
+  });
+ `);
+ try{
+  const result=await runNodeTests({root,outputDir:out,concurrency:1,fileTimeoutMs:4500,heartbeatMs:200,
+   print:value=>events.push({value,at:Date.now()})});
+  assert.equal(result.passed,false);assert.equal(result.completedFiles,1);
+  const row=result.results[0];assert.equal(row.failureCode,'FILE_TIMEOUT');assert.equal(row.processClosed,true);
+  assert.equal(row.traceRecords,1);assert.equal(row.lastStoragePhase.stage,'phase:spawnSync:begin');
+  assert.equal(row.lastStoragePhase.backend,'journal');assert.equal(row.traceCaptureError,null);
+  const phase=events.find(event=>event.value.startsWith('[STORAGE PHASE]')),
+   timeout=events.find(event=>event.value.startsWith('[TEST TIMEOUT]'));
+  assert.ok(phase&&timeout);assert.ok(events.indexOf(phase)<events.indexOf(timeout),'the phase must be relayed before the watchdog terminates the worker');
+  assert.match(phase.value,/firstCreatedDirectory/);assert.doesNotMatch(phase.value,/unrelatedDetail|not-for-the-live-console/);
+  const record=JSON.parse(fs.readFileSync(path.join(out,row.trace),'utf8'));
+  assert.equal(record.stage,'phase:spawnSync:begin');
+  assert.equal(fs.existsSync(record.directory),false,'only the owned temporary sidecar directory is removed after capture');
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test('a successful body with a truncated storage trace fails diagnostics while preserving the original trace',{timeout:10000},async()=>{
+ for(const partial of [Buffer.from('{"stage":'),Buffer.from([0xe3,0x85])]){
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'signal-ci-phase-partial-')),out=path.join(root,'logs');
+ fs.mkdirSync(path.join(root,'tests'));
+ fs.writeFileSync(path.join(root,'tests','partial.test.mjs'),`import test from 'node:test';import fs from 'node:fs';
+  test('body succeeds but diagnostics are incomplete',()=>fs.appendFileSync(process.env.SIGNAL_LAB_TEST_TRACE_FILE,Buffer.from(${JSON.stringify([...partial])})));`);
+ try{
+  const result=await runNodeTests({root,outputDir:out,print:()=>{}}),row=result.results[0];
+  assert.equal(row.pass,1);assert.equal(row.exitCode,0);assert.equal(row.processClosed,true);
+  assert.equal(result.passed,false);assert.equal(row.status,'FAIL');assert.equal(row.failureCode,'TRACE_CAPTURE_FAILED');
+  assert.equal(row.traceCaptureError,'TEST_TRACE_PARTIAL_RECORD');
+  assert.deepEqual(fs.readFileSync(path.join(out,row.trace)),partial);
+ }finally{fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+ }
+});

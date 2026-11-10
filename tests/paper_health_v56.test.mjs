@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {paperEngineHealth} from '../paper_health.mjs';
 import {PaperEngine} from '../paper.mjs';
 const now=1770000000000;
-const healthy={ws:'connected',lastTickerAt:now-1000,variational:'connected',scanMode:'verified',activeCount:20};
+const healthy={ws:'connected',lastTickerAt:now-1000,analysisVenue:'BINANCE',scanMode:'binance-usdt-perpetual',activeCount:20};
 const empty={open:[],pending:[],closed:[]};
 test('paper can be on standby without claiming a real trade',()=>{
  const result=paperEngineHealth({paper:empty,scanner:healthy,now});
@@ -28,4 +28,16 @@ test('paper activity counters are session-only and preserve stored records',()=>
  assert.equal(eng.telemetry.priceTickCount,1);
  assert.equal(eng.telemetry.lastQuoteAt,now);
  assert.equal(eng.store.closed.length,1);
+});
+
+test('Disabled TradFi never claims live tracking even when a caller supplies healthy-looking feed metadata',()=>{
+ const position={market:'TRADFI',lastPriceAt:now-1000};const paper={open:[position],pending:[]};
+ const before=structuredClone(paper);
+ const result=paperEngineHealth({paper,scanner:healthy,tradfi:{status:'connected',updatedAt:now,feedStatus:'connected',feedUpdatedAt:now},now});
+ assert.equal(result.state,'DELAYED');assert.equal(result.tradfiQuoteFresh,false);assert.equal(result.tradfiSignalReady,false);
+ assert.equal(result.tradfiStatus,'disabled');assert.equal(result.retainedTradfiPositions,1);assert.deepEqual(paper,before);
+});
+test('Readiness requires explicit Binance listing/scan readiness rather than an unknown feed mode',()=>{
+ const result=paperEngineHealth({paper:empty,scanner:{...healthy,analysisVenue:undefined,scanMode:'verified'},now});
+ assert.equal(result.cryptoSignalReady,false);assert.equal(result.state,'WAITING');
 });

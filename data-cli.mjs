@@ -1,7 +1,6 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {prepareData,resolveDataDir,readStore,backupStore,importLegacy,atomicWriteStore,isLocked} from './persistence.mjs';
+import {prepareData,resolveDataDir,backupStore,importLegacy,restoreStore,isLocked} from './persistence.mjs';
 const root=path.dirname(fileURLToPath(import.meta.url));
 const [command,arg,flag]=process.argv.slice(2);
 try{
@@ -19,12 +18,9 @@ try{
  }else if(command==='restore'){
   if(!arg)throw Error('복원할 백업 store-*.json 경로를 지정하세요.');
   if(isLocked(dir))throw Error('복원 전 Signal Lab 서버를 종료하세요.');
-  const src=path.resolve(arg),record=readStore(src);
-  if(!record)throw Error('백업 파일을 찾지 못했습니다.');
-  const dataPath=path.join(dir,'store.json');fs.mkdirSync(dir,{recursive:true});
-  const previous=backupStore(dataPath);
-  atomicWriteStore(dataPath,record);
-  console.log('복원 완료. 이전 데이터 백업:',previous||'(없음)');
+  const result=restoreStore(arg,dir);
+  console.log('복원 완료. 이전 데이터 백업:',result.previous||'(없음)');
+  if(result.preservedCorrupt)console.log('기존 손상 기록 원본 보존:',result.preservedCorrupt);
  }else{
   console.log('사용법: node data-cli.mjs path | backup | import "이전 버전 폴더" | restore "백업 JSON 경로"');
   process.exitCode=2;
