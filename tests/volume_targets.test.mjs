@@ -70,3 +70,17 @@ test('adverse funding reserve is explicit for both directions and no favorable a
   assert.equal(regular.estimatedNetRR,opposite.estimatedNetRR);assert.equal(regular.costAssumptions.fundingPolicy,'ABSOLUTE_RATE_STRESS_RESERVE');
  }
 });
+
+test('HVN_THEN_R: same as strict when three zones exist, R steps fill open air, heavy zone before TP1 blocks',()=>{
+ const hybrid=extra=>run({...plan(),targetMode:'HVN_THEN_R',...extra});
+ assert.deepEqual(hybrid().targets,run(plan()).targets);assert.equal(hybrid().fixedRRReplacementEnabled,false);assert.equal(hybrid().rMultipleTargets,0);
+ const one=hybrid({entry:125,stop:124});assert.equal(one.ok,true,one.reasons?.join());
+ assert.deepEqual(one.targets,[129.9,130,131]);assert.deepEqual(one.parts.map(p=>p.source),['HVN','R_MULTIPLE','R_MULTIPLE']);
+ assert.deepEqual(one.parts.map(p=>p.rMultiple),[null,5,6]);assert.equal(one.fixedRRReplacementEnabled,true);assert.equal(one.hvnTargets,1);
+ const air=hybrid({entry:135,stop:134});assert.equal(air.ok,true,air.reasons?.join());assert.equal(air.hvnTargets,0);
+ assert.ok(air.estimatedNetRR>=1.8,'first R step clears the net minimum after costs');assert.ok(air.targets[1]-air.targets[0]>=.99);
+ assert.deepEqual(hybrid({entry:109.5,stop:108.5}).reasons,['STRONG_HVN_BEFORE_TP1'],'0.4R to a zone two-thirds of POC');
+ const passed=hybrid({entry:109.5,stop:108.5,obstacleFraction:.9});assert.equal(passed.ok,true);assert.equal(passed.targets[0],119.9,'a lighter zone is passed through');
+ assert.deepEqual(run({...plan(),entry:135,stop:134}).reasons,['FEWER_THAN_THREE_DIRECTIONAL_HVNS'],'strict mode unchanged');
+ assert.deepEqual(hybrid({targetMode:'X'}).reasons,['TARGET_SETTINGS_INVALID']);
+});

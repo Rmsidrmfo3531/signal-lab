@@ -88,7 +88,9 @@ test('synthetic markets: rising/falling breakouts, retests and a 90-point setup 
   }
   const requests=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(requests.some(r=>r.interval==='1h'));assert.ok(requests.some(r=>r.interval==='4h'));
-  assert.ok(requests.filter(r=>r.interval).every(r=>['1h','4h','1d'].includes(r.interval)),'no sub-hour candle requests');
+  // Signals use closed 1H/4H candles only; 15m candles are read solely for the volume-profile targets.
+  assert.ok(requests.filter(r=>r.interval).every(r=>['1h','4h','1d','15m'].includes(r.interval)),'no other candle intervals');
+  assert.ok(requests.some(r=>r.interval==='15m'),'volume profile reads 15m candles');
   // Order-book reads (Gate.io /order_book) are market data; any order placement path is forbidden.
   assert.ok(requests.every(r=>!/\/orders?(?:\/|$)|\/trade\/order/.test(r.path)),'no exchange order endpoint');
   assert.ok(requests.some(r=>r.host==='open-api.bingx.com')&&requests.some(r=>r.host==='api.gateio.ws'),'execution venues quoted');
@@ -103,8 +105,8 @@ test('synthetic end to end: LONG three profile targets with breakeven/restart, t
   let paper=await until(()=>app.get('/api/paper'),p=>p.openCount===1,{label:'fresh final LONG must open a profile-managed paper position'});
   const long=paper.open[0];assert.equal(long.direction,'LONG');assert.equal(long.executionVenue,'BINGX','tie on price keeps the first configured venue');assert.equal(long.venueSymbol,'BTC-USDT');assert.equal(long.managementVersion,'VOLUME_PROFILE_V1');
   assert.ok(long.entryFill>ENTRY,'long fill includes spread and slippage');assert.ok(long.feesUSD>0);
-  assert.ok(long.targetPlan?.profileEvidence,'the entry preserves actual supplied aggTrade profile evidence');
-  await app.write({prices:{BTCUSDT:long.targets[0]}});
+  assert.ok(long.targetPlan?.profileEvidence,'the entry preserves the supplied 15m-candle profile evidence');
+  await app.write({prices:{BTCUSDT:long.targets[0]+.02}});
   paper=await until(()=>app.get('/api/paper'),p=>p.open[0]?.exitedPct===40);
   const partial=paper.open[0];assert.equal(partial.closeParts.length,1);assert.equal(partial.closeParts[0].targetNumber,1);
   assert.ok(Math.abs(partial.qtyRemaining/partial.originalQty-.6)<1e-10);assert.equal(partial.stop,partial.entryFill);
@@ -113,10 +115,10 @@ test('synthetic end to end: LONG three profile targets with breakeven/restart, t
   await app.stop();await app.start();paper=await app.get('/api/paper');
   const restored=paper.open.find(p=>p.key===long.key);assert.equal(restored.exitedPct,40);assert.equal(restored.entryFill,long.entryFill);
   assert.equal(restored.qtyRemaining,partial.qtyRemaining);assert.equal(restored.realizedPnLUSD,partial.realizedPnLUSD);
-  await app.write({prices:{BTCUSDT:long.targets[1]}});
+  await app.write({prices:{BTCUSDT:long.targets[1]+.02}});
   paper=await until(()=>app.get('/api/paper'),p=>p.open[0]?.exitedPct===75);
   assert.deepEqual(paper.open[0].closeParts.map(p=>p.targetNumber),[1,2]);
-  await app.write({prices:{BTCUSDT:long.targets[2]}});
+  await app.write({prices:{BTCUSDT:long.targets[2]+.02}});
   paper=await until(()=>app.get('/api/paper'),p=>p.closed.some(x=>x.key===long.key));
   const closedLong=paper.closed.find(x=>x.key===long.key);assert.equal(closedLong.closeReason,'ALL_TARGETS');assert.equal(closedLong.qtyRemaining,0);
   assert.deepEqual(closedLong.closeParts.map(p=>p.targetNumber),[1,2,3]);assert.ok(closedLong.realizedPnLUSD>0);

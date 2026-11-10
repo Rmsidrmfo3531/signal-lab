@@ -92,6 +92,7 @@ PNL은 모의 체결·명시된 비용 가정이며 실제 거래소 체결·실
 |---|---:|---|
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | 로컬 서버 |
 | `PAPER_VENUE_REFRESH_MS` | `4000` | 모의 포지션용 거래소 호가 갱신 주기(1000~60000). BingX 1.1초 요청 간격은 항상 유지 |
+| `TARGET_MODE` | `HVN_THEN_R` | 목표가 방식. `HVN_THEN_R`: 15분봉 3일 매물대(HVN)를 목표로 쓰고, 매물대가 부족하면 그 뒤를 1R 단위로 채움. TP1 전에 강한 매물대(POC의 50% 이상)가 있으면 진입 안 함. `HVN_ONLY`: 매물대 3개가 모두 있어야만 진입(이전 방식) |
 | `PAPER_VENUES` | `BINGX,GATEIO` | 모의 체결에 쓸 거래소(쉼표). 예: `GATEIO`만 쓰려면 `PAPER_VENUES=GATEIO` |
 | `LIVE_TRADING_MODE` | `OFF` | 실주문 모드 `OFF`·`TESTNET`·`LIVE` (LIVE는 `LIVE_TRADING_CONFIRM=REAL_MONEY` 필요) |
 | `LIVE_MAX_RISK_USD` / `LIVE_DAILY_MAX_RISK_USD` / `LIVE_MAX_OPEN_POSITIONS` | `2` / `6` / `1` | 실주문 위험 한도 |

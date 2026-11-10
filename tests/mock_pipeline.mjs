@@ -31,6 +31,14 @@ globalThis.fetch=async(input,options={})=>{
    const symbol=url.searchParams.get('symbol'),p=price(symbol),start=Number(url.searchParams.get('startTime'))||Date.now()-300000;
    return json(Array.from({length:120},(_,i)=>({a:i+1,p:(p+([10,16,22,-10,-16,-22][Math.floor(i/20)]+(i%3)*.01)).toFixed(2),q:String(i%20<17?100:1),T:start+Math.floor(i*300000/119)})));
   }
+  if(url.pathname==='/fapi/v1/klines'&&url.searchParams.get('interval')==='15m'){
+   // Volume-profile candles: heavy, narrow candles at the same six levels the old trade fixture used.
+   if(control().profileUnavailable)return json([]);
+   const symbol=url.searchParams.get('symbol'),p=price(symbol),limit=Number(url.searchParams.get('limit'))||288,step=900000;
+   const last=Math.floor(Date.now()/step)*step,offsets=[10,16,22,-10,-16,-22];
+   return json(Array.from({length:limit},(_,i)=>{const level=p+offsets[i%6],heavy=i%5!==4,lo=heavy?level:p-0.5,hi=heavy?level+0.02:p+0.5;
+    return [last-(limit-1-i)*step,lo.toFixed(2),hi.toFixed(2),lo.toFixed(2),hi.toFixed(2),heavy?'100':'1',last-(limit-1-i)*step+step-1,'0',1,'0','0','0']}));
+  }
   if(url.pathname==='/fapi/v1/klines'){
    const symbol=url.searchParams.get('symbol'),interval=url.searchParams.get('interval');
    if(!['1h','4h','1d'].includes(interval))throw Error('Test transport forbids sub-hour/unknown candles');

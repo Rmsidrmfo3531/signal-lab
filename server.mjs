@@ -60,6 +60,8 @@ const CONFIG={
  paperVenues:parsePaperVenues(process.env.PAPER_VENUES),
  // Venue book refresh for paper records; BingX's 1.1 s request spacing applies regardless.
  venueRefreshMs:Math.max(1000,Math.min(60000,Number(process.env.PAPER_VENUE_REFRESH_MS)||4000)),
+ // HVN_THEN_R (default): volume-profile targets, open air beyond them filled in whole R steps. HVN_ONLY: strict.
+ targetMode:process.env.TARGET_MODE==='HVN_ONLY'?'HVN_ONLY':'HVN_THEN_R',
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  limits:{maxSpreadBps:20}
@@ -322,7 +324,7 @@ async function checkSymbolInternal(symbol, force=false){
     const profileResult=await profiles.get(symbol,{tickSize:chartTick,eligible:true}),costs=venueCosts(contract,estimate.spreadBps);
     const targetPlan=planVolumeTargets({profileResult,direction:out.direction,entry:estimate.entryBasis,stop:out.stop,quantity:estimate.quantity,
      tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,
-     contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',unitsVerified:true,costs,minNetRR:1.8},{now:Date.now()});
+     contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',unitsVerified:true,costs,minNetRR:1.8,targetMode:CONFIG.targetMode},{now:Date.now()});
     out.targetPlan={...targetPlan,quantity:estimate.quantity,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',
      minNotional:estimate.minNotional,minQuantity:estimate.minQuantity,quantityStep:estimate.quantityStep,tickSize:estimate.tickSize,costAssumptions:costs,
      // Diagnostics only: keep the collector's own reason, which planVolumeTargets wraps as VOLUME_PROFILE_NOT_AVAILABLE.
