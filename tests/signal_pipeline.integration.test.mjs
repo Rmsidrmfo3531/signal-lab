@@ -112,6 +112,7 @@ test('synthetic end to end: LONG three profile targets with breakeven/restart, t
   const tighter=Number((long.stop+0.5).toFixed(2)),edited=await post({key:long.key,stop:tighter,targets:long.targets});
   assert.equal(edited.status,200,JSON.stringify(edited.body));assert.equal(edited.body.changed,true);assert.equal(edited.body.live.live,false,'live trading is off');
   assert.equal((await app.get('/api/paper')).open[0].stop,tighter);
+  const scalp=await app.get('/api/scalp');assert.equal(scalp.enabled,true);assert.equal(scalp.mode,'PAPER_ONLY','scalp mode never trades live');
   await app.write({prices:{BTCUSDT:long.targets[0]+.02}});
   paper=await until(()=>app.get('/api/paper'),p=>p.open[0]?.exitedPct===40);
   const partial=paper.open[0];assert.equal(partial.closeParts.length,1);assert.equal(partial.closeParts[0].targetNumber,1);

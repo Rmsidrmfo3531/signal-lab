@@ -32,6 +32,7 @@ import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
 import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues} from './venue_execution.mjs';
 import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
+import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS} from './scalp_reversal.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
 
@@ -62,6 +63,10 @@ const CONFIG={
  venueRefreshMs:Math.max(1000,Math.min(60000,Number(process.env.PAPER_VENUE_REFRESH_MS)||4000)),
  // HVN_THEN_R (default): volume-profile targets, open air beyond them filled in whole R steps. HVN_ONLY: strict.
  targetMode:process.env.TARGET_MODE==='HVN_ONLY'?'HVN_ONLY':'HVN_THEN_R',
+ // 5m reversal scalp mode: paper trading only, never routed to live orders.
+ scalpMode:String(process.env.SCALP_MODE||'ON').toUpperCase()!=='OFF',
+ scalpMinMovePct:Math.max(1,Math.min(20,Number(process.env.SCALP_MIN_MOVE_PCT)||SCALP_DEFAULTS.minMovePct)),
+ scalpIntervalMs:60000,scalpMaxChecks:6,
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  limits:{maxSpreadBps:20}
@@ -471,6 +476,9 @@ function recoverLive(){if(state.activeSet.size||state.researchSet.size){liveSubs
 let marketWs, retryMs=1500; const changed=new Map();
 function cryptoEntryAllowed(symbol,now=Date.now()){
  if(!storageHealth.healthy||!state.activeSet.has(symbol)||state.rest!=='connected')return false;
+ // A scalp entry is approved by its own 5m detection; it lives until its short expiry.
+ const scalpPending=paper.store.pending.find(x=>x.market==='CRYPTO'&&x.symbol===symbol&&x.strategy==='SCALP_REVERSAL_5M');
+ if(scalpPending)return now<=scalpPending.expiresAt;
  const analysis=state.analyses.get(symbol);
  if(!analysis?.patternConfirmed||!analysis.technicalQualified)return false;
  const decision=assessAnalysis(analysis,now);
@@ -485,6 +493,49 @@ function cryptoEntryAllowed(symbol,now=Date.now()){
   analysis.patternConfirmedAt!==pending[0].barAt)return false;
  return decision.ready;
 }
+// ---- 5m reversal scalp mode (paper only) ----
+const moveTracker=new MoveTracker();
+const scalpState={enabled:CONFIG.scalpMode,mode:'PAPER_ONLY',minMovePct:CONFIG.scalpMinMovePct,lastRunAt:0,lastCandidates:[],checks:0,signals:[],recentRejects:[],error:''};
+const scalpChecked=new Map(); // symbol -> last evaluated candle close time
+let scalpActive=false;
+async function runScalpCheck(now=Date.now()){
+ if(!CONFIG.scalpMode||scalpActive||state.rest!=='connected'||!storageHealth.healthy)return;
+ scalpActive=true;
+ try{
+  const candidates=moveTracker.candidates({now,minMovePct:CONFIG.scalpMinMovePct,limit:CONFIG.scalpMaxChecks*2})
+   .filter(c=>state.activeSet.has(c.symbol)&&!paper.store.open.some(x=>x.symbol===c.symbol)&&!paper.store.pending.some(x=>x.symbol===c.symbol))
+   .filter(c=>scalpChecked.get(c.symbol)!==Math.floor(now/300000)).slice(0,CONFIG.scalpMaxChecks);
+  scalpState.lastRunAt=now;scalpState.lastCandidates=candidates.map(c=>({symbol:c.symbol,movePct:Number(c.movePct.toFixed(2))}));
+  for(const {symbol} of candidates){
+   scalpChecked.set(symbol,Math.floor(now/300000));scalpState.checks++;
+   let rows;try{rows=await binance(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=5m&limit=60`,20000)}catch(e){scalpState.error=e.message;continue}
+   const det=detectScalpReversal(rows,{symbol,now:Date.now(),settings:{minMovePct:CONFIG.scalpMinMovePct}});
+   const reject=(reasons,extra={})=>{scalpState.recentRejects=[{at:Date.now(),symbol,direction:det.direction??null,reasons,...extra},...scalpState.recentRejects].slice(0,20)};
+   if(!det.ok){reject(det.reasons,{evidence:det.evidence});continue}
+   await Promise.all(CONFIG.paperVenues.map(venue=>refreshVenueBook(venue,symbol,{maxAgeMs:3000})));
+   const signal={symbol,direction:det.direction,entry:det.entry,stop:det.stop,atr:det.atr};
+   const selection=selectExecutionVenue({signal,venues:Object.fromEntries(CONFIG.paperVenues.map(v=>[v,venueEntry(v,symbol)])),allowed:CONFIG.paperVenues,maxRiskUSD:CONFIG.maxRiskUSD});
+   const chosen=selection.chosen;
+   if(!chosen){reject(['EXECUTION_VENUE_UNAVAILABLE',...selection.candidates.flatMap(c=>c.reasons).slice(0,4)]);continue}
+   const contract=venueEntry(chosen.venue,symbol).contract,costs=venueCosts(contract,chosen.estimate.spreadBps);
+   const plan=buildScalpPlan({signal:{...det,stop:chosen.stop},estimate:chosen.estimate,costs});
+   if(!plan.ok){reject(plan.reasons);continue}
+   const row={symbol,direction:det.direction,pattern:det.pattern,entry:chosen.estimate.entryBasis,stop:chosen.stop,atr:det.atr,patternConfirmedAt:det.barAt,
+    managementVersion:'VOLUME_PROFILE_V1',targetPlan:plan,targets:plan.targets,strategy:'SCALP_REVERSAL_5M',
+    entryTimeoutMs:SCALP_DEFAULTS.entryTimeoutMs,maxHoldMs:SCALP_DEFAULTS.maxHoldMs,executionVenue:chosen.venue,venueSymbol:contract.venueSymbol,
+    venueContract:{tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
+     decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null}};
+   const accepted=paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
+   const item={at:Date.now(),symbol,direction:det.direction,pattern:det.pattern,venue:chosen.venue,entry:row.entry,stop:row.stop,targets:plan.targets,
+    netRR:Number(plan.estimatedNetRR.toFixed(2)),evidence:det.evidence,paperAccepted:accepted};
+   scalpState.signals=[item,...scalpState.signals].slice(0,30);
+   if(accepted){send('scalp',item);console.log('[SCALP]',symbol,det.direction,det.evidence.movePct+'%')}
+   else reject(['PAPER_REJECTED:'+(paper.store.skipped.at(-1)?.reason||'unknown')]);
+  }
+ }catch(e){scalpState.error=e.message}
+ finally{scalpActive=false}
+}
+if(CONFIG.scalpMode)setInterval(()=>void runScalpCheck(),CONFIG.scalpIntervalMs).unref?.();
 function connectWS(){
  let endpoint=0;let retryTimer=null;
  const urls=['wss://fstream.binance.com/market/ws/!miniTicker@arr','wss://fstream.binance.com/market/stream?streams=!miniTicker@arr'];
@@ -516,6 +567,7 @@ function connectWS(){
      // Keep Binance's source event clock next to the receipt time.
      p.exchangePriceAt=typeof q.E==='number'&&Number.isFinite(q.E)&&q.E>0?q.E:null;
      if(q.q)p.quoteVolume=Number(q.q);state.quotes.set(q.s,p);changed.set(q.s,[q.s,p.price,p.priceAt]);
+     if(CONFIG.scalpMode)moveTracker.record(q.s,price,p.priceAt);
      paper.onPrice('CRYPTO',q.s,p.price,p.priceAt,{venue:'BINANCE',entryAllowed:cryptoEntryAllowed(q.s,p.priceAt)});priceLevelTrigger(q.s,previous,p.price);valid++;
     }
     if(valid){received=true;state.ws='connected';state.lastTickerAt=Date.now();state.lastTickerCount+=valid;send('status',getStatus())}
@@ -735,6 +787,7 @@ const server=http.createServer(async(req,res)=>{
    res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename=signal-lab-auto-paper-trades.csv','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(paperCSV(paper.store.closed));
   }
+  if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
