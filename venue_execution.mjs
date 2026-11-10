@@ -67,6 +67,6 @@ export function selectExecutionVenue({signal,venues={},allowed=VENUES,now=Date.n
 export function venueOrderQuantity(contract,baseQuantity){
  if(!contract||!positive(baseQuantity))return null;
  if(contract.quantityUnit!=='CONTRACT')return {quantity:String(baseQuantity),unit:'BASE_ASSET'};
- const contracts=Math.round(baseQuantity/Number(contract.contractSizeBase));
- return {quantity:String(contracts),unit:'CONTRACT',baseQuantity:Number(multiplyDecimal(String(contracts),contract.contractSizeBase))};
+ const step=contract.contractStep||'1',contracts=roundDecimalToStep(baseQuantity/Number(contract.contractSizeBase)*(1+1e-9),step,'DOWN');
+ return {quantity:contracts,unit:'CONTRACT',baseQuantity:Number(multiplyDecimal(contracts,contract.contractSizeBase))};
 }

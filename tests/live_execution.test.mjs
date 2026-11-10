@@ -106,7 +106,8 @@ test('preflight blocks every unsafe condition with a named reason',()=>{
   [{row:row('BINGX',{decision:{ready:false}})},'SIGNAL_NOT_READY'],[{qty:null},'QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK'],
   [{records:[{status:'OPEN',symbol:'BTCUSDT'}]},'MAX_OPEN_POSITIONS'],[{config:config({maxOpen:3}),records:[{status:'OPEN',symbol:'ETHUSDT'}]},'SYMBOL_ALREADY_ACTIVE'],
   [{records:[{status:'UNKNOWN',symbol:'X'}],config:config({maxOpen:3})},'UNRESOLVED_ORDER_STATE'],
-  [{records:[{status:'CLOSED',day:'2026-11-10',plannedRiskUSD:5}]},'DAILY_RISK_LIMIT']];
+  [{records:[{status:'CLOSED',day:'2026-11-10',plannedRiskUSD:5}]},'DAILY_RISK_LIMIT'],
+  [{row:row('GATEIO',{venueContract:{...row('GATEIO').venueContract,decimalSizes:true}})},'GATEIO_DECIMAL_SIZE_UNVERIFIED']];
  for(const [patch,reason] of cases)assert.ok(preflight({...base,...patch}).reasons.includes(reason),reason);
 });
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {BingXMarketData,BINGX_HOSTS,spacedQueue} from '../bingx_market.mjs';
 import {GateMarketData,GATEIO_HOST} from '../gateio_market.mjs';
 import {VenueQuoteService,parseVenueSymbols,MAX_VENUE_SYMBOLS} from '../venue_service.mjs';
+import {normalizeBook} from '../venue_market_data.mjs';
 
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
 const NOW=Date.parse('2026-11-10T12:00:00Z');
@@ -13,10 +14,10 @@ test('BingX client calls only documented public GET paths on the official host, 
   :json({code:0,msg:'',data:{T:NOW,bids:[['1','1']],asks:[['1.1','1']]}}));
  const client=new BingXMarketData({fetcher,now:()=>NOW,minIntervalMs:0});
  const contracts=await client.loadContracts();assert.equal(contracts.get('BTCUSDT').tickSize,'0.1');
- await client.loadContracts();assert.equal(calls.length,1,'contracts are cached');
+ await client.loadContracts();assert.equal(calls.length,2,'contracts (+ one clock sync) are cached');
  const book=await client.book('BTCUSDT');assert.equal(book.ok,true);
- assert.deepEqual(calls.map(c=>new URL(c.url).origin+new URL(c.url).pathname),[BINGX_HOSTS[0]+'/openApi/swap/v2/quote/contracts',BINGX_HOSTS[0]+'/openApi/swap/v2/quote/depth']);
- assert.equal(new URL(calls[1].url).searchParams.get('symbol'),'BTC-USDT');
+ assert.deepEqual(calls.map(c=>new URL(c.url).origin+new URL(c.url).pathname),[BINGX_HOSTS[0]+'/openApi/swap/v2/quote/contracts',BINGX_HOSTS[0]+'/openApi/swap/v2/server/time',BINGX_HOSTS[0]+'/openApi/swap/v2/quote/depth']);
+ assert.equal(new URL(calls[2].url).searchParams.get('symbol'),'BTC-USDT');
  for(const c of calls){assert.equal(c.options.method,'GET');assert.equal(c.options.redirect,'error');
   assert.ok(!Object.keys(c.options.headers).some(h=>/key|sign|auth/i.test(h)),'no credential headers');assert.equal(c.options.body,undefined)}
 });
@@ -46,8 +47,8 @@ test('Gate.io client uses the USDT futures public paths and reports HTTP errors 
  const client=new GateMarketData({fetcher,now:()=>NOW,minIntervalMs:0});
  assert.equal((await client.loadContracts()).get('ETHUSDT').contractSizeBase,'0.01');
  assert.equal((await client.book('ETHUSDT')).ok,true);
- assert.deepEqual(calls.map(c=>{const u=new URL(c.url);return u.origin+u.pathname}),[GATEIO_HOST+'/api/v4/futures/usdt/contracts',GATEIO_HOST+'/api/v4/futures/usdt/order_book']);
- assert.equal(new URL(calls[1].url).searchParams.get('contract'),'ETH_USDT');assert.ok(calls.every(c=>c.options.method==='GET'));
+ assert.deepEqual(calls.map(c=>{const u=new URL(c.url);return u.origin+u.pathname}),[GATEIO_HOST+'/api/v4/futures/usdt/contracts',GATEIO_HOST+'/api/v4/spot/time',GATEIO_HOST+'/api/v4/futures/usdt/order_book']);
+ assert.equal(new URL(calls[2].url).searchParams.get('contract'),'ETH_USDT');assert.ok(calls.every(c=>c.options.method==='GET'));
  const bad=new GateMarketData({fetcher:async()=>json({label:'INVALID_CONTRACT'},400),now:()=>NOW,minIntervalMs:0});
  await assert.rejects(bad.book('ETHUSDT'),e=>e.code==='HTTP_400'&&/INVALID_CONTRACT/.test(e.message));
 });
@@ -74,4 +75,25 @@ test('quote service: one venue failing still returns the other, unlisted symbols
  assert.deepEqual(parseVenueSymbols('btcusdt, ETHUSDT,bad!,BTCUSDT'),['BTCUSDT','ETHUSDT']);
  assert.equal(parseVenueSymbols(Array.from({length:10},(_,i)=>`C${i}USDT`).join(',')).length,MAX_VENUE_SYMBOLS);
  assert.deepEqual(parseVenueSymbols('',['SOLUSDT']),['SOLUSDT']);
+});
+
+test('venue clock: the offset is measured from server time and book ages are judged on the local clock',async()=>{
+ // PC clock 8 s ahead of the venue (as observed on a user PC): venue time = local - 8000.
+ let local=NOW;const skew=-8000;
+ const fetcher=async url=>{
+  if(url.includes('/server/time'))return json({code:0,data:{serverTime:local+skew}});
+  if(url.includes('/contracts'))return json({code:0,data:[{symbol:'BTC-USDT',currency:'USDT',asset:'BTC',pricePrecision:1,quantityPrecision:4,tradeMinQuantity:0.0001,tradeMinUSDT:2,status:1,apiStateOpen:'true',apiStateClose:'true'}]});
+  return json({code:0,data:{T:local+skew-300,bids:[['1','1']],asks:[['1.1','1']]}});
+ };
+ const client=new BingXMarketData({fetcher,now:()=>local,minIntervalMs:0});
+ await client.loadContracts();assert.equal(client.clockOffsetMs,-8000);
+ const book=await client.book('BTCUSDT');assert.equal(book.ageMs,300,'0.3 s old, not 8.3 s');assert.equal(book.sourceTime,local-300,'local time base');
+ local+=10000;const late=normalizeBook('BINGX',{T:local+skew-300,bids:[['1','1']],asks:[['1.1','1']]},{receivedAt:local,now:local,clockOffsetMs:client.clockOffsetMs});
+ assert.equal(late.ok,true);
+ const unsynced=normalizeBook('BINGX',{T:local+skew-300,bids:[['1','1']],asks:[['1.1','1']]},{receivedAt:local,now:local+8000});
+ assert.deepEqual(unsynced.reasons,['BOOK_STALE'],'without the offset an 8 s skew plus delay looks stale');
+ const gate=new GateMarketData({fetcher:async url=>url.includes('/spot/time')?json({server_time:local+2500}):json([{name:'BTC_USDT',type:'direct',quanto_multiplier:'0.0001',order_price_round:'0.1',order_size_min:1,status:'trading',in_delisting:false}]),now:()=>local,minIntervalMs:0});
+ await gate.loadContracts();assert.equal(gate.clockOffsetMs,2500);
+ const failing=new GateMarketData({fetcher:async url=>{if(url.includes('/spot/time'))throw TypeError('fetch failed');return json([{name:'BTC_USDT',type:'direct',quanto_multiplier:'0.0001',order_price_round:'0.1',order_size_min:1,status:'trading'}])},now:()=>local,minIntervalMs:0});
+ await failing.loadContracts();assert.equal(failing.clockOffsetMs,0,'a failed time sync never blocks contracts');
 });
