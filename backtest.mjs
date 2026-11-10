@@ -16,6 +16,7 @@ import {planVolumeTargets} from './volume_targets.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS} from './dca_plan.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
+import {seededEMA} from './indicators.mjs';
 
 export const HOUR=3600000,M5=300000,M15=900000;
 export const BACKTEST_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:2,spreadBps:1,fundingRate:.0001,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'});
@@ -83,36 +84,41 @@ function profileAt(m15Raw,now,symbol,tick){
 }
 
 /** 1H/4H strategy replay: the live rule (score >= minScore) plus one book per score bucket. */
-export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,riskUSD=6,minScore=90,costs=BACKTEST_COSTS}){
+// Research knobs (defaults = the live server): minNetRR, obstacleFraction (STRONG_HVN_BEFORE_TP1),
+// targetMode, breakeven after TP1, stopScale (>1 widens the stop away from the entry),
+// patterns / directions (only trade these), endAt (exclusive signal cut-off).
+export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=Infinity,riskUSD=6,minScore=90,costs=BACKTEST_COSTS,
+ minNetRR=1.8,obstacleFraction=1,targetMode='HVN_THEN_R',breakeven=true,stopScale=1,patterns=null,directions=null}){
  const m5c=m5.map(toCandle),funnel={bars:0,patterns:0,validated:0,scoreOk:0,planned:0,chaseSkipped:0,planReasons:{}},trades=[];
  // LIVE = the live rule (score >= minScore). Each score bucket is its own sequential book,
  // so a bucket's trades are never crowded out by trades of another bucket.
  const busy={};
  for(let j=0;j<h1.length;j++){
-  const closeAt=Number(h1[j][6]);if(closeAt<startAt)continue;
+  const closeAt=Number(h1[j][6]);if(closeAt<startAt||closeAt>=endAt)continue;
   const now=closeAt+1000;funnel.bars++;
   const h1s=h1.slice(Math.max(0,j-199),j+1),i4=closedUntil(h4,now),h4s=h4.slice(Math.max(0,i4-301),i4);
   const ib=closedUntil(btcH4,now),btc=btcH4.slice(Math.max(0,ib-301),ib);
   const out=analyze(symbol,h1s,h4s,[],Number(h1[j][4]),{now,btcH4Rows:btc});
   if(!out.patternConfirmed)continue;funnel.patterns++;
   if(out.quality?.validationPassed!==true)continue;funnel.validated++;
+  if(patterns&&!patterns.includes(out.pattern)||directions&&!directions.includes(out.direction))continue;
   const live=out.score>=minScore;if(live)funnel.scoreOk++;
   const k=lowerBound(m5c,closeAt+1);const next=m5c[k];if(!next)continue;
   const dir=out.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
   // Stop on the tick grid, rounded away from the entry (as venueStop does on the server).
-  const stop=onTick(out.stop,filters.tickSize,dir===1?'DOWN':'UP');
+  const stop=onTick(out.entry-(out.entry-out.stop)*stopScale,filters.tickSize,dir===1?'DOWN':'UP');
   if(Math.abs(entry-out.entry)>Math.min(out.entry*.004,out.atr*.45)||dir*(entry-stop)<=0){funnel.chaseSkipped++;continue}
   const quantity=stepQuantity(riskUSD/Math.abs(entry-stop),filters.stepSize);
   if(!positive(quantity)||quantity<filters.minQty||quantity*entry<filters.minNotional){(funnel.planReasons.QUANTITY_BELOW_MINIMUM=(funnel.planReasons.QUANTITY_BELOW_MINIMUM||0)+1);continue}
   const profileResult=profileAt(m15,now,symbol,filters.tickSize);
   const plan=planVolumeTargets({profileResult,direction:out.direction,entry,stop,quantity,tickSize:filters.tickSize,quantityStep:filters.stepSize,
    minQuantity:filters.minQty,minNotional:filters.minNotional,contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',unitsVerified:true,
-   costs,minNetRR:1.8,targetMode:'HVN_THEN_R'},{now});
+   costs,minNetRR,targetMode,obstacleFraction},{now});
   if(!plan.ok){for(const r of plan.reasons||['PLAN_FAILED'])funnel.planReasons[r]=(funnel.planReasons[r]||0)+1;continue}
   funnel.planned++;
   for(const book of [...(live?['LIVE']:[]),'BUCKET:'+scoreBucket(out.score)]){
    if(k<=(busy[book]??-1))continue;
-   const t=simulateTrade({direction:out.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs});
+   const t=simulateTrade({direction:out.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs,breakeven});
    if(!t)continue;busy[book]=t.endIdx;
    trades.push({strategy:'HOURLY',book,symbol,direction:out.direction,pattern:out.pattern,score:out.score,signalAt:closeAt,stop,targets:plan.targets,
     hvnTargets:plan.hvnTargets,rMultipleTargets:plan.rMultipleTargets,...t});
@@ -122,23 +128,31 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,riskUS
 }
 
 /** 5m reversal scalp replay, without and with the zone scale-in plan. */
-export function backtestScalp({symbol,m5,m15,filters,startAt,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={}}){
+// trendFilter: no rebound LONG while the 4H trend is down, no fade SHORT while it is up (needs h4).
+export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=false,filters,startAt,endAt=Infinity,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={},minNetRR=SCALP_DEFAULTS.minNetRR,maxHoldMs=SCALP_DEFAULTS.maxHoldMs}){
  const m5c=m5.map(toCandle),funnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},trades=[];
  const busy={FIXED:-1,DCA:-1};let balance=balanceUSD;
+ // 4H trend after each closed 4H candle (EMA100/EMA200 as in the 1H strategy), for the optional filter.
+ const trendAt=(()=>{if(!trendFilter||!Array.isArray(h4))return ()=>null;const closes=h4.map(r=>Number(r[4]));
+  const e100=seededEMA(closes,100),e200=seededEMA(closes,200);
+  const trend=h4.map((r,i)=>e100[i]==null||e200[i]==null?null:e100[i]>e200[i]&&closes[i]>e200[i]?'up':e100[i]<e200[i]&&closes[i]<e200[i]?'down':'range');
+  return now=>{const i=closedUntil(h4,now)-1;return i>=0?trend[i]:null}})();
+ funnel.trendBlocked=0;
  for(let i=60;i<m5.length-1;i++){
-  const closeAt=Number(m5[i][6]);if(closeAt<startAt)continue;funnel.bars++;
+  const closeAt=Number(m5[i][6]);if(closeAt<startAt||closeAt>=endAt)continue;funnel.bars++;
   const now=closeAt+1000,det=detectScalpReversal(m5.slice(i-59,i+1),{symbol,now,settings});
   if(!det.ok)continue;funnel.signals++;
+  if(trendFilter){const tr=trendAt(now);if(tr===null||det.direction==='LONG'&&tr==='down'||det.direction==='SHORT'&&tr==='up'){funnel.trendBlocked++;continue}}
   const k=i+1,next=m5c[k],dir=det.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
   det.stop=onTick(det.stop,filters.tickSize,dir===1?'DOWN':'UP');
   if(dir*(entry-det.stop)<=0||dir*(det.targets[0]-entry)<=0){funnel.entrySkipped++;continue}
   const quantity=stepQuantity(riskUSD/Math.abs(entry-det.stop),filters.stepSize);
   const estimate={eligible:true,tickSize:filters.tickSize,quantityStep:filters.stepSize,entryBasis:entry,quantity,minNotional:filters.minNotional,minQuantity:filters.minQty};
-  const quality=buildScalpPlan({signal:det,estimate,costs});
+  const quality=buildScalpPlan({signal:det,estimate,costs,minNetRR});
   if(!quality.ok||!positive(quantity)){funnel.qualityRejected++;continue}
   const base={strategy:'SCALP',symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct};
   if(k>busy.FIXED){
-   const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:det.stop,targets:quality.targets,quantity,maxHoldMs:SCALP_DEFAULTS.maxHoldMs,costs});
+   const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:det.stop,targets:quality.targets,quantity,maxHoldMs,costs});
    if(t){busy.FIXED=t.endIdx;trades.push({...base,book:'FIXED',stop:det.stop,targets:quality.targets,...t})}
   }
   if(k>busy.DCA){
@@ -149,7 +163,7 @@ export function backtestScalp({symbol,m5,m15,filters,startAt,riskUSD=6,balanceUS
    if(!plan.ok){for(const r of plan.reasons)funnel.dcaRejected[r]=(funnel.dcaRejected[r]||0)+1}
    else{
     const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:plan.stop,targets:quality.targets,quantity:plan.unitQty,
-     adds:plan.adds.map(a=>({price:a.price,quantity:a.quantity})),maxHoldMs:SCALP_DEFAULTS.maxHoldMs,costs});
+     adds:plan.adds.map(a=>({price:a.price,quantity:a.quantity})),maxHoldMs,costs});
     if(t){busy.DCA=t.endIdx;const before=balance;balance+=t.netUSD;
      trades.push({...base,book:'DCA',stop:plan.stop,targets:quality.targets,plannedAdds:plan.adds.length,plannedMaxLossPct:plan.full.maxLossPct,
       balanceBefore:before,balanceAfter:balance,pnlPctOfBalance:t.netUSD/before*100,worstOpenPctOfBalance:t.worstOpenUSD/before*100,...t})}

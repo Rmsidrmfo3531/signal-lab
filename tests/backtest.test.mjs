@@ -82,3 +82,11 @@ test('scalp replay: a crash + hammer opens a fixed-risk trade and a zone scale-i
  const dca=r.trades.find(t=>t.book==='DCA');assert.ok(dca||Object.keys(r.funnel.dcaRejected).length,'scale-in trade or a recorded reason');
  if(dca){assert.ok(Number.isFinite(dca.pnlPctOfBalance));assert.equal(r.finalBalance,1000+dca.netUSD)}
 });
+
+test('scalp trend filter: with 4H candles a rebound LONG in a 4H downtrend is skipped',()=>{
+ const start=Date.parse('2026-01-01T00:00:00Z'),H4=14400000,h4=[];let p=200;
+ for(let i=0;i<320;i++){const o=p;p*=.997;h4.push([start+i*H4,String(o),String(o*1.001),String(p*.999),String(p),'1',start+i*H4+H4-1])}
+ const m5=[[start+319*H4+H4,'1','1','1','1','1',start+319*H4+H4+M5-1]];
+ const r=backtestScalp({symbol:'SOLUSDT',m5,m15:[],h4,trendFilter:true,filters:{tickSize:.01,stepSize:.01,minQty:.01,minNotional:1},startAt:0});
+ assert.equal(r.funnel.trendBlocked,0,'no signal, nothing blocked');assert.equal(r.trades.length,0);
+});
