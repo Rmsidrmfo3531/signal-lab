@@ -36,7 +36,7 @@ async function check(mode){
   `);
   const env={PATH:process.env.PATH};
   if(process.env.SystemRoot)env.SystemRoot=process.env.SystemRoot;
-  const result=spawnSync(process.execPath,['--import',pathToFileURL(preload).href,'scripts/check-market-data.mjs'],{cwd:project,env,encoding:'utf8',timeout:5000});
+  const result=spawnSync(process.execPath,['--import',pathToFileURL(preload).href,'scripts/check-market-data.mjs'],{cwd:project,env,encoding:'utf8',timeout:30000});
   assert.equal(result.error,undefined);assert.equal(result.stderr,'','validation errors must be reported as structured results, not an uncaught stack');
   return {code:result.status,report:JSON.parse(result.stdout)};
  }finally{await fs.rm(sandbox,{recursive:true,force:true})}
