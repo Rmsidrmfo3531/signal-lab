@@ -6,13 +6,13 @@ import vm from 'node:vm';
 const html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
 const css=fs.readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');
 const script=fs.readFileSync(new URL('../public/workspace_nav.js',import.meta.url),'utf8');
-const routes=['overview','scanner','paper','orangex','tradfi','news','alerts','journal'];
+const routes=['overview','scanner','paper','venues','tradfi','news','alerts','journal'];
 
 test('navigation separates every functional panel without removing any stateful UI elements',()=>{
  const markers=[...html.matchAll(/<section\b[^>]*data-workspace-route="([^"]+)"/g)].map(x=>x[1]);
  assert.equal(markers.length,11);
  for(const route of routes)assert.ok(markers.includes(route),'missing route: '+route);
- for(const id of ['scanner','paper','orangex','tradfi','workGrid','execution','news','alerts','journal','chartPanel'])
+ for(const id of ['scanner','paper','venues','tradfi','workGrid','execution','news','alerts','journal','chartPanel'])
   assert.match(html,new RegExp('id="'+id+'"'),'missing existing view '+id);
  assert.match(html,/<script type="module" src="\/workspace_nav\.js"><\/script>/);
  assert.match(css,/\[data-workspace-route\]\[hidden\]\{display:none!important\}/);
@@ -20,7 +20,7 @@ test('navigation separates every functional panel without removing any stateful 
 });
 
 test('hash routing keeps panels mounted and routes chart aliases to overview',()=>{
- const sections=['scanner','paper','orangex','tradfi','overview','overview','overview','overview','news','alerts','journal']
+ const sections=['scanner','paper','venues','tradfi','overview','overview','overview','overview','news','alerts','journal']
   .map((route,i)=>({dataset:{workspaceRoute:route},id:'p'+i,hidden:false,attributes:{},
    setAttribute(k,v){this.attributes[k]=v}}));
  const mkLink=hash=>({hash,attributes:{},classList:{flags:new Set(),toggle(k,v){if(v)this.flags.add(k);else this.flags.delete(k)}},

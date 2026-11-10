@@ -7,11 +7,6 @@ import {stageUpdate,pendingInfo} from './updater.mjs';
 import {normalizeTrade,closeTrade,journalSummary,exportTradesCSV} from './journal.mjs';
 import {signalLifecycle} from './signal_lifecycle.mjs';
 import {evaluateSignal} from './signal_pipeline.mjs';
-import {OrangeXReadOnlyAdapter} from './orangex.mjs';
-import {compareOrangeXBinance} from './orangex_comparison.mjs';
-import {OrangeXPaperService} from './orangex_paper_service.mjs';
-import {OrangeXPaperReplayStore} from './orangex_paper_replay_store.mjs';
-import {evaluateOrangeXReadiness} from './orangex_readiness.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -23,7 +18,7 @@ import {binancePerpetualMarkets} from './markets.mjs';
 import {officialMarketLinks,telegramMessage} from './links.mjs';
 import {estimateBinanceExecution,BINANCE_PAPER_ASSUMPTIONS} from './binance_execution.mjs';
 import {VolumeProfileCollector} from './profile_collector.mjs';
-import {roundOrangeXDecimal} from './orangex_contract_validation.mjs';
+import {roundDecimalToStep} from './decimal_grid.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
 import {finalTelegramMatch} from './telegram_final.mjs';
 import {translateNewsArticles} from './news_translation.mjs';
@@ -31,6 +26,7 @@ import {buildMarketCommentary} from './market_commentary.mjs';
 import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {tradfiAvailability} from './tradfi.mjs';
+import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
 import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
@@ -61,26 +57,6 @@ const CONFIG={
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  limits:{maxSpreadBps:20}
 };
-// OrangeX transport stays READ_ONLY. Stage 2 offline PAPER uses a separate store;
-// no setting, API key or browser request can enable actual-data auto entry.
-let orangeX,orangeXConfigError=false;
-try{
- orangeX=new OrangeXReadOnlyAdapter({enabled:process.env.ORANGEX_ENABLED==='true',mode:process.env.ORANGEX_MODE||'READ_ONLY',
-  includePublicDetails:true,...(process.env.ORANGEX_LISTING_CURRENCIES?.trim()?
-   {listingCurrencies:process.env.ORANGEX_LISTING_CURRENCIES.split(',').map(x=>x.trim()).filter(Boolean)}:
-   process.env.ORANGEX_LISTING_CURRENCY?.trim()?{listingCurrency:process.env.ORANGEX_LISTING_CURRENCY.trim()}:{}),
-  clientId:process.env.ORANGEX_CLIENT_ID||'',clientSecret:process.env.ORANGEX_CLIENT_SECRET||'',
-  instruments:(process.env.ORANGEX_INSTRUMENTS||'BTC-USDT-PERPETUAL,ETH-USDT-PERPETUAL,SOL-USDT-PERPETUAL').split(',').map(x=>x.trim()).filter(Boolean),
-  timeoutMs:Number(process.env.ORANGEX_REQUEST_TIMEOUT_MS||8000)});
-}catch{
- orangeX=new OrangeXReadOnlyAdapter();orangeXConfigError=true;
-}
-const orangeXPaper=new OrangeXPaperService({directory:path.join(storage.dir,'orangex-paper')});
-// Replay archives are read separately and never become a forward PAPER seed.
-function orangeXReplayView(){
- try{return new OrangeXPaperReplayStore({directory:path.join(storage.dir,'orangex-paper-replays')}).snapshot()}
- catch{return {kind:'ORANGEX_PAPER_REPLAY_VIEW',runKind:'BACKTEST',status:'ERROR',result:null,realDataAutoEntryEnabled:false,liveOrdersEnabled:false}}
-}
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
 const lanMode=!['127.0.0.1','::1','localhost'].includes(CONFIG.host);
@@ -141,6 +117,9 @@ function emitPaperNotice(event,{test=false}={}){
   console.log(`[PAPER ${test?'TEST':event.type}]`,event.symbol,event.direction,delivery.reason);
   return {event:item,delivery};
 }
+// BingX/Gate.io are the execution venues: public quotes only, fetched on demand.
+// Binance remains the chart/analysis source and is shown only as a reference price.
+const venueQuotes=new VenueQuoteService();
 const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
 
 async function binance(url,ttl=30000){
@@ -266,11 +245,11 @@ async function checkSymbolInternal(symbol, force=false){
  const meta=state.quotes.get(symbol)||{};
  const [h1,h4,btcH4]=await Promise.all([klines(symbol,'1h',200),klines(symbol,'4h',301),symbol==='BTCUSDT'?Promise.resolve(null):klines('BTCUSDT','4h',301)]);
  const out=analyze(symbol,h1,h4,[],meta.price,{quoteVolume:meta.quoteVolume,priceChangePercent:meta.change,btcH4Rows:btcH4??h4});
- out.analysisVenue='BINANCE';out.tradeApproval=false;out.orangeXApproval=false;out.scorePolicy=getSignalScorePolicy();
+ out.analysisVenue='BINANCE';out.tradeApproval=false;out.scorePolicy=getSignalScorePolicy();
  if(out.pattern&&out.technicalQualified===true){
   try{
    const book=await depth(symbol),tick=Number(meta.filters?.PRICE_FILTER?.tickSize);
-   if(Number.isFinite(tick)&&tick>0){out.rawStop=out.stop;out.stop=Number(roundOrangeXDecimal(out.stop,tick,out.direction==='LONG'?'DOWN':'UP'));}
+   if(Number.isFinite(tick)&&tick>0){out.rawStop=out.stop;out.stop=Number(roundDecimalToStep(out.stop,tick,out.direction==='LONG'?'DOWN':'UP'));}
    const estimate=estimateBinanceExecution({signal:out,book,market:meta,maxRiskUSD:CONFIG.maxRiskUSD});
    out.binanceExecution=estimate;
    if(estimate.eligible){
@@ -313,7 +292,6 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  if(!decision.ready||!storageHealth.healthy)return;
  // Observe the validated scanner output, but never route actual market data to
  // the offline simulation engine or alter the existing paper registration.
- orangeXPaper.observeSignal({...row,decision,qualified:true},{instrumentName:orangeX.instruments.find(name=>name.split('-').slice(0,2).join('')===row.symbol)});
  const {symbol,direction,pattern}=row;
  const paperKey=signalKey({market:'CRYPTO',symbol,direction,pattern,barAt:row.patternConfirmedAt});
  // The same fresh approval may be observed by a scan and many ticker events.
@@ -464,8 +442,7 @@ function connectWS(){
      if(!q.s||!q.c||Number(q.st||1)!==1||!state.activeSet.has(q.s)&&!state.researchSet.has(q.s)&&!tracked)continue;
      const price=Number(q.c);if(!Number.isFinite(price)||price<=0)continue;
      const p=state.quotes.get(q.s)||{symbol:q.s},previous=p.price;p.price=price;p.priceAt=Date.now();
-     // OrangeX comparison requires Binance's source event clock; the existing
-     // scanner's receipt-time behavior remains unchanged.
+     // Keep Binance's source event clock next to the receipt time.
      p.exchangePriceAt=typeof q.E==='number'&&Number.isFinite(q.E)&&q.E>0?q.E:null;
      if(q.q)p.quoteVolume=Number(q.q);state.quotes.set(q.s,p);changed.set(q.s,[q.s,p.price,p.priceAt]);
      paper.onPrice('CRYPTO',q.s,p.price,p.priceAt,{entryAllowed:cryptoEntryAllowed(q.s,p.priceAt)});priceLevelTrigger(q.s,previous,p.price);valid++;
@@ -639,30 +616,6 @@ const server=http.createServer(async(req,res)=>{
    res.writeHead(401,{'WWW-Authenticate':'Basic realm="Signal Lab mobile - username signal", charset="UTF-8"','Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS});
    res.end('Signal Lab: 모바일 접속 인증이 필요합니다. PC 실행 창에 표시된 사용자명(signal)과 접속 암호를 입력하세요.');return;
   }
-  if(pathname==='/api/orangex'||pathname.startsWith('/api/orangex/')){
-   if(req.method!=='GET')return response(res,405,{error:'ORANGEX_READ_ONLY',message:'OrangeX 1단계는 조회만 허용합니다.',orderSubmissionEnabled:false});
-   if(pathname==='/api/orangex/preflight'){
-    const symbol=(url.searchParams.get('symbol')||'BTCUSDT').toUpperCase();
-    if(!/^[A-Z0-9]+USDT$/.test(symbol))return response(res,400,{error:'INVALID_SYMBOL',liveOrdersEnabled:false});
-    const row=state.analyses.get(symbol),decision=row?assessAnalysis(row):null;
-    return response(res,200,{mode:'READ_ONLY',previewOnly:true,liveOrdersEnabled:false,orderSubmissionEnabled:false,
-     symbol,binanceSignalReady:decision?.ready===true,executionApproved:false,
-     missingEvidence:['ORANGEX_CONTRACT_AMOUNT_AND_MIN_NOTIONAL_UNITS','ACCOUNT_SPECIFIC_RISK_AND_FEES','PROTECTIVE_STOP_AND_SAFE_REPLACE','REDUCE_ONLY_AND_ORDER_STATE_RECONCILIATION'],
-     note:'Binance 분석과 OrangeX 주문 승인은 별개입니다. 공식 계약·보호 주문 근거가 없어 실제 주문을 허용하지 않습니다.'});
-   }
-   if(pathname==='/api/orangex/paper')return response(res,200,orangeXPaper.snapshot());
-   if(pathname==='/api/orangex/paper/replay')return response(res,200,orangeXReplayView());
-   if(pathname==='/api/orangex/readiness')return response(res,200,evaluateOrangeXReadiness(orangeX.getStatus()));
-   if(pathname!=='/api/orangex')return response(res,404,{error:'ORANGEX_READ_ONLY_ROUTE_NOT_FOUND',orderSubmissionEnabled:false});
-   try{
-    const snapshot=await orangeX.snapshot({refresh:url.searchParams.get('refresh')==='1'});
-    snapshot.markets=snapshot.markets.map(market=>({...market,binanceComparison:
-     compareOrangeXBinance(market,state.quotes.get(market.symbol),{now:Date.now()})}));
-    snapshot.operationalReadiness=evaluateOrangeXReadiness(snapshot);
-    if(orangeXConfigError)snapshot.errors=[...(snapshot.errors||[]),{code:'CONFIG_INVALID',message:'OrangeX 설정이 유효하지 않아 연결을 비활성화했습니다.',at:Date.now()}];
-    return response(res,200,snapshot);
-   }catch{return response(res,503,{mode:'READ_ONLY',connected:false,orderSubmissionEnabled:false,error:'ORANGEX_READ_FAILED'})}
-  }
   if(pathname==='/events'){
    res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no',...SECURITY_HEADERS});
    state.clients.add(res);res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);
@@ -707,6 +660,12 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/paper/export'&&req.method==='GET'){
    res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename=signal-lab-auto-paper-trades.csv','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(paperCSV(paper.store.closed));
+  }
+  if(pathname==='/api/venues'){
+   if(req.method!=='GET')return response(res,405,{error:'VENUES_READ_ONLY',ordersEnabled:false});
+   const symbols=parseVenueSymbols(url.searchParams.get('symbols'),persisted.watchlist);
+   if(!symbols.length)return response(res,400,{error:'INVALID_SYMBOLS',ordersEnabled:false});
+   return response(res,200,await venueQuotes.snapshot(symbols,{binancePrice:symbol=>state.quotes.get(symbol)?.price??null}));
   }
   if(pathname==='/api/tradfi')return response(res,200,tradfiPublic());
   if(pathname==='/api/tradfi/refresh'&&req.method==='POST')return response(res,409,{accepted:false,...tradfiPublic()});

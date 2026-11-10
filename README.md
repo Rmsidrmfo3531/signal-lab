@@ -1,20 +1,6 @@
 # Signal Lab — Issue #6 통합 개발판
 
-PR #7 적용 전 검증: [PR7_RELEASE_READY_KO.md](PR7_RELEASE_READY_KO.md) · [Windows 백업·적용·복구 명령어](WINDOWS_PR7_APPLY_KO.md).
-
-최신 Windows Node 22 파일 식별·정리 보완: [PR7_WINDOWS_NODE22_KO.md](PR7_WINDOWS_NODE22_KO.md).
-
-최신 Windows 부분 쓰기 롤백 보완: [PR7_WINDOWS_ROLLBACK_KO.md](PR7_WINDOWS_ROLLBACK_KO.md).
-
-최신 백업 fsync·종료 확인 보완: [PR7_WINDOWS_FSYNC_EXIT_KO.md](PR7_WINDOWS_FSYNC_EXIT_KO.md).
-
-최신 Windows 저장 실패 보완: [PR7_WINDOWS_STORAGE_KO.md](PR7_WINDOWS_STORAGE_KO.md).
-
-Windows CI 종료 문제 후속 검증: [PR7_WINDOWS_TEST_HANG_KO.md](PR7_WINDOWS_TEST_HANG_KO.md).
-
-PR #7 후속 수정·최신 테스트: [공급자 의존성 제거 및 점수 설정 검증](PR7_PROVIDER_REMOVAL_KO.md).
-
-Binance USDT 무기한 선물의 확정 1H·4H 데이터로 분석하는 로컬 PC·모바일 대시보드입니다. 최신 구현·검증 이력은 [ISSUE6_INTEGRATION_KO.md](ISSUE6_INTEGRATION_KO.md)를 참고하세요. 거래 점수는 승률이 아니며 **새 전략의 실전 성능은 미검증**입니다.
+Binance USDT 무기한 선물의 확정 1H·4H **차트**로 분석하고, 실제 매매 대상 거래소인 **BingX·Gate.io**의 공개 시세를 함께 보는 로컬 PC·모바일 대시보드입니다. Binance는 차트 분석 기준으로만 사용합니다. 최신 구현·검증 이력은 [ISSUE6_INTEGRATION_KO.md](ISSUE6_INTEGRATION_KO.md)를 참고하세요. 거래 점수는 승률이 아니며 **새 전략의 실전 성능은 미검증**입니다.
 
 이 버전은 이전 공급자의 네트워크·API·UI·링크 의존성을 제거합니다. 대체 시세 공급자가 없는 **TradFi 수집·스캔·신규 모의 진입은 비활성**입니다. 기존 TradFi 포지션·PNL·매매일지는 보존하지만 시세를 갱신하지 못하므로 마지막 관측값을 현재 가격으로 해석하면 안 됩니다.
 
@@ -33,13 +19,13 @@ macOS/Linux에서는 `node server.mjs`로 실행합니다. 기본 데이터 경�
 
 ## 기능별 페이지
 
-좌측 메뉴와 모바일 하단 메뉴에서 **대시보드·차트 / 최종 신호 / 자동 모의매매 PNL / OrangeX 조회 / TradFi 기록 / 시황·뉴스 / 알림·시스템 / 매매일지**로 페이지를 전환합니다. 주소의 `#scanner`, `#paper` 등으로 직접 접근할 수 있으며, 페이지 이동 시 시세 스트림·차트 선택·저장 데이터는 다시 시작하거나 초기화하지 않습니다.
+좌측 메뉴와 모바일 하단 메뉴에서 **대시보드·차트 / 최종 신호 / 자동 모의매매 PNL / BingX·Gate.io 시세 / TradFi 기록 / 시황·뉴스 / 알림·시스템 / 매매일지**로 페이지를 전환합니다. 주소의 `#scanner`, `#paper` 등으로 직접 접근할 수 있으며, 페이지 이동 시 시세 스트림·차트 선택·저장 데이터는 다시 시작하거나 초기화하지 않습니다.
 
 ## 분석·최종 신호
 
 - 스캔 대상은 Binance의 `TRADING`·`USDT`·`PERPETUAL` 계약입니다. 완전히 마감된 4H 250개 이상이 필요하며 서버는 미확정봉을 제외할 수 있도록 301개를 요청합니다.
 - 단일 100점: 4H EMA200 15, EMA100 5, 1H EMA20 10, 패턴·확정봉 강도 25, ADX/DMI 15, RSI 10, MACD 5, 패턴 거래량 10, ATR 5점입니다. 평가 불가능하면 점수는 `null / 평가 불가`입니다.
-- **`SIGNAL_FINAL_MIN_SCORE=90`은 제안 기본 임계값이며 검증 상태는 `UNVERIFIED`입니다.** 실측 수익률·기간 외·워킹 포워드 결과로 최적화된 값이 아닙니다. 점수 통과와 기술·신선도·손절·호가·위험·매물대 검증 및 실거래 승인은 별개입니다. 설정은 90~100의 정수만 허용하며 잘못된 값이면 서버 시작을 차단합니다. 기존보다 낮은 기준으로 완화하거나 설정 변경으로 OrangeX 주문을 승인하지 않습니다.
+- **`SIGNAL_FINAL_MIN_SCORE=90`은 제안 기본 임계값이며 검증 상태는 `UNVERIFIED`입니다.** 실측 수익률·기간 외·워킹 포워드 결과로 최적화된 값이 아닙니다. 점수 통과와 기술·신선도·손절·호가·위험·매물대 검증 및 실거래 승인은 별개입니다. 설정은 90~100의 정수만 허용하며 잘못된 값이면 서버 시작을 차단합니다. 기존보다 낮은 기준으로 완화하거나 설정 변경으로 실제 주문을 승인하지 않습니다.
 - 기본 60초 보완 스캔은 관심종목·거래대금 상위 12개·순환 18개와 확정봉 이벤트를 처리합니다. 전체 종목을 매초 재분석하는 시스템이 아닙니다. 화면의 실제 처리 건수와 연결 상태를 확인하세요.
 - 메인에는 검증 완료된 최종 신호만 점수 내림차순 → 최신 확정봉 → 종목명 순으로 표시합니다. **Telegram은 현재 화면의 최종 판단 목록(`/api/results.signals`)에 남아 있는 검증 신호만 전송합니다.** 본문은 종목·방향·배율·포지션 수량(모의) 네 줄입니다. 같은 신호의 실제 모의 진입 원장에서 확인된 값만 사용하며, 엔진의 기본 추천 배율이나 계획 수량으로 채우지 않습니다. 진입 전에는 '미설정·미확인'이 정상입니다. 발송 직전에 최신 호가·기술·진입·매물대 조건을 다시 확인하며, 동일 조건으로 매칭되지 않으면 전송하지 않습니다. 기존 관찰 알림과 뉴스 Telegram 발송은 중지되며, 브라우저 뉴스와 기존 Telegram 설정/발송 이력은 보존합니다.
 
@@ -53,11 +39,17 @@ TP1의 실제 **모의 체결 누적 수량 40%**가 완료된 뒤에만 잔량 
 
 PNL은 모의 체결·명시된 비용 가정이며 실제 거래소 체결·실제 계정 수수료·현재 펀딩 정산과 다릅니다. 기존 원장의 펀딩 미반영 여부는 화면에 표시합니다. 시세 단절·PC 종료 중에는 포지션 평가에 공백이 생깁니다. 실제 수익률로 해석하지 마세요.
 
-## OrangeX 범위
+## BingX·Gate.io 시세 조회 (1단계)
 
-OrangeX는 기본 비활성·`READ_ONLY`이며 공개 진단과 별도 합성 PAPER 엔진을 제공합니다. 실제 시세 PAPER 자동 진입은 OFF이고 LIVE 주문 전송 기능은 활성화하지 않습니다. API 키가 있거나 점수가 높다는 이유로 모드를 전환하지 않습니다.
+`BingX·Gate.io 시세` 메뉴(`#venues`)에서 관심 종목(최대 6개)의 두 거래소 USDT 무기한 선물 **최우선 매수/매도 호가·스프레드·두 거래소 간 가격 차이·Binance 차트가 대비 차이**와 계약 규칙(가격 단위, 수량 단위, 최소 수량, 최소 주문금액, 거래 가능 여부)을 봅니다.
 
-계약 단위, 최소량·증분·명목 통화, 실제 비용, 펀딩, 시세 신선도와 보호 주문·reduce-only·안전한 손절 수정 등 필요한 증거가 없으면 준비 상태는 `NOT_READY`입니다. 실제 Windows 공개 응답·과거 자료·합성 테스트를 구분하며 과거 정상 관측을 현재 거래 가능한 호가로 사용하지 않습니다. 사용법은 `.env.orangex.example`과 OrangeX 단계별 검증 보고서를 참고하세요.
+- 공개 시세 GET만 사용합니다. **API 키·계좌·주문 기능은 없습니다.** `GET /api/venues?symbols=BTCUSDT,ETHUSDT`
+- BingX: `open-api.bingx.com` (`/openApi/swap/v2/quote/contracts`, `/quote/depth`). 공식 제한이 IP당 초당 1회라 요청 간격을 1.1초로 지키고, 화면이 열려 있을 때만 20초마다 갱신합니다. 네트워크 실패 시에만 `open-api.bingx.pro`로 재시도합니다.
+- Gate.io: `api.gateio.ws/api/v4` (`/futures/usdt/contracts`, `/futures/usdt/order_book`). 주문 수량은 **계약 수** 단위이며 1계약 = `quanto_multiplier` 기초자산입니다.
+- 거래 가능 판정: BingX `status=1`·`apiStateOpen`·`apiStateClose`=true, Gate.io `status=trading`·`in_delisting=false`. 15초보다 오래된 호가나 역전된 호가는 오류로 표시합니다.
+- 실제 PC에서 연결 확인: `npm run test:venues` (또는 `npm run test:venues -- SOLUSDT,XRPUSDT`).
+
+다음 단계(별도 승인 후): 모의매매 체결 기준을 BingX·Gate.io 호가로 전환 → 실주문(키 보관·긴급 정지·보호 손절 포함).
 
 ## 환경설정
 
@@ -76,7 +68,6 @@ OrangeX는 기본 비활성·`READ_ONLY`이며 공개 진단과 별도 합성 PA
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 없음 | 기존 비공개 Telegram 설정 |
 | `TELEGRAM_WATCH_MIN_SCORE` / `TELEGRAM_SCORE_WATCH_ENABLED` | 적용 안 함 | 과거 관찰 알림 설정은 데이터에 남아 있어도 Telegram 발송에 사용하지 않음 |
 | `NEWS_TRANSLATION_URL` | 없음 | 선택 LibreTranslate 호환 서비스 |
-| `ORANGEX_ENABLED` / `ORANGEX_MODE` | `false` / `READ_ONLY` | OrangeX 공개 조회 |
 
 폐기된 공급자·TradFi API 키 설정은 기능에서 참조하지 않습니다. 기존 `.env`에 남아 있더라도 이 업데이트가 파일을 삭제·수정하지 않습니다. 키·토큰을 브라우저·로그·Git에 넣지 마세요.
 
@@ -86,11 +77,11 @@ OrangeX는 기본 비활성·`READ_ONLY`이며 공개 진단과 별도 합성 PA
 npm test
 node --check server.mjs
 npm run test:market
-npm run diagnose:orangex:windows
+npm run test:venues
 npm run test:strategy:compare -- --input 과거데이터.json
 ```
 
-`npm test`는 Mock·합성 데이터 기반 회귀 검사입니다. `test:market`은 별도 실제 Binance 공개 GET 진단으로 주문·계좌 API를 사용하지 않습니다. 네트워크 정책·거래소 지역 제한이 있으면 실패할 수 있으며 회귀 통과가 실제 연결 성공을 의미하지 않습니다. OrangeX 진단도 공개 API만 사용하고 기존 PNL은 수정하지 않습니다.
+`npm test`는 Mock·합성 데이터 기반 회귀 검사입니다. `test:market`(Binance)과 `test:venues`(BingX·Gate.io)는 별도 실제 공개 GET 진단으로 주문·계좌 API를 사용하지 않습니다. 네트워크 정책·거래소 지역 제한이 있으면 실패할 수 있으며 회귀 통과가 실제 연결 성공을 의미하지 않습니다. 두 진단 모두 기존 PNL은 수정하지 않습니다.
 
 실제 과거 캔들·aggTrades·호가와 체결 원장에 기반한 새 전략의 성능 개선, 실제 Windows 기능 및 원격 CI 결과는 해당 검증 자료가 있을 때만 통과로 보고합니다. 이전 단계 문서는 과거 개발 이력이며 현재 활성 기능 안내가 아닙니다.
 
@@ -98,4 +89,5 @@ npm run test:strategy:compare -- --input 과거데이터.json
 
 - [Binance 선물 Exchange Information](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Exchange-Information)
 - [Binance 선물 Kline](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data)
-- [OrangeX 공개 API 문서](https://openapi-docs.orangex.com/)
+- [BingX API 문서](https://bingx-api.github.io/docs/) · [BingX 공식 API 스킬 저장소](https://github.com/bingx-api/api-ai-skills)
+- [Gate.io API v4 문서](https://www.gate.com/docs/developers/apiv4/)

@@ -27,5 +27,5 @@ Signal Lab — PC·Android·iPhone 접속 안내
 [기록·모드]
 - Windows 중앙 저장 경로 %LOCALAPPDATA%\SignalLab의 .env·store.json·백업을 유지합니다.
 - 예제 설정 파일을 기존 .env 위에 복사하지 마세요. 비밀 파일을 공유하거나 Git에 올리지 마세요.
-- 실제 거래소 주문은 전송하지 않습니다. OrangeX READ_ONLY, 실제 시세 PAPER 자동 진입 OFF를 유지합니다.
+- 실제 거래소 주문은 전송하지 않습니다. BingX·Gate.io는 공개 시세 조회만 합니다.
 - SIGNAL_FINAL_MIN_SCORE 기본 90점은 제안 기준이며 실전 성능 UNVERIFIED입니다.

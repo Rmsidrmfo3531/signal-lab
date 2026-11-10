@@ -13,4 +13,4 @@ TradFi 시장 수집, 캔들 분석, 신규 신호, 신규 모의 진입 및 관
 Binance 암호화폐 스캐너, 기존 PNL·차트·뉴스·Telegram 설정은 별도로 유지합니다.
 향후 대체 공급자는 상품 대응·단위·신선도·이용 권한을 검증한 뒤 별도 개발해야 합니다.
 기존 %LOCALAPPDATA%\SignalLab\.env 및 store.json을 덮어쓰거나 초기화하지 마세요.
-실제 주문은 전송하지 않으며 OrangeX는 READ_ONLY, 실제 시세 PAPER 자동 진입은 OFF입니다.
+실제 주문은 전송하지 않으며 BingX·Gate.io는 공개 시세 조회만 합니다.

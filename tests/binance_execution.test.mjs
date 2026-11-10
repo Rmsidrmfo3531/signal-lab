@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {binancePerpetualMarkets} from '../markets.mjs';
 import {estimateBinanceExecution} from '../binance_execution.mjs';
-import {roundOrangeXDecimal} from '../orangex_contract_validation.mjs';
+import {roundDecimalToStep} from '../decimal_grid.mjs';
 const NOW=Date.now();
 const market=()=>({symbol:'SOLUSDT',baseAsset:'SOL',quoteAsset:'USDT',marginAsset:'USDT',status:'TRADING',contractType:'PERPETUAL',filters:{
  PRICE_FILTER:{tickSize:'.01'},LOT_SIZE:{stepSize:'.01',minQty:'.01'},MIN_NOTIONAL:{notional:'5'}}});
@@ -28,7 +28,7 @@ test('risk-sized quantity stays on the exact 20-lot grid for steps whose float p
  for(const [stepSize,grid] of [['0.000001','0.00002'],['0.0000005','0.00001'],['0.07','1.4'],['.01','0.2']]){
   const value=input();value.market.filters.LOT_SIZE={stepSize,minQty:stepSize};
   const result=estimateBinanceExecution(value);assert.equal(result.eligible,true,`${stepSize}: ${result.reasons.join()}`);
-  assert.equal(Number(roundOrangeXDecimal(result.quantity,grid,'DOWN')),result.quantity,`${stepSize}: ${result.quantity} is not a multiple of ${grid}`);
+  assert.equal(Number(roundDecimalToStep(result.quantity,grid,'DOWN')),result.quantity,`${stepSize}: ${result.quantity} is not a multiple of ${grid}`);
   assert.ok(result.estimatedStopLossUSD<=6);
  }
 });

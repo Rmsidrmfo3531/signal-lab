@@ -28,7 +28,7 @@ function harness(){
   state:{activeSet:new Set([row.symbol]),rest:'connected',quotes:new Map([[row.symbol,{...marketContext.market,price:marketContext.price,priceAt:now}]]),analyses:new Map([[row.symbol,row]])},
   books:new Map([[row.symbol,marketContext.book]]),storageHealth:{healthy:true},persisted:{seen:{},alerts:[]},
   paper:{store:{open:[],seen:{}},register(value){registrations.push(value);sandbox.paper.store.seen[key(value)]=now}},
-  orangeX:{instruments:['BTC-USDT-PERPETUAL']},orangeXPaper:{observeSignal:value=>observations.push(value)},evaluateSignal,getSignalScorePolicy,finalTelegramMatch,officialMarketLinks,signalKey,
+  evaluateSignal,getSignalScorePolicy,finalTelegramMatch,officialMarketLinks,signalKey,
   telegramMessage:(...args)=>{if(formatFailure)throw Error('offline-test-token must never be logged');return telegramMessage(...args)},
   save:candidate=>{if(saveFailure)throw Error('synthetic save failure');sandbox.persisted=structuredClone(candidate)},
   send:(type,value)=>events.push({type,value}),

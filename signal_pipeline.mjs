@@ -44,6 +44,6 @@ export function evaluateBinanceSignal(row,{market,book,verified=false,venueConne
  if(!timing.actionable)entryReasons.push(timing.label);
  const ready=Boolean(venue&&entryReasons.length===0),stage=!pattern?'noPattern':!technical?'quality':!venue?'venue':!ready?'entry':'ready';
  return {pattern,scorePassed,validationPassed,technical,venue,ready,stage,execution,timing,technicalReasons,entryReasons,
-  tradeApproval:false,orangeXApproval:false,analysisVenue:'BINANCE',reasons:stage==='noPattern'?['확정 패턴 없음']:stage==='quality'?technicalReasons:
+  tradeApproval:false,analysisVenue:'BINANCE',reasons:stage==='noPattern'?['확정 패턴 없음']:stage==='quality'?technicalReasons:
    stage==='venue'?execution.reasons:stage==='entry'?entryReasons:[],checkedAt:now};
 }

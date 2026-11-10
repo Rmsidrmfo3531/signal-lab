@@ -10,25 +10,16 @@ export const MAX_UPDATE_BYTES = 20_000_000;
 const ALLOWED_ROOTS = new Set([
  // The staged copy is self-tested before installation, so every module the server
  // imports and every script a test executes must be listed (tests/update_bundle.test.mjs).
- 'request_guard.mjs','diagnose_scan.mjs','diagnose_scan.bat','scripts/run-node-tests.mjs',
- 'public_read_budget.mjs','indicators.mjs','binance_execution.mjs','volume_profile.mjs','volume_targets.mjs','profile_collector.mjs','telegram_watch.mjs','telegram_final.mjs','orangex_adapter.mjs','orangex_order_safety.mjs','news_translation.mjs','market_commentary.mjs','strategy_validation.mjs','scripts/compare-issue6-strategies.mjs','research/legacy_v58/engine.mjs','research/legacy_v58/quality.mjs',
- 'server.mjs','engine.mjs','quality.mjs','signal_pipeline.mjs','observation.mjs','scan_diagnostics.mjs',
- 'signal_policy.mjs','research/legacy_v58/decision.mjs','markets.mjs','news.mjs','links.mjs','journal.mjs','signal_lifecycle.mjs','orangex.mjs','orangex_comparison.mjs','orangex_listing_domains.mjs',
- 'orangex_paper.mjs','orangex_paper_service.mjs','orangex_paper_signal.mjs','orangex_paper_store.mjs',
- 'orangex_paper_performance.mjs','orangex_paper_replay.mjs','orangex_paper_replay_store.mjs',
- 'orangex_readiness.mjs','orangex_paper_journal.mjs','durable_append_recovery.mjs',
- 'orangex_evidence_review.mjs','orangex_paper_storage_lab.mjs',
- 'orangex_contract_validation.mjs','orangex_cost_validation.mjs','orangex_market_monitor.mjs',
- 'orangex_official_sources.mjs','orangex_funding_observation.mjs',
- 'paper.mjs','paper_health.mjs','mobile_access.mjs','windows_paper_notify.mjs','windows_paper_notify.ps1',
- 'tradfi.mjs','tradfi_signal.mjs','tradfi_feed.mjs','updater.mjs','update-cli.mjs','package.json',
- 'start.sh','persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','start_auto.bat','start_auto_test.bat','enable_auto_update.bat','disable_auto_update.bat','windows-supervisor.mjs','windows-update-source.mjs','backup_data.bat',
- 'migrate_legacy_data.bat','restore_data.bat','open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-orangex-readonly.mjs','scripts/diagnose-orangex-public.mjs','scripts/diagnose-orangex-currencies.mjs',
- 'scripts/orangex-paper-offline.mjs','examples/orangex-paper-scenario.json',
- 'scripts/orangex-paper-replay.mjs','scripts/check-orangex-paper-endurance.mjs','examples/orangex-paper-replay.json',
- 'diagnose_orangex.bat','scripts/diagnose-orangex-windows.mjs','scripts/check-orangex-readiness.mjs',
- 'scripts/check-orangex-storage-performance.mjs','scripts/storage-worker.mjs','scripts/check-orangex-operational-stress.mjs',
- 'scripts/review-orangex-evidence.mjs','scripts/check-orangex-storage-scale.mjs','scripts/diagnose-orangex-continuous.mjs'
+ 'venue_service.mjs','gateio_market.mjs','bingx_market.mjs','venue_market_data.mjs','decimal_grid.mjs','request_guard.mjs','diagnose_scan.mjs','diagnose_scan.bat',
+ 'scripts/run-node-tests.mjs','public_read_budget.mjs','indicators.mjs','binance_execution.mjs','volume_profile.mjs','volume_targets.mjs',
+ 'profile_collector.mjs','telegram_watch.mjs','telegram_final.mjs','news_translation.mjs','market_commentary.mjs','strategy_validation.mjs',
+ 'scripts/compare-issue6-strategies.mjs','research/legacy_v58/engine.mjs','research/legacy_v58/quality.mjs','server.mjs','engine.mjs','quality.mjs',
+ 'signal_pipeline.mjs','observation.mjs','scan_diagnostics.mjs','signal_policy.mjs','research/legacy_v58/decision.mjs','markets.mjs','news.mjs',
+ 'links.mjs','journal.mjs','signal_lifecycle.mjs','paper.mjs','paper_health.mjs','mobile_access.mjs','windows_paper_notify.mjs',
+ 'windows_paper_notify.ps1','tradfi.mjs','tradfi_signal.mjs','tradfi_feed.mjs','updater.mjs','update-cli.mjs','package.json','start.sh',
+ 'persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','start_auto.bat','start_auto_test.bat','enable_auto_update.bat',
+ 'disable_auto_update.bat','windows-supervisor.mjs','windows-update-source.mjs','backup_data.bat','migrate_legacy_data.bat','restore_data.bat',
+ 'open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-venue-market-data.mjs'
 ]);
 const VERSION=/^\d+\.\d+\.\d+$/;
 export function compareVersions(a,b){
