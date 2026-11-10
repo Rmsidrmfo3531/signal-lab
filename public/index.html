@@ -55,7 +55,7 @@
             <div><span>기술 조건 통과</span><strong id="diagTechnicalPassed">—</strong></div>
             <div><span>기술 조건 미달</span><strong id="diagQuality">—</strong></div>
            
-            <div><span>Binance 호가·위험 검증 통과</span><strong id="diagVenuePassed">—</strong></div>
+            <div><span>거래소 호가·위험 검증 통과</span><strong id="diagVenuePassed">—</strong></div>
             <div><span>거래소·호가 검증 보류</span><strong id="diagVenue">—</strong></div>
             <div><span>진입 시점 재확인</span><strong id="diagEntry">—</strong></div>
             <div><span>최종 신호</span><strong id="diagReady">—</strong></div>
@@ -67,7 +67,7 @@
       <section id="paper" class="panel paper-panel" data-workspace-route="paper">
         <div class="panel-header"><div><p class="panel-eyebrow">AUTOMATED FORWARD PAPER TEST / NO REAL ORDERS</p><h3>시그널 자동 모의매매 · PNL 검증</h3></div><div class="scan-toolbar"><span class="paper-live-indicator" id="paperLiveIndicator" aria-live="polite">● 상태 확인 중</span><button type="button" class="outline-btn" id="paperRefresh">↻ 기록 갱신</button><a class="outline-btn" href="/api/paper/export" download>CSV 내려받기 ↧</a></div></div>
         <p class="section-note"><strong>가상 주문 전용 — 거래소에 주문하지 않습니다.</strong> 스캐너에서 진입 검증을 통과한 신규 신호를 감지하면, 그 뒤에 수신한 첫 최신 가격에서 진입을 시뮬레이션합니다. 1차 40% / 2차 35% / 3차 25% 자동 분할 익절, 손절 및 TP1 목표 물량의 모의 체결 완료 이후 본절 손절 이동을 설정에 따라 적용합니다. 수동 입력은 필요 없습니다.</p>
-        <p class="section-note"><strong>실제 거래소 체결 손익이 아닙니다.</strong> 크립토는 Binance 시세로 모의 계산합니다. TradFi 신규 분석·진입·가격 추적은 대체 공급자가 없어 비활성화되어 있으며 기존 PNL·거래 기록은 보존합니다. 왕복 수수료·모의 스프레드·슬리피지를 공제하지만 펀딩·청산 및 시세 누락 사이의 경로는 재현할 수 없습니다. 가상 기록은 새 버전을 실행한 후의 신호부터 쌓입니다.</p>
+        <p class="section-note"><strong>실제 거래소 체결 손익이 아닙니다.</strong> 신호는 Binance 차트로 분석하고, 모의 진입·청산은 BingX·Gate.io 중 진입가가 더 유리한 거래소의 호가로 계산합니다. 이전 기록은 Binance 시세로 계속 추적합니다. TradFi 신규 분석·진입·가격 추적은 대체 공급자가 없어 비활성화되어 있으며 기존 PNL·거래 기록은 보존합니다. 왕복 수수료·모의 스프레드·슬리피지를 공제하지만 펀딩·청산 및 시세 누락 사이의 경로는 재현할 수 없습니다. 가상 기록은 새 버전을 실행한 후의 신호부터 쌓입니다.</p>
         <div class="paper-management-settings"><label><input id="paperBreakevenToggle" type="checkbox" disabled> TP1 40% 체결 완료 후 본절 손절 이동</label><label class="paper-mode-label" for="paperBreakevenMode">본절 기준<select id="paperBreakevenMode" disabled><option value="ENTRY_FILL" selected>평균 진입체결가</option><option value="COST_COVERED">비용 보전 가정 (수수료·슬리피지)</option></select></label><span id="paperBreakevenStatus" role="status">기본 ON·평균 체결가 제안 · 서버 설정 확인 중</span><small>신규 포지션에만 적용합니다. 비용 보전은 수수료·예상 슬리피지 모형이며 실제 무손실을 보장하지 않습니다. 가격 도달·주문 접수·부분 체결로 이동하지 않으며, 기존 미청산 포지션의 TP/SL은 바꾸지 않습니다. 실거래 주문은 OFF입니다.</small></div>
         <div class="paper-monitor" aria-live="polite">
           <div class="paper-monitor-head"><strong id="paperMonitorTitle">● 모의매매 엔진 상태 확인 중</strong><small id="paperMonitorChecked">—</small></div>
@@ -140,21 +140,21 @@
 
       <section class="panel execution-panel" id="execution" data-workspace-route="overview">
         <div class="panel-header execution-head">
-          <div><p class="panel-eyebrow">EXECUTION GUARD · READ ONLY</p><h3>Binance 호가·위험 검증</h3></div>
+          <div><p class="panel-eyebrow">EXECUTION GUARD · READ ONLY</p><h3>거래소(BingX·Gate.io) 호가·위험 검증</h3></div>
           <div class="execution-controls">
             <label>방향 <select id="executionSide" aria-label="방향"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select></label>
             <label>계산 명목 상한 <select id="executionSize" aria-label="포지션 명목금액"><option value="250">$250</option><option value="500">$500</option><option value="1000" selected>$1,000</option><option value="1500">$1,500</option></select></label>
             <button class="outline-btn" id="executionRefresh">↻ 호가 검증</button>
           </div>
         </div>
-        <div class="execution-banner" id="executionVerdict" aria-live="polite">Binance 공개 호가 조회 대기</div>
+        <div class="execution-banner" id="executionVerdict" aria-live="polite">거래소 공개 호가 조회 대기</div>
         <div class="execution-metrics">
           <div><span>Binance Bid / Ask</span><strong id="execBidAsk">—</strong><small id="execQuoteTime">갱신 시각 확인 중</small></div>
-          <div><span>Binance 호가 스프레드</span><strong id="execSpread">—</strong><small id="execCost">모의 위험 계산 대기</small></div>
+          <div><span>거래소 호가 스프레드</span><strong id="execSpread">—</strong><small id="execCost">모의 위험 계산 대기</small></div>
           <div><span>호가 잔량 기준 슬리피지</span><strong id="execVenue">—</strong><small id="execMark">진입 수량 확인 대기</small></div>
           <div><span>비용 가정과 실제 검증</span><strong id="execFunding">—</strong><small id="execFundingTime">실제 계정 요율·펀딩 정산 미검증</small></div>
         </div>
-        <p class="execution-note">Binance 공개 호가 잔량으로 모의 수량·스프레드·슬리피지를 검사합니다. <b>예상 체결과 비용 가정은 실제 체결·계정 수수료·펀딩 정산이 아닙니다.</b> 계산 명목 상한을 높여도 손실 한도나 최소 주문 검증을 우회하지 않습니다. 실제 주문은 OFF입니다.</p>
+        <p class="execution-note">BingX·Gate.io 공개 호가 잔량과 계약 규칙으로 모의 수량·스프레드·슬리피지를 검사합니다. <b>예상 체결과 비용 가정은 실제 체결·계정 수수료·펀딩 정산이 아닙니다.</b> 계산 명목 상한을 높여도 손실 한도나 최소 주문 검증을 우회하지 않습니다. 실제 주문은 OFF입니다.</p>
         <div class="execution-footer"><span id="execLimits">보수적 필터 검사 중</span><a href="https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book" target="_blank" rel="noopener noreferrer" class="trade-link neutral">공식 API 문서 ↗</a></div>
       </section>
       <section id="matched" class="panel matched-panel" data-workspace-route="overview" style="display:none" aria-hidden="true">

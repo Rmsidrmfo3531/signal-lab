@@ -8,7 +8,7 @@
 function targetPlanReasons(row){
  const plan=row?.targetPlan;
  if(!plan||typeof plan!=='object')
-  return [row?.binanceExecution?.eligible===false?'EXECUTION_ESTIMATE_NOT_ELIGIBLE':'TARGET_PLAN_NOT_EVALUATED'];
+  return [(row?.venueExecution??row?.binanceExecution)?.eligible===false?'EXECUTION_ESTIMATE_NOT_ELIGIBLE':'TARGET_PLAN_NOT_EVALUATED'];
  const strings=list=>Array.isArray(list)?list.filter(x=>typeof x==='string'&&x):[];
  const profile=strings(plan.profileReasons),planning=strings(plan.reasons);
  // VOLUME_PROFILE_NOT_AVAILABLE only wraps the collector's own reason.

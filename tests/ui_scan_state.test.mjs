@@ -99,7 +99,7 @@ test('diagnostics render four separate pass stages without substituting failure 
   assert.equal($(id).textContent,count+'종');
   assert.match(html,new RegExp(`id="${id}"`));
  }
- assert.match(html,/단일 100점/);assert.match(html,/Binance 호가·위험 검증 통과/);assert.doesNotMatch(html,/필수 8개 조건|추가 10점/);
+ assert.match(html,/단일 100점/);assert.match(html,/거래소 호가·위험 검증 통과/);assert.doesNotMatch(html,/필수 8개 조건|추가 10점/);
 });
 
 test('shared entry allowance retains price, risk and ATR guards for LONG and SHORT',()=>{

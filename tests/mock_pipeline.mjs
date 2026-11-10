@@ -39,6 +39,22 @@ globalThis.fetch=async(input,options={})=>{
    return json(interval==='1h'?series.h1:interval==='4h'?series.h4:[]);
   }
  }
+// Execution venues (BingX / Gate.io) quote the same scenario price as the Binance chart.
+ // While a test pauses for a pending entry, the venue books are stale so no fill can occur.
+ const venueBook=symbol=>{const p=price(symbol),cfg=control(),T=waitingForEntry()?Date.now()-60000:Date.now();
+  return cfg.invalidQuote?{T,bids:[],asks:[]}:{T,bids:[[(p-.01).toFixed(2),'1000']],asks:[[(p+.01).toFixed(2),'1000']]}};
+ const venueListed=()=>listedSymbols().filter(symbol=>!control().venueUnlisted?.includes(symbol));
+ if(url.hostname==='open-api.bingx.com'){
+  if(url.pathname==='/openApi/swap/v2/quote/contracts')return json({code:0,msg:'',data:venueListed().map(symbol=>({symbol:symbol.slice(0,-4)+'-USDT',currency:'USDT',asset:symbol.slice(0,-4),
+   pricePrecision:2,quantityPrecision:2,tradeMinQuantity:0.01,tradeMinUSDT:5,status:1,apiStateOpen:'true',apiStateClose:'true'}))});
+  if(url.pathname==='/openApi/swap/v2/quote/depth')return json({code:0,msg:'',data:venueBook(url.searchParams.get('symbol').replace('-',''))});
+ }
+ if(url.hostname==='api.gateio.ws'){
+  if(url.pathname==='/api/v4/futures/usdt/contracts')return json(venueListed().map(symbol=>({name:symbol.slice(0,-4)+'_USDT',type:'direct',quanto_multiplier:'0.01',
+   order_price_round:'0.01',order_size_min:1,status:'trading',in_delisting:false})));
+  if(url.pathname==='/api/v4/futures/usdt/order_book'){const b=venueBook(url.searchParams.get('contract').replace('_',''));
+   return json({current:b.T/1000,asks:b.asks.map(([p,s])=>({p,s:Number(s)*100})),bids:b.bids.map(([p,s])=>({p,s:Number(s)*100}))})}
+ }
  if(['decrypt.co','www.coindesk.com','cointelegraph.com'].includes(url.hostname))return new Response('<rss><channel></channel></rss>',{headers:{'content-type':'application/xml'}});
  throw Error('Test transport blocked external destination: '+url.hostname);
 };
