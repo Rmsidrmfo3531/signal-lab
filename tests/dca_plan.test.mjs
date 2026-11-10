@@ -58,3 +58,20 @@ test('paper: adds fill on each zone before TP1, average entry and target sizes f
  const bad={...row,patternConfirmedAt:now-500,symbol:'XUSDT',dca:{...plan,stop:1}};assert.equal(engine.register(bad,{quoteEligible:true}),false);
  tick(plan.stop-.01);assert.equal(engine.store.closed.at(-1).closeReason,'STOP');assert.ok(engine.store.closed.at(-1).realizedPnLUSD<0);
 });
+
+test('after TP1 the stop moves to the average entry (break-even), also after zone adds',()=>{
+ let now=Date.parse('2026-11-11T01:00:00Z');const engine=new PaperEngine({},{now:()=>now});
+ const plan=planZoneDca(base),q=plan.unitQty,targets=[99,100.5,102];
+ const targetPlan={ok:true,code:'SCALP_PLAN_READY',targets,quantity:q,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',minNotional:1,minQuantity:.001,quantityStep:.001,tickSize:.01,
+  parts:targets.map((price,i)=>({price,fraction:[.4,.35,.25][i],quantity:Number((q*[.4,.35,.25][i]).toFixed(6))})),
+  costAssumptions:{assumption:'SYNTHETIC_TEST',makerRate:.0002,takerRate:.0006,slippageBps:0,spreadBps:0,fundingRate:0},profileEvidence:{dataSource:'SYNTHETIC_TEST'}};
+ const row={symbol:'SOLUSDT',direction:'LONG',pattern:'급락 후 반등 롱 (5분)',entry:98.5,stop:plan.stop,patternConfirmedAt:now-1000,managementVersion:'VOLUME_PROFILE_V1',targetPlan,
+  dca:{...plan,adds:plan.adds.filter(a=>a.price<98.5)},strategy:'SCALP_REVERSAL_5M'};
+ assert.equal(engine.register(row,{quoteEligible:true}),true,JSON.stringify(engine.store.skipped.at(-1)));
+ const tick=price=>{now+=1000;engine.onPrice('CRYPTO','SOLUSDT',price,now,{halfSpreadBps:0})};
+ tick(98.5);tick(96.2);const p=()=>engine.store.open[0];assert.equal(p().dca.filledAdds,2,'zone adds at 97.8 and 96.3');
+ const average=p().entryFill;assert.ok(average<98.5);
+ tick(99);assert.equal(p().exitedPct,40);assert.equal(p().stop,average,'stop moved to the average entry');assert.equal(p().breakevenMoved,true);
+ tick(Number((average-.01).toFixed(2)));const closed=engine.store.closed.at(-1);assert.equal(closed.closeReason,'STOP','the rest closes at the break-even stop');
+ assert.equal(closed.dca.filledAdds,2,'no more adds after TP1');assert.ok(closed.realizedPnLUSD>0,'TP1 profit kept: the rest exits at break-even');
+});
