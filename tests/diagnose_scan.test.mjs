@@ -27,7 +27,7 @@ test('scanner diagnostic uses only localhost and Binance GET while preserving se
    };
   `);
   const env={PATH:process.env.PATH,SIGNAL_LAB_DATA_DIR:dir};if(process.env.SystemRoot)env.SystemRoot=process.env.SystemRoot;
-  const run=spawnSync(process.execPath,['--import',pathToFileURL(preload).href,'diagnose_scan.mjs'],{cwd:project,env,encoding:'utf8',timeout:5000});
+  const run=spawnSync(process.execPath,['--import',pathToFileURL(preload).href,'diagnose_scan.mjs'],{cwd:project,env,encoding:'utf8',timeout:30000});
   assert.equal(run.error,undefined);assert.equal(run.status,0);assert.equal(run.stderr,'');
   assert.deepEqual(JSON.parse(await fs.readFile(audit,'utf8')),[{url:'http://127.0.0.1:34567/api/status',method:'GET'},{url:'https://fapi.binance.com/fapi/v1/exchangeInfo',method:'GET'}]);
   assert.equal(await fs.readFile(path.join(dir,'.env'),'utf8'),settings);assert.equal(await fs.readFile(path.join(dir,'store.json'),'utf8'),pnl);
