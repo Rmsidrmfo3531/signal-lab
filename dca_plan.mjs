@@ -29,10 +29,12 @@ export function planZoneDca({direction,entry,atr,zones=[],balanceUSD,leverage=DC
  if(!(unitPct>0&&unitPct<=100))reasons.push('DCA_UNIT_PCT_INVALID');
  if(!positive(tickSize)||!positive(quantityStep))reasons.push('DCA_GRID_INVALID');
  if(reasons.length)return {ok:false,reasons};
- // One unit: balance x unitPct margin at the leverage, on a 20-lot grid so 40/35/25 splits stay exact.
+ // One unit: balance x unitPct margin at the leverage, on the lot step. Its smallest
+ // take-profit part (25 %) must still be a valid order on its own.
  const unitNotional=balanceUSD*unitPct/100*leverage;
- let unitQty;try{unitQty=Number(roundDecimalToStep(unitNotional/entry,roundDecimalToStep(quantityStep*20.5,quantityStep,'DOWN'),'DOWN'))}catch{unitQty=0}
- if(!positive(unitQty)||unitQty<minQuantity||unitQty*entry<minNotional)return {ok:false,reasons:['DCA_UNIT_BELOW_MINIMUM_ORDER'],unitNotional};
+ let unitQty;try{unitQty=Number(roundDecimalToStep(unitNotional/entry,quantityStep,'DOWN'))}catch{unitQty=0}
+ let smallest=0;try{smallest=Number(roundDecimalToStep(unitQty*.25+quantityStep*1e-6,quantityStep,'DOWN'))}catch{}
+ if(!positive(unitQty)||unitQty<minQuantity||unitQty*entry<minNotional||!(smallest>=Math.max(minQuantity,quantityStep)))return {ok:false,reasons:['DCA_UNIT_BELOW_MINIMUM_ORDER'],unitNotional};
  // Zones against the position, nearest first, at least minSpacing apart (and from the entry).
  const spacing=s.minSpacingAtr*atr,edge=z=>dir===1?z.priceHigh:z.priceLow,far=z=>dir===1?z.priceLow:z.priceHigh;
  const against=zones.filter(z=>positive(z?.priceLow)&&positive(z?.priceHigh)&&dir*(entry-edge(z))>=spacing)
