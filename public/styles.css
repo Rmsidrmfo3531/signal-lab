@@ -453,3 +453,4 @@
 .venues-status{padding:12px 20px;border-block:1px solid #2c4357;background:#102236;color:#c9d8e8;font-size:12px;line-height:1.7;overflow-wrap:anywhere}.venues-status.warn{background:#362a21;color:#f1c18d;border-color:#71553b}
 .venues-table{width:100%;border-collapse:collapse;font-size:12px}.venues-table th,.venues-table td{padding:9px 12px;border-bottom:1px solid #1e3247;text-align:left;white-space:nowrap}.venues-table td small{display:block;color:#97adc5}
 .venues-details{padding:6px 20px 12px}.venues-details summary{cursor:pointer;color:#97adc5;font-size:12px;padding:8px 0}.venues-footnote{font-size:11px}
+.live-control{border-top:1px solid #1e3247;margin-top:8px}.live-actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px 20px}.live-kill{border-color:#a3403a;color:#ffb4ab}
