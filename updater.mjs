@@ -10,7 +10,7 @@ export const MAX_UPDATE_BYTES = 20_000_000;
 const ALLOWED_ROOTS = new Set([
  // The staged copy is self-tested before installation, so every module the server
  // imports and every script a test executes must be listed (tests/update_bundle.test.mjs).
- 'live_clients.mjs','live_orders.mjs','live_executor.mjs','scalp_reversal.mjs','dca_plan.mjs','venue_execution.mjs','venue_service.mjs','gateio_market.mjs','bingx_market.mjs','venue_market_data.mjs','decimal_grid.mjs','request_guard.mjs','diagnose_scan.mjs','diagnose_scan.bat',
+ 'live_clients.mjs','live_orders.mjs','live_executor.mjs','scalp_reversal.mjs','dca_plan.mjs','backtest.mjs','venue_execution.mjs','venue_service.mjs','gateio_market.mjs','bingx_market.mjs','venue_market_data.mjs','decimal_grid.mjs','request_guard.mjs','diagnose_scan.mjs','diagnose_scan.bat',
  'scripts/run-node-tests.mjs','public_read_budget.mjs','indicators.mjs','binance_execution.mjs','volume_profile.mjs','volume_targets.mjs',
  'profile_collector.mjs','telegram_watch.mjs','telegram_final.mjs','news_translation.mjs','market_commentary.mjs','strategy_validation.mjs',
  'scripts/compare-issue6-strategies.mjs','research/legacy_v58/engine.mjs','research/legacy_v58/quality.mjs','server.mjs','engine.mjs','quality.mjs',
@@ -19,7 +19,7 @@ const ALLOWED_ROOTS = new Set([
  'windows_paper_notify.ps1','tradfi.mjs','tradfi_signal.mjs','tradfi_feed.mjs','updater.mjs','update-cli.mjs','package.json','start.sh',
  'persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','start_auto.bat','start_auto_test.bat','enable_auto_update.bat',
  'disable_auto_update.bat','windows-supervisor.mjs','windows-update-source.mjs','backup_data.bat','migrate_legacy_data.bat','restore_data.bat',
- 'open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-venue-market-data.mjs'
+ 'open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-venue-market-data.mjs','scripts/backtest.mjs','backtest.bat'
 ]);
 const VERSION=/^\d+\.\d+\.\d+$/;
 export function compareVersions(a,b){

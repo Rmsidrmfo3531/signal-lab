@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {planZoneDca,crossLiquidationPrice,DCA_UNITS} from '../dca_plan.mjs';
 import {PaperEngine} from '../paper.mjs';
+import {roundDecimalToStep} from '../decimal_grid.mjs';
+// 40/35 % rounded down to the 0.001 lot, the last part takes the rest (as buildScalpPlan does).
+const split=q=>{const a=Number(roundDecimalToStep(q*.4,.001,'DOWN')),b=Number(roundDecimalToStep(q*.35,.001,'DOWN'));return [a,b,Number((q-a-b).toFixed(6))]};
 
 const zone=(lo,hi,v=100)=>({priceLow:lo,priceHigh:hi,peakVolume:v});
 const zonesBelow=[zone(97.5,97.8),zone(96,96.3),zone(94,94.4),zone(91,91.5),zone(88,88.4),zone(85,85.5),zone(82,82.3),zone(79,79.4),zone(76,76.5),zone(72,72.5),zone(101,101.5)];
@@ -10,7 +13,7 @@ const base={direction:'LONG',entry:100,atr:.4,zones:zonesBelow,balanceUSD:1000,l
 test('units double after the first add and the plan uses volume zones against the position, nearest first',()=>{
  assert.deepEqual(DCA_UNITS,[1,1,2,4,8,16,32,64,128,256]);
  const p=planZoneDca(base);assert.equal(p.ok,true,JSON.stringify(p));
- assert.equal(p.unitQty,.18,'0.19% of $1000 = $1.9 margin x10 = $19 -> 0.19 -> 0.18 on the 0.02 grid');
+ assert.equal(p.unitQty,.19,'0.19% of $1000 = $1.9 margin x10 = $19 -> 0.19 at price 100');
  assert.deepEqual(p.adds.map(a=>a.price).slice(0,3),[97.8,96.3,94.4],'zone tops, nearest first, the zone above entry ignored');
  assert.deepEqual(p.adds.map(a=>a.units),DCA_UNITS.slice(1,1+p.adds.length));
  const last=p.adds.at(-1);assert.ok(p.stop<last.zone.priceLow,'stop beyond the last zone used');
@@ -45,7 +48,7 @@ test('paper: adds fill on each zone before TP1, average entry and target sizes f
  let now=Date.parse('2026-11-11T00:00:00Z');const engine=new PaperEngine({},{now:()=>now});
  const plan=planZoneDca(base),q=plan.unitQty,targets=[103,104,105];
  const targetPlan={ok:true,code:'SCALP_PLAN_READY',targets,quantity:q,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',minNotional:1,minQuantity:.001,quantityStep:.001,tickSize:.01,
-  parts:targets.map((price,i)=>({price,fraction:[.4,.35,.25][i],quantity:Number((q*[.4,.35,.25][i]).toFixed(6))})),
+  parts:targets.map((price,i)=>({price,fraction:[.4,.35,.25][i],quantity:split(q)[i]})),
   costAssumptions:{assumption:'SYNTHETIC_TEST',makerRate:.0002,takerRate:.0006,slippageBps:0,spreadBps:0,fundingRate:0},profileEvidence:{dataSource:'SYNTHETIC_TEST'}};
  const row={symbol:'SOLUSDT',direction:'LONG',pattern:'급락 후 반등 롱 (5분)',entry:100,stop:plan.stop,patternConfirmedAt:now-1000,managementVersion:'VOLUME_PROFILE_V1',targetPlan,dca:plan,strategy:'SCALP_REVERSAL_5M'};
  assert.equal(engine.register(row,{quoteEligible:true}),true,JSON.stringify(engine.store.skipped.at(-1)));
@@ -63,7 +66,7 @@ test('after TP1 the stop moves to the average entry (break-even), also after zon
  let now=Date.parse('2026-11-11T01:00:00Z');const engine=new PaperEngine({},{now:()=>now});
  const plan=planZoneDca(base),q=plan.unitQty,targets=[99,100.5,102];
  const targetPlan={ok:true,code:'SCALP_PLAN_READY',targets,quantity:q,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',minNotional:1,minQuantity:.001,quantityStep:.001,tickSize:.01,
-  parts:targets.map((price,i)=>({price,fraction:[.4,.35,.25][i],quantity:Number((q*[.4,.35,.25][i]).toFixed(6))})),
+  parts:targets.map((price,i)=>({price,fraction:[.4,.35,.25][i],quantity:split(q)[i]})),
   costAssumptions:{assumption:'SYNTHETIC_TEST',makerRate:.0002,takerRate:.0006,slippageBps:0,spreadBps:0,fundingRate:0},profileEvidence:{dataSource:'SYNTHETIC_TEST'}};
  const row={symbol:'SOLUSDT',direction:'LONG',pattern:'급락 후 반등 롱 (5분)',entry:98.5,stop:plan.stop,patternConfirmedAt:now-1000,managementVersion:'VOLUME_PROFILE_V1',targetPlan,
   dca:{...plan,adds:plan.adds.filter(a=>a.price<98.5)},strategy:'SCALP_REVERSAL_5M'};
@@ -74,4 +77,10 @@ test('after TP1 the stop moves to the average entry (break-even), also after zon
  tick(99);assert.equal(p().exitedPct,40);assert.equal(p().stop,average,'stop moved to the average entry');assert.equal(p().breakevenMoved,true);
  tick(Number((average-.01).toFixed(2)));const closed=engine.store.closed.at(-1);assert.equal(closed.closeReason,'STOP','the rest closes at the break-even stop');
  assert.equal(closed.dca.filledAdds,2,'no more adds after TP1');assert.ok(closed.realizedPnLUSD>0,'TP1 profit kept: the rest exits at break-even');
+});
+
+test('unit size follows the lot step; a unit whose 25 % part is below the exchange minimum is refused',()=>{
+ assert.equal(planZoneDca({...base,quantityStep:.01,minQuantity:.01}).unitQty,.19,'no 20-lot rounding: 0.19 stays 0.19');
+ assert.deepEqual(planZoneDca({...base,quantityStep:1,minQuantity:1}).reasons,['DCA_UNIT_BELOW_MINIMUM_ORDER'],'a 1-coin lot cannot hold a $19 unit');
+ assert.deepEqual(planZoneDca({...base,quantityStep:.1,minQuantity:.1}).reasons,['DCA_UNIT_BELOW_MINIMUM_ORDER'],'0.1 lot: the 25 % part would be 0');
 });

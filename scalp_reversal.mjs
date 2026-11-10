@@ -115,8 +115,10 @@ export function buildScalpPlan({signal,estimate,costs,minNetRR=SCALP_DEFAULTS.mi
  try{targets=signal.targets.map(p=>Number(roundDecimalToStep(p,tick,dir===1?'DOWN':'UP')))}catch{return {ok:false,reasons:['TARGET_GRID_INVALID']}}
  if(targets.some((p,i)=>dir*(p-entry)<=0||i>0&&dir*(p-targets[i-1])<=0))reasons.push('TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY');
  let parts;
- try{parts=[.4,.35,.25].map(f=>Number(roundDecimalToStep(quantity*f*(1+1e-9),step,'DOWN')))}catch{return {ok:false,reasons:['QUANTITY_GRID_INVALID']}}
+ // 40 % and 35 % round down to the lot step; the last part takes the remainder.
+ try{parts=[.4,.35].map(f=>Number(roundDecimalToStep(quantity*f*(1+1e-9),step,'DOWN')));parts.push(Number(roundDecimalToStep(quantity-parts[0]-parts[1]+step*1e-6,step,'DOWN')))}catch{return {ok:false,reasons:['QUANTITY_GRID_INVALID']}}
  if(Math.abs(parts.reduce((a,b)=>a+b,0)-quantity)>step/2)reasons.push('QUANTITY_SPLIT_INVALID');
+ if(parts.some(p=>!(p>0)||p<(estimate.minQuantity||0)))reasons.push('QUANTITY_SPLIT_BELOW_MINIMUM');
  const roundTrip=entry*(2*costs.takerRate+2*costs.slippageBps/10000+(costs.fundingRate||0)),risk=Math.abs(entry-signal.stop);
  const netRR=(dir*(targets[0]-entry)-roundTrip)/(risk+roundTrip);
  if(!(netRR>=minNetRR))reasons.push('TP1_NET_RR_BELOW_MINIMUM');

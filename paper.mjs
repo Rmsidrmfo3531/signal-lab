@@ -123,7 +123,9 @@ export class PaperEngine {
   const targets=(profile?plan.targets:Array.isArray(signal.targets)&&signal.targets.length===3?signal.targets:[2,3,4].map(r=>entry+(direction==='LONG'?1:-1)*Math.abs(entry-stop)*r)).map(num);
   const plannedQuantity=profile?(validPrice(plan.quantity)?plan.quantity:plan.parts.every(part=>validPrice(part?.quantity))?plan.parts.reduce((sum,part)=>sum+part.quantity,0):null):null;
   if(profile&&(!validPrice(plannedQuantity)||plan.quantityUnit!=='BASE_ASSET'||plan.notionalCurrency!=='USDT'||!Number.isFinite(plan.minNotional)||plan.minNotional<0||
-   plan.parts.some((part,i)=>!validPrice(part.quantity)||Math.abs(part.quantity-plannedQuantity*[.4,.35,.25][i])>Math.max(1e-12,plannedQuantity*1e-9))))
+   // 40/35/25 may round down to the lot step (small scale-in units); the parts must still add up to the plan.
+   Math.abs(plan.parts.reduce((sum,part)=>sum+(Number(part?.quantity)||0),0)-plannedQuantity)>Math.max(1e-12,plannedQuantity*1e-9)||
+   plan.parts.some((part,i)=>!validPrice(part.quantity)||Math.abs(part.quantity-plannedQuantity*[.4,.35,.25][i])>Math.max(1e-12,plannedQuantity*1e-9,validPrice(plan.quantityStep)?plan.quantityStep*(1+1e-9):0))))
    return this.reject(key,'TP_QUANTITY_UNVERIFIED',{remember:false});
   if(profile&&(!validPrice(plan.quantityStep)||!validPrice(plan.minQuantity)||!validPrice(plan.tickSize)||
    !onGrid(plannedQuantity,plan.quantityStep)||plannedQuantity<plan.minQuantity||
