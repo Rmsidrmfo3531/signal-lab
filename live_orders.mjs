@@ -86,7 +86,9 @@ export function preflight({config,armed,killSwitch,credentials,row,records,now=D
  if(active.some(r=>r.symbol===row?.symbol))reasons.push('SYMBOL_ALREADY_ACTIVE');
  if(!qty)reasons.push('QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK');
  // Fractional Gate.io contract sizes are not yet verified against the venue: no live order.
- if(venue==='GATEIO'&&row?.venueContract?.decimalSizes===true)reasons.push('GATEIO_DECIMAL_SIZE_UNVERIFIED');
+ // Decimal contracts sized in whole contracts (order_size_min 0 fallback) are safe to send.
+ const vc=row?.venueContract;
+ if(venue==='GATEIO'&&vc?.decimalSizes===true&&!(vc.decimalStepFallback===true&&vc.contractStep==='1'))reasons.push('GATEIO_DECIMAL_SIZE_UNVERIFIED');
  const todayRisk=records.filter(r=>r.day===day&&r.status!=='FAILED').reduce((s,r)=>s+(r.plannedRiskUSD||0),0);
  if(qty&&todayRisk+qty.riskUSD>config.dailyMaxRiskUSD+1e-9)reasons.push('DAILY_RISK_LIMIT');
  return {ok:reasons.length===0,reasons,day,todayRiskUSD:todayRisk};

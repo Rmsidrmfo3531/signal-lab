@@ -56,7 +56,13 @@ export function normalizeGateContract(raw){
  // enable_decimal contracts accept fractional contract sizes; their size step is
  // order_size_min (as ccxt does). Integer contracts step by one contract.
  const decimalSizes=raw.enable_decimal===true||raw.enable_decimal==='true';
- const multiplier=text(raw.quanto_multiplier),tickSize=text(raw.order_price_round),minContracts=text(raw.order_size_min);
+ const multiplier=text(raw.quanto_multiplier),tickSize=text(raw.order_price_round);let minContracts=text(raw.order_size_min);
+ // Gate.io reports order_size_min 0 on some decimal contracts (ETH_USDT, Nov 2026).
+ // The fractional step is then unknown, so fall back to whole contracts: one contract
+ // is always a valid size, never below the venue minimum.
+ const decimalStep=decimalSizes&&positive(num(minContracts));
+ const minFallback=decimalSizes&&!decimalStep&&num(minContracts)===0;
+ if(minFallback)minContracts='1';
  const reasons=[];
  if(raw.status!==undefined&&raw.status!=='trading')reasons.push('VENUE_STATUS_INACTIVE');
  if(raw.in_delisting===true)reasons.push('VENUE_DELISTING');
@@ -67,8 +73,8 @@ export function normalizeGateContract(raw){
  try{if(!reasons.includes('VENUE_PRECISION_INVALID')&&positive(num(minContracts)))minQuantityBase=multiplyDecimal(minContracts,multiplier)}catch{reasons.push('VENUE_PRECISION_INVALID')}
  return {venue:'GATEIO',symbol,venueSymbol:raw.name,baseAsset:symbol.slice(0,-4),quoteAsset:'USDT',
   tickSize:positive(num(tickSize))?tickSize:null,quantityUnit:'CONTRACT',decimalSizes,
-  contractStep:decimalSizes&&positive(num(minContracts))?minContracts:'1',
-  quantityStep:positive(num(multiplier))?(()=>{try{return decimalSizes&&positive(num(minContracts))?multiplyDecimal(minContracts,multiplier):multiplier}catch{return null}})():null,
+  contractStep:decimalStep?minContracts:'1',decimalStepFallback:minFallback,
+  quantityStep:positive(num(multiplier))?(()=>{try{return decimalStep?multiplyDecimal(minContracts,multiplier):multiplier}catch{return null}})():null,
   contractSizeBase:positive(num(multiplier))?multiplier:null,minContracts:positive(num(minContracts))?num(minContracts):null,minQuantityBase,
   minNotionalUSDT:null,markPrice:positive(num(raw.mark_price))?num(raw.mark_price):null,tradable:reasons.length===0,reasons};
 }

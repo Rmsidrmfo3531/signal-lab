@@ -312,7 +312,7 @@ async function checkSymbolInternal(symbol, force=false){
     const contract=venueEntry(chosen.venue,symbol).contract;
     out.executionVenue=chosen.venue;out.venueSymbol=contract.venueSymbol;
     out.venueContract={tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
-     decimalSizes:contract.decimalSizes===true,contractStep:contract.contractStep??null};
+     decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null};
     out.rawStop=out.stop;out.stop=chosen.stop;
    }
    if(estimate.eligible&&Number.isFinite(chartTick)&&chartTick>0){
