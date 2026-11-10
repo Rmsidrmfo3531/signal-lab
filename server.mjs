@@ -33,6 +33,7 @@ import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,par
 import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS} from './scalp_reversal.mjs';
+import {planZoneDca,DCA_DEFAULTS} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
 
@@ -67,6 +68,12 @@ const CONFIG={
  scalpMode:String(process.env.SCALP_MODE||'ON').toUpperCase()!=='OFF',
  scalpMinMovePct:Math.max(1,Math.min(20,Number(process.env.SCALP_MIN_MOVE_PCT)||SCALP_DEFAULTS.minMovePct)),
  scalpIntervalMs:60000,scalpMaxChecks:6,
+ // Zone scale-in for scalp paper trades: 1,1,2,4,... units on volume zones, cross margin.
+ dcaMode:String(process.env.DCA_MODE||'ON').toUpperCase()!=='OFF',
+ paperBalanceUSD:Math.max(10,Math.min(10000000,Number(process.env.PAPER_BALANCE_USD)||1000)),
+ dcaLeverage:Math.max(10,Math.min(20,Number(process.env.DCA_LEVERAGE)||DCA_DEFAULTS.leverage)),
+ dcaUnitPct:Math.max(.01,Math.min(10,Number(process.env.DCA_UNIT_PCT)||DCA_DEFAULTS.unitPct)),
+ dcaMaxLossPct:Math.max(1,Math.min(95,Number(process.env.DCA_MAX_LOSS_PCT)||DCA_DEFAULTS.maxLossPct)),
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  limits:{maxSpreadBps:20}
@@ -495,7 +502,7 @@ function cryptoEntryAllowed(symbol,now=Date.now()){
 }
 // ---- 5m reversal scalp mode (paper only) ----
 const moveTracker=new MoveTracker();
-const scalpState={enabled:CONFIG.scalpMode,mode:'PAPER_ONLY',minMovePct:CONFIG.scalpMinMovePct,lastRunAt:0,lastCandidates:[],checks:0,signals:[],recentRejects:[],error:''};
+const scalpState={enabled:CONFIG.scalpMode,mode:'PAPER_ONLY',minMovePct:CONFIG.scalpMinMovePct,dca:{enabled:CONFIG.dcaMode,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,maxLossPct:CONFIG.dcaMaxLossPct,paperBalanceUSD:CONFIG.paperBalanceUSD,marginMode:'CROSS'},lastRunAt:0,lastCandidates:[],checks:0,signals:[],recentRejects:[],error:''};
 const scalpChecked=new Map(); // symbol -> last evaluated candle close time
 let scalpActive=false;
 async function runScalpCheck(now=Date.now()){
@@ -518,16 +525,31 @@ async function runScalpCheck(now=Date.now()){
    const chosen=selection.chosen;
    if(!chosen){reject(['EXECUTION_VENUE_UNAVAILABLE',...selection.candidates.flatMap(c=>c.reasons).slice(0,4)]);continue}
    const contract=venueEntry(chosen.venue,symbol).contract,costs=venueCosts(contract,chosen.estimate.spreadBps);
-   const plan=buildScalpPlan({signal:{...det,stop:chosen.stop},estimate:chosen.estimate,costs});
-   if(!plan.ok){reject(plan.reasons);continue}
-   const row={symbol,direction:det.direction,pattern:det.pattern,entry:chosen.estimate.entryBasis,stop:chosen.stop,atr:det.atr,patternConfirmedAt:det.barAt,
+   // Signal quality is judged with the reversal stop; with scale-in the stop moves to the zones.
+   const quality=buildScalpPlan({signal:{...det,stop:chosen.stop},estimate:chosen.estimate,costs});
+   if(!quality.ok){reject(quality.reasons);continue}
+   let plan=quality,dca=null,stop=chosen.stop;
+   if(CONFIG.dcaMode){
+    const chartTick=Number(state.quotes.get(symbol)?.filters?.PRICE_FILTER?.tickSize);
+    const profile=Number.isFinite(chartTick)&&chartTick>0?await profiles.get(symbol,{tickSize:chartTick,eligible:true}):null;
+    if(!profile?.ok){reject(['DCA_VOLUME_PROFILE_UNAVAILABLE',...(profile?.reasons??[]).slice(0,3)]);continue}
+    const balanceUSD=CONFIG.paperBalanceUSD+paper.store.closed.reduce((sum,x)=>sum+(Number(x.realizedPnLUSD)||0),0);
+    dca=planZoneDca({direction:det.direction,entry:chosen.estimate.entryBasis,atr:det.atr,zones:profile.profile.hvn,balanceUSD,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,
+     tickSize:chosen.estimate.tickSize,quantityStep:chosen.estimate.quantityStep,minQuantity:chosen.estimate.minQuantity,minNotional:chosen.estimate.minNotional,takerRate:costs.takerRate,
+     settings:{maxLossPct:CONFIG.dcaMaxLossPct}});
+    if(!dca.ok){reject(dca.reasons);continue}
+    stop=dca.stop;
+    plan=buildScalpPlan({signal:{...det,stop},estimate:{...chosen.estimate,quantity:dca.unitQty},costs,minNetRR:0});
+    if(!plan.ok){reject(plan.reasons);continue}
+   }
+   const row={symbol,direction:det.direction,pattern:det.pattern,entry:chosen.estimate.entryBasis,stop,atr:det.atr,patternConfirmedAt:det.barAt,...(dca?{dca}:{}),
     managementVersion:'VOLUME_PROFILE_V1',targetPlan:plan,targets:plan.targets,strategy:'SCALP_REVERSAL_5M',
     entryTimeoutMs:SCALP_DEFAULTS.entryTimeoutMs,maxHoldMs:SCALP_DEFAULTS.maxHoldMs,executionVenue:chosen.venue,venueSymbol:contract.venueSymbol,
     venueContract:{tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
      decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null}};
    const accepted=paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
    const item={at:Date.now(),symbol,direction:det.direction,pattern:det.pattern,venue:chosen.venue,entry:row.entry,stop:row.stop,targets:plan.targets,
-    netRR:Number(plan.estimatedNetRR.toFixed(2)),evidence:det.evidence,paperAccepted:accepted};
+    netRR:Number(quality.estimatedNetRR.toFixed(2)),evidence:det.evidence,paperAccepted:accepted,...(dca?{dca:{adds:dca.adds.map(a=>({price:a.price,units:a.units})),stop:dca.stop,maxLossUSD:dca.full.maxLossUSD,maxLossPct:dca.full.maxLossPct,liquidationPrice:dca.full.liquidationPrice,leverage:dca.leverage}}:{})};
    scalpState.signals=[item,...scalpState.signals].slice(0,30);
    if(accepted){send('scalp',item);console.log('[SCALP]',symbol,det.direction,det.evidence.movePct+'%')}
    else reject(['PAPER_REJECTED:'+(paper.store.skipped.at(-1)?.reason||'unknown')]);
