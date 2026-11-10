@@ -142,3 +142,24 @@ test('more than 500 historical closed simulations are never discarded on reload'
  assert.equal(engine.snapshot().netRealizedUSD,650);
  assert.equal(engine.snapshot().closed.length,200,'small UI page only');
 });
+test('store data is flushed to disk before the atomic rename replaces store.json',()=>{
+ // rename() alone is atomic but not durable: after a power cut the new file can be
+ // empty. The temporary file must be fsynced first, then the directory where possible.
+ const sandbox=work(),file=path.join(sandbox,'store.json'),events=[],names=new Map();
+ const original={openSync:fs.openSync,fsyncSync:fs.fsyncSync,renameSync:fs.renameSync,closeSync:fs.closeSync};
+ fs.openSync=(target,...rest)=>{const fd=original.openSync(target,...rest);names.set(fd,String(target));return fd};
+ fs.closeSync=fd=>{names.delete(fd);return original.closeSync(fd)};
+ fs.fsyncSync=fd=>{events.push(['fsync',names.get(fd)]);return original.fsyncSync(fd)};
+ fs.renameSync=(from,to)=>{events.push(['rename',String(from),String(to)]);return original.renameSync(from,to)};
+ try{
+  atomicWriteStore(file,fixture('durable'));
+ }finally{Object.assign(fs,original)}
+ try{
+  const rename=events.findIndex(([kind])=>kind==='rename');
+  assert.ok(rename>=0,'store was replaced by rename');
+  const temp=events[rename][1];
+  assert.ok(events.slice(0,rename).some(([kind,name])=>kind==='fsync'&&name===temp),'temporary file fsynced before rename');
+  assert.equal(readStore(file).paper.open[0].key,'durable');
+  assert.deepEqual(fs.readdirSync(sandbox),['store.json'],'no temporary file left behind');
+ }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});

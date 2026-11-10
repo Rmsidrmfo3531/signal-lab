@@ -8,6 +8,9 @@ export const MAX_MANIFEST_BYTES = 131072;
 export const MAX_FILE_BYTES = 2_000_000;
 export const MAX_UPDATE_BYTES = 20_000_000;
 const ALLOWED_ROOTS = new Set([
+ // The staged copy is self-tested before installation, so every module the server
+ // imports and every script a test executes must be listed (tests/update_bundle.test.mjs).
+ 'request_guard.mjs','diagnose_scan.mjs','diagnose_scan.bat','scripts/run-node-tests.mjs',
  'public_read_budget.mjs','indicators.mjs','binance_execution.mjs','volume_profile.mjs','volume_targets.mjs','profile_collector.mjs','telegram_watch.mjs','telegram_final.mjs','orangex_adapter.mjs','orangex_order_safety.mjs','news_translation.mjs','market_commentary.mjs','strategy_validation.mjs','scripts/compare-issue6-strategies.mjs','research/legacy_v58/engine.mjs','research/legacy_v58/quality.mjs',
  'server.mjs','engine.mjs','quality.mjs','signal_pipeline.mjs','observation.mjs','scan_diagnostics.mjs',
  'signal_policy.mjs','research/legacy_v58/decision.mjs','markets.mjs','news.mjs','links.mjs','journal.mjs','signal_lifecycle.mjs','orangex.mjs','orangex_comparison.mjs','orangex_listing_domains.mjs',

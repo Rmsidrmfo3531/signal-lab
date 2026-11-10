@@ -29,6 +29,12 @@ async function inspect(name,url,limit=9000){
     log(`   최근 스캔=${body.lastScan?new Date(body.lastScan).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}):'없음'}, BinanceWS=${body.ws}, 봉WS=${body.liveWS}`);
     if(body.marketError)log(`   상장 연결 오류=${String(body.marketError).slice(0,250)}`);
     if(body.lastScanFailures?.length)log(`   캔들 조회 실패=${body.lastScanFailures.slice(0,4).join(' | ').slice(0,350)}`);
+    // Counts only (reason codes, no prices or positions): why technically passed setups still have no target plan.
+    const plan=body.scanFunnel?.targetPlan;
+    if(plan&&Number.isFinite(plan.technicalCandidates)){
+     const blocked=Array.isArray(plan.blocked)?plan.blocked.slice(0,4).map(x=>`${x.reason} ${x.count}종`).join(' | ').slice(0,300):'';
+     log(`   기술 검증 통과 ${plan.technicalCandidates}종 중 매물대 목표가 준비 ${plan.ready||0}종`+(blocked?` · 보류 사유=${blocked}`:''));
+    }
    }
   }
   log(msg);

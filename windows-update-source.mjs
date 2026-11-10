@@ -6,6 +6,9 @@ import {allowedFile} from './updater.mjs';
 const REPO='Rmsidrmfo3531/signal-lab',CI='node-tests.yml',BRANCH='main';
 const names=['Node 22.x / ubuntu-latest','Node 24.x / ubuntu-latest','Node 22.x / windows-latest','Node 24.x / windows-latest'];
 const sha40=/^[a-f0-9]{40}$/i,hex=(algo,b)=>createHash(algo).update(b).digest('hex');
+// Sanity ceilings for one release, not a security boundary. The repository already
+// ships more than the former 180-file ceiling, which made every update fail here.
+export const MAX_UPDATE_FILES=600,MAX_UPDATE_TOTAL_BYTES=20000000;
 const base=root=>path.join(root,'.updates');
 export const readAutoStatus=root=>{try{return JSON.parse(fs.readFileSync(path.join(base(root),'auto-status.json'),'utf8'))}catch{return {enabled:false}}};
 export function writeAutoStatus(root,state){fs.mkdirSync(base(root),{recursive:true});const to=path.join(base(root),'auto-status.json'),temp=to+'.tmp';fs.writeFileSync(temp,JSON.stringify(state,null,2));fs.renameSync(temp,to)}
@@ -42,7 +45,7 @@ export function github({token=credential(),fetcher=fetch}={}){
 export function codeEntries(tree){
  if(!tree||tree.truncated||!Array.isArray(tree.tree))throw Error('불완전한 GitHub 트리');
  const files=tree.tree.filter(e=>allowedFile(e.path));
- if(files.length>180||files.reduce((sum,e)=>sum+e.size,0)>20000000)throw Error('전체 업데이트 크기 제한');
+ if(files.length>MAX_UPDATE_FILES||files.reduce((sum,e)=>sum+e.size,0)>MAX_UPDATE_TOTAL_BYTES)throw Error('전체 업데이트 크기 제한');
  for(const f of files)if(f.type!=='blob'||!['100644','100755'].includes(f.mode)||!sha40.test(f.sha)||!Number.isSafeInteger(f.size)||f.size>2000000)throw Error('잘못된 코드 파일: '+f.path);
  for(const required of ['server.mjs','package.json','windows-supervisor.mjs','windows-update-source.mjs','updater.mjs'])if(!files.some(f=>f.path===required))throw Error('필수 파일 없음: '+required);
  return files

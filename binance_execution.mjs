@@ -34,7 +34,11 @@ export function estimateBinanceExecution({signal,book,market,now=Date.now(),maxR
    perUnit=sign*(worstEntry-worstStop)+(worstEntry+worstStop)*Math.max(assumptions.takerRate,assumptions.makerRate)+worstEntry*assumptions.fundingReserveRate;
   if(!(perUnit>0))reasons.push('RISK_MODEL_INVALID');
   else{
-   quantity=Number(roundOrangeXDecimal(Math.min(maxRiskUSD/perUnit,maxNotionalUSD/worstEntry),step*20,'DOWN'));
+   // Twenty lot steps let the 40/35/25% split land on the lot grid. The grid is
+   // built in exact decimal arithmetic: step*20 in binary floating point is not
+   // always a multiple of step (0.07*20 === 1.4000000000000001).
+   const splitGrid=roundOrangeXDecimal(step*20.5,step,'DOWN');
+   quantity=Number(roundOrangeXDecimal(Math.min(maxRiskUSD/perUnit,maxNotionalUSD/worstEntry),splitGrid,'DOWN'));
    if(!positive(quantity)||quantity<minQuantity||quantity*quote<minNotional)reasons.push('RISK_CAP_BELOW_MINIMUM_ORDER');
    let remaining=quantity,cost=0;
    for(const [price,size]of side==='LONG'?asks:bids){const take=Math.min(remaining,size);cost+=take*price;remaining-=take;if(remaining<=1e-12)break}

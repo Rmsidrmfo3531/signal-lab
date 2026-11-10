@@ -26,3 +26,16 @@ test('expired scans are excluded',()=>{
  const a=base('AAAUSDT');a.scannedAt=now-10*3600000;
  assert.equal(describeScanFunnel(new Map([[a.symbol,a]]),{activeSymbols:['AAAUSDT'],now}).uniqueAnalyzed,0);
 });
+test('target-plan diagnostics name the recorded cause behind TP_PROFILE_UNAVAILABLE',()=>{
+ const ready=base('AAAUSDT');ready.targetPlan={ok:true};
+ const coverage=base('BBBUSDT');coverage.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['VOLUME_PROFILE_NOT_AVAILABLE'],profileReasons:['PROFILE_COVERAGE_INCOMPLETE']};
+ const rr=base('CCCUSDT');rr.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['TARGET_NET_RR_BELOW_MINIMUM']};
+ const sizing=base('DDDUSDT');sizing.binanceExecution={eligible:false};
+ const rejected=base('EEEUSDT');rejected.quality={passed:false,failed:['거래량 배율 부족']};rejected.targetPlan={ok:false,reasons:['NOT_COUNTED']};
+ const map=new Map([ready,coverage,rr,sizing,rejected].map(x=>[x.symbol,x]));
+ const plan=describeScanFunnel(map,{activeSymbols:[...map.keys()],now}).targetPlan;
+ assert.equal(plan.technicalCandidates,4,'only technically passed setups are counted');
+ assert.equal(plan.ready,1);
+ assert.deepEqual(plan.blocked.map(x=>x.reason).sort(),['EXECUTION_ESTIMATE_NOT_ELIGIBLE','PROFILE_COVERAGE_INCOMPLETE','TARGET_NET_RR_BELOW_MINIMUM']);
+ assert.ok(plan.blocked.every(x=>x.count===1));
+});

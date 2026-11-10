@@ -2,6 +2,7 @@ import http from 'node:http';
 import {exec} from 'node:child_process';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
+import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
 import {stageUpdate,pendingInfo} from './updater.mjs';
 import {normalizeTrade,closeTrade,journalSummary,exportTradesCSV} from './journal.mjs';
 import {signalLifecycle} from './signal_lifecycle.mjs';
@@ -42,7 +43,9 @@ process.on('exit',releaseDataLock);
 const envfile=storage.envPath;
 if(fs.existsSync(envfile))for(const line of fs.readFileSync(envfile,'utf8').split(/\r?\n/)){
  const match=line.match(/^\s*([A-Z][A-Z_0-9]*)\s*=\s*(.*)\s*$/);
- if(match&&!process.env[match[1]])process.env[match[1]]=match[2].replace(/^['"]|['"]$/g,'');
+ // The greedy value group keeps trailing blanks (e.g. "HOST=127.0.0.1 " from a
+ // text editor). Trim first so the value is not silently different from what was typed.
+ if(match&&!process.env[match[1]])process.env[match[1]]=match[2].trim().replace(/^['"]|['"]$/g,'');
 }
 configureSignalScorePolicy(process.env);
 const CONFIG={
@@ -82,6 +85,9 @@ function orangeXReplayView(){
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
 const lanMode=!['127.0.0.1','::1','localhost'].includes(CONFIG.host);
 const lanPassword=lanMode?(process.env.MOBILE_ACCESS_PASSWORD||randomBytes(6).toString('hex')):'';
+// Loopback peers skip the password, so every request is first checked for a
+// foreign Host name (DNS rebinding) and for cross-site browser origins.
+const allowedHosts=allowedHostNames();
 const dataPath=storage.storePath;
 let persisted={watchlist:['BTCUSDT','ETHUSDT','SOLUSDT'],seen:{},alerts:[],newsSeen:{},journal:[],tradfiSeen:{}};
 const historical=readStore(dataPath);
@@ -125,7 +131,7 @@ const historyBySymbol=new Map();
 function recentStructures(){return [...structureBySymbol.values()].flat().filter(x=>Date.now()-x.observedAt<2*3600000).sort((a,b)=>b.observedAt-a.observedAt).slice(0,100)}
 function recentHistory(){return [...historyBySymbol.values()].flat().filter(x=>Date.now()-x.confirmedAt<24*3600000).sort((a,b)=>b.confirmedAt-a.confirmedAt).slice(0,100)}
 const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.json':'application/json; charset=utf-8'};
-function response(res,status,body){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))}
+function response(res,status,body,extraHeaders={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS,...extraHeaders});res.end(JSON.stringify(body))}
 function send(event,obj){const msg=`event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;for(const client of state.clients){try{client.write(msg)}catch{state.clients.delete(client)}}}
 function emitPaperNotice(event,{test=false}={}){
   const item={...event,id:randomUUID(),recordedAt:Date.now(),test};
@@ -275,7 +281,9 @@ async function checkSymbolInternal(symbol, force=false){
      tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,
      contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',unitsVerified:true,costs,minNetRR:1.8},{now:Date.now()});
     out.targetPlan={...targetPlan,quantity:estimate.quantity,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',
-     minNotional:estimate.minNotional,minQuantity:estimate.minQuantity,quantityStep:estimate.quantityStep,tickSize:estimate.tickSize,costAssumptions:costs};
+     minNotional:estimate.minNotional,minQuantity:estimate.minQuantity,quantityStep:estimate.quantityStep,tickSize:estimate.tickSize,costAssumptions:costs,
+     // Diagnostics only: keep the collector's own reason, which planVolumeTargets wraps as VOLUME_PROFILE_NOT_AVAILABLE.
+     ...(targetPlan.ok?{}:{profileReasons:Array.isArray(profileResult?.reasons)?profileResult.reasons.slice(0,6):[]})};
     if(targetPlan.ok){out.referenceEntry=out.entry;out.entry=estimate.entryBasis;[out.target1,out.target2,out.target3]=targetPlan.targets;out.targets=targetPlan.targets;}
    }
   }catch{out.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['PUBLIC_EXECUTION_OR_PROFILE_UNAVAILABLE']};}
@@ -604,14 +612,33 @@ async function pollNews(){
  for(const article of notifications)send('news-alert',article);
  send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:feeds.length,error:state.newsError});
 }
-function bodyJson(req){return new Promise((resolve,reject)=>{let buf='';req.on('data',c=>{buf+=c;if(buf.length>30000){reject(Error('Body too large'));req.destroy()}});req.on('end',()=>{try{resolve(JSON.parse(buf))}catch{reject(Error('Invalid JSON'))}})})}
+// A malformed, oversized or interrupted request body is the caller's error
+// (400/413). 502 stays reserved for failures of an upstream data source.
+const clientError=(message,httpStatus)=>Object.assign(Error(message),{httpStatus});
+function bodyJson(req){return new Promise((resolve,reject)=>{
+ let buf='',settled=false;
+ const settle=(fn,value)=>{if(settled)return;settled=true;fn(value)};
+ req.on('data',chunk=>{if(settled)return;buf+=chunk;if(buf.length>30000){req.pause();settle(reject,clientError('Body too large',413))}});
+ req.on('end',()=>{
+  let value;try{value=JSON.parse(buf)}catch{return settle(reject,clientError('Invalid JSON',400))}
+  if(value===null||typeof value!=='object'||Array.isArray(value))return settle(reject,clientError('JSON object required',400));
+  settle(resolve,value);
+ });
+ // Without these a client that disconnects mid-body leaves the handler waiting forever.
+ req.on('error',()=>settle(reject,clientError('Request aborted',400)));
+ req.on('close',()=>settle(reject,clientError('Request aborted',400)));
+})}
 const server=http.createServer(async(req,res)=>{
  try{
+  let url;
+  try{url=new URL(req.url,'http://localhost')}catch{return response(res,400,{error:'Invalid request URL'})}
+  const pathname=url.pathname;
+  const guard=evaluateRequest({method:req.method,path:pathname,headers:req.headers},{hostNames:allowedHosts});
+  if(!guard.ok)return response(res,guard.status,{error:guard.code,message:guard.message});
   if(lanMode && !authorizedRequest(req.socket.remoteAddress,req.headers.authorization,lanPassword)){
-   res.writeHead(401,{'WWW-Authenticate':'Basic realm="Signal Lab mobile - username signal", charset="UTF-8"','Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+   res.writeHead(401,{'WWW-Authenticate':'Basic realm="Signal Lab mobile - username signal", charset="UTF-8"','Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS});
    res.end('Signal Lab: 모바일 접속 인증이 필요합니다. PC 실행 창에 표시된 사용자명(signal)과 접속 암호를 입력하세요.');return;
   }
-  const url=new URL(req.url,'http://localhost');const pathname=url.pathname;
   if(pathname==='/api/orangex'||pathname.startsWith('/api/orangex/')){
    if(req.method!=='GET')return response(res,405,{error:'ORANGEX_READ_ONLY',message:'OrangeX 1단계는 조회만 허용합니다.',orderSubmissionEnabled:false});
    if(pathname==='/api/orangex/preflight'){
@@ -637,7 +664,7 @@ const server=http.createServer(async(req,res)=>{
    }catch{return response(res,503,{mode:'READ_ONLY',connected:false,orderSubmissionEnabled:false,error:'ORANGEX_READ_FAILED'})}
   }
   if(pathname==='/events'){
-   res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no'});
+   res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no',...SECURITY_HEADERS});
    state.clients.add(res);res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);
    const pulse=setInterval(()=>{try{res.write(': heartbeat\n\n')}catch{}},20000);
    req.on('close',()=>{clearInterval(pulse);state.clients.delete(res)});return;
@@ -678,7 +705,7 @@ const server=http.createServer(async(req,res)=>{
    return response(res,200,{...result,warning:'모의 테스트 알림. 실제 포지션이 생성되지 않고 PNL 기록에 저장되지 않음'});
   }
   if(pathname==='/api/paper/export'&&req.method==='GET'){
-   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename=signal-lab-auto-paper-trades.csv','Cache-Control':'no-store'});
+   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename=signal-lab-auto-paper-trades.csv','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(paperCSV(paper.store.closed));
   }
   if(pathname==='/api/tradfi')return response(res,200,tradfiPublic());
@@ -693,7 +720,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/news')return response(res,200,{status:state.newsStatus,checked:state.newsChecked,sourceCount:state.newsSources.length,error:state.newsError,articles:state.news});
   if(pathname==='/api/journal'&&req.method==='GET')return response(res,200,{entries:persisted.journal.slice(0,200),summary:journalSummary(persisted.journal)});
   if(pathname==='/api/journal/export'&&req.method==='GET'){
-   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-trade-journal.csv"','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
+   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-trade-journal.csv"','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(exportTradesCSV(persisted.journal));
   }
   if(pathname==='/api/journal'&&req.method==='POST'){
@@ -760,10 +787,17 @@ const server=http.createServer(async(req,res)=>{
   const safe=path.resolve(path.join(__dirname,'public'),'.'+file), root=path.resolve(__dirname,'public');
   if(!safe.startsWith(root+path.sep)&&safe!==root)return response(res,403,{error:'Forbidden'});
   fs.readFile(safe,(err,buf)=>{
-   if(err){res.writeHead(404);res.end('Not Found');return}
-   res.writeHead(200,{'Content-Type':MIME[path.extname(safe)]||'application/octet-stream','Cache-Control':'no-cache'});res.end(buf);
+   if(err){res.writeHead(404,SECURITY_HEADERS);res.end('Not Found');return}
+   res.writeHead(200,{'Content-Type':MIME[path.extname(safe)]||'application/octet-stream','Cache-Control':'no-cache',...SECURITY_HEADERS});res.end(buf);
   });
- }catch(e){response(res,e.code==='STORE_WRITE_FAILED'?503:502,{error:e.message})}
+ }catch(e){
+  // A second writeHead would throw inside this async handler and take the process down.
+  if(res.headersSent||res.writableEnded){if(!res.writableEnded)try{res.end()}catch{}return}
+  const status=Number.isInteger(e?.httpStatus)?e.httpStatus:e?.code==='STORE_WRITE_FAILED'?503:502;
+  // Stop reading an oversized upload once the refusal has been delivered.
+  if(status===413){res.once('finish',()=>req.destroy());return response(res,413,{error:e.message},{Connection:'close'})}
+  response(res,status,{error:e.message});
+ }
 });
 server.listen(CONFIG.port,CONFIG.host,()=>{
  console.log(`\nSignal Lab (PC) → http://127.0.0.1:${CONFIG.port}`);
