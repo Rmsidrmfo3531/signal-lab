@@ -35,3 +35,16 @@ test('venue-only list: coins only, not on Binance, tradable, volume at least the
  assert.equal(half.threshold,1e6);assert.equal(half.coins.length,4);
  assert.equal(isCoinSymbol('NVDAUSDT'),false);assert.equal(isCoinSymbol('NCCOGOLD2USDUSDT'),false);assert.equal(isCoinSymbol('AKEUSDT'),true);
 });
+
+import {parseMarketCaps,marketCapFor,screenByMarketCap} from '../venue_charts.mjs';
+test('market cap screen: ticker+price match, tiny / unknown / wash-volume coins dropped',()=>{
+ const caps=parseMarketCaps([[{id:'ake',symbol:'ake',market_cap:40e6,current_price:.5},{id:'ake-fake',symbol:'ake',market_cap:900e6,current_price:30},
+  {id:'tiny',symbol:'tiny',market_cap:2e6,current_price:1},{id:'wash',symbol:'wash',market_cap:12e6,current_price:2},{id:'pepe',symbol:'pepe',market_cap:2e9,current_price:.00001}]]);
+ assert.equal(marketCapFor('AKEUSDT',.52,caps).id,'ake','same ticker, price decides');
+ assert.equal(marketCapFor('AKEUSDT',5,caps),null,'no price match = unknown');
+ assert.equal(marketCapFor('1000PEPEUSDT',.01,caps).id,'pepe','1000x contracts');
+ const coins=[{symbol:'AKEUSDT',price:.5,quoteVolume:3e6},{symbol:'TINYUSDT',price:1,quoteVolume:3e6},{symbol:'WASHUSDT',price:2,quoteVolume:80e6},{symbol:'NONEUSDT',price:1,quoteVolume:9e6}];
+ const r=screenByMarketCap(coins,caps,{minMarketCap:10e6,maxVolumeToCap:5});
+ assert.deepEqual(r.kept.map(c=>[c.symbol,c.marketCap]),[['AKEUSDT',40e6]]);
+ assert.deepEqual(r.dropped.map(c=>[c.symbol,c.reason]),[['TINYUSDT','MCAP_TOO_SMALL'],['WASHUSDT','VOLUME_TO_MCAP_TOO_HIGH'],['NONEUSDT','MCAP_UNKNOWN']]);
+});

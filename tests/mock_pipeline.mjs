@@ -77,6 +77,10 @@ globalThis.fetch=async(input,options={})=>{
   if(url.pathname==='/api/v4/futures/usdt/order_book'){const b=venueBook(url.searchParams.get('contract').replace('_',''));
    return json({current:b.T/1000,asks:b.asks.map(([p,s])=>({p,s:Number(s)*100})),bids:b.bids.map(([p,s])=>({p,s:Number(s)*100}))})}
  }
+ // Market caps: control().marketCaps = {SYMBOL: USD}; prices follow the scenario price.
+ if(url.hostname==='api.coingecko.com'&&url.pathname==='/api/v3/coins/markets'){
+  if(control().marketCapsOffline)return new Response('synthetic outage',{status:503});
+  return json(Object.entries(control().marketCaps||{}).map(([symbol,cap])=>({id:symbol.toLowerCase(),symbol:symbol.replace(/USDT$/,'').toLowerCase(),market_cap:cap,current_price:price(symbol)})))}
  if(['decrypt.co','www.coindesk.com','cointelegraph.com'].includes(url.hostname))return new Response('<rss><channel></channel></rss>',{headers:{'content-type':'application/xml'}});
  throw Error('Test transport blocked external destination: '+url.hostname);
 };

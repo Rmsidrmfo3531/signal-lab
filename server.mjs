@@ -35,7 +35,7 @@ import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
-import {selectVenueOnlyCoins,venueVolumes} from './venue_charts.mjs';
+import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
 
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
@@ -96,6 +96,11 @@ const CONFIG={
  // (AKEUSDT,JCTUSDT: examples of the size wanted). VENUE_ONLY_COINS=false turns it off.
  venueOnly:{enabled:process.env.VENUE_ONLY_COINS!=='false',
   minVolume:Number.isFinite(Number(process.env.VENUE_ONLY_MIN_VOLUME_USDT))&&process.env.VENUE_ONLY_MIN_VOLUME_USDT!==''&&process.env.VENUE_ONLY_MIN_VOLUME_USDT!=null?Number(process.env.VENUE_ONLY_MIN_VOLUME_USDT):null,
+  // Market cap screen (CoinGecko top VENUE_ONLY_MCAP_PAGES x 250 coins, refreshed every 6 h):
+  // drop coins under VENUE_ONLY_MIN_MARKET_CAP_USD (10M$) or not found, or whose 24h perp volume
+  // is more than VENUE_ONLY_MAX_VOLUME_TO_MCAP (5) times their market cap.
+  minMarketCap:Math.max(0,Number(process.env.VENUE_ONLY_MIN_MARKET_CAP_USD??1e7)||0),maxVolumeToCap:Math.max(.1,Number(process.env.VENUE_ONLY_MAX_VOLUME_TO_MCAP)||5),
+  mcapPages:Math.max(1,Math.min(20,Math.round(Number(process.env.VENUE_ONLY_MCAP_PAGES)||8))),
   referenceRatio:Math.max(.05,Math.min(1,Number(process.env.VENUE_ONLY_REFERENCE_RATIO)||.5)),
   references:String(process.env.VENUE_ONLY_REFERENCE||'AKEUSDT,JCTUSDT').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9]{1,20}USDT$/.test(x)),
   batch:Math.max(1,Math.min(20,Math.round(Number(process.env.VENUE_ONLY_BATCH)||6))),startDelayMs:Math.max(200,Number(process.env.VENUE_ONLY_START_MS)||20000),intervalMs:Math.max(1000,Number(process.env.VENUE_ONLY_INTERVAL_MS)||60000),max:Math.max(1,Math.min(1000,Math.round(Number(process.env.VENUE_ONLY_MAX)||1000)))},
@@ -142,7 +147,7 @@ if(!Array.isArray(persisted.paperNotify.history))persisted.paperNotify.history=[
 // Create the first shared store file even if no trading event occurs yet.
 save();
 const state={ws:'offline',rest:'connecting',lastMarketListings:0,executionRefreshAt:0,blockedSignals:0,lastBlockReason:'',binancePerps:0,lastMarket:0,lastScan:0,scannedSinceBoot:0,cycleScanned:0,cycle:0,
- activeSymbols:[],activeSet:new Set(),venueOnly:new Map(),venueOnlySet:new Set(),venueOnlyInfo:{at:0,threshold:null,thresholdSource:null,count:0,error:''},venueOnlyCursor:0,researchSymbols:[],researchSet:new Set(),researchRanked:[],scanMode:'waiting',lastValidatedAt:0,ranked:[],quotes:new Map(),analyses:new Map(),scanCursor:0,scanActive:false,error:'',clients:new Set(),recentSignals:[],
+ activeSymbols:[],activeSet:new Set(),venueOnly:new Map(),venueOnlySet:new Set(),venueOnlyInfo:{at:0,threshold:null,thresholdSource:null,count:0,error:''},marketCaps:{caps:null,at:0,error:''},venueOnlyCursor:0,researchSymbols:[],researchSet:new Set(),researchRanked:[],scanMode:'waiting',lastValidatedAt:0,ranked:[],quotes:new Map(),analyses:new Map(),scanCursor:0,scanActive:false,error:'',clients:new Set(),recentSignals:[],
  liveWS:'offline',liveWatched:0,lastLiveTrigger:0,livePending:0,liveAnalyzed:0,
  lastTickerAt:0,lastTickerCount:0,lastLiveDataAt:0,lastLiveCandleClose:0,liveSubscribeAcks:0,liveSubscribeErrors:0,liveLastError:'',lastScanAttempt:0,scanStartedAt:0,scanFailedAt:0,marketRetryCount:0,marketError:'',marketLastRetry:0,news:[],newsStatus:'connecting',newsChecked:0,newsSources:[],newsError:'',update:{state:'unconfigured',lastCheck:0,message:'업데이트 서버 미설정'},scanSuccess:0,scanFailed:0,lastScanFailures:[],lastScanSuccessAt:0};
 const apiCache=new Map();
@@ -338,6 +343,21 @@ async function venueKlines(symbol,interval,limit){
 function invalidateVenueCandles(symbol){for(const key of venueKlineCache.keys())if(key.split(':')[1]===symbol)venueKlineCache.delete(key)}
 // Same profile rules as Binance; the collector's Binance-style URL is answered from the venue.
 const venueProfiles=new VolumeProfileCollector({request:url=>{const q=new URL(url,'http://x').searchParams;return venueKlines(q.get('symbol'),q.get('interval'),Number(q.get('limit')))}});
+// CoinGecko public pages, spaced to stay under the free rate limit; reused for 6 hours.
+async function refreshMarketCaps(){
+ const mc=state.marketCaps;if(mc.caps&&Date.now()-mc.at<6*3600000)return mc.caps;
+ if(!mc.caps&&mc.error&&Date.now()-mc.at<10*60000)return null;
+ try{
+  const pages=[];
+  for(let page=1;page<=CONFIG.venueOnly.mcapPages;page++){
+   if(page>1)await new Promise(r=>setTimeout(r,2500));
+   const r=await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${page}`,{signal:AbortSignal.timeout(15000),headers:{Accept:'application/json'}});
+   if(!r.ok)throw Error('CoinGecko HTTP '+r.status);
+   const data=await r.json();pages.push(data);if(!Array.isArray(data)||data.length<250)break;
+  }
+  state.marketCaps={caps:parseMarketCaps(pages),at:Date.now(),error:''};return state.marketCaps.caps;
+ }catch(e){state.marketCaps={...mc,at:mc.caps?mc.at:Date.now(),error:e.message};console.warn('[MARKET CAP]',e.message);return mc.caps}
+}
 async function refreshVenueOnlyList(){
  if(!CONFIG.venueOnly.enabled||!state.activeSymbols.length)return;
  if(Date.now()-state.venueOnlyInfo.at<(state.venueOnlyInfo.error?60000:10*60000))return;
@@ -346,10 +366,15 @@ async function refreshVenueOnlyList(){
    venueQuotes.clients.GATEIO.tickers(),venueQuotes.clients.BINGX.tickers()]);
   const picked=selectVenueOnlyCoins({binanceSymbols:state.activeSymbols,contracts:{GATEIO:gc,BINGX:bc},volumes:venueVolumes({gateTickers:gt,bingxTickers:bt}),
    minVolume:CONFIG.venueOnly.minVolume,references:CONFIG.venueOnly.references,referenceRatio:CONFIG.venueOnly.referenceRatio});
-  const coins=picked.coins.slice(0,CONFIG.venueOnly.max);
+  // Without market caps nothing is added: a coin whose size cannot be checked is not traded.
+  const caps=await refreshMarketCaps();if(!caps)throw Error('시총 자료(CoinGecko) 조회 실패 — 바이낸스 미상장 코인 보류');
+  const screened=screenByMarketCap(picked.coins,caps,{minMarketCap:CONFIG.venueOnly.minMarketCap,maxVolumeToCap:CONFIG.venueOnly.maxVolumeToCap});
+  const coins=screened.kept.slice(0,CONFIG.venueOnly.max);
+  const dropped=screened.dropped.reduce((m,c)=>(m[c.reason]=(m[c.reason]||0)+1,m),{});
   state.venueOnly=new Map(coins.map(c=>[c.symbol,{...c,priceAt:Date.now()}]));state.venueOnlySet=new Set(state.venueOnly.keys());
-  state.venueOnlyInfo={at:Date.now(),threshold:picked.threshold,thresholdSource:picked.thresholdSource,count:coins.length,error:''};
-  console.log(`[VENUE-ONLY] ${coins.length}개 코인 (24h 거래대금 ≥ ${(picked.threshold/1e6).toFixed(2)}M$, 기준 ${picked.thresholdSource})`);
+  state.venueOnlyInfo={at:Date.now(),threshold:picked.threshold,thresholdSource:picked.thresholdSource,count:coins.length,error:'',
+   beforeMarketCap:picked.coins.length,droppedByMarketCap:dropped,minMarketCap:CONFIG.venueOnly.minMarketCap};
+  console.log(`[VENUE-ONLY] ${coins.length}개 코인 (24h 거래대금 ≥ ${(picked.threshold/1e6).toFixed(2)}M$, 기준 ${picked.thresholdSource}; 시총 제외 ${screened.dropped.length}개: 미확인 ${dropped.MCAP_UNKNOWN||0}·${(CONFIG.venueOnly.minMarketCap/1e6).toFixed(0)}M$ 미만 ${dropped.MCAP_TOO_SMALL||0}·거래대금 과다 ${dropped.VOLUME_TO_MCAP_TOO_HIGH||0})`);
  }catch(e){state.venueOnlyInfo={...state.venueOnlyInfo,at:Date.now(),error:String(e.code||e.message)};console.warn('[VENUE-ONLY]',e.code||e.message)}
 }
 let venueOnlyScanActive=false;
