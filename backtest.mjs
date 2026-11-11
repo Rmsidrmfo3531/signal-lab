@@ -13,7 +13,7 @@
 import {analyze} from './engine.mjs';
 import {buildKlineVolumeProfile} from './volume_profile.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
-import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,trendAllows} from './scalp_reversal.mjs';
+import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE} from './dca_plan.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {seededEMA} from './indicators.mjs';
@@ -134,8 +134,11 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
 
 /** 5m reversal scalp replay, without and with the zone scale-in plan. */
 // trendFilter: no rebound LONG while the 4H trend is down, no fade SHORT while it is up (needs h4).
-export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h4),filters,startAt,endAt=Infinity,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={},minNetRR=SCALP_DEFAULTS.minNetRR,maxHoldMs=SCALP_DEFAULTS.maxHoldMs}){
- const m5c=m5.map(toCandle),funnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},trades=[];
+// interval: the signal timeframe ('1m' | '5m' | '15m'); bars are its candles (default m5).
+// Trades are replayed on m5 candles, or on the 1m bars themselves for the 1m timeframe.
+export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h4),filters,startAt,endAt=Infinity,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={},minNetRR=SCALP_DEFAULTS.minNetRR,
+ interval='5m',bars=m5,maxHoldMs=SCALP_TIMEFRAMES[interval].maxHoldMs}){
+ const m5c=(interval==='1m'?bars:m5).map(toCandle),funnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},trades=[];
  const busy={FIXED:-1,DCA:-1};let balance=balanceUSD;
  // 4H trend after each closed 4H candle (EMA100/EMA200 as in the 1H strategy), for the optional filter.
  const trendAt=(()=>{if(!trendFilter||!Array.isArray(h4))return ()=>null;const closes=h4.map(r=>Number(r[4]));
@@ -143,19 +146,19 @@ export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h
   const trend=h4.map((r,i)=>e100[i]==null||e200[i]==null?null:e100[i]>e200[i]&&closes[i]>e200[i]?'up':e100[i]<e200[i]&&closes[i]<e200[i]?'down':'range');
   return now=>{const i=closedUntil(h4,now)-1;return i>=0?trend[i]:null}})();
  funnel.trendBlocked=0;
- for(let i=60;i<m5.length-1;i++){
-  const closeAt=Number(m5[i][6]);if(closeAt<startAt||closeAt>=endAt)continue;funnel.bars++;
-  const now=closeAt+1000,det=detectScalpReversal(m5.slice(i-59,i+1),{symbol,now,settings});
+ for(let i=60;i<bars.length-1;i++){
+  const closeAt=Number(bars[i][6]);if(closeAt<startAt||closeAt>=endAt)continue;funnel.bars++;
+  const now=closeAt+1000,det=detectScalpReversal(bars.slice(i-59,i+1),{symbol,now,settings,interval});
   if(!det.ok)continue;funnel.signals++;
   if(trendFilter&&!trendAllows(det.direction,trendAt(now))){funnel.trendBlocked++;continue}
-  const k=i+1,next=m5c[k],dir=det.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
+  const k=lowerBound(m5c,closeAt+1),next=m5c[k];if(!next)continue;const dir=det.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
   det.stop=onTick(det.stop,filters.tickSize,dir===1?'DOWN':'UP');
   if(dir*(entry-det.stop)<=0||dir*(det.targets[0]-entry)<=0){funnel.entrySkipped++;continue}
   const quantity=stepQuantity(riskUSD/Math.abs(entry-det.stop),filters.stepSize);
   const estimate={eligible:true,tickSize:filters.tickSize,quantityStep:filters.stepSize,entryBasis:entry,quantity,minNotional:filters.minNotional,minQuantity:filters.minQty};
   const quality=buildScalpPlan({signal:det,estimate,costs,minNetRR});
   if(!quality.ok||!positive(quantity)){funnel.qualityRejected++;continue}
-  const base={strategy:'SCALP',symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct};
+  const base={strategy:'SCALP',interval,symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct};
   if(k>busy.FIXED){
    const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:det.stop,targets:quality.targets,quantity,maxHoldMs,costs});
    if(t){busy.FIXED=t.endIdx;trades.push({...base,book:'FIXED',stop:det.stop,targets:quality.targets,...t})}

@@ -19,6 +19,23 @@ const validPrice=p=>Number.isFinite(p)&&p>0;
 const isoDay=(at)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
 const isoWeek=(at)=>{const d=new Date(at+9*3600000);let dow=(d.getUTCDay()+6)%7;d.setUTCDate(d.getUTCDate()-dow);return d.toISOString().slice(0,10)};
 const rounded=v=>Math.round(v*100000000)/100000000;
+/** Size multiplier for the next position: 1 with nothing open, else half of the newest open/pending one. */
+export function nextSizeScale(store){
+ const active=[...(store?.open??[]),...(store?.pending??[])];
+ if(!active.length)return 1;
+ const newest=active.reduce((a,b)=>((b.openedAt??b.signalAt??0)>(a.openedAt??a.signalAt??0)?b:a));
+ const s=Number(newest.sizeScale);return (Number.isFinite(s)&&s>0&&s<=1?s:1)/2;
+}
+// Scale a volume-profile plan's quantity down to the lot step; parts 40/35 rounded down, the rest to TP3.
+function scalePlanQuantity(plan,scale){
+ const step=Number(plan?.quantityStep),total0=Number(plan?.quantity);
+ if(!(step>0)||!(total0>0)||!Array.isArray(plan?.parts)||plan.parts.length!==3)return null;
+ const down=x=>Number((Math.floor(x/step+1e-9)*step).toFixed(12));
+ const total=down(total0*scale),a=down(total*.4),b=down(total*.35),c=Number((total-a-b).toFixed(12));
+ const min=Number(plan.minQuantity)||0,minNotional=Number(plan.minNotional)||0,qs=[a,b,c];
+ if(!(total>0)||qs.some((q,i)=>!(q>0)||q<min||q*Number(plan.targets?.[i])<minNotional))return null;
+ return {...plan,quantity:total,parts:plan.parts.map((p,i)=>({...p,quantity:qs[i]})),sizeScale:scale};
+}
 const onGrid=(value,step)=>{if(!validPrice(value)||!validPrice(step))return false;const n=value/step,near=Math.round(n);return Number.isSafeInteger(near)&&Math.abs(n-near)<=Math.max(1,Math.abs(n))*Number.EPSILON*16};
 // Reconstruct cash flows without rewriting historical records. Fees have already
 // been charged in each trade, so changing today's fee settings must not restate PNL.
@@ -111,7 +128,16 @@ export class PaperEngine {
   if(this.store.open.some(x=>x.symbol===symbol&&x.market===market)||this.store.pending.some(x=>x.symbol===symbol&&x.market===market))return this.reject(key,'동일 종목 중복 가상 포지션 방지');
   if(this.store.open.length+this.store.pending.length>=settings.maxPositions)return this.reject(key,'동시 포지션 상한');
   const managementVersion=signal.managementVersion,profile=managementVersion==='VOLUME_PROFILE_V1',
-   legacy=managementVersion==='LEGACY_R_MULTIPLES'||managementVersion==='LEGACY_R_V1',plan=signal.targetPlan;
+   legacy=managementVersion==='LEGACY_R_MULTIPLES'||managementVersion==='LEGACY_R_V1';
+  // Each new position while others are open gets half the size of the newest open one.
+  // A signal sized upstream says so with sizeScale (it must match); otherwise the plan is scaled here.
+  const sizeScale=nextSizeScale(this.store);
+  if(signal.sizeScale!=null&&Math.abs(Number(signal.sizeScale)-sizeScale)>1e-9)return this.reject(key,'SIZE_SCALE_STALE',{remember:false});
+  let plan=signal.targetPlan;
+  if(profile&&signal.sizeScale==null&&sizeScale<1&&!signal.dca){
+   plan=scalePlanQuantity(plan,sizeScale);
+   if(!plan)return this.reject(key,'HALF_SIZE_BELOW_MINIMUM_ORDER',{remember:false});
+  }
   if(!profile&&!legacy)return this.reject(key,'TP_PROFILE_UNAVAILABLE',{remember:false});
   if(profile&&(plan?.ok!==true||!plan.profileEvidence||!Array.isArray(plan.targets)||plan.targets.length!==3||
    !Array.isArray(plan.parts)||plan.parts.length!==3||plan.parts.some((part,i)=>!Number.isFinite(part?.fraction)||Math.abs(part.fraction-[.4,.35,.25][i])>1e-10)))
@@ -151,7 +177,7 @@ export class PaperEngine {
    if(!valid)return this.reject(key,'DCA_PLAN_INVALID',{remember:false});
    dca={...structuredClone(d),adds:adds.map(a=>({...structuredClone(a),filled:false})),filledAdds:0};
   }
-  this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+entryTimeoutMs,
+  this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,sizeScale,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+entryTimeoutMs,
    ...(dca?{dca}:{}),
    ...(maxHoldMs?{maxHoldMs}:{}),...(typeof signal.strategy==='string'&&/^[A-Z0-9_]{1,40}$/.test(signal.strategy)?{strategy:signal.strategy}:{}),
    ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),

@@ -30,9 +30,9 @@ import {liveConfig} from './live_orders.mjs';
 import {LiveExecutor} from './live_executor.mjs';
 import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
 import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues} from './venue_execution.mjs';
-import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
+import {PaperEngine,paperCSV,signalKey,nextSizeScale} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
-import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
+import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
@@ -58,6 +58,8 @@ const CONFIG={
  tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
  newsMs:Math.max(60000,Number(process.env.NEWS_POLL_MS||90000)),
  maxRiskUSD:Number(process.env.PAPER_MAX_RISK_USD||6),
+ // Paper positions open at once (1-10). Each new one is half the size of the newest open one.
+ paperMaxPositions:Math.max(1,Math.min(10,Math.round(Number(process.env.PAPER_MAX_POSITIONS)||5))),
  // Paper fills use these venues' quotes and contract rules (best entry wins). Binance = chart only.
  paperVenues:parsePaperVenues(process.env.PAPER_VENUES),
  // Venue book refresh for paper records; BingX's 1.1 s request spacing applies regardless.
@@ -72,6 +74,8 @@ const CONFIG={
  scalpMode:String(process.env.SCALP_MODE||'ON').toUpperCase()!=='OFF',
  scalpMinMovePct:Math.max(1,Math.min(20,Number(process.env.SCALP_MIN_MOVE_PCT)||SCALP_DEFAULTS.minMovePct)),
  scalpIntervalMs:60000,scalpMaxChecks:6,
+ // Scalp timeframes checked (SCALP_INTERVALS, any of 1m,5m,15m; default all three).
+ scalpIntervals:(()=>{const v=String(process.env.SCALP_INTERVALS||'1m,5m,15m').split(',').map(x=>x.trim().toLowerCase()).filter(x=>x in SCALP_TIMEFRAMES);return v.length?[...new Set(v)]:['1m','5m','15m']})(),
  // 180-day backtest: counter-4H-trend reversals lost most (-$275 -> -$41 with this filter).
  scalpTrendFilter:String(process.env.SCALP_TREND_FILTER||'ON').toUpperCase()!=='OFF',
  // Zone scale-in for scalp paper trades: 1,1,2,4,... units on volume zones, cross margin.
@@ -168,7 +172,7 @@ function liveClients(){
  return clients;
 }
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status)});
-const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
+const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,maxPositions:CONFIG.paperMaxPositions,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
 
 // ---- Execution venue books (BingX / Gate.io) -------------------------------------
 // Latest validated book per venue+symbol. Refreshed for technically qualified setups
@@ -500,7 +504,7 @@ let marketWs, retryMs=1500; const changed=new Map();
 function cryptoEntryAllowed(symbol,now=Date.now()){
  if(!storageHealth.healthy||!state.activeSet.has(symbol)||state.rest!=='connected')return false;
  // A scalp entry is approved by its own 5m detection; it lives until its short expiry.
- const scalpPending=paper.store.pending.find(x=>x.market==='CRYPTO'&&x.symbol===symbol&&x.strategy==='SCALP_REVERSAL_5M');
+ const scalpPending=paper.store.pending.find(x=>x.market==='CRYPTO'&&x.symbol===symbol&&isScalpStrategy(x.strategy));
  if(scalpPending)return now<=scalpPending.expiresAt;
  const analysis=state.analyses.get(symbol);
  if(!analysis?.patternConfirmed||!analysis.technicalQualified)return false;
@@ -525,23 +529,30 @@ async function runScalpCheck(now=Date.now()){
  if(!CONFIG.scalpMode||scalpActive||state.rest!=='connected'||!storageHealth.healthy)return;
  scalpActive=true;
  try{
-  const candidates=moveTracker.candidates({now,minMovePct:CONFIG.scalpMinMovePct,limit:CONFIG.scalpMaxChecks*2})
-   .filter(c=>state.activeSet.has(c.symbol)&&!paper.store.open.some(x=>x.symbol===c.symbol)&&!paper.store.pending.some(x=>x.symbol===c.symbol))
-   .filter(c=>scalpChecked.get(c.symbol)!==Math.floor(now/300000)).slice(0,CONFIG.scalpMaxChecks);
-  scalpState.lastRunAt=now;scalpState.lastCandidates=candidates.map(c=>({symbol:c.symbol,movePct:Number(c.movePct.toFixed(2))}));
-  for(const {symbol} of candidates){
-   scalpChecked.set(symbol,Math.floor(now/300000));scalpState.checks++;
-   let rows;try{rows=await binance(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=5m&limit=60`,20000)}catch(e){scalpState.error=e.message;continue}
-   const det=detectScalpReversal(rows,{symbol,now:Date.now(),settings:{minMovePct:CONFIG.scalpMinMovePct}});
-   const reject=(reasons,extra={})=>{scalpState.recentRejects=[{at:Date.now(),symbol,direction:det.direction??null,reasons,...extra},...scalpState.recentRejects].slice(0,20)};
+  // One job per (symbol, timeframe): the symbol moved at least that timeframe's move size within its window.
+  const busySymbol=symbol=>paper.store.open.some(x=>x.symbol===symbol)||paper.store.pending.some(x=>x.symbol===symbol);
+  const jobs=[];
+  for(const interval of CONFIG.scalpIntervals){
+   const tf=SCALP_TIMEFRAMES[interval],minMovePct=interval==='5m'?CONFIG.scalpMinMovePct:tf.minMovePct,bucket=Math.floor(now/tf.intervalMs);
+   for(const c of moveTracker.candidates({now,windowMs:(SCALP_DEFAULTS.moveWindow+1)*tf.intervalMs,minMovePct,limit:CONFIG.scalpMaxChecks}))
+    if(state.activeSet.has(c.symbol)&&!busySymbol(c.symbol)&&scalpChecked.get(c.symbol+':'+interval)!==bucket)jobs.push({...c,interval,minMovePct,bucket});
+  }
+  const candidates=jobs.sort((a,b)=>b.movePct-a.movePct).slice(0,CONFIG.scalpMaxChecks);
+  scalpState.lastRunAt=now;scalpState.lastCandidates=candidates.map(c=>({symbol:c.symbol,interval:c.interval,movePct:Number(c.movePct.toFixed(2))}));
+  for(const {symbol,interval,minMovePct,bucket} of candidates){
+   if(busySymbol(symbol))continue;
+   scalpChecked.set(symbol+':'+interval,bucket);scalpState.checks++;
+   let rows;try{rows=await binance(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=60`,20000)}catch(e){scalpState.error=e.message;continue}
+   const det=detectScalpReversal(rows,{symbol,now:Date.now(),interval,settings:{minMovePct}});
+   const reject=(reasons,extra={})=>{scalpState.recentRejects=[{at:Date.now(),symbol,interval,direction:det.direction??null,reasons,...extra},...scalpState.recentRejects].slice(0,20)};
    if(!det.ok){reject(det.reasons,{evidence:det.evidence});continue}
    if(CONFIG.scalpTrendFilter){
     let trend=null;try{trend=fourHourTrend(await klines(symbol,'4h',301),Date.now())}catch{}
     if(!trendAllows(det.direction,trend)){reject([trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND_'+trend.toUpperCase()]);continue}
    }
    await Promise.all(CONFIG.paperVenues.map(venue=>refreshVenueBook(venue,symbol,{maxAgeMs:3000})));
-   const signal={symbol,direction:det.direction,entry:det.entry,stop:det.stop,atr:det.atr};
-   const selection=selectExecutionVenue({signal,venues:Object.fromEntries(CONFIG.paperVenues.map(v=>[v,venueEntry(v,symbol)])),allowed:CONFIG.paperVenues,maxRiskUSD:CONFIG.maxRiskUSD});
+   const signal={symbol,direction:det.direction,entry:det.entry,stop:det.stop,atr:det.atr},sizeScale=nextSizeScale(paper.store);
+   const selection=selectExecutionVenue({signal,venues:Object.fromEntries(CONFIG.paperVenues.map(v=>[v,venueEntry(v,symbol)])),allowed:CONFIG.paperVenues,maxRiskUSD:CONFIG.maxRiskUSD*sizeScale});
    const chosen=selection.chosen;
    if(!chosen){reject(['EXECUTION_VENUE_UNAVAILABLE',...selection.candidates.flatMap(c=>c.reasons).slice(0,4)]);continue}
    const contract=venueEntry(chosen.venue,symbol).contract,costs=venueCosts(contract,chosen.estimate.spreadBps);
@@ -557,7 +568,7 @@ async function runScalpCheck(now=Date.now()){
     const deep=CONFIG.dcaZoneDays>3?await deepProfiles.get(symbol,{tickSize:chartTick,eligible:true}):null;
     const zones=[...profile.profile.hvn,...(deep?.ok?deep.profile.hvn:[])];
     const balanceUSD=CONFIG.paperBalanceUSD+paper.store.closed.reduce((sum,x)=>sum+(Number(x.realizedPnLUSD)||0),0);
-    dca=planZoneDca({direction:det.direction,entry:chosen.estimate.entryBasis,atr:det.atr,zones,balanceUSD,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,
+    dca=planZoneDca({direction:det.direction,entry:chosen.estimate.entryBasis,atr:det.atr,zones,balanceUSD,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct*sizeScale,
      tickSize:chosen.estimate.tickSize,quantityStep:chosen.estimate.quantityStep,minQuantity:chosen.estimate.minQuantity,minNotional:chosen.estimate.minNotional,takerRate:costs.takerRate,
      settings:{maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds}});
     if(!dca.ok){reject(dca.reasons);continue}
@@ -566,15 +577,15 @@ async function runScalpCheck(now=Date.now()){
     if(!plan.ok){reject(plan.reasons);continue}
    }
    const row={symbol,direction:det.direction,pattern:det.pattern,entry:chosen.estimate.entryBasis,stop,atr:det.atr,patternConfirmedAt:det.barAt,...(dca?{dca}:{}),
-    managementVersion:'VOLUME_PROFILE_V1',targetPlan:plan,targets:plan.targets,strategy:'SCALP_REVERSAL_5M',
-    entryTimeoutMs:SCALP_DEFAULTS.entryTimeoutMs,maxHoldMs:SCALP_DEFAULTS.maxHoldMs,executionVenue:chosen.venue,venueSymbol:contract.venueSymbol,
+    managementVersion:'VOLUME_PROFILE_V1',targetPlan:plan,targets:plan.targets,strategy:det.strategy,sizeScale,
+    entryTimeoutMs:det.entryTimeoutMs,maxHoldMs:det.maxHoldMs,executionVenue:chosen.venue,venueSymbol:contract.venueSymbol,
     venueContract:{tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
      decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null}};
    const accepted=paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
-   const item={at:Date.now(),symbol,direction:det.direction,pattern:det.pattern,venue:chosen.venue,entry:row.entry,stop:row.stop,targets:plan.targets,
+   const item={at:Date.now(),symbol,interval,direction:det.direction,pattern:det.pattern,venue:chosen.venue,entry:row.entry,stop:row.stop,targets:plan.targets,
     netRR:Number(quality.estimatedNetRR.toFixed(2)),evidence:det.evidence,paperAccepted:accepted,...(dca?{dca:{adds:dca.adds.map(a=>({price:a.price,units:a.units})),stop:dca.stop,maxLossUSD:dca.full.maxLossUSD,maxLossPct:dca.full.maxLossPct,liquidationPrice:dca.full.liquidationPrice,leverage:dca.leverage}}:{})};
    scalpState.signals=[item,...scalpState.signals].slice(0,30);
-   if(accepted){send('scalp',item);console.log('[SCALP]',symbol,det.direction,det.evidence.movePct+'%')}
+   if(accepted){send('scalp',item);console.log('[SCALP]',interval,symbol,det.direction,det.evidence.movePct+'%')}
    else reject(['PAPER_REJECTED:'+(paper.store.skipped.at(-1)?.reason||'unknown')]);
   }
  }catch(e){scalpState.error=e.message}
