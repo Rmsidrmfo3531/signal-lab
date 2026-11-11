@@ -198,5 +198,5 @@ npm run test:strategy:compare -- --input 과거데이터.json
 
 - 바이낸스에 있는 종목은 지금처럼 바이낸스 차트로 판단합니다.
 - 바이낸스에 없고 Gate.io·BingX에만 있는 **코인**은 그 거래소 차트(1H·4H·15m, Gate.io 우선, 없으면 BingX)로 같은 규칙(패턴·90점·매물대 TP·손익비 1.8)을 적용합니다. 주식·원자재·지수 토큰은 제외합니다.
-- 대상: 24h 거래대금이 `VENUE_ONLY_REFERENCE`(기본 `AKEUSDT,JCTUSDT`) 중 가장 작은 값 이상. `VENUE_ONLY_MIN_VOLUME_USDT`로 금액을 직접 정할 수도 있습니다. 최대 `VENUE_ONLY_MAX`(150)개, 1분에 `VENUE_ONLY_BATCH`(6)개씩 차례로 확인. 목록은 10분마다 갱신.
+- 대상: 기준선 이상인 코인 **전부**. 기준선 = `VENUE_ONLY_REFERENCE`(기본 `AKEUSDT,JCTUSDT`, 원하는 규모의 예시) 중 더 작은 24h 거래대금 × `VENUE_ONLY_REFERENCE_RATIO`(기본 0.5, 비슷한 규모까지 포함). `VENUE_ONLY_MIN_VOLUME_USDT`로 금액을 직접 정할 수도 있습니다. 상한 `VENUE_ONLY_MAX`(1000). 모든 코인을 약 40분 안에 한 번씩 확인하도록 1분당 확인 수가 자동으로 늘어납니다(최소 `VENUE_ONLY_BATCH` 6). 목록은 10분마다 갱신.
 - 모의매매만 합니다(실주문 제외). 단타(1·5·15분)는 바이낸스 실시간 시세를 쓰므로 대상이 아닙니다. 끄려면 `VENUE_ONLY_COINS=false`.

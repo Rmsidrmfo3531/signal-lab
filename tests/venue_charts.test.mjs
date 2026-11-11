@@ -30,5 +30,8 @@ test('venue-only list: coins only, not on Binance, tradable, volume at least the
  assert.deepEqual(r.coins.map(x=>x.symbol),['BIGUSDT','AKEUSDT','MIDUSDT','JCTUSDT']);
  assert.deepEqual(r.coins.find(x=>x.symbol==='MIDUSDT').venues,['BINGX']);
  assert.equal(selectVenueOnlyCoins({binanceSymbols:[],contracts,volumes,minVolume:5e6,references:['AKEUSDT']}).coins.length,1);
+ // Half the smaller reference (1M$) also takes coins a bit smaller than the examples.
+ const half=selectVenueOnlyCoins({binanceSymbols:['BTCUSDT'],contracts,volumes,references:['AKEUSDT','JCTUSDT'],referenceRatio:.5});
+ assert.equal(half.threshold,1e6);assert.equal(half.coins.length,4);
  assert.equal(isCoinSymbol('NVDAUSDT'),false);assert.equal(isCoinSymbol('NCCOGOLD2USDUSDT'),false);assert.equal(isCoinSymbol('AKEUSDT'),true);
 });
