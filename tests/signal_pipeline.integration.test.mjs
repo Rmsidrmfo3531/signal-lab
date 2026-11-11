@@ -43,7 +43,7 @@ async function sandbox(config){
  async function start(){
   child=trackChild(spawn(process.execPath,['--import','./tests/mock_pipeline.mjs','server.mjs'],{cwd:app,env:{PATH:process.env.PATH,
    PORT:String(port),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:data,SIGNAL_LAB_TEST_CONTROL:control,SIGNAL_LAB_TEST_REQUESTS:requests,
-   AUTO_UPDATE:'false',PAPER_VENUE_REFRESH_MS:'1000',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',
+   AUTO_UPDATE:'false',PAPER_VENUE_REFRESH_MS:'1000',SIGNAL_PATTERNS:cfg.signalPatterns??'ALL',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',
    ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})},stdio:['ignore','pipe','pipe']}));
   child.stdout.on('data',chunk=>{logs+=String(chunk)});child.stderr.on('data',chunk=>{logs+=String(chunk)});
   await until(()=>get('/api/status'),s=>s.activeCount===(cfg.binanceOffline?0:Object.keys(cfg.scenarios).filter(symbol=>!cfg.unlisted?.includes(symbol)).length),{label:'market discovery '+logs});
@@ -271,5 +271,17 @@ test('the first fresh ticker promotes an already analyzed setup and opens it wit
   assert.equal((await app.get('/api/paper')).openCount,1);
   assert.equal((await app.get('/api/paper/notifications')).history.filter(row=>row.type==='OPEN').length,1,'later ticks must not replay OPEN');
   assert.equal((await app.get('/api/results')).alerts.length,1,'later ticks must not replay the signal alert');
+ }finally{await app.close()}
+});
+
+test('default pattern list: a range breakdown SHORT is detected but not traded, the range breakout LONG still is',{timeout:30000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-short'},prices:{BTCUSDT:ENTRY},signalPatterns:''});
+ try{
+  await app.start();const analyzed=await app.get('/api/analyze?symbol=BTCUSDT');
+  assert.equal(analyzed.patternConfirmed,true,'the pattern itself is still recognised');
+  assert.equal((await app.get('/api/results')).signals.length,0,'not in the backtest-validated list');
+  assert.ok(JSON.stringify(analyzed).includes('SIGNAL_PATTERNS'),'the reason names the setting');
+  await app.write({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY}});await app.get('/api/analyze?symbol=BTCUSDT');
+  assert.equal((await app.get('/api/results')).signals.length,1,'range breakout LONG passes');
  }finally{await app.close()}
 });

@@ -15,7 +15,7 @@ const INTERVAL_MS={'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
 export const DEFAULT_SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT'];
 
 export function parseArgs(argv){
- const out={obstacle:1,trendFilter:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,balance:1000,out:'backtest-results',cache:'backtest-cache'};
+ const out={obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,balance:1000,out:'backtest-results',cache:'backtest-cache'};
  for(let i=0;i<argv.length;i++){
   const key=argv[i],value=argv[i+1];
   if(key==='--days'){out.days=Math.max(7,Math.min(365,Number(value)||60));i++}
@@ -26,6 +26,8 @@ export function parseArgs(argv){
   else if(key==='--balance'){out.balance=Math.max(10,Number(value)||1000);i++}
   else if(key==='--obstacle'){out.obstacle=Math.max(.1,Math.min(1,Number(value)||1));i++}
   else if(key==='--trend-filter'){out.trendFilter=true}
+  else if(key==='--no-trend-filter'){out.trendFilter=false}
+  else if(key==='--all-patterns'){out.allPatterns=true}
  }
  if(!out.symbols.length)out.symbols=DEFAULT_SYMBOLS;
  if(!out.symbols.includes('BTCUSDT'))out.symbols=[...out.symbols];
@@ -74,7 +76,7 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  const all=results.flatMap(r=>r.trades),by=(f)=>{const m=new Map();for(const t of all.filter(f.filter)){const k=f.key(t);if(!m.has(k))m.set(k,[]);m.get(k).push(t)}return m};
  const lines=[],date=t=>new Date(t).toISOString().slice(0,16).replace('T',' ')+' UTC';
  lines.push('Signal Lab 백테스트 결과','='.repeat(60),`기간: ${date(startAt)} ~ ${date(endAt)} (${args.days}일)`,`종목: ${args.symbols.join(', ')}`,
-  `비용 가정: 시장가 수수료 0.06% + 슬리피지 0.02% (진입·청산 매번), 1H·단타 고정 위험 $6/거래`,`TP1 전 매물대 차단 기준: POC의 ${Math.round(args.obstacle*100)}% 이상${args.trendFilter?' · 단타 4H 추세 필터 켬':''}`,
+  `비용 가정: 시장가 수수료 0.06% + 슬리피지 0.02% (진입·청산 매번), 1H·단타 고정 위험 $6/거래`,`TP1 전 매물대 차단 기준: POC의 ${Math.round(args.obstacle*100)}% 이상 · 1H 패턴: ${args.allPatterns?'전체':'박스권 상단 돌파만(--all-patterns로 전체)'} · 단타 4H 추세 필터 ${args.trendFilter?'켬':'끔'}`,
   `체결 가정: 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결`,'');
  lines.push('[1] 1시간봉 전략 (현재 기준: 100점 중 90점 이상)','-'.repeat(60));
  const live=all.filter(t=>t.strategy==='HOURLY'&&t.book==='LIVE');
@@ -130,7 +132,7 @@ export async function main(argv=process.argv.slice(2)){
   const m15=await klines(symbol,'15m',startAt-4*86400000,endAt,args.cache);
   const m5=await klines(symbol,'5m',startAt-6*HOUR,endAt,args.cache);
   process.stdout.write(`1H ${h1.length} · 5m ${m5.length} → 계산 중… `);
-  const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle});
+  const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:{})});
   const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:{leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct}});
   for(const k of ['bars','patterns','validated','scoreOk','planned','chaseSkipped'])hourlyFunnel[k]+=hourly.funnel[k];
   for(const [k,v] of Object.entries(hourly.funnel.planReasons))hourlyFunnel.planReasons[k]=(hourlyFunnel.planReasons[k]||0)+v;

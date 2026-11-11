@@ -7,6 +7,7 @@
 // (38.2 % rarely pays 1R once the entry waits for a closed rejection candle).
 // Pure functions plus a tiny price tracker: no network, no orders.
 import {roundDecimalToStep} from './decimal_grid.mjs';
+import {seededEMA} from './indicators.mjs';
 
 export const SCALP_INTERVAL_MS=300000;
 export const SCALP_PATTERNS=Object.freeze({LONG:'급락 후 반등 롱 (5분)',SHORT:'급등 후 되돌림 숏 (5분)'});
@@ -152,3 +153,13 @@ export class MoveTracker{
   return out.sort((a,b)=>b.movePct-a.movePct).slice(0,limit);
  }
 }
+
+/** 4H trend from closed candles (EMA100/EMA200, as the 1H strategy uses): 'up' | 'down' | 'range' | null. */
+export function fourHourTrend(rows,now=Date.now()){
+ const closed=(Array.isArray(rows)?rows:[]).filter(r=>Number(r?.[6])<now),closes=closed.map(r=>Number(r[4]));
+ if(closes.length<200||!closes.every(positive))return null;
+ const e100=seededEMA(closes,100).at(-1),e200=seededEMA(closes,200).at(-1),c=closes.at(-1);
+ return e100>e200&&c>e200?'up':e100<e200&&c<e200?'down':'range';
+}
+/** 180-day backtest: fading the 4H trend lost most; no rebound LONG in a downtrend, no fade SHORT in an uptrend. */
+export function trendAllows(direction,trend){return trend!==null&&!(direction==='LONG'&&trend==='down')&&!(direction==='SHORT'&&trend==='up')}

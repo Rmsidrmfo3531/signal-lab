@@ -13,12 +13,14 @@
 import {analyze} from './engine.mjs';
 import {buildKlineVolumeProfile} from './volume_profile.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
-import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS} from './scalp_reversal.mjs';
+import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS} from './dca_plan.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {seededEMA} from './indicators.mjs';
 
 export const HOUR=3600000,M5=300000,M15=900000;
+// Same default as the server (SIGNAL_PATTERNS): only the range breakout trades. null = every pattern.
+export const LIVE_PATTERNS=Object.freeze(['박스권 상단 돌파']);
 export const BACKTEST_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:2,spreadBps:1,fundingRate:.0001,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'});
 const FRACTIONS=[.4,.35,.25];
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
@@ -88,7 +90,7 @@ function profileAt(m15Raw,now,symbol,tick){
 // targetMode, breakeven after TP1, stopScale (>1 widens the stop away from the entry),
 // patterns / directions (only trade these), endAt (exclusive signal cut-off).
 export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=Infinity,riskUSD=6,minScore=90,costs=BACKTEST_COSTS,
- minNetRR=1.8,obstacleFraction=1,targetMode='HVN_THEN_R',breakeven=true,stopScale=1,patterns=null,directions=null}){
+ minNetRR=1.8,obstacleFraction=1,targetMode='HVN_THEN_R',breakeven=true,stopScale=1,patterns=LIVE_PATTERNS,directions=null}){
  const m5c=m5.map(toCandle),funnel={bars:0,patterns:0,validated:0,scoreOk:0,planned:0,chaseSkipped:0,planReasons:{}},trades=[];
  // LIVE = the live rule (score >= minScore). Each score bucket is its own sequential book,
  // so a bucket's trades are never crowded out by trades of another bucket.
@@ -129,7 +131,7 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
 
 /** 5m reversal scalp replay, without and with the zone scale-in plan. */
 // trendFilter: no rebound LONG while the 4H trend is down, no fade SHORT while it is up (needs h4).
-export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=false,filters,startAt,endAt=Infinity,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={},minNetRR=SCALP_DEFAULTS.minNetRR,maxHoldMs=SCALP_DEFAULTS.maxHoldMs}){
+export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h4),filters,startAt,endAt=Infinity,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={},minNetRR=SCALP_DEFAULTS.minNetRR,maxHoldMs=SCALP_DEFAULTS.maxHoldMs}){
  const m5c=m5.map(toCandle),funnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},trades=[];
  const busy={FIXED:-1,DCA:-1};let balance=balanceUSD;
  // 4H trend after each closed 4H candle (EMA100/EMA200 as in the 1H strategy), for the optional filter.
@@ -142,7 +144,7 @@ export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=false,filters,s
   const closeAt=Number(m5[i][6]);if(closeAt<startAt||closeAt>=endAt)continue;funnel.bars++;
   const now=closeAt+1000,det=detectScalpReversal(m5.slice(i-59,i+1),{symbol,now,settings});
   if(!det.ok)continue;funnel.signals++;
-  if(trendFilter){const tr=trendAt(now);if(tr===null||det.direction==='LONG'&&tr==='down'||det.direction==='SHORT'&&tr==='up'){funnel.trendBlocked++;continue}}
+  if(trendFilter&&!trendAllows(det.direction,trendAt(now))){funnel.trendBlocked++;continue}
   const k=i+1,next=m5c[k],dir=det.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
   det.stop=onTick(det.stop,filters.tickSize,dir===1?'DOWN':'UP');
   if(dir*(entry-det.stop)<=0||dir*(det.targets[0]-entry)<=0){funnel.entrySkipped++;continue}
