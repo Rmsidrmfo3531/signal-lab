@@ -1,5 +1,6 @@
 import {gradeSetup,STRICT_MIN_SCORE,MIN_CLOSED_4H_BARS,SCORE_VERSION} from './quality.mjs';
 import {seededEMA,atrWilder} from './indicators.mjs';
+import {prepare as preparePatternSeries,leeTrendline,leeMaCross} from './pattern_detectors.mjs';
 // Price-action scanner for closed Binance futures candles. No trading or order execution.
 export const number = value => Number(value);
 export function normalizedKlines(rows, now=Date.now()) {
@@ -185,6 +186,14 @@ export function analyze(symbol, h1Rows, h4Rows, m15Rows=[], priceOverride=null, 
     }
   }
 
+  // From the user's video lessons; kept after a 180-day / 12-symbol backtest (robust to
+  // parameter changes): a rising trendline broken downward on volume, and a 5/20 SMA dead
+  // cross on volume below the 50 SMA. The 4H EMA score keeps them out of 4H uptrends.
+  {
+    const series=preparePatternSeries(h1.map(x=>({t:x.time,o:x.open,h:x.high,l:x.low,c:x.close,v:x.volume,ct:x.closeTime}))),j=series.c.length-1;
+    const tl=leeTrendline(series,j,-1);if(tl)push('SHORT','상승 추세선 이탈 숏',tl.entry,tl.stop,'거래량 동반 꼬리를 이은 상승 추세선을 거래량과 함께 하향 종가 이탈');
+    const dc=leeMaCross(series,j,-1);if(dc)push('SHORT','5/20 데드크로스 숏',dc.entry,dc.stop,'5·20 이평 데드크로스(거래량 1.5배), 50 이평 아래');
+  }
   // Completed reversal formations (not subjective image recognition): two confirmed
   // swing extremes, a neckline, and a completed 1H close through that neckline.
   // More than one swing pivot is required to avoid labelling a lone V as a double bottom.

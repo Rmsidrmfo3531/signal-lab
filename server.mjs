@@ -83,10 +83,11 @@ const CONFIG={
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  limits:{maxSpreadBps:20,
-  // 180-day / 12-symbol backtest: only the range breakout (LONG) was profitable across the period.
+  // 180-day / 12-symbol backtest: the range breakout (LONG) plus two short set-ups from the
+  // user's video lessons (trendline break, 5/20 dead cross) were the profitable ones.
   // SIGNAL_PATTERNS=ALL trades every pattern; or a comma list of pattern names.
   allowedPatterns:(()=>{const v=String(process.env.SIGNAL_PATTERNS??'').trim();if(v.toUpperCase()==='ALL')return null;
-   return v?v.split(',').map(x=>x.trim()).filter(Boolean):['박스권 상단 돌파']})()}
+   return v?v.split(',').map(x=>x.trim()).filter(Boolean):['박스권 상단 돌파','상승 추세선 이탈 숏','5/20 데드크로스 숏']})()}
 };
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.

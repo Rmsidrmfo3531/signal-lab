@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {backtestHourly,backtestScalp,backtestCandidates,summarize,scoreBucket,HOUR} from '../backtest.mjs';
-import {DETECTORS} from '../research/candidates.mjs';
+import {DETECTORS} from '../pattern_detectors.mjs';
 import {SCALP_DEFAULTS} from '../scalp_reversal.mjs';
 import {DCA_DEFAULTS} from '../dca_plan.mjs';
 
@@ -78,7 +78,7 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  const all=results.flatMap(r=>r.trades),by=(f)=>{const m=new Map();for(const t of all.filter(f.filter)){const k=f.key(t);if(!m.has(k))m.set(k,[]);m.get(k).push(t)}return m};
  const lines=[],date=t=>new Date(t).toISOString().slice(0,16).replace('T',' ')+' UTC';
  lines.push('Signal Lab 백테스트 결과','='.repeat(60),`기간: ${date(startAt)} ~ ${date(endAt)} (${args.days}일)`,`종목: ${args.symbols.join(', ')}`,
-  `비용 가정: 시장가 수수료 0.06% + 슬리피지 0.02% (진입·청산 매번), 1H·단타 고정 위험 $6/거래`,`TP1 전 매물대 차단 기준: POC의 ${Math.round(args.obstacle*100)}% 이상 · 1H 패턴: ${args.allPatterns?'전체':'박스권 상단 돌파만(--all-patterns로 전체)'} · 단타 4H 추세 필터 ${args.trendFilter?'켬':'끔'}`,
+  `비용 가정: 시장가 수수료 0.06% + 슬리피지 0.02% (진입·청산 매번), 1H·단타 고정 위험 $6/거래`,`TP1 전 매물대 차단 기준: POC의 ${Math.round(args.obstacle*100)}% 이상 · 1H 패턴: ${args.allPatterns?'전체':'박스권 상단 돌파·상승 추세선 이탈 숏·5/20 데드크로스 숏(--all-patterns로 전체)'} · 단타 4H 추세 필터 ${args.trendFilter?'켬':'끔'}`,
   `체결 가정: 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결`,'');
  lines.push('[1] 1시간봉 전략 (현재 기준: 100점 중 90점 이상)','-'.repeat(60));
  const live=all.filter(t=>t.strategy==='HOURLY'&&t.book==='LIVE');
