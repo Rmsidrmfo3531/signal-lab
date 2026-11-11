@@ -19,7 +19,7 @@ const ALLOWED_ROOTS = new Set([
  'windows_paper_notify.ps1','tradfi.mjs','tradfi_signal.mjs','tradfi_feed.mjs','updater.mjs','update-cli.mjs','package.json','start.sh',
  'persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','start_auto.bat','start_auto_test.bat','enable_auto_update.bat',
  'disable_auto_update.bat','windows-supervisor.mjs','windows-update-source.mjs','backup_data.bat','migrate_legacy_data.bat','restore_data.bat',
- 'open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-venue-market-data.mjs','scripts/backtest.mjs','backtest.bat','research/candidates.mjs'
+ 'open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-venue-market-data.mjs','scripts/backtest.mjs','backtest.bat','research/candidates.mjs','pattern_detectors.mjs'
 ]);
 const VERSION=/^\d+\.\d+\.\d+$/;
 export function compareVersions(a,b){
