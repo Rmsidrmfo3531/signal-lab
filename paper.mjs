@@ -65,6 +65,14 @@ export function signalKey({market,symbol,direction,pattern,barAt}){
 }
 // Closed trades grouped the way they are compared with the backtest: 1H on the Binance chart,
 // 1H on a venue chart (coins Binance does not list), and the 1m / 5m / 15m scalps.
+// Leverage (배율) from the score: 90 points -> 10x ... 100 points -> 20x (1 point = 1x), the user's
+// 10-20x range. Positions are sized by the stop-loss risk, so leverage sets the margin (증거금) a
+// position ties up, not the loss at the stop.
+export const LEVERAGE_RANGE=Object.freeze({min:10,max:20});
+export function leverageForScore(score){
+ const x=Number(score);if(!Number.isFinite(x))return null;
+ return Math.max(LEVERAGE_RANGE.min,Math.min(LEVERAGE_RANGE.max,Math.round(LEVERAGE_RANGE.min+(x-90))));
+}
 export const BREAKDOWN_GROUPS=Object.freeze([
  {key:'HOURLY_BINANCE',label:'1시간봉 · 바이낸스 차트'},{key:'HOURLY_VENUE',label:'1시간봉 · Gate.io/BingX 차트'},
  {key:'SCALP_REVERSAL_1M',label:'1분 단타'},{key:'SCALP_REVERSAL_5M',label:'5분 단타'},{key:'SCALP_REVERSAL_15M',label:'15분 단타'},{key:'OTHER',label:'기타·이전 기록'}]);
@@ -201,6 +209,7 @@ export class PaperEngine {
   const chartVenue=['BINANCE','GATEIO','BINGX'].includes(signal.analysisVenue)?signal.analysisVenue:null,score=Number(signal.score);
   this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,sizeScale,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+entryTimeoutMs,
    ...(chartVenue?{chartVenue}:{}),...(Number.isFinite(score)&&score>=0&&score<=100?{score}:{}),
+   ...(()=>{const given=Number(signal.leverage),lev=Number.isFinite(given)&&given>=1&&given<=125?Math.round(given):leverageForScore(Number.isFinite(score)&&score>=0&&score<=100?score:NaN);return lev?{leverage:lev}:{}})(),
    ...(dca?{dca}:{}),
    ...(maxHoldMs?{maxHoldMs}:{}),...(typeof signal.strategy==='string'&&/^[A-Z0-9_]{1,40}$/.test(signal.strategy)?{strategy:signal.strategy}:{}),
    ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),
@@ -257,6 +266,7 @@ export class PaperEngine {
     this.store.skipped.push({key:pending.key,reason:'실제 가상 진입체결 후 목표가 방향 무효',at:now});modified++;continue;
    }
    this.store.open.push({...pending,openedAt:at,entryRefPrice:price,entryFill,initialStop:pending.stop,notionalUSD:rounded(n),originalQty:quantity,qtyRemaining:quantity,
+    ...(pending.leverage?{marginUSD:rounded(n/pending.leverage)}:{}),
      exitedPct:0,realizedGrossUSD:0,feesUSD,realizedPnLUSD:-feesUSD,closeParts:[],markPrice:price,lastPriceAt:at,
      halfSpreadBps:spread,quoteGaps:0,...(profile?{plannedLossUSD,initialRiskUSD:rounded(pending.dca&&Number(pending.dca.full?.maxLossUSD)>0?Number(pending.dca.full.maxLossUSD):plannedLossUSD),feeBps,slippageBps,managementEvents:[],targetQuantities:[quantity*.4,quantity*.35,quantity-quantity*.4-quantity*.35]}:{})});
    events.push({type:'OPEN',key:pending.key,market,symbol,direction:pending.direction,at,entryFill,notionalUSD:rounded(n),stop:pending.stop});
@@ -422,13 +432,14 @@ export class PaperEngine {
 // strategy: HOURLY_1H or SCALP_REVERSAL_1M/5M/15M; chartVenue: whose chart judged it; rMultiple:
 // realized PnL / risk at entry (for a scale-in plan the risk is the plan's full stop loss).
 export const PAPER_CSV_COLUMNS=Object.freeze(['market','executionVenue','symbol','direction','pattern','openedAt','closedAt','entryFill','stop','notionalUSD','closeReason','realizedGrossUSD','feesUSD','realizedPnLUSD','quoteGaps',
- 'strategy','chartVenue','score','sizeScale','initialRiskUSD','rMultiple','dcaAddsFilled','holdMinutes']);
+ 'strategy','chartVenue','score','sizeScale','initialRiskUSD','rMultiple','dcaAddsFilled','holdMinutes','quantity','leverage','marginUSD']);
 const csvValue=(x,k)=>{
  if(k==='executionVenue')return venueOf(x);
  if(k==='strategy')return x.strategy||(x.market==='CRYPTO'?'HOURLY_1H':'');
  if(k==='chartVenue')return x.chartVenue||(x.market==='CRYPTO'?'BINANCE':'');
  if(k==='rMultiple')return Number(x.initialRiskUSD)>0&&Number.isFinite(Number(x.realizedPnLUSD))?(Number(x.realizedPnLUSD)/Number(x.initialRiskUSD)).toFixed(3):'';
  if(k==='dcaAddsFilled')return x.dca?x.dca.filledAdds??0:'';
+ if(k==='quantity')return x.originalQty??'';
  if(k==='holdMinutes')return Number(x.openedAt)&&Number(x.closedAt)?Math.round((x.closedAt-x.openedAt)/60000):'';
  return x[k]??'';
 };

@@ -37,3 +37,13 @@ test('closed trades are grouped by strategy and chart for the comparison table',
  assert.equal(g.HOURLY_VENUE.netUSD,-1);assert.equal(g.SCALP_REVERSAL_5M.averageR,.5);assert.equal(g.SCALP_REVERSAL_15M.trades,0);assert.equal(g.OTHER.trades,1);
  assert.equal(paperBreakdown([]).some(x=>x.key==='OTHER'),false,'empty "other" row hidden');
 });
+
+import {leverageForScore} from '../paper.mjs';
+test('leverage from the score: 90 -> 10x, 95 -> 15x, 100 -> 20x; a given leverage (scalps) wins',()=>{
+ assert.deepEqual([80,90,92.4,95,100,120].map(leverageForScore),[10,10,12,15,20,20]);assert.equal(leverageForScore(undefined),null);
+ const engine=new PaperEngine({},{now:()=>START});
+ engine.register(signal({score:95}),{quoteEligible:true});engine.register(signal({symbol:'CUSDT',leverage:10}),{quoteEligible:true});
+ assert.equal(engine.store.pending.find(x=>x.symbol==='AKEUSDT').leverage,15);assert.equal(engine.store.pending.find(x=>x.symbol==='CUSDT').leverage,10);
+ const csv=paperCSV([{market:'CRYPTO',symbol:'AKEUSDT',originalQty:2.6,leverage:15,marginUSD:17.33}]).split('\r\n')[1];
+ assert.match(csv,/"2\.6","15","17\.33"$/);
+});
