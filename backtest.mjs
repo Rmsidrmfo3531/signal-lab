@@ -14,7 +14,7 @@ import {analyze} from './engine.mjs';
 import {buildKlineVolumeProfile} from './volume_profile.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,trendAllows} from './scalp_reversal.mjs';
-import {planZoneDca,DCA_DEFAULTS} from './dca_plan.mjs';
+import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE} from './dca_plan.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {seededEMA} from './indicators.mjs';
 import {DETECTORS,prepare} from './pattern_detectors.mjs';
@@ -81,10 +81,10 @@ export function stepQuantity(raw,step){
 }
 // Closed 15m candles only (no look-ahead). Between 15m closes the profile is dated at the
 // last 15m close, which is when the server would last have seen a finished 15m candle.
-export function profileAt(m15Raw,now,symbol,tick){
- const end=closedUntil(m15Raw,now),rows=m15Raw.slice(Math.max(0,end-288),end);
+export function profileAt(m15Raw,now,symbol,tick,{candles=288,...options}={}){
+ const end=closedUntil(m15Raw,now),rows=m15Raw.slice(Math.max(0,end-candles),end);
  const at=rows.length?Math.min(now,Number(rows.at(-1)[6])+1000):now;
- return buildKlineVolumeProfile({symbol,klines:rows,receivedAt:at,tickSize:String(tick),dataSource:'SYNTHETIC_TEST'},{now:at});
+ return buildKlineVolumeProfile({symbol,klines:rows,receivedAt:at,tickSize:String(tick),dataSource:'SYNTHETIC_TEST'},{now:at,...options});
 }
 
 /** 1H/4H strategy replay: the live rule (score >= minScore) plus one book per score bucket. */
@@ -162,15 +162,18 @@ export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h
   }
   if(k>busy.DCA){
    const profile=profileAt(m15,now,symbol,filters.tickSize);
-   const plan=profile.ok?planZoneDca({direction:det.direction,entry,atr:det.atr,zones:profile.profile.hvn,balanceUSD:balance,leverage:dca.leverage??DCA_DEFAULTS.leverage,
+   // Deeper adds: zones from a longer 15m window (dca.zoneDays > 3) join the 3-day zones.
+   const deep=profile.ok&&(dca.zoneDays??DCA_DEFAULTS.zoneDays)>3?profileAt(m15,now,symbol,filters.tickSize,DCA_DEEP_PROFILE(dca.zoneDays??DCA_DEFAULTS.zoneDays)):null;
+   const zones=profile.ok?[...profile.profile.hvn,...(deep?.ok?deep.profile.hvn:[])]:[];
+   const plan=profile.ok?planZoneDca({direction:det.direction,entry,atr:det.atr,zones,balanceUSD:balance,leverage:dca.leverage??DCA_DEFAULTS.leverage,
     unitPct:dca.unitPct??DCA_DEFAULTS.unitPct,tickSize:filters.tickSize,quantityStep:filters.stepSize,minQuantity:filters.minQty,minNotional:filters.minNotional,
-    takerRate:costs.takerRate,settings:{maxLossPct:dca.maxLossPct??DCA_DEFAULTS.maxLossPct}}):{ok:false,reasons:['PROFILE_'+(profile.reasons?.[0]||'UNAVAILABLE')]};
+    takerRate:costs.takerRate,settings:{maxLossPct:dca.maxLossPct??DCA_DEFAULTS.maxLossPct,maxAdds:dca.maxAdds??DCA_DEFAULTS.maxAdds}}):{ok:false,reasons:['PROFILE_'+(profile.reasons?.[0]||'UNAVAILABLE')]};
    if(!plan.ok){for(const r of plan.reasons)funnel.dcaRejected[r]=(funnel.dcaRejected[r]||0)+1}
    else{
     const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:plan.stop,targets:quality.targets,quantity:plan.unitQty,
      adds:plan.adds.map(a=>({price:a.price,quantity:a.quantity})),maxHoldMs,costs});
     if(t){busy.DCA=t.endIdx;const before=balance;balance+=t.netUSD;
-     trades.push({...base,book:'DCA',stop:plan.stop,targets:quality.targets,plannedAdds:plan.adds.length,plannedMaxLossPct:plan.full.maxLossPct,
+     trades.push({...base,book:'DCA',stop:plan.stop,targets:quality.targets,plannedAdds:plan.adds.length,zonesFound:plan.adds.length+plan.addsDropped,plannedMaxLossPct:plan.full.maxLossPct,
       balanceBefore:before,balanceAfter:balance,pnlPctOfBalance:t.netUSD/before*100,worstOpenPctOfBalance:t.worstOpenUSD/before*100,...t})}
    }
   }

@@ -33,7 +33,7 @@ import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,par
 import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
-import {planZoneDca,DCA_DEFAULTS} from './dca_plan.mjs';
+import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
 
@@ -80,6 +80,9 @@ const CONFIG={
  dcaLeverage:Math.max(10,Math.min(20,Number(process.env.DCA_LEVERAGE)||DCA_DEFAULTS.leverage)),
  dcaUnitPct:Math.max(.01,Math.min(10,Number(process.env.DCA_UNIT_PCT)||DCA_DEFAULTS.unitPct)),
  dcaMaxLossPct:Math.max(1,Math.min(95,Number(process.env.DCA_MAX_LOSS_PCT)||DCA_DEFAULTS.maxLossPct)),
+ // Adds per scale-in plan: 5-10 (default 10). Zones come from the 3-day profile plus a
+ // deeper 15m profile over DCA_ZONE_DAYS (3-15, default 14) so 5+ adds have zones to sit on.
+ dcaMaxAdds:clampMaxAdds(process.env.DCA_MAX_ADDS),dcaZoneDays:clampZoneDays(process.env.DCA_ZONE_DAYS),
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  limits:{maxSpreadBps:20,
@@ -133,6 +136,8 @@ const publicReadBudget=new PublicReadBudget();
 let rawMarketTickers=[];
 let marketStatsReceivedAt=0,marketStatsPending=null;
 const profiles=new VolumeProfileCollector({request:url=>binance(url,0)});
+const deepZoneProfile=DCA_DEEP_PROFILE(CONFIG.dcaZoneDays);
+const deepProfiles=new VolumeProfileCollector({request:url=>binance(url,0),candles:deepZoneProfile.candles,profileOptions:{minCandles:deepZoneProfile.minCandles,targetBins:deepZoneProfile.targetBins,hvnMinFractionOfPoc:deepZoneProfile.hvnMinFractionOfPoc}});
 const structureBySymbol=new Map();
 const historyBySymbol=new Map();
 function recentStructures(){return [...structureBySymbol.values()].flat().filter(x=>Date.now()-x.observedAt<2*3600000).sort((a,b)=>b.observedAt-a.observedAt).slice(0,100)}
@@ -513,7 +518,7 @@ function cryptoEntryAllowed(symbol,now=Date.now()){
 }
 // ---- 5m reversal scalp mode (paper only) ----
 const moveTracker=new MoveTracker();
-const scalpState={enabled:CONFIG.scalpMode,mode:'PAPER_ONLY',minMovePct:CONFIG.scalpMinMovePct,dca:{enabled:CONFIG.dcaMode,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,maxLossPct:CONFIG.dcaMaxLossPct,paperBalanceUSD:CONFIG.paperBalanceUSD,marginMode:'CROSS'},lastRunAt:0,lastCandidates:[],checks:0,signals:[],recentRejects:[],error:''};
+const scalpState={enabled:CONFIG.scalpMode,mode:'PAPER_ONLY',minMovePct:CONFIG.scalpMinMovePct,dca:{enabled:CONFIG.dcaMode,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds,zoneDays:CONFIG.dcaZoneDays,paperBalanceUSD:CONFIG.paperBalanceUSD,marginMode:'CROSS'},lastRunAt:0,lastCandidates:[],checks:0,signals:[],recentRejects:[],error:''};
 const scalpChecked=new Map(); // symbol -> last evaluated candle close time
 let scalpActive=false;
 async function runScalpCheck(now=Date.now()){
@@ -548,10 +553,13 @@ async function runScalpCheck(now=Date.now()){
     const chartTick=Number(state.quotes.get(symbol)?.filters?.PRICE_FILTER?.tickSize);
     const profile=Number.isFinite(chartTick)&&chartTick>0?await profiles.get(symbol,{tickSize:chartTick,eligible:true}):null;
     if(!profile?.ok){reject(['DCA_VOLUME_PROFILE_UNAVAILABLE',...(profile?.reasons??[]).slice(0,3)]);continue}
+    // Deeper zones are optional: if that fetch fails the plan uses the 3-day zones only.
+    const deep=CONFIG.dcaZoneDays>3?await deepProfiles.get(symbol,{tickSize:chartTick,eligible:true}):null;
+    const zones=[...profile.profile.hvn,...(deep?.ok?deep.profile.hvn:[])];
     const balanceUSD=CONFIG.paperBalanceUSD+paper.store.closed.reduce((sum,x)=>sum+(Number(x.realizedPnLUSD)||0),0);
-    dca=planZoneDca({direction:det.direction,entry:chosen.estimate.entryBasis,atr:det.atr,zones:profile.profile.hvn,balanceUSD,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,
+    dca=planZoneDca({direction:det.direction,entry:chosen.estimate.entryBasis,atr:det.atr,zones,balanceUSD,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,
      tickSize:chosen.estimate.tickSize,quantityStep:chosen.estimate.quantityStep,minQuantity:chosen.estimate.minQuantity,minNotional:chosen.estimate.minNotional,takerRate:costs.takerRate,
-     settings:{maxLossPct:CONFIG.dcaMaxLossPct}});
+     settings:{maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds}});
     if(!dca.ok){reject(dca.reasons);continue}
     stop=dca.stop;
     plan=buildScalpPlan({signal:{...det,stop},estimate:{...chosen.estimate,quantity:dca.unitQty},costs,minNetRR:0});

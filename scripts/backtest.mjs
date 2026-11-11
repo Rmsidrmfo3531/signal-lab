@@ -9,14 +9,14 @@ import {pathToFileURL} from 'node:url';
 import {backtestHourly,backtestScalp,backtestCandidates,summarize,scoreBucket,HOUR} from '../backtest.mjs';
 import {DETECTORS} from '../pattern_detectors.mjs';
 import {SCALP_DEFAULTS} from '../scalp_reversal.mjs';
-import {DCA_DEFAULTS} from '../dca_plan.mjs';
+import {DCA_DEFAULTS,clampMaxAdds,clampZoneDays} from '../dca_plan.mjs';
 
 const BASE='https://fapi.binance.com';
 const INTERVAL_MS={'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
 export const DEFAULT_SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT'];
 
 export function parseArgs(argv){
- const out={candidates:false,obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,balance:1000,out:'backtest-results',cache:'backtest-cache'};
+ const out={candidates:false,obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,maxAdds:DCA_DEFAULTS.maxAdds,zoneDays:DCA_DEFAULTS.zoneDays,balance:1000,out:'backtest-results',cache:'backtest-cache'};
  for(let i=0;i<argv.length;i++){
   const key=argv[i],value=argv[i+1];
   if(key==='--days'){out.days=Math.max(7,Math.min(365,Number(value)||60));i++}
@@ -24,6 +24,8 @@ export function parseArgs(argv){
   else if(key==='--leverage'){out.leverage=Math.max(10,Math.min(20,Number(value)||10));i++}
   else if(key==='--unit-pct'){out.unitPct=Math.max(.01,Math.min(10,Number(value)||DCA_DEFAULTS.unitPct));i++}
   else if(key==='--max-loss-pct'){out.maxLossPct=Math.max(1,Math.min(95,Number(value)||30));i++}
+  else if(key==='--max-adds'){out.maxAdds=clampMaxAdds(value);i++}
+  else if(key==='--zone-days'){out.zoneDays=clampZoneDays(value);i++}
   else if(key==='--balance'){out.balance=Math.max(10,Number(value)||1000);i++}
   else if(key==='--obstacle'){out.obstacle=Math.max(.1,Math.min(1,Number(value)||1));i++}
   else if(key==='--trend-filter'){out.trendFilter=true}
@@ -144,7 +146,7 @@ export async function main(argv=process.argv.slice(2)){
   const m5=await klines(symbol,'5m',startAt-6*HOUR,endAt,args.cache);
   process.stdout.write(`1H ${h1.length} · 5m ${m5.length} → 계산 중… `);
   const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:{})});
-  const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:{leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct}});
+  const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:{leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays}});
   for(const k of ['bars','patterns','validated','scoreOk','planned','chaseSkipped'])hourlyFunnel[k]+=hourly.funnel[k];
   for(const [k,v] of Object.entries(hourly.funnel.planReasons))hourlyFunnel.planReasons[k]=(hourlyFunnel.planReasons[k]||0)+v;
   for(const k of ['bars','signals','qualityRejected','entrySkipped'])scalpFunnel[k]+=scalp.funnel[k];
