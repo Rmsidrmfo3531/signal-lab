@@ -94,3 +94,8 @@ test('max adds is 5-10 (default 10) and caps the plan; the deep zone window is 3
  for(const n of [5,7]){const p=planZoneDca({...loose,settings:{...loose.settings,maxAdds:n}});assert.equal(p.adds.length,n);assert.equal(p.maxAdds,n);
   assert.ok(p.stop<p.adds.at(-1).zone.priceLow,'stop moves to beyond the last zone kept')}
 });
+
+import {dcaZoneDaysFor} from '../dca_plan.mjs';
+test('1m scalps use only the 3-day zones; 5m and 15m keep the configured window',()=>{
+ assert.equal(dcaZoneDaysFor('1m',14),3);assert.equal(dcaZoneDaysFor('5m',14),14);assert.equal(dcaZoneDaysFor('15m',10),10);
+});
