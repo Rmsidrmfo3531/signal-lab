@@ -3,9 +3,11 @@
 // depth are 1 request/s per IP, so requests are serialized with spacing.
 // Primary host .com; .pro only after a network failure (not a business error).
 import {normalizeBingXContract,normalizeBook,venueSymbol} from './venue_market_data.mjs';
+import {bingxKlineRows} from './venue_charts.mjs';
 
 export const BINGX_HOSTS=Object.freeze(['https://open-api.bingx.com','https://open-api.bingx.pro']);
-const PATHS=Object.freeze({contracts:'/openApi/swap/v2/quote/contracts',depth:'/openApi/swap/v2/quote/depth',time:'/openApi/swap/v2/server/time'});
+const PATHS=Object.freeze({contracts:'/openApi/swap/v2/quote/contracts',depth:'/openApi/swap/v2/quote/depth',time:'/openApi/swap/v2/server/time',
+ tickers:'/openApi/swap/v2/quote/ticker',klines:'/openApi/swap/v3/quote/klines'});
 export const BINGX_MIN_INTERVAL_MS=1100;
 const MAX_BYTES=4_000_000;
 
@@ -66,6 +68,11 @@ export class BingXMarketData{
   this.contracts=map;this.rawContracts=raws;this.contractsAt=this.now();
   await this.syncClock().catch(()=>{}); // re-measured with every contract refresh (10 min)
   return map;
+ }
+ async tickers(){const data=await this.#get(PATHS.tickers);if(!Array.isArray(data))throw new VenueHttpError('TICKERS_SCHEMA');return data}
+ async klines(symbol,interval,limit){
+  const rows=bingxKlineRows(await this.#get(PATHS.klines,{symbol:venueSymbol('BINGX',symbol),interval,limit:String(Math.min(1440,limit))}),interval);
+  if(!rows)throw new VenueHttpError('KLINES_SCHEMA');return rows;
  }
  async book(symbol){
   const data=await this.#get(PATHS.depth,{symbol:venueSymbol('BINGX',symbol),limit:'5'});

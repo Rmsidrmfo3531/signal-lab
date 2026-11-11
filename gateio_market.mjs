@@ -3,9 +3,11 @@
 // limited to 200 requests per 10 s per IP; requests are spaced well below that.
 import {normalizeGateContract,normalizeBook,venueSymbol} from './venue_market_data.mjs';
 import {VenueHttpError,readLimitedJSON,spacedQueue} from './bingx_market.mjs';
+import {gateKlineRows} from './venue_charts.mjs';
 
 export const GATEIO_HOST='https://api.gateio.ws';
-const PATHS=Object.freeze({contracts:'/api/v4/futures/usdt/contracts',book:'/api/v4/futures/usdt/order_book',time:'/api/v4/spot/time'});
+const PATHS=Object.freeze({contracts:'/api/v4/futures/usdt/contracts',book:'/api/v4/futures/usdt/order_book',time:'/api/v4/spot/time',
+ tickers:'/api/v4/futures/usdt/tickers',candles:'/api/v4/futures/usdt/candlesticks'});
 export const GATEIO_MIN_INTERVAL_MS=120;
 
 export class GateMarketData{
@@ -41,6 +43,13 @@ export class GateMarketData{
   this.contracts=map;this.rawContracts=raws;this.contractsAt=this.now();
   await this.syncClock().catch(()=>{});
   return map;
+ }
+ async tickers(){const data=await this.#get(PATHS.tickers);if(!Array.isArray(data))throw new VenueHttpError('TICKERS_SCHEMA');return data}
+ /** Closed and forming candles in the Binance kline layout (chart data for coins Binance does not list). */
+ async klines(symbol,interval,limit){
+  const data=await this.#get(PATHS.candles,{contract:venueSymbol('GATEIO',symbol),interval,limit:String(Math.min(2000,limit))});
+  const rows=gateKlineRows(data,interval,{multiplier:this.contracts?.get(symbol)?.contractSizeBase??1});
+  if(!rows)throw new VenueHttpError('KLINES_SCHEMA');return rows;
  }
  async book(symbol){
   const data=await this.#get(PATHS.book,{contract:venueSymbol('GATEIO',symbol),limit:'5'});
