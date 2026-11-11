@@ -30,6 +30,11 @@ async function inspect(name,url,limit=9000){
     if(body.marketError)log(`   상장 연결 오류=${String(body.marketError).slice(0,250)}`);
     if(body.lastScanFailures?.length)log(`   캔들 조회 실패=${body.lastScanFailures.slice(0,4).join(' | ').slice(0,350)}`);
     // Counts only (reason codes, no prices or positions): why technically passed setups still have no target plan.
+    const f=body.scanFunnel||{};
+    log(`   최근 분석 ${f.uniqueAnalyzed??'-'}종 · 패턴 발견 ${f.patternCount??'-'} · 기술검증 통과 ${f.technicalPassed??'-'} · 호가·목표가까지 통과(최종 신호) ${f.venuePassed??'-'}`);
+    if(Array.isArray(f.topReasons)&&f.topReasons.length)log(`   탈락 사유 상위=${f.topReasons.slice(0,6).map(x=>typeof x==='string'?x:`${x.reason??x.label??''} ${x.count??''}`).join(' | ').slice(0,400)}`);
+    const vo=body.venueOnly;
+    if(vo)log(`   바이낸스 미상장 코인(Gate.io·BingX 차트)=${vo.enabled?vo.count+'종':'꺼짐'}`+(vo.threshold?` · 거래대금 기준 ${(vo.threshold/1e6).toFixed(2)}M$`:'')+(vo.droppedByMarketCap?` · 시총 제외 ${JSON.stringify(vo.droppedByMarketCap)}`:'')+(vo.error?` · 오류 ${String(vo.error).slice(0,120)}`:''));
     const plan=body.scanFunnel?.targetPlan;
     if(plan&&Number.isFinite(plan.technicalCandidates)){
      const blocked=Array.isArray(plan.blocked)?plan.blocked.slice(0,4).map(x=>`${x.reason} ${x.count}종`).join(' | ').slice(0,300):'';
@@ -51,4 +56,5 @@ await inspect('Binance 선물','https://fapi.binance.com/fapi/v1/exchangeInfo');
 log('진단 완료. 시그널 0개는 엄격 필터 때문일 수도 있으므로 위 스캔 성공/실패 및 연결 상태를 먼저 확인하세요.');
 const out=path.join(dataDir,'scanner_diagnostics.txt');
 fs.writeFileSync(out,lines.join('\r\n')+'\r\n','utf8');
-log(`결과 파일: ${out}`);
+try{fs.writeFileSync(path.join(process.cwd(),'scanner_diagnostics.txt'),lines.join('\r\n')+'\r\n','utf8')}catch{}
+log(`결과 파일: ${out} (프로그램 폴더에도 scanner_diagnostics.txt 저장)`);
