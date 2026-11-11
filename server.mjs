@@ -41,6 +41,8 @@ import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const storage=prepareData(__dirname);
 const releaseDataLock=acquireDataLock(storage.dir);
+// Heartbeat so a second PC sharing this data folder (OneDrive etc.) sees the server is running.
+setInterval(()=>releaseDataLock.heartbeat?.(),30000).unref?.();
 process.on('exit',releaseDataLock);
 const envfile=storage.envPath;
 if(fs.existsSync(envfile))for(const line of fs.readFileSync(envfile,'utf8').split(/\r?\n/)){

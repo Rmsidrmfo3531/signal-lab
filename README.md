@@ -201,3 +201,10 @@ npm run test:strategy:compare -- --input 과거데이터.json
 - 대상: 기준선 이상인 코인 **전부**. 기준선 = `VENUE_ONLY_REFERENCE`(기본 `AKEUSDT,JCTUSDT`, 원하는 규모의 예시) 중 더 작은 24h 거래대금 × `VENUE_ONLY_REFERENCE_RATIO`(기본 0.5, 비슷한 규모까지 포함). `VENUE_ONLY_MIN_VOLUME_USDT`로 금액을 직접 정할 수도 있습니다. 상한 `VENUE_ONLY_MAX`(1000). 모든 코인을 약 40분 안에 한 번씩 확인하도록 1분당 확인 수가 자동으로 늘어납니다(최소 `VENUE_ONLY_BATCH` 6). 목록은 10분마다 갱신.
 - **시총 걸러내기**: CoinGecko 시총 상위 2000개(`VENUE_ONLY_MCAP_PAGES` 8쪽 × 250, 6시간마다 갱신)와 티커·가격(±25%)이 맞아야 합니다. 시총 `VENUE_ONLY_MIN_MARKET_CAP_USD`(1000만$) 미만, 시총을 찾을 수 없는 코인, 24h 선물 거래대금이 시총의 `VENUE_ONLY_MAX_VOLUME_TO_MCAP`(5)배를 넘는 코인(거래량 부풀림 의심)은 뺍니다. 시총 자료를 못 받으면 바이낸스 미상장 코인은 추가하지 않습니다.
 - 모의매매만 합니다(실주문 제외). 단타(1·5·15분)는 바이낸스 실시간 시세를 쓰므로 대상이 아닙니다. 끄려면 `VENUE_ONLY_COINS=false`.
+
+### 두 PC를 번갈아 쓸 때 (`start_shared.bat`)
+
+`start.bat` 대신 `start_shared.bat`로 켜면 모의매매 기록·설정(.env)을 OneDrive의 `SignalLabData` 폴더에 두고 두 PC가 같이 씁니다. 다른 동기화 폴더를 쓰려면 같은 폴더에 `shared_data_dir.txt`를 만들고 첫 줄에 경로를 적으세요.
+- 처음 실행할 때 그 PC의 기존 기록이 공유 폴더로 복사됩니다(공유 폴더에 기록이 없을 때만).
+- 한 번에 한 PC만 켭니다. 다른 PC에서 서버가 켜져 있으면(30초마다 갱신되는 잠금, 3분 기준) 실행을 거부합니다.
+- 바꿀 때: 쓰던 PC의 서버 창 닫기 → OneDrive 동기화 완료(초록 체크) 확인 → 다른 PC에서 `start_shared.bat`.
