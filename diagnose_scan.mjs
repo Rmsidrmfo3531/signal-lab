@@ -34,7 +34,7 @@ async function inspect(name,url,limit=9000){
     log(`   최근 분석 ${f.uniqueAnalyzed??'-'}종 · 패턴 발견 ${f.patternCount??'-'} · 기술검증 통과 ${f.technicalPassed??'-'} · 호가·목표가까지 통과(최종 신호) ${f.venuePassed??'-'}`);
     if(Array.isArray(f.topReasons)&&f.topReasons.length)log(`   탈락 사유 상위=${f.topReasons.slice(0,6).map(x=>typeof x==='string'?x:`${x.reason??x.label??''} ${x.count??''}`).join(' | ').slice(0,400)}`);
     const vo=body.venueOnly;
-    if(vo)log(`   바이낸스 미상장 코인(Gate.io·BingX 차트)=${vo.enabled?vo.count+'종':'꺼짐'}`+(vo.threshold?` · 거래대금 기준 ${(vo.threshold/1e6).toFixed(2)}M$`:'')+(vo.droppedByMarketCap?` · 시총 제외 ${JSON.stringify(vo.droppedByMarketCap)}`:'')+(vo.error?` · 오류 ${String(vo.error).slice(0,120)}`:''));
+    if(vo)log(`   바이낸스 미상장 코인(Gate.io·BingX 차트)=${vo.enabled?vo.count+'종':'꺼짐'}`+(vo.minMarketCap?` · 시총 기준 ${(vo.minMarketCap/1e6).toFixed(1)}M$(${vo.marketCapSource==='REFERENCE'?'기준 코인 시총×비율':'최소값'})`:'')+(vo.threshold?` · 거래대금 ${(vo.threshold/1e6).toFixed(1)}M$ 이상 후보 ${vo.beforeMarketCap??'-'}종`:'')+(vo.droppedByMarketCap?` · 시총 제외 ${JSON.stringify(vo.droppedByMarketCap)}`:'')+(vo.error?` · 오류 ${String(vo.error).slice(0,120)}`:''));
     const plan=body.scanFunnel?.targetPlan;
     if(plan&&Number.isFinite(plan.technicalCandidates)){
      const blocked=Array.isArray(plan.blocked)?plan.blocked.slice(0,4).map(x=>`${x.reason} ${x.count}종`).join(' | ').slice(0,300):'';
