@@ -5,7 +5,11 @@ rem Two PCs, one record: keep the data folder in OneDrive (or any synced folder)
 rem Folder: first line of shared_data_dir.txt next to this file, else %OneDrive%\SignalLabData.
 set "SHARED="
 if exist "%~dp0shared_data_dir.txt" set /p SHARED=<"%~dp0shared_data_dir.txt"
+rem Personal OneDrive first (Explorer shows it as "OneDrive - Personal"), then the default one.
+if "%SHARED%"=="" if not "%OneDriveConsumer%"=="" set "SHARED=%OneDriveConsumer%\SignalLabData"
 if "%SHARED%"=="" if not "%OneDrive%"=="" set "SHARED=%OneDrive%\SignalLabData"
+if "%SHARED%"=="" if exist "%USERPROFILE%\OneDrive - Personal\" set "SHARED=%USERPROFILE%\OneDrive - Personal\SignalLabData"
+if "%SHARED%"=="" if exist "%USERPROFILE%\OneDrive\" set "SHARED=%USERPROFILE%\OneDrive\SignalLabData"
 if "%SHARED%"=="" goto NO_SHARED
 if not exist "%SHARED%" mkdir "%SHARED%"
 if exist "%SHARED%\store.json" goto RUN
