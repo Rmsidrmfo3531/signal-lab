@@ -16,6 +16,8 @@ const json=obj=>new Response(JSON.stringify(obj),{headers:{'content-type':'appli
 const symbols=()=>Object.keys(control().scenarios);
 const listedSymbols=()=>symbols().filter(symbol=>!control().unlisted?.includes(symbol));
 const price=symbol=>Number(control().prices?.[symbol]??(control().scenarios[symbol]==='range'?100:ENTRY));
+// Coins only on the execution venues (not on Binance): control().venueOnly = {SYMBOL: scenario}.
+const venueOnlySymbols=()=>Object.keys(control().venueOnly||{});
 globalThis.fetch=async(input,options={})=>{
  const url=new URL(typeof input==='string'?input:input.url??String(input));
  if(['127.0.0.1','localhost','[::1]'].includes(url.hostname))return realFetch(input,options);
@@ -51,15 +53,27 @@ globalThis.fetch=async(input,options={})=>{
  // While a test pauses for a pending entry, the venue books are stale so no fill can occur.
  const venueBook=symbol=>{const p=price(symbol),cfg=control(),T=waitingForEntry()?Date.now()-60000:Date.now();
   return cfg.invalidQuote?{T,bids:[],asks:[]}:{T,bids:[[(p-.01).toFixed(2),'1000']],asks:[[(p+.01).toFixed(2),'1000']]}};
- const venueListed=()=>listedSymbols().filter(symbol=>!control().venueUnlisted?.includes(symbol));
+ const venueListed=()=>[...listedSymbols().filter(symbol=>!control().venueUnlisted?.includes(symbol)),...venueOnlySymbols()];
+ const profileRows=(symbol,limit,step=900000)=>{const p=price(symbol),last=Math.floor(Date.now()/step)*step,offsets=[10,16,22,-10,-16,-22];
+  return Array.from({length:limit},(_,i)=>{const level=p+offsets[i%6],heavy=i%5!==4,lo=heavy?level:p-0.5,hi=heavy?level+0.02:p+0.5;
+   return {t:(last-(limit-1-i)*step)/1000,o:lo.toFixed(2),h:hi.toFixed(2),l:lo.toFixed(2),c:hi.toFixed(2),v:heavy?'10000':'100',sum:String((heavy?100:1)*hi)}})};
+ const venueCandles=(symbol,interval,limit)=>{
+  if(interval==='15m')return profileRows(symbol,limit);
+  const cfg=control(),series=marketSeries(cfg.venueOnly?.[symbol]??cfg.scenarios[symbol],cfg.marketNow??Date.now()),rows=interval==='1h'?series.h1:series.h4;
+  return rows.slice(-limit).map(r=>({t:Number(r[0])/1000,o:String(r[1]),h:String(r[2]),l:String(r[3]),c:String(r[4]),v:String(Number(r[5])*100),sum:String(Number(r[5])*Number(r[4]))}))};
  if(url.hostname==='open-api.bingx.com'){
   if(url.pathname==='/openApi/swap/v2/quote/contracts')return json({code:0,msg:'',data:venueListed().map(symbol=>({symbol:symbol.slice(0,-4)+'-USDT',currency:'USDT',asset:symbol.slice(0,-4),
    pricePrecision:2,quantityPrecision:2,tradeMinQuantity:0.01,tradeMinUSDT:5,status:1,apiStateOpen:'true',apiStateClose:'true'}))});
+  if(url.pathname==='/openApi/swap/v2/quote/ticker')return json({code:0,msg:'',data:venueListed().map(symbol=>({symbol:symbol.slice(0,-4)+'-USDT',lastPrice:String(price(symbol)),quoteVolume:'50000000'}))});
   if(url.pathname==='/openApi/swap/v2/quote/depth')return json({code:0,msg:'',data:venueBook(url.searchParams.get('symbol').replace('-',''))});
  }
  if(url.hostname==='api.gateio.ws'){
   if(url.pathname==='/api/v4/futures/usdt/contracts')return json(venueListed().map(symbol=>({name:symbol.slice(0,-4)+'_USDT',type:'direct',quanto_multiplier:'0.01',
    order_price_round:'0.01',order_size_min:1,status:'trading',in_delisting:false})));
+  if(url.pathname==='/api/v4/futures/usdt/tickers')return json(venueListed().map(symbol=>({contract:symbol.slice(0,-4)+'_USDT',last:String(price(symbol)),volume_24h_quote:'50000000'})));
+  if(url.pathname==='/api/v4/futures/usdt/candlesticks'){const symbol=url.searchParams.get('contract').replace('_',''),interval=url.searchParams.get('interval');
+   if(!['15m','1h','4h'].includes(interval))throw Error('Test transport forbids other venue candles');
+   return json(venueCandles(symbol,interval,Number(url.searchParams.get('limit'))||100))}
   if(url.pathname==='/api/v4/futures/usdt/order_book'){const b=venueBook(url.searchParams.get('contract').replace('_',''));
    return json({current:b.T/1000,asks:b.asks.map(([p,s])=>({p,s:Number(s)*100})),bids:b.bids.map(([p,s])=>({p,s:Number(s)*100}))})}
  }
