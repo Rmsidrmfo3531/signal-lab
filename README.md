@@ -218,3 +218,7 @@ npm run test:strategy:compare -- --input 과거데이터.json
 ### CSV 내려받기 열
 
 기존 열에 더해 `strategy`(HOURLY_1H / SCALP_REVERSAL_1M·5M·15M), `chartVenue`(판단한 차트 거래소), `score`, `sizeScale`(절반 크기 배율), `initialRiskUSD`(진입 시 위험, 물타기는 계획 전체 손절액), `rMultiple`(손익 ÷ 위험), `dcaAddsFilled`, `holdMinutes`가 들어갑니다.
+
+### PC 절전 방지 (Windows)
+
+서버가 켜져 있는 동안 Windows가 절전(대기) 모드로 들어가지 않게 요청합니다. 동영상 재생 프로그램과 같은 방식이라 전원 설정은 바꾸지 않고, 화면은 평소처럼 꺼질 수 있으며, 서버를 닫으면 바로 해제됩니다. 노트북 덮개를 닫을 때의 동작은 Windows 설정을 따릅니다. 끄려면 `KEEP_AWAKE=false`.

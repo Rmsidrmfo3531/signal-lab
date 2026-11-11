@@ -35,6 +35,7 @@ import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
+import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
@@ -1131,6 +1132,8 @@ const server=http.createServer(async(req,res)=>{
 });
 if(LIVE.mode!=='OFF')setInterval(()=>{void live.reconcile().catch(e=>console.error('[LIVE RECONCILE]',e.message))},15000).unref?.();
 server.listen(CONFIG.port,CONFIG.host,()=>{
+ const awake=startKeepAwake();
+ if(awake.started){process.on('exit',awake.stop);console.log('[POWER] 서버가 켜져 있는 동안 PC 절전 진입을 막습니다 (화면은 꺼질 수 있음, KEEP_AWAKE=false로 끔).')}
  console.log(`\nSignal Lab (PC) → http://127.0.0.1:${CONFIG.port}`);
  console.log(`[DATA] Records: ${storage.dir}`);
  console.log(`[DATA] Settings (.env): ${storage.envPath}`);
