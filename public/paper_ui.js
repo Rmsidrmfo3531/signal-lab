@@ -44,7 +44,7 @@ function paperManagementCaption(row){
  if(management!=='VOLUME_PROFILE_V1')return '기존 기록 · 저장된 TP/SL 보존';
  const moved=row.breakevenMovedAt??row.beMovedAt??row.management?.breakevenMovedAt;
  const basis=row.breakevenMode==='COST_COVERED'?' · 비용 보전 가정 (무손실 보장 아님)':row.breakevenMode==='ENTRY_FILL'||row.breakevenMode==='ENTRY'?' · 평균 진입체결가 기준':'';
- const kind=row.strategy==='SCALP_REVERSAL_5M'?`단타 되돌림 TP(50·62·79%)${Number.isFinite(row.maxHoldMs)?' · '+Math.round(row.maxHoldMs/60000)+'분 시간 청산':''}`:'실제 체결량 매물대 TP';
+ const kind=/^SCALP_REVERSAL_(1M|5M|15M)$/.test(row.strategy||'')?`${({SCALP_REVERSAL_1M:'1분',SCALP_REVERSAL_5M:'5분',SCALP_REVERSAL_15M:'15분'})[row.strategy]} 단타 되돌림 TP(50·62·79%)${Number.isFinite(row.maxHoldMs)?' · '+Math.round(row.maxHoldMs/60000)+'분 시간 청산':''}`:'실제 체결량 매물대 TP';
  return kind+' · '+(moved?'TP1 목표 물량 체결 완료 후 본절 이동 확인':row.moveStopToBreakeven===false||row.tp1MoveStopToBreakeven===false?'본절 이동 OFF':'TP1 목표 물량 체결 완료 확인 전 · 손절 유지')+basis;
 }
 let lastBreakevenSetting=null,lastBreakevenMode=null,paperManagementSaving=false;

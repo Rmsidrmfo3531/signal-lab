@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_PATTERNS} from '../scalp_reversal.mjs';
+import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_PATTERNS,SCALP_TIMEFRAMES} from '../scalp_reversal.mjs';
 import {PaperEngine} from '../paper.mjs';
 
 const STEP=300000,NOW=Date.parse('2026-11-11T00:00:30Z'),LAST_CLOSE=Math.floor(NOW/STEP)*STEP;
 // 40 quiet candles around 100, then a fast 4% drop on heavy volume and a hammer.
-function crash({direction='LONG',hammer=true,move=4,volume=10}={}){
+function crash({direction='LONG',hammer=true,move=4,volume=10,step:STEP_=STEP,now=NOW}={}){
+ const STEP=STEP_,LAST_CLOSE=Math.floor(now/STEP)*STEP;
  const d=direction==='LONG'?1:-1,rows=[];let p=100;
  const push=(o,h,l,c,v)=>rows.push([0,String(o),String(h),String(l),String(c),String(v)]);
  for(let i=0;i<44;i++){const o=p,c=p+(i%2?.05:-.05);push(o,Math.max(o,c)+.1,Math.min(o,c)-.1,c,100);p=c}
@@ -79,4 +80,18 @@ test('4H trend filter: a rebound LONG is blocked in a downtrend, a fade SHORT in
  assert.equal(fourHourTrend(series(.998).slice(0,100),now),null,'not enough history');
  assert.equal(trendAllows('LONG','down'),false);assert.equal(trendAllows('SHORT','up'),false);
  assert.equal(trendAllows('LONG','up'),true);assert.equal(trendAllows('SHORT','range'),true);assert.equal(trendAllows('LONG',null),false);
+});
+
+test('1m and 15m candles use their own move size, wait and time stop, and say which timeframe they came from',()=>{
+ const m1=detectScalpReversal(crash({move:3,step:60000}),{symbol:'SOLUSDT',now:NOW,interval:'1m'});
+ assert.equal(m1.ok,true,JSON.stringify(m1));assert.equal(m1.strategy,'SCALP_REVERSAL_1M');assert.equal(m1.pattern,'급락 후 반등 롱 (1분)');
+ assert.equal(m1.evidence.interval,'1m');assert.equal(m1.entryTimeoutMs,SCALP_TIMEFRAMES['1m'].entryTimeoutMs);assert.equal(m1.maxHoldMs,24*60000);
+ // 15m needs a bigger move (4.3%): about 3.8% fails, 6% passes.
+ const small=detectScalpReversal(crash({move:3,step:900000}),{symbol:'SOLUSDT',now:NOW,interval:'15m'});
+ assert.equal(small.ok,false);assert.ok(small.reasons.includes('MOVE_TOO_SMALL'));
+ const m15=detectScalpReversal(crash({move:6,step:900000}),{symbol:'SOLUSDT',now:NOW,interval:'15m'});
+ assert.equal(m15.ok,true,JSON.stringify(m15));assert.equal(m15.strategy,'SCALP_REVERSAL_15M');assert.equal(m15.maxHoldMs,6*3600000);
+ // 5m candles read as 1m are a sequence error, not a signal.
+ assert.equal(detectScalpReversal(crash(),{symbol:'SOLUSDT',now:NOW,interval:'1m'}).ok,false);
+ assert.equal(detectScalpReversal(crash(),{symbol:'SOLUSDT',now:NOW,interval:'3m'}).reasons[0],'SCALP_INTERVAL_UNSUPPORTED');
 });

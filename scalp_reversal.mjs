@@ -11,6 +11,16 @@ import {seededEMA} from './indicators.mjs';
 
 export const SCALP_INTERVAL_MS=300000;
 export const SCALP_PATTERNS=Object.freeze({LONG:'급락 후 반등 롱 (5분)',SHORT:'급등 후 되돌림 숏 (5분)'});
+// Timeframes the scalp check runs on. The rules count candles, so each timeframe has its own
+// move size, entry wait and time stop (24 candles). minMovePct for 1m/15m is set from the
+// 5m value by the square root of time (1m: 6 minutes of move, 15m: 90 minutes).
+export const SCALP_TIMEFRAMES=Object.freeze({
+ '1m':Object.freeze({intervalMs:60000,label:'1분',minMovePct:1.2,entryTimeoutMs:2*60000,maxHoldMs:24*60000}),
+ '5m':Object.freeze({intervalMs:300000,label:'5분',minMovePct:2.5,entryTimeoutMs:5*60000,maxHoldMs:2*3600000}),
+ '15m':Object.freeze({intervalMs:900000,label:'15분',minMovePct:4.3,entryTimeoutMs:15*60000,maxHoldMs:6*3600000})});
+export const scalpStrategy=interval=>'SCALP_REVERSAL_'+String(interval).toUpperCase();
+export const isScalpStrategy=s=>typeof s==='string'&&/^SCALP_REVERSAL_(1M|5M|15M)$/.test(s);
+export const scalpPatterns=interval=>{const l=SCALP_TIMEFRAMES[interval]?.label??'5분';return {LONG:`급락 후 반등 롱 (${l})`,SHORT:`급등 후 되돌림 숏 (${l})`}};
 export const SCALP_DEFAULTS=Object.freeze({
  moveWindow:6,          // the move must happen within the last 6 closed candles (30 min)
  extremeWithin:3,       // the extreme is one of the last 3 closed candles
@@ -28,14 +38,14 @@ export const SCALP_DEFAULTS=Object.freeze({
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
 const median=values=>{const s=[...values].sort((a,b)=>a-b);return s.length?s.length%2?s[(s.length-1)/2]:(s[s.length/2-1]+s[s.length/2])/2:NaN};
 
-function parse(rows,now){
+function parse(rows,now,intervalMs=SCALP_INTERVAL_MS){
  const out=[];
  for(const k of Array.isArray(rows)?rows:[]){
   if(!Array.isArray(k))return null;
   const [open,high,low,close,volume]=[k[1],k[2],k[3],k[4],k[5]].map(Number),openTime=Number(k[0]);
   if(!Number.isSafeInteger(openTime)||![open,high,low,close].every(positive)||!(volume>=0)||high<Math.max(open,close)||low>Math.min(open,close))return null;
-  if(out.length&&openTime-out.at(-1).openTime!==SCALP_INTERVAL_MS)return null;
-  out.push({openTime,closeTime:openTime+SCALP_INTERVAL_MS,open,high,low,close,volume});
+  if(out.length&&openTime-out.at(-1).openTime!==intervalMs)return null;
+  out.push({openTime,closeTime:openTime+intervalMs,open,high,low,close,volume});
  }
  // Closed candles only: the in-progress candle is dropped.
  while(out.length&&out.at(-1).closeTime>now)out.pop();
@@ -53,14 +63,15 @@ function rsiSeries(closes,period=14){
  return out;
 }
 
-/** Evaluate the latest closed 5m candles for a reversal entry. */
-export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={}}={}){
- const s={...SCALP_DEFAULTS,...settings},candles=parse(rows,now);
+/** Evaluate the latest closed candles (1m / 5m / 15m) for a reversal entry. */
+export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={},interval='5m'}={}){
+ const tf=SCALP_TIMEFRAMES[interval];if(!tf)return {ok:false,reasons:['SCALP_INTERVAL_UNSUPPORTED']};
+ const s={...SCALP_DEFAULTS,minMovePct:tf.minMovePct,entryTimeoutMs:tf.entryTimeoutMs,maxHoldMs:tf.maxHoldMs,...settings},candles=parse(rows,now,tf.intervalMs);
  if(!candles)return {ok:false,reasons:['KLINE_SCHEMA_OR_SEQUENCE_INVALID']};
  const need=s.moveWindow+30;
  if(candles.length<need)return {ok:false,reasons:['NOT_ENOUGH_CANDLES']};
  const last=candles.at(-1);
- if(now-last.closeTime>SCALP_INTERVAL_MS+90000)return {ok:false,reasons:['CANDLES_STALE']};
+ if(now-last.closeTime>tf.intervalMs+90000)return {ok:false,reasons:['CANDLES_STALE']};
  const window=candles.slice(-s.moveWindow-1),before=candles.slice(-s.moveWindow-25,-s.moveWindow-1);
  const baseAtr=atr(candles.slice(-s.moveWindow-17,-s.moveWindow-1)),baseVolume=median(before.map(c=>c.volume));
  const rsi=rsiSeries(candles.map(c=>c.close)).slice(-s.moveWindow-1);
@@ -94,14 +105,14 @@ export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={}}={})
   if(dir*(levels[0]-entry)<=0)levels=[.618,.786,1].map(f=>extreme+dir*f*move);
   if(levels.some(p=>dir*(p-entry)<=0))reasons.push('TARGETS_BEHIND_ENTRY');
   results.push({direction,ok:reasons.length===0,reasons,entry,stop,targets:levels,atr:baseAtr,
-   pattern:SCALP_PATTERNS[direction],barAt:last.closeTime,
+   pattern:scalpPatterns(interval)[direction],barAt:last.closeTime,interval,entryTimeoutMs:s.entryTimeoutMs,maxHoldMs:s.maxHoldMs,
    evidence:{symbol,origin,extreme,movePct:Number(movePct.toFixed(3)),moveAtr:Number((move/baseAtr).toFixed(2)),
     climaxVolumeRatio:positive(baseVolume)?Number((climax/baseVolume).toFixed(2)):null,rsiPeak:Number.isFinite(rsiPeak)?Number(rsiPeak.toFixed(1)):null,
     retracedPct:Number((retraced*100).toFixed(1)),rejection:recovered?'CLOSE_BEYOND_PREVIOUS':rejected?'WICK':'NONE',
-    candleCloseAt:last.closeTime,interval:'5m'}});
+    candleCloseAt:last.closeTime,interval}});
  }
  const hit=results.find(r=>r.ok);
- if(hit)return {ok:true,...hit,strategy:'SCALP_REVERSAL_5M'};
+ if(hit)return {ok:true,...hit,strategy:scalpStrategy(interval)};
  // Report the side that came closest (fewest failed rules).
  const best=results.reduce((a,b)=>b.reasons.length<a.reasons.length?b:a);
  return {ok:false,direction:best.direction,reasons:best.reasons,evidence:best.evidence};
@@ -127,14 +138,14 @@ export function buildScalpPlan({signal,estimate,costs,minNetRR=SCALP_DEFAULTS.mi
  return {ok:true,code:'SCALP_PLAN_READY',targets,quantity,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',
   parts:targets.map((price,i)=>({price,fraction:[.4,.35,.25][i],quantity:parts[i],source:'RETRACEMENT'})),
   minNotional:estimate.minNotional,minQuantity:estimate.minQuantity,quantityStep:step,tickSize:tick,costAssumptions:costs,
-  estimatedNetRR:netRR,profileEvidence:{dataSource:'BINANCE_KLINES_5M',methodology:'MOVE_RETRACEMENT_50_62_79',...signal.evidence},
-  strategy:'SCALP_REVERSAL_5M',calculationOnly:true,executionApproved:false};
+  estimatedNetRR:netRR,profileEvidence:{dataSource:'BINANCE_KLINES_'+String(signal.interval||'5m').toUpperCase(),methodology:'MOVE_RETRACEMENT_50_62_79',...signal.evidence},
+  strategy:signal.strategy||scalpStrategy(signal.interval||'5m'),calculationOnly:true,executionApproved:false};
 }
 
 /** Per-minute high/low of every streamed price, kept for 40 minutes, to find the few
  * symbols worth a 5m candle request. */
 export class MoveTracker{
- constructor({keepMs=40*60000}={}){this.keepMs=keepMs;this.series=new Map()}
+ constructor({keepMs=110*60000}={}){this.keepMs=keepMs;this.series=new Map()}
  record(symbol,price,at){
   if(!positive(price)||!Number.isFinite(at))return;
   const minute=Math.floor(at/60000);let list=this.series.get(symbol);if(!list)this.series.set(symbol,list=[]);
