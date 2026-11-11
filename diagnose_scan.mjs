@@ -6,6 +6,8 @@ import {resolveDataDir} from './persistence.mjs';
 
 const dataDir=resolveDataDir();
 fs.mkdirSync(dataDir,{recursive:true});
+// Copies for the user go to the program folder (where the .bat runs); tests point this elsewhere.
+const reportDir=process.env.SIGNAL_LAB_REPORT_DIR||process.cwd();
 const lines=[];
 const log=s=>{lines.push(s);console.log(s)};
 const stamp=()=>new Date().toLocaleString('ko-KR',{timeZone:'Asia/Seoul'});
@@ -55,10 +57,19 @@ log('API 토큰, 개인 포지션·거래 내역은 보고서에 포함하지 �
 log('로컬 서버 연결 확인:');
 const local=await inspect('내부 스캐너',`http://127.0.0.1:${port}/api/status`,3500);
 if(!local)log('→ 우선 start.bat으로 서버를 실행하고 127.0.0.1 포트 연결을 확인하세요.');
+// Full list of the symbols being checked, as a CSV next to the program (open it in Excel).
+if(local){try{
+ const r=await fetch(`http://127.0.0.1:${port}/api/scan/universe`,{signal:AbortSignal.timeout(5000)});
+ if(r.ok){const u=await r.json(),esc=v=>v==null?'':String(v).replace(/[",\r\n]/g,' ');
+  const csv=['번호,종목,차트,24h거래대금USD,시가총액USD,분석됨,최근패턴,점수',...u.rows.map((x,i)=>[i+1,x.symbol,x.chart,Math.round(x.quoteVolume||0),x.marketCap?Math.round(x.marketCap):'',x.analyzed?'Y':'',esc(x.pattern),x.score??''].join(','))].join('\r\n');
+  const file=path.join(reportDir,'scan_universe.csv');fs.writeFileSync(file,'\ufeff'+csv+'\r\n','utf8');
+  log(`검사 대상 전체 ${u.count}종 (바이낸스 ${u.binance} + 바이낸스 미상장 ${u.venueOnly}) → ${file}`);
+ }
+}catch(e){log('검사 대상 목록 저장 실패: '+String(e.message||e).slice(0,120))}}
 log('공식 공용 데이터 API 연결 확인:');
 await inspect('Binance 선물','https://fapi.binance.com/fapi/v1/exchangeInfo');
 log('진단 완료. 시그널 0개는 엄격 필터 때문일 수도 있으므로 위 스캔 성공/실패 및 연결 상태를 먼저 확인하세요.');
 const out=path.join(dataDir,'scanner_diagnostics.txt');
 fs.writeFileSync(out,lines.join('\r\n')+'\r\n','utf8');
-try{fs.writeFileSync(path.join(process.cwd(),'scanner_diagnostics.txt'),lines.join('\r\n')+'\r\n','utf8')}catch{}
+try{fs.writeFileSync(path.join(reportDir,'scanner_diagnostics.txt'),lines.join('\r\n')+'\r\n','utf8')}catch{}
 log(`결과 파일: ${out} (프로그램 폴더에도 scanner_diagnostics.txt 저장)`);

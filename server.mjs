@@ -932,6 +932,15 @@ const server=http.createServer(async(req,res)=>{
    return response(res,404,{error:'Not found'});
   }
   if(pathname==='/api/status')return response(res,200,getStatus());
+  // Every symbol the scanner checks: Binance perps (Binance chart) + venue-only coins (Gate.io/BingX chart).
+  if(pathname==='/api/scan/universe'){
+   const caps=state.marketCaps.caps,cap=(symbol,price)=>caps?marketCapFor(symbol,price,caps)?.marketCap??null:null;
+   const rows=[...state.ranked.map(x=>({symbol:x.symbol,chart:'BINANCE',quoteVolume:x.quoteVolume,marketCap:cap(x.symbol,state.quotes.get(x.symbol)?.price??x.price),
+     analyzed:state.analyses.has(x.symbol),pattern:state.analyses.get(x.symbol)?.pattern||null,score:state.analyses.get(x.symbol)?.score??null})),
+    ...[...state.venueOnly.values()].map(x=>({symbol:x.symbol,chart:chartVenueFor(x.symbol),quoteVolume:x.quoteVolume,marketCap:x.marketCap??null,
+     analyzed:state.analyses.has(x.symbol),pattern:state.analyses.get(x.symbol)?.pattern||null,score:state.analyses.get(x.symbol)?.score??null}))];
+   return response(res,200,{at:Date.now(),count:rows.length,binance:state.ranked.length,venueOnly:state.venueOnly.size,marketCapsAt:state.marketCaps.at||null,rows});
+  }
   if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,marketError:state.marketError});
   if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:storageHealth.healthy,updatedByServer:true,...storageHealth,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
   if(pathname==='/api/paper'&&req.method==='GET')return response(res,200,{
