@@ -6,7 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {backtestHourly,backtestScalp,summarize,scoreBucket,HOUR} from '../backtest.mjs';
+import {backtestHourly,backtestScalp,backtestCandidates,summarize,scoreBucket,HOUR} from '../backtest.mjs';
+import {DETECTORS} from '../research/candidates.mjs';
 import {SCALP_DEFAULTS} from '../scalp_reversal.mjs';
 import {DCA_DEFAULTS} from '../dca_plan.mjs';
 
@@ -15,7 +16,7 @@ const INTERVAL_MS={'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
 export const DEFAULT_SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT'];
 
 export function parseArgs(argv){
- const out={obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,balance:1000,out:'backtest-results',cache:'backtest-cache'};
+ const out={candidates:false,obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,balance:1000,out:'backtest-results',cache:'backtest-cache'};
  for(let i=0;i<argv.length;i++){
   const key=argv[i],value=argv[i+1];
   if(key==='--days'){out.days=Math.max(7,Math.min(365,Number(value)||60));i++}
@@ -28,6 +29,7 @@ export function parseArgs(argv){
   else if(key==='--trend-filter'){out.trendFilter=true}
   else if(key==='--no-trend-filter'){out.trendFilter=false}
   else if(key==='--all-patterns'){out.allPatterns=true}
+  else if(key==='--candidates'){out.candidates=true}
  }
  if(!out.symbols.length)out.symbols=DEFAULT_SYMBOLS;
  if(!out.symbols.includes('BTCUSDT'))out.symbols=[...out.symbols];
@@ -106,6 +108,15 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  }
  lines.push('종목별 최종 잔고: '+Object.entries(finalBalances).map(([s,b])=>`${s} $${b.toFixed(2)}`).join(', '));
  const dr=Object.entries(scalpFunnel.dcaRejected).sort((a,b)=>b[1]-a[1]).slice(0,4);if(dr.length)lines.push('분할 계획 불가 사유: '+dr.map(([k,v])=>`${k} ${v}건`).join(', '));
+ if(args.candidates){
+  lines.push('','[5] 교과서 전략 후보 (RSI 다이버전스·MACD·볼린저·삼중바닥·삼각형·캔들 반전·이평·거래량, 같은 청산 방식)','-'.repeat(60));
+  const mid=startAt+(endAt-startAt)/2;
+  for(const name of Object.keys(DETECTORS))for(const book of ['RAW','TREND']){
+   const list=all.filter(t=>t.pattern===name&&t.book==='CANDIDATE:'+book);
+   const a=summarize(list.filter(t=>t.signalAt<mid)),b=summarize(list.filter(t=>t.signalAt>=mid));
+   lines.push(row(`${name}${book==='TREND'?' +4H추세':''}`,summarize(list))+` | 전반 ${usd(a.netUSD)} 후반 ${usd(b.netUSD)}`);
+  }
+ }
  lines.push('','[주의]','- 과거 결과이며 미래 수익을 보장하지 않습니다. 거래 수가 30건 미만인 구간은 우연일 가능성이 큽니다.',
   '- 펀딩비, 실제 호가 깊이, 거래소별 가격 차이는 반영하지 않았습니다. 체결 가정이 보수적이어도 실제와 다를 수 있습니다.',
   '- 1H 결과는 한 종목에 포지션 1개씩만 연다고 가정했습니다(실제 서버의 동시 포지션 상한은 반영 안 함).');
@@ -139,7 +150,8 @@ export async function main(argv=process.argv.slice(2)){
   for(const k of ['bars','signals','qualityRejected','entrySkipped'])scalpFunnel[k]+=scalp.funnel[k];
   for(const [k,v] of Object.entries(scalp.funnel.dcaRejected))scalpFunnel.dcaRejected[k]=(scalpFunnel.dcaRejected[k]||0)+v;
   finalBalances[symbol]=scalp.finalBalance;
-  results.push({symbol,trades:[...hourly.trades,...scalp.trades]});
+  const cand=args.candidates?backtestCandidates({symbol,h1,h4,m15,m5,filters,startAt}).trades:[];
+  results.push({symbol,trades:[...hourly.trades,...scalp.trades,...cand]});
   console.log(`1H 거래 ${hourly.trades.filter(t=>t.book==='LIVE').length} · 단타 ${scalp.trades.filter(t=>t.book==='FIXED').length}`);
  }
  const report=buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel,finalBalances});
