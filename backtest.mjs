@@ -92,7 +92,7 @@ export function profileAt(m15Raw,now,symbol,tick){
 // targetMode, breakeven after TP1, stopScale (>1 widens the stop away from the entry),
 // patterns / directions (only trade these), endAt (exclusive signal cut-off).
 export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=Infinity,riskUSD=6,minScore=90,costs=BACKTEST_COSTS,
- minNetRR=1.8,obstacleFraction=1,targetMode='HVN_THEN_R',breakeven=true,stopScale=1,patterns=LIVE_PATTERNS,directions=null}){
+ minNetRR=1.8,obstacleFraction=1,targetMode='HVN_THEN_R',breakeven=true,stopScale=1,patterns=LIVE_PATTERNS,directions=null,liveGate=null}){
  const m5c=m5.map(toCandle),funnel={bars:0,patterns:0,validated:0,scoreOk:0,planned:0,chaseSkipped:0,planReasons:{}},trades=[];
  // LIVE = the live rule (score >= minScore). Each score bucket is its own sequential book,
  // so a bucket's trades are never crowded out by trades of another bucket.
@@ -106,7 +106,8 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
   if(!out.patternConfirmed)continue;funnel.patterns++;
   if(out.quality?.validationPassed!==true)continue;funnel.validated++;
   if(patterns&&!patterns.includes(out.pattern)||directions&&!directions.includes(out.direction))continue;
-  const live=out.score>=minScore;if(live)funnel.scoreOk++;
+  // liveGate(ctx) replaces the score rule when given (research: alternative scores).
+  const live=liveGate?liveGate({out,h1:h1s,h4:h4s,btcH4:btc,now,symbol}):out.score>=minScore;if(live)funnel.scoreOk++;
   const k=lowerBound(m5c,closeAt+1);const next=m5c[k];if(!next)continue;
   const dir=out.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
   // Stop on the tick grid, rounded away from the entry (as venueStop does on the server).
