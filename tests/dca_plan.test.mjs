@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planZoneDca,crossLiquidationPrice,DCA_UNITS} from '../dca_plan.mjs';
+import {planZoneDca,crossLiquidationPrice,DCA_UNITS,clampMaxAdds,clampZoneDays,DCA_DEEP_PROFILE} from '../dca_plan.mjs';
 import {PaperEngine} from '../paper.mjs';
 import {roundDecimalToStep} from '../decimal_grid.mjs';
 // 40/35 % rounded down to the 0.001 lot, the last part takes the rest (as buildScalpPlan does).
@@ -11,7 +11,7 @@ const zonesBelow=[zone(97.5,97.8),zone(96,96.3),zone(94,94.4),zone(91,91.5),zone
 const base={direction:'LONG',entry:100,atr:.4,zones:zonesBelow,balanceUSD:1000,leverage:10,unitPct:.19,tickSize:.01,quantityStep:.001,minQuantity:.001,minNotional:1};
 
 test('units double after the first add and the plan uses volume zones against the position, nearest first',()=>{
- assert.deepEqual(DCA_UNITS,[1,1,2,4,8,16,32,64,128,256]);
+ assert.deepEqual(DCA_UNITS,[1,1,2,4,8,16,32,64,128,256,512]);
  const p=planZoneDca(base);assert.equal(p.ok,true,JSON.stringify(p));
  assert.equal(p.unitQty,.19,'0.19% of $1000 = $1.9 margin x10 = $19 -> 0.19 at price 100');
  assert.deepEqual(p.adds.map(a=>a.price).slice(0,3),[97.8,96.3,94.4],'zone tops, nearest first, the zone above entry ignored');
@@ -83,4 +83,14 @@ test('unit size follows the lot step; a unit whose 25 % part is below the exchan
  assert.equal(planZoneDca({...base,quantityStep:.01,minQuantity:.01}).unitQty,.19,'no 20-lot rounding: 0.19 stays 0.19');
  assert.deepEqual(planZoneDca({...base,quantityStep:1,minQuantity:1}).reasons,['DCA_UNIT_BELOW_MINIMUM_ORDER'],'a 1-coin lot cannot hold a $19 unit');
  assert.deepEqual(planZoneDca({...base,quantityStep:.1,minQuantity:.1}).reasons,['DCA_UNIT_BELOW_MINIMUM_ORDER'],'0.1 lot: the 25 % part would be 0');
+});
+
+test('max adds is 5-10 (default 10) and caps the plan; the deep zone window is 3-15 days',()=>{
+ assert.equal(clampMaxAdds(undefined),10);assert.equal(clampMaxAdds('3'),5);assert.equal(clampMaxAdds('12'),10);assert.equal(clampMaxAdds('7'),7);
+ assert.equal(clampZoneDays(undefined),14);assert.equal(clampZoneDays('1'),3);assert.equal(clampZoneDays('30'),15);
+ assert.equal(DCA_DEEP_PROFILE(14).candles,1344);
+ const loose={...base,leverage:10,unitPct:.01,settings:{maxLossPct:95}};
+ const all=planZoneDca(loose);assert.equal(all.ok,true,JSON.stringify(all));assert.equal(all.adds.length,10,'ten zones below, all used');
+ for(const n of [5,7]){const p=planZoneDca({...loose,settings:{...loose.settings,maxAdds:n}});assert.equal(p.adds.length,n);assert.equal(p.maxAdds,n);
+  assert.ok(p.stop<p.adds.at(-1).zone.priceLow,'stop moves to beyond the last zone kept')}
 });

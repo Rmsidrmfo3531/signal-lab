@@ -1,6 +1,7 @@
 // Zone-based scale-in plan (paper only).
 // The first entry is 1 unit; each further add sits on the next volume zone (HVN)
-// against the position and doubles the size: 1, 1, 2, 4, 8, ... units (10 entries max).
+// against the position and doubles the size: 1, 1, 2, 4, 8, ... units. maxAdds (5-10, default 10)
+// caps how many adds the plan may use.
 // The stop sits just beyond the last zone used. Cross margin: the whole balance backs
 // the position, so the plan drops the farthest adds until
 //   - the margin of every entry fits in the balance, and
@@ -8,9 +9,14 @@
 //   - the loss at the stop with every add filled stays within maxLossPct of the balance.
 import {roundDecimalToStep} from './decimal_grid.mjs';
 
-export const DCA_UNITS=Object.freeze([1,1,2,4,8,16,32,64,128,256]);
+export const DCA_UNITS=Object.freeze([1,1,2,4,8,16,32,64,128,256,512]);
+// Profile settings for the deeper zone window (15m candles over `days`, finer bins, smaller peaks kept).
+export const DCA_DEEP_PROFILE=days=>({candles:Math.min(1500,Math.round(days*96)),minCandles:96,targetBins:240,hvnMinFractionOfPoc:.05});
+export const DCA_MAX_ADDS_RANGE=Object.freeze({min:5,max:10});
+export const clampZoneDays=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(3,Math.min(15,n)):DCA_DEFAULTS.zoneDays};
+export const clampMaxAdds=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(DCA_MAX_ADDS_RANGE.min,Math.min(DCA_MAX_ADDS_RANGE.max,n)):DCA_DEFAULTS.maxAdds};
 // maxLossPct: loss at the stop with every add filled may not exceed this share of the balance.
-export const DCA_DEFAULTS=Object.freeze({leverage:10,unitPct:.19,maintenanceRate:.005,stopAtr:.25,minSpacingAtr:.5,liquidationBufferPct:1,maxLossPct:30});
+export const DCA_DEFAULTS=Object.freeze({leverage:10,unitPct:.19,maintenanceRate:.005,stopAtr:.25,minSpacingAtr:.5,liquidationBufferPct:1,maxLossPct:30,maxAdds:10,zoneDays:14});
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
 
 /** Cross-margin liquidation price for one position backed by `balance`. */
@@ -40,7 +46,8 @@ export function planZoneDca({direction,entry,atr,zones=[],balanceUSD,leverage=DC
  const against=zones.filter(z=>positive(z?.priceLow)&&positive(z?.priceHigh)&&dir*(entry-edge(z))>=spacing)
   .sort((a,b)=>dir*(edge(b)-edge(a)));
  const picked=[];
- for(const z of against){if(picked.length>=units.length-1)break;if(picked.length&&dir*(edge(picked.at(-1))-edge(z))<spacing)continue;picked.push(z)}
+ const addCap=Math.min(units.length-1,clampMaxAdds(s.maxAdds));
+ for(const z of against){if(picked.length>=addCap)break;if(picked.length&&dir*(edge(picked.at(-1))-edge(z))<spacing)continue;picked.push(z)}
  const round=(p,mode)=>Number(roundDecimalToStep(p,tickSize,mode));
  const build=count=>{
   const levels=picked.slice(0,count).map((z,i)=>({price:round(edge(z),dir===1?'DOWN':'UP'),units:units[i+1],quantity:Number((units[i+1]*unitQty).toFixed(12)),zone:{priceLow:z.priceLow,priceHigh:z.priceHigh,volume:z.peakVolume??z.volume}}));
@@ -66,5 +73,5 @@ export function planZoneDca({direction,entry,atr,zones=[],balanceUSD,leverage=DC
  return {ok:true,direction,entry,unitQty,unitNotional:unitQty*entry,leverage,unitPct,balanceUSD,
   adds:plan.levels,addsDropped:picked.length-count,stop:plan.stop,
   full:{quantity:plan.quantity,averageEntry:plan.averageEntry,marginUSD:plan.marginUSD,maxLossUSD:plan.maxLossUSD,maxLossPct:plan.maxLossPct,liquidationPrice:plan.liquidationPrice},
-  marginMode:'CROSS',maintenanceRate:s.maintenanceRate,maxLossPctCap:s.maxLossPct,method:'HVN_ZONES_1_1_2_4',calculationOnly:true};
+  maxAdds:addCap,marginMode:'CROSS',maintenanceRate:s.maintenanceRate,maxLossPctCap:s.maxLossPct,method:'HVN_ZONES_1_1_2_4',calculationOnly:true};
 }

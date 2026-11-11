@@ -146,7 +146,7 @@ export class PaperEngine {
   let dca=null;
   if(signal.dca){
    const d=signal.dca,dir=direction==='LONG'?1:-1,adds=Array.isArray(d.adds)?d.adds:[];
-   const valid=profile&&d.ok===true&&adds.length<=9&&adds.every((a,i)=>validPrice(a?.price)&&validPrice(a?.quantity)&&dir*(entry-a.price)>0&&(i===0||dir*(adds[i-1].price-a.price)>0)&&dir*(a.price-stop)>0)&&
+   const valid=profile&&d.ok===true&&adds.length<=10&&adds.every((a,i)=>validPrice(a?.price)&&validPrice(a?.quantity)&&dir*(entry-a.price)>0&&(i===0||dir*(adds[i-1].price-a.price)>0)&&dir*(a.price-stop)>0)&&
     num(d.stop)===stop&&validPrice(d.unitQty)&&Math.abs(d.unitQty-plan.quantity)<=plan.quantity*1e-9;
    if(!valid)return this.reject(key,'DCA_PLAN_INVALID',{remember:false});
    dca={...structuredClone(d),adds:adds.map(a=>({...structuredClone(a),filled:false})),filledAdds:0};
