@@ -35,7 +35,7 @@ import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
-import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap} from './venue_charts.mjs';
+import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
 
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
@@ -93,9 +93,9 @@ const CONFIG={
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  // Coins on Gate.io / BingX that Binance does not list: charts come from the venue itself.
- // Paper only (never live). Every coin at or above the floor is included. Floor: VENUE_ONLY_MIN_VOLUME_USDT,
- // or by default VENUE_ONLY_REFERENCE_RATIO (0.5) x the smallest 24h volume among VENUE_ONLY_REFERENCE
- // (AKEUSDT,JCTUSDT: examples of the size wanted). VENUE_ONLY_COINS=false turns it off.
+ // Paper only (never live). Every coin of similar size or larger is included: market cap at least
+ // VENUE_ONLY_REFERENCE_RATIO (0.5) x the smaller market cap of VENUE_ONLY_REFERENCE (AKEUSDT,JCTUSDT:
+ // examples of the size wanted), and 24h volume at least VENUE_ONLY_MIN_VOLUME_USDT (1M$). VENUE_ONLY_COINS=false turns it off.
  venueOnly:{enabled:process.env.VENUE_ONLY_COINS!=='false',
   minVolume:Number.isFinite(Number(process.env.VENUE_ONLY_MIN_VOLUME_USDT))&&process.env.VENUE_ONLY_MIN_VOLUME_USDT!==''&&process.env.VENUE_ONLY_MIN_VOLUME_USDT!=null?Number(process.env.VENUE_ONLY_MIN_VOLUME_USDT):null,
   // Market cap screen (CoinGecko top VENUE_ONLY_MCAP_PAGES x 250 coins, refreshed every 6 h):
@@ -385,17 +385,22 @@ async function refreshVenueOnlyList(){
  try{
   const [gc,bc,gt,bt]=await Promise.all([venueQuotes.clients.GATEIO.loadContracts(),venueQuotes.clients.BINGX.loadContracts(),
    venueQuotes.clients.GATEIO.tickers(),venueQuotes.clients.BINGX.tickers()]);
-  const picked=selectVenueOnlyCoins({binanceSymbols:state.activeSymbols,contracts:{GATEIO:gc,BINGX:bc},volumes:venueVolumes({gateTickers:gt,bingxTickers:bt}),
-   minVolume:CONFIG.venueOnly.minVolume,references:CONFIG.venueOnly.references,referenceRatio:CONFIG.venueOnly.referenceRatio});
   // Without market caps nothing is added: a coin whose size cannot be checked is not traded.
   const caps=await refreshMarketCaps();if(!caps)throw Error('시총 자료(CoinGecko) 조회 실패 — 바이낸스 미상장 코인 보류: '+(state.marketCaps.error||'원인 미상'));
-  const screened=screenByMarketCap(picked.coins,caps,{minMarketCap:CONFIG.venueOnly.minMarketCap,maxVolumeToCap:CONFIG.venueOnly.maxVolumeToCap});
+  const volumes=venueVolumes({gateTickers:gt,bingxTickers:bt});
+  // Size is judged by MARKET CAP: the reference coins (AKEUSDT, JCTUSDT) are examples of the size
+  // wanted, so the floor is VENUE_ONLY_REFERENCE_RATIO x the smaller reference market cap (never
+  // below VENUE_ONLY_MIN_MARKET_CAP_USD). Volume only has to clear a tradable minimum (1M$).
+  const refCaps=CONFIG.venueOnly.references.map(sym=>{const v=volumes.get(sym);return v?marketCapFor(sym,v.price,caps)?.marketCap:null}).filter(x=>x>0);
+  const mcapFloor=Math.max(CONFIG.venueOnly.minMarketCap,refCaps.length?Math.min(...refCaps)*CONFIG.venueOnly.referenceRatio:0);
+  const picked=selectVenueOnlyCoins({binanceSymbols:state.activeSymbols,contracts:{GATEIO:gc,BINGX:bc},volumes,minVolume:CONFIG.venueOnly.minVolume??1e6});
+  const screened=screenByMarketCap(picked.coins,caps,{minMarketCap:mcapFloor,maxVolumeToCap:CONFIG.venueOnly.maxVolumeToCap});
   const coins=screened.kept.slice(0,CONFIG.venueOnly.max);
   const dropped=screened.dropped.reduce((m,c)=>(m[c.reason]=(m[c.reason]||0)+1,m),{});
   state.venueOnly=new Map(coins.map(c=>[c.symbol,{...c,priceAt:Date.now()}]));state.venueOnlySet=new Set(state.venueOnly.keys());
-  state.venueOnlyInfo={at:Date.now(),threshold:picked.threshold,thresholdSource:picked.thresholdSource,count:coins.length,error:'',
-   beforeMarketCap:picked.coins.length,droppedByMarketCap:dropped,minMarketCap:CONFIG.venueOnly.minMarketCap};
-  console.log(`[VENUE-ONLY] ${coins.length}개 코인 (24h 거래대금 ≥ ${(picked.threshold/1e6).toFixed(2)}M$, 기준 ${picked.thresholdSource}; 시총 제외 ${screened.dropped.length}개: 미확인 ${dropped.MCAP_UNKNOWN||0}·${(CONFIG.venueOnly.minMarketCap/1e6).toFixed(0)}M$ 미만 ${dropped.MCAP_TOO_SMALL||0}·거래대금 과다 ${dropped.VOLUME_TO_MCAP_TOO_HIGH||0})`);
+  state.venueOnlyInfo={at:Date.now(),threshold:picked.threshold,thresholdSource:'VOLUME_MIN',count:coins.length,error:'',
+   beforeMarketCap:picked.coins.length,droppedByMarketCap:dropped,minMarketCap:mcapFloor,marketCapSource:refCaps.length?'REFERENCE':'MINIMUM',referenceCaps:refCaps};
+  console.log(`[VENUE-ONLY] ${coins.length}개 코인 (시총 ≥ ${(mcapFloor/1e6).toFixed(1)}M$ ${refCaps.length?'= 기준 코인 시총 '+(Math.min(...refCaps)/1e6).toFixed(1)+'M$ × '+CONFIG.venueOnly.referenceRatio:'(기준 코인 시총 미확인 → 최소값)'}, 24h 거래대금 ≥ ${(picked.threshold/1e6).toFixed(1)}M$; 제외: 시총 미확인 ${dropped.MCAP_UNKNOWN||0}·시총 부족 ${dropped.MCAP_TOO_SMALL||0}·거래대금 과다 ${dropped.VOLUME_TO_MCAP_TOO_HIGH||0})`);
  }catch(e){state.venueOnlyInfo={...state.venueOnlyInfo,at:Date.now(),error:String(e.code||e.message)};console.warn('[VENUE-ONLY]',e.code||e.message)}
 }
 let venueOnlyScanActive=false;
