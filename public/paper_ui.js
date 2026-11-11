@@ -124,6 +124,12 @@ function render(payload){
   `<span class="${resultClass(payload.unrealizedUSD)}">${usd(payload.unrealizedUSD)}</span>`,
   `$${Number(payload.maxClosedTradeDrawdownUSD||0).toFixed(2)}`
  ];
+ // Per-strategy table: compare each group with its backtest separately.
+ const groups=(payload.breakdown||[]).filter(g=>g.trades>0);
+ const breakdownBox=find('paperBreakdown');
+ if(breakdownBox)breakdownBox.innerHTML=groups.length?`<table><caption>전략별 성과 (종료 거래)</caption><thead><tr><th>전략</th><th>건수</th><th>승률</th><th>손익</th><th>PF</th><th>평균 R</th></tr></thead><tbody>`+
+  groups.map(g=>`<tr><td>${esc(g.label)}</td><td>${g.trades}</td><td>${g.winRatePct==null?'—':g.winRatePct.toFixed(0)+'%'}</td><td class="${resultClass(g.netUSD)}">${usd(g.netUSD)}</td><td>${g.profitFactor==null?'—':Number(g.profitFactor).toFixed(2)}</td><td>${g.averageR==null?'—':(g.averageR>=0?'+':'')+Number(g.averageR).toFixed(2)+'R'}</td></tr>`).join('')+'</tbody></table>'
+  :'<p class="empty-small">전략별 성과: 아직 종료된 거래가 없습니다.</p>';
  find('paperMetrics').innerHTML=summaries.map((x,i)=>`<div><span>${['종료 거래','누적 실현 PNL','승률 (종료)','평가 손익 (참고)','종료 거래 낙폭'][i]}</span><strong>${x}</strong></div>`).join('');
  find('paperStatus').textContent=`시작자금·계좌잔고 가정 없음 · ${payload.newPositionSizing==='VALIDATED_PROFILE_QUANTITY'?'신규 거래는 검증된 매물대·위험 수량 사용 / 구버전 명목 기록 보존':'구버전 모의 기준 명목 $'+fmt(payload.paperNotionalUSD)} · 누적 평가손익 ${usd(payload.totalMarkedPnLUSD)} · 진행 ${payload.openCount}건 · 진입 대기 ${payload.pendingCount}건 · 오늘 ${usd(payload.dailyPnLUSD)} · 이번 주 ${usd(payload.weeklyPnLUSD)} · ${payload.assumptions}`;
  const open=[...(payload.open||[])];
