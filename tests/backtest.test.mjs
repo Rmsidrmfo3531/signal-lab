@@ -101,3 +101,18 @@ test('textbook candidate detectors: stops on the protective side, replay never e
  const r=backtestCandidates({symbol:'SOLUSDT',h1,h4,m15,m5,filters:{tickSize:.0001,stepSize:.01,minQty:.01,minNotional:5},startAt:start+58*86400000});
  for(const t of r.trades){assert.ok(t.entryAt>t.signalAt);assert.ok(['CANDIDATE:RAW','CANDIDATE:TREND'].includes(t.book))}
 });
+
+test('blog detectors: Bollinger two-candle rule fires after a band pierce on extreme RSI; fixed-percent exits are honoured',async()=>{
+ const {bollingerTwoCandles,prepare}=await import('../pattern_detectors.mjs');const {backtestCandidates}=await import('../backtest.mjs');
+ // 40 flat candles, then a sharp bearish candle through the lower band with RSI < 30, then two bullish candles.
+ const bars=[];let p=100;for(let i=0;i<40;i++){const o=p,c=p+(i%2?.05:-.05);bars.push({t:i,o,h:Math.max(o,c)+.05,l:Math.min(o,c)-.05,c,v:1,ct:i+1});p=c}
+ for(let i=0;i<6;i++){const o=p,c=p-.4;bars.push({t:40+i,o,h:o+.02,l:c-.05,c,v:1,ct:41+i});p=c}
+ const o=p;bars.push({t:46,o,h:o+.02,l:o-1.2,c:o-1,v:1,ct:47});p=o-1;
+ bars.push({t:47,o:p,h:p+.35,l:p-.05,c:p+.3,v:1,ct:48});p+=.3;bars.push({t:48,o:p,h:p+.35,l:p-.05,c:p+.3,v:1,ct:49});
+ const s=prepare(bars),sig=bollingerTwoCandles(s,bars.length-1,1);
+ assert.ok(sig,'signal after the two bullish candles');assert.equal(sig.direction,'LONG');assert.ok(sig.stop<o-1.2,'stop below the piercing wick');
+ assert.equal(bollingerTwoCandles(s,bars.length-2,1),null,'one opposite candle is not enough');
+ const {m5,m15,h1,h4,start}=market();
+ const r=backtestCandidates({symbol:'SOLUSDT',h1,h4,m15,m5,filters:{tickSize:.0001,stepSize:.01,minQty:.01,minNotional:5},startAt:start+58*86400000,fixedTargetPct:.005});
+ for(const t of r.trades)if(t.exitReason==='ALL_TARGETS')assert.ok(Math.abs(t.targets[0]/t.entryFill-1)<.0062,'single target about 0.5 % away');
+});

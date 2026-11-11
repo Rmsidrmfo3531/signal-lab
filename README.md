@@ -114,7 +114,7 @@ PNL은 모의 체결·명시된 비용 가정이며 실제 거래소 체결·실
 
 `backtest.bat`을 더블클릭하면 최근 60일 Binance 공개 캔들(1시간·4시간·15분·5분봉, 6개 종목)을 받아 서버와 같은 판단 함수로 다시 돌리고 `backtest-results\report.txt`에 결과를 씁니다. 키는 필요 없습니다. 처음엔 캔들을 받느라 몇 분 걸리고, 다음부터는 `backtest-cache`에 저장된 캔들을 재사용합니다.
 
-- 기간·종목 바꾸기: `backtest.bat --days 180 --symbols BTCUSDT,ETHUSDT,SOLUSDT` (모든 1H 패턴 비교: `--all-patterns`, 단타 추세 필터 끄기: `--no-trend-filter`, 교과서 전략 16종 비교: `--candidates`) (분할 설정: `--leverage 20 --unit-pct 0.19 --max-loss-pct 30 --balance 1000`, 매물대 차단 기준: `--obstacle 0.5`, 단타 4H 추세 필터: `--trend-filter`)
+- 기간·종목 바꾸기: `backtest.bat --days 180 --symbols BTCUSDT,ETHUSDT,SOLUSDT` (모든 1H 패턴 비교: `--all-patterns`, 단타 추세 필터 끄기: `--no-trend-filter`, 교과서·영상·블로그 전략 37종 비교: `--candidates`) (분할 설정: `--leverage 20 --unit-pct 0.19 --max-loss-pct 30 --balance 1000`, 매물대 차단 기준: `--obstacle 0.5`, 단타 4H 추세 필터: `--trend-filter`)
 - 보고서 항목: ① 1시간봉 현재 기준(90점+) 패턴별 성과 ② 점수 구간별(90+/85~89/80~84/80 미만) 성과 — 90점 기준이 맞는지 판단용 ③ 5분봉 단타(고정 위험) ④ 단타 + 매물대 분할(잔고 대비 손익·최악 거래·보유 중 최대 평가손)
 - 체결 가정(보수적): 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결, 매 체결 수수료 0.06% + 슬리피지 0.02%. 펀딩비·실제 호가 깊이는 반영하지 않습니다.
 - `trades.csv`에 모든 거래가, `summary.json`에 신호 흐름과 설정이 남습니다.

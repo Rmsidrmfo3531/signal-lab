@@ -193,8 +193,10 @@ export function scoreBucket(score){return score>=90?'90점 이상':score>=85?'85
 
 /** Research: textbook detectors (research/candidates.mjs) with the live exits (15m-profile
  * targets, break-even after TP1). Two books per detector: RAW and TREND (4H trend agrees). */
-export function backtestCandidates({symbol,h1,h4,m15,m5,filters,startAt,endAt=Infinity,riskUSD=6,costs=BACKTEST_COSTS,detectors=DETECTORS}){
- const m5c=m5.map(toCandle),c=h1.map(toCandle),p=prepare(c),busy={},trades=[];
+// bars: the signal timeframe (default 1H; 5m / 15m rows work too). fixedTargetPct: exit everything at
+// that move (e.g. .005 = the blog's '20 % at 40x') instead of the 15m-profile targets.
+export function backtestCandidates({symbol,h1,bars=h1,h4,m15,m5,filters,startAt,endAt=Infinity,riskUSD=6,costs=BACKTEST_COSTS,detectors=DETECTORS,fixedTargetPct=null,maxHoldMs=null}){
+ const m5c=m5.map(toCandle),c=bars.map(toCandle),p=prepare(c),busy={},trades=[];
  const trendAt=now=>{const i=closedUntil(h4,now);return fourHourTrend(h4.slice(Math.max(0,i-301),i),now)};
  for(let j=210;j<c.length;j++){
   const closeAt=c[j].ct;if(closeAt<startAt||closeAt>=endAt)continue;const now=closeAt+1000;let trend;
@@ -205,7 +207,9 @@ export function backtestCandidates({symbol,h1,h4,m15,m5,filters,startAt,endAt=In
    if(Math.abs(entry-sig.entry)>Math.min(sig.entry*.004,p.atr[j]*.45)||dir*(entry-stop)<=0)continue;
    const quantity=stepQuantity(riskUSD/Math.abs(entry-stop),filters.stepSize);
    if(!positive(quantity)||quantity<filters.minQty||quantity*entry<filters.minNotional)continue;
-   const plan=planVolumeTargets({profileResult:profileAt(m15,now,symbol,filters.tickSize),direction:sig.direction,entry,stop,quantity,tickSize:filters.tickSize,
+   let plan;
+   if(fixedTargetPct){const t=onTick(entry*(1+dir*fixedTargetPct),filters.tickSize,dir===1?'UP':'DOWN'),tk=filters.tickSize;plan={ok:true,targets:[t,t+dir*tk,t+2*dir*tk]}}
+   else plan=planVolumeTargets({profileResult:profileAt(m15,now,symbol,filters.tickSize),direction:sig.direction,entry,stop,quantity,tickSize:filters.tickSize,
     quantityStep:filters.stepSize,minQuantity:filters.minQty,minNotional:filters.minNotional,contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',
     unitsVerified:true,costs,minNetRR:1.8,targetMode:'HVN_THEN_R',obstacleFraction:1},{now});
    if(!plan.ok)continue;
@@ -213,7 +217,7 @@ export function backtestCandidates({symbol,h1,h4,m15,m5,filters,startAt,endAt=In
    const agrees=trend!==null&&!(sig.direction==='LONG'&&trend==='down')&&!(sig.direction==='SHORT'&&trend==='up');
    for(const book of ['RAW',...(agrees?['TREND']:[])]){
     const key=name+'|'+book;if(k<=(busy[key]??-1))continue;
-    const t=simulateTrade({direction:sig.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs});
+    const t=simulateTrade({direction:sig.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs,maxHoldMs});
     if(!t)continue;busy[key]=t.endIdx;
     trades.push({strategy:'CANDIDATE',book:'CANDIDATE:'+book,symbol,direction:sig.direction,pattern:name,signalAt:closeAt,stop,targets:plan.targets,...t});
    }

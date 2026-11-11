@@ -167,3 +167,67 @@ export const LEE_DETECTORS={
  'LEE 5/20 데드크로스 숏':(p,j)=>leeMaCross(p,j,-1),
 };
 Object.assign(DETECTORS,LEE_DETECTORS);
+
+// ---- Rules from the user's blog notes (투자성공기, full posts) ----
+/** Bollinger "음양양 / 양음음" (lesson 1): a candle pierces the band while RSI is <=30 (>=70),
+ * then two candles of the opposite colour close -> enter. Stop: the piercing candle's wick. */
+export function bollingerTwoCandles(p,j,dir,{stopBufferPct=.0015}={}){
+ const c=p.c,k=j-2;if(k<21||p.bbLo[k]==null)return null;const x=c[k],a=c[j-1],b=c[j];
+ const pierced=dir===1?x.l<p.bbLo[k]&&bear(x)&&(p.rsi[k]<=30||p.rsi[k-1]<=30):x.h>p.bbUp[k]&&bull(x)&&(p.rsi[k]>=70||p.rsi[k-1]>=70);
+ if(!pierced||!(dir===1?bull(a)&&bull(b):bear(a)&&bear(b)))return null;
+ const wick=dir===1?Math.min(x.l,a.l,b.l):Math.max(x.h,a.h,b.h);
+ return {direction:dir===1?'LONG':'SHORT',entry:b.c,stop:dir===1?wick*(1-stopBufferPct):wick*(1+stopBufferPct)};
+}
+/** MACD: dead (golden) cross within the last 3 candles plus MACD divergence at the last two price pivots. */
+export function macdCrossDivergence(p,j,dir){
+ const c=p.c,m=p.macd,s=p.sig,at=p.atr[j];if(!at||j<60)return null;
+ let crossed=false;for(let i=j;i>j-3;i--)if(m[i]!=null&&s[i]!=null&&m[i-1]!=null&&s[i-1]!=null&&(dir===-1?m[i-1]>=s[i-1]&&m[i]<s[i]:m[i-1]<=s[i-1]&&m[i]>s[i]))crossed=true;
+ if(!crossed)return null;const piv=[];for(let i=j-3;i>=j-50&&i>=3;i--)if(dir===-1?pivotHigh(c,i):pivotLow(c,i))piv.push(i);if(piv.length<2)return null;
+ const [b,f]=piv;if(j-b>12||b-f<5||b-f>40)return null;
+ const div=dir===-1?c[b].h>c[f].h&&m[b]<m[f]:c[b].l<c[f].l&&m[b]>m[f];if(!div)return null;
+ return {direction:dir===1?'LONG':'SHORT',entry:c[j].c,stop:dir===-1?Math.max(c[b].h,c[j].h)+at*.2:Math.min(c[b].l,c[j].l)-at*.2};
+}
+/** RSI hidden divergence (convergence): price higher low + RSI lower low (LONG), mirror for SHORT; lows close together. */
+export function rsiHiddenDivergence(p,j,dir){
+ const c=p.c,at=p.atr[j],x=c[j];if(!at)return null;const piv=[];for(let i=j-3;i>=j-35&&i>=3;i--)if(dir===1?pivotLow(c,i):pivotHigh(c,i))piv.push(i);if(piv.length<2)return null;
+ const [b,f]=piv;if(j-b>8||b-f<5||b-f>30)return null;
+ const ok=dir===1?c[b].l>c[f].l&&p.rsi[b]<p.rsi[f]&&bull(x)&&x.c>c[j-1].h:c[b].h<c[f].h&&p.rsi[b]>p.rsi[f]&&bear(x)&&x.c<c[j-1].l;
+ if(!ok)return null;return {direction:dir===1?'LONG':'SHORT',entry:x.c,stop:dir===1?c[b].l-at*.2:c[b].h+at*.2};
+}
+/** W (M): two lows (highs) within 0.6 % / 0.7 ATR, a body close through the neckline on 1.5x volume. */
+export function doubleBottomVolume(p,j,dir){
+ const c=p.c,at=p.atr[j],x=c[j];if(!at||p.volAvg[j-1]==null)return null;const piv=[];for(let i=j-3;i>=j-60&&i>=3;i--)if(dir===1?pivotLow(c,i):pivotHigh(c,i))piv.push(i);if(piv.length<2)return null;
+ const [b,f]=piv;if(b-f<5)return null;const y1=dir===1?c[f].l:c[f].h,y2=dir===1?c[b].l:c[b].h;if(Math.abs(y1-y2)>Math.max(at*.7,y1*.006))return null;
+ const between=c.slice(f,b+1),neck=dir===1?Math.max(...between.map(k=>k.h)):Math.min(...between.map(k=>k.l));
+ if(!(dir===1?x.c>neck&&c[j-1].c<=neck&&bull(x):x.c<neck&&c[j-1].c>=neck&&bear(x))||x.v<1.5*p.volAvg[j-1])return null;
+ return {direction:dir===1?'LONG':'SHORT',entry:x.c,stop:dir===1?Math.min(y1,y2)-at*.25:Math.max(y1,y2)+at*.25};
+}
+/** Triangle breakout with contracting volume during the build and a wick stop. */
+export function triangleVolume(p,j,dir){
+ const c=p.c,at=p.atr[j],x=c[j];if(!at||p.volAvg[j-1]==null||j<45)return null;const w=c.slice(j-40,j);
+ const edge=dir===1?Math.max(...w.map(k=>k.h)):Math.min(...w.map(k=>k.l));if(w.filter(k=>dir===1?k.h>=edge*.997:k.l<=edge*1.003).length<2)return null;
+ const piv=[];for(let i=j-40;i<j-3;i++)if(dir===1?pivotLow(c,i):pivotHigh(c,i))piv.push(dir===1?c[i].l:c[i].h);if(piv.length<2||!piv.every((v,k)=>k===0||(dir===1?v>piv[k-1]:v<piv[k-1])))return null;
+ const early=w.slice(0,20).reduce((s,k)=>s+k.v,0),late=w.slice(20).reduce((s,k)=>s+k.v,0);if(!(late<early))return null;
+ if(!(dir===1?x.c>edge&&bull(x):x.c<edge&&bear(x))||x.v<1.5*p.volAvg[j-1])return null;
+ return {direction:dir===1?'LONG':'SHORT',entry:x.c,stop:dir===1?x.l-at*.1:x.h+at*.1};
+}
+/** Volume divergence: a new 20-bar high on lower volume than the previous swing high, then three bearish closes. */
+export function volumeDivergenceShort(p,j){
+ const c=p.c,at=p.atr[j];if(!at||j<40)return null;if(!(bear(c[j])&&bear(c[j-1])&&bear(c[j-2])))return null;
+ const piv=[];for(let i=j-3;i>=j-40&&i>=3;i--)if(pivotHigh(c,i))piv.push(i);if(piv.length<2)return null;const [b,f]=piv;
+ if(j-b>8||!(c[b].h>c[f].h&&c[b].v<c[f].v))return null;return {direction:'SHORT',entry:c[j].c,stop:c[b].h+at*.2};
+}
+export const BLOG_DETECTORS={
+ '볼린저 음양양 롱':(p,j)=>bollingerTwoCandles(p,j,1),
+ '볼린저 양음음 숏':(p,j)=>bollingerTwoCandles(p,j,-1),
+ 'MACD 골든+상승다이버전스 롱':(p,j)=>macdCrossDivergence(p,j,1),
+ 'MACD 데드+하락다이버전스 숏':(p,j)=>macdCrossDivergence(p,j,-1),
+ 'RSI 히든다이버전스 롱':(p,j)=>rsiHiddenDivergence(p,j,1),
+ 'RSI 히든다이버전스 숏':(p,j)=>rsiHiddenDivergence(p,j,-1),
+ 'W패턴 거래량 돌파 롱':(p,j)=>doubleBottomVolume(p,j,1),
+ 'M패턴 거래량 이탈 숏':(p,j)=>doubleBottomVolume(p,j,-1),
+ '상승삼각 거래량수렴 돌파 롱':(p,j)=>triangleVolume(p,j,1),
+ '하락삼각 거래량수렴 이탈 숏':(p,j)=>triangleVolume(p,j,-1),
+ '거래량 다이버전스+음봉3 숏':(p,j)=>volumeDivergenceShort(p,j),
+};
+Object.assign(DETECTORS,BLOG_DETECTORS);
