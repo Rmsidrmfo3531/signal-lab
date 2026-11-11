@@ -35,6 +35,10 @@ async function inspect(name,url,limit=9000){
     if(Array.isArray(f.topReasons)&&f.topReasons.length)log(`   탈락 사유 상위=${f.topReasons.slice(0,6).map(x=>typeof x==='string'?x:`${x.reason??x.label??''} ${x.count??''}`).join(' | ').slice(0,400)}`);
     const vo=body.venueOnly;
     if(vo)log(`   바이낸스 미상장 코인(Gate.io·BingX 차트)=${vo.enabled?vo.count+'종':'꺼짐'}`+(vo.minMarketCap?` · 시총 기준 ${(vo.minMarketCap/1e6).toFixed(1)}M$(${vo.marketCapSource==='REFERENCE'?'기준 코인 시총×비율':'최소값'})`:'')+(vo.threshold?` · 거래대금 ${(vo.threshold/1e6).toFixed(1)}M$ 이상 후보 ${vo.beforeMarketCap??'-'}종`:'')+(vo.droppedByMarketCap?` · 시총 제외 ${JSON.stringify(vo.droppedByMarketCap)}`:'')+(vo.error?` · 오류 ${String(vo.error).slice(0,120)}`:''));
+    const m=x=>x==null?'시총?':(x/1e6).toFixed(1)+'M$';
+    if(Array.isArray(vo?.kept)&&vo.kept.length)log(`     포함: `+vo.kept.map(c=>`${c.symbol}(시총 ${m(c.marketCap)}·거래 ${(c.quoteVolume/1e6).toFixed(1)}M$)`).join(', '));
+    const why={MCAP_UNKNOWN:'시총 미확인',MCAP_TOO_SMALL:'시총 부족',VOLUME_TO_MCAP_TOO_HIGH:'거래대금 과다'};
+    if(Array.isArray(vo?.droppedSample)&&vo.droppedSample.length)log(`     제외: `+vo.droppedSample.map(c=>`${c.symbol}(${why[c.reason]||c.reason}${c.marketCap?' '+m(c.marketCap):''}·거래 ${(c.quoteVolume/1e6).toFixed(1)}M$)`).join(', '));
     const plan=body.scanFunnel?.targetPlan;
     if(plan&&Number.isFinite(plan.technicalCandidates)){
      const blocked=Array.isArray(plan.blocked)?plan.blocked.slice(0,4).map(x=>`${x.reason} ${x.count}종`).join(' | ').slice(0,300):'';
