@@ -163,3 +163,18 @@ test('store data is flushed to disk before the atomic rename replaces store.json
   assert.deepEqual(fs.readdirSync(sandbox),['store.json'],'no temporary file left behind');
  }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
 });
+
+test('a lock from another PC (shared OneDrive folder) holds while its heartbeat is fresh',()=>{
+ const sandbox=work();try{
+  const lock=path.join(sandbox,'server.lock'),now=Date.now();
+  fs.writeFileSync(lock,JSON.stringify({pid:999999,host:'other-pc',startedAt:new Date(now-3600000).toISOString(),heartbeatAt:new Date(now-30000).toISOString(),nonce:'x'}));
+  assert.equal(isLocked(sandbox,{host:'this-pc',now}),true,'fresh heartbeat from another PC');
+  assert.throws(()=>acquireDataLock(sandbox),/other-pc/);
+  assert.equal(isLocked(sandbox,{host:'this-pc',now:now+4*60000}),false,'stale after 3 minutes without heartbeat');
+  fs.writeFileSync(lock,JSON.stringify({pid:999999,host:'other-pc',startedAt:new Date(now-3600000).toISOString(),heartbeatAt:new Date(now-10*60000).toISOString(),nonce:'x'}));
+  const release=acquireDataLock(sandbox),first=JSON.parse(fs.readFileSync(lock,'utf8'));
+  assert.equal(first.host,os.hostname());assert.equal(release.heartbeat(),true);
+  assert.ok(Date.parse(JSON.parse(fs.readFileSync(lock,'utf8')).heartbeatAt)>=Date.parse(first.heartbeatAt));
+  release();assert.equal(fs.existsSync(lock),false);
+ }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});

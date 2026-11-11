@@ -122,22 +122,37 @@ export function importLegacy(sourcePath,dir,{replace=false}={}){
 }
 
 // Prevent two simultaneously running versions from overwriting the same trade log.
-export function isLocked(dir){
+// A lock written on another PC (shared OneDrive/Drive folder) cannot be checked by PID: it
+// counts as held while its heartbeat is newer than LOCK_STALE_MS. The holder rewrites it every 30 s.
+export const LOCK_STALE_MS=3*60000;
+export function isLocked(dir,{host=os.hostname(),now=Date.now()}={}){
  const file=path.join(dir,'server.lock');
  if(!fs.existsSync(file))return false;
  let data;try{data=JSON.parse(fs.readFileSync(file,'utf8'))}catch{return true}
+ if(typeof data.host==='string'&&data.host!==host){
+  const beat=Date.parse(data.heartbeatAt||data.startedAt);
+  return !Number.isFinite(beat)||now-beat<LOCK_STALE_MS;
+ }
  if(!Number.isSafeInteger(data.pid)||data.pid<=0)return true;
  try{process.kill(data.pid,0);return true}catch(e){return e.code!=='ESRCH'}
 }
+/** Returns release(); release.heartbeat() refreshes the lock's heartbeat (call every 30 s). */
 export function acquireDataLock(dir){
- const file=path.join(dir,'server.lock');
- const payload=JSON.stringify({pid:process.pid,startedAt:new Date().toISOString(),nonce:randomBytes(8).toString('hex')});
+ const file=path.join(dir,'server.lock'),nonce=randomBytes(8).toString('hex'),host=os.hostname();
+ const body=()=>JSON.stringify({pid:process.pid,host,startedAt,heartbeatAt:new Date().toISOString(),nonce});
+ const startedAt=new Date().toISOString();let payload=body();
  for(let attempt=0;attempt<2;attempt++){
   try{fs.writeFileSync(file,payload,{flag:'wx',mode:0o600});break}
   catch(e){
-   if(e.code!=='EEXIST'||isLocked(dir))throw Error('다른 Signal Lab이 같은 기록 폴더를 사용 중이거나 잠금 파일 상태를 확인할 수 없습니다. 이전 서버를 종료한 후 다시 실행하세요.');
+   if(e.code!=='EEXIST'||isLocked(dir)){
+    let other='';try{const d=JSON.parse(fs.readFileSync(file,'utf8'));if(d.host&&d.host!==host)other=` (다른 PC "${d.host}"에서 실행 중 — 그 PC의 서버를 먼저 끄고 동기화가 끝난 뒤 3분 후 다시 실행하세요)`}catch{}
+    throw Error('다른 Signal Lab이 같은 기록 폴더를 사용 중이거나 잠금 파일 상태를 확인할 수 없습니다. 이전 서버를 종료한 후 다시 실행하세요.'+other);
+   }
    fs.rmSync(file,{force:true});if(attempt===1)throw Error('서버 잠금 확보 실패');
   }
  }
- return ()=>{try{if(fs.readFileSync(file,'utf8')===payload)fs.rmSync(file,{force:true})}catch{}};
+ const ours=()=>{try{return JSON.parse(fs.readFileSync(file,'utf8')).nonce===nonce}catch{return false}};
+ const release=()=>{try{if(ours())fs.rmSync(file,{force:true})}catch{}};
+ release.heartbeat=()=>{try{if(!ours())return false;payload=body();const tmp=file+'.'+nonce+'.tmp';fs.writeFileSync(tmp,payload,{mode:0o600});fs.renameSync(tmp,file);return true}catch{return false}};
+ return release;
 }
