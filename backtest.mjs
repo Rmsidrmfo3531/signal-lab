@@ -14,7 +14,7 @@ import {analyze} from './engine.mjs';
 import {buildKlineVolumeProfile} from './volume_profile.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,trendAllows} from './scalp_reversal.mjs';
-import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE} from './dca_plan.mjs';
+import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,dcaZoneDaysFor} from './dca_plan.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {seededEMA} from './indicators.mjs';
 import {DETECTORS,prepare} from './pattern_detectors.mjs';
@@ -166,7 +166,8 @@ export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h
   if(k>busy.DCA){
    const profile=profileAt(m15,now,symbol,filters.tickSize);
    // Deeper adds: zones from a longer 15m window (dca.zoneDays > 3) join the 3-day zones.
-   const deep=profile.ok&&(dca.zoneDays??DCA_DEFAULTS.zoneDays)>3?profileAt(m15,now,symbol,filters.tickSize,DCA_DEEP_PROFILE(dca.zoneDays??DCA_DEFAULTS.zoneDays)):null;
+   const zoneDays=dcaZoneDaysFor(interval,dca.zoneDays??DCA_DEFAULTS.zoneDays);
+   const deep=profile.ok&&zoneDays>3?profileAt(m15,now,symbol,filters.tickSize,DCA_DEEP_PROFILE(zoneDays)):null;
    const zones=profile.ok?[...profile.profile.hvn,...(deep?.ok?deep.profile.hvn:[])]:[];
    const plan=profile.ok?planZoneDca({direction:det.direction,entry,atr:det.atr,zones,balanceUSD:balance,leverage:dca.leverage??DCA_DEFAULTS.leverage,
     unitPct:dca.unitPct??DCA_DEFAULTS.unitPct,tickSize:filters.tickSize,quantityStep:filters.stepSize,minQuantity:filters.minQty,minNotional:filters.minNotional,

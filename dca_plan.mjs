@@ -12,6 +12,10 @@ import {roundDecimalToStep} from './decimal_grid.mjs';
 export const DCA_UNITS=Object.freeze([1,1,2,4,8,16,32,64,128,256,512]);
 // Profile settings for the deeper zone window (15m candles over `days`, finer bins, smaller peaks kept).
 export const DCA_DEEP_PROFILE=days=>({candles:Math.min(1500,Math.round(days*96)),minCandles:96,targetBins:240,hvnMinFractionOfPoc:.05});
+// Zone window per scalp timeframe. A 1m scalp lives at most 24 minutes, so 14-day zones only push
+// its stop far away (first paper trade: JCTUSDT stop 37% below entry) and are never reached: it
+// uses the 3-day zones. 5m / 15m keep the configured window.
+export const dcaZoneDaysFor=(interval,zoneDays)=>interval==='1m'?3:zoneDays;
 export const DCA_MAX_ADDS_RANGE=Object.freeze({min:5,max:10});
 export const clampZoneDays=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(3,Math.min(15,n)):DCA_DEFAULTS.zoneDays};
 export const clampMaxAdds=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(DCA_MAX_ADDS_RANGE.min,Math.min(DCA_MAX_ADDS_RANGE.max,n)):DCA_DEFAULTS.maxAdds};

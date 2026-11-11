@@ -33,7 +33,7 @@ import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,par
 import {PaperEngine,paperCSV,signalKey,nextSizeScale} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
-import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays} from './dca_plan.mjs';
+import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays,dcaZoneDaysFor} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
@@ -709,7 +709,7 @@ async function runScalpCheck(now=Date.now()){
     const profile=Number.isFinite(chartTick)&&chartTick>0?await profiles.get(symbol,{tickSize:chartTick,eligible:true}):null;
     if(!profile?.ok){reject(['DCA_VOLUME_PROFILE_UNAVAILABLE',...(profile?.reasons??[]).slice(0,3)]);continue}
     // Deeper zones are optional: if that fetch fails the plan uses the 3-day zones only.
-    const deep=CONFIG.dcaZoneDays>3?await deepProfiles.get(symbol,{tickSize:chartTick,eligible:true}):null;
+    const deep=dcaZoneDaysFor(interval,CONFIG.dcaZoneDays)>3?await deepProfiles.get(symbol,{tickSize:chartTick,eligible:true}):null;
     const zones=[...profile.profile.hvn,...(deep?.ok?deep.profile.hvn:[])];
     const balanceUSD=CONFIG.paperBalanceUSD+paper.store.closed.reduce((sum,x)=>sum+(Number(x.realizedPnLUSD)||0),0);
     dca=planZoneDca({direction:det.direction,entry:chosen.estimate.entryBasis,atr:det.atr,zones,balanceUSD,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct*sizeScale,
