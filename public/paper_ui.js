@@ -1,3 +1,4 @@
+import {notifyOn} from './notify_settings.js';
 // PC/mobile paper dashboard. Only an explicit click changes settings or a position's stop/TP;
 // a stop/TP change also moves the linked live order when live trading is on.
 const find=id=>document.getElementById(id);
@@ -207,8 +208,9 @@ find('paperNoticeToggle').addEventListener('click',async()=>{
 });
 // Second channel that does not depend on Windows notification settings: a browser
 // notification (localhost may show them once allowed) plus a short sound, while this page is open.
-function browserNotice(title,body){
-  try{
+function browserNotice(title,body,{test=false}={}){
+  if(!test&&!notifyOn('paperScreen'))return;
+  if(notifyOn('sound'))try{
     const ctx=new (window.AudioContext||window.webkitAudioContext)(),o=ctx.createOscillator(),g=ctx.createGain();
     o.frequency.value=880;g.gain.value=.08;o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+.18);
   }catch{}
@@ -225,7 +227,7 @@ async function testPaperNotice(type){
   const permission=await ensureBrowserNoticePermission();
   try{const r=await fetch('/api/paper/notifications/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type})});const data=await r.json();
     if(!r.ok)throw Error(data.error||'알림 테스트 실패');
-    browserNotice(type==='CLOSE'?'[SIM 테스트] BTCUSDT LONG CLOSE':'[SIM 테스트] BTCUSDT LONG 진입','모의 테스트 알림 · 실제 주문 없음');
+    browserNotice(type==='CLOSE'?'[SIM 테스트] BTCUSDT LONG CLOSE':'[SIM 테스트] BTCUSDT LONG 진입','모의 테스트 알림 · 실제 주문 없음',{test:true});
     find('paperNoticeStatus').textContent=(data.delivery.queued?'Windows에 표시 요청함. 결과 확인 중…':data.delivery.reason)+
       (permission==='granted'?' · 브라우저 알림 보냄':permission==='denied'?' · 브라우저 알림 차단됨(주소창 자물쇠 → 알림 허용)':'')+
       (data.telegram?.queued?' · 텔레그램 보냄':'');

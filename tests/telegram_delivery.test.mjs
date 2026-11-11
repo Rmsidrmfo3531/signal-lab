@@ -98,3 +98,8 @@ test('failed alert persistence prevents Telegram delivery and remains retryable 
  assert.equal(Object.keys(h.sandbox.persisted.seen).length,0);
  h.setSaveFailure(false);await h.publish();assert.equal(h.deliveries.length,1);
 });
+
+test('the 알림 설정 switch for final-signal Telegram stops delivery',async()=>{
+ const h=harness();h.sandbox.persisted.notifySettings={telegramSignals:false};await h.publish();
+ assert.equal(h.deliveries.length,0);assert.equal(h.sandbox.relevantSignals().length,1,'the signal itself is unaffected');
+});

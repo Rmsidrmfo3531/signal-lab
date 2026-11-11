@@ -46,11 +46,21 @@ test('paper notification API: get/toggle/test/store history without synthetic po
   assert.equal((await get('/api/paper')).closedCount,0);
   const html=await (await request(base+'/')).text();assert.match(html,/paperNoticeToggle/);assert.match(html,/paperNoticeHistory/);
   const js=await (await request(base+'/paper_ui.js')).text();assert.match(js,/paper-event/);
+  // 알림 설정: one endpoint for every server-side switch; the page offers all of them.
+  let all=await get('/api/notifications/settings');
+  assert.equal(all.telegramSignals,true,'final-signal Telegram stays on by default');assert.equal(all.telegramPaper,false);assert.equal(all.windowsPaper,true);
+  assert.equal((await post('/api/notifications/settings',{telegramSignals:'off'})).status,400);
+  all=(await post('/api/notifications/settings',{telegramSignals:false,telegramPaper:true})).body;
+  assert.equal(all.telegramSignals,false);assert.equal(all.telegramPaper,true);
+  assert.equal((await get('/api/paper/notifications')).telegram.enabled,true,'paper page sees the same switch');
+  assert.match(html,/id="notifySettings"/);const panel=await (await request(base+'/notify_settings.js')).text();
+  for(const key of ['telegramSignals','telegramPaper','windowsPaper','signalScreen','newsScreen','paperScreen','sound'])assert.match(panel,new RegExp(key));
   await post('/api/paper/notifications/settings',{enabled:false});
   await stopChild(child,{killTree:true});
   launch();let restored;
   for(let i=0;i<80;i++){t.signal.throwIfAborted();await sleep(70);try{restored=await get('/api/paper/notifications');if(restored)break}catch{}}
   assert.equal(restored.enabled,false,'persisted preference should survive restart');
+  const kept=await get('/api/notifications/settings');assert.equal(kept.telegramSignals,false);assert.equal(kept.telegramPaper,true);
  }finally{
   await stopChild(child,{killTree:true});
   // Windows may briefly retain filesystem handles after the owned process tree

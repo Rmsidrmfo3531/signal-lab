@@ -1,3 +1,4 @@
+import {notifyOn} from './notify_settings.js';
 import { tradingViewTicker, tradingViewInterval, tradingViewChartUrl, tradingViewAccess } from "/tradingview.js";
 import {NEWS_PER_PAGE,paginateNews,clipNewsText,pageWindow} from "/news_pagination.js";
 import {tradePlan,entryTiming} from "/trade_plan.js";
@@ -498,7 +499,7 @@ function onQuote(arr){let selectedChanged=false;for(const [symbol,price,priceAt]
 }
 let audioContext;
 function ping(){try{audioContext??=new(window.AudioContext||window.webkitAudioContext)();const osc=audioContext.createOscillator(),g=audioContext.createGain();osc.frequency.value=880;g.gain.setValueAtTime(.0001,audioContext.currentTime);g.gain.exponentialRampToValueAtTime(.12,audioContext.currentTime+.02);g.gain.exponentialRampToValueAtTime(.0001,audioContext.currentTime+.35);osc.connect(g);g.connect(audioContext.destination);osc.start();osc.stop(audioContext.currentTime+.38)}catch{}}
-function notify(alert,{test=false}={}){if(!app.marketMap.has(alert.symbol)||alert.kind==='WATCH'||alert.alertType==='WATCH'||alert.observationOnly===true)return;signalToast(alert);ping();
+function notify(alert,{test=false}={}){if(!app.marketMap.has(alert.symbol)||alert.kind==='WATCH'||alert.alertType==='WATCH'||alert.observationOnly===true)return;if(!test&&!notifyOn('signalScreen'))return;signalToast(alert);if(notifyOn('sound'))ping();
  if('Notification' in window&&Notification.permission==='granted'){try{const n=new Notification(`${test?'[테스트 알림] ':''}${alert.symbol} ${alert.direction} · ${alert.pattern}`,{body:`진입 ${fmt(alert.entry)} / 손절 ${fmt(alert.stop)} / 목표 ${fmt(alert.target1)} | 클릭하면 Binance 선물 차트`,tag:alert.id||alert.symbol});n.onclick=()=>{window.focus();const url=externalLinks(alert.symbol)?.binance;if(url)window.open(url,'_blank','noopener,noreferrer');else focusSignal(alert.symbol);n.close()}}catch{}}
 }
 function renderNews(){
@@ -542,6 +543,7 @@ async function loadMarketCommentary(){
  try{const data=await json('/api/market-commentary');const lines=Array.isArray(data.lines)?data.lines:data.summary?[data.summary]:[];host.textContent=lines.length?lines.join(' ')+' · '+dateClock(data.asOf??data.checkedAt)+' KST':'실측 시장 시황 자료 부족 · 원인·전망을 추정하지 않습니다.'}catch{host.textContent='실측 시장 시황 조회 미완료 · 가격 전망이나 원인을 추정하지 않습니다.'}
 }
 function newsNotify(article){
+ if(!notifyOn('newsScreen'))return;
  const holder=$('toastHolder'),node=document.createElement('div');node.className='toast signal-toast';
  node.innerHTML=`<strong>📰 중요 기사 후보 · ${escapeHtml(article.source)}</strong><div>${escapeHtml(article.title)}</div><small>보도 원문 확인 전에는 사실·가격 영향을 확정할 수 없습니다.</small><div style="margin-top:8px"><a class="trade-link neutral" href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer">기사 원문 ↗</a></div>`;
  holder.prepend(node);setTimeout(()=>node.remove(),18000);

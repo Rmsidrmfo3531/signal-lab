@@ -156,6 +156,11 @@ persisted.paperNotify.enabled = persisted.paperNotify.enabled!==false;
 if(!Array.isArray(persisted.paperNotify.history))persisted.paperNotify.history=[];
 // Paper entries/closes on Telegram are opt-in (button on the paper page); PAPER_TELEGRAM=true/false forces it.
 persisted.paperNotify.telegram=persisted.paperNotify.telegram===true;
+// Server-side notification switches (알림 설정 page). Missing keys keep today's behaviour.
+if(!persisted.notifySettings||typeof persisted.notifySettings!=='object'||Array.isArray(persisted.notifySettings))persisted.notifySettings={};
+persisted.notifySettings.telegramSignals=persisted.notifySettings.telegramSignals!==false;
+function notificationSettings(){return {telegramSignals:persisted.notifySettings.telegramSignals,telegramPaper:paperTelegramOn(),windowsPaper:persisted.paperNotify.enabled===true,
+ telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),telegramPaperForced:CONFIG.paperTelegram!==null,windowsSupported:process.platform==='win32'}}
 const paperTelegramOn=()=>CONFIG.paperTelegram===true||CONFIG.paperTelegram===null&&persisted.paperNotify.telegram===true;
 // Create the first shared store file even if no trading event occurs yet.
 save();
@@ -323,6 +328,7 @@ async function refreshMarketStats(){
 }
 async function tgNotify(s){
  if(!CONFIG.tgToken||!CONFIG.tgChat)return;
+ if(persisted.notifySettings?.telegramSignals===false)return; // switched off in 알림 설정
  try{
  // Final-results API is the source of truth. Any later quote/venue rejection
  // suppresses delivery even if an earlier scan approved the same candle.
@@ -976,6 +982,19 @@ const server=http.createServer(async(req,res)=>{
    ...paper.snapshot(),storage:{...storageHealth},monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
    scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,scanMode:state.scanMode,activeCount:state.activeSymbols.length}})
   });
+  // One place for every server-side notification switch.
+  if(pathname==='/api/notifications/settings'&&req.method==='GET')return response(res,200,notificationSettings());
+  if(pathname==='/api/notifications/settings'&&req.method==='POST'){
+   const body=await bodyJson(req),keys=['telegramSignals','telegramPaper','windowsPaper'].filter(k=>typeof body?.[k]==='boolean');
+   if(!keys.length)return response(res,400,{error:'telegramSignals, telegramPaper or windowsPaper must be a boolean'});
+   const before=structuredClone({notifySettings:persisted.notifySettings,paperNotify:{enabled:persisted.paperNotify.enabled,telegram:persisted.paperNotify.telegram}});
+   if(typeof body.telegramSignals==='boolean')persisted.notifySettings.telegramSignals=body.telegramSignals;
+   if(typeof body.telegramPaper==='boolean')persisted.paperNotify.telegram=body.telegramPaper;
+   if(typeof body.windowsPaper==='boolean')persisted.paperNotify.enabled=body.windowsPaper;
+   try{save()}catch(e){persisted.notifySettings=before.notifySettings;Object.assign(persisted.paperNotify,before.paperNotify);throw e}
+   send('notify-settings',notificationSettings());send('paper-notify-settings',{enabled:persisted.paperNotify.enabled,telegram:paperTelegramOn()});
+   return response(res,200,notificationSettings());
+  }
   if(pathname==='/api/paper/notifications'&&req.method==='GET')return response(res,200,{enabled:persisted.paperNotify.enabled,
    telegram:{enabled:paperTelegramOn(),configured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),forced:CONFIG.paperTelegram!==null},
    serverPlatform:process.platform,windowsSupported:process.platform==='win32',history:persisted.paperNotify.history.slice(0,50),lastDelivery:persisted.paperNotify.lastDelivery??null,
