@@ -16,10 +16,12 @@ if exist "%SHARED%\store.json" goto RUN
 if not exist "%LOCALAPPDATA%\SignalLab\store.json" goto RUN
 echo [SHARED] 이 PC의 기존 기록을 공유 폴더로 복사합니다 - 처음 한 번만
 copy /Y "%LOCALAPPDATA%\SignalLab\store.json" "%SHARED%\store.json" >nul
-if exist "%LOCALAPPDATA%\SignalLab\.env" if not exist "%SHARED%\.env" copy "%LOCALAPPDATA%\SignalLab\.env" "%SHARED%\.env" >nul
 :RUN
 set "SIGNAL_LAB_DATA_DIR=%SHARED%"
+rem Settings and secrets (.env: Telegram token, exchange keys) stay on this PC, not in the cloud.
+set "SIGNAL_LAB_ENV_DIR=%LOCALAPPDATA%\SignalLab"
 echo [SHARED] 기록 폴더: %SHARED%
+echo [SHARED] 설정 파일: %SIGNAL_LAB_ENV_DIR%\.env (이 PC 전용)
 echo [SHARED] 다른 PC의 서버를 끄고 OneDrive 동기화가 끝난 뒤 실행하세요.
 call "%~dp0start.bat"
 exit /b %ERRORLEVEL%

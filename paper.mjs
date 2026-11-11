@@ -177,7 +177,10 @@ export class PaperEngine {
    if(!valid)return this.reject(key,'DCA_PLAN_INVALID',{remember:false});
    dca={...structuredClone(d),adds:adds.map(a=>({...structuredClone(a),filled:false})),filledAdds:0};
   }
+  // Kept for the performance breakdown: which chart judged it, and the score it had.
+  const chartVenue=['BINANCE','GATEIO','BINGX'].includes(signal.analysisVenue)?signal.analysisVenue:null,score=Number(signal.score);
   this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,sizeScale,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+entryTimeoutMs,
+   ...(chartVenue?{chartVenue}:{}),...(Number.isFinite(score)&&score>=0&&score<=100?{score}:{}),
    ...(dca?{dca}:{}),
    ...(maxHoldMs?{maxHoldMs}:{}),...(typeof signal.strategy==='string'&&/^[A-Z0-9_]{1,40}$/.test(signal.strategy)?{strategy:signal.strategy}:{}),
    ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),
@@ -235,7 +238,7 @@ export class PaperEngine {
    }
    this.store.open.push({...pending,openedAt:at,entryRefPrice:price,entryFill,initialStop:pending.stop,notionalUSD:rounded(n),originalQty:quantity,qtyRemaining:quantity,
      exitedPct:0,realizedGrossUSD:0,feesUSD,realizedPnLUSD:-feesUSD,closeParts:[],markPrice:price,lastPriceAt:at,
-     halfSpreadBps:spread,quoteGaps:0,...(profile?{plannedLossUSD,feeBps,slippageBps,managementEvents:[],targetQuantities:[quantity*.4,quantity*.35,quantity-quantity*.4-quantity*.35]}:{})});
+     halfSpreadBps:spread,quoteGaps:0,...(profile?{plannedLossUSD,initialRiskUSD:rounded(pending.dca&&Number(pending.dca.full?.maxLossUSD)>0?Number(pending.dca.full.maxLossUSD):plannedLossUSD),feeBps,slippageBps,managementEvents:[],targetQuantities:[quantity*.4,quantity*.35,quantity-quantity*.4-quantity*.35]}:{})});
    events.push({type:'OPEN',key:pending.key,market,symbol,direction:pending.direction,at,entryFill,notionalUSD:rounded(n),stop:pending.stop});
    this.telemetry.openedCountSession++;this.telemetry.lastPositionEventAt=now;modified++;
   }
@@ -396,5 +399,18 @@ export class PaperEngine {
  #expirePending(){let count=0;const now=this.now();for(const p of [...this.store.pending])if(p.market==='CRYPTO'&&now>p.expiresAt){this.store.pending=this.store.pending.filter(x=>x.key!==p.key);this.store.skipped.push({key:p.key,reason:'20분 이내 새 시세가 없어 진입 생략',at:now});count++}
   if(count){this.telemetry.lastPositionEventAt=now;this.notify()}return count}
 }
-export function paperCSV(rows=[]){const cols=['market','executionVenue','symbol','direction','pattern','openedAt','closedAt','entryFill','stop','notionalUSD','closeReason','realizedGrossUSD','feesUSD','realizedPnLUSD','quoteGaps'];
- return '\uFEFF'+cols.join(',')+'\r\n'+rows.map(x=>cols.map(k=>{let v=k==='executionVenue'?venueOf(x):x[k]??'';if(k.endsWith('At')&&Number(v))v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\r\n');}
+// strategy: HOURLY_1H or SCALP_REVERSAL_1M/5M/15M; chartVenue: whose chart judged it; rMultiple:
+// realized PnL / risk at entry (for a scale-in plan the risk is the plan's full stop loss).
+export const PAPER_CSV_COLUMNS=Object.freeze(['market','executionVenue','symbol','direction','pattern','openedAt','closedAt','entryFill','stop','notionalUSD','closeReason','realizedGrossUSD','feesUSD','realizedPnLUSD','quoteGaps',
+ 'strategy','chartVenue','score','sizeScale','initialRiskUSD','rMultiple','dcaAddsFilled','holdMinutes']);
+const csvValue=(x,k)=>{
+ if(k==='executionVenue')return venueOf(x);
+ if(k==='strategy')return x.strategy||(x.market==='CRYPTO'?'HOURLY_1H':'');
+ if(k==='chartVenue')return x.chartVenue||(x.market==='CRYPTO'?'BINANCE':'');
+ if(k==='rMultiple')return Number(x.initialRiskUSD)>0&&Number.isFinite(Number(x.realizedPnLUSD))?(Number(x.realizedPnLUSD)/Number(x.initialRiskUSD)).toFixed(3):'';
+ if(k==='dcaAddsFilled')return x.dca?x.dca.filledAdds??0:'';
+ if(k==='holdMinutes')return Number(x.openedAt)&&Number(x.closedAt)?Math.round((x.closedAt-x.openedAt)/60000):'';
+ return x[k]??'';
+};
+export function paperCSV(rows=[]){const cols=PAPER_CSV_COLUMNS;
+ return '\uFEFF'+cols.join(',')+'\r\n'+rows.map(x=>cols.map(k=>{let v=csvValue(x,k);if(k.endsWith('At')&&Number(v))v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\r\n');}

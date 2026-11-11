@@ -4,13 +4,13 @@ import {fileURLToPath} from 'node:url';
 import {randomBytes} from 'node:crypto';
 import {spawn,execFileSync} from 'node:child_process';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {resolveDataDir,readStore,backupStore,isLocked} from './persistence.mjs';
+import {resolveDataDir,resolveEnvPath,readStore,backupStore,isLocked} from './persistence.mjs';
 import {compareVersions} from './updater.mjs';
 import {github,readAutoStatus,writeAutoStatus,stageCandidate,swapCandidate,restoreCode} from './windows-update-source.mjs';
 const root=path.dirname(fileURLToPath(import.meta.url)),dataDir=resolveDataDir(),secret=randomBytes(32).toString('hex');
 let proc,interval,closing=false,updating=false,failures=0;
 const active=()=>proc&&proc.exitCode===null&&proc.signalCode===null;
-const getPort=()=>{let port=process.env.PORT||'3000';const envPath=path.join(dataDir,'.env');
+const getPort=()=>{let port=process.env.PORT||'3000';const envPath=resolveEnvPath();
  if(!process.env.PORT&&fs.existsSync(envPath)){const m=fs.readFileSync(envPath,'utf8').match(/^\s*PORT\s*=\s*(\d+)\s*$/m);if(m)port=m[1]}
  const n=Number(port);if(!Number.isSafeInteger(n)||n<1||n>65535)throw Error('PORT 설정 오류');return n};
 const url=()=>`http://127.0.0.1:${getPort()}`;

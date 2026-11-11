@@ -166,6 +166,12 @@ function renderPaperNotices(data){
   lastPaperNoticeStatus=data;
   find('paperNoticeToggle').textContent=data.enabled?'🔔 Windows 알림 켜짐':'🔕 Windows 알림 꺼짐';
   find('paperNoticeToggle').setAttribute('aria-pressed',data.enabled?'true':'false');
+  const tg=data.telegram||{},tgButton=find('paperTelegramToggle');
+  if(tgButton){
+    tgButton.textContent=!tg.configured?'📱 텔레그램 미설정':tg.enabled?'📱 텔레그램 모의 알림 켜짐':'📵 텔레그램 모의 알림 꺼짐';
+    tgButton.setAttribute('aria-pressed',tg.enabled?'true':'false');tgButton.disabled=!tg.configured||tg.forced===true;
+    tgButton.title=!tg.configured?'.env에 TELEGRAM_BOT_TOKEN과 TELEGRAM_CHAT_ID가 있어야 합니다':tg.forced?'PAPER_TELEGRAM 설정으로 고정됨':'모의 진입·청산을 휴대폰 텔레그램으로도 받습니다';
+  }
   find('paperNoticeStatus').textContent=data.windowsSupported
     ? (data.enabled?'PC Windows 알림 활성화 · 방해 금지 설정에 따라 표시되지 않을 수 있음':'Windows 알림 비활성화')
     : '현재 서버는 Windows가 아닙니다. 이력 표시만 지원합니다.';
@@ -179,6 +185,13 @@ async function loadPaperNotices(){
   try{const r=await fetch('/api/paper/notifications',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);renderPaperNotices(await r.json());}
   catch(e){find('paperNoticeStatus').textContent='알림 설정 조회 실패 · '+e.message;}
 }
+find('paperTelegramToggle')?.addEventListener('click',async()=>{
+  if(!lastPaperNoticeStatus?.telegram?.configured)return;
+  const value=!lastPaperNoticeStatus.telegram.enabled;
+  try{const r=await fetch('/api/paper/notifications/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({telegram:value})});
+    if(!r.ok)throw Error((await r.json()).error||'텔레그램 설정 변경 실패');await loadPaperNotices();}
+  catch(e){find('paperNoticeStatus').textContent=e.message;}
+});
 find('paperNoticeToggle').addEventListener('click',async()=>{
   if(!lastPaperNoticeStatus)return;
   const value=!lastPaperNoticeStatus.enabled;
@@ -208,7 +221,8 @@ async function testPaperNotice(type){
     if(!r.ok)throw Error(data.error||'알림 테스트 실패');
     browserNotice(type==='CLOSE'?'[SIM 테스트] BTCUSDT LONG CLOSE':'[SIM 테스트] BTCUSDT LONG 진입','모의 테스트 알림 · 실제 주문 없음');
     find('paperNoticeStatus').textContent=(data.delivery.queued?'Windows에 표시 요청함. 결과 확인 중…':data.delivery.reason)+
-      (permission==='granted'?' · 브라우저 알림 보냄':permission==='denied'?' · 브라우저 알림 차단됨(주소창 자물쇠 → 알림 허용)':'');
+      (permission==='granted'?' · 브라우저 알림 보냄':permission==='denied'?' · 브라우저 알림 차단됨(주소창 자물쇠 → 알림 허용)':'')+
+      (data.telegram?.queued?' · 텔레그램 보냄':'');
   }catch(e){find('paperNoticeStatus').textContent='알림 테스트 오류: '+e.message}
   finally{button.disabled=false}
 }

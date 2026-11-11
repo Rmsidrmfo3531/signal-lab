@@ -40,3 +40,27 @@ test('.env values edited with trailing blanks (Windows Notepad, CRLF) still star
   assert.equal(await statusFor(port,`other.lan:${port}`),403);
  }finally{await stopChild(child);await fs.rm(sandbox,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
+
+test('shared records + per-PC settings: the shared .env seeds this PC once, PCs and conflict copies are reported',{timeout:30000},async(t)=>{
+ const port=await freePort(),sandbox=await fs.mkdtemp(path.join(os.tmpdir(),'env-shared-'));
+ await fs.cp(project,sandbox,{recursive:true,filter:src=>!['.env','.git','node_modules','.updates','store.json','scanner_diagnostics.txt'].includes(path.basename(src))});
+ const shared=path.join(sandbox,'OneDrive','SignalLabData'),local=path.join(sandbox,'LocalAppData','SignalLab');await fs.mkdir(shared,{recursive:true});
+ await fs.writeFile(path.join(shared,'.env'),`HOST=127.0.0.1\r\nPORT=${port}\r\n`);
+ await fs.writeFile(path.join(shared,'pcs.json'),JSON.stringify({hosts:{'OTHER-PC':{firstAt:1,lastAt:2,starts:1}}}));
+ await fs.writeFile(path.join(shared,'store-OTHER-PC.json'),'{}');
+ const env={...process.env,SIGNAL_LAB_DATA_DIR:shared,SIGNAL_LAB_ENV_DIR:local,AUTO_UPDATE:'false',UPDATE_MANIFEST_URL:'',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:''};
+ for(const key of ['HOST','PORT','ALLOWED_HOSTS'])delete env[key];
+ const child=trackChild(spawn(process.execPath,['--import','./tests/mock_runtime.mjs','server.mjs'],{cwd:sandbox,env,stdio:'pipe'}));
+ let logs='';child.stdout.on('data',d=>logs+=d);child.stderr.on('data',d=>logs+=d);
+ try{
+  let status=null;
+  for(let i=0;i<100&&!status;i++){t.signal.throwIfAborted();await nap(80);
+   try{const response=await fetchLocal(`http://127.0.0.1:${port}/api/status`,{signal:t.signal});if(response.ok)status=await response.json();else await response.arrayBuffer()}catch{}}
+  assert.ok(status,'server listens on the PORT from the seeded local .env\n'+logs);
+  assert.equal(await fs.readFile(path.join(local,'.env'),'utf8'),`HOST=127.0.0.1\r\nPORT=${port}\r\n`);
+  assert.equal(status.sharedData.separateEnv,true);assert.equal(status.sharedData.sharedEnvLeft,true);
+  assert.deepEqual(status.sharedData.conflicts,['store-OTHER-PC.json']);
+  assert.deepEqual(status.sharedData.pcs.map(p=>[p.host,p.current]),[[os.hostname(),true],['OTHER-PC',false]]);
+  assert.match(logs,/공유\(OneDrive\) 폴더에 \.env가 남아 있습니다/);assert.match(logs,/OneDrive 충돌 사본 발견 → store-OTHER-PC\.json/);
+ }finally{await stopChild(child);await fs.rm(sandbox,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});

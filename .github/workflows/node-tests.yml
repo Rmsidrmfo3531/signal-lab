@@ -24,6 +24,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: [22.x, 24.x]
+        # The user's Windows PC runs Node 26: test that combination too.
+        include:
+          - os: windows-latest
+            node: 26.x
     env:
       HOST: 127.0.0.1
       AUTO_UPDATE: 'false'

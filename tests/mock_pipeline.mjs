@@ -21,6 +21,12 @@ const venueOnlySymbols=()=>Object.keys(control().venueOnly||{});
 globalThis.fetch=async(input,options={})=>{
  const url=new URL(typeof input==='string'?input:input.url??String(input));
  if(['127.0.0.1','localhost','[::1]'].includes(url.hostname))return realFetch(input,options);
+ // Telegram sendMessage is captured (text only, never the bot path/token) and answered ok.
+ if(url.hostname==='api.telegram.org'&&/\/sendMessage$/.test(url.pathname)&&(options.method||'').toUpperCase()==='POST'){
+  let text='';try{text=JSON.parse(String(options.body)).text}catch{}
+  if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:'/sendMessage',text})+'\n');
+  return json({ok:true,result:{message_id:1}});
+ }
  if(!['GET','HEAD'].includes((options.method||'GET').toUpperCase()))throw Error('Test transport forbids external write methods');
  if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:url.pathname,interval:url.searchParams.get('interval')})+'\n');
  if(url.hostname==='fapi.binance.com'){
