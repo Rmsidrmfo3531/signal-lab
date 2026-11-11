@@ -91,12 +91,14 @@ const CONFIG={
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  // Coins on Gate.io / BingX that Binance does not list: charts come from the venue itself.
- // Paper only (never live). Volume floor: VENUE_ONLY_MIN_VOLUME_USDT, or by default the smallest
- // 24h volume among VENUE_ONLY_REFERENCE (AKEUSDT,JCTUSDT). VENUE_ONLY_COINS=false turns it off.
+ // Paper only (never live). Every coin at or above the floor is included. Floor: VENUE_ONLY_MIN_VOLUME_USDT,
+ // or by default VENUE_ONLY_REFERENCE_RATIO (0.5) x the smallest 24h volume among VENUE_ONLY_REFERENCE
+ // (AKEUSDT,JCTUSDT: examples of the size wanted). VENUE_ONLY_COINS=false turns it off.
  venueOnly:{enabled:process.env.VENUE_ONLY_COINS!=='false',
   minVolume:Number.isFinite(Number(process.env.VENUE_ONLY_MIN_VOLUME_USDT))&&process.env.VENUE_ONLY_MIN_VOLUME_USDT!==''&&process.env.VENUE_ONLY_MIN_VOLUME_USDT!=null?Number(process.env.VENUE_ONLY_MIN_VOLUME_USDT):null,
+  referenceRatio:Math.max(.05,Math.min(1,Number(process.env.VENUE_ONLY_REFERENCE_RATIO)||.5)),
   references:String(process.env.VENUE_ONLY_REFERENCE||'AKEUSDT,JCTUSDT').split(',').map(x=>x.trim().toUpperCase()).filter(x=>/^[A-Z0-9]{1,20}USDT$/.test(x)),
-  batch:Math.max(1,Math.min(20,Math.round(Number(process.env.VENUE_ONLY_BATCH)||6))),startDelayMs:Math.max(200,Number(process.env.VENUE_ONLY_START_MS)||20000),intervalMs:Math.max(1000,Number(process.env.VENUE_ONLY_INTERVAL_MS)||60000),max:Math.max(1,Math.min(400,Math.round(Number(process.env.VENUE_ONLY_MAX)||150)))},
+  batch:Math.max(1,Math.min(20,Math.round(Number(process.env.VENUE_ONLY_BATCH)||6))),startDelayMs:Math.max(200,Number(process.env.VENUE_ONLY_START_MS)||20000),intervalMs:Math.max(1000,Number(process.env.VENUE_ONLY_INTERVAL_MS)||60000),max:Math.max(1,Math.min(1000,Math.round(Number(process.env.VENUE_ONLY_MAX)||1000)))},
  limits:{maxSpreadBps:20,
   // 180-day / 12-symbol backtest: the range breakout (LONG) plus two short set-ups from the
   // user's video lessons (trendline break, 5/20 dead cross) were the profitable ones.
@@ -343,7 +345,7 @@ async function refreshVenueOnlyList(){
   const [gc,bc,gt,bt]=await Promise.all([venueQuotes.clients.GATEIO.loadContracts(),venueQuotes.clients.BINGX.loadContracts(),
    venueQuotes.clients.GATEIO.tickers(),venueQuotes.clients.BINGX.tickers()]);
   const picked=selectVenueOnlyCoins({binanceSymbols:state.activeSymbols,contracts:{GATEIO:gc,BINGX:bc},volumes:venueVolumes({gateTickers:gt,bingxTickers:bt}),
-   minVolume:CONFIG.venueOnly.minVolume,references:CONFIG.venueOnly.references});
+   minVolume:CONFIG.venueOnly.minVolume,references:CONFIG.venueOnly.references,referenceRatio:CONFIG.venueOnly.referenceRatio});
   const coins=picked.coins.slice(0,CONFIG.venueOnly.max);
   state.venueOnly=new Map(coins.map(c=>[c.symbol,{...c,priceAt:Date.now()}]));state.venueOnlySet=new Set(state.venueOnly.keys());
   state.venueOnlyInfo={at:Date.now(),threshold:picked.threshold,thresholdSource:picked.thresholdSource,count:coins.length,error:''};
@@ -356,11 +358,13 @@ async function runVenueOnlyScan(){
  try{
   await refreshVenueOnlyList();
   const list=[...state.venueOnlySet];if(!list.length)return;
-  for(let j=0;j<Math.min(CONFIG.venueOnly.batch,list.length);j++){
+  // Every coin is re-checked within about 40 minutes (a confirmed 1H pattern stays valid 75 minutes).
+  const batch=Math.min(list.length,Math.max(CONFIG.venueOnly.batch,Math.ceil(list.length/40)));
+  for(let j=0;j<batch;j++){
    const symbol=list[(state.venueOnlyCursor+j)%list.length];
    try{await checkSymbol(symbol)}catch(e){state.venueOnlyInfo.error=`${symbol}: ${e.code||e.message}`}
   }
-  state.venueOnlyCursor=(state.venueOnlyCursor+CONFIG.venueOnly.batch)%list.length;
+  state.venueOnlyCursor=(state.venueOnlyCursor+batch)%list.length;
  }finally{venueOnlyScanActive=false}
 }
 const analyzing=new Set();
