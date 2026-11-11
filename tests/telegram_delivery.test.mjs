@@ -64,8 +64,9 @@ test('production final-results decision alone gates Telegram; 85-point observati
 test('final publication sends one four-field Mock message and persisted deduplication survives repeated scans and restart',async()=>{
  const h=harness();await h.publish();await h.publish();
  assert.equal(h.sandbox.relevantSignals().length,1);assert.equal(h.deliveries.length,1);assert.equal(h.events.length,1);
- assert.deepEqual(h.deliveries[0].text.split('\n'),['종목: BTCUSDT','방향: 롱 (LONG)','배율: 미설정','포지션 수량(모의): 미확인']);
- assert.equal(h.deliveries[0].reply_markup,undefined);assert.doesNotMatch(h.deliveries[0].text,/https|점수|TP|EMA|RSI|뉴스/);
+ const lines=h.deliveries[0].text.split('\n');assert.equal(lines.length,4);assert.deepEqual(lines.slice(0,2),['종목: BTCUSDT','방향: 롱 (LONG)']);
+ assert.match(lines[2],/^배율: \d+배 \(모의 기준, \d+점\)$/);assert.match(lines[3],/^포지션 수량\(모의\): (미확인|[\d.,]+ BTC \(진입 예정\).*)$/);
+ assert.equal(h.deliveries[0].reply_markup,undefined);assert.doesNotMatch(h.deliveries[0].text,/https|TP|EMA|RSI|뉴스/);
  assert.equal(h.registrations.length,1);
  const saved=structuredClone(h.sandbox.persisted),restarted=harness();
  Object.assign(restarted.row,{time:h.row.time,patternConfirmedAt:h.row.patternConfirmedAt});
@@ -76,7 +77,7 @@ test('only an opened PAPER position for the exact signal supplies leverage and r
  const h=harness();h.sandbox.paper.store.open.push({key:h.key(h.row),market:'CRYPTO',symbol:h.row.symbol,direction:h.row.direction,
   pattern:h.row.pattern,barAt:h.row.patternConfirmedAt,openedAt:h.now-10,entryFill:100,leverage:4,
   originalQty:1,qtyRemaining:.6,targetPlan:{quantityUnit:'BASE_ASSET'}});
- await h.publish();assert.match(h.deliveries[0].text,/배율: 4배 \(모의 기준\)/);
+ await h.publish();assert.match(h.deliveries[0].text,/배율: 4배 \(모의 기준/);
  assert.match(h.deliveries[0].text,/포지션 수량\(모의\): 0.6 BTC/);assert.doesNotMatch(h.deliveries[0].text,/20배/);
 });
 

@@ -1,3 +1,4 @@
+import {leverageForScore} from './paper.mjs';
 /** Official destination links only. This module never submits an order. */
 export function officialBinanceLinks(symbol){
  if(typeof symbol!=='string'||!/^[A-Z0-9]{2,24}USDT$/.test(symbol))return null;
@@ -25,11 +26,17 @@ export function telegramMessage(signal,officialLinks,{paperPosition}={}){
    Number.isFinite(paperPosition.originalQty)&&paperPosition.originalQty>0&&
    Number.isFinite(paperPosition.qtyRemaining)&&paperPosition.qtyRemaining>0&&paperPosition.qtyRemaining<=paperPosition.originalQty
    ?paperPosition:null;
- const leverage=position?.leverage;
+ // 배율: the paper position's, else the score rule (90점 10배 … 100점 20배).
+ const leverage=Number.isFinite(position?.leverage)?position.leverage:leverageForScore(signal.score);
  const multiple=typeof leverage==='number'&&Number.isFinite(leverage)&&leverage>0
-   ? leverage.toLocaleString('ko-KR',{maximumFractionDigits:2})+'배 (모의 기준)' : '미설정';
- const quantity=position
-   ? position.qtyRemaining.toLocaleString('en-US',{maximumFractionDigits:12})+' '+signal.symbol.slice(0,-4) : '미확인';
+   ? leverage.toLocaleString('ko-KR',{maximumFractionDigits:2})+'배 (모의 기준'+(Number.isFinite(signal.score)?`, ${signal.score}점`:'')+')' : '미설정';
+ const base=signal.symbol.slice(0,-4),qtyText=q=>q.toLocaleString('en-US',{maximumFractionDigits:12})+' '+base;
+ const usdText=v=>'$'+v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+ // 수량: the open paper position's remaining quantity, else the planned quantity (filled on entry).
+ const plannedQty=Number(plan.quantity),entryPrice=Number(position?.entryFill??signal.entry);
+ const qty=position?position.qtyRemaining:Number.isFinite(plannedQty)&&plannedQty>0?plannedQty:null;
+ const notional=qty!=null&&entryPrice>0?qty*entryPrice:null;
+ const quantity=qty==null?'미확인':qtyText(qty)+(position?'':' (진입 예정)')+(notional?` · 명목 ${usdText(notional)}`:'')+(notional&&leverage>0?` · 증거금 ${usdText(notional/leverage)}`:'');
  const text=[
   '종목: '+signal.symbol,
   '방향: '+(signal.direction==='LONG'?'롱 (LONG)':'숏 (SHORT)'),

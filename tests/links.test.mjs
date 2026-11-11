@@ -22,31 +22,34 @@ test('official links only expose validated Binance futures symbols',()=>{
 test('final Telegram alert contains only four requested concise fields',()=>{
  const message=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition});
  assert.deepEqual(message.text.split('\n'),[
-  '종목: SOLUSDT','방향: 롱 (LONG)','배율: 3배 (모의 기준)','포지션 수량(모의): 1.25 SOL'
+  '종목: SOLUSDT','방향: 롱 (LONG)','배율: 3배 (모의 기준, 95점)','포지션 수량(모의): 1.25 SOL · 명목 $125.00 · 증거금 $41.67'
  ]);
  assert.equal(message.reply_markup,undefined,'do not include links or order buttons');
- assert.doesNotMatch(message.text,/점수|패턴|RSI|EMA|TP1|거래 승인|http|손절|승률/);
+ assert.doesNotMatch(message.text,/패턴|RSI|EMA|TP1|거래 승인|http|손절|승률/);
  const short=telegramMessage({...valid,direction:'SHORT',entry:100,targetPlan:{...valid.targetPlan,targets:[95,90,85]}},
    officialMarketLinks('SOLUSDT'));
  assert.match(short.text,/방향: 숏 \(SHORT\)/);
 });
 
-test('unconfigured leverage and position quantity are explicitly unknown, never invented',()=>{
- const noLeverage={...valid,risk:{nominal:500},targetPlan:{...valid.targetPlan,quantity:null}};
- const message=telegramMessage(noLeverage,officialMarketLinks('SOLUSDT'));
- assert.match(message.text,/배율: 미설정/);
- assert.match(message.text,/포지션 수량\(모의\): 미확인/);
- assert.doesNotMatch(message.text,/3배|500 SOL/);
- const plannedOnly=telegramMessage(valid,officialMarketLinks('SOLUSDT'));
- assert.match(plannedOnly.text,/배율: 미설정/);assert.match(plannedOnly.text,/포지션 수량\(모의\): 미확인/);
+test('leverage follows the score (90 -> 10x ... 100 -> 20x); quantity is the open position or the planned one, never invented',()=>{
+ // No paper position yet: leverage from the score, quantity from the validated plan, marked as planned.
+ const planned=telegramMessage(valid,officialMarketLinks('SOLUSDT'));
+ assert.match(planned.text,/배율: 15배 \(모의 기준, 95점\)/);
+ assert.match(planned.text,/포지션 수량\(모의\): 1\.25 SOL \(진입 예정\) · 명목 \$125\.00 · 증거금 \$8\.33/);
+ assert.match(telegramMessage({...valid,score:90},officialMarketLinks('SOLUSDT')).text,/배율: 10배/);
+ assert.match(telegramMessage({...valid,score:100},officialMarketLinks('SOLUSDT')).text,/배율: 20배/);
+ // Without a plan quantity nothing is guessed (a final signal always has a score).
+ const unknown=telegramMessage({...valid,targetPlan:{...valid.targetPlan,quantity:null}},officialMarketLinks('SOLUSDT'));
+ assert.match(unknown.text,/포지션 수량\(모의\): 미확인/);assert.doesNotMatch(unknown.text,/명목|증거금/);
+ // A paper position that does not match the signal is ignored: the plan is shown instead.
  for(const altered of [{...paperPosition,barAt:paperPosition.barAt-3600000},{...paperPosition,openedAt:null},
   {...paperPosition,qtyRemaining:0},{...paperPosition,direction:'SHORT'},
   {...paperPosition,targetPlan:{quantityUnit:'CONTRACT'}}]){
   const text=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition:altered}).text;
-  assert.match(text,/배율: 미설정/);assert.match(text,/포지션 수량\(모의\): 미확인/);
+  assert.match(text,/배율: 15배/);assert.match(text,/1\.25 SOL \(진입 예정\)/);
  }
  const partial=telegramMessage(valid,officialMarketLinks('SOLUSDT'),{paperPosition:{...paperPosition,qtyRemaining:.75,leverage:undefined}});
- assert.match(partial.text,/배율: 미설정/);assert.match(partial.text,/포지션 수량\(모의\): 0.75 SOL/);
+ assert.match(partial.text,/배율: 15배/);assert.match(partial.text,/포지션 수량\(모의\): 0\.75 SOL · 명목 \$75\.00 · 증거금 \$5\.00/);
 });
 
 test('final alert rejects observation, unverified scores, stale validation and invalid target plans',()=>{

@@ -5,9 +5,10 @@ import {paperTelegramText} from '../paper_telegram.mjs';
 const T=Date.parse('2026-11-12T00:00:00Z');
 test('paper entry text: simulation label, strategy, chart, levels, half size',()=>{
  const text=paperTelegramText({type:'OPEN',symbol:'AKEUSDT',direction:'LONG',entryFill:1.2345,stop:1.2,notionalUSD:12.5},
-  {strategy:'HOURLY_1H',pattern:'박스권 상단 돌파',score:92,targets:[1.3,1.35,1.4],sizeScale:.5,chartVenue:'GATEIO',executionVenue:'BINGX'});
+  {strategy:'HOURLY_1H',pattern:'박스권 상단 돌파',score:92,targets:[1.3,1.35,1.4],sizeScale:.5,chartVenue:'GATEIO',executionVenue:'BINGX',originalQty:10.125,leverage:12,marginUSD:1.04});
  assert.match(text,/^🟢 \[모의 진입\] AKEUSDT 롱/);assert.match(text,/1시간봉 · 박스권 상단 돌파 · 92점/);
  assert.match(text,/진입 1\.2345 · 손절 1\.2/);assert.match(text,/목표 1\.3 \/ 1\.35 \/ 1\.4/);assert.match(text,/크기 ×0\.5/);
+ assert.match(text,/수량 10\.125 AKE · 명목 \$12\.50 \(크기 ×0\.5\)/);assert.match(text,/배율 12배 · 증거금 \$1\.04/);
  assert.match(text,/차트 Gate\.io · 체결 BingX/);assert.match(text,/실제 주문 없음/);
 });
 test('paper close text: PnL, R multiple, reason (breakeven after a target), hold time, running totals',()=>{
