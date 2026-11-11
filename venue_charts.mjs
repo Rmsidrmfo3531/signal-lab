@@ -47,3 +47,39 @@ export function selectVenueOnlyCoins({binanceSymbols,contracts,volumes,minVolume
   .filter(x=>x.quoteVolume>=threshold).sort((a,b)=>b.quoteVolume-a.quoteVolume||a.symbol.localeCompare(b.symbol));
  return {coins,threshold,thresholdSource:Number.isFinite(minVolume)?'SETTING':refVolumes.length?'REFERENCE':'FALLBACK'};
 }
+
+// ---- Market cap screen (CoinGecko /coins/markets pages) ----------------------------------
+// Coins are matched by ticker AND price (within 25%), because many tiny coins share a ticker
+// with a known one. A coin that is not found (outside the fetched top list) has no market cap.
+export const MCAP_PRICE_TOLERANCE=.25;
+/** CoinGecko /coins/markets pages -> Map(TICKER -> [{id, marketCap, price}]). */
+export function parseMarketCaps(pages){
+ const out=new Map();
+ for(const page of pages)for(const c of Array.isArray(page)?page:[]){
+  const sym=String(c?.symbol||'').toUpperCase(),cap=Number(c?.market_cap),price=Number(c?.current_price);
+  if(!/^[A-Z0-9]{1,20}$/.test(sym)||!(cap>0)||!(price>0))continue;
+  out.set(sym,[...(out.get(sym)??[]),{id:String(c.id),marketCap:cap,price}]);
+ }
+ return out;
+}
+/** Market cap of a venue symbol (e.g. 1000XUSDT trades X x1000), or null when no ticker+price match. */
+export function marketCapFor(symbol,price,caps){
+ let base=String(symbol).replace(/USDT$/,''),mult=1;const m=/^(1000000|10000|1000|1M)([A-Z].*)$/.exec(base);
+ if(m&&!caps.has(base)){base=m[2];mult=m[1]==='1M'?1e6:Number(m[1])}
+ const unit=Number(price)/mult;if(!(unit>0))return null;
+ const hits=(caps.get(base)??[]).filter(c=>Math.abs(c.price/unit-1)<=MCAP_PRICE_TOLERANCE).sort((a,b)=>b.marketCap-a.marketCap);
+ return hits[0]??null;
+}
+/**
+ * Drop coins whose market cap makes no sense for trading: not found / below minMarketCap, or a
+ * 24h perp volume more than maxVolumeToCap times the market cap (wash-traded or near-empty float).
+ */
+export function screenByMarketCap(coins,caps,{minMarketCap=10e6,maxVolumeToCap=5}={}){
+ const kept=[],dropped=[];
+ for(const c of coins){
+  const hit=marketCapFor(c.symbol,c.price,caps),cap=hit?.marketCap??null;
+  const reason=!hit?'MCAP_UNKNOWN':cap<minMarketCap?'MCAP_TOO_SMALL':c.quoteVolume>maxVolumeToCap*cap?'VOLUME_TO_MCAP_TOO_HIGH':null;
+  (reason?dropped:kept).push({...c,marketCap:cap,coingeckoId:hit?.id??null,...(reason?{reason}:{})});
+ }
+ return {kept,dropped};
+}
