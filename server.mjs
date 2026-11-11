@@ -345,20 +345,39 @@ async function venueKlines(symbol,interval,limit){
 function invalidateVenueCandles(symbol){for(const key of venueKlineCache.keys())if(key.split(':')[1]===symbol)venueKlineCache.delete(key)}
 // Same profile rules as Binance; the collector's Binance-style URL is answered from the venue.
 const venueProfiles=new VolumeProfileCollector({request:url=>{const q=new URL(url,'http://x').searchParams;return venueKlines(q.get('symbol'),q.get('interval'),Number(q.get('limit')))}});
-// CoinGecko public pages, spaced to stay under the free rate limit; reused for 6 hours.
+// CoinGecko public pages, spaced to stay under the free rate limit; reused for 6 hours and kept
+// on disk (marketcaps.json in the data folder) so a restart or a later outage uses the last good
+// list for up to 3 days. 429 (rate limit) waits and retries. COINGECKO_API_KEY (free demo key) is optional.
+const marketCapFile=path.join(storage.dir,'marketcaps.json');
+function loadMarketCapCache(){try{const d=JSON.parse(fs.readFileSync(marketCapFile,'utf8'));if(Array.isArray(d.pages)&&Number.isFinite(d.at))return {caps:parseMarketCaps(d.pages),at:d.at}}catch{}return null}
+async function fetchCoinGeckoPage(page){
+ const headers={Accept:'application/json','User-Agent':'SignalLab/1.0'};if(process.env.COINGECKO_API_KEY)headers['x-cg-demo-api-key']=process.env.COINGECKO_API_KEY;
+ for(let attempt=0;attempt<3;attempt++){
+  const r=await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${page}`,{signal:AbortSignal.timeout(20000),headers});
+  if(r.status===429&&attempt<2){await new Promise(res=>setTimeout(res,65000));continue}
+  if(!r.ok)throw Error('CoinGecko HTTP '+r.status+(r.status===429?' (요청 한도 초과)':''));
+  return r.json();
+ }
+}
 async function refreshMarketCaps(){
- const mc=state.marketCaps;if(mc.caps&&Date.now()-mc.at<6*3600000)return mc.caps;
- if(!mc.caps&&mc.error&&Date.now()-mc.at<10*60000)return null;
+ const mc=state.marketCaps;
+ if(!mc.caps){const disk=loadMarketCapCache();if(disk)Object.assign(mc,disk)}
+ if(mc.caps&&Date.now()-mc.at<6*3600000)return mc.caps;
+ if(mc.error&&Date.now()-(mc.failedAt||0)<10*60000)return mc.caps&&Date.now()-mc.at<3*86400000?mc.caps:null;
+ const pages=[];
  try{
-  const pages=[];
   for(let page=1;page<=CONFIG.venueOnly.mcapPages;page++){
-   if(page>1)await new Promise(r=>setTimeout(r,2500));
-   const r=await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=${page}`,{signal:AbortSignal.timeout(15000),headers:{Accept:'application/json'}});
-   if(!r.ok)throw Error('CoinGecko HTTP '+r.status);
-   const data=await r.json();pages.push(data);if(!Array.isArray(data)||data.length<250)break;
+   if(page>1)await new Promise(r=>setTimeout(r,6000));
+   const data=await fetchCoinGeckoPage(page);pages.push(data);if(!Array.isArray(data)||data.length<250)break;
   }
-  state.marketCaps={caps:parseMarketCaps(pages),at:Date.now(),error:''};return state.marketCaps.caps;
- }catch(e){state.marketCaps={...mc,at:mc.caps?mc.at:Date.now(),error:e.message};console.warn('[MARKET CAP]',e.message);return mc.caps}
+ }catch(e){mc.error=String(e.message||e);mc.failedAt=Date.now();console.warn('[MARKET CAP]',mc.error)}
+ // Top 1000 (4 pages) is enough to judge "not absurdly small"; fewer pages is not used.
+ if(pages.length>=Math.min(4,CONFIG.venueOnly.mcapPages)||pages.length&&!mc.error){
+  state.marketCaps={caps:parseMarketCaps(pages),at:Date.now(),error:'',failedAt:0,pages:pages.length};
+  try{fs.writeFileSync(marketCapFile+'.tmp',JSON.stringify({at:Date.now(),pages}));fs.renameSync(marketCapFile+'.tmp',marketCapFile)}catch{}
+  return state.marketCaps.caps;
+ }
+ return mc.caps&&Date.now()-mc.at<3*86400000?mc.caps:null;
 }
 async function refreshVenueOnlyList(){
  if(!CONFIG.venueOnly.enabled||!state.activeSymbols.length)return;
@@ -369,7 +388,7 @@ async function refreshVenueOnlyList(){
   const picked=selectVenueOnlyCoins({binanceSymbols:state.activeSymbols,contracts:{GATEIO:gc,BINGX:bc},volumes:venueVolumes({gateTickers:gt,bingxTickers:bt}),
    minVolume:CONFIG.venueOnly.minVolume,references:CONFIG.venueOnly.references,referenceRatio:CONFIG.venueOnly.referenceRatio});
   // Without market caps nothing is added: a coin whose size cannot be checked is not traded.
-  const caps=await refreshMarketCaps();if(!caps)throw Error('시총 자료(CoinGecko) 조회 실패 — 바이낸스 미상장 코인 보류');
+  const caps=await refreshMarketCaps();if(!caps)throw Error('시총 자료(CoinGecko) 조회 실패 — 바이낸스 미상장 코인 보류: '+(state.marketCaps.error||'원인 미상'));
   const screened=screenByMarketCap(picked.coins,caps,{minMarketCap:CONFIG.venueOnly.minMarketCap,maxVolumeToCap:CONFIG.venueOnly.maxVolumeToCap});
   const coins=screened.kept.slice(0,CONFIG.venueOnly.max);
   const dropped=screened.dropped.reduce((m,c)=>(m[c.reason]=(m[c.reason]||0)+1,m),{});
