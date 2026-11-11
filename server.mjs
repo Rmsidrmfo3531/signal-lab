@@ -153,7 +153,10 @@ function emitPaperNotice(event,{test=false}={}){
   const item={...event,id:randomUUID(),recordedAt:Date.now(),test};
   const pref=persisted.paperNotify;
   if(!test){pref.history.unshift(item);pref.history=pref.history.slice(0,100);save();send('paper-event',item)}
-  const delivery=pref.enabled?windowsPaperNotify(event):{queued:false,reason:'알림 설정 OFF'};
+  const delivery=pref.enabled?windowsPaperNotify(event,{onResult:result=>{
+    pref.lastDelivery={...result,at:Date.now(),test,type:event.type,symbol:event.symbol};
+    if(!result.ok)console.warn('[PAPER NOTIFY FAILED]',result.error);
+    send('paper-notify-result',pref.lastDelivery)}}):{queued:false,reason:'알림 설정 OFF'};
   console.log(`[PAPER ${test?'TEST':event.type}]`,event.symbol,event.direction,delivery.reason);
   return {event:item,delivery};
 }
@@ -822,7 +825,7 @@ const server=http.createServer(async(req,res)=>{
    scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,scanMode:state.scanMode,activeCount:state.activeSymbols.length}})
   });
   if(pathname==='/api/paper/notifications'&&req.method==='GET')return response(res,200,{enabled:persisted.paperNotify.enabled,
-   serverPlatform:process.platform,windowsSupported:process.platform==='win32',history:persisted.paperNotify.history.slice(0,50),
+   serverPlatform:process.platform,windowsSupported:process.platform==='win32',history:persisted.paperNotify.history.slice(0,50),lastDelivery:persisted.paperNotify.lastDelivery??null,
    note:'Windows 로그인 세션에 표시 요청. 방해 금지/알림 설정 또는 작업 스케줄러의 비대화형 실행 시 표시되지 않을 수 있음'});
   if(pathname==='/api/paper/notifications/settings'&&req.method==='POST'){
    const body=await bodyJson(req);

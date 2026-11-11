@@ -169,6 +169,7 @@ function renderPaperNotices(data){
   find('paperNoticeStatus').textContent=data.windowsSupported
     ? (data.enabled?'PC Windows 알림 활성화 · 방해 금지 설정에 따라 표시되지 않을 수 있음':'Windows 알림 비활성화')
     : '현재 서버는 Windows가 아닙니다. 이력 표시만 지원합니다.';
+  if(data.enabled&&data.lastDelivery&&!data.lastDelivery.ok)find('paperNoticeStatus').textContent=deliveryText(data.lastDelivery);
   find('paperNoticeHistory').innerHTML=(data.history||[]).map(e=>
     `<div><strong>${esc(e.symbol)} · ${esc(e.direction)} · ${paperEventLabel(e)}</strong>`+
     `<small>${time(e.at)} KST · ${e.type==='OPEN'?'모의 진입 '+fmt(e.entryFill):'모의 종료 '+esc(e.closeReason)+' · 총 PNL '+usd(e.realizedPnLUSD)} · 실제 주문 없음</small></div>`
@@ -185,14 +186,33 @@ find('paperNoticeToggle').addEventListener('click',async()=>{
     if(!r.ok)throw Error((await r.json()).error||'알림 설정 변경 실패');await loadPaperNotices();}
   catch(e){find('paperNoticeStatus').textContent=e.message;}
 });
+// Second channel that does not depend on Windows notification settings: a browser
+// notification (localhost may show them once allowed) plus a short sound, while this page is open.
+function browserNotice(title,body){
+  try{
+    const ctx=new (window.AudioContext||window.webkitAudioContext)(),o=ctx.createOscillator(),g=ctx.createGain();
+    o.frequency.value=880;g.gain.value=.08;o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+.18);
+  }catch{}
+  try{if('Notification' in window&&Notification.permission==='granted')new Notification(title,{body,tag:'signal-lab-paper-'+Date.now()});}catch{}
+}
+async function ensureBrowserNoticePermission(){
+  try{if('Notification' in window&&Notification.permission==='default')await Notification.requestPermission();}catch{}
+  return 'Notification' in window?Notification.permission:'unsupported';
+}
+const deliveryText=d=>!d?'':d.ok?(d.method==='TOAST'?'Windows 알림 표시됨(알림 센터에 \'Windows PowerShell\'로 표시)':'Windows 트레이 풍선 알림 표시됨')
+  :'Windows 알림 실패: '+(d.error||'원인 미상')+' → 설정 > 시스템 > 알림에서 알림과 \'Windows PowerShell\'을 켜고, 방해 금지(집중 지원)를 끄세요.';
 async function testPaperNotice(type){
   const button=find(type==='CLOSE'?'paperNoticeTestClose':'paperNoticeTest');button.disabled=true;
+  const permission=await ensureBrowserNoticePermission();
   try{const r=await fetch('/api/paper/notifications/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type})});const data=await r.json();
     if(!r.ok)throw Error(data.error||'알림 테스트 실패');
-    find('paperNoticeStatus').textContent=data.delivery.queued?'Windows에 테스트 알림 표시를 요청했습니다. PC 알림 센터를 확인하세요.':data.delivery.reason;
+    browserNotice(type==='CLOSE'?'[SIM 테스트] BTCUSDT LONG CLOSE':'[SIM 테스트] BTCUSDT LONG 진입','모의 테스트 알림 · 실제 주문 없음');
+    find('paperNoticeStatus').textContent=(data.delivery.queued?'Windows에 표시 요청함. 결과 확인 중…':data.delivery.reason)+
+      (permission==='granted'?' · 브라우저 알림 보냄':permission==='denied'?' · 브라우저 알림 차단됨(주소창 자물쇠 → 알림 허용)':'');
   }catch(e){find('paperNoticeStatus').textContent='알림 테스트 오류: '+e.message}
   finally{button.disabled=false}
 }
+live.addEventListener('paper-notify-result',e=>{try{find('paperNoticeStatus').textContent=deliveryText(JSON.parse(e.data))}catch{}});
 find('paperNoticeTest').addEventListener('click',()=>testPaperNotice('OPEN'));
 find('paperNoticeTestClose').addEventListener('click',()=>testPaperNotice('CLOSE'));
 let paperLiveTimer;
@@ -201,6 +221,7 @@ live.addEventListener('paper-event',e=>{
     const box=find('paperNoticeLive');box.hidden=false;
     box.textContent=`🔔 ${item.symbol} ${item.direction} ${paperEventLabel(item)} · `+(item.type==='OPEN'?`진입 ${fmt(item.entryFill)}`:`최종 PNL ${usd(item.realizedPnLUSD)}`)+' · 모의 거래';
     clearTimeout(paperLiveTimer);paperLiveTimer=setTimeout(()=>box.hidden=true,10000);
+    browserNotice(`[SIM] ${item.symbol} ${item.direction} ${item.type==='OPEN'?'진입':'CLOSE'}`,box.textContent);
     void loadPaperNotices();
   }catch{}
 });
