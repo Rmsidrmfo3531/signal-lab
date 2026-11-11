@@ -75,6 +75,19 @@ test('Windows notification launcher passes safe base64 text and does not execute
  assert.equal(call.args[call.args.indexOf('-File')+1],'C:/Signal Lab/notify.ps1');
 });
 
+test('the Windows result (toast, balloon or the failure reason) is reported back',()=>{
+ const event={type:'CLOSE',symbol:'ETHUSDT',direction:'SHORT',lastExitFill:99,realizedPnLUSD:-1};
+ const make=(code,out,err)=>{const h={};const stream=text=>({on:(e,f)=>{if(e==='data'&&text)h.push=()=>f(text)}});
+  const proc={stdout:stream(out),stderr:{on:(e,f)=>{if(e==='data'&&err)h.err=()=>f(err)}},on:(e,f)=>{if(e==='exit')h.exit=f},unref:()=>{},kill:()=>{}};
+  return {proc,fire:()=>{h.push?.();h.err?.();h.exit(code)}}};
+ const results=[];
+ for(const [code,out,err] of [[0,'TOAST\n',''],[0,'BALLOON\n',''],[1,'','toast: x / balloon: no desktop']]){
+  const p=make(code,out,err);windowsPaperNotify(event,{platform:'win32',launch:()=>p.proc,onResult:r=>results.push(r)});p.fire();
+ }
+ assert.deepEqual(results.map(r=>[r.ok,r.method]),[[true,'TOAST'],[true,'BALLOON'],[false,null]]);
+ assert.match(results[2].error,/no desktop/);
+});
+
 test('bad notification callback cannot interrupt simulated PNL, prevent subsequent trades',()=>{
  let now=initial;
  const engine=new PaperEngine({}, {now:()=>now,onEvent:()=>{throw Error('desktop unavailable')}});
