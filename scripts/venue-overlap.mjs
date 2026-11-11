@@ -28,9 +28,22 @@ for(const t of Array.isArray(gateTickers)?gateTickers:[]){const k=String(t.contr
 for(const t of bingxTickers?.data||[]){const k=String(t.symbol).replace('-','');venueVol.set(k,Math.max(venueVol.get(k)||0,Number(t.quoteVolume)||0))}
 const venueOnly=[...new Set([...gateSet,...bingxSet])].filter(x=>x.endsWith('USDT')&&!binanceSet.has(x))
  .map(symbol=>({symbol,volume:venueVol.get(symbol)||0,gate:gateSet.has(symbol),bingx:bingxSet.has(symbol)})).sort((a,b)=>b.volume-a.volume);
-lines.push('',`BingX·Gate.io에만 있는 종목 ${venueOnly.length}개 (바이낸스 차트 없음 → 지금은 분석하지 않음)`,
- `  그중 24h 거래대금 ${(minVol/1e6).toFixed(0)}M$ 이상: ${venueOnly.filter(r=>r.volume>=minVol).length}개 (거래대금 순, 최대 40개):`,
- ...venueOnly.slice(0,40).map(r=>`  ${r.symbol.padEnd(18)} ${(r.volume/1e6).toFixed(1)}M$  ${[r.gate?'Gate.io':'',r.bingx?'BingX':''].filter(Boolean).join('·')}`));
+// Stocks, ETFs, indexes and commodities are not coins. BingX marks them with an NC prefix;
+// for Gate.io this is a list of known tickers, so a few may slip through (check the list).
+const NON_CRYPTO=new Set(['XAU','XAG','XPT','XPD','CL','BZ','NG','COPPER','COPP','UKOIL','USOIL','US30','US100','US500','US400','DXI','VXI','SPCX',
+ 'NVDA','INTC','AMD','AAPL','TSLA','AMZN','MSFT','META','GOOGL','GOOG','NFLX','ORCL','AVGO','PLTR','MSTR','COIN','HOOD','CRCL','NBIS','CRWV','AAOI','AXTI',
+ 'MU','MUU','TSM','ARM','SMCI','BABA','GME','AMC','QQQ','SPY','IWM','TQQQ','SQQQ','SOXL','SOXS','SAMSUNG','SKHYNIX','SKHY','KORU','SNDK','CXMT','ZHIPU',
+ 'OPENAI','SNXX','CIRCLE','RDDT','UBER','SHOP','SNOW','IBM','DIS','JPM','BAC','V','MA','WMT','KO','PEP','NKE','XOM','CVX','LLY','UNH','HYUNDAI','LG','KRX',
+ 'ANTHROPIC','SPACEX','XIAOMI','TENCENT','NIO','LI','XPEV','BIDU','JD','PDD','EWJ','EWY','FXI','GLD','SLV','USO','TLT','UVXY','VIX']);
+const isCoin=symbol=>{const base=symbol.replace(/USDT$/,'');return !/^NC/.test(base)&&!NON_CRYPTO.has(base)};
+const coins=venueOnly.filter(r=>isCoin(r.symbol)),others=venueOnly.filter(r=>!isCoin(r.symbol));
+const band=(lo,hi)=>coins.filter(r=>r.volume>=lo&&r.volume<hi).length,m=x=>x*1e6;
+lines.push('',`BingX·Gate.io에만 있는 종목 ${venueOnly.length}개 = 코인 ${coins.length}개 + 주식·원자재·지수 ${others.length}개 (바이낸스 차트 없음 → 지금은 분석하지 않음)`,
+ `코인 ${coins.length}개의 24h 거래대금 분포: 5M$ 이상 ${band(m(5),Infinity)} · 1~5M$ ${band(m(1),m(5))} · 0.1~1M$ ${band(m(.1),m(1))} · 0.1M$ 미만 ${band(0,m(.1))}`,
+ '','코인만 (거래대금 순, 최대 150개):',
+ ...coins.slice(0,150).map((r,i)=>`  ${String(i+1).padStart(3)}. ${r.symbol.padEnd(20)} ${(r.volume/1e6).toFixed(2).padStart(8)}M$  ${[r.gate?'Gate.io':'',r.bingx?'BingX':''].filter(Boolean).join('·')}`),
+ '','주식·원자재·지수 (거래대금 순, 최대 20개):',
+ ...others.slice(0,20).map(r=>`  ${r.symbol.padEnd(24)} ${(r.volume/1e6).toFixed(1)}M$`));
 console.log(lines.join('\n'));
 fs.mkdirSync('backtest-results',{recursive:true});fs.writeFileSync('backtest-results/venue-overlap.txt',lines.join('\r\n'));
 console.log('\n저장: backtest-results\\venue-overlap.txt');
