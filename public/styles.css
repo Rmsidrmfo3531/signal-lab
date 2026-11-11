@@ -459,3 +459,10 @@
 .paper-levels form{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-top:6px;align-items:end}
 .paper-levels label{display:flex;flex-direction:column;font-size:.75rem;gap:2px}.paper-levels input{min-width:0;padding:4px 6px}
 .paper-levels input:disabled{opacity:.5}.paper-levels small{grid-column:1/-1}
+
+.paper-breakdown{margin:12px 0;overflow-x:auto}
+.paper-breakdown table{width:100%;border-collapse:collapse;font-size:12px;min-width:420px}
+.paper-breakdown caption{text-align:left;color:#93a9bd;font-size:11px;padding:0 0 6px}
+.paper-breakdown th,.paper-breakdown td{padding:7px 9px;border-bottom:1px solid #293c50;text-align:right;white-space:nowrap}
+.paper-breakdown th:first-child,.paper-breakdown td:first-child{text-align:left}
+.paper-breakdown th{color:#93a9bd;font-weight:600}

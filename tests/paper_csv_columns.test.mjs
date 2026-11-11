@@ -25,3 +25,15 @@ test('paper records keep the chart venue and score; the CSV adds strategy, R mul
  assert.equal(a.strategy,'HOURLY_1H');assert.equal(a.chartVenue,'GATEIO');assert.equal(a.score,'92');assert.equal(a.rMultiple,'1.500');assert.equal(a.holdMinutes,'90');assert.equal(a.dcaAddsFilled,'');
  assert.equal(c.strategy,'SCALP_REVERSAL_5M');assert.equal(c.chartVenue,'BINANCE');assert.equal(c.rMultiple,'-1.000');assert.equal(c.dcaAddsFilled,'2');
 });
+
+import {paperBreakdown,breakdownGroup} from '../paper.mjs';
+test('closed trades are grouped by strategy and chart for the comparison table',()=>{
+ const t=(extra,pnl,risk=2)=>({market:'CRYPTO',realizedPnLUSD:pnl,initialRiskUSD:risk,...extra});
+ const closed=[t({},3),t({},-2),t({chartVenue:'BINANCE',strategy:'HOURLY_1H'},1),t({chartVenue:'GATEIO'},-1),t({strategy:'SCALP_REVERSAL_5M'},.5,1),t({strategy:'SCALP_REVERSAL_1M'},-1,1),
+  {market:'TRADFI',realizedPnLUSD:9}];
+ assert.equal(breakdownGroup(closed[3]),'HOURLY_VENUE');assert.equal(breakdownGroup(closed[6]),'OTHER');
+ const g=Object.fromEntries(paperBreakdown(closed).map(x=>[x.key,x]));
+ assert.deepEqual([g.HOURLY_BINANCE.trades,g.HOURLY_BINANCE.wins,g.HOURLY_BINANCE.netUSD,g.HOURLY_BINANCE.profitFactor,Number(g.HOURLY_BINANCE.averageR.toFixed(4))],[3,2,2,2,.3333]);
+ assert.equal(g.HOURLY_VENUE.netUSD,-1);assert.equal(g.SCALP_REVERSAL_5M.averageR,.5);assert.equal(g.SCALP_REVERSAL_15M.trades,0);assert.equal(g.OTHER.trades,1);
+ assert.equal(paperBreakdown([]).some(x=>x.key==='OTHER'),false,'empty "other" row hidden');
+});

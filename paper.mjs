@@ -63,6 +63,26 @@ export function fillPrice(reference,orderSide,{halfSpreadBps=1,slippageBps=2}={}
 export function signalKey({market,symbol,direction,pattern,barAt}){
  return `${market}:${symbol}:${direction}:${pattern}:${barAt}`;
 }
+// Closed trades grouped the way they are compared with the backtest: 1H on the Binance chart,
+// 1H on a venue chart (coins Binance does not list), and the 1m / 5m / 15m scalps.
+export const BREAKDOWN_GROUPS=Object.freeze([
+ {key:'HOURLY_BINANCE',label:'1시간봉 · 바이낸스 차트'},{key:'HOURLY_VENUE',label:'1시간봉 · Gate.io/BingX 차트'},
+ {key:'SCALP_REVERSAL_1M',label:'1분 단타'},{key:'SCALP_REVERSAL_5M',label:'5분 단타'},{key:'SCALP_REVERSAL_15M',label:'15분 단타'},{key:'OTHER',label:'기타·이전 기록'}]);
+export function breakdownGroup(x){
+ if(x?.market!=='CRYPTO')return 'OTHER';
+ if(/^SCALP_REVERSAL_(1M|5M|15M)$/.test(x.strategy||''))return x.strategy;
+ if(!x.strategy||x.strategy==='HOURLY_1H')return x.chartVenue==='GATEIO'||x.chartVenue==='BINGX'?'HOURLY_VENUE':'HOURLY_BINANCE';
+ return 'OTHER';
+}
+export function paperBreakdown(closed=[]){
+ return BREAKDOWN_GROUPS.map(({key,label})=>{
+  const rows=closed.filter(x=>breakdownGroup(x)===key),pnl=rows.reduce((s,x)=>s+Number(x.realizedPnLUSD||0),0);
+  const wins=rows.filter(x=>x.realizedPnLUSD>0),gw=wins.reduce((s,x)=>s+x.realizedPnLUSD,0),gl=rows.reduce((s,x)=>s+Math.max(0,-x.realizedPnLUSD),0);
+  const rs=rows.filter(x=>Number(x.initialRiskUSD)>0).map(x=>x.realizedPnLUSD/x.initialRiskUSD);
+  return {key,label,trades:rows.length,wins:wins.length,winRatePct:rows.length?wins.length/rows.length*100:null,netUSD:rounded(pnl),
+   profitFactor:gl>0?rounded(gw/gl):null,averageR:rs.length?rounded(rs.reduce((a,b)=>a+b,0)/rs.length):null,rCount:rs.length};
+ }).filter(g=>g.trades>0||g.key!=='OTHER');
+}
 export function paperSummary(store,{now=Date.now(),settings=PAPER_DEFAULTS}={}){
  const done=store.closed||[],active=store.open||[];
  const closedRealized=done.reduce((s,x)=>s+x.realizedPnLUSD,0),openPartRealized=active.reduce((s,x)=>s+Number(x.realizedPnLUSD||0),0);
@@ -99,7 +119,7 @@ export class PaperEngine {
   if(seed&&typeof seed==='object')for(const key of ['pending','open','closed','skipped'])if(Array.isArray(seed[key]))this.store[key]=structuredClone(seed[key]);
   if(seed?.seen&&typeof seed.seen==='object'&&!Array.isArray(seed.seen))this.store.seen={...seed.seen};
  }
- snapshot(){const summary=paperSummary(this.store,{now:this.now(),settings:this.settings});return {...summary,
+ snapshot(){const summary=paperSummary(this.store,{now:this.now(),settings:this.settings});return {...summary,breakdown:paperBreakdown(this.store.closed),
   pending:this.store.pending.slice(0,20),open:this.store.open.slice(0,20),closed:this.store.closed.slice(-200).reverse(),skipped:this.store.skipped.slice(-30).reverse(),
   updatedAt:this.now(),mode:'SIMULATION_ONLY',settings:{TP1_MOVE_STOP_TO_BREAKEVEN:this.settings.TP1_MOVE_STOP_TO_BREAKEVEN!==false,TP1_BREAKEVEN_MODE:this.settings.TP1_BREAKEVEN_MODE},sourceNotes:{CRYPTO:'Binance 실시간 시세 기준 모의 PNL. 실제 거래소 확정 체결·펀딩·계정 수수료와 다름',TRADFI:'대체 데이터 공급자 없음 · 신규 진입/시세 갱신 비활성 · 기존 기록 및 마지막 관측 PNL 보존'}}}
  // Only publish mutations after the persistence callback succeeds. A failed write
