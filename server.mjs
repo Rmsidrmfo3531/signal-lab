@@ -32,7 +32,7 @@ import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
 import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues} from './venue_execution.mjs';
 import {PaperEngine,paperCSV,signalKey} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
-import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS} from './scalp_reversal.mjs';
+import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
@@ -72,6 +72,8 @@ const CONFIG={
  scalpMode:String(process.env.SCALP_MODE||'ON').toUpperCase()!=='OFF',
  scalpMinMovePct:Math.max(1,Math.min(20,Number(process.env.SCALP_MIN_MOVE_PCT)||SCALP_DEFAULTS.minMovePct)),
  scalpIntervalMs:60000,scalpMaxChecks:6,
+ // 180-day backtest: counter-4H-trend reversals lost most (-$275 -> -$41 with this filter).
+ scalpTrendFilter:String(process.env.SCALP_TREND_FILTER||'ON').toUpperCase()!=='OFF',
  // Zone scale-in for scalp paper trades: 1,1,2,4,... units on volume zones, cross margin.
  dcaMode:String(process.env.DCA_MODE||'ON').toUpperCase()!=='OFF',
  paperBalanceUSD:Math.max(10,Math.min(10000000,Number(process.env.PAPER_BALANCE_USD)||1000)),
@@ -80,7 +82,11 @@ const CONFIG={
  dcaMaxLossPct:Math.max(1,Math.min(95,Number(process.env.DCA_MAX_LOSS_PCT)||DCA_DEFAULTS.maxLossPct)),
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
- limits:{maxSpreadBps:20}
+ limits:{maxSpreadBps:20,
+  // 180-day / 12-symbol backtest: only the range breakout (LONG) was profitable across the period.
+  // SIGNAL_PATTERNS=ALL trades every pattern; or a comma list of pattern names.
+  allowedPatterns:(()=>{const v=String(process.env.SIGNAL_PATTERNS??'').trim();if(v.toUpperCase()==='ALL')return null;
+   return v?v.split(',').map(x=>x.trim()).filter(Boolean):['박스권 상단 돌파']})()}
 };
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
@@ -523,6 +529,10 @@ async function runScalpCheck(now=Date.now()){
    const det=detectScalpReversal(rows,{symbol,now:Date.now(),settings:{minMovePct:CONFIG.scalpMinMovePct}});
    const reject=(reasons,extra={})=>{scalpState.recentRejects=[{at:Date.now(),symbol,direction:det.direction??null,reasons,...extra},...scalpState.recentRejects].slice(0,20)};
    if(!det.ok){reject(det.reasons,{evidence:det.evidence});continue}
+   if(CONFIG.scalpTrendFilter){
+    let trend=null;try{trend=fourHourTrend(await klines(symbol,'4h',301),Date.now())}catch{}
+    if(!trendAllows(det.direction,trend)){reject([trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND_'+trend.toUpperCase()]);continue}
+   }
    await Promise.all(CONFIG.paperVenues.map(venue=>refreshVenueBook(venue,symbol,{maxAgeMs:3000})));
    const signal={symbol,direction:det.direction,entry:det.entry,stop:det.stop,atr:det.atr};
    const selection=selectExecutionVenue({signal,venues:Object.fromEntries(CONFIG.paperVenues.map(v=>[v,venueEntry(v,symbol)])),allowed:CONFIG.paperVenues,maxRiskUSD:CONFIG.maxRiskUSD});

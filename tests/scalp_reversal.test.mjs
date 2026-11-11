@@ -70,3 +70,13 @@ test('paper: a scalp signal uses its short entry window and closes the rest at t
  now+=31*60000;engine.onPrice('CRYPTO','SOLUSDT',estimate.entryBasis+.01,now);
  const closed=engine.store.closed.at(-1);assert.equal(closed.closeReason,'TIME_STOP');assert.equal(closed.closeParts.at(-1).type,'TIME');
 });
+
+test('4H trend filter: a rebound LONG is blocked in a downtrend, a fade SHORT in an uptrend',async()=>{
+ const {fourHourTrend,trendAllows}=await import('../scalp_reversal.mjs');
+ const H4=14400000,series=step=>{let p=100;return Array.from({length:260},(_,i)=>{const o=p;p*=step;return [i*H4,String(o),String(Math.max(o,p)),String(Math.min(o,p)),String(p),'1',i*H4+H4-1]})};
+ const now=261*H4;
+ assert.equal(fourHourTrend(series(.998),now),'down');assert.equal(fourHourTrend(series(1.002),now),'up');
+ assert.equal(fourHourTrend(series(.998).slice(0,100),now),null,'not enough history');
+ assert.equal(trendAllows('LONG','down'),false);assert.equal(trendAllows('SHORT','up'),false);
+ assert.equal(trendAllows('LONG','up'),true);assert.equal(trendAllows('SHORT','range'),true);assert.equal(trendAllows('LONG',null),false);
+});

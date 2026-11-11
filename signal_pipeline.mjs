@@ -15,7 +15,10 @@ export function evaluateBinanceSignal(row,{market,book,verified=false,venueConne
   fresh=Number.isFinite(row?.quality?.validUntil)&&now<=row.quality.validUntil;
  if(!fresh)technicalReasons.push('확정 1H·4H 봉 신선도 만료 또는 재검증 필요');
  if(!scorePassed)technicalReasons.push(Number.isFinite(row?.score)?`종합점수 ${STRICT_MIN_SCORE}점 미만`:'종합점수 평가 불가');
- const technical=pattern&&validationPassed&&scorePassed&&fresh;
+ // Only patterns that held up in the 180-day backtest trade (limits.allowedPatterns; null = all).
+ const patternAllowed=!Array.isArray(limits.allowedPatterns)||limits.allowedPatterns.includes(row?.pattern);
+ if(pattern&&!patternAllowed)technicalReasons.push('백테스트 검증 패턴 아님(SIGNAL_PATTERNS)');
+ const technical=pattern&&validationPassed&&scorePassed&&fresh&&patternAllowed;
  const execution=estimateBinanceExecution({signal:row,market,book,now,maxRiskUSD:limits.maxRiskUSD??6});
  if(!verified||!venueConnected)execution.reasons.push('Binance TRADING USDT 무기한 선물·연결 검증 필요');
  const plan=row?.targetPlan,profileReceipt=plan?.profileEvidence?.receivedAt,profileWindowEnd=plan?.profileEvidence?.windowEnd;
