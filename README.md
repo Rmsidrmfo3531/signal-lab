@@ -171,3 +171,9 @@ npm run test:strategy:compare -- --input 과거데이터.json
 - [Binance 선물 Kline](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data)
 - [BingX API 문서](https://bingx-api.github.io/docs/) · [BingX 공식 API 스킬 저장소](https://github.com/bingx-api/api-ai-skills)
 - [Gate.io API v4 문서](https://www.gate.com/docs/developers/apiv4/)
+
+### 연구용 점수 v2 (score_factors.mjs)
+학습 자료(LEE의 차트연구소 영상, 투자성공기 블로그)에서 뽑은 17개 체크 항목과, 180일·12종목 재생 데이터 앞 120일로 정한 배점입니다.
+- 롱: 다이버전스 62, 손절 앞 거래량선 받침 38
+- 숏: 5이평 아래 아님 19, 1.5R 안 막힘 있음 17, MACD 시그널 아래 아님 17, 20이평 아래 아님 14, 손절 앞 거래량선 받침 12, 거래량 급증 아님 9, 추세선 기울기 하락 7, 다이버전스 아님 5
+- 실주문·모의매매 기준은 바꾸지 않았습니다. 61~120일 구간에서 숏 성과가 마이너스여서 아직 연구용입니다. `backtestHourly({liveGate})`로 비교할 수 있습니다.
