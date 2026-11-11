@@ -90,3 +90,14 @@ test('scalp trend filter: with 4H candles a rebound LONG in a 4H downtrend is sk
  const r=backtestScalp({symbol:'SOLUSDT',m5,m15:[],h4,trendFilter:true,filters:{tickSize:.01,stepSize:.01,minQty:.01,minNotional:1},startAt:0});
  assert.equal(r.funnel.trendBlocked,0,'no signal, nothing blocked');assert.equal(r.trades.length,0);
 });
+
+test('textbook candidate detectors: stops on the protective side, replay never enters before the signal closes',async()=>{
+ const {backtestCandidates}=await import('../backtest.mjs');const {DETECTORS,prepare}=await import('../research/candidates.mjs');
+ const {m5,m15,h1,h4,start}=market();
+ const p=prepare(h1.map(r=>({t:+r[0],o:+r[1],h:+r[2],l:+r[3],c:+r[4],v:+r[5],ct:+r[6]})));let hits=0;
+ for(let j=210;j<h1.length;j++)for(const detect of Object.values(DETECTORS)){const s=detect(p,j);if(!s)continue;hits++;
+  assert.ok(s.direction==='LONG'?s.stop<s.entry:s.stop>s.entry,'stop on the protective side');assert.equal(s.entry,p.close[j],'entry is the signal close')}
+ assert.ok(hits>0,'synthetic data triggers some detectors');
+ const r=backtestCandidates({symbol:'SOLUSDT',h1,h4,m15,m5,filters:{tickSize:.0001,stepSize:.01,minQty:.01,minNotional:5},startAt:start+58*86400000});
+ for(const t of r.trades){assert.ok(t.entryAt>t.signalAt);assert.ok(['CANDIDATE:RAW','CANDIDATE:TREND'].includes(t.book))}
+});

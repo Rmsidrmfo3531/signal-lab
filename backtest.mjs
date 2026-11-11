@@ -17,6 +17,8 @@ import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,trendAllows} from './s
 import {planZoneDca,DCA_DEFAULTS} from './dca_plan.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {seededEMA} from './indicators.mjs';
+import {DETECTORS,prepare} from './research/candidates.mjs';
+import {fourHourTrend} from './scalp_reversal.mjs';
 
 export const HOUR=3600000,M5=300000,M15=900000;
 // Same default as the server (SIGNAL_PATTERNS): only the range breakout trades. null = every pattern.
@@ -25,11 +27,11 @@ export const BACKTEST_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slipp
 const FRACTIONS=[.4,.35,.25];
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
 
-const toCandle=r=>({t:Number(r[0]),o:Number(r[1]),h:Number(r[2]),l:Number(r[3]),c:Number(r[4]),v:Number(r[5]),ct:Number(r[6])});
+export const toCandle=r=>({t:Number(r[0]),o:Number(r[1]),h:Number(r[2]),l:Number(r[3]),c:Number(r[4]),v:Number(r[5]),ct:Number(r[6])});
 /** First index whose open time is >= t. */
-function lowerBound(candles,t){let lo=0,hi=candles.length;while(lo<hi){const mid=(lo+hi)>>1;if(candles[mid].t<t)lo=mid+1;else hi=mid}return lo}
+export function lowerBound(candles,t){let lo=0,hi=candles.length;while(lo<hi){const mid=(lo+hi)>>1;if(candles[mid].t<t)lo=mid+1;else hi=mid}return lo}
 /** Index after the last candle closed at or before `now` (raw Binance rows: [6] = close time). */
-function closedUntil(rows,now){let lo=0,hi=rows.length;while(lo<hi){const mid=(lo+hi)>>1;if(Number(rows[mid][6])<now)lo=mid+1;else hi=mid}return lo}
+export function closedUntil(rows,now){let lo=0,hi=rows.length;while(lo<hi){const mid=(lo+hi)>>1;if(Number(rows[mid][6])<now)lo=mid+1;else hi=mid}return lo}
 
 /** Simulate one trade on 5m candles from startIdx. Quantities in base asset. */
 export function simulateTrade({direction,m5,startIdx,entryRef,stop,targets,quantity,adds=[],maxHoldMs=null,costs=BACKTEST_COSTS,breakeven=true,endIdx=m5.length}){
@@ -70,16 +72,16 @@ export function simulateTrade({direction,m5,startIdx,entryRef,stop,targets,quant
   netUSD:net,feesUSD:fees,R:initialRisk>0?net/initialRisk:null,initialRiskUSD:initialRisk,worstOpenUSD:worst,endIdx:i};
 }
 
-function onTick(price,tick,mode){
+export function onTick(price,tick,mode){
  if(mode==='NEAREST'){const down=Number(roundDecimalToStep(price,tick,'DOWN')),up=Number(roundDecimalToStep(price,tick,'UP'));return price-down<=up-price?down:up}
  return Number(roundDecimalToStep(price,tick,mode));
 }
-function stepQuantity(raw,step){
+export function stepQuantity(raw,step){
  try{const grid=roundDecimalToStep(step*20.5,step,'DOWN');return Number(roundDecimalToStep(raw,grid,'DOWN'))}catch{return 0}
 }
 // Closed 15m candles only (no look-ahead). Between 15m closes the profile is dated at the
 // last 15m close, which is when the server would last have seen a finished 15m candle.
-function profileAt(m15Raw,now,symbol,tick){
+export function profileAt(m15Raw,now,symbol,tick){
  const end=closedUntil(m15Raw,now),rows=m15Raw.slice(Math.max(0,end-288),end);
  const at=rows.length?Math.min(now,Number(rows.at(-1)[6])+1000):now;
  return buildKlineVolumeProfile({symbol,klines:rows,receivedAt:at,tickSize:String(tick),dataSource:'SYNTHETIC_TEST'},{now:at});
@@ -188,3 +190,34 @@ export function summarize(trades){
   avgHoldMin:list.reduce((s,t)=>s+t.holdMs,0)/n/60000,worstTradeUSD:Math.min(...list.map(t=>t.netUSD)),bestTradeUSD:Math.max(...list.map(t=>t.netUSD))};
 }
 export function scoreBucket(score){return score>=90?'90점 이상':score>=85?'85~89점':score>=80?'80~84점':'80점 미만'}
+
+/** Research: textbook detectors (research/candidates.mjs) with the live exits (15m-profile
+ * targets, break-even after TP1). Two books per detector: RAW and TREND (4H trend agrees). */
+export function backtestCandidates({symbol,h1,h4,m15,m5,filters,startAt,endAt=Infinity,riskUSD=6,costs=BACKTEST_COSTS,detectors=DETECTORS}){
+ const m5c=m5.map(toCandle),c=h1.map(toCandle),p=prepare(c),busy={},trades=[];
+ const trendAt=now=>{const i=closedUntil(h4,now);return fourHourTrend(h4.slice(Math.max(0,i-301),i),now)};
+ for(let j=210;j<c.length;j++){
+  const closeAt=c[j].ct;if(closeAt<startAt||closeAt>=endAt)continue;const now=closeAt+1000;let trend;
+  for(const [name,detect] of Object.entries(detectors)){
+   const sig=detect(p,j);if(!sig)continue;
+   const k=lowerBound(m5c,closeAt+1),next=m5c[k];if(!next)continue;
+   const dir=sig.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST'),stop=onTick(sig.stop,filters.tickSize,dir===1?'DOWN':'UP');
+   if(Math.abs(entry-sig.entry)>Math.min(sig.entry*.004,p.atr[j]*.45)||dir*(entry-stop)<=0)continue;
+   const quantity=stepQuantity(riskUSD/Math.abs(entry-stop),filters.stepSize);
+   if(!positive(quantity)||quantity<filters.minQty||quantity*entry<filters.minNotional)continue;
+   const plan=planVolumeTargets({profileResult:profileAt(m15,now,symbol,filters.tickSize),direction:sig.direction,entry,stop,quantity,tickSize:filters.tickSize,
+    quantityStep:filters.stepSize,minQuantity:filters.minQty,minNotional:filters.minNotional,contractSizeBase:1,quantityUnit:'BASE_ASSET',notionalCurrency:'USDT',
+    unitsVerified:true,costs,minNetRR:1.8,targetMode:'HVN_THEN_R',obstacleFraction:1},{now});
+   if(!plan.ok)continue;
+   if(trend===undefined)trend=trendAt(now);
+   const agrees=trend!==null&&!(sig.direction==='LONG'&&trend==='down')&&!(sig.direction==='SHORT'&&trend==='up');
+   for(const book of ['RAW',...(agrees?['TREND']:[])]){
+    const key=name+'|'+book;if(k<=(busy[key]??-1))continue;
+    const t=simulateTrade({direction:sig.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs});
+    if(!t)continue;busy[key]=t.endIdx;
+    trades.push({strategy:'CANDIDATE',book:'CANDIDATE:'+book,symbol,direction:sig.direction,pattern:name,signalAt:closeAt,stop,targets:plan.targets,...t});
+   }
+  }
+ }
+ return {trades};
+}
