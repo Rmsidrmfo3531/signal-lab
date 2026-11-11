@@ -178,3 +178,31 @@ test('a lock from another PC (shared OneDrive folder) holds while its heartbeat 
   release();assert.equal(fs.existsSync(lock),false);
  }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
 });
+
+test('settings (.env) can stay on this PC while records are shared; the shared copy seeds it once',async()=>{
+ const {resolveEnvPath,prepareData}=await import('../persistence.mjs');
+ const root=work(),shared=work(),local=work();
+ try{
+  assert.equal(resolveEnvPath({env:{SIGNAL_LAB_DATA_DIR:shared}}),path.join(shared,'.env'),'default: next to the records');
+  assert.equal(resolveEnvPath({env:{SIGNAL_LAB_DATA_DIR:shared,SIGNAL_LAB_ENV_DIR:local}}),path.join(local,'.env'));
+  fs.writeFileSync(path.join(shared,'.env'),'TELEGRAM_BOT_TOKEN=synthetic\n');
+  const first=prepareData(root,{env:{SIGNAL_LAB_DATA_DIR:shared,SIGNAL_LAB_ENV_DIR:local}});
+  assert.equal(first.envPath,path.join(local,'.env'));assert.equal(first.movedSharedEnv,true);assert.equal(first.sharedEnvLeft,path.join(shared,'.env'));
+  assert.equal(fs.readFileSync(path.join(local,'.env'),'utf8'),'TELEGRAM_BOT_TOKEN=synthetic\n');
+  fs.writeFileSync(path.join(local,'.env'),'TELEGRAM_BOT_TOKEN=this-pc\n');
+  const again=prepareData(root,{env:{SIGNAL_LAB_DATA_DIR:shared,SIGNAL_LAB_ENV_DIR:local}});
+  assert.equal(again.movedSharedEnv,false);assert.equal(fs.readFileSync(path.join(local,'.env'),'utf8'),'TELEGRAM_BOT_TOKEN=this-pc\n','never overwritten');
+  fs.rmSync(path.join(shared,'.env'));assert.equal(prepareData(root,{env:{SIGNAL_LAB_DATA_DIR:shared,SIGNAL_LAB_ENV_DIR:local}}).sharedEnvLeft,null);
+ }finally{for(const d of [root,shared,local])fs.rmSync(d,{recursive:true,force:true})}
+});
+
+test('shared folder: PCs that used it are listed; OneDrive conflict copies are found',async()=>{
+ const {recordHost,findConflictCopies}=await import('../persistence.mjs');
+ const dir=work();
+ try{
+  recordHost(dir,{host:'SHK',now:1000});recordHost(dir,{host:'BOOK',now:2000});const list=recordHost(dir,{host:'SHK',now:3000});
+  assert.deepEqual(list.map(h=>[h.host,h.current,h.starts]),[['SHK',true,2],['BOOK',false,1]]);assert.equal(list[0].firstAt,1000);
+  for(const f of ['store.json','store-BOOK.json','store (1).json','store.json.abc.tmp','pcs.json'])fs.writeFileSync(path.join(dir,f),'{}');
+  assert.deepEqual(findConflictCopies(dir),['store (1).json','store-BOOK.json']);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});

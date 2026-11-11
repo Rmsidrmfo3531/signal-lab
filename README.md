@@ -204,7 +204,17 @@ npm run test:strategy:compare -- --input 과거데이터.json
 
 ### 두 PC를 번갈아 쓸 때 (`start_shared.bat`)
 
-`start.bat` 대신 `start_shared.bat`로 켜면 모의매매 기록·설정(.env)을 OneDrive의 `SignalLabData` 폴더에 두고 두 PC가 같이 씁니다. 다른 동기화 폴더를 쓰려면 같은 폴더에 `shared_data_dir.txt`를 만들고 첫 줄에 경로를 적으세요.
+`start.bat` 대신 `start_shared.bat`로 켜면 모의매매 **기록**을 OneDrive의 `SignalLabData` 폴더에 두고 두 PC가 같이 씁니다. 텔레그램 토큰·거래소 키가 들어가는 **설정(.env)은 각 PC의 `%LOCALAPPDATA%\SignalLab\.env`에 따로** 둡니다(`SIGNAL_LAB_ENV_DIR`). 예전 버전이 공유 폴더에 복사해 둔 `.env`가 있으면 한 번만 이 PC 설정으로 복사하고, 서버 창에 삭제 권장 안내를 띄웁니다.
+- 서버 창과 진단에 이 기록 폴더를 사용한 PC 목록(`pcs.json`)이 나옵니다. 다른 PC 이름이 보이면 OneDrive 동기화가 되고 있는 것입니다.
+- OneDrive 충돌 사본(`store-PC이름.json` 등)이 생기면 경고합니다. 지우지 말고 확인하세요. 다른 동기화 폴더를 쓰려면 같은 폴더에 `shared_data_dir.txt`를 만들고 첫 줄에 경로를 적으세요.
 - 처음 실행할 때 그 PC의 기존 기록이 공유 폴더로 복사됩니다(공유 폴더에 기록이 없을 때만).
 - 한 번에 한 PC만 켭니다. 다른 PC에서 서버가 켜져 있으면(30초마다 갱신되는 잠금, 3분 기준) 실행을 거부합니다.
 - 바꿀 때: 쓰던 PC의 서버 창 닫기 → OneDrive 동기화 완료(초록 체크) 확인 → 다른 PC에서 `start_shared.bat`.
+
+### 모의매매 텔레그램 알림
+
+텔레그램(`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`)이 설정돼 있으면 모의 **진입·청산**도 휴대폰으로 보냅니다(전략·패턴·점수·진입/손절/목표·차트 거래소, 청산 시 손익·R·사유·보유 시간·누적 손익). 모두 "실제 주문 없음 (모의매매)"로 표시됩니다. 끄려면 `PAPER_TELEGRAM=false`.
+
+### CSV 내려받기 열
+
+기존 열에 더해 `strategy`(HOURLY_1H / SCALP_REVERSAL_1M·5M·15M), `chartVenue`(판단한 차트 거래소), `score`, `sizeScale`(절반 크기 배율), `initialRiskUSD`(진입 시 위험, 물타기는 계획 전체 손절액), `rMultiple`(손익 ÷ 위험), `dcaAddsFilled`, `holdMinutes`가 들어갑니다.

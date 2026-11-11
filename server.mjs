@@ -35,8 +35,9 @@ import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays} from './dca_plan.mjs';
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
+import {paperTelegramText} from './paper_telegram.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
-import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock} from './persistence.mjs';
+import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
 
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const storage=prepareData(__dirname);
@@ -44,6 +45,10 @@ const releaseDataLock=acquireDataLock(storage.dir);
 // Heartbeat so a second PC sharing this data folder (OneDrive etc.) sees the server is running.
 setInterval(()=>releaseDataLock.heartbeat?.(),30000).unref?.();
 process.on('exit',releaseDataLock);
+// Which PCs have used this record folder (proves OneDrive is syncing between them) and any
+// conflict copies OneDrive made when both wrote while out of sync.
+const sharedCheck={hosts:recordHost(storage.dir),conflicts:findConflictCopies(storage.dir),checkedAt:Date.now()};
+setInterval(()=>{sharedCheck.conflicts=findConflictCopies(storage.dir);sharedCheck.checkedAt=Date.now()},10*60000).unref?.();
 const envfile=storage.envPath;
 if(fs.existsSync(envfile))for(const line of fs.readFileSync(envfile,'utf8').split(/\r?\n/)){
  const match=line.match(/^\s*([A-Z][A-Z_0-9]*)\s*=\s*(.*)\s*$/);
@@ -59,6 +64,8 @@ const CONFIG={
  hotBatch:Math.max(5,Math.min(80,Number(process.env.SCAN_HOT_BATCH||12))),
  quoteVolume:Math.max(0,Number(process.env.MIN_DAILY_VOLUME_USDT||5000000)),
  tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
+ // Paper entries / closes to Telegram (opt-in on the paper page; needs the bot token and chat ID above).
+ paperTelegram:process.env.PAPER_TELEGRAM==='true'?true:process.env.PAPER_TELEGRAM==='false'?false:null,
  newsMs:Math.max(60000,Number(process.env.NEWS_POLL_MS||90000)),
  maxRiskUSD:Number(process.env.PAPER_MAX_RISK_USD||6),
  // Paper positions open at once (1-10). Each new one is half the size of the newest open one.
@@ -146,6 +153,9 @@ persisted.paper ||= {pending:[],open:[],closed:[],skipped:[],seen:{}};
 persisted.paperNotify ||= {enabled:true,history:[]};
 persisted.paperNotify.enabled = persisted.paperNotify.enabled!==false;
 if(!Array.isArray(persisted.paperNotify.history))persisted.paperNotify.history=[];
+// Paper entries/closes on Telegram are opt-in (button on the paper page); PAPER_TELEGRAM=true/false forces it.
+persisted.paperNotify.telegram=persisted.paperNotify.telegram===true;
+const paperTelegramOn=()=>CONFIG.paperTelegram===true||CONFIG.paperTelegram===null&&persisted.paperNotify.telegram===true;
 // Create the first shared store file even if no trading event occurs yet.
 save();
 const state={ws:'offline',rest:'connecting',lastMarketListings:0,executionRefreshAt:0,blockedSignals:0,lastBlockReason:'',binancePerps:0,lastMarket:0,lastScan:0,scannedSinceBoot:0,cycleScanned:0,cycle:0,
@@ -175,7 +185,21 @@ function emitPaperNotice(event,{test=false}={}){
     if(!result.ok)console.warn('[PAPER NOTIFY FAILED]',result.error);
     send('paper-notify-result',pref.lastDelivery)}}):{queued:false,reason:'알림 설정 OFF'};
   console.log(`[PAPER ${test?'TEST':event.type}]`,event.symbol,event.direction,delivery.reason);
-  return {event:item,delivery};
+  const telegram=paperTelegram(event,{test});
+  return {event:item,delivery,telegram};
+}
+// Phone notice for paper events. Independent of the Windows notice switch; failures never touch the PNL.
+function paperTelegram(event,{test=false}={}){
+ if(!paperTelegramOn()||!CONFIG.tgToken||!CONFIG.tgChat)return {queued:false,reason:!paperTelegramOn()?'텔레그램 모의 알림 꺼짐':'텔레그램 미설정'};
+ if(event.type!=='OPEN'&&event.type!=='CLOSE')return {queued:false,reason:'대상 아님'};
+ try{
+  const store=typeof paper==='undefined'?null:paper.store,record=store?[...store.open,...store.closed].findLast?.(x=>x.key===event.key)??null:null;
+  const done=store?.closed??[],totals=test?null:{pnl:done.reduce((s,x)=>s+Number(x.realizedPnLUSD||0),0),closed:done.length,wins:done.filter(x=>x.realizedPnLUSD>0).length};
+  const text=paperTelegramText(event,test?{strategy:'HOURLY_1H',pattern:'테스트',targets:[104,106,108],chartVenue:'BINANCE',executionVenue:'BINGX',openedAt:Date.now()-3600000,initialRiskUSD:2}:record,{totals,test});
+  void telegramPost({chat_id:CONFIG.tgChat,text,disable_web_page_preview:true})
+   .then(r=>{if(!r.ok)console.warn('[PAPER TELEGRAM] HTTP',r.status)}).catch(()=>console.warn('[PAPER TELEGRAM] 전송 확인 실패'));
+  return {queued:true};
+ }catch(e){console.warn('[PAPER TELEGRAM]',e.message);return {queued:false,reason:e.message}}
 }
 // BingX/Gate.io are the execution venues: public quotes only, fetched on demand.
 // Binance remains the chart/analysis source and is shown only as a reference price.
@@ -307,11 +331,15 @@ async function tgNotify(s){
  if(!urls){console.warn('Telegram suppressed: market link not verified',s.symbol);return}
  const paperPosition=paper.store.open.find(p=>p.key===signalKey({market:'CRYPTO',symbol:matched.symbol,direction:matched.direction,pattern:matched.pattern,barAt:matched.patternConfirmedAt}));
  const payload={chat_id:CONFIG.tgChat,...telegramMessage(matched,urls,{paperPosition})};
-  const r=await fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
-   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)
-  });
+  const r=await telegramPost(payload);
   if(!r.ok)console.error('Telegram HTTP',r.status);
  }catch{console.error('Telegram delivery unconfirmed')}
+}
+// The one Telegram transport. Callers: final signals (tgNotify, guarded by the final results) and
+// opt-in paper entry/close notices (paperTelegram, simulation text only).
+function telegramPost(payload){
+ return fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
+  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
 }
 
 let updateCheckPromise=null;
@@ -763,7 +791,7 @@ setInterval(()=>{
  }
 },30000);
 function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.researchSymbols,assess:row=>assessAnalysis(row)});}
-function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',venueOnly:{enabled:CONFIG.venueOnly.enabled,...state.venueOnlyInfo,referenceRatio:CONFIG.venueOnly.referenceRatio,references:CONFIG.venueOnly.references,symbols:[...state.venueOnlySet].slice(0,40)},live:{mode:LIVE.mode,armed:live.armed,killSwitch:live.store.killSwitch},paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
+function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',sharedData:{dir:storage.dir,separateEnv:path.dirname(storage.envPath)!==storage.dir,pcs:sharedCheck.hosts.map(h=>({host:h.host,lastAt:h.lastAt,current:h.current})),conflicts:sharedCheck.conflicts,sharedEnvLeft:Boolean(storage.sharedEnvLeft)},venueOnly:{enabled:CONFIG.venueOnly.enabled,...state.venueOnlyInfo,referenceRatio:CONFIG.venueOnly.referenceRatio,references:CONFIG.venueOnly.references,symbols:[...state.venueOnlySet].slice(0,40)},live:{mode:LIVE.mode,armed:live.armed,killSwitch:live.store.killSwitch},paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
  intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:{maxQuoteAgeSeconds:15,maxFeedAgeSeconds:90,maxSpreadBps:20,maxRiskUSD:CONFIG.maxRiskUSD,minNetRR:1.8,analysisOnly:true},
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
@@ -948,16 +976,20 @@ const server=http.createServer(async(req,res)=>{
    scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,scanMode:state.scanMode,activeCount:state.activeSymbols.length}})
   });
   if(pathname==='/api/paper/notifications'&&req.method==='GET')return response(res,200,{enabled:persisted.paperNotify.enabled,
+   telegram:{enabled:paperTelegramOn(),configured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),forced:CONFIG.paperTelegram!==null},
    serverPlatform:process.platform,windowsSupported:process.platform==='win32',history:persisted.paperNotify.history.slice(0,50),lastDelivery:persisted.paperNotify.lastDelivery??null,
    note:'Windows 로그인 세션에 표시 요청. 방해 금지/알림 설정 또는 작업 스케줄러의 비대화형 실행 시 표시되지 않을 수 있음'});
   if(pathname==='/api/paper/notifications/settings'&&req.method==='POST'){
    const body=await bodyJson(req);
-   if(typeof body?.enabled!=='boolean')return response(res,400,{error:'enabled must be a boolean'});
-   persisted.paperNotify.enabled=body.enabled;save();send('paper-notify-settings',{enabled:body.enabled});
-   return response(res,200,{enabled:body.enabled});
+   const hasWin=typeof body?.enabled==='boolean',hasTg=typeof body?.telegram==='boolean';
+   if(!hasWin&&!hasTg)return response(res,400,{error:'enabled or telegram must be a boolean'});
+   if(hasWin)persisted.paperNotify.enabled=body.enabled;
+   if(hasTg)persisted.paperNotify.telegram=body.telegram;
+   save();send('paper-notify-settings',{enabled:persisted.paperNotify.enabled,telegram:paperTelegramOn()});
+   return response(res,200,{enabled:persisted.paperNotify.enabled,telegram:paperTelegramOn()});
   }
   if(pathname==='/api/paper/notifications/test'&&req.method==='POST'){
-   if(!persisted.paperNotify.enabled)return response(res,409,{error:'알림이 꺼져 있습니다. 먼저 켜주세요.'});
+   if(!persisted.paperNotify.enabled&&!paperTelegramOn())return response(res,409,{error:'알림이 꺼져 있습니다. 먼저 켜주세요.'});
    const body=await bodyJson(req);
    const type=body?.type==='CLOSE'?'CLOSE':'OPEN';
    const example={type,key:'demo-only',market:'CRYPTO',symbol:'BTCUSDT',direction:'LONG',at:Date.now(),entryFill:100,
@@ -1100,7 +1132,14 @@ const server=http.createServer(async(req,res)=>{
 if(LIVE.mode!=='OFF')setInterval(()=>{void live.reconcile().catch(e=>console.error('[LIVE RECONCILE]',e.message))},15000).unref?.();
 server.listen(CONFIG.port,CONFIG.host,()=>{
  console.log(`\nSignal Lab (PC) → http://127.0.0.1:${CONFIG.port}`);
- console.log(`[DATA] Records & settings: ${storage.dir}`);
+ console.log(`[DATA] Records: ${storage.dir}`);
+ console.log(`[DATA] Settings (.env): ${storage.envPath}`);
+ if(storage.movedSharedEnv)console.log('[DATA] 공유 폴더의 설정(.env)을 이 PC 전용 위치로 복사했습니다. 이제 이 PC 설정이 사용됩니다.');
+ if(storage.sharedEnvLeft)console.warn(`[DATA] 주의: 공유(OneDrive) 폴더에 .env가 남아 있습니다 → ${storage.sharedEnvLeft}\n       텔레그램 토큰 등 비밀값이 클라우드에 올라가 있으니, 두 PC 모두 새 버전으로 한 번 실행한 뒤 이 파일을 지우세요.`);
+ const others=sharedCheck.hosts.filter(h=>!h.current);
+ console.log(`[DATA] 이 기록 폴더를 사용한 PC: ${sharedCheck.hosts.map(h=>`${h.host}${h.current?'(지금)':` (마지막 ${new Date(h.lastAt).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})})`}`).join(', ')}`);
+ if(process.env.SIGNAL_LAB_DATA_DIR&&!others.length)console.log('[DATA] 다른 PC 기록이 아직 없습니다. 다른 PC에서 실행한 적이 있다면 OneDrive 계정·동기화를 확인하세요.');
+ if(sharedCheck.conflicts.length)console.warn(`[DATA] 경고: OneDrive 충돌 사본 발견 → ${sharedCheck.conflicts.join(', ')}\n       두 PC 기록이 갈라졌을 수 있습니다. 지우지 말고 알려 주세요.`);
  if(lanMode){
   console.log('\n[MOBILE] 같은 Wi-Fi의 휴대폰 브라우저에서 아래 주소 중 PC와 같은 네트워크의 주소로 접속하세요.');
   for(const ip of localIPv4Addresses())console.log(`[MOBILE] http://${ip}:${CONFIG.port}`);

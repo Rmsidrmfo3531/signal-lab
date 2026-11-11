@@ -2,7 +2,7 @@
 // It NEVER includes .env secrets, Telegram tokens, or the user's trade records.
 import fs from 'node:fs';
 import path from 'node:path';
-import {resolveDataDir} from './persistence.mjs';
+import {resolveDataDir,resolveEnvPath} from './persistence.mjs';
 
 const dataDir=resolveDataDir();
 fs.mkdirSync(dataDir,{recursive:true});
@@ -12,7 +12,7 @@ const lines=[];
 const log=s=>{lines.push(s);console.log(s)};
 const stamp=()=>new Date().toLocaleString('ko-KR',{timeZone:'Asia/Seoul'});
 let port=3000;
-const envPath=path.join(dataDir,'.env');
+const envPath=resolveEnvPath();
 if(fs.existsSync(envPath)){
  for(const line of fs.readFileSync(envPath,'utf8').split(/\r?\n/)){
   const m=line.match(/^\s*PORT\s*=\s*(\d+)/);if(m){port=Number(m[1]);break}
@@ -35,6 +35,10 @@ async function inspect(name,url,limit=9000){
     const f=body.scanFunnel||{};
     log(`   최근 분석 ${f.uniqueAnalyzed??'-'}종 · 패턴 발견 ${f.patternCount??'-'} · 기술검증 통과 ${f.technicalPassed??'-'} · 호가·목표가까지 통과(최종 신호) ${f.venuePassed??'-'}`);
     if(Array.isArray(f.topReasons)&&f.topReasons.length)log(`   탈락 사유 상위=${f.topReasons.slice(0,6).map(x=>typeof x==='string'?x:`${x.reason??x.label??''} ${x.count??''}`).join(' | ').slice(0,400)}`);
+    const st=body.sharedData;
+    if(st){log(`   기록 폴더를 사용한 PC=${(st.pcs||[]).map(p=>p.host+(p.current?'(지금)':'')).join(', ')||'-'} · 설정 파일 ${st.separateEnv?'이 PC 전용':'기록 폴더와 같은 곳'}`);
+     if(st.conflicts?.length)log(`   경고: OneDrive 충돌 사본 ${st.conflicts.join(', ')} — 두 PC 기록이 갈라졌을 수 있음`);
+     if(st.sharedEnvLeft)log('   주의: 공유(OneDrive) 폴더에 .env(비밀값)가 남아 있음 — 두 PC 모두 새 버전으로 실행한 뒤 삭제 권장');}
     const vo=body.venueOnly;
     if(vo)log(`   바이낸스 미상장 코인(Gate.io·BingX 차트)=${vo.enabled?vo.count+'종':'꺼짐'}`+(vo.minMarketCap?` · 시총 기준 ${(vo.minMarketCap/1e6).toFixed(1)}M$(${vo.marketCapSource==='REFERENCE'?'기준 코인 시총×비율':'최소값'})`:'')+(vo.threshold?` · 거래대금 ${(vo.threshold/1e6).toFixed(1)}M$ 이상 후보 ${vo.beforeMarketCap??'-'}종`:'')+(vo.droppedByMarketCap?` · 시총 제외 ${JSON.stringify(vo.droppedByMarketCap)}`:'')+(vo.error?` · 오류 ${String(vo.error).slice(0,120)}`:''));
     const m=x=>x==null?'시총?':(x/1e6).toFixed(1)+'M$';

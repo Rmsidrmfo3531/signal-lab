@@ -10,6 +10,12 @@ export function resolveDataDir({env=process.env,platform=process.platform,home=o
  if(platform==='win32')return path.join(env.LOCALAPPDATA||path.join(home,'AppData','Local'),'SignalLab');
  return path.join(home,'.signal-lab');
 }
+// Settings and secrets (.env: Telegram token, exchange keys) can live apart from the records:
+// SIGNAL_LAB_ENV_DIR keeps them on this PC while the records sit in a shared (OneDrive) folder.
+export function resolveEnvPath({env=process.env,platform=process.platform,home=os.homedir()}={}){
+ const override=env.SIGNAL_LAB_ENV_DIR?.trim();
+ return path.join(override?path.resolve(override):resolveDataDir({env,platform,home}),'.env');
+}
 const stamp=()=>new Date().toISOString().replace(/[:.]/g,'-');
 function isObject(x){return x!==null&&typeof x==='object'&&!Array.isArray(x)}
 function invalidStore(message){const error=new Error(message);error.code='SIGNAL_LAB_INVALID_STORE';return error}
@@ -28,7 +34,11 @@ function copyExclusive(source,target){
 export function prepareData(root,{env=process.env,platform=process.platform,home=os.homedir()}={}){
  const dir=resolveDataDir({env,platform,home});
  fs.mkdirSync(dir,{recursive:true,mode:0o700});
- const storePath=path.join(dir,'store.json'),envPath=path.join(dir,'.env');
+ const storePath=path.join(dir,'store.json'),envPath=resolveEnvPath({env,platform,home}),sharedEnv=path.join(dir,'.env');
+ const separateEnv=path.resolve(envPath)!==path.resolve(sharedEnv);
+ if(separateEnv)fs.mkdirSync(path.dirname(envPath),{recursive:true,mode:0o700});
+ // Moving to a local .env: the copy in the shared folder seeds it once, so nothing stops working.
+ const movedSharedEnv=separateEnv&&copyExclusive(sharedEnv,envPath);
  const legacyStore=path.join(root,'store.json'),legacyEnv=path.join(root,'.env');
  // A shared store is authoritative. Inspect the release's legacy copy only
  // when it will actually be migrated; an unused damaged copy must not block it.
@@ -36,7 +46,7 @@ export function prepareData(root,{env=process.env,platform=process.platform,home
  const migratedStore=copyExclusive(legacyStore,storePath);
  const migratedEnv=copyExclusive(legacyEnv,envPath);
  if(fs.existsSync(storePath))readStore(storePath);
- return {dir,storePath,envPath,migratedStore,migratedEnv};
+ return {dir,storePath,envPath,migratedStore,migratedEnv,movedSharedEnv,sharedEnvLeft:separateEnv&&fs.existsSync(sharedEnv)?sharedEnv:null};
 }
 // rename() only swaps a directory entry. Without flushing the new file first, a
 // power cut or OS crash shortly after a save can leave store.json empty or
@@ -155,4 +165,19 @@ export function acquireDataLock(dir){
  const release=()=>{try{if(ours())fs.rmSync(file,{force:true})}catch{}};
  release.heartbeat=()=>{try{if(!ours())return false;payload=body();const tmp=file+'.'+nonce+'.tmp';fs.writeFileSync(tmp,payload,{mode:0o600});fs.renameSync(tmp,file);return true}catch{return false}};
  return release;
+}
+
+// ---- Shared folder checks (two PCs, one OneDrive folder) ---------------------------------
+/** Records this PC in pcs.json and returns every PC that has used the folder, newest first. */
+export function recordHost(dir,{host=os.hostname(),now=Date.now()}={}){
+ const file=path.join(dir,'pcs.json');let data={};
+ try{data=JSON.parse(fs.readFileSync(file,'utf8'))}catch{}
+ const hosts=isObject(data.hosts)?data.hosts:{},old=isObject(hosts[host])?hosts[host]:{};
+ hosts[host]={firstAt:Number(old.firstAt)||now,lastAt:now,starts:(Number(old.starts)||0)+1};
+ try{const tmp=file+'.'+randomBytes(4).toString('hex')+'.tmp';fs.writeFileSync(tmp,JSON.stringify({hosts},null,1));fs.renameSync(tmp,file)}catch{}
+ return Object.entries(hosts).map(([name,x])=>({host:name,...x,current:name===host})).sort((a,b)=>b.lastAt-a.lastAt);
+}
+/** OneDrive / Drive conflict copies of the record file (e.g. store-DESKTOP-1.json, "store (1).json"). */
+export function findConflictCopies(dir){
+ try{return fs.readdirSync(dir).filter(name=>/^store.+\.json$/i.test(name)&&name!=='store.json'&&!/\.tmp$/i.test(name)).sort()}catch{return []}
 }

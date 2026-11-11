@@ -24,7 +24,13 @@ test('Telegram only permits an exact current final-screen signal at the configur
 
 test('server contains a single Telegram delivery path guarded by live final results',()=>{
  const server=fs.readFileSync(new URL('../server.mjs',import.meta.url),'utf8');
- assert.equal((server.match(/api\.telegram\.org\/bot/g)||[]).length,1,'only final signals may call Telegram');
+ assert.equal((server.match(/api\.telegram\.org\/bot/g)||[]).length,1,'one Telegram transport');
+ // Callers of the transport: final signals, and opt-in simulation notices (paper entries/closes) only.
+ assert.deepEqual([...server.matchAll(/(?<!function )telegramPost\(/g)].length,2);
+ assert.match(server,/const r=await telegramPost\(payload\)/);
+ assert.match(server,/void telegramPost\(\{chat_id:CONFIG\.tgChat,text,/);
+ assert.match(server,/if\(!paperTelegramOn\(\)\|\|!CONFIG\.tgToken\|\|!CONFIG\.tgChat\)return/);
+ assert.match(server,/persisted\.paperNotify\.telegram=persisted\.paperNotify\.telegram===true/,'paper Telegram is opt-in');
  assert.match(server,/finalTelegramMatch\(s,relevantSignals\(\),getSignalScorePolicy\(\)\.finalMinScore\)/);
  assert.match(server,/telegramMessage\(matched,urls,\{paperPosition\}\)/);
  assert.doesNotMatch(server,/tgWatch\(|tgNews\(|telegramWatchMessage\(/);
