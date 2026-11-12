@@ -13,12 +13,15 @@ const MAX_BYTES=4_000_000;
 
 export class VenueHttpError extends Error{constructor(code,message){super(message||code);this.code=code}}
 
-export async function readLimitedJSON(response,maxBytes=MAX_BYTES){
+// BingX order ids are 19-digit integers (> 2^53): JSON.parse would round them (…737 -> …700) and a
+// cancel would then name another order. They are kept as exact strings before parsing.
+export const keepBigIds=text=>text.replace(/("(?:orderId|orderID|clientOrderID|tradeId|positionId)"\s*:\s*)(-?\d{16,})(?=\s*[,}\]])/g,'$1"$2"');
+export async function readLimitedJSON(response,maxBytes=MAX_BYTES,{bigIds=false}={}){
  const length=Number(response.headers?.get?.('content-length')||0);
  if(length>maxBytes)throw new VenueHttpError('RESPONSE_TOO_LARGE');
  const chunks=[];let size=0;
  for await(const chunk of response.body??[]){size+=chunk.byteLength;if(size>maxBytes)throw new VenueHttpError('RESPONSE_TOO_LARGE');chunks.push(Buffer.from(chunk))}
- try{return JSON.parse(Buffer.concat(chunks).toString('utf8'))}catch{throw new VenueHttpError('RESPONSE_NOT_JSON')}
+ try{const text=Buffer.concat(chunks).toString('utf8');return JSON.parse(bigIds?keepBigIds(text):text)}catch{throw new VenueHttpError('RESPONSE_NOT_JSON')}
 }
 
 /** Serializes calls with a minimum spacing (per venue and IP). */

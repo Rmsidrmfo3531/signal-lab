@@ -50,7 +50,7 @@ function mockBingX({margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,ent
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='GET'){
    const o=orders.find(x=>x.clientOrderId===q.clientOrderId);return o?json({code:0,data:{order:o}}):json({code:80016,msg:'order not exist'});
   }
-  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE'&&globalThis.__bingxAutoCancel)return json({code:109400,msg:'order not exist'});
+  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE'&&globalThis.__bingxAutoCancel){const i=orders.findIndex(o=>o.orderID===q.orderId);if(i<0)return json({code:109400,msg:'order not exist'});orders.splice(i,1);return json({code:0,data:{order:{orderID:q.orderId}}})}
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE'){const i=orders.findIndex(o=>o.orderID===q.orderId);if(i>=0)orders.splice(i,1);return json({code:0,data:{order:{orderID:q.orderId}}})}
   if(u.pathname==='/openApi/swap/v2/trade/openOrders')return json({code:0,data:{orders:orders.filter(o=>o.type!=='MARKET')}});
   if(u.pathname==='/openApi/swap/v2/user/positions')return json({code:0,data:[{symbol:'ETH-USDT',positionAmt:positionAmt(),avgPrice:'100.02',positionSide:'LONG'}]});
@@ -405,5 +405,27 @@ test('BingX removes stop/targets itself on a flat position: a failed cancel of a
   const res=await ex.testRoundTrip(testRow,{holdMs:0,sleep:async()=>{amt='0';m.orders.length=0},maxBalanceUSD:1000});
   const types=res.events.map(e=>e.type);
   assert.equal(res.ok,true,JSON.stringify(res.events));assert.ok(types.includes('ORDER_ALREADY_GONE'));assert.equal(types.includes('CANCEL_FAILED'),false);
+ }finally{delete globalThis.__bingxAutoCancel}
+});
+
+test('BingX 19-digit order ids stay exact (JSON numbers above 2^53 would be rounded)',async()=>{
+ const {keepBigIds}=await import('../bingx_market.mjs');
+ const o=JSON.parse(keepBigIds('{"code":0,"data":{"order":{"orderId":1736012449498123737,"price":0.2,"time":1736012449498}},"list":[{"orderId":1736012449498123701}]}'));
+ assert.equal(o.data.order.orderId,'1736012449498123737');assert.equal(o.list[0].orderId,'1736012449498123701');
+ assert.equal(o.data.order.time,1736012449498,'other numbers untouched');assert.equal(o.data.order.price,0.2);
+ assert.equal(JSON.parse(keepBigIds('{"orderId":"1736012449498123737"}')).orderId,'1736012449498123737','already a string');
+});
+
+test('a rounded id saved earlier still finds and cancels the open order by its exact id',async()=>{
+ let amt='0.20';const m=mockBingX({positionAmt:()=>amt});
+ const ex=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ const testRow=row('BINGX',{entry:100,leverage:10,stop:99,targets:[101.5,102,103],paperAddInputs:null});
+ globalThis.__bingxAutoCancel=true;
+ try{
+  const res=await ex.testRoundTrip(testRow,{holdMs:0,maxBalanceUSD:1000,sleep:async()=>{
+   amt='0';m.orders.length=0;m.orders.push({orderID:'1736012449498123737',type:'TAKE_PROFIT_MARKET'});
+   ex.store.records[0].targetOrderIds=['1736012449498123700'];ex.store.records[0].stopOrderId=null}});
+  const types=res.events.map(e=>e.type);
+  assert.ok(types.includes('CANCELLED_BY_EXACT_ID'),JSON.stringify(res.events));assert.equal(m.orders.length,0);assert.equal(res.ok,true);
  }finally{delete globalThis.__bingxAutoCancel}
 });

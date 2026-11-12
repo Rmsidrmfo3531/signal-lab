@@ -37,7 +37,7 @@ export class BingXTradeClient{
    let response;
    try{response=await fetcher(url,{method,redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'X-BX-APIKEY':apiKey,Accept:'application/json'}})}
    catch(error){throw new VenueHttpError('NETWORK_UNREACHABLE',clean(error?.message))}
-   const body=await readLimitedJSON(response,2_000_000);
+   const body=await readLimitedJSON(response,2_000_000,{bigIds:true});
    if(!response.ok)throw new VenueHttpError('HTTP_'+response.status,clean(body?.msg));
    if(body?.code!==0)throw new VenueHttpError('VENUE_ERROR_'+String(body?.code??'UNKNOWN').slice(0,12),clean(body?.msg));
    return body.data;
