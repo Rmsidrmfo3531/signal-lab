@@ -40,12 +40,12 @@ export class LiveExecutor{
  constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null}={}){
   // priceOf(record): the venue's public mid price, used only to estimate an exit when the venue gives none.
   Object.assign(this,{config,clients,now,log,onChange,priceOf});
-  this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();
+  this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();
   const stored=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[],
    deletedKeys:Array.isArray(stored?.deletedKeys)?stored.deletedKeys.slice(-MAX_DELETED_KEYS):[]};
   // Successful test orders are not kept (user, 2026-11-13); a failed one stays for checking.
-  this.store.records=this.store.records.filter(r=>!(r.test===true&&r.status==='CLOSED'));
+  this.store.records=this.store.records.filter(r=>!(r.test===true&&r.status==='CLOSED'&&r.closeReason==='TEST_CLOSE'));
   // An entry that was being submitted when the server stopped may have filled without its stop:
   // unknown state, which blocks new entries until a person checks the account.
   for(const r of this.store.records)if(r.status==='SUBMITTING'){r.status='UNKNOWN';r.events=[...(r.events||[]),{type:'RESTART_WHILE_SUBMITTING',at:now()}].slice(-MAX_EVENTS)}
@@ -59,7 +59,9 @@ export class LiveExecutor{
   * today (KST) stays because it counts toward today's risk limit. */
  deleteBlock(record){
   if(!record)return 'NOT_FOUND';
-  if(['SUBMITTING','OPEN','UNKNOWN'].includes(record.status))return 'ACTIVE';
+  if(['SUBMITTING','OPEN','UNKNOWN'].includes(record.status)||this.closing.has(record.signalKey)||this.busy.has(record.symbol))return 'ACTIVE';
+  // Records that turned on the kill switch stay: they are the reason trading stopped.
+  if(['LATE_ADD_AFTER_FLAT','EMERGENCY_NO_STOP'].includes(record.closeReason))return 'SAFETY_RECORD';
   if(record.test===true||record.status==='FAILED')return null;
   if(record.status==='CLOSED'&&record.day===new Date(this.now()+9*3600000).toISOString().slice(0,10))return 'TODAY_COUNTS_FOR_DAILY_RISK';
   return record.status==='CLOSED'?null:'NOT_FINISHED';
@@ -355,6 +357,7 @@ export class LiveExecutor{
     this.#observe(record,pos);
     if(size===0){
      record.status='CLOSED';record.closedAt=this.now();record.closeReason=record.closeReason||'POSITION_FLAT';
+     this.closing.add(record.signalKey);try{
      // Resting adds first: an add left behind would open a new position on its own.
      if(record.adds?.length){
       await this.#cancelAdds(record,'POSITION_FLAT');
@@ -371,7 +374,7 @@ export class LiveExecutor{
       }
      }
      for(const id of [record.stopOrderId,...record.targetOrderIds].filter(Boolean))await this.#cancel(record,id);
-     this.#event(record,'CLOSED');continue;
+     this.#event(record,'CLOSED');}finally{this.closing.delete(record.signalKey)}continue;
     }
     if(record.adds?.length&&!record.breakevenMoved&&size>(record.peakSize??record.quantity.total)*(1+1e-9)){
      // One or more adds filled: count them, then resize the targets to the whole position.

@@ -442,9 +442,11 @@ test('finished records can be deleted; positions, unchecked states and today\'s 
  assert.equal(ex.deleteRecord('d1').ok,true);assert.equal(ex.store.records.length,0);
  assert.equal(ex.hasSignal('d1'),true,'deleted signal is remembered');
  const sent=await ex.onSignal(row('BINGX'),{signalKey:'d1'});assert.notEqual(sent?.sent,true);
- ex.store.records.push({signalKey:'f1',status:'FAILED',day:'2026-11-13'},{signalKey:'u1',status:'UNKNOWN'},{signalKey:'t1',test:true,status:'CLOSED'});
+ ex.store.records.push({signalKey:'f1',status:'FAILED',day:'2026-11-13'},{signalKey:'u1',status:'UNKNOWN'},{signalKey:'t1',test:true,status:'CLOSED',closeReason:'TEST_CLOSE'},{signalKey:'t2',test:true,status:'CLOSED',closeReason:'EMERGENCY_NO_STOP'});
+ ex.store.records.push({signalKey:'s1',status:'CLOSED',day:'2000-01-01',closeReason:'LATE_ADD_AFTER_FLAT'});assert.equal(ex.deleteRecord('s1').reason,'SAFETY_RECORD');
+ ex.closing.add('f1');assert.equal(ex.deleteRecord('f1').reason,'ACTIVE');ex.closing.delete('f1');
  assert.equal(ex.deleteRecord('f1').ok,true);assert.equal(ex.deleteRecord('u1').reason,'ACTIVE');assert.equal(ex.deleteRecord('nope').reason,'NOT_FOUND');
  // Reload: successful test records are dropped, deleted keys kept.
  const ex2=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
- assert.equal(ex2.store.records.some(x=>x.signalKey==='t1'),false);assert.equal(ex2.hasSignal('d1'),true);assert.ok(ex2.store.records.some(x=>x.signalKey==='u1'));
+ assert.equal(ex2.store.records.some(x=>x.signalKey==='t1'),false);assert.ok(ex2.store.records.some(x=>x.signalKey==='t2'),'a failed test stays');assert.equal(ex2.hasSignal('d1'),true);assert.ok(ex2.store.records.some(x=>x.signalKey==='u1'));
 });
