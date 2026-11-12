@@ -22,7 +22,10 @@ export function liveConfig(env=process.env){
   // at volume zones, stop beyond the last add). RISK_USD: the old fixed LIVE_MAX_RISK_USD sizing.
   sizing:String(env.LIVE_SIZING||'BALANCE').toUpperCase()==='RISK_USD'?'RISK_USD':'BALANCE',
   unitPct:num('DCA_UNIT_PCT',DCA_DEFAULTS.unitPct,.01,10),maxLossPct:num('DCA_MAX_LOSS_PCT',DCA_DEFAULTS.maxLossPct,1,95),maxAdds:clampMaxAdds(env.DCA_MAX_ADDS),
-  dailyMaxLossPct:num('LIVE_DAILY_MAX_LOSS_PCT',60,1,100)};
+  dailyMaxLossPct:num('LIVE_DAILY_MAX_LOSS_PCT',60,1,100),
+  // Size from at most this much of the account (0 = the whole balance). Lets a testnet with 100,000
+  // virtual USDT trade like the real $400 account, or a live account use only part of its funds.
+  balanceCapUSD:num('LIVE_BALANCE_CAP_USD',0,0,10000000)};
 }
 
 /** Deterministic client order id from the signal key: the same signal can never be sent twice. */

@@ -39,7 +39,7 @@ export class LiveExecutor{
  credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
  status(){
   return {mode:this.config.mode,armed:this.armed,killSwitch:this.store.killSwitch,liveConfirmed:this.config.liveConfirmed,venues:this.config.venues,
-   credentialsConfigured:this.credentials(),limits:{sizing:this.config.sizing,unitPct:this.config.unitPct,maxLossPct:this.config.maxLossPct,dailyMaxLossPct:this.config.dailyMaxLossPct,maxRiskUSD:this.config.maxRiskUSD,dailyMaxRiskUSD:this.config.dailyMaxRiskUSD,maxOpen:this.config.maxOpen,maxPerDirection:this.config.maxPerDirection},
+   credentialsConfigured:this.credentials(),limits:{sizing:this.config.sizing,balanceCapUSD:this.config.balanceCapUSD||null,unitPct:this.config.unitPct,maxLossPct:this.config.maxLossPct,dailyMaxLossPct:this.config.dailyMaxLossPct,maxRiskUSD:this.config.maxRiskUSD,dailyMaxRiskUSD:this.config.dailyMaxRiskUSD,maxOpen:this.config.maxOpen,maxPerDirection:this.config.maxPerDirection},
    records:this.store.records.slice(-30).reverse().map(({events,...r})=>({...r,lastEvent:events?.at(-1)??null})),skipped:this.store.skipped.slice(-20).reverse()};
  }
  arm(){
@@ -64,6 +64,7 @@ export class LiveExecutor{
    const gateOpen=this.config.mode!=='OFF'&&this.armed&&!this.store.killSwitch&&this.config.venues.includes(venue)&&this.credentials()[venue]&&contract;
    if(gateOpen){
     let balanceUSD=null;try{balanceUSD=await this.#balance(venue)}catch(error){extra.push('BALANCE_UNAVAILABLE')}
+    if(balanceUSD>0&&this.config.balanceCapUSD>0)balanceUSD=Math.min(balanceUSD,this.config.balanceCapUSD);
     if(balanceUSD>0){
      const active=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).length;
      split=liveSplitPlan({row,balanceUSD,leverage,sizeScale:.5**active,config:this.config});
