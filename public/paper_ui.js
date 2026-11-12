@@ -14,6 +14,16 @@ const timeGap=(value,limit)=>!(Number.isFinite(Number(value))&&Date.now()-Number
 // Execution venue of a paper record; records before the venue switch used Binance prices.
 const PAPER_VENUE_LABELS={BINGX:'BingX',GATEIO:'Gate.io'};
 // Manual stop/TP editor. Filled targets are locked; the server validates and rounds to the tick.
+// Cross margin: the whole paper account backs every open position. Liquidation of one position
+// uses the account balance plus the other positions' unrealized results (maintenance 0.5%).
+// 0 = the account covers the position down to zero (no liquidation price).
+function crossLiquidation(t,open,balance){
+ if(!(Number(balance)>0)||!(t.qtyRemaining>0)||!(t.entryFill>0))return null;
+ const others=open.filter(x=>x!==t).reduce((s,x)=>s+(Number(x.qtyRemaining)*(x.direction==='LONG'?1:-1)*(Number(x.markPrice)-Number(x.entryFill))||0),0);
+ const eq=balance+others,q=t.qtyRemaining,cost=q*t.entryFill,mm=.005;
+ const x=t.direction==='LONG'?(cost-eq)/(q*(1-mm)):(eq+cost)/(q*(1+mm));
+ return x>0?x:0;
+}
 const LEVEL_REASONS={STOP_ALREADY_CROSSED:'손절가가 이미 현재가를 넘었습니다',STOP_INVALID:'손절가 숫자 오류',STOP_BEYOND_TARGET:'손절가가 목표가보다 바깥에 있습니다',
  MANUAL_STOP_EXCEEDS_RISK_LIMIT:'실주문 1회 손실 한도를 넘는 손절폭입니다',LIVE_STOP_NOT_PLACED:'거래소에 새 손절 주문을 넣지 못했습니다(기존 손절 유지)',
  POSITION_NOT_FOUND:'포지션이 이미 종료되었습니다',SYMBOL_BUSY:'거래소 주문 처리 중입니다. 잠시 후 다시 시도하세요',LIVE_POSITION_FLAT:'거래소 포지션이 이미 없습니다'};
@@ -145,13 +155,13 @@ function render(payload){
   groups.map(g=>`<tr><td>${esc(g.label)}</td><td>${g.trades}</td><td>${g.winRatePct==null?'—':g.winRatePct.toFixed(0)+'%'}</td><td class="${resultClass(g.netUSD)}">${usd(g.netUSD)}</td><td>${g.profitFactor==null?'—':Number(g.profitFactor).toFixed(2)}</td><td>${g.averageR==null?'—':(g.averageR>=0?'+':'')+Number(g.averageR).toFixed(2)+'R'}</td></tr>`).join('')+'</tbody></table>'
   :'<p class="empty-small">전략별 성과: 아직 종료된 거래가 없습니다.</p>';
  find('paperMetrics').innerHTML=summaries.map((x,i)=>`<div><span>${['종료 거래','누적 실현 PNL','승률 (종료)','평가 손익 (참고)','종료 거래 낙폭'][i]}</span><strong>${x}</strong></div>`).join('');
- find('paperStatus').textContent=`시작자금·계좌잔고 가정 없음 · ${payload.newPositionSizing==='VALIDATED_PROFILE_QUANTITY'?'신규 거래는 검증된 매물대·위험 수량 사용 / 구버전 명목 기록 보존':'구버전 모의 기준 명목 $'+fmt(payload.paperNotionalUSD)} · 누적 평가손익 ${usd(payload.totalMarkedPnLUSD)} · 진행 ${payload.openCount}건 · 진입 대기 ${payload.pendingCount}건 · 오늘 ${usd(payload.dailyPnLUSD)} · 이번 주 ${usd(payload.weeklyPnLUSD)} · ${payload.assumptions}`;
+ find('paperStatus').textContent=`${Number(payload.accountBalanceUSD)>0?`교차 마진 · 모의 계좌 $${Number(payload.accountBalanceUSD).toFixed(2)} (시작 자금 + 실현 손익)`:'시작자금·계좌잔고 가정 없음'} · ${payload.newPositionSizing==='VALIDATED_PROFILE_QUANTITY'?'신규 거래는 검증된 매물대·위험 수량 사용 / 구버전 명목 기록 보존':'구버전 모의 기준 명목 $'+fmt(payload.paperNotionalUSD)} · 누적 평가손익 ${usd(payload.totalMarkedPnLUSD)} · 진행 ${payload.openCount}건 · 진입 대기 ${payload.pendingCount}건 · 오늘 ${usd(payload.dailyPnLUSD)} · 이번 주 ${usd(payload.weeklyPnLUSD)} · ${payload.assumptions}`;
  const open=[...(payload.open||[])];
  const cards=open.map(t=>{
   const frozen=providerUnavailable(t),stale=frozen||timeGap(t.lastPriceAt,90000);
   const dir=t.direction==='LONG'?1:-1,gain=t.qtyRemaining*dir*(t.markPrice-t.entryFill);
   const lev=positionLeverage(t),margin=lev?t.qtyRemaining*t.entryFill/lev.value:null,roe=margin>0?gain/margin*100:null;
-  const liq=lev?t.entryFill*(1-dir*(1/lev.value-.005)):null;
+  const liq=crossLiquidation(t,open,payload.accountBalanceUSD);
   const base=esc(String(t.symbol||'').replace(/USDT$/,''));
   const rows=t.closeParts?.map(p=>`<small>${p.type==='STOP'?'손절':p.type==='TIME'?'시간 청산':p.targetNumber+'차 익절'} ${fmt(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('')||'';
   const cell=(label,value,cls='')=>`<div class="pos-cell ${cls}"><span>${label}</span><b>${value}</b></div>`;
@@ -167,7 +177,7 @@ function render(payload){
     ${cell('증거금',margin!=null?'$'+margin.toFixed(2):'—')}
     ${cell('진입가',fmt(t.entryFill))}
     ${cell('현재가',fmt(t.markPrice))}
-    ${cell('예상 청산가 <small>격리 가정</small>',liq!=null&&liq>0?fmt(liq):'—')}
+    ${cell('예상 청산가 <small>교차 마진</small>',liq!=null&&liq>0?fmt(liq):liq===0?'없음':'—')}
     ${cell('손절',fmt(t.stop))}
     ${cell('명목금액','$'+(t.qtyRemaining*t.entryFill).toFixed(2))}
    </div>
