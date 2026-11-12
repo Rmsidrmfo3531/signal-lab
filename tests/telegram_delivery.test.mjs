@@ -27,7 +27,7 @@ function harness(){
  let transport='ok',formatFailure=false,saveFailure=false;
  class Clock extends Date{static now(){return now}}
  const sandbox={Date:Clock,AbortSignal,console:{log(){},warn:(...args)=>logs.push(args.join(' ')),error:(...args)=>logs.push(args.join(' '))},
-  CONFIG:{tgToken:'offline-test-token',tgChat:'offline-test-chat',maxRiskUSD:6,limits:{},paperVenues:['BINGX']},
+  CONFIG:{tgToken:'offline-test-token',tgChat:'offline-test-chat',maxRiskUSD:6,limits:{},paperVenues:['BINGX'],paperTrading:true},
   // The execution venue view is derived from the same synthetic book, so a stale book stays stale.
   venueEntry:(_venue,symbol)=>{const book=sandbox.books.get(symbol),f=marketContext.market.filters;return {contract:{symbol,tradable:true,tickSize:f.PRICE_FILTER.tickSize,quantityStep:f.LOT_SIZE.stepSize,
    minQuantityBase:f.LOT_SIZE.minQty,minNotionalUSDT:Number(f.MIN_NOTIONAL?.notional??f.NOTIONAL?.minNotional),quantityUnit:'BASE_ASSET',contractSizeBase:'1'},
@@ -104,4 +104,9 @@ test('failed alert persistence prevents Telegram delivery and remains retryable 
 test('the 알림 설정 switch for final-signal Telegram stops delivery',async()=>{
  const h=harness();h.sandbox.persisted.notifySettings={telegramSignals:false};await h.publish();
  assert.equal(h.deliveries.length,0);assert.equal(h.sandbox.relevantSignals().length,1,'the signal itself is unaffected');
+});
+
+test('paper trading off: the final signal is still published and sent, but no paper position is registered',async()=>{
+ const h=harness();h.sandbox.CONFIG.paperTrading=false;await h.publish();
+ assert.equal(h.deliveries.length,1);assert.equal(h.events.length,1);assert.equal(h.registrations.length,0);
 });

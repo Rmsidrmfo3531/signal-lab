@@ -5,8 +5,7 @@ import vm from 'node:vm';
 import {entryTiming} from '../public/trade_plan.js';
 import {paginateScan,SCAN_PAGE_SIZE} from '../public/scan_pagination.js';
 const source=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8'),
- html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8'),
- paper=fs.readFileSync(new URL('../public/paper_ui.js',import.meta.url),'utf8');
+ html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
 const section=(text,start,end)=>{const first=text.indexOf(start),last=text.indexOf(end,first+start.length);assert.ok(first>=0&&last>first);return text.slice(first,last)};
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const noop=()=>{};
@@ -67,56 +66,9 @@ test('removed observation controls cannot reappear and Telegram-only alerts neve
  assert.equal(displayed,0);
 });
 
-test('breakeven switch reflects a server setting only and missing settings never guess activation',()=>{
- const nodes=new Map(),find=id=>{if(!nodes.has(id))nodes.set(id,{disabled:false,checked:false,textContent:''});return nodes.get(id)},ctx=vm.createContext({find});
- vm.runInContext(section(paper,'let lastBreakevenSetting=',"const breakevenControl="),ctx);
- ctx.renderPaperManagementSetting(undefined);assert.equal(find('paperBreakevenToggle').disabled,true);
- ctx.renderPaperManagementSetting({TP1_MOVE_STOP_TO_BREAKEVEN:true});assert.equal(find('paperBreakevenToggle').checked,true);
- ctx.renderPaperManagementSetting({TP1_MOVE_STOP_TO_BREAKEVEN:false});assert.equal(find('paperBreakevenToggle').checked,false);
- assert.match(find('paperBreakevenStatus').textContent,/OFF/);
- assert.match(paper,/fetch\('\/api\/paper\/settings'/);assert.match(paper,/TP1_MOVE_STOP_TO_BREAKEVEN:enabled/);
- assert.doesNotMatch(paper,/fetch\([^\n]*(?:private\/|\/live|\/activate)/);
-});
-
-test('existing paper positions display their preserved management state instead of adopting a new profile',()=>{
- const ctx=vm.createContext({});vm.runInContext(section(paper,'function paperManagementCaption(','let lastBreakevenSetting='),ctx);
- assert.match(ctx.paperManagementCaption({targets:[102,103,104],stop:99}),/기존 기록.*TP\/SL 보존/);
- assert.match(ctx.paperManagementCaption({managementVersion:'VOLUME_PROFILE_V1',moveStopToBreakeven:false}),/OFF/);
- assert.match(ctx.paperManagementCaption({managementVersion:'VOLUME_PROFILE_V1',breakevenMovedAt:123}),/체결 완료 후 본절 이동 확인/);
- assert.match(ctx.paperManagementCaption({managementVersion:'VOLUME_PROFILE_V1'}),/손절 유지/);
- assert.match(ctx.paperManagementCaption({managementVersion:'VOLUME_PROFILE_V1',breakevenMode:'COST_COVERED'}),/비용 보전 가정.*무손실 보장 아님/);
- assert.doesNotMatch(ctx.paperManagementCaption({targets:[102,103,104],stop:99,breakevenMode:'COST_COVERED'}),/비용 보전/);
-});
-
-test('breakeven basis settings save only a future-position mode, restore rejected changes and prevent overlapping updates',async()=>{
- const nodes=new Map(),handlers=new Map(),find=id=>{if(!nodes.has(id))nodes.set(id,{disabled:false,checked:false,textContent:'',value:'ENTRY_FILL',
-  addEventListener:(_type,handler)=>handlers.set(id,handler)});return nodes.get(id)},updates=[],settings={TP1_MOVE_STOP_TO_BREAKEVEN:true,TP1_BREAKEVEN_MODE:'ENTRY_FILL'};
- const ctx=vm.createContext({find,loadPaper:async()=>{},fetch:async(_url,options)=>{
-  const update=JSON.parse(options.body);updates.push(update);Object.assign(settings,update);return {ok:true,json:async()=>({settings:{...settings}})};
- }});
- vm.runInContext(section(paper,'let lastBreakevenSetting=','function renderMonitor('),ctx);
- ctx.renderPaperManagementSetting(undefined);assert.equal(find('paperBreakevenMode').disabled,true);
- ctx.renderPaperManagementSetting(settings);assert.equal(find('paperBreakevenMode').value,'ENTRY_FILL');
- find('paperBreakevenMode').value='COST_COVERED';await handlers.get('paperBreakevenMode')();
- assert.deepEqual(updates,[{TP1_BREAKEVEN_MODE:'COST_COVERED'}]);assert.equal(find('paperBreakevenToggle').checked,true);
- assert.match(find('paperBreakevenStatus').textContent,/비용 보전 가정.*무손실 보장 아님.*기존 TP\/SL 보존/);
- ctx.renderPaperManagementSetting({...settings,TP1_BREAKEVEN_MODE:'UNVERIFIED'});assert.equal(find('paperBreakevenMode').disabled,true);
- assert.match(find('paperBreakevenStatus').textContent,/기준 조회 미완료/);
- ctx.renderPaperManagementSetting({...settings,TP1_BREAKEVEN_MODE:'ENTRY_FILL'});ctx.fetch=async()=>({ok:false,json:async()=>({error:'synthetic save rejection'})});
- find('paperBreakevenMode').value='COST_COVERED';await handlers.get('paperBreakevenMode')();
- assert.equal(find('paperBreakevenMode').value,'ENTRY_FILL');assert.match(find('paperBreakevenStatus').textContent,/설정 변경 실패/);
- let release;ctx.fetch=async(_url,options)=>{updates.push(JSON.parse(options.body));await new Promise(resolve=>{release=resolve});return {ok:true,json:async()=>({settings:{...settings}})}};
- find('paperBreakevenMode').value='COST_COVERED';const pending=handlers.get('paperBreakevenMode')();
- assert.equal(find('paperBreakevenToggle').disabled,true);assert.equal(find('paperBreakevenMode').disabled,true);
- find('paperBreakevenToggle').checked=false;await handlers.get('paperBreakevenToggle')();
- release();await pending;assert.equal(updates.length,2,'an overlapping checkbox update cannot race the mode update');
- assert.equal(find('paperBreakevenToggle').checked,true);assert.equal(find('paperBreakevenMode').value,'COST_COVERED');
- assert.match(html,/id="paperBreakevenMode"/);assert.match(html,/value="ENTRY_FILL" selected/);
-});
-
 test('risk and quote details distinguish Binance PAPER assumptions from order permission without unsupported leverage advice',()=>{
  assert.doesNotMatch(html,/BTC 20~40x|ETH 10~25x|SOL 10~15x|모의 손익은 고정 명목금액/);
- assert.match(html,/실주문 OFF/);assert.doesNotMatch(html,/OrangeX/i);assert.match(html,/계산 명목 상한/);
+ assert.match(html,/실주문 기본 OFF/);assert.doesNotMatch(html,/OrangeX/i);assert.match(html,/계산 명목 상한/);
  assert.match(source,/Binance TRADING USDT 무기한 상장 확인 · 실제 주문 OFF/);
  const nodes=new Map(),$=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',className:''});return nodes.get(id)},ctx=vm.createContext({$,Number,fmt:String,dateClock:String,money:value=>'$'+value});
  vm.runInContext(section(source,'function setExecutionView(','async function loadExecution('),ctx);
@@ -143,10 +95,12 @@ test('basic chart EMA200 uses the full closed history and never fabricates warmu
 });
 
 
-test('TradFi and BingX·Gate.io quote pages are removed; live order control stays on the system page',()=>{
+test('TradFi, BingX·Gate.io quote and 자동 모의매매 pages are removed; live order control has its own 실매매 page',()=>{
+ assert.equal(fs.existsSync(new URL('../public/paper_ui.js',import.meta.url)),false,'the paper screen was replaced by the live screen');
+ assert.doesNotMatch(html,/id="paper"|paper_ui\.js|자동 모의매매 PNL|href="#paper"/);
  assert.equal(fs.existsSync(new URL('../public/tradfi.js',import.meta.url)),false);assert.equal(fs.existsSync(new URL('../public/venues.js',import.meta.url)),false);
  assert.doesNotMatch(html,/id="tradfi"|id="venues"|tradfi\.js|venues\.js|TradFi/);
- assert.match(html,/id="livePanel"[\s\S]*id="liveControl"[\s\S]*id="liveArm"/);assert.match(html,/src="\/live_control\.js"/);
+ assert.match(html,/id="live" [^>]*data-workspace-route="live"[\s\S]*id="liveControl"[\s\S]*id="liveArm"/);assert.match(html,/src="\/live_control\.js"/);
 });
 
 test('final-score threshold display uses server configuration and always discloses unverified performance',()=>{
@@ -163,26 +117,3 @@ test('final-score threshold display uses server configuration and always disclos
  assert.match(source,/renderScorePolicy\(s\.scorePolicy\)/);assert.match(html,/id="scorePolicyStatus"/);
 });
 
-
-test('disabled TradFi open and pending cards preserve stored levels and PNL without promising automatic fills or expiry',()=>{
- const nodes=new Map(),find=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',innerHTML:''});return nodes.get(id)};
- const ctx=vm.createContext({find,document:{getElementById:find},Number,Date});
- vm.runInContext(section(paper,'const esc=','let lastBreakevenSetting='),ctx);
- ctx.renderMonitor=()=>{};ctx.renderPaperManagementSetting=()=>{};
- vm.runInContext(section(paper,'function render(payload)','let active=false;'),ctx);
- const original={market:'TRADFI',symbol:'XAU-SWAP',direction:'LONG',pattern:'stored',entry:4000,entryFill:4000,stop:3900,targets:[4200,4300,4400],markPrice:4050,lastPriceAt:Date.now(),qtyRemaining:.1,notionalUSD:400,feesUSD:1,openedAt:1,signalAt:1,expiresAt:Date.now()-1000};
- const payload={mode:'SIMULATION_ONLY',open:[{...original}],pending:[{...original}],closed:[{...original,realizedPnLUSD:12.34}],skipped:[],closedCount:1,winRatePct:null};
- const before=JSON.stringify(payload);ctx.render(payload);assert.equal(JSON.stringify(payload),before);
- const rendered=find('paperOpen').innerHTML;
- assert.equal((rendered.match(/공급자 없음 · 기록 보존 · 자동처리 중지/g)||[]).length,3);
- assert.match(rendered,/마지막 저장 시세 평가.*현재 평가 아님/);assert.match(rendered,/최신 시세 미검증/);
- assert.match(rendered,/4,200/);assert.match(rendered,/3,900/);assert.match(rendered,/\+\$5.00/);
- assert.doesNotMatch(rendered,/첫 신규 시세 대기|첫 익절 또는 손절 대기| 만료<\/p>/);
- assert.match(find('paperClosed').innerHTML,/\+\$12.34/);assert.match(find('paperClosed').innerHTML,/공급자 없음 · 기록 보존 · 자동처리 중지/);
- const crypto={...original,market:'CRYPTO'};ctx.render({...payload,open:[crypto],pending:[crypto],closed:[]});
- assert.match(find('paperOpen').innerHTML,/첫 신규 시세 대기/);assert.match(find('paperOpen').innerHTML,/첫 익절 또는 손절 대기/);
- assert.equal((find('paperOpen').innerHTML.match(/손절·TP 직접 수정/g)||[]).length,2,'crypto open and pending cards offer the stop/TP editor');
- assert.doesNotMatch(rendered,/손절·TP 직접 수정/,'frozen TradFi records cannot be edited');
- const tp1Filled={...crypto,targetQuantities:[.04,.035,.025],closeParts:[{type:'TARGET',targetNumber:1,qty:.04}]};ctx.render({...payload,open:[tp1Filled],pending:[],closed:[]});
- assert.match(find('paperOpen').innerHTML,/name="tp0"[^>]*disabled/,'a filled TP1 is locked');assert.doesNotMatch(find('paperOpen').innerHTML,/name="tp1"[^>]*disabled/);
-});

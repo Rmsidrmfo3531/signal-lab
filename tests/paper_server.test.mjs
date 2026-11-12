@@ -12,7 +12,7 @@ import os from 'node:os';
 const project=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 async function freePort(){const socket=net.createServer();socket.listen(0,'127.0.0.1');await once(socket,'listening');const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));return port}
 const nap=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-test('simulated execution HTTP API, CSV route, shared PC/mobile pane, persisted history after restart', {timeout:16000},async(t)=>{
+test('paper off by default: stored paper history stays readable (API, CSV) and the 실매매 pane replaces the paper pane', {timeout:16000},async(t)=>{
  const request=(input,options={})=>fetchLocal(input,{...options,signal:t.signal});
  const port=await freePort(),sandbox=await fs.mkdtemp(path.join(os.tmpdir(),'paper-server-'));
  await fs.cp(project,sandbox,{recursive:true,filter:src=>!['.env','.git','node_modules','.updates','store.json','scanner_diagnostics.txt'].includes(path.basename(src))});
@@ -22,7 +22,7 @@ test('simulated execution HTTP API, CSV route, shared PC/mobile pane, persisted 
  const store={watchlist:[],seen:{},alerts:[],newsSeen:{},journal:[],paper:{pending:[],open:[],closed:[fixture],skipped:[],seen:{}}};
  await fs.writeFile(path.join(sandbox,'store.json'),JSON.stringify(store));
  const child=trackChild(spawn(process.execPath,['--import','./tests/mock_runtime.mjs','server.mjs'],{
-  cwd:sandbox,env:{...process.env,SIGNAL_LAB_DATA_DIR:path.join(sandbox,'persistent-data'),PORT:String(port),HOST:'127.0.0.1',AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false',TWELVE_DATA_API_KEY:''},stdio:'pipe'}));
+  cwd:sandbox,env:{...process.env,SIGNAL_LAB_DATA_DIR:path.join(sandbox,'persistent-data'),PORT:String(port),HOST:'127.0.0.1',AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false',TWELVE_DATA_API_KEY:'',PAPER_TRADING:''},stdio:'pipe'}));
  let logs='';child.stdout.on('data',d=>logs+=d);child.stderr.on('data',d=>logs+=d);
  try{
   let result;
@@ -32,6 +32,8 @@ test('simulated execution HTTP API, CSV route, shared PC/mobile pane, persisted 
    if(result?.mode==='SIMULATION_ONLY')break;
   }
   assert.equal(result?.mode,'SIMULATION_ONLY',logs);assert.equal(result.closedCount,1);
+  assert.equal(result.enabled,false,'automatic paper trading is off unless PAPER_TRADING=on');
+  assert.equal((await(await request(`http://127.0.0.1:${port}/api/status`)).json()).paperTrading,false);
   assert.ok(['OFFLINE','WAITING','WATCHING','TRACKING','DELAYED'].includes(result.monitor?.state));
   assert.equal(typeof result.monitor?.priceTickCount,'number');
   assert.equal(result.monitor?.openedCountSession,0); // persisted PNL is not a new live fill
@@ -47,10 +49,11 @@ test('simulated execution HTTP API, CSV route, shared PC/mobile pane, persisted 
   const csv=await(await request(`http://127.0.0.1:${port}/api/paper/export`)).text();
   assert.match(csv,/BTCUSDT/);assert.match(csv,/realizedPnLUSD/);
   const html=await(await request(`http://127.0.0.1:${port}/`)).text();
-  assert.match(html,/id="paper"/);assert.match(html,/id="paperMonitorMode"/);assert.match(html,/id="scanPageControls"/);assert.ok(html.indexOf('id="scanner"')<html.indexOf('id="paper"'));
-  assert.ok(html.indexOf('id="paper"')>0&&!html.includes('id="tradfi"'));
-  assert.match(html,/href="#paper"/);
-  const ui=await(await request(`http://127.0.0.1:${port}/paper_ui.js`)).text();assert.match(ui,/api\/paper/);
+  assert.match(html,/id="live"/);assert.match(html,/id="liveModeBadge"/);assert.match(html,/id="scanPageControls"/);assert.ok(html.indexOf('id="scanner"')<html.indexOf('id="live"'));
+  assert.ok(!html.includes('id="paper"')&&!html.includes('id="tradfi"'));
+  assert.match(html,/href="#live"/);assert.doesNotMatch(html,/href="#paper"/);
+  const gone=await request(`http://127.0.0.1:${port}/paper_ui.js`);assert.equal(gone.status,404);await gone.arrayBuffer();
+  const ui=await(await request(`http://127.0.0.1:${port}/live_control.js`)).text();assert.match(ui,/api\/live\/overview/);
   const css=await(await request(`http://127.0.0.1:${port}/styles.css`)).text();assert.match(css,/max-width:660px/);
  }finally{await stopChild(child);await fs.rm(sandbox,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });

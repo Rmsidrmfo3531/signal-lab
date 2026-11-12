@@ -528,3 +528,38 @@
 .paper-position .paper-targets span{display:block}
 .paper-position .paper-management-mode{display:block;line-height:1.5}
 .paper-position .paper-targets .sep{display:none}
+
+/* 실매매 (live / testnet) screen: mode badge, status, position cards. Same layout on PC and phone. */
+.live-screen{margin-top:16px}
+.live-screen .live-control{border-top:0;margin-top:0}
+.live-updated{color:var(--muted);font-size:11px}
+.live-top{display:grid;grid-template-columns:minmax(200px,260px) minmax(0,1fr);gap:0;border-block:1px solid #2c4357}
+.live-top .venues-status{border:0;border-left:1px solid #2c4357}
+.live-mode-box{display:grid;gap:10px;align-content:center;padding:16px 20px;background:#0e1b2a}
+.live-mode{display:grid;gap:2px;padding:12px 14px;border-radius:10px;border:1px solid #3b4d63;background:#16212f}
+.live-mode strong{font-size:26px;letter-spacing:.04em;line-height:1.1}
+.live-mode span{font-size:12px;color:var(--muted)}
+.live-mode.testnet{border-color:#2f7d74;background:#0f2a2a}.live-mode.testnet strong{color:var(--cyan)}
+.live-mode.live{border-color:#a3403a;background:#341a1c}.live-mode.live strong{color:#ff8a80}
+.live-mode.off strong{color:#9fb0c4}
+.live-flag{display:inline-block;justify-self:start;font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;background:#1d2a3a;color:#b9c8d8}
+.live-flag.armed{background:#13392f;color:#7fe3c4}.live-flag.kill{background:#4a1f22;color:#ffb4ab}
+.live-grid{grid-template-columns:minmax(0,1fr)}
+.live-position header>span,.live-closed header>span{font-size:11px}
+.live-state{padding:2px 8px;border-radius:999px;background:#1d2a3a;color:#c9d8e8}
+.live-state.s-OPEN{background:#13392f;color:#7fe3c4}.live-state.s-UNKNOWN{background:#4a1f22;color:#ffb4ab}.live-state.s-SUBMITTING{background:#3a3220;color:#eebd71}
+.live-values{grid-template-columns:repeat(4,minmax(0,1fr))}
+.paper-trade-values span small{font-size:10px;color:#7f97ad;line-height:1.4}
+.live-line{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px!important;color:#c9d8e8!important;margin:8px 0 0!important;overflow-wrap:anywhere}
+.live-line>span{color:#8da6bc;min-width:7.5rem}
+.live-warn{border-color:#a3403a}.live-warn-text{color:#ffb4ab!important}
+.live-metrics{grid-template-columns:repeat(4,minmax(0,1fr));border-radius:10px;overflow:hidden;margin-bottom:12px}
+.live-metrics small{font-size:10px;color:#8da6bc}
+.live-closed-list{gap:10px}
+.live-skipped{margin:0;padding-left:1.1rem;display:grid;gap:4px;font-size:12px;color:#c9d8e8}
+.live-test-result{border-top:1px solid #2c4357}
+@media(max-width:900px){.live-values{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:660px){.live-top{grid-template-columns:minmax(0,1fr)}.live-top .venues-status{border-left:0;border-top:1px solid #2c4357}.live-mode-box{padding:12px 16px;grid-template-columns:auto 1fr;align-items:center}.live-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.live-actions{padding:12px 14px}.live-actions .outline-btn,.live-actions .outline-button{flex:1 1 40%}}
+.live-control [hidden]{display:none!important}
+.live-position header,.live-closed header{justify-content:flex-start;gap:6px 12px}
+.live-position header>.live-state,.live-closed header>span:last-child{margin-left:auto}

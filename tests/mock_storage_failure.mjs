@@ -1,6 +1,7 @@
 // Test-only disk fault, with the same fully synthetic transport as pipeline tests.
 // Older synthetic fixtures target the base patterns: the study-material trend patterns are tested separately.
 process.env.SIGNAL_TREND_GATE??='off';
+process.env.BTC_LONG_FILTER??='off'; // fixtures predate the BTC 4H long filter
 import './mock_pipeline.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
