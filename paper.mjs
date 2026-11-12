@@ -7,6 +7,8 @@ import {quantizeVolumeStep} from './volume_profile.mjs';
 
 // Fixed simulation trade size, independent of any assumed account balance.
 // Signals must still pass pattern, quality, quote, entry-timing and stop checks.
+/** Maximum open positions: an even number (long / short halves), 2..max. Odd values round up. */
+export function evenPositions(value,fallback,max=10){const n=Math.round(Number(value));if(!Number.isFinite(n)||value===''||value==null)return fallback;const e=n%2?n+1:n;return Math.max(2,Math.min(max,e))}
 export const PAPER_DEFAULTS=Object.freeze({paperNotionalUSD:500,maxPositions:2,maxNotional:1500,minNotional:250,
  feeBps:5,slippageBps:2,cryptoHalfSpreadBps:1,entryTimeoutMs:20*60000,maxFreshMsCrypto:90000,
  maxQuoteGapMsCrypto:120000,maxRiskUSD:6,requireExecutionVenue:false,TP1_MOVE_STOP_TO_BREAKEVEN:true,TP1_BREAKEVEN_MODE:'ENTRY_FILL'});
@@ -179,6 +181,10 @@ export class PaperEngine {
   if(!quoteEligible)return this.reject(key,'상장/호가/진입 검증 실패');
   if(this.store.open.some(x=>x.symbol===symbol&&x.market===market)||this.store.pending.some(x=>x.symbol===symbol&&x.market===market))return this.reject(key,'동일 종목 중복 가상 포지션 방지');
   if(this.store.open.length+this.store.pending.length>=settings.maxPositions)return this.reject(key,'동시 포지션 상한');
+  // Long / short split: at most maxPerDirection positions on one side (half of the even maximum).
+  if(Number.isInteger(settings.maxPerDirection)&&settings.maxPerDirection>0&&
+   [...this.store.open,...this.store.pending].filter(x=>x.direction===direction).length>=settings.maxPerDirection)
+   return this.reject(key,`${direction==='LONG'?'롱':'숏'} 포지션 상한(롱·숏 각 ${settings.maxPerDirection}개)`);
   const managementVersion=signal.managementVersion,profile=managementVersion==='VOLUME_PROFILE_V1',
    legacy=managementVersion==='LEGACY_R_MULTIPLES'||managementVersion==='LEGACY_R_V1';
   // Each new position while others are open gets half the size of the newest open one.

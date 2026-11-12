@@ -100,7 +100,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:1,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:2,maxPerDirection:1,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60});
  assert.equal(liveConfig({LIVE_SIZING:'risk_usd'}).sizing,'RISK_USD');
  assert.equal(liveConfig({LIVE_TRADING_MODE:'live',LIVE_TRADING_CONFIRM:'REAL_MONEY'}).liveConfirmed,true);
  assert.equal(liveConfig({LIVE_TRADING_MODE:'yolo'}).mode,'OFF');assert.equal(liveConfig({LIVE_MAX_RISK_USD:'1000'}).maxRiskUSD,2,'out-of-range values fall back');
@@ -115,6 +115,7 @@ test('preflight blocks every unsafe condition with a named reason',()=>{
   [{row:row('BINGX',{decision:{ready:false}})},'SIGNAL_NOT_READY'],[{qty:null},'QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK'],
   [{records:[{status:'OPEN',symbol:'BTCUSDT'}]},'MAX_OPEN_POSITIONS'],[{config:config({maxOpen:3}),records:[{status:'OPEN',symbol:'ETHUSDT'}]},'SYMBOL_ALREADY_ACTIVE'],
   [{records:[{status:'UNKNOWN',symbol:'X'}],config:config({maxOpen:3})},'UNRESOLVED_ORDER_STATE'],
+  [{config:config({maxOpen:4,maxPerDirection:2}),records:[{status:'OPEN',symbol:'A',direction:'LONG'},{status:'OPEN',symbol:'B',direction:'LONG'}]},'MAX_SAME_DIRECTION_POSITIONS'],
   [{records:[{status:'CLOSED',day:'2026-11-10',plannedRiskUSD:5}]},'DAILY_RISK_LIMIT'],
   [{row:row('GATEIO',{venueContract:{...row('GATEIO').venueContract,decimalSizes:true}})},'GATEIO_DECIMAL_SIZE_UNVERIFIED']];
  for(const [patch,reason] of cases)assert.ok(preflight({...base,...patch}).reasons.includes(reason),reason);
