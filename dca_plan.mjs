@@ -16,9 +16,14 @@ export const DCA_DEEP_PROFILE=days=>({candles:Math.min(1500,Math.round(days*96))
 // its stop far away (first paper trade: JCTUSDT stop 37% below entry) and are never reached: it
 // uses the 3-day zones. 5m / 15m keep the configured window.
 export const dcaZoneDaysFor=(interval,zoneDays)=>interval==='1m'?3:zoneDays;
+// 1H split buys stop adding after 7 (HOURLY_MAX_ADDS, 5-10). 180-day / 12-symbol replay, $400:
+// 10 adds +$1079, first half -$59, max drawdown -$181, worst trade -24.6 % of the balance;
+// 7 adds +$1150, first half +$12, max drawdown -$134, worst trade -12.7 % (without the single best
+// trade: 7 -> +$532, 8 -> +$504, 10 -> +$461, 6 -> +$348).
+export const HOURLY_MAX_ADDS_DEFAULT=7;
 export const DCA_MAX_ADDS_RANGE=Object.freeze({min:5,max:10});
 export const clampZoneDays=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(3,Math.min(15,n)):DCA_DEFAULTS.zoneDays};
-export const clampMaxAdds=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(DCA_MAX_ADDS_RANGE.min,Math.min(DCA_MAX_ADDS_RANGE.max,n)):DCA_DEFAULTS.maxAdds};
+export const clampMaxAdds=(v,fallback=DCA_DEFAULTS.maxAdds)=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(DCA_MAX_ADDS_RANGE.min,Math.min(DCA_MAX_ADDS_RANGE.max,n)):fallback};
 // maxLossPct: loss at the stop with every add filled may not exceed this share of the balance.
 export const DCA_DEFAULTS=Object.freeze({leverage:10,unitPct:.19,maintenanceRate:.005,stopAtr:.25,minSpacingAtr:.5,liquidationBufferPct:1,maxLossPct:30,maxAdds:10,zoneDays:14});
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
