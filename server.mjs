@@ -92,7 +92,7 @@ const CONFIG={
  scalpTrendFilter:String(process.env.SCALP_TREND_FILTER||'ON').toUpperCase()!=='OFF',
  // Zone scale-in for scalp paper trades: 1,1,2,4,... units on volume zones, cross margin.
  dcaMode:String(process.env.DCA_MODE||'ON').toUpperCase()!=='OFF',
- paperBalanceUSD:Math.max(10,Math.min(10000000,Number(process.env.PAPER_BALANCE_USD)||1000)),
+ paperBalanceUSD:Math.max(10,Math.min(10000000,Number(process.env.PAPER_BALANCE_USD)||400)),
  // 1H paper positions are split buys: adds at volume zones, stop beyond the last add (STOP_ZONE_ADDS=false: pattern stop, no adds).
  stopZoneAdds:process.env.STOP_ZONE_ADDS!=='false',
  dcaLeverage:Math.max(10,Math.min(30,Math.round(Number(process.env.DCA_LEVERAGE)||DCA_DEFAULTS.leverage))),

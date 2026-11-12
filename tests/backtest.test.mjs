@@ -47,6 +47,10 @@ test('full replay on synthetic candles runs both strategies end to end and the r
  const {m5,m15,h1,h4,start}=market();
  const filters={tickSize:.0001,stepSize:.01,minQty:.01,minNotional:5},startAt=start+58*86400000;
  const hourly=backtestHourly({symbol:'SOLUSDT',h1,h4,btcH4:h4,m15,m5,filters,startAt});
+ // The split-buy book never changes the fixed-risk books.
+ const withSplit=backtestHourly({symbol:'SOLUSDT',h1,h4,btcH4:h4,m15,m5,filters,startAt,split:{balanceUSD:400,marketCap:9e10}});
+ assert.deepEqual(withSplit.trades.filter(t=>t.book!=='SPLIT').map(t=>t.netUSD),hourly.trades.map(t=>t.netUSD));
+ for(const t of withSplit.trades.filter(t=>t.book==='SPLIT')){assert.ok(t.leverage>=10&&t.leverage<=30);assert.ok(Number.isFinite(t.pnlPctOfBalance))}
  assert.ok(hourly.funnel.bars>300);assert.ok(hourly.funnel.patterns>0,'patterns are detected');
  assert.ok(hourly.trades.every(t=>t.book!=='LIVE'||t.score>=90),'the live book only takes 90+');
  assert.ok(hourly.trades.every(t=>t.book==='LIVE'||t.book==='BUCKET:'+scoreBucket(t.score)),'each candidate is booked in its own score bucket');
