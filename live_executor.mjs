@@ -8,9 +8,13 @@
 //  - A failed or timed-out entry is never resent blindly: its client id is looked up
 //    first. An unknown outcome blocks new entries until a person checks the account.
 //  - The kill switch blocks new entries and never removes protective stops.
+//  - Before every entry the symbol is set to CROSS margin and the signal's leverage
+//    (score + market cap, 10-30x; capped at the venue maximum). If either cannot be set
+//    and read back, the entry is not sent.
 import fs from 'node:fs';
 import path from 'node:path';
 import {atomicWriteStore,readStore} from './persistence.mjs';
+import {leverageForScore} from './paper.mjs';
 import {bingxOrders,gateOrders,liveClientId,liveQuantity,preflight} from './live_orders.mjs';
 
 const MAX_RECORDS=300,MAX_EVENTS=40;
@@ -54,7 +58,7 @@ export class LiveExecutor{
   if(this.busy.has(row.symbol))return {sent:false,reasons:['SYMBOL_BUSY']};
   this.busy.add(row.symbol);
   const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,direction:row.direction,
-   stop:row.stop,targets:[...row.targets],quantity:qty,plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
+   stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage:Number(row.leverage)>0?Math.round(Number(row.leverage)):leverageForScore(row.score,row.marketCap)??10,plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
    entryOrderId:null,stopOrderId:null,targetOrderIds:[],breakevenMoved:false,events:[]};
   this.store.records.push(record);this.#save();
   try{
@@ -73,6 +77,17 @@ export class LiveExecutor{
   const client=this.clients.BINGX,plan=bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
   const mode=await client.positionMode();
   if(mode?.dualSidePosition===true||mode?.dualSidePosition==='true'){record.status='FAILED';this.#event(record,'REJECTED',{reason:'BINGX_HEDGE_MODE_UNSUPPORTED'});return}
+  try{
+   const current=await client.marginType(record.venueSymbol);
+   if(current?.marginType!=='CROSSED'){await client.setMarginType(record.venueSymbol,'CROSSED');
+    const check=await client.marginType(record.venueSymbol);if(check?.marginType!=='CROSSED')throw Object.assign(Error('cross not confirmed'),{code:'BINGX_CROSS_NOT_CONFIRMED'})}
+   const info=await client.leverage(record.venueSymbol).catch(()=>null);
+   const max=Number(record.direction==='LONG'?info?.maxLongLeverage:info?.maxShortLeverage);
+   if(max>0&&record.leverage>max){this.#event(record,'LEVERAGE_CAPPED',{reason:`${record.leverage}x>${max}x`});record.leverage=Math.floor(max)}
+   const set=await client.setLeverage(record.venueSymbol,'BOTH',record.leverage);
+   if(set?.leverage!==undefined&&Number(set.leverage)!==record.leverage)throw Object.assign(Error('leverage not confirmed'),{code:'BINGX_LEVERAGE_NOT_CONFIRMED'});
+   this.#event(record,'MARGIN_SET',{reason:`CROSS ${record.leverage}x`});
+  }catch(error){record.status='FAILED';this.#event(record,'REJECTED',{reason:'MARGIN_SETUP_FAILED:'+(error.code||error.message)});return}
   let entry;
   try{entry=await client.placeOrder(plan.entry)}
   catch(error){
@@ -111,6 +126,14 @@ export class LiveExecutor{
   const plan=gateOrders({contract,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
   const account=await client.account();
   if(account?.in_dual_mode===true){record.status='FAILED';this.#event(record,'REJECTED',{reason:'GATEIO_DUAL_MODE_UNSUPPORTED'});return}
+  try{
+   const pos=await client.setCrossLeverage(contract,record.leverage);
+   // leverage "0" = cross margin; cross_leverage_limit = the leverage in cross.
+   if(Number(pos?.leverage)!==0)throw Object.assign(Error('cross not confirmed'),{code:'GATEIO_CROSS_NOT_CONFIRMED'});
+   const got=Number(pos?.cross_leverage_limit);
+   if(got>0&&got!==record.leverage){this.#event(record,'LEVERAGE_CAPPED',{reason:`${record.leverage}x>${got}x`});record.leverage=got}
+   this.#event(record,'MARGIN_SET',{reason:`CROSS ${record.leverage}x`});
+  }catch(error){record.status='FAILED';this.#event(record,'REJECTED',{reason:'MARGIN_SETUP_FAILED:'+(error.code||error.message)});return}
   let entry;
   try{entry=await client.placeOrder(plan.entry)}
   catch(error){

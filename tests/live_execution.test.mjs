@@ -22,7 +22,7 @@ test('signatures reproduce the official examples (BingX openssl example, Gate.io
 });
 
 // ---- Mock venues that verify every signature exactly as documented ---------------
-function mockBingX({hedge=false,entry='ok',stopAttached=true,positionAmt=()=>'0.20',stopPlacement='ok'}={}){
+function mockBingX({margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,entry='ok',stopAttached=true,positionAmt=()=>'0.20',stopPlacement='ok'}={}){
  const calls=[],orders=[];let id=1000;
  const fetcher=async(url,options)=>{
   const u=new URL(url),q=Object.fromEntries([...u.searchParams].filter(([k])=>k!=='signature'));
@@ -30,6 +30,10 @@ function mockBingX({hedge=false,entry='ok',stopAttached=true,positionAmt=()=>'0.
   assert.equal(u.searchParams.get('signature'),createHmac('sha256',BINGX_SECRET).update(Object.keys(q).sort().map(k=>`${k}=${q[k]}`).join('&')).digest('hex'),'BingX signature');
   assert.ok(!url.includes(BINGX_SECRET));
   const call={method:options.method,path:u.pathname,params:q};calls.push(call);
+  if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='GET')return json({code:0,data:{marginType:margin}});
+  if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='POST'){if(marginFail)return json({code:80001,msg:'position exists'});margin=q.marginType;return json({code:0,data:{}})}
+  if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='GET')return json({code:0,data:{longLeverage:5,shortLeverage:5,maxLongLeverage:maxLev,maxShortLeverage:maxLev}});
+  if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='POST')return json({code:0,data:{symbol:q.symbol,leverage:Number(q.leverage)}});
   if(u.pathname==='/openApi/swap/v1/positionSide/dual')return json({code:0,data:{dualSidePosition:hedge}});
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='POST'){
    if(q.type==='MARKET'&&!q.reduceOnly){
@@ -69,6 +73,7 @@ function mockGate({dual=false,fill=20,stop='ok',size=()=>20}={}){
    return json({id:++id});
   }
   if(u.pathname.startsWith('/api/v4/futures/usdt/price_orders/')&&options.method==='DELETE')return json({id:1});
+  if(u.pathname.endsWith('/leverage')&&options.method==='POST'){const lev=u.searchParams.get('leverage'),lim=Number(u.searchParams.get('cross_leverage_limit'));calls.at(-1).query={leverage:lev,cross_leverage_limit:lim};return json({contract:'ETH_USDT',leverage:lev,cross_leverage_limit:String(Math.min(lim,25))})}
   if(u.pathname.startsWith('/api/v4/futures/usdt/positions/'))return json({contract:'ETH_USDT',size:size(),entry_price:'100.01'});
   throw Error('unexpected '+u.pathname);
  };
@@ -117,7 +122,7 @@ test('BingX: entry carries the stop, three reduce-only targets follow, a repeate
  const m=mockBingX(),dir=tmp(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
  assert.equal((await ex.onSignal(row(),{signalKey:'k1'})).reasons[0],'NOT_ARMED');assert.equal(m.calls.length,0,'nothing is sent before arming');
  ex.arm();const result=await ex.onSignal(row(),{signalKey:'k1'});assert.equal(result.status,'OPEN');
- const posts=m.calls.filter(c=>c.method==='POST').map(c=>c.params);
+ const posts=m.calls.filter(c=>c.method==='POST'&&c.path==='/openApi/swap/v2/trade/order').map(c=>c.params);
  assert.equal(posts[0].type,'MARKET');assert.equal(posts[0].side,'BUY');assert.equal(posts[0].positionSide,'BOTH');assert.equal(posts[0].quantity,'0.2');
  assert.deepEqual(JSON.parse(posts[0].stopLoss),{type:'STOP_MARKET',stopPrice:98,workingType:'MARK_PRICE'});assert.equal(posts[0].clientOrderId,liveClientId('k1'));
  assert.deepEqual(posts.slice(1).map(p=>[p.type,p.side,p.quantity,p.stopPrice,p.reduceOnly]),[['TAKE_PROFIT_MARKET','SELL','0.08','105','true'],['TAKE_PROFIT_MARKET','SELL','0.07','108','true'],['TAKE_PROFIT_MARKET','SELL','0.05','112','true']]);
@@ -135,7 +140,7 @@ test('BingX: hedge mode and rejected margin never leave a position; a timed-out 
  const timeout=mockBingX({entry:'timeout'}),c=new LiveExecutor({config:config(),clients:{BINGX:timeout.client},now:()=>NOW});c.arm();
  await c.onSignal(row(),{signalKey:'t'});
  assert.equal(c.store.records[0].status,'UNKNOWN');assert.equal(c.store.killSwitch,true,'unknown outcome stops trading');
- assert.equal(timeout.calls.filter(x=>x.method==='POST').length,1,'the entry is sent once');
+ assert.equal(timeout.calls.filter(x=>x.method==='POST'&&x.path==='/openApi/swap/v2/trade/order').length,1,'the entry is sent once');
  assert.ok(timeout.calls.some(x=>x.method==='GET'&&x.params.clientOrderId===liveClientId('t')),'looked up by client id');
  assert.equal((await c.onSignal(row('BINGX',{symbol:'BTCUSDT'}),{signalKey:'t2'})).reasons.includes('KILL_SWITCH_ON'),true);
 });
@@ -154,7 +159,7 @@ test('BingX: a missing stop is placed explicitly; if that fails the position is 
 test('Gate.io: IOC entry, then mark-price stop and three partial reduce-only targets in contracts',async()=>{
  const m=mockGate(),ex=new LiveExecutor({config:config(),clients:{GATEIO:m.client},now:()=>NOW});ex.arm();
  await ex.onSignal(row('GATEIO'),{signalKey:'g1'});assert.equal(ex.store.records[0].status,'OPEN');
- const posts=m.calls.filter(c=>c.method==='POST').map(c=>c.body);
+ const posts=m.calls.filter(c=>c.method==='POST'&&!c.path.endsWith('/leverage')).map(c=>c.body);
  assert.deepEqual(posts[0],{contract:'ETH_USDT',size:20,price:'0',tif:'ioc',text:'t-'+liveClientId('g1')});
  assert.ok(posts[0].text.length-2<=28,'Gate text limit');
  assert.deepEqual(posts[1],{initial:{contract:'ETH_USDT',size:0,price:'0',tif:'ioc',close:true},trigger:{strategy_type:0,price_type:1,price:'98',rule:2},order_type:'close-long-position'});
@@ -235,4 +240,29 @@ test('reconcile keeps a manual stop that is already better than break-even',asyn
  await ex.onSignal(row(),{signalKey:'m3'});await ex.setLevels('m3',{stop:101,targets:[105,108,112]});
  amt='0.12';const before=m.calls.length;await ex.reconcile();
  assert.ok(!m.calls.slice(before).some(c=>c.method==='POST'),'no break-even stop placed');assert.equal(ex.store.records[0].stop,101);assert.equal(ex.store.records[0].breakevenMoved,true);
+});
+
+test('cross margin and leverage are set and confirmed before every live entry; a failure sends no entry',async()=>{
+ const m=mockBingX(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(row('BINGX',{score:95,marketCap:3e8}),{signalKey:'c1'});
+ const r=ex.store.records[0];assert.equal(r.status,'OPEN');assert.equal(r.marginMode,'CROSS');assert.equal(r.leverage,18);
+ const seq=m.calls.filter(c=>c.method==='POST').map(c=>c.path);
+ assert.deepEqual(seq.slice(0,3),['/openApi/swap/v2/trade/marginType','/openApi/swap/v2/trade/leverage','/openApi/swap/v2/trade/order'],'margin, leverage, then entry');
+ assert.equal(m.calls.find(c=>c.method==='POST'&&c.path.endsWith('/marginType')).params.marginType,'CROSSED');
+ const lev=m.calls.find(c=>c.method==='POST'&&c.path.endsWith('/leverage')).params;assert.deepEqual([lev.side,lev.leverage],['BOTH','18']);
+ // Venue maximum below the wanted leverage: capped, recorded.
+ const capped=mockBingX({maxLev:15}),c=new LiveExecutor({config:config(),clients:{BINGX:capped.client},now:()=>NOW});c.arm();
+ await c.onSignal(row('BINGX',{leverage:28}),{signalKey:'c2'});assert.equal(c.store.records[0].leverage,15);
+ // Already cross: no switch request.
+ const already=mockBingX({margin:'CROSSED'}),a=new LiveExecutor({config:config(),clients:{BINGX:already.client},now:()=>NOW});a.arm();
+ await a.onSignal(row(),{signalKey:'c3'});assert.ok(!already.calls.some(x=>x.method==='POST'&&x.path.endsWith('/marginType')));
+ // Switch refused: no entry is sent.
+ const bad=mockBingX({marginFail:true}),b=new LiveExecutor({config:config(),clients:{BINGX:bad.client},now:()=>NOW});b.arm();
+ await b.onSignal(row(),{signalKey:'c4'});assert.equal(b.store.records[0].status,'FAILED');
+ assert.ok(!bad.calls.some(x=>x.path==='/openApi/swap/v2/trade/order'),'no order without cross margin');
+ // Gate.io: leverage=0 (cross) with cross_leverage_limit, before the entry; venue cap read back.
+ const g=mockGate(),gx=new LiveExecutor({config:config(),clients:{GATEIO:g.client},now:()=>NOW});gx.arm();
+ await gx.onSignal(row('GATEIO',{leverage:28}),{signalKey:'c5'});
+ const gp=g.calls.filter(x=>x.method==='POST');assert.ok(gp[0].path.endsWith('/positions/ETH_USDT/leverage'));
+ assert.deepEqual(gp[0].query,{leverage:'0',cross_leverage_limit:28});assert.equal(gx.store.records[0].leverage,25);assert.equal(gx.store.records[0].status,'OPEN');
 });
