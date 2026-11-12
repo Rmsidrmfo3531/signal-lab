@@ -33,6 +33,7 @@ export function parseArgs(argv){
   else if(key==='--no-trend-filter'){out.trendFilter=false}
   else if(key==='--all-patterns'){out.allPatterns=true}
   else if(key==='--candidates'){out.candidates=true}
+  else if(key==='--offline'){out.offline=true}
  }
  if(!out.symbols.length)out.symbols=DEFAULT_SYMBOLS;
  if(!out.symbols.includes('BTCUSDT'))out.symbols=[...out.symbols];
@@ -47,9 +48,11 @@ async function getJSON(url,tries=4){
   catch(e){if(a>=tries)throw e;await sleep(1500*a)}
  }
 }
+let OFFLINE=false;
 async function klines(symbol,interval,start,end,cacheDir){
  const file=path.join(cacheDir,`${symbol}_${interval}.json`),step=INTERVAL_MS[interval];
  let rows=[];try{rows=JSON.parse(fs.readFileSync(file,'utf8'))}catch{}
+ if(OFFLINE)return rows; // --offline: the cached candles as they are, no download
  rows=rows.filter(r=>Number(r[0])>=start);
  if(!rows.length||Number(rows[0][0])>start)rows=[];
  let from=rows.length?Number(rows.at(-1)[0])+step:start;
@@ -65,6 +68,15 @@ async function klines(symbol,interval,start,end,cacheDir){
  fs.mkdirSync(cacheDir,{recursive:true});fs.writeFileSync(file,JSON.stringify(rows));
  return rows;
 }
+// --offline without a cached exchangeInfo: the price tick from the cached candles' decimals, a
+// lot step worth roughly $0.1-$1, BTC/ETH minimum order as on Binance. An approximation.
+function approxFilters(symbol,rows){
+ const dec=Math.max(...rows.slice(-200).flatMap(r=>[r[1],r[2],r[3],r[4]]).map(x=>(String(x).split('.')[1]||'').replace(/0+$/,'').length)),price=Number(rows.at(-1)[4]);
+ const stepSize=symbol==='BTCUSDT'||symbol==='ETHUSDT'?.001:10**Math.floor(Math.log10(1/price));
+ return {tickSize:Number((10**-dec).toFixed(dec)),stepSize,minQty:stepSize,minNotional:symbol==='BTCUSDT'?100:symbol==='ETHUSDT'?20:5,approximate:true};
+}
+// Rough market caps (USD) for the leverage rule in the backtest; unknown symbols count as 1B.
+const APPROX_MARKET_CAP={BTCUSDT:1.5e12,ETHUSDT:4e11,SOLUSDT:9e10,XRPUSDT:1.3e11,DOGEUSDT:3e10,BNBUSDT:1.2e11,ADAUSDT:2.5e10,AVAXUSDT:1e10,LINKUSDT:1e10,LTCUSDT:7e9,SUIUSDT:1e10,TRXUSDT:2.5e10};
 function filtersOf(info,symbol){
  const s=info.symbols.find(x=>x.symbol===symbol);if(!s)return null;
  const f=Object.fromEntries(s.filters.map(x=>[x.filterType,x]));
@@ -93,6 +105,22 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  lines.push('',`신호 흐름: 1H봉 ${hourlyFunnel.bars}개 → 패턴 ${hourlyFunnel.patterns} → 필수조건 통과 ${hourlyFunnel.validated} → 90점 이상 ${hourlyFunnel.scoreOk} → 목표가 계획 성공 ${hourlyFunnel.planned}(점수 무관) · 추격 제외 ${hourlyFunnel.chaseSkipped}`);
  const reasons=Object.entries(hourlyFunnel.planReasons).sort((a,b)=>b[1]-a[1]).slice(0,5);
  if(reasons.length)lines.push('목표가 계획 실패 사유: '+reasons.map(([k,v])=>`${k} ${v}건`).join(', '));
+ // 1H split buys (the paper / live rule) against the fixed-risk rule above.
+ const sp=all.filter(t=>t.strategy==='HOURLY'&&t.book==='SPLIT');
+ if(sp.length){
+  const bal=args.balance,pctOf=x=>pct(x/bal*100),s0=summarize(live),s1=summarize(sp);
+  lines.push('',`[1-1] 1시간봉 매물대 분할 추매 (잔고 $${bal}, 1단위 ${args.unitPct}% × 점수·시총 배율, 추매 최대 ${args.maxAdds}회, 손절은 마지막 추매 바깥)`,'-'.repeat(60));
+  lines.push(row('기존: 패턴 손절 $6 위험',s0)+` | 잔고 대비 ${pctOf(s0.netUSD)}`,row('분할 추매',s1)+` | 잔고 대비 ${pctOf(s1.netUSD)}`);
+  for(const [k,v] of by({filter:t=>t.strategy==='HOURLY'&&t.book==='SPLIT',key:t=>t.pattern}))lines.push(row('  '+k,summarize(v)));
+  for(const [label,list] of halves(sp))lines.push(row(label+' (기간 절반씩)',summarize(list)));
+  const worst=Math.min(...sp.map(t=>t.pnlPctOfBalance)),worstOpen=Math.min(...sp.map(t=>t.worstOpenPctOfBalance)),withAdds=sp.filter(t=>t.plannedAdds>0);
+  const dist=[0,1,2,3,4,5].map(n=>`${n}${n===5?'회 이상':'회'} ${sp.filter(t=>n===5?t.addsFilled>=5:t.addsFilled===n).length}건`).join(' · ');
+  const stops=sp.filter(t=>t.exitReason==='STOP'),avgHold=sp.reduce((s,t)=>s+t.holdMs,0)/sp.length/HOUR;
+  lines.push(`최악 거래 잔고 대비 ${pct(worst)} · 보유 중 최대 평가손 잔고 대비 ${pct(worstOpen)} · 손절 ${stops.length}건(평균 ${usd(stops.reduce((s,t)=>s+t.netUSD,0)/(stops.length||1))}) · 평균 보유 ${num(avgHold,1)}시간`,
+   `추매 체결 횟수: ${dist}`,
+   `분할 계획 ${withAdds.length}건 (매물대 출처 ${Object.entries(hourlyFunnel.split?.sources||{}).map(([k,v])=>`${k} ${v}`).join(', ')||'—'}) · 매물대 없어 패턴 손절 ${sp.length-withAdds.length}건 · 평균 손절 거리 ${pct(withAdds.reduce((s,t)=>s+t.stopDistancePct,0)/(withAdds.length||1))} · 평균 배율 ${num(sp.reduce((s,t)=>s+t.leverage,0)/sp.length,1)}배`,
+   '가정: 잔고 고정(복리 없음), 종목별 1포지션, 동시 포지션 절반 축소·롱숏 상한 미반영, 시총은 대략값.');
+ }
  lines.push('','[2] 1시간봉 점수 구간별 (90점 기준이 맞는지 판단용, 필수조건 통과 후보를 구간마다 따로 계산)','-'.repeat(60));
  for(const bucket of ['90점 이상','85~89점','80~84점','80점 미만'])lines.push(row(bucket,summarize(all.filter(t=>t.strategy==='HOURLY'&&t.book==='BUCKET:'+bucket))));
  lines.push('','[3] 5분봉 단타 되돌림 (분할 없음, 고정 위험 $6)','-'.repeat(60));
@@ -134,22 +162,35 @@ function toCSV(trades){
 }
 
 export async function main(argv=process.argv.slice(2)){
- const args=parseArgs(argv),endAt=Date.now(),startAt=endAt-args.days*86400000;
+ const args=parseArgs(argv);let endAt=Date.now(),startAt=endAt-args.days*86400000;
  console.log(`백테스트 시작: ${args.days}일, ${args.symbols.join(', ')}`);
- const info=await getJSON(`${BASE}/fapi/v1/exchangeInfo`);
+ OFFLINE=args.offline===true;
+ const infoFile=path.join(args.cache,'exchangeInfo.json');let info=null;
+ if(OFFLINE){try{info=JSON.parse(fs.readFileSync(infoFile,'utf8'))}catch{}}
+ else{info=await getJSON(`${BASE}/fapi/v1/exchangeInfo`);
+  try{fs.mkdirSync(args.cache,{recursive:true});fs.writeFileSync(infoFile,JSON.stringify({symbols:info.symbols.filter(s=>args.symbols.includes(s.symbol)).map(s=>({symbol:s.symbol,filters:s.filters}))}))}catch{}}
  const warm4h=320*14400000,warm1h=210*HOUR;
- const btcH4=await klines('BTCUSDT','4h',startAt-warm4h,endAt,args.cache);
+ let btcH4=await klines('BTCUSDT','4h',startAt-warm4h,endAt,args.cache);
+ if(OFFLINE){ // the period ends at the last cached candle
+  if(!btcH4.length)throw Error('캐시된 캔들이 없습니다 (--offline)');
+  endAt=Number(btcH4.at(-1)[6]);startAt=endAt-args.days*86400000;btcH4=btcH4.filter(r=>Number(r[0])>=startAt-warm4h);
+ }
  const results=[],hourlyFunnel={bars:0,patterns:0,validated:0,scoreOk:0,planned:0,chaseSkipped:0,planReasons:{}},
   scalpFunnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},finalBalances={};
  for(const symbol of args.symbols){
-  const filters=filtersOf(info,symbol);if(!filters){console.log(`${symbol}: 거래소 목록에 없음, 건너뜀`);continue}
+  let filters=info?filtersOf(info,symbol):null;
+  if(!filters&&OFFLINE){let r=[];try{r=JSON.parse(fs.readFileSync(path.join(args.cache,`${symbol}_1h.json`),'utf8'))}catch{};if(r.length)filters=approxFilters(symbol,r)}
+  if(!filters){console.log(`${symbol}: 거래소 목록에 없음, 건너뜀`);continue}
   process.stdout.write(`${symbol}: 캔들 받는 중… `);
   const h4=symbol==='BTCUSDT'?btcH4:await klines(symbol,'4h',startAt-warm4h,endAt,args.cache);
   const h1=await klines(symbol,'1h',startAt-warm1h,endAt,args.cache);
   const m15=await klines(symbol,'15m',startAt-4*86400000,endAt,args.cache);
   const m5=await klines(symbol,'5m',startAt-6*HOUR,endAt,args.cache);
   process.stdout.write(`1H ${h1.length} · 5m ${m5.length} → 계산 중… `);
-  const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:{})});
+  const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:{}),
+   split:{balanceUSD:args.balance,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays,marketCap:APPROX_MARKET_CAP[symbol]??1e9}});
+  if(hourly.funnel.split){hourlyFunnel.split??={planned:0,fallback:0,sources:{}};hourlyFunnel.split.planned+=hourly.funnel.split.planned;hourlyFunnel.split.fallback+=hourly.funnel.split.fallback;
+   for(const [k,v] of Object.entries(hourly.funnel.split.sources))hourlyFunnel.split.sources[k]=(hourlyFunnel.split.sources[k]||0)+v}
   const dcaArgs={leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays};
   const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:dcaArgs});
   // Other scalp timeframes: 15m over the whole period, 1m over the last --scalp-1m-days days (1m data is large).

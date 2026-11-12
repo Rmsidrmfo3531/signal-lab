@@ -17,6 +17,7 @@ import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,trend
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,dcaZoneDaysFor} from './dca_plan.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {seededEMA} from './indicators.mjs';
+import {leverageForScore} from './paper.mjs';
 import {DETECTORS,prepare} from './pattern_detectors.mjs';
 import {fourHourTrend} from './scalp_reversal.mjs';
 
@@ -92,7 +93,7 @@ export function profileAt(m15Raw,now,symbol,tick,{candles=288,...options}={}){
 // targetMode, breakeven after TP1, stopScale (>1 widens the stop away from the entry),
 // patterns / directions (only trade these), endAt (exclusive signal cut-off).
 export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=Infinity,riskUSD=6,minScore=90,costs=BACKTEST_COSTS,
- minNetRR=1.8,obstacleFraction=1,targetMode='HVN_THEN_R',breakeven=true,stopScale=1,patterns=LIVE_PATTERNS,directions=null,liveGate=null}){
+ minNetRR=1.8,obstacleFraction=1,targetMode='HVN_THEN_R',breakeven=true,stopScale=1,patterns=LIVE_PATTERNS,directions=null,liveGate=null,split=null}){
  const m5c=m5.map(toCandle),funnel={bars:0,patterns:0,validated:0,scoreOk:0,planned:0,chaseSkipped:0,planReasons:{}},trades=[];
  // LIVE = the live rule (score >= minScore). Each score bucket is its own sequential book,
  // so a bucket's trades are never crowded out by trades of another bucket.
@@ -121,6 +122,31 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
    costs,minNetRR,targetMode,obstacleFraction},{now});
   if(!plan.ok){for(const r of plan.reasons||['PLAN_FAILED'])funnel.planReasons[r]=(funnel.planReasons[r]||0)+1;continue}
   funnel.planned++;
+  // SPLIT book: the live paper rule since v5.9 - one unit at the entry, adds of 1, 2, 4 ... units
+  // at volume zones (15m 3d + deep, then 1h 30d, then 4h 90d), stop beyond the last add. Unit =
+  // balance x unitPct x leverage (score + market cap). No zone fits: the fixed-risk trade above.
+  if(live&&split&&k>(busy.SPLIT??-1)){
+   const leverage=leverageForScore(out.score,split.marketCap)??10,fb={minCandles:96,targetBins:240,hvnMinFractionOfPoc:.05};
+   const deep=profileResult.ok&&(split.zoneDays??14)>3?profileAt(m15,now,symbol,filters.tickSize,DCA_DEEP_PROFILE(split.zoneDays??14)):null;
+   const sets=[['15m',()=>profileResult.ok?[...profileResult.profile.hvn,...(deep?.ok?deep.profile.hvn:[])]:[]],
+    ['1h',()=>{const r=profileAt(h1,now,symbol,filters.tickSize,{candles:720,intervalMs:HOUR,interval:'1h',...fb});return r.ok?r.profile.hvn:[]}],
+    ['4h',()=>{const r=profileAt(h4,now,symbol,filters.tickSize,{candles:540,intervalMs:4*HOUR,interval:'4h',...fb});return r.ok?r.profile.hvn:[]}]];
+   let dca=null,zoneSource=null;
+   for(const [label,zonesOf] of sets){
+    const d=planZoneDca({direction:out.direction,entry,atr:out.atr,zones:zonesOf(),balanceUSD:split.balanceUSD,leverage,unitPct:split.unitPct??DCA_DEFAULTS.unitPct,
+     tickSize:filters.tickSize,quantityStep:filters.stepSize,minQuantity:filters.minQty,minNotional:filters.minNotional,takerRate:costs.takerRate,
+     settings:{maxLossPct:split.maxLossPct??DCA_DEFAULTS.maxLossPct,maxAdds:split.maxAdds??DCA_DEFAULTS.maxAdds}});
+    if(d.ok&&d.adds.length){dca=d;zoneSource=label;break}
+   }
+   funnel.split??={planned:0,fallback:0,sources:{}};
+   const t=dca?simulateTrade({direction:out.direction,m5:m5c,startIdx:k,entryRef:entry,stop:dca.stop,targets:plan.targets,quantity:dca.unitQty,
+     adds:dca.adds.map(a=>({price:a.price,quantity:a.quantity})),costs,breakeven})
+    :simulateTrade({direction:out.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs,breakeven});
+   if(t){busy.SPLIT=t.endIdx;if(dca){funnel.split.planned++;funnel.split.sources[zoneSource]=(funnel.split.sources[zoneSource]||0)+1}else funnel.split.fallback++;
+    trades.push({strategy:'HOURLY',book:'SPLIT',symbol,direction:out.direction,pattern:out.pattern,score:out.score,signalAt:closeAt,stop:dca?dca.stop:stop,targets:plan.targets,
+     leverage,zoneSource,plannedAdds:dca?dca.adds.length:0,plannedMaxLossPct:dca?dca.full.maxLossPct:null,stopDistancePct:Math.abs(entry-(dca?dca.stop:stop))/entry*100,
+     pnlPctOfBalance:t.netUSD/split.balanceUSD*100,worstOpenPctOfBalance:t.worstOpenUSD/split.balanceUSD*100,...t})}
+  }
   for(const book of [...(live?['LIVE']:[]),'BUCKET:'+scoreBucket(out.score)]){
    if(k<=(busy[book]??-1))continue;
    const t=simulateTrade({direction:out.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs,breakeven});
