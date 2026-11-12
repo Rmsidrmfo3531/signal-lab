@@ -120,7 +120,9 @@ test('preflight blocks every unsafe condition with a named reason',()=>{
   [{records:[{status:'UNKNOWN',symbol:'X'}],config:config({maxOpen:3})},'UNRESOLVED_ORDER_STATE'],
   [{config:config({maxOpen:4,maxPerDirection:2}),records:[{status:'OPEN',symbol:'A',direction:'LONG'},{status:'OPEN',symbol:'B',direction:'LONG'}]},'MAX_SAME_DIRECTION_POSITIONS'],
   [{records:[{status:'CLOSED',day:'2026-11-10',plannedRiskUSD:5}]},'DAILY_RISK_LIMIT'],
-  [{row:row('GATEIO',{venueContract:{...row('GATEIO').venueContract,decimalSizes:true}})},'GATEIO_DECIMAL_SIZE_UNVERIFIED']];
+  [{row:row('GATEIO',{venueContract:{...row('GATEIO').venueContract,decimalSizes:true}})},'GATEIO_DECIMAL_SIZE_UNVERIFIED'],
+  [{config:config({mode:'LIVE',liveConfirmed:true}),row:row('BINGX',{venueOnly:true})},'VENUE_ONLY_TESTNET_ONLY']];
+ assert.equal(preflight({...base,row:row('BINGX',{venueOnly:true})}).reasons.includes('VENUE_ONLY_TESTNET_ONLY'),false,'testnet may trade coins not on Binance');
  for(const [patch,reason] of cases)assert.ok(preflight({...base,...patch}).reasons.includes(reason),reason);
  const whole=preflight({...base,config:config({venues:['BINGX','GATEIO']}),row:row('GATEIO',{venueContract:{...row('GATEIO').venueContract,decimalSizes:true,decimalStepFallback:true,contractStep:'1'}})});
  assert.ok(!whole.reasons.includes('GATEIO_DECIMAL_SIZE_UNVERIFIED'),'whole contracts on a decimal contract are allowed');

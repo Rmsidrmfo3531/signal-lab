@@ -265,18 +265,25 @@ function feedPaperFromVenue(venue,symbol,book){
  paper.onPrice('CRYPTO',symbol,book.mid,book.sourceTime,{venue,halfSpreadBps:book.spreadBps/2,quoteFresh:true,
   entryAllowed:cryptoEntryAllowed(symbol,Date.now())});
 }
-let venueRefreshActive=false;
+let venueRefreshActive=false,venueRefreshCycle=0;
 async function refreshVenueExecution(){
  if(venueRefreshActive)return;venueRefreshActive=true;
  try{
-  const now=Date.now(),wanted=new Map(CONFIG.paperVenues.map(v=>[v,new Set()]));
-  // Positions already opened on a venue that is now on hold keep their quotes until they close.
-  for(const record of [...paper.store.pending,...paper.store.open]){const v=record.executionVenue;if(!v||!venueQuotes.clients[v])continue;if(!wanted.has(v))wanted.set(v,new Set());wanted.get(v).add(record.symbol)}
-  for(const row of state.analyses.values())if(row.technicalQualified===true&&row.executionVenue&&wanted.has(row.executionVenue)&&now-row.scannedAt<2*3600000)
-   wanted.get(row.executionVenue).add(row.symbol);
-  // BingX allows one public request per second: at most 4 symbols per venue per cycle.
-  await Promise.all([...wanted].map(async([venue,symbols])=>{
-   for(const symbol of [...symbols].slice(0,4)){const book=await refreshVenueBook(venue,symbol);if(book)feedPaperFromVenue(venue,symbol,book)}
+  const now=Date.now(),held=new Map(),cand=new Map(CONFIG.paperVenues.map(v=>[v,new Set()]));
+  const add=(map,v,s)=>{if(!map.has(v))map.set(v,new Set());map.get(v).add(s)};
+  // Open/pending positions always get a quote every cycle (stops and TPs depend on it), including
+  // positions on a venue that is now on hold, until they close.
+  for(const record of [...paper.store.pending,...paper.store.open]){const v=record.executionVenue;if(v&&venueQuotes.clients[v])add(held,v,record.symbol)}
+  for(const row of state.analyses.values())if(row.technicalQualified===true&&row.executionVenue&&cand.has(row.executionVenue)&&now-row.scannedAt<2*3600000)
+   add(cand,row.executionVenue,row.symbol);
+  // BingX allows about one public request per second: held symbols first, then new candidates up to
+  // about 4 requests per venue per cycle (at least 1), rotating so every candidate is quoted in turn.
+  venueRefreshCycle++;
+  const venues=new Set([...held.keys(),...cand.keys()]);
+  await Promise.all([...venues].map(async venue=>{
+   const mine=held.get(venue)??new Set(),rest=[...(cand.get(venue)??[])].filter(s=>!mine.has(s));
+   const start=rest.length?(venueRefreshCycle*2)%rest.length:0,pick=[...rest.slice(start),...rest.slice(0,start)].slice(0,Math.max(1,4-mine.size));
+   for(const symbol of [...mine,...pick]){const book=await refreshVenueBook(venue,symbol);if(book)feedPaperFromVenue(venue,symbol,book)}
   }));
   state.venueRefreshAt=Date.now();state.executionRefreshAt=state.venueRefreshAt;
  }finally{venueRefreshActive=false}
@@ -599,7 +606,6 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  // Live / testnet: every still-valid approval (fresh 1H bar, price inside the entry range) is
  // offered while the executor is armed, not only the first publication. So arming (or a restart)
  // trades the signals of the current hour right away; each signal is still ordered at most once.
- // Venue-only coins are paper only: their charts were never part of the validated backtest.
  // Bounded like the paper entry: at most PAPER_DEFAULTS.entryTimeoutMs (20 min) after the 1H close
  // (the backtest enters on the first 5m candle; later entries are not validated).
  const liveWindow=Number.isFinite(row.patternConfirmedAt)&&now-row.patternConfirmedAt<=PAPER_DEFAULTS.entryTimeoutMs;

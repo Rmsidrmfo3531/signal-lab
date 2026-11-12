@@ -9,7 +9,8 @@ const positive=value=>typeof value==='number'&&Number.isFinite(value)&&value>0;
 
 export function parsePaperVenues(value){
  const list=String(value??'').split(',').map(x=>x.trim().toUpperCase()).filter(x=>VENUES.includes(x));
- return list.length?[...new Set(list)]:[...VENUES];
+ // Empty or unknown values fall back to BingX only (Gate.io on hold, 2026-11-12).
+ return list.length?[...new Set(list)]:['BINGX'];
 }
 
 /** Venue contract + book in the shape the verified sizing model expects.

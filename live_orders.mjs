@@ -130,6 +130,8 @@ export function preflight({config,armed,killSwitch,credentials,row,records,now=D
  if(!armed)reasons.push('NOT_ARMED');
  if(killSwitch)reasons.push('KILL_SWITCH_ON');
  if(!config.venues.includes(venue))reasons.push('VENUE_NOT_ENABLED_FOR_LIVE');
+ // Coins not on Binance were never part of the validated backtest: testnet only.
+ if(config.mode==='LIVE'&&row?.venueOnly)reasons.push('VENUE_ONLY_TESTNET_ONLY');
  else if(!credentials?.[venue])reasons.push('CREDENTIALS_MISSING');
  if(row?.decision?.ready!==true)reasons.push('SIGNAL_NOT_READY');
  if(!Array.isArray(row?.targets)||row.targets.length!==3||!positive(row?.stop))reasons.push('PLAN_INCOMPLETE');
