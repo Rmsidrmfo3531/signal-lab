@@ -32,12 +32,13 @@ const bingxOrderId=data=>{const o=orderOf(data);const id=pick(o,'orderID','order
 export class LiveExecutor{
  constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{}}={}){
   Object.assign(this,{config,clients,now,log,onChange});
-  this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();
+  this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();
   const stored=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[]};
  }
  #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records})}this.onChange(this.status())}
  #event(record,type,detail={}){record.events=[...(record.events||[]),{type,at:this.now(),...detail}].slice(-MAX_EVENTS);this.log(`[LIVE ${record.venue} ${record.symbol}] ${type}`,detail.reason||'')}
+ hasSignal(signalKey){return this.inFlight.has(signalKey)||this.store.records.some(r=>r.signalKey===signalKey)}
  credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
  status(){
   return {mode:this.config.mode,armed:this.armed,killSwitch:this.store.killSwitch,liveConfirmed:this.config.liveConfirmed,venues:this.config.venues,
@@ -56,6 +57,13 @@ export class LiveExecutor{
 
  /** Called once per newly published final signal (already venue-checked). */
  async onSignal(row,{signalKey}){
+  // One evaluation per signal at a time: price ticks can offer the same signal again while the
+  // balance is being read; without this both could pass the duplicate check.
+  if(this.inFlight.has(signalKey))return {sent:false,reasons:['SIGNAL_IN_FLIGHT']};
+  this.inFlight.add(signalKey);
+  try{return await this.#onSignal(row,{signalKey})}finally{this.inFlight.delete(signalKey)}
+ }
+ async #onSignal(row,{signalKey}){
   const venue=row?.executionVenue,contract=row?.venueContract&&{...row.venueContract,symbol:row.symbol};
   const clientOrderId=liveClientId(signalKey);
   if(this.store.records.some(r=>r.clientOrderId===clientOrderId))return {sent:false,reasons:['DUPLICATE_SIGNAL']};
@@ -78,7 +86,13 @@ export class LiveExecutor{
   }else qty=contract?liveQuantity({quantity:row.targetPlan?.quantity,estimatedStopLossUSD:row.execution?.estimatedStopLossUSD,maxRiskUSD:this.config.maxRiskUSD,contract}):null;
   const check=preflight({config,armed:this.armed,killSwitch:this.store.killSwitch,credentials:this.credentials(),row,records:this.store.records,now:this.now(),qty});
   if(extra.length){check.ok=false;check.reasons=[...extra,...check.reasons.filter(r=>r!=='QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK')]}
-  if(!check.ok){this.store.skipped=[...this.store.skipped,{at:this.now(),symbol:row?.symbol,venue,reasons:check.reasons}].slice(-50);this.onChange(this.status());return {sent:false,reasons:check.reasons}}
+  if(!check.ok){
+   // The same signal is offered on every price tick while it stays valid: list a skip once per
+   // signal and reason set (again after 10 minutes), not on every tick.
+   const tag=signalKey+'|'+check.reasons.join(','),last=this.skipSeen.get(tag);
+   if(!(last>this.now()-600000)){this.skipSeen.set(tag,this.now());if(this.skipSeen.size>500)this.skipSeen.delete(this.skipSeen.keys().next().value);
+    this.store.skipped=[...this.store.skipped,{at:this.now(),symbol:row?.symbol,venue,reasons:check.reasons}].slice(-50);this.onChange(this.status())}
+   return {sent:false,reasons:check.reasons}}
   if(this.busy.has(row.symbol))return {sent:false,reasons:['SYMBOL_BUSY']};
   this.busy.add(row.symbol);
   const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,

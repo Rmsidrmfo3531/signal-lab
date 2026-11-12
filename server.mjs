@@ -579,15 +579,19 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  // the offline simulation engine or alter the existing paper registration.
  const {symbol,direction,pattern}=row;
  const paperKey=signalKey({market:'CRYPTO',symbol,direction,pattern,barAt:row.patternConfirmedAt});
+ // Study-material patterns keep their pattern stop: no zone adds (paper and live).
+ const noAdds=TREND_GATE_PATTERNS.includes(row.pattern);
+ // Live / testnet: every still-valid approval (fresh 1H bar, price inside the entry range) is
+ // offered while the executor is armed, not only the first publication. So arming (or a restart)
+ // trades the signals of the current hour right away; each signal is still ordered at most once.
+ // Venue-only coins are paper only: their charts were never part of the validated backtest.
+ if(LIVE.mode!=='OFF'&&!row.venueOnly&&live.armed&&!live.hasSignal(paperKey))
+  void live.onSignal(routeLiveSignal({...row,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{enabled:LIVE.venues,credentials:live.credentials()}),{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
  // The same fresh approval may be observed by a scan and many ticker events.
  // Persist each paper registration and alert once, including after a restart.
  if(!paper.store.seen[paperKey]){
-  // Study-material patterns keep their pattern stop: no zone adds (paper and live).
-  const noAdds=TREND_GATE_PATTERNS.includes(row.pattern),sizeScale=nextSizeScale(paper.store),adds=noAdds?null:zoneScaleInPlan(row,sizeScale);
+  const sizeScale=nextSizeScale(paper.store),adds=noAdds?null:zoneScaleInPlan(row,sizeScale);
   paper.register(adds?{...row,stop:adds.dca.stop,targetPlan:adds.targetPlan,dca:adds.dca,sizeScale,leverage:adds.leverage}:row,{market:'CRYPTO',symbol,quoteEligible:true});
-  // The same first publication may also open a live/testnet position (its own checks decide).
-  // Venue-only coins are paper only: their charts were never part of the validated backtest.
-  if(LIVE.mode!=='OFF'&&!row.venueOnly)void live.onSignal(routeLiveSignal({...row,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{enabled:LIVE.venues,credentials:live.credentials()}),{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
  }
  const key=`${symbol}:${direction}:${pattern}:${row.time}`;
  if(persisted.seen[key])return;
@@ -1094,7 +1098,11 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
-   if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.arm())}
+   if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
+    const status=live.arm();
+    // Look at the current hour's approvals right away instead of waiting for the next tick or bar.
+    setTimeout(()=>{for(const symbol of state.analyses.keys()){try{cryptoEntryAllowed(symbol)}catch{}}},50);
+    return response(res,200,status)}
    if(pathname==='/api/live/disarm')return response(res,200,live.disarm());
    if(pathname==='/api/live/kill')return response(res,200,live.kill('MANUAL'));
    if(pathname==='/api/live/test-order'){

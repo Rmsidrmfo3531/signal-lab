@@ -362,3 +362,13 @@ test('testnet round trip: same order path, then everything cancelled and closed;
  assert.ok(!m2.calls.some(c=>c.method==='DELETE'),'stop and targets stay while the position is open');assert.equal(bad.ok,false);assert.equal(ex2.store.killSwitch,true);
  await assert.rejects(new LiveExecutor({config:config({mode:'LIVE',liveConfirmed:true}),clients:{BINGX:m.client},now:()=>NOW}).testRoundTrip(row('BINGX')),/TEST_TESTNET_ONLY/);
 });
+
+test('a signal offered on every tick is ordered once, and a refused one is listed once',async()=>{
+ const m=mockBingX(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ const [a,b]=await Promise.all([ex.onSignal(row(),{signalKey:'tick'}),ex.onSignal(row(),{signalKey:'tick'})]);
+ assert.deepEqual([a.sent,b.sent].sort(),[false,true]);assert.equal(ex.store.records.length,1);assert.equal(ex.hasSignal('tick'),true);
+ assert.equal(m.calls.filter(c=>c.method==='POST'&&c.path==='/openApi/swap/v2/trade/order'&&c.params.type==='MARKET').length,1,'one entry order');
+ const blocked=new LiveExecutor({config:config({venues:['GATEIO']}),clients:{BINGX:m.client},now:()=>NOW});blocked.arm();
+ for(let i=0;i<5;i++)await blocked.onSignal(row(),{signalKey:'again'});
+ assert.equal(blocked.store.skipped.length,1,'same reasons listed once');
+});
