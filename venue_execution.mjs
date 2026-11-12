@@ -60,25 +60,37 @@ export function selectExecutionVenue({signal,venues={},allowed=VENUES,now=Date.n
  const eligible=candidates.filter(c=>c.eligible),sign=signal?.direction==='SHORT'?-1:1;
  // Better = lower entry for LONG, higher for SHORT; ties keep the listed order.
  const chosen=eligible.reduce((best,c)=>!best||sign*(c.estimate.entryBasis-best.estimate.entryBasis)<0?c:best,null);
- return {chosen,candidates:candidates.map(({venue,eligible,reasons,estimate})=>({venue,eligible,reasons,entryBasis:estimate?.entryBasis??null}))};
+ return {chosen,candidates:candidates.map(({venue,eligible,reasons,estimate})=>({venue,eligible,reasons,entryBasis:estimate?.entryBasis??null,
+  quantity:estimate?.quantity??null,estimatedStopLossUSD:estimate?.estimatedStopLossUSD??null}))};
+}
+
+/** Live order on another venue than the paper one: when the paper venue has no live keys (or is
+ * not enabled), the same signal goes to the first venue in `liveAlternatives` that is enabled, has
+ * keys, lists the coin and still clears the TP1 net reward/risk (minNetRR, costs both ways) at its
+ * own entry. Stop and targets move onto that venue's tick grid: the stop away from the entry
+ * (never tighter), the targets toward the entry (never further); entry, quantity and estimated
+ * stop loss are that venue's. When no venue fits, the row is returned unchanged (preflight then
+ * reports the missing keys). */
+export function routeLiveSignal(row,{enabled=[],credentials={},minNetRR=1.8,costRate=.0012}={}){
+ const ok=v=>enabled.includes(v)&&credentials[v]===true;
+ if(!row||ok(row.executionVenue))return row;
+ const dir=row.direction==='LONG'?1:-1;
+ for(const alt of row.liveAlternatives||[]){
+  if(!ok(alt.venue)||!alt.venueSymbol||!alt.venueContract||!positive(Number(alt.venueContract.tickSize))||!positive(alt.entryBasis))continue;
+  const tick=String(alt.venueContract.tickSize),entry=alt.entryBasis;
+  const stop=venueStop(row.rawStop??row.stop,row.direction,alt.venueContract.tickSize);
+  const targets=(row.targets||[]).map(t=>Number(roundDecimalToStep(t,tick,dir===1?'DOWN':'UP')));
+  if(!positive(stop)||targets.length!==3||!targets.every(positive))continue;
+  const reward=dir*(targets[0]-entry)-entry*costRate,risk=dir*(entry-stop)+entry*costRate;
+  if(!(risk>0)||!(reward/risk>=minNetRR))continue;
+  return {...row,executionVenue:alt.venue,venueSymbol:alt.venueSymbol,venueContract:alt.venueContract,entry,stop,targets,
+   targetPlan:row.targetPlan?{...row.targetPlan,quantity:alt.quantity??row.targetPlan.quantity}:row.targetPlan,
+   execution:{...(row.execution||{}),estimatedStopLossUSD:alt.estimatedStopLossUSD??row.execution?.estimatedStopLossUSD},liveRoutedFrom:row.executionVenue};
+ }
+ return row;
 }
 
 /** Venue order size for display: base quantity for BingX, whole contracts for Gate.io. */
-/** Live order on another venue than the paper one: when the paper venue has no live keys (or is
- * not enabled), the same signal goes to the first venue in `alternatives` that is enabled, has
- * keys and lists the coin. Stop and targets move onto that venue's tick grid: the stop away from
- * the entry (never tighter), the targets toward the entry (never further). Null: no venue fits. */
-export function routeLiveSignal(row,{enabled=[],credentials={}}={}){
- const ok=v=>enabled.includes(v)&&credentials[v]===true;
- if(!row||ok(row.executionVenue))return row;
- const alt=(row.liveAlternatives||[]).find(a=>ok(a.venue)&&a.venueSymbol&&a.venueContract&&positive(Number(a.venueContract.tickSize)));
- if(!alt)return row;
- const tick=String(alt.venueContract.tickSize),dir=row.direction==='LONG'?1:-1;
- const targets=(row.targets||[]).map(t=>Number(roundDecimalToStep(t,tick,dir===1?'DOWN':'UP')));
- return {...row,executionVenue:alt.venue,venueSymbol:alt.venueSymbol,venueContract:alt.venueContract,stop:venueStop(row.rawStop??row.stop,row.direction,alt.venueContract.tickSize),
-  targets,liveRoutedFrom:row.executionVenue};
-}
-
 export function venueOrderQuantity(contract,baseQuantity){
  if(!contract||!positive(baseQuantity))return null;
  if(contract.quantityUnit!=='CONTRACT')return {quantity:String(baseQuantity),unit:'BASE_ASSET'};

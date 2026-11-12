@@ -514,7 +514,7 @@ async function checkSymbolInternal(symbol, force=false){
     // Other venues that list the coin and could take the same entry: the live order goes there when
     // the paper venue has no live keys (routeLiveSignal).
     out.liveAlternatives=selection.candidates.filter(c=>c.eligible&&c.venue!==chosen.venue).map(c=>{const k=venueEntry(c.venue,symbol).contract;
-     return {venue:c.venue,venueSymbol:k.venueSymbol,venueContract:{tickSize:k.tickSize,quantityStep:k.quantityStep,quantityUnit:k.quantityUnit,contractSizeBase:k.contractSizeBase,minQuantityBase:k.minQuantityBase,minNotionalUSDT:k.minNotionalUSDT??null,
+     return {venue:c.venue,venueSymbol:k.venueSymbol,entryBasis:c.entryBasis,quantity:c.quantity,estimatedStopLossUSD:c.estimatedStopLossUSD,venueContract:{tickSize:k.tickSize,quantityStep:k.quantityStep,quantityUnit:k.quantityUnit,contractSizeBase:k.contractSizeBase,minQuantityBase:k.minQuantityBase,minNotionalUSDT:k.minNotionalUSDT??null,
       decimalSizes:k.decimalSizes===true,decimalStepFallback:k.decimalStepFallback===true,contractStep:k.contractStep??null}}});
    }
    if(estimate.eligible&&Number.isFinite(chartTick)&&chartTick>0){
@@ -1185,7 +1185,12 @@ const server=http.createServer(async(req,res)=>{
    if(!check.levels.changed)return response(res,200,{ok:true,changed:false,levels:check.levels});
    let liveResult={live:false};
    if(LIVE.mode!=='OFF'){
-    liveResult=await live.setLevels(body.key,{stop:check.levels.stop,targets:check.levels.targets});
+    // Only what the user changed goes to the exchange (the live stop / targets may sit on another
+    // venue's grid or, with zone adds, at another stop than the paper record).
+    const current=[...paper.store.open,...paper.store.pending].find(x=>x.key===body.key);
+    const changedStop=wanted.stop!==null&&Number(check.levels.stop)!==Number(current?.stop)?check.levels.stop:NaN;
+    const changedTargets=(check.levels.targets||[]).map((t,i)=>Array.isArray(wanted.targets)&&Number(t)!==Number(current?.targets?.[i])?t:NaN);
+    liveResult=await live.setLevels(body.key,{stop:changedStop,targets:changedTargets});
     if(!liveResult.ok)return response(res,409,{ok:false,reasons:liveResult.reasons,live:liveResult});
    }
    const applied=paper.setLevels(body.key,wanted,{source:liveResult.live?'MANUAL_PAPER_AND_LIVE':'MANUAL'});

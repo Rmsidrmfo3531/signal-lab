@@ -83,12 +83,16 @@ test('live routing: a Gate.io paper signal goes to BingX when only BingX has liv
  const {routeLiveSignal}=await import('../venue_execution.mjs');
  const bingx={tickSize:'0.01',quantityStep:'0.01',quantityUnit:'BASE_ASSET',contractSizeBase:'1',minQuantityBase:'0.01'};
  const row={symbol:'ETHUSDT',direction:'LONG',executionVenue:'GATEIO',venueSymbol:'ETH_USDT',venueContract:{tickSize:'0.05'},rawStop:97.987,stop:97.95,targets:[105.057,108.003,112.009],
-  liveAlternatives:[{venue:'BINGX',venueSymbol:'ETH-USDT',venueContract:bingx}]};
+  liveAlternatives:[{venue:'BINGX',venueSymbol:'ETH-USDT',entryBasis:100,quantity:0.5,estimatedStopLossUSD:1.1,venueContract:bingx}]};
  const r=routeLiveSignal(row,{enabled:['BINGX','GATEIO'],credentials:{BINGX:true,GATEIO:false}});
  assert.equal(r.executionVenue,'BINGX');assert.equal(r.venueSymbol,'ETH-USDT');assert.equal(r.liveRoutedFrom,'GATEIO');
  assert.equal(r.stop,97.98,'stop away from the entry on the BingX grid');assert.deepEqual(r.targets,[105.05,108,112],'targets toward the entry');
- const s=routeLiveSignal({...row,direction:'SHORT',rawStop:102.013,targets:[95.011,92.004]},{enabled:['BINGX'],credentials:{BINGX:true}});
- assert.equal(s.stop,102.02);assert.deepEqual(s.targets,[95.02,92.01]);
+ assert.equal(r.entry,100);assert.equal(r.execution.estimatedStopLossUSD,1.1);
+ const s=routeLiveSignal({...row,direction:'SHORT',rawStop:102.013,targets:[95.011,92.004,90.001]},{enabled:['BINGX'],credentials:{BINGX:true}});
+ assert.equal(s.stop,102.02);assert.deepEqual(s.targets,[95.02,92.01,90.01]);
+ // A worse entry on BingX that breaks the TP1 net 1.8R: not routed.
+ const worse={...row,liveAlternatives:[{...row.liveAlternatives[0],entryBasis:101.5}]};
+ assert.equal(routeLiveSignal(worse,{enabled:['BINGX'],credentials:{BINGX:true}}).executionVenue,'GATEIO');
  assert.equal(routeLiveSignal(row,{enabled:['BINGX','GATEIO'],credentials:{BINGX:true,GATEIO:true}}),row,'paper venue with keys: unchanged');
  assert.equal(routeLiveSignal({...row,liveAlternatives:[]},{enabled:['BINGX'],credentials:{BINGX:true}}).executionVenue,'GATEIO','no alternative: unchanged (preflight reports it)');
 });

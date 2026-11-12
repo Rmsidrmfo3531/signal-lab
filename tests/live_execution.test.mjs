@@ -323,3 +323,15 @@ test('LIVE_BALANCE_CAP_USD: a 100,000 virtual USDT testnet is sized like a $400 
  await ex.onSignal(row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}}),{signalKey:'cap'});
  const r=ex.store.records[0];assert.equal(r.balanceUSD,400);assert.equal(r.quantity.total,0.13,'400 x 0.19% x 18 = 13.68 USDT -> 0.13 ETH');
 });
+
+test('a signal routed from Gate.io is ordered on BingX with BingX symbol and grid, and recorded as routed',async()=>{
+ const {routeLiveSignal}=await import('../venue_execution.mjs');
+ const gate=row('GATEIO');const bingx=row('BINGX');
+ const routed=routeLiveSignal({...gate,entry:100,rawStop:97.987,stop:97.95,targets:[105.057,108.003,112.009],
+  liveAlternatives:[{venue:'BINGX',venueSymbol:'ETH-USDT',entryBasis:100.01,quantity:0.6,estimatedStopLossUSD:6,venueContract:bingx.venueContract}]},{enabled:['BINGX'],credentials:{BINGX:true}});
+ const m=mockBingX(),ex=new LiveExecutor({config:config({venues:['BINGX']}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(routed,{signalKey:'route1'});
+ const r=ex.store.records[0];assert.equal(r.status,'OPEN',JSON.stringify(r.events));assert.equal(r.venue,'BINGX');assert.equal(r.venueSymbol,'ETH-USDT');assert.equal(r.routedFrom,'GATEIO');
+ const entry=m.calls.find(c=>c.method==='POST'&&c.path==='/openApi/swap/v2/trade/order').params;assert.equal(entry.symbol,'ETH-USDT');
+ assert.equal(JSON.parse(entry.stopLoss).stopPrice,97.98);assert.deepEqual(r.targets,[105.05,108,112]);
+});

@@ -20,6 +20,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {leverageForScore} from './paper.mjs';
+import {roundDecimalToStep} from './decimal_grid.mjs';
+import {venueStop} from './venue_execution.mjs';
 import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight} from './live_orders.mjs';
 
 const MAX_RECORDS=300,MAX_EVENTS=40;
@@ -80,7 +82,7 @@ export class LiveExecutor{
   if(this.busy.has(row.symbol))return {sent:false,reasons:['SYMBOL_BUSY']};
   this.busy.add(row.symbol);
   const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
-   stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,...(split?{balanceUSD:split.balanceUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
+   stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,...(row.liveRoutedFrom?{routedFrom:row.liveRoutedFrom}:{}),...(split?{balanceUSD:split.balanceUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
    entryOrderId:null,stopOrderId:null,targetOrderIds:[],breakevenMoved:false,events:[]};
   this.store.records.push(record);this.#save();
   try{
@@ -307,6 +309,13 @@ export class LiveExecutor{
   if(this.busy.has(record.symbol))return {ok:false,live:true,reasons:['SYMBOL_BUSY']};
   this.busy.add(record.symbol);
   const client=this.clients[record.venue],dir=record.direction==='LONG'?1:-1,result={ok:true,live:true,stopMoved:false,targetsMoved:[],errors:[]};
+  // Manual levels arrive on the paper venue's grid: put them on this record's venue grid
+  // (stop away from the entry, targets toward it).
+  const tick=record.venueContract?.tickSize;
+  if(tick){
+   if(Number.isFinite(stop))stop=venueStop(stop,record.direction,tick);
+   if(Array.isArray(targets))targets=targets.map(t=>Number.isFinite(t)?Number(roundDecimalToStep(t,String(tick),dir===1?'DOWN':'UP')):t);
+  }
   try{
    const {size,entryPrice}=await this.#position(record);
    if(size===0)return {ok:false,live:true,reasons:['LIVE_POSITION_FLAT']};
