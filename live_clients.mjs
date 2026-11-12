@@ -46,6 +46,10 @@ export class BingXTradeClient{
  positionMode(){return this.request('GET','/openApi/swap/v1/positionSide/dual')}
  balance(){return this.request('GET','/openApi/swap/v3/user/balance')}
  positions(symbol){return this.request('GET','/openApi/swap/v2/user/positions',{symbol})}
+ marginType(symbol){return this.request('GET','/openApi/swap/v2/trade/marginType',{symbol})}
+ setMarginType(symbol,marginType){return this.request('POST','/openApi/swap/v2/trade/marginType',{symbol,marginType})}
+ leverage(symbol){return this.request('GET','/openApi/swap/v2/trade/leverage',{symbol})}
+ setLeverage(symbol,side,leverage){return this.request('POST','/openApi/swap/v2/trade/leverage',{symbol,side,leverage})}
  placeOrder(params){return this.request('POST','/openApi/swap/v2/trade/order',params)}
  testOrder(params){return this.request('POST','/openApi/swap/v2/trade/order/test',params)}
  openOrders(symbol){return this.request('GET','/openApi/swap/v2/trade/openOrders',{symbol})}
@@ -82,6 +86,8 @@ export class GateTradeClient{
  }
  account(){return this.request('GET','/futures/usdt/accounts')}
  position(contract){return this.request('GET','/futures/usdt/positions/'+encodeURIComponent(contract))}
+ /** Cross margin: leverage=0 with cross_leverage_limit = the cross leverage. */
+ setCrossLeverage(contract,leverage){return this.request('POST','/futures/usdt/positions/'+encodeURIComponent(contract)+'/leverage',{query:{leverage:'0',cross_leverage_limit:String(leverage)}})}
  placeOrder(order){return this.request('POST','/futures/usdt/orders',{body:order})}
  getOrder(id){return this.request('GET','/futures/usdt/orders/'+encodeURIComponent(id))}
  cancelOrder(id){return this.request('DELETE','/futures/usdt/orders/'+encodeURIComponent(id))}
