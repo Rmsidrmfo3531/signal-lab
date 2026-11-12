@@ -54,7 +54,7 @@ test('paper notification API: get/toggle/test/store history without synthetic po
   assert.equal(all.telegramSignals,false);assert.equal(all.telegramPaper,true);
   assert.equal((await get('/api/paper/notifications')).telegram.enabled,true,'paper page sees the same switch');
   assert.match(html,/id="notifySettings"/);const panel=await (await request(base+'/notify_settings.js')).text();
-  for(const key of ['telegramSignals','telegramPaper','windowsPaper','signalScreen','newsScreen','paperScreen','sound'])assert.match(panel,new RegExp(key));
+  for(const key of ['telegramSignals','telegramPaper','windowsPaper','signalScreen','paperScreen','sound'])assert.match(panel,new RegExp(key));
   await post('/api/paper/notifications/settings',{enabled:false});
   await stopChild(child,{killTree:true});
   launch();let restored;

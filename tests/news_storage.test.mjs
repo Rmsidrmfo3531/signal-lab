@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {translateNewsArticles} from '../news_translation.mjs';
+import {translateNewsArticles,googleTranslateStatus} from '../news_translation.mjs';
 
 // Exercise the production polling function without a server, user files or any
 // network delivery. The failing persistence callback models a real disk error.
@@ -11,7 +11,7 @@ test('news bootstrap and new alerts are committed before delivery and remain ret
  const polling=source.slice(source.indexOf('let newsBootstrapped=false;'),source.indexOf('function bodyJson(req)'));
  assert.ok(polling.includes('async function pollNews()'));
  const sent=[],telegram=[],now=Date.now();let fail=true,articles=[{id:'old',published:now}];
- const context=vm.createContext({Date,AbortController,setTimeout,clearTimeout,CONFIG:{translationURL:''},translateNewsArticles,
+ const context=vm.createContext({Date,AbortController,setTimeout,clearTimeout,CONFIG:{translationURL:''},translateNewsArticles,googleTranslateStatus,console:{log(){}},
   FEEDS:[{name:'synthetic',url:'https://fixture.invalid/rss'}],
   state:{ranked:[]},tradfiState:{swaps:[]},persisted:{newsSeen:{}},
   fetch:async()=>({ok:true,text:async()=>'<rss><channel/></rss>'}),
