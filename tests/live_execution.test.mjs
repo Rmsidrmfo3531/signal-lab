@@ -362,3 +362,31 @@ test('testnet round trip: same order path, then everything cancelled and closed;
  assert.ok(!m2.calls.some(c=>c.method==='DELETE'),'stop and targets stay while the position is open');assert.equal(bad.ok,false);assert.equal(ex2.store.killSwitch,true);
  await assert.rejects(new LiveExecutor({config:config({mode:'LIVE',liveConfirmed:true}),clients:{BINGX:m.client},now:()=>NOW}).testRoundTrip(row('BINGX')),/TEST_TESTNET_ONLY/);
 });
+
+test('a signal offered on every tick is ordered once, and a refused one is listed once',async()=>{
+ const m=mockBingX(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ const [a,b]=await Promise.all([ex.onSignal(row(),{signalKey:'tick'}),ex.onSignal(row(),{signalKey:'tick'})]);
+ assert.deepEqual([a.sent,b.sent].sort(),[false,true]);assert.equal(ex.store.records.length,1);assert.equal(ex.hasSignal('tick'),true);
+ assert.equal(m.calls.filter(c=>c.method==='POST'&&c.path==='/openApi/swap/v2/trade/order'&&c.params.type==='MARKET').length,1,'one entry order');
+ const blocked=new LiveExecutor({config:config({venues:['GATEIO']}),clients:{BINGX:m.client},now:()=>NOW});blocked.arm();
+ for(let i=0;i<5;i++)await blocked.onSignal(row(),{signalKey:'again'});
+ assert.equal(blocked.store.skipped.length,1,'same reasons listed once');
+});
+
+test('a skipped signal is retried at most every 30 s (no balance read on every tick); arming retries at once',async()=>{
+ let now=NOW;const m=mockBingX(),ex=new LiveExecutor({config:config({maxOpen:1}),clients:{BINGX:m.client},now:()=>now});ex.arm();
+ const blocked=row('BINGX',{decision:{ready:false}});
+ assert.equal((await ex.onSignal(blocked,{signalKey:'w1'})).reasons.includes('SIGNAL_NOT_READY'),true);
+ now+=5000;assert.deepEqual((await ex.onSignal(row('BINGX'),{signalKey:'w1'})).reasons,['RETRY_WAIT']);
+ ex.arm();assert.equal((await ex.onSignal(row('BINGX'),{signalKey:'w1'})).status,'OPEN','arming clears the wait');
+ now+=1000;assert.deepEqual((await ex.onSignal(row('BINGX'),{signalKey:'w1'})).reasons,['DUPLICATE_SIGNAL']);
+});
+
+test('a record left SUBMITTING by a restart becomes UNKNOWN and blocks new entries',async()=>{
+ const dir=tmp(),m=mockBingX();const a=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});a.arm();
+ await a.onSignal(row('BINGX'),{signalKey:'s1'});
+ const file=path.join(dir,'live-orders.json'),stored=JSON.parse(fs.readFileSync(file,'utf8'));stored.records[0].status='SUBMITTING';fs.writeFileSync(file,JSON.stringify(stored));
+ const b=new LiveExecutor({config:config({maxOpen:4}),clients:{BINGX:m.client},directory:dir,now:()=>NOW});b.arm();
+ assert.equal(b.store.records[0].status,'UNKNOWN');assert.equal(b.canTry('x'),true);
+ assert.ok((await b.onSignal(row('BINGX',{symbol:'SOLUSDT'}),{signalKey:'s2'})).reasons.includes('UNRESOLVED_ORDER_STATE'));
+});

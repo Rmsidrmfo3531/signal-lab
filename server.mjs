@@ -31,7 +31,7 @@ import {LiveExecutor} from './live_executor.mjs';
 import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
 import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues,routeLiveSignal,venueStop} from './venue_execution.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
-import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore,evenPositions} from './paper.mjs';
+import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore,evenPositions,PAPER_DEFAULTS} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays,dcaZoneDaysFor} from './dca_plan.mjs';
@@ -573,21 +573,48 @@ async function checkSymbolInternal(symbol, force=false){
  publishCryptoSignal(out,decision);
  return out;
 }
+// Re-quote the live alternatives of a signal (other venues than the paper one) with their
+// current books: same selection rule as the analysis, only for the venues already listed.
+async function freshLiveAlternatives(row){
+ const alts=row.liveAlternatives||[];if(!alts.length||!row.rawStop)return alts;
+ const keys=live.credentials(),wanted=alts.filter(a=>LIVE.venues.includes(a.venue)&&keys[a.venue]);if(!wanted.length)return alts;
+ await Promise.all(wanted.map(a=>refreshVenueBook(a.venue,row.symbol,{maxAgeMs:3000})));
+ const selection=selectExecutionVenue({signal:{...row,stop:row.rawStop},venues:Object.fromEntries(wanted.map(a=>[a.venue,venueEntry(a.venue,row.symbol)])),
+  allowed:wanted.map(a=>a.venue),maxRiskUSD:CONFIG.maxRiskUSD});
+ return alts.map(a=>{const c=selection.candidates.find(x=>x.venue===a.venue);
+  return c?.eligible?{...a,entryBasis:c.entryBasis,quantity:c.quantity,estimatedStopLossUSD:c.estimatedStopLossUSD,spreadBps:c.spreadBps,quotedAt:Date.now()}:{...a,quotedAt:null}});
+}
 function publishCryptoSignal(row,decision,now=Date.now()){
  if(!decision.ready||!storageHealth.healthy)return;
  // Observe the validated scanner output, but never route actual market data to
  // the offline simulation engine or alter the existing paper registration.
  const {symbol,direction,pattern}=row;
  const paperKey=signalKey({market:'CRYPTO',symbol,direction,pattern,barAt:row.patternConfirmedAt});
+ // Study-material patterns keep their pattern stop: no zone adds (paper and live).
+ const noAdds=TREND_GATE_PATTERNS.includes(row.pattern);
+ // Live / testnet: every still-valid approval (fresh 1H bar, price inside the entry range) is
+ // offered while the executor is armed, not only the first publication. So arming (or a restart)
+ // trades the signals of the current hour right away; each signal is still ordered at most once.
+ // Venue-only coins are paper only: their charts were never part of the validated backtest.
+ // Bounded like the paper entry: at most PAPER_DEFAULTS.entryTimeoutMs (20 min) after the 1H close
+ // (the backtest enters on the first 5m candle; later entries are not validated).
+ const liveWindow=Number.isFinite(row.patternConfirmedAt)&&now-row.patternConfirmedAt<=PAPER_DEFAULTS.entryTimeoutMs;
+ if(LIVE.mode!=='OFF'&&!row.venueOnly&&live.armed&&liveWindow&&!live.hasSignal(paperKey)&&live.canTry(paperKey))
+  void (async()=>{
+   // Only when the paper venue has no live keys, the other venues' quotes are refreshed so the
+   // signal can be routed (routeLiveSignal needs a quote at most 15 s old).
+   const keys=live.credentials(),needRoute=!(LIVE.venues.includes(row.executionVenue)&&keys[row.executionVenue]);
+   const fresh=needRoute?await freshLiveAlternatives(row).catch(()=>row.liveAlternatives):row.liveAlternatives;
+   // The approval is re-assessed after the wait: an approval that went stale meanwhile is not ordered.
+   const now2=Date.now(),current=assessAnalysis(row,now2);
+   if(!current.ready||now2-row.patternConfirmedAt>PAPER_DEFAULTS.entryTimeoutMs)return;
+   return live.onSignal(routeLiveSignal({...row,liveAlternatives:fresh,...(noAdds?{paperAddInputs:null}:{}),decision:current,execution:current.execution},{enabled:LIVE.venues,credentials:keys,now:now2}),{signalKey:paperKey});
+  })().catch(e=>console.error('[LIVE]',e.message));
  // The same fresh approval may be observed by a scan and many ticker events.
  // Persist each paper registration and alert once, including after a restart.
  if(!paper.store.seen[paperKey]){
-  // Study-material patterns keep their pattern stop: no zone adds (paper and live).
-  const noAdds=TREND_GATE_PATTERNS.includes(row.pattern),sizeScale=nextSizeScale(paper.store),adds=noAdds?null:zoneScaleInPlan(row,sizeScale);
+  const sizeScale=nextSizeScale(paper.store),adds=noAdds?null:zoneScaleInPlan(row,sizeScale);
   paper.register(adds?{...row,stop:adds.dca.stop,targetPlan:adds.targetPlan,dca:adds.dca,sizeScale,leverage:adds.leverage}:row,{market:'CRYPTO',symbol,quoteEligible:true});
-  // The same first publication may also open a live/testnet position (its own checks decide).
-  // Venue-only coins are paper only: their charts were never part of the validated backtest.
-  if(LIVE.mode!=='OFF'&&!row.venueOnly)void live.onSignal(routeLiveSignal({...row,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{enabled:LIVE.venues,credentials:live.credentials()}),{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
  }
  const key=`${symbol}:${direction}:${pattern}:${row.time}`;
  if(persisted.seen[key])return;
@@ -1094,7 +1121,11 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
-   if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.arm())}
+   if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
+    const status=live.arm();
+    // Look at the current hour's approvals right away instead of waiting for the next tick or bar.
+    setTimeout(()=>{for(const symbol of state.analyses.keys()){try{cryptoEntryAllowed(symbol)}catch{}}},50);
+    return response(res,200,status)}
    if(pathname==='/api/live/disarm')return response(res,200,live.disarm());
    if(pathname==='/api/live/kill')return response(res,200,live.kill('MANUAL'));
    if(pathname==='/api/live/test-order'){
