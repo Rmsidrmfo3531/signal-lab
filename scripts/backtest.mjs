@@ -34,6 +34,7 @@ export function parseArgs(argv){
   else if(key==='--all-patterns'){out.allPatterns=true}
   else if(key==='--candidates'){out.candidates=true}
   else if(key==='--offline'){out.offline=true}
+  else if(key==='--patterns'){out.patterns=String(value||'').split(',').map(x=>x.trim()).filter(Boolean);i++}
  }
  if(!out.symbols.length)out.symbols=DEFAULT_SYMBOLS;
  if(!out.symbols.includes('BTCUSDT'))out.symbols=[...out.symbols];
@@ -187,7 +188,7 @@ export async function main(argv=process.argv.slice(2)){
   const m15=await klines(symbol,'15m',startAt-4*86400000,endAt,args.cache);
   const m5=await klines(symbol,'5m',startAt-6*HOUR,endAt,args.cache);
   process.stdout.write(`1H ${h1.length} · 5m ${m5.length} → 계산 중… `);
-  const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:{}),
+  const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:args.patterns?.length?{patterns:args.patterns}:{}),
    split:{balanceUSD:args.balance,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays,marketCap:APPROX_MARKET_CAP[symbol]??1e9}});
   if(hourly.funnel.split){hourlyFunnel.split??={planned:0,fallback:0,sources:{}};hourlyFunnel.split.planned+=hourly.funnel.split.planned;hourlyFunnel.split.fallback+=hourly.funnel.split.fallback;
    for(const [k,v] of Object.entries(hourly.funnel.split.sources))hourlyFunnel.split.sources[k]=(hourlyFunnel.split.sources[k]||0)+v}

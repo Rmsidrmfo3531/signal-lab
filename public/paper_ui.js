@@ -3,6 +3,19 @@ import {notifyOn} from './notify_settings.js';
 // a stop/TP change also moves the linked live order when live trading is on.
 const find=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// One price format per position: the venue tick's decimals (or the most decimals among the
+// exchange-quoted prices), so entry, average, mark, stop and targets line up digit for digit.
+const decimalsOf=v=>{const x=Number(v);if(!Number.isFinite(x)||x<=0)return null;const t=x.toFixed(10).replace(/0+$/,'');return t.includes('.')?t.split('.')[1].length:0};
+function priceDecimals(t){
+ const tick=t?.targetPlan?.tickSize??t?.venueContract?.tickSize??t?.tickSize,fromTick=decimalsOf(tick);
+ if(fromTick!==null)return Math.min(10,fromTick);
+ const quoted=[t?.markPrice,t?.stop,...(t?.targets||[])].map(decimalsOf).filter(x=>x!==null);
+ return quoted.length?Math.min(10,Math.max(...quoted)):null;
+}
+function priceFmt(t){
+ const d=priceDecimals(t);
+ return v=>v===null||v===undefined||v===''||!Number.isFinite(Number(v))?'—':d===null?fmt(v):Number(v).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+}
 const fmt=value=>value!==null&&value!==undefined&&value!==''&&Number.isFinite(Number(value))?Number(value).toLocaleString('en-US',{maximumFractionDigits:8}):'—';
 const usd=value=>value!==null&&value!==undefined&&value!==''&&Number.isFinite(Number(value))?`${Number(value)>=0?'+':''}$${Number(value).toFixed(2)}`:'—';
 const time=at=>at?new Date(at).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
@@ -28,8 +41,8 @@ function crossLiquidation(t,open,balance){
 function addsLine(t){
  const adds=t.dca?.adds;if(!Array.isArray(adds)||!adds.length)return '';
  const base=esc(String(t.symbol||'').replace(/USDT$/,''));
- const items=adds.map((a,i)=>`<li class="${a.filled?'add-filled':'add-waiting'}"><b>추매 ${i+1}차</b> ${fmt(a.price)} · ${fmt(a.quantity)} ${base} · ${a.filled?`체결 ${fmt(a.fill)}`:t.closeParts?.some(x=>x.type==='TARGET')?'취소(1차 익절 후)':'대기'}</li>`).join('');
- return `<details class="paper-adds" ${t.dca.filledAdds?'open':''}><summary>추매 ${t.dca.filledAdds||0}/${adds.length}회 체결${Number.isFinite(t.firstEntryFill)?` · 첫 진입 ${fmt(t.firstEntryFill)} → 평균 ${fmt(t.entryFill)}`:''} · 손절 ${fmt(t.stop)}</summary><ul>${items}</ul></details>`;
+ const pf=priceFmt(t),items=adds.map((a,i)=>`<li class="${a.filled?'add-filled':'add-waiting'}"><b>추매 ${i+1}차</b> ${pf(a.price)} · ${fmt(a.quantity)} ${base} · ${a.filled?`체결 ${pf(a.fill)}`:t.closeParts?.some(x=>x.type==='TARGET')?'취소(1차 익절 후)':'대기'}</li>`).join('');
+ return `<details class="paper-adds" ${t.dca.filledAdds?'open':''}><summary>추매 ${t.dca.filledAdds||0}/${adds.length}회 체결${Number.isFinite(t.firstEntryFill)?` · 첫 진입 ${pf(t.firstEntryFill)} → 평균 ${pf(t.entryFill)}`:''} · 손절 ${pf(t.stop)}</summary><ul>${items}</ul></details>`;
 }
 const LEVEL_REASONS={STOP_ALREADY_CROSSED:'손절가가 이미 현재가를 넘었습니다',STOP_INVALID:'손절가 숫자 오류',STOP_BEYOND_TARGET:'손절가가 목표가보다 바깥에 있습니다',
  MANUAL_STOP_EXCEEDS_RISK_LIMIT:'실주문 1회 손실 한도를 넘는 손절폭입니다',LIVE_STOP_NOT_PLACED:'거래소에 새 손절 주문을 넣지 못했습니다(기존 손절 유지)',
@@ -41,7 +54,7 @@ function filledTargets(t){const q=t.targetQuantities,f=(t.closeParts||[]).filter
 function dcaCaption(t){
  const d=t.dca;if(!d||!Array.isArray(d.adds))return '';
  const next=d.adds.find(a=>!a.filled),full=d.full||{};
- return `<small class="paper-management-mode">매물대 분할 ${d.filledAdds||0}/${d.adds.length}회 추가${next?` · 다음 ${fmt(next.price)} (${esc(next.units)}단위)`:''} · 손절(매물대) ${fmt(t.stop)} · 교차 ${esc(d.leverage)}배 · 전부 체결 후 손절 시 손실 약 $${Number.isFinite(full.maxLossUSD)?full.maxLossUSD.toFixed(2):"—"} (잔고 ${Number.isFinite(full.maxLossPct)?full.maxLossPct.toFixed(1):'—'}%)${Number.isFinite(full.liquidationPrice)?' · 추정 청산가 '+fmt(full.liquidationPrice):''}</small>`;
+ return `<small class="paper-management-mode">매물대 분할 ${d.filledAdds||0}/${d.adds.length}회 추가${next?` · 다음 ${priceFmt(t)(next.price)} (${esc(next.units)}단위)`:''} · 손절(매물대) ${priceFmt(t)(t.stop)} · 교차 ${esc(d.leverage)}배 · 전부 체결 후 손절 시 손실 약 $${Number.isFinite(full.maxLossUSD)?full.maxLossUSD.toFixed(2):"—"} (잔고 ${Number.isFinite(full.maxLossPct)?full.maxLossPct.toFixed(1):'—'}%)${Number.isFinite(full.liquidationPrice)?' · 추정 청산가 '+fmt(full.liquidationPrice):''}</small>`;
 }
 function levelsEditor(t){
  if(providerUnavailable(t))return '';const filled=filledTargets(t);
@@ -69,7 +82,7 @@ function reasonLine(t){
  const r=Array.isArray(t?.entryReasons)?t.entryReasons:[];
  return `<p class="pos-reasons"><span>진입 이유</span>${esc(t.pattern||'')}${r.length?' · '+r.map(x=>esc(x)).join(' · '):Number.isFinite(t?.score)?'':' · 이전 기록(세부 근거 없음)'}</p>`;
 }
-function targets(row){return (row.targets||[]).map((p,i)=>`<span>${i+1}차 ${fmt(p)} / ${[40,35,25][i]}%</span>`).join(' · ')}
+function targets(row){const pf=priceFmt(row);return (row.targets||[]).map((p,i)=>`<span>${i+1}차 ${pf(p)} / ${[40,35,25][i]}%</span>`).join(' · ')}
 function paperManagementCaption(row){
  const management=row.managementVersion??row.management?.version;
  if(management!=='VOLUME_PROFILE_V1')return '기존 기록 · 저장된 TP/SL 보존';
@@ -170,7 +183,7 @@ function render(payload){
   const lev=positionLeverage(t),margin=lev?t.qtyRemaining*t.entryFill/lev.value:null,roe=margin>0?gain/margin*100:null;
   const liq=crossLiquidation(t,open,payload.accountBalanceUSD);
   const base=esc(String(t.symbol||'').replace(/USDT$/,'')),addsDone=t.dca?.adds?.some(a=>a.filled)&&Number.isFinite(t.firstEntryFill);
-  const rows=t.closeParts?.map(p=>`<small>${p.type==='STOP'?'손절':p.type==='TIME'?'시간 청산':p.targetNumber+'차 익절'} ${fmt(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('')||'';
+  const pf=priceFmt(t),rows=t.closeParts?.map(p=>`<small>${p.type==='STOP'?'손절':p.type==='TIME'?'시간 청산':p.targetNumber+'차 익절'} ${pf(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('')||'';
   const cell=(label,value,cls='')=>`<div class="pos-cell ${cls}"><span>${label}</span><b>${value}</b></div>`;
   return `<article class="paper-trade paper-position"><header class="position-head">
     <strong class="pos-symbol">${esc(t.symbol)}</strong><span class="pos-side ${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction==='LONG'?'롱':'숏'}</span>
@@ -182,11 +195,11 @@ function render(payload){
     ${cell('수량',`${fmt(t.qtyRemaining)} ${base}${t.originalQty&&t.originalQty!==t.qtyRemaining?` <small>/ 처음 ${fmt(t.originalQty)}</small>`:''}`)}
     ${cell(frozen?'마지막 저장 시세 평가 (현재 평가 아님)':'미실현 손익',`<span class="${resultClass(gain)}">${usd(gain)}${roe!=null?` (${roe>=0?'+':''}${roe.toFixed(2)}%)`:''}</span>${frozen?' <small>최신 시세 미검증</small>':stale?' <small>시세 지연</small>':''}`)}
     ${cell('증거금',margin!=null?'$'+margin.toFixed(2):'—')}
-    ${addsDone?cell('진입가 <small>첫 진입</small>',fmt(t.firstEntryFill)):''}
-    ${cell(addsDone?'평균 진입가':'진입가',fmt(t.entryFill))}
-    ${cell('현재가',fmt(t.markPrice))}
-    ${cell('예상 청산가 <small>교차 마진</small>',liq!=null&&liq>0?fmt(liq):liq===0?'없음':'—')}
-    ${cell('손절',fmt(t.stop))}
+    ${addsDone?cell('진입가 <small>첫 진입</small>',pf(t.firstEntryFill)):''}
+    ${cell(addsDone?'평균 진입가':'진입가',pf(t.entryFill))}
+    ${cell('현재가',pf(t.markPrice))}
+    ${cell('예상 청산가 <small>교차 마진</small>',liq!=null&&liq>0?pf(liq):liq===0?'없음':'—')}
+    ${cell('손절',pf(t.stop))}
     ${cell('명목금액','$'+(t.qtyRemaining*t.entryFill).toFixed(2))}
    </div>
    ${addsLine(t)}
@@ -202,7 +215,7 @@ function render(payload){
  find('paperOpen').innerHTML=[...pending,...cards].join('')||'<p class="empty-small">현재 열린 가상 포지션이 없습니다. 새 시그널 이후 자동 기록합니다.</p>';
  restoreLevelDrafts(drafts);
  find('paperClosed').innerHTML=(payload.closed||[]).map(t=>{
-  const parts=(t.closeParts||[]).map(p=>`<small>${p.type==='STOP'?'잔여 손절':p.type==='TIME'?'시간 청산':p.targetNumber+'차 익절'} · ${time(p.at)} · ${fmt(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('');
+  const pf=priceFmt(t),parts=(t.closeParts||[]).map(p=>`<small>${p.type==='STOP'?'잔여 손절':p.type==='TIME'?'시간 청산':p.targetNumber+'차 익절'} · ${time(p.at)} · ${pf(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('');
   return `<article class="paper-trade"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><strong class="${resultClass(t.realizedPnLUSD)}">${usd(t.realizedPnLUSD)}</strong></header><p>${esc(t.market)} · ${esc(t.pattern)}${providerUnavailable(t)?' · '+frozenPaperCaption:''}</p><div class="paper-trade-values"><span>진입 <b>${fmt(t.entryFill)}</b></span><span>종료 <b>${time(t.closedAt)}</b></span><span>명목 <b>$${fmt(t.notionalUSD)}</b></span><span>총 수수료 <b>$${fmt(t.feesUSD)}</b></span></div><p>종료 사유: ${esc(t.closeReason)}${t.quoteGaps?' · 가격 수신 공백 '+t.quoteGaps+'회':''}</p><div class="paper-partials">${parts}</div></article>`;
  }).join('')||'<p class="empty-small">아직 자동으로 종료된 거래가 없습니다. 거래 내역은 앞으로 발생하는 신호부터 누적됩니다.</p>';
  find('paperSkipped').innerHTML=(payload.skipped||[]).map(t=>`<p>${time(t.at)} · ${esc(t.key)}<br><small>${esc(t.reason)}</small></p>`).join('')||'생략된 신호 없음';
