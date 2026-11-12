@@ -29,7 +29,8 @@ import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
 import {liveConfig} from './live_orders.mjs';
 import {LiveExecutor} from './live_executor.mjs';
 import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
-import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues,routeLiveSignal} from './venue_execution.mjs';
+import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues,routeLiveSignal,venueStop} from './venue_execution.mjs';
+import {roundDecimalToStep} from './decimal_grid.mjs';
 import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore,evenPositions} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
@@ -1096,6 +1097,28 @@ const server=http.createServer(async(req,res)=>{
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.arm())}
    if(pathname==='/api/live/disarm')return response(res,200,live.disarm());
    if(pathname==='/api/live/kill')return response(res,200,live.kill('MANUAL'));
+   if(pathname==='/api/live/test-order'){
+    // TESTNET only: a small DOGE long through the real order path, closed after a few seconds
+    // (DOGE: fine lot steps, so a small unit still splits into three targets and adds).
+    if(body.confirm!=='TEST')return response(res,400,{error:'CONFIRM_REQUIRED'});
+    if(LIVE.mode!=='TESTNET')return response(res,409,{error:'TEST_TESTNET_ONLY'});
+    // BingX only: its demo (VST) trades on the live price feed; Gate.io's testnet prices can drift from the public book.
+    const venue='BINGX';
+    if(!LIVE.venues.includes(venue)||!live.credentials()[venue])return response(res,409,{error:'BINGX_CREDENTIALS_MISSING'});
+    try{await venueQuotes.clients[venue].loadContracts()}catch{}
+    const contract=venueEntry(venue,'DOGEUSDT').contract,book=await refreshVenueBook(venue,'DOGEUSDT',{maxAgeMs:0});
+    if(!contract||!book?.ok||!Number.isFinite(book.mid))return response(res,502,{error:'VENUE_QUOTE_UNAVAILABLE',venue});
+    const tick=String(contract.tickSize),entry=book.mid,down=x=>Number(roundDecimalToStep(x,tick,'DOWN'));
+    const row={symbol:'DOGEUSDT',direction:'LONG',pattern:'TESTNET 시험 주문',score:90,leverage:10,executionVenue:venue,venueSymbol:contract.venueSymbol,
+     venueContract:{tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
+      minNotionalUSDT:contract.minNotionalUSDT??null,decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null},
+     entry,stop:venueStop(entry*.99,'LONG',contract.tickSize),targets:[1.015,1.02,1.03].map(f=>down(entry*f)),decision:{ready:true},
+     // Three far zones below: resting adds are placed (and cancelled at the close) like a real split buy.
+     paperAddInputs:{zoneSets:[{label:'시험',zones:[.97,.95,.93].map(f=>({priceLow:entry*f*.999,priceHigh:entry*f*1.001}))}],atr:entry*.004,takerRate:.0005},
+     targetPlan:{quantity:0}};
+    try{return response(res,200,{...(await live.testRoundTrip(row,{holdMs:5000})),liveStatus:live.status()})}
+    catch(error){return response(res,error.httpStatus||500,{error:error.message})}
+   }
    if(pathname==='/api/live/reset-kill'){if(body.confirm!=='RESET')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.resetKill())}
    return response(res,404,{error:'LIVE_ROUTE_NOT_FOUND'});
   }
