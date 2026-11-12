@@ -499,6 +499,21 @@ export class LiveExecutor{
   try{if(record.venue==='BINGX')await this.clients.BINGX.cancelOrder(record.venueSymbol,id);else{
    // Gate.io protective/target orders are price-triggered orders.
    await this.clients.GATEIO.cancelTrigger(id)}}
-  catch(error){this.#event(record,'CANCEL_FAILED',{orderId:id,reason:error.code||error.message})}
+  catch(error){
+   // BingX removes a position's stop/target orders by itself when the position goes flat, so a
+   // cancel of those fails (e.g. 109400). If the order is no longer open, that is not a failure.
+   if(record.venue==='BINGX'){
+    const open=await this.clients.BINGX.openOrders(record.venueSymbol).catch(()=>null),raw=open?.orders??open,list=Array.isArray(raw)?raw:null;
+    // Records saved before ids were kept exact may hold a rounded id (…737 stored as …700): match
+    // it by numeric value and cancel with the venue's exact id.
+    const same=o=>bingxOrderId(o)===String(id)||Number(bingxOrderId(o))===Number(id),match=list?.find(same);
+    if(list&&!match){this.#event(record,'ORDER_ALREADY_GONE',{orderId:id,reason:error.code||error.message});return}
+    const exact=match&&bingxOrderId(match);
+    if(exact&&exact!==String(id)){
+     try{await this.clients.BINGX.cancelOrder(record.venueSymbol,exact);this.#event(record,'CANCELLED_BY_EXACT_ID',{orderId:exact});return}
+     catch(retry){this.#event(record,'CANCEL_FAILED',{orderId:exact,reason:retry.code||retry.message});return}
+    }
+   }
+   this.#event(record,'CANCEL_FAILED',{orderId:id,reason:error.code||error.message})}
  }
 }
