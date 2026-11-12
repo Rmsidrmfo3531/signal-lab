@@ -48,7 +48,7 @@ test('simulated execution HTTP API, CSV route, shared PC/mobile pane, persisted 
   assert.match(csv,/BTCUSDT/);assert.match(csv,/realizedPnLUSD/);
   const html=await(await request(`http://127.0.0.1:${port}/`)).text();
   assert.match(html,/id="paper"/);assert.match(html,/id="paperMonitorMode"/);assert.match(html,/id="scanPageControls"/);assert.ok(html.indexOf('id="scanner"')<html.indexOf('id="paper"'));
-  assert.ok(html.indexOf('id="paper"')<html.indexOf('id="tradfi"'));
+  assert.ok(html.indexOf('id="paper"')>0&&!html.includes('id="tradfi"'));
   assert.match(html,/href="#paper"/);
   const ui=await(await request(`http://127.0.0.1:${port}/paper_ui.js`)).text();assert.match(ui,/api\/paper/);
   const css=await(await request(`http://127.0.0.1:${port}/styles.css`)).text();assert.match(css,/max-width:660px/);

@@ -9,7 +9,6 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import {venueQuoteCells,contractRows} from '../public/venues.js';
 const project=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 async function freePort(){const socket=net.createServer();socket.listen(0,'127.0.0.1');await once(socket,'listening');const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));return port}
 const nap=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -40,11 +39,6 @@ test('/api/venues returns BingX and Gate.io public quotes read-only, with listin
   assert.equal(sol.venues.GATEIO.error,'NOT_LISTED');
   assert.equal(data.venues.BINGX.state,'connected');assert.equal(data.venues.GATEIO.state,'connected');
 
-  // Page helpers render the same payload without HTML.
-  assert.match(venueQuoteCells(btc.venues.BINGX)[0],/80999\.5 \/ 81000\.5/);
-  assert.equal(venueQuoteCells(sol.venues.GATEIO)[0],'미상장');
-  const rows=contractRows(data);assert.ok(rows.some(r=>r[1]==='Gate.io'&&/1계약 = 0\.0001 BTC/.test(r[4])));
-  assert.ok(rows.some(r=>r[0]==='SOLUSDT'&&/API 거래 불가/.test(r[2])));
 
   const post=await request('/api/venues',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
   assert.equal(post.status,405);await post.arrayBuffer();

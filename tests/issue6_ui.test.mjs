@@ -143,17 +143,10 @@ test('basic chart EMA200 uses the full closed history and never fabricates warmu
 });
 
 
-test('disabled TradFi UI performs no requests, subscriptions, timers or external chart injection and keeps record links',()=>{
- const tradfi=fs.readFileSync(new URL('../public/tradfi.js',import.meta.url),'utf8');
- const nodes=new Map(),document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,{textContent:''});return nodes.get(id)}};
- let remoteCalls=0;const forbidden=()=>{remoteCalls++;throw Error('disabled provider attempted an operation')};
- const ctx=vm.createContext({document,fetch:forbidden,EventSource:forbidden,WebSocket:forbidden,setInterval:forbidden,setTimeout:forbidden});
- vm.runInContext(tradfi.replaceAll('export function','function'),ctx);
- ctx.initTradFi();ctx.refreshTradFi();
- assert.equal(remoteCalls,0);assert.match(nodes.get('tradfiStatus').textContent,/DISABLED.*신규 분석·진입 OFF/);
- const sectionHtml=section(html,'<section id="tradfi"','<section class="metrics"');
- assert.match(sectionHtml,/href="#paper"/);assert.match(sectionHtml,/href="#journal"/);
- assert.match(sectionHtml,/임의 청산/);assert.doesNotMatch(sectionHtml,/<script|https?:|data-tfchart|tradfiRefresh/);
+test('TradFi and BingX·Gate.io quote pages are removed; live order control stays on the system page',()=>{
+ assert.equal(fs.existsSync(new URL('../public/tradfi.js',import.meta.url)),false);assert.equal(fs.existsSync(new URL('../public/venues.js',import.meta.url)),false);
+ assert.doesNotMatch(html,/id="tradfi"|id="venues"|tradfi\.js|venues\.js|TradFi/);
+ assert.match(html,/id="livePanel"[\s\S]*id="liveControl"[\s\S]*id="liveArm"/);assert.match(html,/src="\/live_control\.js"/);
 });
 
 test('final-score threshold display uses server configuration and always discloses unverified performance',()=>{

@@ -22,7 +22,7 @@ export function paperTelegramText(event,record=null,{totals=null,test=false}={})
    `진입 ${n(event.entryFill)} · 손절 ${n(event.stop??r.stop)}`,`목표 ${targets}`,
    `수량 ${Number.isFinite(Number(r.originalQty))?Number(r.originalQty).toLocaleString('en-US',{maximumFractionDigits:12})+' '+String(event.symbol).replace(/USDT$/,''):'-'} · 명목 $${Number(event.notionalUSD||0).toFixed(2)}${Number(r.sizeScale)<1?` (크기 ×${r.sizeScale})`:''}`,
    `배율 ${r.leverage?r.leverage+'배':'미설정'}${r.marginUSD?` · 증거금 $${Number(r.marginUSD).toFixed(2)}`:''}${r.dca?` · 물타기 최대 ${r.dca.adds?.length??0}회`:''}`,
-   `차트 ${chart} · 체결 ${venue}`,'실제 주문 없음 (모의매매)'].join('\n');
+   `차트 ${chart} · 체결 ${venue}`,...(Array.isArray(r.entryReasons)&&r.entryReasons.length?['진입 이유: '+r.entryReasons.slice(0,5).join(' · ')]:[]),'실제 주문 없음 (모의매매)'].join('\n');
  }
  const pnl=Number(event.realizedPnLUSD),risk=Number(r.initialRiskUSD),rMul=risk>0&&Number.isFinite(pnl)?` (${pnl>=0?'+':''}${(pnl/risk).toFixed(2)}R)`:'';
  const held=Number(r.openedAt)&&Number(event.at)?` · 보유 ${minutes(event.at-r.openedAt)}`:'';

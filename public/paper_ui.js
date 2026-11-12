@@ -48,6 +48,10 @@ function positionLeverage(t){
  const cap=Number(t?.marketCap),capPts=cap>0?MCAP_STEPS.filter(x=>cap>=x).length:0;
  return {value:Math.max(10,Math.min(30,10+Math.max(0,Math.min(10,Math.floor(score-90+1e-9)))+capPts)),estimated:true};
 }
+function reasonLine(t){
+ const r=Array.isArray(t?.entryReasons)?t.entryReasons:[];
+ return `<p class="pos-reasons"><span>진입 이유</span>${esc(t.pattern||'')}${r.length?' · '+r.map(x=>esc(x)).join(' · '):Number.isFinite(t?.score)?'':' · 이전 기록(세부 근거 없음)'}</p>`;
+}
 function targets(row){return (row.targets||[]).map((p,i)=>`<span>${i+1}차 ${fmt(p)} / ${[40,35,25][i]}%</span>`).join(' · ')}
 function paperManagementCaption(row){
  const management=row.managementVersion??row.management?.version;
@@ -116,7 +120,7 @@ function renderMonitor(payload){
  find('paperMonitorTitle').textContent='● '+m.label;
  find('paperMonitorChecked').textContent='서버 확인 '+time(m.checkedAt)+' KST';
  find('paperMonitorMode').textContent=`진행 ${payload.openCount} · 대기 ${payload.pendingCount} · 종료 ${payload.closedCount}`;
- find('paperMonitorQuotes').textContent=`크립토 ${m.cryptoQuotesFresh?'수신 정상':'지연/미수신'} · TradFi 비활성 (기록 보존)`;
+ find('paperMonitorQuotes').textContent=`시세 ${m.cryptoQuotesFresh?'수신 정상':'지연/미수신'}`;
  find('paperMonitorTrades').textContent=`접수 ${Number.isFinite(m.acceptedSignals)?m.acceptedSignals:'미확인'}건 / 진입 ${Number.isFinite(m.openedCountSession)?m.openedCountSession:'미확인'}건 · 시세 확인 ${Number.isFinite(m.priceTickCount)?m.priceTickCount:'미확인'}회`;
  find('paperMonitorEvent').textContent=m.lastPositionEventAt?time(m.lastPositionEventAt):'이번 실행 중 신규 거래 없음';
  find('paperMonitorReason').textContent=m.reason+' · 실거래 주문 없음 · 접수/진입 횟수는 현재 서버 실행 이후 기준';
@@ -155,6 +159,7 @@ function render(payload){
     <strong class="pos-symbol">${esc(t.symbol)}</strong><span class="pos-side ${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction==='LONG'?'롱':'숏'}</span>
     <span class="pos-lev" title="${lev?.estimated?'예전 버전에서 열린 포지션: 점수로 다시 계산한 배율':'배율'}">${lev?lev.value+'X'+(lev.estimated?'*':''):'배율 미설정'}</span>
     <span class="pos-venue">${esc(PAPER_VENUE_LABELS[t.executionVenue]||'Binance 시세(이전 기록)')}</span>
+    ${Number.isFinite(t.score)?`<span class="pos-score">${esc(t.score)}점</span>`:''}
     <span class="pos-meta">${esc(t.pattern)} · ${time(t.openedAt)} 진입 · ${frozen?frozenPaperCaption:'진행 중'}</span></header>
    <div class="position-grid">
     ${cell('수량',`${fmt(t.qtyRemaining)} ${base}${t.originalQty&&t.originalQty!==t.qtyRemaining?` <small>/ 처음 ${fmt(t.originalQty)}</small>`:''}`)}
@@ -166,12 +171,13 @@ function render(payload){
     ${cell('손절',fmt(t.stop))}
     ${cell('명목금액','$'+(t.qtyRemaining*t.entryFill).toFixed(2))}
    </div>
+   ${reasonLine(t)}
    <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))} · 분할익절 ${t.exitedPct||0}% · 수수료 등 $${fmt(t.feesUSD)}</small>
    <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div>${t.manualLevels?'<small class="paper-management-mode">손절·TP 직접 수정됨</small>':''}${dcaCaption(t)}${levelsEditor(t)}</article>`;
  });
  const pending=(payload.pending||[]).map(t=>{
   const frozen=providerUnavailable(t);
-  return `<article class="paper-trade paper-pending"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} ${esc(t.direction)}</strong><span>${frozen?frozenPaperCaption:'첫 신규 시세 대기'}</span></header><p>${esc(t.pattern)} · ${time(t.signalAt)} 접수 · ${frozen?'기록된 유효기한 ':' '}${time(t.expiresAt)}${frozen?'':' 만료'}</p>${frozen?`<p>진입·만료 처리를 중지하고 기존 대기 기록을 보존합니다. 최신 시세 미검증.</p><p>기록된 진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)}</p><p class="paper-targets">${targets(t)}</p>`:`<p>과거 캔들 가격에서 소급 진입하지 않습니다.</p><p>손절 ${fmt(t.stop)} · <span class="paper-targets">${targets(t)}</span></p>${dcaCaption(t)}${levelsEditor(t)}`}</article>`;
+  return `<article class="paper-trade paper-pending"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} ${esc(t.direction)}</strong><span>${frozen?frozenPaperCaption:'첫 신규 시세 대기'}</span></header><p>${esc(t.pattern)} · ${time(t.signalAt)} 접수 · ${frozen?'기록된 유효기한 ':' '}${time(t.expiresAt)}${frozen?'':' 만료'}</p>${frozen?`<p>진입·만료 처리를 중지하고 기존 대기 기록을 보존합니다. 최신 시세 미검증.</p><p>기록된 진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)}</p><p class="paper-targets">${targets(t)}</p>`:`<p>과거 캔들 가격에서 소급 진입하지 않습니다.</p><p>손절 ${fmt(t.stop)} · <span class="paper-targets">${targets(t)}</span></p>${dcaCaption(t)}${levelsEditor(t)}`}${Number.isFinite(t.score)||t.entryReasons?.length?reasonLine(t):''}</article>`;
  });
  const drafts=captureLevelDrafts();
  find('paperOpen').innerHTML=[...pending,...cards].join('')||'<p class="empty-small">현재 열린 가상 포지션이 없습니다. 새 시그널 이후 자동 기록합니다.</p>';
