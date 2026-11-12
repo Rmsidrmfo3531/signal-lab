@@ -30,7 +30,7 @@ import {liveConfig} from './live_orders.mjs';
 import {LiveExecutor} from './live_executor.mjs';
 import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
 import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues} from './venue_execution.mjs';
-import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore} from './paper.mjs';
+import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore,evenPositions} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays,dcaZoneDaysFor} from './dca_plan.mjs';
@@ -70,7 +70,8 @@ const CONFIG={
  newsMs:Math.max(60000,Number(process.env.NEWS_POLL_MS||90000)),
  maxRiskUSD:Number(process.env.PAPER_MAX_RISK_USD||6),
  // Paper positions open at once (1-10). Each new one is half the size of the newest open one.
- paperMaxPositions:Math.max(1,Math.min(10,Math.round(Number(process.env.PAPER_MAX_POSITIONS)||5))),
+ // Even maximum, split half long / half short (PAPER_MAX_POSITIONS 2-10, default 6: 3 long + 3 short).
+ paperMaxPositions:evenPositions(process.env.PAPER_MAX_POSITIONS,6),
  // Paper fills use these venues' quotes and contract rules (best entry wins). Binance = chart only.
  paperVenues:parsePaperVenues(process.env.PAPER_VENUES),
  // Venue book refresh for paper records; BingX's 1.1 s request spacing applies regardless.
@@ -231,7 +232,7 @@ function liveClients(){
  return clients;
 }
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status)});
-const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,maxPositions:CONFIG.paperMaxPositions,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
+const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,maxPositions:CONFIG.paperMaxPositions,maxPerDirection:CONFIG.paperMaxPositions/2,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
 
 // ---- Execution venue books (BingX / Gate.io) -------------------------------------
 // Latest validated book per venue+symbol. Refreshed for technically qualified setups

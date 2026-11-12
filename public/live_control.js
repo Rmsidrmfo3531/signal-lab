@@ -5,7 +5,7 @@ const LIVE_STATUS={SUBMITTING:'주문 중',OPEN:'보유(손절 설정)',CLOSED:'
 export function liveSummary(s){
  const keys=['BINGX','GATEIO'].map(v=>`${LABEL[v]} 키 ${s.credentialsConfigured?.[v]?'설정됨':'없음'}`).join(' · ');
  const mode={OFF:'OFF(주문 없음)',TESTNET:'테스트넷',LIVE:'실거래'}[s.mode]||s.mode;
- return `모드 ${mode} · ${s.armed?'활성화됨':'비활성'}${s.killSwitch?' · 긴급 정지 중':''} · ${keys} · ${s.limits?.sizing==='BALANCE'?`잔고 비율 1단위 ${s.limits.unitPct}% × 배율, 매물대 분할 추매 · 1회 최대 손실 ≤ 잔고 ${s.limits.maxLossPct}% · 일일 ≤ ${s.limits.dailyMaxLossPct}%`:`1회 위험 ≤ $${s.limits?.maxRiskUSD} · 일일 ≤ $${s.limits?.dailyMaxRiskUSD}`} · 동시 ${s.limits?.maxOpen}개`;
+ return `모드 ${mode} · ${s.armed?'활성화됨':'비활성'}${s.killSwitch?' · 긴급 정지 중':''} · ${keys} · ${s.limits?.sizing==='BALANCE'?`잔고 비율 1단위 ${s.limits.unitPct}% × 배율, 매물대 분할 추매 · 1회 최대 손실 ≤ 잔고 ${s.limits.maxLossPct}% · 일일 ≤ ${s.limits.dailyMaxLossPct}%`:`1회 위험 ≤ $${s.limits?.maxRiskUSD} · 일일 ≤ $${s.limits?.dailyMaxRiskUSD}`} · 동시 ${s.limits?.maxOpen}개${s.limits?.maxPerDirection?` (롱·숏 각 ${s.limits.maxPerDirection}개)`:''}`;
 }
 function renderLive(s){
  const status=document.getElementById('liveStatus'),rows=document.getElementById('liveRecords'),skipped=document.getElementById('liveSkipped');

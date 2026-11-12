@@ -3,6 +3,7 @@
 // plus the pre-trade checks. No network, no keys.
 import {createHash} from 'node:crypto';
 import {roundDecimalToStep,multiplyDecimal} from './decimal_grid.mjs';
+import {evenPositions} from './paper.mjs';
 import {planZoneDca,clampMaxAdds,DCA_DEFAULTS} from './dca_plan.mjs';
 
 export const LIVE_MODES=Object.freeze(['OFF','TESTNET','LIVE']);
@@ -15,7 +16,7 @@ export function liveConfig(env=process.env){
  const num=(key,def,min,max)=>{const v=Number(env[key]);return Number.isFinite(v)&&v>=min&&v<=max?v:def};
  return {mode,liveConfirmed:env.LIVE_TRADING_CONFIRM===LIVE_CONFIRM_PHRASE,
   venues:String(env.LIVE_VENUES||'BINGX,GATEIO').split(',').map(x=>x.trim().toUpperCase()).filter(x=>['BINGX','GATEIO'].includes(x)),
-  maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),maxOpen:num('LIVE_MAX_OPEN_POSITIONS',1,1,5),
+  maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),maxOpen:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,2,6),maxPerDirection:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,2,6)/2,
   // BALANCE (default): the account balance is read before every entry and the position is
   // sized like the paper one (unit = balance x DCA_UNIT_PCT x leverage, adds 1, 2, 4 ... units
   // at volume zones, stop beyond the last add). RISK_USD: the old fixed LIVE_MAX_RISK_USD sizing.
@@ -132,6 +133,8 @@ export function preflight({config,armed,killSwitch,credentials,row,records,now=D
  const active=records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status));
  if(active.some(r=>r.status==='UNKNOWN'))reasons.push('UNRESOLVED_ORDER_STATE');
  if(active.length>=config.maxOpen)reasons.push('MAX_OPEN_POSITIONS');
+ // Long / short split: half of the even maximum on each side.
+ if(config.maxPerDirection>0&&active.filter(r=>r.direction===row?.direction).length>=config.maxPerDirection)reasons.push('MAX_SAME_DIRECTION_POSITIONS');
  if(active.some(r=>r.symbol===row?.symbol))reasons.push('SYMBOL_ALREADY_ACTIVE');
  if(!qty)reasons.push('QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK');
  // Fractional Gate.io contract sizes are not yet verified against the venue: no live order.
