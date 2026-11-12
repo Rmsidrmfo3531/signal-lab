@@ -12,6 +12,13 @@ BASE=/opt/signallab; APP=$BASE/app; DATA=$BASE/data; SVC=signal-lab
 say(){ printf '\n\033[1;36m== %s\033[0m\n' "$*"; }
 [ "$(id -u)" = 0 ] || { echo "root로 실행하세요: sudo bash install.sh"; exit 1; }
 
+say "0/6 이 서버 위치에서 거래소 접속 확인"
+# Binance answers HTTP 451 to blocked regions (e.g. the US). Check before installing anything.
+for url in https://fapi.binance.com/fapi/v1/ping https://open-api.bingx.com/openApi/swap/v2/server/time; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$url" || echo 000)
+  echo "  $url → $code"
+  [ "$code" = 200 ] || { echo "이 서버 위치에서 접속이 막혀 있습니다(응답 $code). 서울 지역으로 서버를 다시 만드세요."; exit 1; }
+done
 say "1/6 기본 도구 설치"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y && apt-get install -y git curl ca-certificates openssh-client
