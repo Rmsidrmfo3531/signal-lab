@@ -34,9 +34,11 @@ export function telegramMessage(signal,officialLinks,{paperPosition}={}){
  const usdText=v=>'$'+v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
  // 수량: the open paper position's remaining quantity, else the planned quantity (filled on entry).
  const plannedQty=Number(plan.quantity),entryPrice=Number(position?.entryFill??signal.entry);
- const qty=position?position.qtyRemaining:Number.isFinite(plannedQty)&&plannedQty>0?plannedQty:null;
+ // Split buys: the first entry is one unit; adds follow at volume zones and the stop is beyond the last one.
+ const preview=!position&&Number(signal.paperAddsPreview?.unitQty)>0?signal.paperAddsPreview:null;
+ const qty=position?position.qtyRemaining:preview?Number(preview.unitQty):Number.isFinite(plannedQty)&&plannedQty>0?plannedQty:null;
  const notional=qty!=null&&entryPrice>0?qty*entryPrice:null;
- const quantity=qty==null?'미확인':qtyText(qty)+(position?'':' (진입 예정)')+(notional?` · 명목 ${usdText(notional)}`:'')+(notional&&leverage>0?` · 증거금 ${usdText(notional/leverage)}`:'');
+ const quantity=qty==null?'미확인':qtyText(qty)+(position?'':preview?' (첫 진입 예정)':' (진입 예정)')+(notional?` · 명목 ${usdText(notional)}`:'')+(notional&&leverage>0?` · 증거금 ${usdText(notional/leverage)}`:'')+(preview?` · 추매 최대 ${preview.adds}회 (최대 ${qtyText(Number(preview.fullQty))}) 후 손절`:'');
  const text=[
   '종목: '+signal.symbol,
   '방향: '+(signal.direction==='LONG'?'롱 (LONG)':'숏 (SHORT)'),

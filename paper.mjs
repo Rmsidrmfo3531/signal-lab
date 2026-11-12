@@ -36,6 +36,8 @@ function scalePlanQuantity(plan,scale){
  if(!(total>0)||qs.some((q,i)=>!(q>0)||q<min||q*Number(plan.targets?.[i])<minNotional))return null;
  return {...plan,quantity:total,parts:plan.parts.map((p,i)=>({...p,quantity:qs[i]})),sizeScale:scale};
 }
+/** The same profile plan for another total quantity (parts 40/35/rest on the lot step), or null. */
+export function planWithQuantity(plan,quantity){const total0=Number(plan?.quantity);return total0>0?scalePlanQuantity(plan,Number(quantity)/total0):null}
 const onGrid=(value,step)=>{if(!validPrice(value)||!validPrice(step))return false;const n=value/step,near=Math.round(n);return Number.isSafeInteger(near)&&Math.abs(n-near)<=Math.max(1,Math.abs(n))*Number.EPSILON*16};
 // Reconstruct cash flows without rewriting historical records. Fees have already
 // been charged in each trade, so changing today's fee settings must not restate PNL.
