@@ -1,5 +1,5 @@
 import {STRICT_MIN_SCORE} from './quality.mjs';
-import {scoreGatePassed,TREND_GATE_PATTERNS,TREND_GATE_MIN_SCORE} from './signal_policy.mjs';
+import {scoreGatePassed,TREND_GATE_PATTERNS,TREND_GATE_MIN_SCORE,btcLongBlocked} from './signal_policy.mjs';
 import {entryTiming} from './public/trade_plan.js';
 import {estimateBinanceExecution,netRewardRisk} from './binance_execution.mjs';
 
@@ -19,7 +19,10 @@ export function evaluateBinanceSignal(row,{market,book,verified=false,venueConne
  // Only patterns that held up in the 180-day backtest trade (limits.allowedPatterns; null = all).
  const patternAllowed=!Array.isArray(limits.allowedPatterns)||limits.allowedPatterns.includes(row?.pattern);
  if(pattern&&!patternAllowed)technicalReasons.push('백테스트 검증 패턴 아님(SIGNAL_PATTERNS)');
- const technical=pattern&&validationPassed&&scorePassed&&fresh&&patternAllowed;
+ // LONG only while BTC's 4H trend is up (limits.btcLongFilter 'up'; 'off' or unset = no filter).
+ const btcBlocked=btcLongBlocked(row,limits.btcLongFilter);
+ if(pattern&&btcBlocked)technicalReasons.push('BTC 4H 상승 추세 아님(롱 진입 제한)');
+ const technical=pattern&&validationPassed&&scorePassed&&fresh&&patternAllowed&&!btcBlocked;
  const execution=estimateBinanceExecution({signal:row,market,book,now,maxRiskUSD:limits.maxRiskUSD??6});
  if(!verified||!venueConnected)execution.reasons.push('Binance TRADING USDT 무기한 선물·연결 검증 필요');
  const plan=row?.targetPlan,profileReceipt=plan?.profileEvidence?.receivedAt,profileWindowEnd=plan?.profileEvidence?.windowEnd;

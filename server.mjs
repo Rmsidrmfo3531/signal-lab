@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {analyze} from './engine.mjs';
-import {configureSignalScorePolicy,getSignalScorePolicy,TREND_GATE_PATTERNS} from './signal_policy.mjs';
+import {configureSignalScorePolicy,getSignalScorePolicy,TREND_GATE_PATTERNS,DEFAULT_TRADE_PATTERNS} from './signal_policy.mjs';
 import {structureObservations,historicalPatternObservations} from './observation.mjs';
 import {describeScanFunnel} from './scan_diagnostics.mjs';
 import {binancePerpetualMarkets} from './markets.mjs';
@@ -131,7 +131,9 @@ const CONFIG={
   // user's video lessons (trendline break, 5/20 dead cross) were the profitable ones.
   // SIGNAL_PATTERNS=ALL trades every pattern; or a comma list of pattern names.
   allowedPatterns:(()=>{const v=String(process.env.SIGNAL_PATTERNS??'').trim();if(v.toUpperCase()==='ALL')return null;
-   return v?v.split(',').map(x=>x.trim()).filter(Boolean):['박스권 상단 돌파','상승 추세선 이탈 숏','5/20 데드크로스 숏',...TREND_GATE_PATTERNS]})()}
+   return v?v.split(',').map(x=>x.trim()).filter(Boolean):[...DEFAULT_TRADE_PATTERNS]})(),
+  // LONG only while BTC's 4H trend is up (signal_policy btcLongBlocked). BTC_LONG_FILTER=off disables.
+  btcLongFilter:String(process.env.BTC_LONG_FILTER??'').trim().toLowerCase()==='off'?'off':'up'}
 };
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.

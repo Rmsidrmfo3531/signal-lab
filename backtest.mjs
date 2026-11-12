@@ -23,8 +23,8 @@ import {fourHourTrend} from './scalp_reversal.mjs';
 
 export const HOUR=3600000,M5=300000,M15=900000;
 // Same default as the server (SIGNAL_PATTERNS): only the range breakout trades. null = every pattern.
-import {TREND_GATE_PATTERNS,scoreGatePassed} from './signal_policy.mjs';
-export const LIVE_PATTERNS=Object.freeze(['박스권 상단 돌파','상승 추세선 이탈 숏','5/20 데드크로스 숏',...TREND_GATE_PATTERNS]);
+import {TREND_GATE_PATTERNS,scoreGatePassed,DEFAULT_TRADE_PATTERNS} from './signal_policy.mjs';
+export const LIVE_PATTERNS=DEFAULT_TRADE_PATTERNS;
 export const BACKTEST_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:2,spreadBps:1,fundingRate:.0001,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'});
 const FRACTIONS=[.4,.35,.25];
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;

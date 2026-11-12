@@ -12,6 +12,16 @@ export const TREND_GATE_PATTERNS=Object.freeze(['MACD 데드+하락다이버전�
 // split book (the paper/live rule): +$956 -> +$1079, PF 1.94 -> 2.36, max drawdown -$220 -> -$181;
 // these patterns alone at 75+: PF 1.43 -> 1.61 with 96 of 167 trades. Fixed-risk book: +$483 -> +$313.
 export const TREND_GATE_MIN_SCORE=75;
+// Tightening (2026-11-12, 1-year / 30-symbol replay, split book, $400): these two lost money and are
+// no longer traded (still detected and shown). Total +$1871 -> +$2033, first half -$493 -> -$368,
+// second half +$2364 -> +$2401, max drawdown -$940 -> -$827.
+export const DISABLED_PATTERNS=Object.freeze(['볼린저 수축 후 상단 돌파','거래량 다이버전스+음봉3 숏']);
+// Patterns that trade by default (server SIGNAL_PATTERNS default and the backtest default).
+export const DEFAULT_TRADE_PATTERNS=Object.freeze(['박스권 상단 돌파','상승 추세선 이탈 숏','5/20 데드크로스 숏',...TREND_GATE_PATTERNS].filter(p=>!DISABLED_PATTERNS.includes(p)));
+// Tightening (same replay, with the two patterns above dropped): LONG only while BTC's 4H trend is
+// up (EMA100 > EMA200 and close > EMA200). First half -$368 -> -$216, second half +$2401 -> +$2329,
+// total +$2033 -> +$2112, max drawdown -$827 -> -$748. Unknown BTC trend blocks longs (fail closed).
+export const btcLongBlocked=(row,mode)=>mode==='up'&&row?.direction==='LONG'&&row?.btcContext?.trend!=='up';
 export const scoreGatePassed=(score,pattern)=>Number.isFinite(score)&&(score>=FINAL_MIN_SCORE||TREND_GATE_PATTERNS.includes(pattern)&&score>=TREND_GATE_MIN_SCORE);
 export function resolveSignalScorePolicy(env={}){
  const raw=env.SIGNAL_FINAL_MIN_SCORE;

@@ -16,7 +16,7 @@ const INTERVAL_MS={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':1440000
 export const DEFAULT_SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT'];
 
 export function parseArgs(argv){
- const out={candidates:false,obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,maxAdds:DCA_DEFAULTS.maxAdds,zoneDays:DCA_DEFAULTS.zoneDays,balance:1000,hourlyMaxAdds:HOURLY_MAX_ADDS_DEFAULT,scalp1mDays:30,out:'backtest-results',cache:'backtest-cache'};
+ const out={btcLongFilter:'up',candidates:false,obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,maxAdds:DCA_DEFAULTS.maxAdds,zoneDays:DCA_DEFAULTS.zoneDays,balance:1000,hourlyMaxAdds:HOURLY_MAX_ADDS_DEFAULT,scalp1mDays:30,out:'backtest-results',cache:'backtest-cache'};
  for(let i=0;i<argv.length;i++){
   const key=argv[i],value=argv[i+1];
   if(key==='--days'){out.days=Math.max(7,Math.min(365,Number(value)||60));i++}
@@ -35,7 +35,7 @@ export function parseArgs(argv){
   else if(key==='--all-patterns'){out.allPatterns=true}
   else if(key==='--candidates'){out.candidates=true}
   else if(key==='--offline'){out.offline=true}
-  else if(key==='--btc-long-filter'){out.btcLongFilter=['up','notdown'].includes(value)?value:null;i++}
+  else if(key==='--btc-long-filter'){out.btcLongFilter=['up','notdown'].includes(value)?value:null;i++} // default 'up' (as the server); 'off' disables
   else if(key==='--min-box-atr'){out.minBoxWidthAtr=Math.max(0,Number(value)||0);i++}
   else if(key==='--hourly-max-hold-days'){out.hourlyMaxHoldMs=Math.max(0,Number(value)||0)*86400000||null;i++}
   else if(key==='--patterns'){out.patterns=String(value||'').split(',').map(x=>x.trim()).filter(Boolean);i++}

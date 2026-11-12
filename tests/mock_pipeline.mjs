@@ -1,6 +1,7 @@
 // Test-only exchange transport. All external destinations and write methods fail closed.
 // Older synthetic fixtures target the base patterns: the study-material trend patterns are tested separately.
 process.env.SIGNAL_TREND_GATE??='off';
+process.env.BTC_LONG_FILTER??='off'; // fixtures predate the BTC 4H long filter
 import fs from 'node:fs';
 import path from 'node:path';
 import {marketSeries,ENTRY} from './fixtures/pipeline_market.mjs';
