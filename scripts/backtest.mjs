@@ -35,7 +35,7 @@ export function parseArgs(argv){
   else if(key==='--all-patterns'){out.allPatterns=true}
   else if(key==='--candidates'){out.candidates=true}
   else if(key==='--offline'){out.offline=true}
-  else if(key==='--btc-long-filter'){out.btcLongFilter=['up','notdown'].includes(value)?value:null;i++} // default 'up' (as the server); 'off' disables
+  else if(key==='--btc-long-filter'){if(!['up','notdown','off'].includes(value))throw Error('--btc-long-filter는 up, notdown, off 중 하나입니다');out.btcLongFilter=value==='off'?null:value;i++} // default 'up' (as the server); 'off' disables
   else if(key==='--min-box-atr'){out.minBoxWidthAtr=Math.max(0,Number(value)||0);i++}
   else if(key==='--hourly-max-hold-days'){out.hourlyMaxHoldMs=Math.max(0,Number(value)||0)*86400000||null;i++}
   else if(key==='--patterns'){out.patterns=String(value||'').split(',').map(x=>x.trim()).filter(Boolean);i++}

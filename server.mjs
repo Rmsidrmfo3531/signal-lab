@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {analyze} from './engine.mjs';
-import {configureSignalScorePolicy,getSignalScorePolicy,TREND_GATE_PATTERNS,DEFAULT_TRADE_PATTERNS} from './signal_policy.mjs';
+import {configureSignalScorePolicy,getSignalScorePolicy,TREND_GATE_PATTERNS,DEFAULT_TRADE_PATTERNS,DISABLED_PATTERNS} from './signal_policy.mjs';
 import {structureObservations,historicalPatternObservations} from './observation.mjs';
 import {describeScanFunnel} from './scan_diagnostics.mjs';
 import {binancePerpetualMarkets} from './markets.mjs';
@@ -131,7 +131,7 @@ const CONFIG={
   // user's video lessons (trendline break, 5/20 dead cross) were the profitable ones.
   // SIGNAL_PATTERNS=ALL trades every pattern; or a comma list of pattern names.
   allowedPatterns:(()=>{const v=String(process.env.SIGNAL_PATTERNS??'').trim();if(v.toUpperCase()==='ALL')return null;
-   return v?v.split(',').map(x=>x.trim()).filter(Boolean):[...DEFAULT_TRADE_PATTERNS]})(),
+   return v?v.split(',').map(x=>x.trim()).filter(x=>x&&!DISABLED_PATTERNS.includes(x)):[...DEFAULT_TRADE_PATTERNS]})(),
   // LONG only while BTC's 4H trend is up (signal_policy btcLongBlocked). BTC_LONG_FILTER=off disables.
   btcLongFilter:String(process.env.BTC_LONG_FILTER??'').trim().toLowerCase()==='off'?'off':'up'}
 };
@@ -528,7 +528,7 @@ async function checkSymbol(symbol, force=false){
   try{await existing}catch{}
  }
  // Invalidate after the older request finishes; it must not repopulate stale cached candles.
- if(force)invalidateCandles(symbol);
+ if(force){invalidateCandles(symbol);invalidateBtc4hIfStale()}
  const task=checkSymbolInternal(symbol,force);
  pendingAnalyses.set(symbol,task);analyzing.add(symbol);
  try{return await task}finally{
@@ -701,6 +701,10 @@ function zoneScaleInPlan(row,sizeScale){
 // Historical candles remain REST snapshots, not tick-perfect.
 const liveQueue=[];const queued=new Set();const lastTrigger=new Map();let liveWorkers=0;
 const liveSockets=[];let liveSubscriptionKey='';let streamRequestId=1;
+// BTC 4H (the long filter and score context) must not come from a cache taken before the last 4H
+// close: drop it once the newest cached bar has closed, so the closed bar is read again.
+function invalidateBtc4hIfStale(now=Date.now()){const key='/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=301',rows=apiCache.get(key)?.data;
+ if(Array.isArray(rows)&&Number(rows.at(-1)?.[6])<now)apiCache.delete(key)}
 function invalidateCandles(symbol){for(const interval of ['1h','4h'])for(const suffix of [150,110,100,200,301])apiCache.delete(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${suffix}`)}
 function queueLive(symbol,reason='stream'){
  if(!state.activeSet.has(symbol)&&!state.researchSet.has(symbol))return false;
