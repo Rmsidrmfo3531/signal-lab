@@ -21,6 +21,6 @@ Binance 확정 1H·4H 차트로 신호를 분석하고 BingX·Gate.io 호가로 
 
 - 실제 주문을 실행하거나 실거래를 기본으로 켜지 않습니다.
 - 개발·테스트는 별도 `SIGNAL_LAB_DATA_DIR`을 사용하고 운영 `.env`·`store.json`을 건드리지 않습니다.
-- `SIGNAL_FINAL_MIN_SCORE` 등 안전 임계값을 완화하지 않습니다. 예외(사용자 승인 2026-11-12): `signal_policy.mjs`의 `TREND_GATE_PATTERNS` 6개 패턴만 90점 대신 4H 추세 일치로 진입합니다(추매 없음). 이 목록을 늘릴 때는 다시 승인을 받습니다.
+- `SIGNAL_FINAL_MIN_SCORE` 등 안전 임계값을 완화하지 않습니다. 예외(사용자 승인 2026-11-12): `signal_policy.mjs`의 `TREND_GATE_PATTERNS` 6개 패턴만 90점 대신 4H 추세 일치 + 75점 이상(`TREND_GATE_MIN_SCORE`)으로 진입합니다(추매 없음). 이 목록을 늘릴 때는 다시 승인을 받습니다.
 - 비밀키·토큰을 코드·로그·커밋에 남기지 않습니다.
 - 보고는 한국어 합니다체로 합니다.
