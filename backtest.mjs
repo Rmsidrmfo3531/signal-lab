@@ -108,6 +108,9 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
   if(!out.patternConfirmed)continue;funnel.patterns++;
   if(out.quality?.validationPassed!==true)continue;funnel.validated++;
   if(patterns&&!patterns.includes(out.pattern)||directions&&!directions.includes(out.direction))continue;
+  // Research filters for the SPLIT book only (split.btcLongFilter / split.minBoxWidthAtr).
+  const splitBlocked=split&&((split.btcLongFilter&&out.direction==='LONG'&&(()=>{const t=fourHourTrend(btc,now);return split.btcLongFilter==='up'?t!=='up':t==='down'})())||
+   (split.minBoxWidthAtr>0&&out.pattern==='박스권 상단 돌파'&&(()=>{const w=h1s.slice(-21,-1);const hi=Math.max(...w.map(r=>Number(r[2]))),lo=Math.min(...w.map(r=>Number(r[3])));return (hi-lo)/out.atr<split.minBoxWidthAtr})()));
   // liveGate(ctx) replaces the score rule when given (research: alternative scores).
   const live=liveGate?liveGate({out,h1:h1s,h4:h4s,btcH4:btc,now,symbol}):minScore===90?scoreGatePassed(out.score,out.pattern):out.score>=minScore;if(live)funnel.scoreOk++;
   const k=lowerBound(m5c,closeAt+1);const next=m5c[k];if(!next)continue;
@@ -126,7 +129,7 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
   // SPLIT book: the live paper rule since v5.9 - one unit at the entry, adds of 1, 2, 4 ... units
   // at volume zones (15m 3d + deep, then 1h 30d, then 4h 90d), stop beyond the last add. Unit =
   // balance x unitPct x leverage (score + market cap). No zone fits: the fixed-risk trade above.
-  if(live&&split&&k>(busy.SPLIT??-1)){
+  if(live&&split&&!splitBlocked&&k>(busy.SPLIT??-1)){
    const leverage=leverageForScore(out.score,split.marketCap)??10,fb={minCandles:96,targetBins:240,hvnMinFractionOfPoc:.05};
    const deep=profileResult.ok&&(split.zoneDays??14)>3?profileAt(m15,now,symbol,filters.tickSize,DCA_DEEP_PROFILE(split.zoneDays??14)):null;
    const sets=[['15m',()=>profileResult.ok?[...profileResult.profile.hvn,...(deep?.ok?deep.profile.hvn:[])]:[]],
@@ -142,8 +145,8 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
    }
    funnel.split??={planned:0,fallback:0,sources:{}};
    const t=dca?simulateTrade({direction:out.direction,m5:m5c,startIdx:k,entryRef:entry,stop:dca.stop,targets:plan.targets,quantity:dca.unitQty,
-     adds:dca.adds.map(a=>({price:a.price,quantity:a.quantity})),costs,breakeven})
-    :simulateTrade({direction:out.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs,breakeven});
+     adds:dca.adds.map(a=>({price:a.price,quantity:a.quantity})),costs,breakeven,maxHoldMs:split.maxHoldMs??null})
+    :simulateTrade({direction:out.direction,m5:m5c,startIdx:k,entryRef:entry,stop,targets:plan.targets,quantity,costs,breakeven,maxHoldMs:split.maxHoldMs??null});
    if(t){busy.SPLIT=t.endIdx;if(dca){funnel.split.planned++;funnel.split.sources[zoneSource]=(funnel.split.sources[zoneSource]||0)+1}else funnel.split.fallback++;
     trades.push({strategy:'HOURLY',book:'SPLIT',symbol,direction:out.direction,pattern:out.pattern,score:out.score,signalAt:closeAt,stop:dca?dca.stop:stop,targets:plan.targets,
      leverage,zoneSource,plannedAdds:dca?dca.adds.length:0,plannedMaxLossPct:dca?dca.full.maxLossPct:null,stopDistancePct:Math.abs(entry-(dca?dca.stop:stop))/entry*100,

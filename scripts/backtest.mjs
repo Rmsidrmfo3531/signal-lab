@@ -20,7 +20,7 @@ export function parseArgs(argv){
  for(let i=0;i<argv.length;i++){
   const key=argv[i],value=argv[i+1];
   if(key==='--days'){out.days=Math.max(7,Math.min(365,Number(value)||60));i++}
-  else if(key==='--symbols'){out.symbols=String(value||'').toUpperCase().split(',').map(s=>s.trim()).filter(s=>/^[A-Z0-9]{2,20}USDT$/.test(s)).slice(0,20);i++}
+  else if(key==='--symbols'){out.symbols=String(value||'').toUpperCase().split(',').map(s=>s.trim()).filter(s=>/^[A-Z0-9]{2,20}USDT$/.test(s)).slice(0,40);i++}
   else if(key==='--leverage'){out.leverage=Math.max(10,Math.min(20,Number(value)||10));i++}
   else if(key==='--unit-pct'){out.unitPct=Math.max(.01,Math.min(10,Number(value)||DCA_DEFAULTS.unitPct));i++}
   else if(key==='--max-loss-pct'){out.maxLossPct=Math.max(1,Math.min(95,Number(value)||30));i++}
@@ -35,6 +35,9 @@ export function parseArgs(argv){
   else if(key==='--all-patterns'){out.allPatterns=true}
   else if(key==='--candidates'){out.candidates=true}
   else if(key==='--offline'){out.offline=true}
+  else if(key==='--btc-long-filter'){out.btcLongFilter=['up','notdown'].includes(value)?value:null;i++}
+  else if(key==='--min-box-atr'){out.minBoxWidthAtr=Math.max(0,Number(value)||0);i++}
+  else if(key==='--hourly-max-hold-days'){out.hourlyMaxHoldMs=Math.max(0,Number(value)||0)*86400000||null;i++}
   else if(key==='--patterns'){out.patterns=String(value||'').split(',').map(x=>x.trim()).filter(Boolean);i++}
  }
  if(!out.symbols.length)out.symbols=DEFAULT_SYMBOLS;
@@ -190,7 +193,7 @@ export async function main(argv=process.argv.slice(2)){
   const m5=await klines(symbol,'5m',startAt-6*HOUR,endAt,args.cache);
   process.stdout.write(`1H ${h1.length} · 5m ${m5.length} → 계산 중… `);
   const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:args.patterns?.length?{patterns:args.patterns}:{}),
-   split:{balanceUSD:args.balance,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.hourlyMaxAdds,zoneDays:args.zoneDays,marketCap:APPROX_MARKET_CAP[symbol]??1e9}});
+   split:{balanceUSD:args.balance,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.hourlyMaxAdds,btcLongFilter:args.btcLongFilter??null,minBoxWidthAtr:args.minBoxWidthAtr??0,maxHoldMs:args.hourlyMaxHoldMs??null,zoneDays:args.zoneDays,marketCap:APPROX_MARKET_CAP[symbol]??1e9}});
   if(hourly.funnel.split){hourlyFunnel.split??={planned:0,fallback:0,sources:{}};hourlyFunnel.split.planned+=hourly.funnel.split.planned;hourlyFunnel.split.fallback+=hourly.funnel.split.fallback;
    for(const [k,v] of Object.entries(hourly.funnel.split.sources))hourlyFunnel.split.sources[k]=(hourlyFunnel.split.sources[k]||0)+v}
   const dcaArgs={leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays};
