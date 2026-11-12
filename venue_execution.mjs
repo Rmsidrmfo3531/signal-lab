@@ -64,6 +64,21 @@ export function selectExecutionVenue({signal,venues={},allowed=VENUES,now=Date.n
 }
 
 /** Venue order size for display: base quantity for BingX, whole contracts for Gate.io. */
+/** Live order on another venue than the paper one: when the paper venue has no live keys (or is
+ * not enabled), the same signal goes to the first venue in `alternatives` that is enabled, has
+ * keys and lists the coin. Stop and targets move onto that venue's tick grid: the stop away from
+ * the entry (never tighter), the targets toward the entry (never further). Null: no venue fits. */
+export function routeLiveSignal(row,{enabled=[],credentials={}}={}){
+ const ok=v=>enabled.includes(v)&&credentials[v]===true;
+ if(!row||ok(row.executionVenue))return row;
+ const alt=(row.liveAlternatives||[]).find(a=>ok(a.venue)&&a.venueSymbol&&a.venueContract&&positive(Number(a.venueContract.tickSize)));
+ if(!alt)return row;
+ const tick=String(alt.venueContract.tickSize),dir=row.direction==='LONG'?1:-1;
+ const targets=(row.targets||[]).map(t=>Number(roundDecimalToStep(t,tick,dir===1?'DOWN':'UP')));
+ return {...row,executionVenue:alt.venue,venueSymbol:alt.venueSymbol,venueContract:alt.venueContract,stop:venueStop(row.rawStop??row.stop,row.direction,alt.venueContract.tickSize),
+  targets,liveRoutedFrom:row.executionVenue};
+}
+
 export function venueOrderQuantity(contract,baseQuantity){
  if(!contract||!positive(baseQuantity))return null;
  if(contract.quantityUnit!=='CONTRACT')return {quantity:String(baseQuantity),unit:'BASE_ASSET'};

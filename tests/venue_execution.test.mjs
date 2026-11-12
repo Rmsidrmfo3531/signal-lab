@@ -78,3 +78,17 @@ test('paper records follow only their own venue; records from before the switch 
  later+=1000;legacy.onPrice('CRYPTO','ETHUSDT',100,later,{venue:'BINANCE'});assert.equal(legacy.store.open.length,1);
  assert.equal(venueOf(legacy.store.open[0]),'BINANCE');
 });
+
+test('live routing: a Gate.io paper signal goes to BingX when only BingX has live keys',async()=>{
+ const {routeLiveSignal}=await import('../venue_execution.mjs');
+ const bingx={tickSize:'0.01',quantityStep:'0.01',quantityUnit:'BASE_ASSET',contractSizeBase:'1',minQuantityBase:'0.01'};
+ const row={symbol:'ETHUSDT',direction:'LONG',executionVenue:'GATEIO',venueSymbol:'ETH_USDT',venueContract:{tickSize:'0.05'},rawStop:97.987,stop:97.95,targets:[105.057,108.003,112.009],
+  liveAlternatives:[{venue:'BINGX',venueSymbol:'ETH-USDT',venueContract:bingx}]};
+ const r=routeLiveSignal(row,{enabled:['BINGX','GATEIO'],credentials:{BINGX:true,GATEIO:false}});
+ assert.equal(r.executionVenue,'BINGX');assert.equal(r.venueSymbol,'ETH-USDT');assert.equal(r.liveRoutedFrom,'GATEIO');
+ assert.equal(r.stop,97.98,'stop away from the entry on the BingX grid');assert.deepEqual(r.targets,[105.05,108,112],'targets toward the entry');
+ const s=routeLiveSignal({...row,direction:'SHORT',rawStop:102.013,targets:[95.011,92.004]},{enabled:['BINGX'],credentials:{BINGX:true}});
+ assert.equal(s.stop,102.02);assert.deepEqual(s.targets,[95.02,92.01]);
+ assert.equal(routeLiveSignal(row,{enabled:['BINGX','GATEIO'],credentials:{BINGX:true,GATEIO:true}}),row,'paper venue with keys: unchanged');
+ assert.equal(routeLiveSignal({...row,liveAlternatives:[]},{enabled:['BINGX'],credentials:{BINGX:true}}).executionVenue,'GATEIO','no alternative: unchanged (preflight reports it)');
+});
