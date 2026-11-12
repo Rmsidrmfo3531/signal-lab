@@ -313,6 +313,7 @@ export class PaperEngine {
      if(dir*(price-level.price)>0)break;
      const fill=fillPrice(level.price,dir===1?'BUY':'SELL',{halfSpreadBps:spread,slippageBps:position.slippageBps}),q=level.quantity,fee=q*fill*position.feeBps/10000;
      const total=position.qtyRemaining+q;
+     position.firstEntryFill??=position.entryFill; // the first entry, kept once adds move the average
      position.entryFill=(position.entryFill*position.qtyRemaining+fill*q)/total;
      position.originalQty+=q;position.qtyRemaining=total;position.notionalUSD=rounded(position.notionalUSD+q*fill);
      position.feesUSD+=fee;position.realizedPnLUSD-=fee;

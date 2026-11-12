@@ -56,6 +56,7 @@ test('paper: adds fill on each zone before TP1, average entry and target sizes f
  tick(100);const p=()=>engine.store.open[0];assert.equal(p().originalQty,q);
  tick(97.7);assert.equal(p().dca.filledAdds,1);assert.ok(Math.abs(p().originalQty-2*q)<1e-12);assert.ok(p().entryFill<100&&p().entryFill>97.8);
  tick(96.2);assert.equal(p().dca.filledAdds,2);assert.ok(Math.abs(p().originalQty-4*q)<1e-12,'1+1+2 units');
+ const first=p().firstEntryFill;assert.ok(Math.abs(first-100)<.05,'first entry kept for the card');assert.ok(p().entryFill<first,'average below the first entry on a long');
  assert.ok(Math.abs(p().targetQuantities[0]-p().originalQty*.4)<1e-12);
  assert.equal(p().managementEvents.filter(e=>e.type==='DCA_ADD').length,2);
  const bad={...row,patternConfirmedAt:now-500,symbol:'XUSDT',dca:{...plan,stop:1}};assert.equal(engine.register(bad,{quoteEligible:true}),false);

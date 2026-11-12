@@ -509,3 +509,9 @@
 .paper-grid{gap:14px}
 .paper-position{border-radius:12px}
 .paper-position:hover{border-color:#3b5268}
+.paper-adds{margin:.4rem 0;font-size:.85rem}
+.paper-adds summary{cursor:pointer;color:#c9d4e6}
+.paper-adds ul{list-style:none;margin:.3rem 0 0;padding:0;display:grid;gap:.15rem}
+.paper-adds li{padding:.15rem .4rem;border-radius:4px;background:rgba(255,255,255,.04)}
+.paper-adds li.add-filled{color:#a4e5d8}
+.paper-adds li.add-waiting{color:#8a96a8}
