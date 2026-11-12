@@ -9,14 +9,14 @@ import {pathToFileURL} from 'node:url';
 import {backtestHourly,backtestScalp,backtestCandidates,summarize,scoreBucket,HOUR} from '../backtest.mjs';
 import {DETECTORS} from '../pattern_detectors.mjs';
 import {SCALP_DEFAULTS} from '../scalp_reversal.mjs';
-import {DCA_DEFAULTS,clampMaxAdds,clampZoneDays} from '../dca_plan.mjs';
+import {DCA_DEFAULTS,clampMaxAdds,clampZoneDays,HOURLY_MAX_ADDS_DEFAULT} from '../dca_plan.mjs';
 
 const BASE='https://fapi.binance.com';
 const INTERVAL_MS={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
 export const DEFAULT_SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT'];
 
 export function parseArgs(argv){
- const out={candidates:false,obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,maxAdds:DCA_DEFAULTS.maxAdds,zoneDays:DCA_DEFAULTS.zoneDays,balance:1000,scalp1mDays:30,out:'backtest-results',cache:'backtest-cache'};
+ const out={candidates:false,obstacle:1,trendFilter:true,allPatterns:false,days:60,symbols:DEFAULT_SYMBOLS,leverage:DCA_DEFAULTS.leverage,unitPct:DCA_DEFAULTS.unitPct,maxLossPct:DCA_DEFAULTS.maxLossPct,maxAdds:DCA_DEFAULTS.maxAdds,zoneDays:DCA_DEFAULTS.zoneDays,balance:1000,hourlyMaxAdds:HOURLY_MAX_ADDS_DEFAULT,scalp1mDays:30,out:'backtest-results',cache:'backtest-cache'};
  for(let i=0;i<argv.length;i++){
   const key=argv[i],value=argv[i+1];
   if(key==='--days'){out.days=Math.max(7,Math.min(365,Number(value)||60));i++}
@@ -25,6 +25,7 @@ export function parseArgs(argv){
   else if(key==='--unit-pct'){out.unitPct=Math.max(.01,Math.min(10,Number(value)||DCA_DEFAULTS.unitPct));i++}
   else if(key==='--max-loss-pct'){out.maxLossPct=Math.max(1,Math.min(95,Number(value)||30));i++}
   else if(key==='--max-adds'){out.maxAdds=clampMaxAdds(value);i++}
+  else if(key==='--hourly-max-adds'){out.hourlyMaxAdds=clampMaxAdds(value);i++}
   else if(key==='--zone-days'){out.zoneDays=clampZoneDays(value);i++}
   else if(key==='--scalp-1m-days'){out.scalp1mDays=Math.max(0,Math.min(90,Math.round(Number(value))||0));i++}
   else if(key==='--balance'){out.balance=Math.max(10,Number(value)||1000);i++}
@@ -110,7 +111,7 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  const sp=all.filter(t=>t.strategy==='HOURLY'&&t.book==='SPLIT');
  if(sp.length){
   const bal=args.balance,pctOf=x=>pct(x/bal*100),s0=summarize(live),s1=summarize(sp);
-  lines.push('',`[1-1] 1시간봉 매물대 분할 추매 (잔고 $${bal}, 1단위 ${args.unitPct}% × 점수·시총 배율, 추매 최대 ${args.maxAdds}회, 손절은 마지막 추매 바깥)`,'-'.repeat(60));
+  lines.push('',`[1-1] 1시간봉 매물대 분할 추매 (잔고 $${bal}, 1단위 ${args.unitPct}% × 점수·시총 배율, 추매 최대 ${args.hourlyMaxAdds}회, 손절은 마지막 추매 바깥)`,'-'.repeat(60));
   lines.push(row('기존: 패턴 손절 $6 위험',s0)+` | 잔고 대비 ${pctOf(s0.netUSD)}`,row('분할 추매',s1)+` | 잔고 대비 ${pctOf(s1.netUSD)}`);
   for(const [k,v] of by({filter:t=>t.strategy==='HOURLY'&&t.book==='SPLIT',key:t=>t.pattern}))lines.push(row('  '+k,summarize(v)));
   for(const [label,list] of halves(sp))lines.push(row(label+' (기간 절반씩)',summarize(list)));
@@ -189,7 +190,7 @@ export async function main(argv=process.argv.slice(2)){
   const m5=await klines(symbol,'5m',startAt-6*HOUR,endAt,args.cache);
   process.stdout.write(`1H ${h1.length} · 5m ${m5.length} → 계산 중… `);
   const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:args.patterns?.length?{patterns:args.patterns}:{}),
-   split:{balanceUSD:args.balance,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays,marketCap:APPROX_MARKET_CAP[symbol]??1e9}});
+   split:{balanceUSD:args.balance,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.hourlyMaxAdds,zoneDays:args.zoneDays,marketCap:APPROX_MARKET_CAP[symbol]??1e9}});
   if(hourly.funnel.split){hourlyFunnel.split??={planned:0,fallback:0,sources:{}};hourlyFunnel.split.planned+=hourly.funnel.split.planned;hourlyFunnel.split.fallback+=hourly.funnel.split.fallback;
    for(const [k,v] of Object.entries(hourly.funnel.split.sources))hourlyFunnel.split.sources[k]=(hourlyFunnel.split.sources[k]||0)+v}
   const dcaArgs={leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays};
