@@ -8,7 +8,7 @@ export const DEFAULT_FINAL_MIN_SCORE=90;
 // and they keep their pattern stop with no zone adds (with adds the same replay lost money).
 // Every other pattern still needs SIGNAL_FINAL_MIN_SCORE (90).
 export const TREND_GATE_PATTERNS=Object.freeze(['MACD 데드+하락다이버전스 숏','거래량 다이버전스+음봉3 숏','RSI 하락 다이버전스','상승삼각형 돌파','볼린저 수축 후 상단 돌파','상승삼각 거래량수렴 돌파 롱']);
-export const scoreGatePassed=(score,pattern)=>Number.isFinite(score)&&score>=FINAL_MIN_SCORE||TREND_GATE_PATTERNS.includes(pattern);
+export const scoreGatePassed=(score,pattern)=>Number.isFinite(score)&&(score>=FINAL_MIN_SCORE||TREND_GATE_PATTERNS.includes(pattern));
 export function resolveSignalScorePolicy(env={}){
  const raw=env.SIGNAL_FINAL_MIN_SCORE;
  const configured=raw!==undefined&&raw!==null&&String(raw).trim()!=='';
