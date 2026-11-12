@@ -32,7 +32,7 @@ const bingxOrderId=data=>{const o=orderOf(data);const id=pick(o,'orderID','order
 export class LiveExecutor{
  constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{}}={}){
   Object.assign(this,{config,clients,now,log,onChange});
-  this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();
+  this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();
   const stored=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[]};
  }
@@ -49,7 +49,7 @@ export class LiveExecutor{
   if(this.config.mode==='OFF')throw Object.assign(Error('LIVE_MODE_OFF'),{httpStatus:409});
   if(this.config.mode==='LIVE'&&!this.config.liveConfirmed)throw Object.assign(Error('LIVE_CONFIRM_MISSING'),{httpStatus:409});
   if(this.store.killSwitch)throw Object.assign(Error('KILL_SWITCH_ON'),{httpStatus:409});
-  this.armed=true;this.onChange(this.status());return this.status();
+  this.armed=true;this.lastTry.clear();this.onChange(this.status());return this.status();
  }
  disarm(){this.armed=false;this.onChange(this.status());return this.status()}
  kill(reason='MANUAL'){this.armed=false;this.store.killSwitch=true;this.store.skipped.push({at:this.now(),reason:'KILL_SWITCH:'+reason});this.#save();return this.status()}
@@ -60,6 +60,10 @@ export class LiveExecutor{
   // One evaluation per signal at a time: price ticks can offer the same signal again while the
   // balance is being read; without this both could pass the duplicate check.
   if(this.inFlight.has(signalKey))return {sent:false,reasons:['SIGNAL_IN_FLIGHT']};
+  // A signal that was just evaluated and skipped waits 30 s before the next try (each try reads
+  // the balance and the venue book); arming clears the wait.
+  const last=this.lastTry.get(signalKey);if(last>this.now()-30000&&!this.hasSignal(signalKey))return {sent:false,reasons:['RETRY_WAIT']};
+  this.lastTry.set(signalKey,this.now());if(this.lastTry.size>500)this.lastTry.delete(this.lastTry.keys().next().value);
   this.inFlight.add(signalKey);
   try{return await this.#onSignal(row,{signalKey})}finally{this.inFlight.delete(signalKey)}
  }

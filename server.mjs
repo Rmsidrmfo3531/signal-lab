@@ -573,6 +573,17 @@ async function checkSymbolInternal(symbol, force=false){
  publishCryptoSignal(out,decision);
  return out;
 }
+// Re-quote the live alternatives of a signal (other venues than the paper one) with their
+// current books: same selection rule as the analysis, only for the venues already listed.
+async function freshLiveAlternatives(row){
+ const alts=row.liveAlternatives||[];if(!alts.length||!row.rawStop)return alts;
+ const keys=live.credentials(),wanted=alts.filter(a=>LIVE.venues.includes(a.venue)&&keys[a.venue]);if(!wanted.length)return alts;
+ await Promise.all(wanted.map(a=>refreshVenueBook(a.venue,row.symbol,{maxAgeMs:3000})));
+ const selection=selectExecutionVenue({signal:{...row,stop:row.rawStop},venues:Object.fromEntries(wanted.map(a=>[a.venue,venueEntry(a.venue,row.symbol)])),
+  allowed:wanted.map(a=>a.venue),maxRiskUSD:CONFIG.maxRiskUSD});
+ return alts.map(a=>{const c=selection.candidates.find(x=>x.venue===a.venue);
+  return c?.eligible?{...a,entryBasis:c.entryBasis,quantity:c.quantity,estimatedStopLossUSD:c.estimatedStopLossUSD,spreadBps:c.spreadBps,quotedAt:Date.now()}:{...a,quotedAt:null}});
+}
 function publishCryptoSignal(row,decision,now=Date.now()){
  if(!decision.ready||!storageHealth.healthy)return;
  // Observe the validated scanner output, but never route actual market data to
@@ -586,7 +597,12 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  // trades the signals of the current hour right away; each signal is still ordered at most once.
  // Venue-only coins are paper only: their charts were never part of the validated backtest.
  if(LIVE.mode!=='OFF'&&!row.venueOnly&&live.armed&&!live.hasSignal(paperKey))
-  void live.onSignal(routeLiveSignal({...row,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{enabled:LIVE.venues,credentials:live.credentials()}),{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
+  void (async()=>{
+   // The other venues' quotes are refreshed first, so a signal of the current hour can still be
+   // routed (routeLiveSignal needs a quote at most 15 s old).
+   const fresh=await freshLiveAlternatives(row).catch(()=>row.liveAlternatives);
+   return live.onSignal(routeLiveSignal({...row,liveAlternatives:fresh,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{enabled:LIVE.venues,credentials:live.credentials()}),{signalKey:paperKey});
+  })().catch(e=>console.error('[LIVE]',e.message));
  // The same fresh approval may be observed by a scan and many ticker events.
  // Persist each paper registration and alert once, including after a restart.
  if(!paper.store.seen[paperKey]){

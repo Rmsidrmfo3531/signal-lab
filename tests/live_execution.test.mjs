@@ -372,3 +372,12 @@ test('a signal offered on every tick is ordered once, and a refused one is liste
  for(let i=0;i<5;i++)await blocked.onSignal(row(),{signalKey:'again'});
  assert.equal(blocked.store.skipped.length,1,'same reasons listed once');
 });
+
+test('a skipped signal is retried at most every 30 s (no balance read on every tick); arming retries at once',async()=>{
+ let now=NOW;const m=mockBingX(),ex=new LiveExecutor({config:config({maxOpen:1}),clients:{BINGX:m.client},now:()=>now});ex.arm();
+ const blocked=row('BINGX',{decision:{ready:false}});
+ assert.equal((await ex.onSignal(blocked,{signalKey:'w1'})).reasons.includes('SIGNAL_NOT_READY'),true);
+ now+=5000;assert.deepEqual((await ex.onSignal(row('BINGX'),{signalKey:'w1'})).reasons,['RETRY_WAIT']);
+ ex.arm();assert.equal((await ex.onSignal(row('BINGX'),{signalKey:'w1'})).status,'OPEN','arming clears the wait');
+ now+=1000;assert.deepEqual((await ex.onSignal(row('BINGX'),{signalKey:'w1'})).reasons,['DUPLICATE_SIGNAL']);
+});
