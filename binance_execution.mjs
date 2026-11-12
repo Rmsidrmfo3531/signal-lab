@@ -58,3 +58,15 @@ export function estimateBinanceExecution({signal,book,market,now=Date.now(),maxR
   costAssumptions:{...assumptions,fundingStatus:'ASSUMED_RESERVE_NOT_ACTUAL_SETTLEMENT'},dataFrom:'BINANCE_PUBLIC_DEPTH',
   actualAccountFeesVerified:false,tradeApproval:false,ordersSubmitted:false,checkedAt:now};
 }
+
+/** TP1 net reward/risk with explicit costs: half spread + slippage on entry, stop and target,
+ * taker fee on both prices, funding once. The single formula for the final decision
+ * (signal_pipeline) and for a live order routed to another venue (routeLiveSignal). */
+export function netRewardRisk({direction,entry,stop,target,costs}){
+ const sign=direction==='LONG'?1:-1;
+ if(![entry,stop,target].every(x=>typeof x==='number'&&Number.isFinite(x)&&x>0)||!costs||
+  !['takerRate','spreadBps','slippageBps','fundingRate'].every(key=>Number.isFinite(costs[key])))return null;
+ const friction=(costs.spreadBps/2+costs.slippageBps)/10000,e=entry*(1+sign*friction),s=stop*(1-sign*friction),t=target*(1-sign*friction),
+  funding=e*Math.abs(costs.fundingRate),risk=sign*(e-s)+(e+s)*costs.takerRate+funding,reward=sign*(t-e)-(e+t)*costs.takerRate-funding;
+ return risk>0&&Number.isFinite(reward)?reward/risk:null;
+}

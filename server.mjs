@@ -514,7 +514,7 @@ async function checkSymbolInternal(symbol, force=false){
     // Other venues that list the coin and could take the same entry: the live order goes there when
     // the paper venue has no live keys (routeLiveSignal).
     out.liveAlternatives=selection.candidates.filter(c=>c.eligible&&c.venue!==chosen.venue).map(c=>{const k=venueEntry(c.venue,symbol).contract;
-     return {venue:c.venue,venueSymbol:k.venueSymbol,entryBasis:c.entryBasis,quantity:c.quantity,estimatedStopLossUSD:c.estimatedStopLossUSD,venueContract:{tickSize:k.tickSize,quantityStep:k.quantityStep,quantityUnit:k.quantityUnit,contractSizeBase:k.contractSizeBase,minQuantityBase:k.minQuantityBase,minNotionalUSDT:k.minNotionalUSDT??null,
+     return {venue:c.venue,venueSymbol:k.venueSymbol,entryBasis:c.entryBasis,quantity:c.quantity,estimatedStopLossUSD:c.estimatedStopLossUSD,spreadBps:c.spreadBps,quotedAt:Date.now(),venueContract:{tickSize:k.tickSize,quantityStep:k.quantityStep,quantityUnit:k.quantityUnit,contractSizeBase:k.contractSizeBase,minQuantityBase:k.minQuantityBase,minNotionalUSDT:k.minNotionalUSDT??null,
       decimalSizes:k.decimalSizes===true,decimalStepFallback:k.decimalStepFallback===true,contractStep:k.contractStep??null}}});
    }
    if(estimate.eligible&&Number.isFinite(chartTick)&&chartTick>0){
