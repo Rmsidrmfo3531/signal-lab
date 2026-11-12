@@ -6,7 +6,8 @@ import {readLimitedJSON,VenueHttpError} from './bingx_market.mjs';
 
 export const LIVE_HOSTS=Object.freeze({
  BINGX:{LIVE:'https://open-api.bingx.com',TESTNET:'https://open-api-vst.bingx.com'},
- GATEIO:{LIVE:'https://api.gateio.ws',TESTNET:'https://fx-api-testnet.gateio.ws'}
+ // Gate.io TestNet (official APIv4 docs): api-testnet.gateapi.io; the old fx-api-testnet host is retired.
+ GATEIO:{LIVE:'https://api.gateio.ws',TESTNET:'https://api-testnet.gateapi.io'}
 });
 const clean=message=>String(message??'').replace(/[A-Za-z0-9]{24,}/g,'[redacted]').slice(0,200);
 
