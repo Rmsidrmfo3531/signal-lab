@@ -1,4 +1,5 @@
 import {leverageForScore} from './paper.mjs';
+import {scoreGatePassed} from './signal_policy.mjs';
 /** Official destination links only. This module never submits an order. */
 export function officialBinanceLinks(symbol){
  if(typeof symbol!=='string'||!/^[A-Z0-9]{2,24}USDT$/.test(symbol))return null;
@@ -11,7 +12,7 @@ export function telegramMessage(signal,officialLinks,{paperPosition}={}){
  const official=officialBinanceLinks(signal?.symbol);
  if(!official||officialLinks?.binance!==official.binance)throw Error('Verified Binance market URL required for Telegram signal');
  if(signal.scoreVersion!=='ISSUE6-100-V1'||signal.status!=='signal'||signal.qualified!==true||
-   !['LONG','SHORT'].includes(signal.direction)||!Number.isFinite(signal.score)||signal.score<90||signal.score>100)
+   !['LONG','SHORT'].includes(signal.direction)||!Number.isFinite(signal.score)||!scoreGatePassed(signal.score,signal.pattern)||signal.score>100)
   throw Error('Final validation is required');
  const plan=signal.targetPlan,prices=plan?.targets;
  const validPlan=plan?.ok===true&&Array.isArray(prices)&&prices.length===3&&prices.every(p=>Number.isFinite(p)&&p>0)&&

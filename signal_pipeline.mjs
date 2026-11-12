@@ -1,5 +1,5 @@
 import {STRICT_MIN_SCORE} from './quality.mjs';
-import {scoreGatePassed} from './signal_policy.mjs';
+import {scoreGatePassed,TREND_GATE_PATTERNS,TREND_GATE_MIN_SCORE} from './signal_policy.mjs';
 import {entryTiming} from './public/trade_plan.js';
 import {estimateBinanceExecution,netRewardRisk} from './binance_execution.mjs';
 
@@ -15,7 +15,7 @@ export function evaluateBinanceSignal(row,{market,book,verified=false,venueConne
   validationPassed=row?.technicalValidation?.passed===true,
   fresh=Number.isFinite(row?.quality?.validUntil)&&now<=row.quality.validUntil;
  if(!fresh)technicalReasons.push('확정 1H·4H 봉 신선도 만료 또는 재검증 필요');
- if(!scorePassed)technicalReasons.push(Number.isFinite(row?.score)?`종합점수 ${STRICT_MIN_SCORE}점 미만`:'종합점수 평가 불가');
+ if(!scorePassed)technicalReasons.push(Number.isFinite(row?.score)?`종합점수 ${TREND_GATE_PATTERNS.includes(row?.pattern)?TREND_GATE_MIN_SCORE+'점 미만(추세 패턴)':STRICT_MIN_SCORE+'점 미만'}`:'종합점수 평가 불가');
  // Only patterns that held up in the 180-day backtest trade (limits.allowedPatterns; null = all).
  const patternAllowed=!Array.isArray(limits.allowedPatterns)||limits.allowedPatterns.includes(row?.pattern);
  if(pattern&&!patternAllowed)technicalReasons.push('백테스트 검증 패턴 아님(SIGNAL_PATTERNS)');
