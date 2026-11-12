@@ -50,7 +50,7 @@ function mockBingX({margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,ent
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='GET'){
    const o=orders.find(x=>x.clientOrderId===q.clientOrderId);return o?json({code:0,data:{order:o}}):json({code:80016,msg:'order not exist'});
   }
-  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE')return json({code:0,data:{order:{orderID:q.orderId}}});
+  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE'){const i=orders.findIndex(o=>o.orderID===q.orderId);if(i>=0)orders.splice(i,1);return json({code:0,data:{order:{orderID:q.orderId}}})}
   if(u.pathname==='/openApi/swap/v2/trade/openOrders')return json({code:0,data:{orders:orders.filter(o=>o.type!=='MARKET')}});
   if(u.pathname==='/openApi/swap/v2/user/positions')return json({code:0,data:[{symbol:'ETH-USDT',positionAmt:positionAmt(),avgPrice:'100.02',positionSide:'LONG'}]});
   throw Error('unexpected '+u.pathname);
@@ -351,12 +351,14 @@ test('testnet round trip: same order path, then everything cancelled and closed;
  const ex=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
  const zones=[97,95,93].map(p=>({priceLow:p-.1,priceHigh:p+.1}));
  const testRow=row('BINGX',{entry:100,leverage:10,stop:99,targets:[101.5,102,103],paperAddInputs:{zoneSets:[{label:'시험',zones}],atr:.4,takerRate:.0005}});
- const res=await ex.testRoundTrip(testRow,{holdMs:0,sleep:async()=>{amt='0'}});
+ const res=await ex.testRoundTrip(testRow,{holdMs:0,sleep:async()=>{amt='0'},maxBalanceUSD:1000});
  assert.equal(res.ok,true,JSON.stringify(res.events));assert.equal(res.status,'CLOSED');assert.ok(res.adds>=1);
  const types=res.events.map(e=>e.type);for(const t of ['MARGIN_SET','ENTRY_SENT','PROTECTED','ADDS_PLACED','ADDS_CANCELLED','TEST_CLOSED'])assert.ok(types.includes(t),t);
  assert.equal(ex.store.records[0].test,true);assert.equal(ex.store.killSwitch,false);
  // Position still there after the close order: stop trading.
  let amt2='0.2';const m2=mockBingX({positionAmt:()=>amt2}),ex2=new LiveExecutor({config:config(),clients:{BINGX:m2.client},now:()=>NOW});ex2.arm();
- const bad=await ex2.testRoundTrip(row('BINGX'),{holdMs:0,sleep:async()=>{}});assert.equal(bad.ok,false);assert.equal(ex2.store.killSwitch,true);
+ const bad=await ex2.testRoundTrip(row('BINGX'),{holdMs:0,sleep:async()=>{}});
+ assert.ok(bad.events.some(e=>e.type==='TEST_CLOSE_INCOMPLETE'));
+ assert.ok(!m2.calls.some(c=>c.method==='DELETE'),'stop and targets stay while the position is open');assert.equal(bad.ok,false);assert.equal(ex2.store.killSwitch,true);
  await assert.rejects(new LiveExecutor({config:config({mode:'LIVE',liveConfirmed:true}),clients:{BINGX:m.client},now:()=>NOW}).testRoundTrip(row('BINGX')),/TEST_TESTNET_ONLY/);
 });

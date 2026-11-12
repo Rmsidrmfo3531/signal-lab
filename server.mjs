@@ -1098,16 +1098,18 @@ const server=http.createServer(async(req,res)=>{
    if(pathname==='/api/live/disarm')return response(res,200,live.disarm());
    if(pathname==='/api/live/kill')return response(res,200,live.kill('MANUAL'));
    if(pathname==='/api/live/test-order'){
-    // TESTNET only: a small BTC long through the real order path, closed after a few seconds.
+    // TESTNET only: a small DOGE long through the real order path, closed after a few seconds
+    // (DOGE: fine lot steps, so a small unit still splits into three targets and adds).
     if(body.confirm!=='TEST')return response(res,400,{error:'CONFIRM_REQUIRED'});
     if(LIVE.mode!=='TESTNET')return response(res,409,{error:'TEST_TESTNET_ONLY'});
-    const venue=['BINGX','GATEIO'].find(v=>LIVE.venues.includes(v)&&live.credentials()[v]);
-    if(!venue)return response(res,409,{error:'CREDENTIALS_MISSING'});
+    // BingX only: its demo (VST) trades on the live price feed; Gate.io's testnet prices can drift from the public book.
+    const venue='BINGX';
+    if(!LIVE.venues.includes(venue)||!live.credentials()[venue])return response(res,409,{error:'BINGX_CREDENTIALS_MISSING'});
     try{await venueQuotes.clients[venue].loadContracts()}catch{}
-    const contract=venueEntry(venue,'BTCUSDT').contract,book=await refreshVenueBook(venue,'BTCUSDT',{maxAgeMs:0});
+    const contract=venueEntry(venue,'DOGEUSDT').contract,book=await refreshVenueBook(venue,'DOGEUSDT',{maxAgeMs:0});
     if(!contract||!book?.ok||!Number.isFinite(book.mid))return response(res,502,{error:'VENUE_QUOTE_UNAVAILABLE',venue});
     const tick=String(contract.tickSize),entry=book.mid,down=x=>Number(roundDecimalToStep(x,tick,'DOWN'));
-    const row={symbol:'BTCUSDT',direction:'LONG',pattern:'TESTNET 시험 주문',score:90,leverage:10,executionVenue:venue,venueSymbol:contract.venueSymbol,
+    const row={symbol:'DOGEUSDT',direction:'LONG',pattern:'TESTNET 시험 주문',score:90,leverage:10,executionVenue:venue,venueSymbol:contract.venueSymbol,
      venueContract:{tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
       minNotionalUSDT:contract.minNotionalUSDT??null,decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null},
      entry,stop:venueStop(entry*.99,'LONG',contract.tickSize),targets:[1.015,1.02,1.03].map(f=>down(entry*f)),decision:{ready:true},

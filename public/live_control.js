@@ -40,7 +40,7 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
  const fail=e=>{const s=document.getElementById('liveStatus');if(s){s.textContent='실주문 요청 실패: '+e.message;s.classList.add('warn')}};
  document.getElementById('liveArm')?.addEventListener('click',()=>{if(confirm('실주문을 활성화합니다. 다음 최종 신호부터 거래소에 실제 주문이 나갑니다. 계속할까요?'))liveCall('/api/live/arm',{confirm:'ARM'}).catch(fail)});
  document.getElementById('liveTest')?.addEventListener('click',async()=>{
-  if(!confirm('테스트넷에서 BTC 소액 롱을 실제 신호와 같은 순서로 주문하고 5초 뒤 청산합니다. 먼저 "활성화"가 되어 있어야 합니다. 진행할까요?'))return;
+  if(!confirm('BingX 테스트넷에서 DOGE 소액 롱(잔고 최대 $400 기준, 10배)을 실제 신호와 같은 순서로 주문하고 5초 뒤 청산합니다. 먼저 "활성화"가 되어 있어야 합니다. 진행할까요?'))return;
   const s=document.getElementById('liveTestResult')||Object.assign(document.createElement('div'),{id:'liveTestResult',className:'kv-list live-test-result'});
   document.getElementById('liveStatus')?.after(s);s.textContent='시험 주문 진행 중… (10~20초)';
   try{const r=await fetch('/api/live/test-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'TEST'})}),d=await r.json();
