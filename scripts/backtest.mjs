@@ -25,7 +25,7 @@ export function parseArgs(argv){
   else if(key==='--unit-pct'){out.unitPct=Math.max(.01,Math.min(10,Number(value)||DCA_DEFAULTS.unitPct));i++}
   else if(key==='--max-loss-pct'){out.maxLossPct=Math.max(1,Math.min(95,Number(value)||30));i++}
   else if(key==='--max-adds'){out.maxAdds=clampMaxAdds(value);i++}
-  else if(key==='--hourly-max-adds'){out.hourlyMaxAdds=clampMaxAdds(value);i++}
+  else if(key==='--hourly-max-adds'){out.hourlyMaxAdds=clampMaxAdds(value,HOURLY_MAX_ADDS_DEFAULT);i++}
   else if(key==='--zone-days'){out.zoneDays=clampZoneDays(value);i++}
   else if(key==='--scalp-1m-days'){out.scalp1mDays=Math.max(0,Math.min(90,Math.round(Number(value))||0));i++}
   else if(key==='--balance'){out.balance=Math.max(10,Number(value)||1000);i++}

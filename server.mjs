@@ -101,7 +101,7 @@ const CONFIG={
  dcaMaxLossPct:Math.max(1,Math.min(95,Number(process.env.DCA_MAX_LOSS_PCT)||DCA_DEFAULTS.maxLossPct)),
  // Adds per scale-in plan: 5-10 (default 10). Zones come from the 3-day profile plus a
  // deeper 15m profile over DCA_ZONE_DAYS (3-15, default 14) so 5+ adds have zones to sit on.
- dcaMaxAdds:clampMaxAdds(process.env.DCA_MAX_ADDS),hourlyMaxAdds:clampMaxAdds(process.env.HOURLY_MAX_ADDS??HOURLY_MAX_ADDS_DEFAULT),dcaZoneDays:clampZoneDays(process.env.DCA_ZONE_DAYS),
+ dcaMaxAdds:clampMaxAdds(process.env.DCA_MAX_ADDS),hourlyMaxAdds:clampMaxAdds(process.env.HOURLY_MAX_ADDS,HOURLY_MAX_ADDS_DEFAULT),dcaZoneDays:clampZoneDays(process.env.DCA_ZONE_DAYS),
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
  // Korean translation of English news (Google public endpoint when no URL is set). NEWS_TRANSLATION=off keeps English.
  newsTranslation:process.env.NEWS_TRANSLATION!=='off',
@@ -624,7 +624,7 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  console.log('[SIGNAL]',symbol,direction,pattern,row.score);
 }
 // Paper 1H position as one split-buy trade: entry 1 unit, then adds of 1, 2, 4 ... units at the
-// volume zones against the position (DCA_MAX_ADDS, 5-10), and the stop BEYOND the last add
+// volume zones against the position (HOURLY_MAX_ADDS, 5-10, default 7), and the stop BEYOND the last add
 // (planZoneDca, the same rule as the scalps). Unit = balance x DCA_UNIT_PCT x leverage, where the
 // leverage comes from the score and market cap; the margin / liquidation / max-loss checks of
 // planZoneDca apply. Null when no zone fits: the position then uses the pattern stop as before.

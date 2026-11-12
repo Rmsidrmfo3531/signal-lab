@@ -23,7 +23,7 @@ export const dcaZoneDaysFor=(interval,zoneDays)=>interval==='1m'?3:zoneDays;
 export const HOURLY_MAX_ADDS_DEFAULT=7;
 export const DCA_MAX_ADDS_RANGE=Object.freeze({min:5,max:10});
 export const clampZoneDays=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(3,Math.min(15,n)):DCA_DEFAULTS.zoneDays};
-export const clampMaxAdds=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(DCA_MAX_ADDS_RANGE.min,Math.min(DCA_MAX_ADDS_RANGE.max,n)):DCA_DEFAULTS.maxAdds};
+export const clampMaxAdds=(v,fallback=DCA_DEFAULTS.maxAdds)=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(DCA_MAX_ADDS_RANGE.min,Math.min(DCA_MAX_ADDS_RANGE.max,n)):fallback};
 // maxLossPct: loss at the stop with every add filled may not exceed this share of the balance.
 export const DCA_DEFAULTS=Object.freeze({leverage:10,unitPct:.19,maintenanceRate:.005,stopAtr:.25,minSpacingAtr:.5,liquidationBufferPct:1,maxLossPct:30,maxAdds:10,zoneDays:14});
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;

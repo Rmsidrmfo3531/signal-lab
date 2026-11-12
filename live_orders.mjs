@@ -21,7 +21,7 @@ export function liveConfig(env=process.env){
   // sized like the paper one (unit = balance x DCA_UNIT_PCT x leverage, adds 1, 2, 4 ... units
   // at volume zones, stop beyond the last add). RISK_USD: the old fixed LIVE_MAX_RISK_USD sizing.
   sizing:String(env.LIVE_SIZING||'BALANCE').toUpperCase()==='RISK_USD'?'RISK_USD':'BALANCE',
-  unitPct:num('DCA_UNIT_PCT',DCA_DEFAULTS.unitPct,.01,10),maxLossPct:num('DCA_MAX_LOSS_PCT',DCA_DEFAULTS.maxLossPct,1,95),maxAdds:clampMaxAdds(env.HOURLY_MAX_ADDS??HOURLY_MAX_ADDS_DEFAULT),
+  unitPct:num('DCA_UNIT_PCT',DCA_DEFAULTS.unitPct,.01,10),maxLossPct:num('DCA_MAX_LOSS_PCT',DCA_DEFAULTS.maxLossPct,1,95),maxAdds:clampMaxAdds(env.HOURLY_MAX_ADDS,HOURLY_MAX_ADDS_DEFAULT),
   dailyMaxLossPct:num('LIVE_DAILY_MAX_LOSS_PCT',60,1,100),
   // Size from at most this much of the account (0 = the whole balance). Lets a testnet with 100,000
   // virtual USDT trade like the real $400 account, or a live account use only part of its funds.
