@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {simulateTrade,backtestHourly,backtestScalp,summarize,scoreBucket} from '../backtest.mjs';
 import {parseArgs,buildReport} from '../scripts/backtest.mjs';
+import {scoreGatePassed} from '../signal_policy.mjs';
 
 const M5=300000,T0=Date.parse('2026-09-01T00:00:00Z');
 const c=(i,o,h,l,cl)=>({t:T0+i*M5,o,h,l,c:cl,v:1,ct:T0+i*M5+M5-1});
@@ -52,7 +53,7 @@ test('full replay on synthetic candles runs both strategies end to end and the r
  assert.deepEqual(withSplit.trades.filter(t=>t.book!=='SPLIT').map(t=>t.netUSD),hourly.trades.map(t=>t.netUSD));
  for(const t of withSplit.trades.filter(t=>t.book==='SPLIT')){assert.ok(t.leverage>=10&&t.leverage<=30);assert.ok(Number.isFinite(t.pnlPctOfBalance))}
  assert.ok(hourly.funnel.bars>300);assert.ok(hourly.funnel.patterns>0,'patterns are detected');
- assert.ok(hourly.trades.every(t=>t.book!=='LIVE'||t.score>=90),'the live book only takes 90+');
+ assert.ok(hourly.trades.every(t=>t.book!=='LIVE'||scoreGatePassed(t.score,t.pattern)),'the live book only takes 90+ (or an approved 4H-trend pattern)');
  assert.ok(hourly.trades.every(t=>t.book==='LIVE'||t.book==='BUCKET:'+scoreBucket(t.score)),'each candidate is booked in its own score bucket');
  const scalp=backtestScalp({symbol:'SOLUSDT',m5,m15,filters,startAt});
  assert.ok(scalp.funnel.bars>3500);

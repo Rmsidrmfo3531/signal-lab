@@ -1,5 +1,5 @@
 import {seededEMA,evaluateIndicators} from './indicators.mjs';
-import {FINAL_MIN_SCORE as STRICT_MIN_SCORE,getSignalScorePolicy} from './signal_policy.mjs';
+import {FINAL_MIN_SCORE as STRICT_MIN_SCORE,getSignalScorePolicy,scoreGatePassed} from './signal_policy.mjs';
 export {FINAL_MIN_SCORE as STRICT_MIN_SCORE} from './signal_policy.mjs';
 
 /** Issue #6: one 100-point evidence score, never a probability or permission. */
@@ -78,7 +78,7 @@ export function gradeSetup({direction,h1,h4,atr1h,volumeRatio,entry,stop,price=e
    statusCheck('confirmedActivity','확정봉 체결 거래량 존재',Boolean(last&&last.volume>0),{volume:last?.volume??null}),
    {...statusCheck('btc4h','BTC 4H 시장 환경 대응',btcObserved&&btcAligned,{required:btcRequired,context:btcContext??null}),
     status:!btcObserved?'UNVERIFIED':btcAligned?'PASS':'FAIL'}
-  ],failed=validationChecks.filter(check=>!check.passed).map(check=>check.label),thresholdPassed=finite(score)&&score>=STRICT_MIN_SCORE,
+  ],failed=validationChecks.filter(check=>!check.passed).map(check=>check.label),thresholdPassed=finite(score)&&scoreGatePassed(score,pattern),
   validationPassed=failed.length===0;
  return {score,scoreVersion:SCORE_VERSION,minimumScore:STRICT_MIN_SCORE,scorePolicy:getSignalScorePolicy(),passed:validationPassed&&thresholdPassed,
   validationPassed,thresholdPassed,checkedAt:now,validUntil:finite(lastCloseAt)&&finite(fourCloseAt)?

@@ -12,7 +12,7 @@ function fixture(now=NOW){
  const h4=Array.from({length:260},(_,i)=>{const v=50+i*.2;return{time:t+(i-260)*4*HOUR,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
  return {h1,h4};
 }
-const scan=(h1,h4,options={})=>analyze(options.symbol??'BTCUSDT',h1,h4,[],options.price??102.2,{now:options.now??NOW,quoteVolume:options.quoteVolume??1e8,...(options.btcH4Rows?{btcH4Rows:options.btcH4Rows}:{})});
+const scan=(h1,h4,options={})=>analyze(options.symbol??'BTCUSDT',h1,h4,[],options.price??102.2,{now:options.now??NOW,quoteVolume:options.quoteVolume??1e8,trendGatePatterns:options.trendGatePatterns??[],...(options.btcH4Rows?{btcH4Rows:options.btcH4Rows}:{})});
 const flip=bars=>bars.map(c=>({...c,open:200-c.open,close:200-c.close,high:200-c.low,low:200-c.high}));
 const grade=(patch={})=>{const {h1,h4}=fixture();return gradeSetup({symbol:'BTCUSDT',direction:'LONG',pattern:'박스권 상단 돌파',h1,h4,atr1h:.9,volumeRatio:2.3,entry:102.2,stop:99,price:102.2,now:NOW,...patch})};
 
@@ -130,4 +130,12 @@ test('entry timing rejects stale prices, missing venue verification and chase in
  assert.equal(entryTiming(s,{price:100,priceAt:NOW,now:NOW,venueReady:false}).code,'venue-hold');
  assert.equal(entryTiming(s,{price:100,priceAt:NOW,now:NOW,venueReady:true}).code,'zone');
  assert.equal(entryTiming(s,{price:102,priceAt:NOW,now:NOW,venueReady:true}).code,'chase');
+});
+
+test('approved 4H-trend pattern: a weak breakout below 90 can still qualify as the study-material pattern',async()=>{
+ const {TREND_GATE_PATTERNS}=await import('../signal_policy.mjs');
+ const {h1,h4}=fixture();h1.at(-1).close=101.5;
+ const gated=scan(h1,h4,{price:101.5,trendGatePatterns:TREND_GATE_PATTERNS});
+ assert.ok(TREND_GATE_PATTERNS.includes(gated.pattern),gated.pattern);assert.ok(gated.score<90);assert.equal(gated.technicalQualified,true);
+ assert.equal(gated.direction,'LONG','with the 4H uptrend only');
 });

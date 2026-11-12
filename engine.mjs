@@ -1,6 +1,7 @@
 import {gradeSetup,STRICT_MIN_SCORE,MIN_CLOSED_4H_BARS,SCORE_VERSION} from './quality.mjs';
 import {seededEMA,atrWilder} from './indicators.mjs';
-import {prepare as preparePatternSeries,leeTrendline,leeMaCross} from './pattern_detectors.mjs';
+import {prepare as preparePatternSeries,leeTrendline,leeMaCross,DETECTORS} from './pattern_detectors.mjs';
+import {TREND_GATE_PATTERNS,scoreGatePassed} from './signal_policy.mjs';
 // Price-action scanner for closed Binance futures candles. No trading or order execution.
 export const number = value => Number(value);
 export function normalizedKlines(rows, now=Date.now()) {
@@ -193,6 +194,13 @@ export function analyze(symbol, h1Rows, h4Rows, m15Rows=[], priceOverride=null, 
     const series=preparePatternSeries(h1.map(x=>({t:x.time,o:x.open,h:x.high,l:x.low,c:x.close,v:x.volume,ct:x.closeTime}))),j=series.c.length-1;
     const tl=leeTrendline(series,j,-1);if(tl)push('SHORT','상승 추세선 이탈 숏',tl.entry,tl.stop,'거래량 동반 꼬리를 이은 상승 추세선을 거래량과 함께 하향 종가 이탈');
     const dc=leeMaCross(series,j,-1);if(dc)push('SHORT','5/20 데드크로스 숏',dc.entry,dc.stop,'5·20 이평 데드크로스(거래량 1.5배), 50 이평 아래');
+    // Study-material patterns, raised only when the 4H trend agrees (signal_policy TREND_GATE_PATTERNS).
+    const trendGate=Array.isArray(meta.trendGatePatterns)?meta.trendGatePatterns:process.env.SIGNAL_TREND_GATE==='off'?[]:TREND_GATE_PATTERNS;
+    for(const name of trendGate){
+     let sig=null;try{sig=DETECTORS[name]?.(series,j)}catch{sig=null}
+     if(!sig||!['LONG','SHORT'].includes(sig.direction)||sig.direction==='LONG'&&trend!=='up'&&trend!=='range'||sig.direction==='SHORT'&&trend!=='down'&&trend!=='range')continue;
+     push(sig.direction,name,sig.entry,sig.stop,'학습 자료 패턴 + 4H 추세 일치 (90점 대신 추세 일치로 진입, 추매 없음)');
+    }
   }
   // Completed reversal formations (not subjective image recognition): two confirmed
   // swing extremes, a neckline, and a completed 1H close through that neckline.
@@ -228,7 +236,7 @@ export function analyze(symbol, h1Rows, h4Rows, m15Rows=[], priceOverride=null, 
   const best=candidates.sort((a,b)=>Number(b.technicalQualified)-Number(a.technicalQualified)||b.score-a.score)[0]??null;
   // Score and independent technical checks share one verdict. Current quotes,
   // book depth, risk and actual volume-profile targets are checked separately.
-  const quality = Boolean(best&&best.technicalQualified&&best.score>=STRICT_MIN_SCORE);
+  const quality = Boolean(best&&best.technicalQualified&&scoreGatePassed(best.score,best.pattern));
   return {
     symbol, price, trend, ema20:e1,ema1004h:e4f,ema2004h:e4s,btcContext,score:null,scoreVersion:SCORE_VERSION,
     evaluationStatus:'NO_CONFIRMED_PATTERN',atr:a, volumeRatio:vRatio, supports:lv.supports,

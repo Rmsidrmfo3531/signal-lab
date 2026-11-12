@@ -1,5 +1,14 @@
 // A configurable research threshold is not evidence of profitability or permission to trade.
 export const DEFAULT_FINAL_MIN_SCORE=90;
+// User-approved exception (2026-11-12) to the "never relax the score threshold" rule, for these
+// patterns only: study-material detectors (blog PDFs, video lessons) that trade only WITH the 4H
+// trend and skip the 90-point score. In the 180-day / 12-symbol replay the score picked their worst
+// entries; with '4H trend agrees' instead, fixed risk went from +$292 (3 base patterns) to +$483
+// (first 90 days -$59 -> -$16, last 90 days +$351 -> +$499); split book +$974 -> +$956. The engine raises them only when the 4H trend agrees (never against it),
+// and they keep their pattern stop with no zone adds (with adds the same replay lost money).
+// Every other pattern still needs SIGNAL_FINAL_MIN_SCORE (90).
+export const TREND_GATE_PATTERNS=Object.freeze(['MACD 데드+하락다이버전스 숏','거래량 다이버전스+음봉3 숏','RSI 하락 다이버전스','상승삼각형 돌파','볼린저 수축 후 상단 돌파','상승삼각 거래량수렴 돌파 롱']);
+export const scoreGatePassed=(score,pattern)=>Number.isFinite(score)&&(score>=FINAL_MIN_SCORE||TREND_GATE_PATTERNS.includes(pattern));
 export function resolveSignalScorePolicy(env={}){
  const raw=env.SIGNAL_FINAL_MIN_SCORE;
  const configured=raw!==undefined&&raw!==null&&String(raw).trim()!=='';

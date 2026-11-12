@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {evaluateSignal} from '../signal_pipeline.mjs';
-import {getSignalScorePolicy} from '../signal_policy.mjs';
+import {getSignalScorePolicy,TREND_GATE_PATTERNS} from '../signal_policy.mjs';
 import {officialMarketLinks,telegramMessage} from '../links.mjs';
 import {finalTelegramMatch} from '../telegram_final.mjs';
 import {signalKey} from '../paper.mjs';
@@ -37,7 +37,7 @@ function harness(){
   state:{activeSet:new Set([row.symbol]),rest:'connected',quotes:new Map([[row.symbol,{...marketContext.market,price:marketContext.price,priceAt:now}]]),analyses:new Map([[row.symbol,row]])},
   books:new Map([[row.symbol,marketContext.book]]),storageHealth:{healthy:true},persisted:{seen:{},alerts:[]},
   paper:{store:{open:[],seen:{}},register(value){registrations.push(value);sandbox.paper.store.seen[key(value)]=now}},
-  evaluateSignal,getSignalScorePolicy,finalTelegramMatch,officialMarketLinks,signalKey,nextSizeScale,planWithQuantity,planZoneDca,leverageForScore,
+  evaluateSignal,getSignalScorePolicy,finalTelegramMatch,officialMarketLinks,signalKey,nextSizeScale,planWithQuantity,planZoneDca,leverageForScore,TREND_GATE_PATTERNS,
   telegramMessage:(...args)=>{if(formatFailure)throw Error('offline-test-token must never be logged');return telegramMessage(...args)},
   save:candidate=>{if(saveFailure)throw Error('synthetic save failure');sandbox.persisted=structuredClone(candidate)},
   send:(type,value)=>events.push({type,value}),

@@ -23,7 +23,8 @@ import {fourHourTrend} from './scalp_reversal.mjs';
 
 export const HOUR=3600000,M5=300000,M15=900000;
 // Same default as the server (SIGNAL_PATTERNS): only the range breakout trades. null = every pattern.
-export const LIVE_PATTERNS=Object.freeze(['박스권 상단 돌파','상승 추세선 이탈 숏','5/20 데드크로스 숏']);
+import {TREND_GATE_PATTERNS,scoreGatePassed} from './signal_policy.mjs';
+export const LIVE_PATTERNS=Object.freeze(['박스권 상단 돌파','상승 추세선 이탈 숏','5/20 데드크로스 숏',...TREND_GATE_PATTERNS]);
 export const BACKTEST_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:2,spreadBps:1,fundingRate:.0001,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'});
 const FRACTIONS=[.4,.35,.25];
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
@@ -108,7 +109,7 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
   if(out.quality?.validationPassed!==true)continue;funnel.validated++;
   if(patterns&&!patterns.includes(out.pattern)||directions&&!directions.includes(out.direction))continue;
   // liveGate(ctx) replaces the score rule when given (research: alternative scores).
-  const live=liveGate?liveGate({out,h1:h1s,h4:h4s,btcH4:btc,now,symbol}):out.score>=minScore;if(live)funnel.scoreOk++;
+  const live=liveGate?liveGate({out,h1:h1s,h4:h4s,btcH4:btc,now,symbol}):minScore===90?scoreGatePassed(out.score,out.pattern):out.score>=minScore;if(live)funnel.scoreOk++;
   const k=lowerBound(m5c,closeAt+1);const next=m5c[k];if(!next)continue;
   const dir=out.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
   // Stop on the tick grid, rounded away from the entry (as venueStop does on the server).
@@ -132,7 +133,8 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
     ['1h',()=>{const r=profileAt(h1,now,symbol,filters.tickSize,{candles:720,intervalMs:HOUR,interval:'1h',...fb});return r.ok?r.profile.hvn:[]}],
     ['4h',()=>{const r=profileAt(h4,now,symbol,filters.tickSize,{candles:540,intervalMs:4*HOUR,interval:'4h',...fb});return r.ok?r.profile.hvn:[]}]];
    let dca=null,zoneSource=null;
-   for(const [label,zonesOf] of sets){
+   // Study-material patterns trade their pattern stop, without zone adds (as on the server).
+   if(!TREND_GATE_PATTERNS.includes(out.pattern))for(const [label,zonesOf] of sets){
     const d=planZoneDca({direction:out.direction,entry,atr:out.atr,zones:zonesOf(),balanceUSD:split.balanceUSD,leverage,unitPct:split.unitPct??DCA_DEFAULTS.unitPct,
      tickSize:filters.tickSize,quantityStep:filters.stepSize,minQuantity:filters.minQty,minNotional:filters.minNotional,takerRate:costs.takerRate,
      settings:{maxLossPct:split.maxLossPct??DCA_DEFAULTS.maxLossPct,maxAdds:split.maxAdds??DCA_DEFAULTS.maxAdds}});

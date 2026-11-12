@@ -1,4 +1,6 @@
 // Test-only exchange transport. All external destinations and write methods fail closed.
+// Older synthetic fixtures target the base patterns: the study-material trend patterns are tested separately.
+process.env.SIGNAL_TREND_GATE??='off';
 import fs from 'node:fs';
 import path from 'node:path';
 import {marketSeries,ENTRY} from './fixtures/pipeline_market.mjs';
