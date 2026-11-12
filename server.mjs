@@ -20,7 +20,7 @@ import {estimateBinanceExecution} from './binance_execution.mjs';
 import {VolumeProfileCollector} from './profile_collector.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
 import {finalTelegramMatch} from './telegram_final.mjs';
-import {translateNewsArticles} from './news_translation.mjs';
+import {translateNewsArticles,googleTranslate} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
@@ -99,6 +99,8 @@ const CONFIG={
  // deeper 15m profile over DCA_ZONE_DAYS (3-15, default 14) so 5+ adds have zones to sit on.
  dcaMaxAdds:clampMaxAdds(process.env.DCA_MAX_ADDS),dcaZoneDays:clampZoneDays(process.env.DCA_ZONE_DAYS),
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
+ // Korean translation of English news (Google public endpoint when no URL is set). NEWS_TRANSLATION=off keeps English.
+ newsTranslation:process.env.NEWS_TRANSLATION!=='off',
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  // Coins on Gate.io / BingX that Binance does not list: charts come from the venue itself.
  // Paper only (never live). Every coin of similar size or larger is included: market cap at least
@@ -729,7 +731,7 @@ async function runScalpCheck(now=Date.now()){
     if(!plan.ok){reject(plan.reasons);continue}
    }
    const row={symbol,direction:det.direction,pattern:det.pattern,entry:chosen.estimate.entryBasis,stop,atr:det.atr,patternConfirmedAt:det.barAt,...(dca?{dca}:{}),
-    managementVersion:'VOLUME_PROFILE_V1',targetPlan:plan,targets:plan.targets,strategy:det.strategy,sizeScale,leverage:CONFIG.dcaLeverage,
+    managementVersion:'VOLUME_PROFILE_V1',targetPlan:plan,targets:plan.targets,strategy:det.strategy,sizeScale,leverage:CONFIG.dcaLeverage,evidence:det.evidence,
     entryTimeoutMs:det.entryTimeoutMs,maxHoldMs:det.maxHoldMs,executionVenue:chosen.venue,venueSymbol:contract.venueSymbol,
     venueContract:{tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
      decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null}};
@@ -909,7 +911,10 @@ async function pollNews(){
  state.newsError=failures.length?`${failures.length}/${FEEDS.length}개 소스 오류`:'';
  if(!feeds.length){state.newsStatus='offline';send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:0,error:'RSS 제공처 모두 연결 실패'});return}
  const originalNews=prepareNews(feeds,state.newsChecked,state.ranked.map(x=>({symbol:x.baseAsset,name:x.baseAsset})));
- const incoming=await translateNewsArticles(originalNews,{translate:CONFIG.translationURL?translateArticle:undefined,providerId:CONFIG.translationURL?'CONFIGURED_LIBRETRANSLATE':'UNCONFIGURED'});
+ // English news is shown in Korean: the configured LibreTranslate URL, else Google's public endpoint
+ // (NEWS_TRANSLATION=off keeps the original English).
+ const provider=CONFIG.translationURL?{translate:translateArticle,id:'CONFIGURED_LIBRETRANSLATE'}:CONFIG.newsTranslation===true?{translate:googleTranslate,id:'GOOGLE_PUBLIC'}:{translate:undefined,id:'UNCONFIGURED'};
+ const incoming=await translateNewsArticles(originalNews,{translate:provider.translate,providerId:provider.id});
  state.newsStatus=feeds.length===FEEDS.length?'connected':'partial';state.news=incoming;
  const newsSeen=new Set(Object.keys(persisted.newsSeen)),nextSeen={...persisted.newsSeen},notifications=[];let changed=false;
  for(const article of incoming){

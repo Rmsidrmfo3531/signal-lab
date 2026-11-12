@@ -82,7 +82,7 @@ function setStatus(s){const previousVenue=app.status?.rest;app.status=s;renderSc
  $('sysScanErrors').textContent=(s.lastScanFailures||[]).slice(0,2).join(' | ')||'기록된 오류 없음';
  $('sysScanErrors').className='health-note';
  $('sysQuoteAge').textContent=s.lastTickerAt?Math.round((Date.now()-s.lastTickerAt)/1000)+'초 전 · '+(s.lastTickerCount||0)+'틱 수신':'실시간 틱 미수신';
- $('sysTradFi').textContent='비활성 · 대체 시세 공급자 미설정 (기존 기록 보존)';
+
  $('sysNewsAge').textContent=s.newsChecked?Math.round((Date.now()-s.newsChecked)/1000)+'초 전':'조회 전';
  const storageEl=$('sysStorage');if(storageEl){storageEl.textContent=s.storage?.healthy===false?'저장 실패 · 모의매매 일시 중지':s.storage?.lastSavedAt?'정상 · '+clock(s.storage.lastSavedAt):'확인 중';storageEl.classList.toggle('negative',s.storage?.healthy===false);}
  $('sysTG').textContent=s.telegramConfigured?'서버 설정 완료':'설정 필요';
@@ -506,7 +506,6 @@ function renderNews(){
  const type=$('newsFilter').value,query=$('newsSearch').value.trim().toLowerCase(),coin=app.symbol.replace(/USDT$/,'');
  const rows=app.news.filter(n=>{
   if(type==='coin'&&!n.symbols?.includes(coin))return false;
-  if(type==='tradfi'&&!n.symbols?.some(s=>['XAU','XAG','US100','US500','US30','DXI','UKOIL','USOIL'].includes(s))&&!/CNBC/.test(n.source))return false;
   if(type==='market'&&n.impact!=='high')return false;
   if((type==='risk'||type==='opportunity')&&n.tone!==type)return false;
   if(query&&!(n.title+' '+n.summary+' '+n.detail+' '+(n.displayTitle??n.titleKo??'')+' '+(n.displaySummary??n.summaryKo??'')+' '+(n.symbols||[]).join(' ')).toLowerCase().includes(query))return false;

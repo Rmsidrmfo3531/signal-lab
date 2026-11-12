@@ -75,3 +75,17 @@ export async function translateNewsArticles(articles,{translate,now=Date.now(),p
  await Promise.all(Array.from({length:Math.min(concurrency,articles.length)},async()=>{for(;;){const index=cursor++;if(index>=articles.length)return;await articleAt(index)}}));
  return output;
 }
+
+/**
+ * Default provider when NEWS_TRANSLATION_URL is not set: Google Translate's public web endpoint
+ * (no key). English titles/summaries become Korean; failures leave the original text shown.
+ */
+export async function googleTranslate({text,signal,fetcher=fetch}){
+ const body=new URLSearchParams({q:String(text).slice(0,4500)});
+ const r=await fetcher('https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ko&dt=t',
+  {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body,signal});
+ if(!r.ok)throw Object.assign(Error('TRANSLATION_HTTP'),{code:'TRANSLATION_HTTP'});
+ const data=await r.json();
+ const parts=Array.isArray(data?.[0])?data[0].map(x=>Array.isArray(x)&&typeof x[0]==='string'?x[0]:'').join(''):'';
+ return {translatedText:parts};
+}

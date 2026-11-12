@@ -49,3 +49,12 @@ test('leverage = 10 + score points (1 per point above 90) + market-cap points, w
  const csv=paperCSV([{market:'CRYPTO',symbol:'AKEUSDT',originalQty:2.6,leverage:15,marginUSD:17.33}]).split('\r\n')[1];
  assert.match(csv,/"2\.6","15","17\.33"$/);
 });
+
+import {entryReasons} from '../paper.mjs';
+test('entry reasons: 1H score items that earned points; scalp move/volume/RSI/candle evidence',()=>{
+ assert.deepEqual(entryReasons({scoreBreakdown:[{label:'4H EMA200',weight:15,earned:15},{label:'RSI(14)',weight:10,earned:5},{label:'x'.repeat(50),weight:5,earned:5},{label:'bad',weight:0,earned:0}]}),['4H EMA200 15/15','RSI(14) 5/10']);
+ assert.deepEqual(entryReasons({direction:'LONG',evidence:{movePct:3.2,moveAtr:5.1,climaxVolumeRatio:4.5,rsiPeak:22.4,rejection:'WICK',retracedPct:12}}),
+  ['급락 3.2% (5.1 ATR)','최대 거래량 평소의 4.5배','RSI 22.4까지 과매도','반전 꼬리 확인','되돌림 12%에서 진입']);
+ const engine=new PaperEngine({},{now:()=>START});engine.register(signal({score:92,scoreBreakdown:[{label:'1H EMA20',weight:10,earned:10}]}),{quoteEligible:true});
+ assert.deepEqual(engine.store.pending[0].entryReasons,['1H EMA20 10/10']);
+});

@@ -1,3 +1,5 @@
+// Test servers never call the real translation service.
+process.env.NEWS_TRANSLATION??="off";
 import './mock_network.mjs';
 const previous=globalThis.fetch;
 const t=Date.now()-3601000;

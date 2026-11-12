@@ -78,6 +78,23 @@ export function leverageForScore(score,marketCap=null){
  if(!Number.isFinite(Number(score)))return null;
  return Math.max(LEVERAGE_RANGE.min,Math.min(LEVERAGE_RANGE.max,LEVERAGE_RANGE.min+scoreLeveragePoints(score)+capLeveragePoints(marketCap)));
 }
+// Why the position was opened, in short Korean lines (kept on the record, shown on the card).
+// 1H: the score items that earned points. Scalp: the move, volume climax, RSI and candle evidence.
+export function entryReasons(signal){
+ const out=[],items=Array.isArray(signal?.scoreBreakdown)?signal.scoreBreakdown:[];
+ for(const c of items.slice(0,12)){const w=Number(c?.weight),e=Number(c?.earned);
+  if(typeof c?.label==='string'&&c.label.length<=40&&Number.isFinite(w)&&w>0&&Number.isFinite(e))out.push(`${c.label} ${e}/${w}`)}
+ const ev=signal?.evidence;
+ if(ev&&typeof ev==='object'){
+  const up=signal.direction==='SHORT';
+  if(Number.isFinite(ev.movePct))out.push(`${up?'급등':'급락'} ${ev.movePct}% (${ev.moveAtr} ATR)`);
+  if(Number.isFinite(ev.climaxVolumeRatio))out.push(`최대 거래량 평소의 ${ev.climaxVolumeRatio}배`);
+  if(Number.isFinite(ev.rsiPeak))out.push(`RSI ${ev.rsiPeak}까지 ${up?'과열':'과매도'}`);
+  if(ev.rejection==='WICK')out.push('반전 꼬리 확인');else if(ev.rejection==='CLOSE_BEYOND_PREVIOUS')out.push('직전 봉 넘어 마감');
+  if(Number.isFinite(ev.retracedPct))out.push(`되돌림 ${ev.retracedPct}%에서 진입`);
+ }
+ return out.slice(0,12);
+}
 export const BREAKDOWN_GROUPS=Object.freeze([
  {key:'HOURLY_BINANCE',label:'1시간봉 · 바이낸스 차트'},{key:'HOURLY_VENUE',label:'1시간봉 · Gate.io/BingX 차트'},
  {key:'SCALP_REVERSAL_1M',label:'1분 단타'},{key:'SCALP_REVERSAL_5M',label:'5분 단타'},{key:'SCALP_REVERSAL_15M',label:'15분 단타'},{key:'OTHER',label:'기타·이전 기록'}]);
@@ -216,6 +233,7 @@ export class PaperEngine {
    ...(chartVenue?{chartVenue}:{}),...(Number.isFinite(score)&&score>=0&&score<=100?{score}:{}),
    ...(()=>{const given=Number(signal.leverage),lev=Number.isFinite(given)&&given>=1&&given<=125?Math.round(given):leverageForScore(Number.isFinite(score)&&score>=0&&score<=100?score:NaN,signal.marketCap);return lev?{leverage:lev}:{}})(),
    ...(Number(signal.marketCap)>0?{marketCap:Number(signal.marketCap)}:{}),
+   ...(()=>{const r=entryReasons(signal);return r.length?{entryReasons:r}:{}})(),
    ...(dca?{dca}:{}),
    ...(maxHoldMs?{maxHoldMs}:{}),...(typeof signal.strategy==='string'&&/^[A-Z0-9_]{1,40}$/.test(signal.strategy)?{strategy:signal.strategy}:{}),
    ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),
