@@ -1,4 +1,5 @@
 import {STRICT_MIN_SCORE} from './quality.mjs';
+import {scoreGatePassed} from './signal_policy.mjs';
 import {entryTiming} from './public/trade_plan.js';
 import {estimateBinanceExecution} from './binance_execution.mjs';
 
@@ -10,7 +11,7 @@ export function evaluateSignal(row,context={}){
 
 export function evaluateBinanceSignal(row,{market,book,verified=false,venueConnected=false,price,priceAt,now=Date.now(),limits={},maxAnalysisAgeMs=20*60000}={}){
  const pattern=Boolean(row?.patternConfirmed&&row.pattern),technicalReasons=[...(row?.quality?.failed||[])],
-  scorePassed=Number.isFinite(row?.score)&&row.score>=STRICT_MIN_SCORE,
+  scorePassed=Number.isFinite(row?.score)&&scoreGatePassed(row.score,row?.pattern),
   validationPassed=row?.technicalValidation?.passed===true,
   fresh=Number.isFinite(row?.quality?.validUntil)&&now<=row.quality.validUntil;
  if(!fresh)technicalReasons.push('확정 1H·4H 봉 신선도 만료 또는 재검증 필요');

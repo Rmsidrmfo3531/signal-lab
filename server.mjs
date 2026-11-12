@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {analyze} from './engine.mjs';
-import {configureSignalScorePolicy,getSignalScorePolicy} from './signal_policy.mjs';
+import {configureSignalScorePolicy,getSignalScorePolicy,TREND_GATE_PATTERNS} from './signal_policy.mjs';
 import {structureObservations,historicalPatternObservations} from './observation.mjs';
 import {describeScanFunnel} from './scan_diagnostics.mjs';
 import {binancePerpetualMarkets} from './markets.mjs';
@@ -124,7 +124,7 @@ const CONFIG={
   // user's video lessons (trendline break, 5/20 dead cross) were the profitable ones.
   // SIGNAL_PATTERNS=ALL trades every pattern; or a comma list of pattern names.
   allowedPatterns:(()=>{const v=String(process.env.SIGNAL_PATTERNS??'').trim();if(v.toUpperCase()==='ALL')return null;
-   return v?v.split(',').map(x=>x.trim()).filter(Boolean):['박스권 상단 돌파','상승 추세선 이탈 숏','5/20 데드크로스 숏']})()}
+   return v?v.split(',').map(x=>x.trim()).filter(Boolean):['박스권 상단 돌파','상승 추세선 이탈 숏','5/20 데드크로스 숏',...TREND_GATE_PATTERNS]})()}
 };
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
@@ -533,9 +533,9 @@ async function checkSymbolInternal(symbol, force=false){
       const zoneSets=[{label:'15분봉 '+(deep?.ok?`3일+${CONFIG.dcaZoneDays}일`:'3일'),zones:toZones([...(profileResult?.profile?.hvn||[]),...(deep?.ok?deep.profile.hvn:[])])}];
       out.paperAddInputs={zoneSets,atr:Number(out.atr)||0,tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,takerRate:costs.takerRate};
       // No zone fits: change the timeframe (1h, then 4h) until one does.
-      let preview=zoneScaleInPlan(out,1);
+      let preview=TREND_GATE_PATTERNS.includes(out.pattern)?null:zoneScaleInPlan(out,1);
       for(const f of venueOnly?venueZoneFallbacks:binanceZoneFallbacks){
-       if(preview)break;
+       if(preview||TREND_GATE_PATTERNS.includes(out.pattern))break;
        const r=await f.collector.get(symbol,{tickSize:chartTick,eligible:true}).catch(()=>null);
        if(!r?.ok||!r.profile?.hvn?.length)continue;
        zoneSets.push({label:f.label,zones:toZones(r.profile.hvn)});preview=zoneScaleInPlan(out,1);
@@ -576,11 +576,12 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  // The same fresh approval may be observed by a scan and many ticker events.
  // Persist each paper registration and alert once, including after a restart.
  if(!paper.store.seen[paperKey]){
-  const sizeScale=nextSizeScale(paper.store),adds=zoneScaleInPlan(row,sizeScale);
+  // Study-material patterns keep their pattern stop: no zone adds (paper and live).
+  const noAdds=TREND_GATE_PATTERNS.includes(row.pattern),sizeScale=nextSizeScale(paper.store),adds=noAdds?null:zoneScaleInPlan(row,sizeScale);
   paper.register(adds?{...row,stop:adds.dca.stop,targetPlan:adds.targetPlan,dca:adds.dca,sizeScale,leverage:adds.leverage}:row,{market:'CRYPTO',symbol,quoteEligible:true});
   // The same first publication may also open a live/testnet position (its own checks decide).
   // Venue-only coins are paper only: their charts were never part of the validated backtest.
-  if(LIVE.mode!=='OFF'&&!row.venueOnly)void live.onSignal({...row,decision,execution:decision.execution},{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
+  if(LIVE.mode!=='OFF'&&!row.venueOnly)void live.onSignal({...row,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
  }
  const key=`${symbol}:${direction}:${pattern}:${row.time}`;
  if(persisted.seen[key])return;

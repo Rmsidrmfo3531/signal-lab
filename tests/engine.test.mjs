@@ -11,7 +11,7 @@ test('finished breakout with warmed4H history creates a technical setup without 
  const h1=Array.from({length:149},(_,i)=>{const v=i<118?90+i*.07:100;return{time:t+(i-149)*3600000,open:v,high:v+.35,low:v-.35,close:v,volume:100,closed:true}});
  h1.push({time:t,open:100,high:103,low:99.9,close:102,volume:230,closed:true});
  const h4=Array.from({length:260},(_,i)=>{const v=50+i*.2;return{time:t+(i-260)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
- const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8});assert.equal(r.status,'watch');assert.equal(r.direction,'LONG');assert.equal(r.target1,null);assert.equal(r.targetPlan,null);assert.equal(r.technicalQualified,false);assert.ok(r.quality.failed.length>=1);
+ const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8,trendGatePatterns:[]});assert.equal(r.status,'watch');assert.equal(r.direction,'LONG');assert.equal(r.target1,null);assert.equal(r.targetPlan,null);assert.equal(r.technicalQualified,false);assert.ok(r.quality.failed.length>=1);
 });
 
 test('completed candle breakout is labelled a confirmed chart pattern even if execution is not checked',()=>{
@@ -19,7 +19,7 @@ test('completed candle breakout is labelled a confirmed chart pattern even if ex
  const h1=Array.from({length:149},(_,i)=>{const v=i<118?90+i*.07:100;return{time:t+(i-149)*3600000,open:v,high:v+.35,low:v-.35,close:v,volume:100,closed:true}});
  h1.push({time:t,open:100,high:103,low:99.9,close:102,volume:230,closed:true});
  const h4=Array.from({length:260},(_,i)=>{const v=50+i*.2;return{time:t+(i-260)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
- const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8});
+ const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8,trendGatePatterns:[]});
  assert.equal(r.patternConfirmed,true);
  assert.equal(r.patternTimeframe,'1h');
  assert.ok(r.patternConfirmedAt<=Date.now()+1000);
@@ -31,7 +31,7 @@ test('unfinished last 1h candle cannot create confirmed signal',()=>{
  const h1=Array.from({length:149},(_,i)=>{const v=i<118?90+i*.07:100;return{time:t+(i-149)*3600000,open:v,high:v+.35,low:v-.35,close:v,volume:100,closed:true}});
  h1.push({time:Date.now(),open:100,high:103,low:99.9,close:102,volume:230,closed:false});
  const h4=Array.from({length:260},(_,i)=>{const v=50+i*.2;return{time:t+(i-260)*4*3600000,open:v-.1,high:v+.35,low:v-.35,close:v,volume:300,closed:true}});
- const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8});
+ const r=analyze('BTCUSDT',h1,h4,[],102,{quoteVolume:1e8,trendGatePatterns:[]});
  assert.equal(r.patternConfirmed,false);
  assert.equal(r.status,'neutral');
 });
