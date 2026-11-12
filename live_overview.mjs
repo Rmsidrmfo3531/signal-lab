@@ -60,8 +60,9 @@ export function livePositionView(record,{price=null,now=Date.now()}={}){
 }
 
 /** One closed live trade. realized.source: EXCHANGE (venue fund flow), ESTIMATE, UNKNOWN or PENDING. */
-export function liveClosedView(record){
- const r=record.realized,adds=Array.isArray(record.adds)?record.adds:[];
+export function liveClosedView(record,now=Date.now()){
+ // No settlement within 2 h of the close (older records): shown as unknown, not 'checking'.
+ const r=!record.realized&&record.closedAt>0&&now-record.closedAt>2*3600000?{source:'UNKNOWN'}:record.realized,adds=Array.isArray(record.adds)?record.adds:[];
  const realized=!r?{source:'PENDING',netUSD:null}:r.source==='UNKNOWN'?{source:'UNKNOWN',netUSD:null}
   :{source:r.source,netUSD:num(r.netUSD),pnlUSD:num(r.pnlUSD),feeUSD:num(r.feeUSD),fundingUSD:num(r.fundingUSD),takerRate:num(r.takerRate)};
  return {signalKey:record.signalKey,symbol:record.symbol,asset:asset(record.symbol),venue:record.venue,mode:record.mode,direction:record.direction,leverage:pos(record.leverage),
@@ -72,8 +73,9 @@ export function liveClosedView(record){
 }
 
 /** Closed real (non-test) trades: count, wins and the summed realized result of those with a number. */
-export function liveSummary(records=[]){
- const closed=records.filter(r=>r.status==='CLOSED'&&r.test!==true);
+export function liveSummary(records=[],mode=null,now=Date.now()){
+ // Only the current mode's trades (TESTNET and LIVE results are never mixed).
+ const closed=records.filter(r=>r.status==='CLOSED'&&r.test!==true&&(!mode||r.mode===mode)).map(r=>({...r,realized:liveClosedView(r,now).realized.source==='PENDING'?null:r.realized??{source:'UNKNOWN'}}));
  const known=closed.filter(r=>r.realized&&r.realized.source!=='UNKNOWN'&&num(r.realized.netUSD)!==null);
  const wins=known.filter(r=>Number(r.realized.netUSD)>0).length;
  return {trades:closed.length,settled:known.length,wins,losses:known.length-wins,winRatePct:known.length?round(wins/known.length*100,1):null,
@@ -89,7 +91,7 @@ export function liveOverview({status,records=[],priceOf=()=>null,balance=null,pa
  const price=r=>{try{return pos(priceOf(r))}catch{return null}};
  return {at:now,mode:status.mode,armed:status.armed,killSwitch:status.killSwitch,liveConfirmed:status.liveConfirmed,venues:status.venues,
   credentialsConfigured:status.credentialsConfigured,limits:status.limits,balance,paperTrading:paperTrading===true,
-  positions:active.map(r=>livePositionView(r,{price:price(r),now})),closed:closed.map(liveClosedView),summary:liveSummary(records),
+  positions:active.map(r=>livePositionView(r,{price:price(r),now})),closed:closed.map(r=>liveClosedView(r,now)),summary:liveSummary(records,status.mode,now),
   skipped:(status.skipped||[]).slice(0,20).map(x=>({at:x.at,symbol:x.symbol??null,venue:x.venue??null,reasons:(x.reasons||[x.reason]).filter(Boolean),
    reasonsKo:(x.reasons||[x.reason]).filter(Boolean).map(liveReasonKo)})),
   records:status.records||[]};

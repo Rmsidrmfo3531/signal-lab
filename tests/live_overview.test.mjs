@@ -52,10 +52,10 @@ test('closed trades and summary: venue settlement, estimates marked, pending and
  const closed=r=>({...openRecord(),status:'CLOSED',closedAt:NOW,closeReason:'POSITION_FLAT',...r});
  const records=[closed({realized:{source:'EXCHANGE',pnlUSD:3,feeUSD:-0.2,fundingUSD:-0.05,netUSD:2.75}}),closed({realized:{source:'ESTIMATE',pnlUSD:-1,feeUSD:-0.1,netUSD:-1.1,takerRate:.0006}}),
   closed({}),closed({realized:{source:'UNKNOWN'}}),closed({test:true,closeReason:'TEST_CLOSE',realized:{source:'EXCHANGE',netUSD:100}}),openRecord()];
- const s=liveSummary(records);
+ const s=liveSummary(records,null,NOW);
  assert.deepEqual({trades:s.trades,settled:s.settled,wins:s.wins,losses:s.losses,winRatePct:s.winRatePct,netUSD:s.netUSD,estimated:s.estimated,pending:s.pending,unknown:s.unknown,tests:s.tests},
   {trades:4,settled:2,wins:1,losses:1,winRatePct:50,netUSD:1.65,estimated:1,pending:1,unknown:1,tests:1});
- const views=records.slice(0,5).map(liveClosedView);
+ const views=records.slice(0,5).map(r=>liveClosedView(r,NOW));
  assert.match(closedCardHTML(views[0]),/\+\$2\.75[\s\S]*거래소 정산[\s\S]*수수료 −\$0\.20/);
  assert.match(closedCardHTML(views[1]),/−\$1\.10 추정[\s\S]*0\.06% 가정/);
  assert.match(closedCardHTML(views[2]),/정산 확인 중/);assert.match(closedCardHTML(views[3]),/확인 불가/);assert.match(closedCardHTML(views[4]),/시험 주문/);
@@ -96,8 +96,8 @@ function fakeBingX({income=()=>[]}={}){
 }
 
 test('executor observation: position snapshot, first entry, exits and the venue settlement after the close (read only)',async()=>{
- let now=NOW;const fake=fakeBingX({income:(q,s)=>s.incomeCalls<2?[]:[{symbol:'DOGE-USDT',incomeType:'REALIZED_PNL',income:'0.9',time:now-5000},{symbol:'DOGE-USDT',incomeType:'TRADING_FEE',income:'-0.05',time:now-5000},
-  {symbol:'DOGE-USDT',incomeType:'FUNDING_FEE',income:'-0.01',time:now-4000},{symbol:'BTC-USDT',incomeType:'REALIZED_PNL',income:'50',time:now-4000},{symbol:'DOGE-USDT',incomeType:'REALIZED_PNL',income:'7',time:NOW-7200000}]});
+ let now=NOW;const fake=fakeBingX({income:(q,s)=>s.incomeCalls<2?[]:[{symbol:'DOGE-USDT',incomeType:'REALIZED_PNL',income:'0.9',time:NOW+40000},{symbol:'DOGE-USDT',incomeType:'TRADING_FEE',income:'-0.05',time:NOW+40000},
+  {symbol:'DOGE-USDT',incomeType:'FUNDING_FEE',income:'-0.01',time:NOW+41000},{symbol:'BTC-USDT',incomeType:'REALIZED_PNL',income:'50',time:NOW+41000},{symbol:'DOGE-USDT',incomeType:'REALIZED_PNL',income:'7',time:NOW-7200000}]});
  const ex=new LiveExecutor({config:liveConfig({LIVE_TRADING_MODE:'TESTNET'}),clients:{BINGX:fake.client},directory:tmp(),now:()=>now,priceOf:()=>0.204});
  const record=openRecord({firstEntryPrice:undefined});ex.store.records.push(record);
  await ex.reconcile();
@@ -110,6 +110,8 @@ test('executor observation: position snapshot, first entry, exits and the venue 
  // Flat: the record closes, the venue fund flow is read until it lists the trade.
  now+=15000;fake.state.amt=0;await ex.reconcile();
  assert.equal(record.status,'CLOSED');assert.equal(record.exits.length,2);assert.equal(record.exits[1].price,0.204,'flat: the public price at detection');
+ now+=15000;await ex.reconcile();assert.equal(fake.state.incomeCalls,0,'no read until SETTLE_DELAY_MS after the close (a late final fill)');
+ now+=135000;await ex.reconcile();
  assert.equal(record.realized,undefined,'no settlement listed yet: no number');
  now+=15000;await ex.reconcile();
  assert.deepEqual({...record.realized,at:undefined},{source:'EXCHANGE',pnlUSD:0.9,feeUSD:-0.05,fundingUSD:-0.01,netUSD:0.84,at:undefined},'only this symbol and this trade\'s lifetime');
@@ -123,7 +125,7 @@ test('executor settlement falls back to a marked estimate when the venue never l
  const record=openRecord({adds:[]});ex.store.records.push(record);
  await ex.reconcile();now+=15000;fake.state.amt=0;fake.state.mark=0.21;await ex.reconcile();
  assert.equal(record.status,'CLOSED');assert.deepEqual(record.exits.map(e=>[e.qty,e.price]),[[100,0.205]],'no public price: the last venue mark');
- for(let i=0;i<5;i++){now+=15000;await ex.reconcile()}
+ now+=150000;for(let i=0;i<5;i++){now+=15000;await ex.reconcile()}
  assert.equal(record.realized.source,'ESTIMATE');assert.equal(record.settleAttempts,4);
  const fee=(0.2+0.205)*100*record.realized.takerRate;
  assert.ok(Math.abs(record.realized.netUSD-(0.5-fee))<1e-3);assert.ok(record.realized.feeUSD<0);
@@ -138,4 +140,13 @@ test('BingX fund-flow read is a signed GET with only the given parameters',async
  const rows=await client.income({symbol:'DOGE-USDT',startTime:NOW-1000,endTime:NOW});
  assert.equal(rows[0].income,'1');assert.equal(seen[0].method,'GET');assert.equal(seen[0].url.origin,LIVE_HOSTS.BINGX.TESTNET);assert.equal(seen[0].url.pathname,'/openApi/swap/v2/user/income');
  assert.deepEqual([...seen[0].url.searchParams.keys()].sort(),['endTime','limit','recvWindow','signature','startTime','symbol','timestamp']);
+});
+
+test('summary counts only the current mode; a close with no settlement after 2 h shows as unknown',()=>{
+ const closed=r=>({...openRecord(),status:'CLOSED',closedAt:NOW,closeReason:'POSITION_FLAT',...r});
+ const recs=[closed({mode:'TESTNET',realized:{source:'EXCHANGE',netUSD:5}}),closed({mode:'LIVE',liveConfirmed:true,realized:{source:'EXCHANGE',netUSD:-3}})];
+ assert.equal(liveSummary(recs,'TESTNET',NOW).netUSD,5);assert.equal(liveSummary(recs,'LIVE',NOW).netUSD,-3);
+ assert.equal(liveClosedView(closed({}),NOW+60000).realized.source,'PENDING');
+ assert.equal(liveClosedView(closed({}),NOW+2*3600000+1).realized.source,'UNKNOWN');
+ assert.equal(liveSummary([closed({})],null,NOW+3*3600000).unknown,1);
 });

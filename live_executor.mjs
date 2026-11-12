@@ -32,7 +32,9 @@ const num=v=>{const x=Number(v);return Number.isFinite(x)?x:null};
 const posNum=v=>{const x=num(v);return x>0?x:null};
 // Venue units (lots / contracts) to base-asset units.
 const baseUnits=(record,qty)=>record.venueContract?.quantityUnit==='CONTRACT'?qty*(Number(record.venueContract.contractSizeBase)||0):qty;
-const SETTLE_TRIES=4,SETTLE_WINDOW_MS=2*3600000;
+// The venue lists fund-flow rows a little after a fill, and the read window ends 120 s after the
+// close: the first read waits SETTLE_DELAY_MS so a late last fill (the final stop) is not missed.
+const SETTLE_TRIES=4,SETTLE_WINDOW_MS=2*3600000,SETTLE_DELAY_MS=150000;
 
 export class LiveExecutor{
  constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null}={}){
@@ -375,7 +377,7 @@ export class LiveExecutor{
    }catch(error){this.#event(record,'RECONCILE_ERROR',{reason:error.code||error.message})}
   }
   // Realized result of closed trades (read only): the venue's own settlement, else an estimate.
-  for(const record of this.store.records.filter(r=>r.status==='CLOSED'&&!r.test&&!r.realized&&(r.settleAttempts||0)<SETTLE_TRIES&&r.closedAt>0&&this.now()-r.closedAt<SETTLE_WINDOW_MS)){
+  for(const record of this.store.records.filter(r=>r.status==='CLOSED'&&!r.test&&!r.realized&&(r.settleAttempts||0)<SETTLE_TRIES&&r.closedAt>0&&this.now()-r.closedAt>=SETTLE_DELAY_MS&&this.now()-r.closedAt<SETTLE_WINDOW_MS)){
    try{await this.#settle(record)}catch(error){this.#event(record,'SETTLE_ERROR',{reason:error.code||error.message})}
   }
   this.#save();
