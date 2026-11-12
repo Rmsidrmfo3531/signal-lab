@@ -1,5 +1,5 @@
 import {seededEMA,evaluateIndicators} from './indicators.mjs';
-import {FINAL_MIN_SCORE as STRICT_MIN_SCORE,getSignalScorePolicy,scoreGatePassed} from './signal_policy.mjs';
+import {FINAL_MIN_SCORE as STRICT_MIN_SCORE,getSignalScorePolicy,scoreGatePassed,TREND_GATE_PATTERNS,TREND_GATE_MIN_SCORE} from './signal_policy.mjs';
 export {FINAL_MIN_SCORE as STRICT_MIN_SCORE} from './signal_policy.mjs';
 
 /** Issue #6: one 100-point evidence score, never a probability or permission. */
@@ -83,7 +83,7 @@ export function gradeSetup({direction,h1,h4,atr1h,volumeRatio,entry,stop,price=e
  return {score,scoreVersion:SCORE_VERSION,minimumScore:STRICT_MIN_SCORE,scorePolicy:getSignalScorePolicy(),passed:validationPassed&&thresholdPassed,
   validationPassed,thresholdPassed,checkedAt:now,validUntil:finite(lastCloseAt)&&finite(fourCloseAt)?
    Math.min(lastCloseAt+75*60000,fourCloseAt+255*60000):null,
-  failed:[...failed,...(!ready?['평가불가: 지표 또는 4H 이력 부족']:!thresholdPassed?['종합점수 '+STRICT_MIN_SCORE+'점 미만']:[])],
+  failed:[...failed,...(!ready?['평가불가: 지표 또는 4H 이력 부족']:!thresholdPassed?[TREND_GATE_PATTERNS.includes(pattern)?'종합점수 '+TREND_GATE_MIN_SCORE+'점 미만(추세 패턴)':'종합점수 '+STRICT_MIN_SCORE+'점 미만']:[])],
   missingBonus:[],checks,validationChecks,rule:SCORE_VERSION,
   technicalValidation:{passed:validationPassed,reasons:failed,checks:validationChecks},
   indicators:{...readings,score,checks,scoreVersion:SCORE_VERSION},policy:SCORE_POLICY,

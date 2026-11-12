@@ -1,6 +1,6 @@
 // Only a signal still present in the exact current final-results view may
 // cause a Telegram message. Scores and technical candidates are not enough.
-import {TREND_GATE_PATTERNS} from './signal_policy.mjs';
+import {TREND_GATE_PATTERNS,TREND_GATE_MIN_SCORE} from './signal_policy.mjs';
 
 export function finalTelegramMatch(alert, currentFinalSignals, finalMinScore = 90) {
   if (!alert || !Array.isArray(currentFinalSignals) ||
@@ -10,7 +10,7 @@ export function finalTelegramMatch(alert, currentFinalSignals, finalMinScore = 9
     row.status === 'signal' &&
     row.qualified === true &&
     // 90+ points, or an approved 4H-trend study-material pattern (signal_policy TREND_GATE_PATTERNS).
-    Number.isFinite(row.score) && (row.score >= finalMinScore || TREND_GATE_PATTERNS.includes(row.pattern)) && row.score <= 100 &&
+    Number.isFinite(row.score) && (row.score >= finalMinScore || TREND_GATE_PATTERNS.includes(row.pattern) && row.score >= TREND_GATE_MIN_SCORE) && row.score <= 100 &&
     (row.direction === 'LONG' || row.direction === 'SHORT') &&
     row.symbol === alert.symbol &&
     row.direction === alert.direction &&
