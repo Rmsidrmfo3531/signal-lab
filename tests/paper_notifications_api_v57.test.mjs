@@ -21,7 +21,7 @@ test('paper notification API: get/toggle/test/store history without synthetic po
  const launch=()=>{
   assert.equal(didClose,true,'the previous server must close its stdio handles before restart');
   didClose=false;
-  child=trackChild(spawn(process.execPath,['--import','./tests/mock_runtime.mjs','server.mjs'],{cwd:sandbox,env:{...process.env,PORT:String(p),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:dataDir,AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false'},stdio:'ignore'}));
+  child=trackChild(spawn(process.execPath,['--import','./tests/mock_runtime.mjs','server.mjs'],{cwd:sandbox,env:{...process.env,PORT:String(p),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:dataDir,AUTO_UPDATE:'false',TELEGRAM_NEWS_ALERTS:'false',PAPER_TRADING:''},stdio:'ignore'}));
   child.once('close',()=>{didClose=true});
  };
  const base=`http://127.0.0.1:${p}`;
@@ -44,17 +44,19 @@ test('paper notification API: get/toggle/test/store history without synthetic po
   assert.equal(closeTest.body.event.realizedPnLUSD,3.52);
   prefs=await get('/api/paper/notifications');assert.deepEqual(prefs.history,[],'test must not fabricate a trade');
   assert.equal((await get('/api/paper')).closedCount,0);
-  const html=await (await request(base+'/')).text();assert.match(html,/paperNoticeToggle/);assert.match(html,/paperNoticeHistory/);
-  const js=await (await request(base+'/paper_ui.js')).text();assert.match(js,/paper-event/);
+  // The paper screen is gone (paper trading off by default); the switches stay on the server.
+  const html=await (await request(base+'/')).text();assert.doesNotMatch(html,/paperNoticeToggle|paper_ui\.js/);
   // 알림 설정: one endpoint for every server-side switch; the page offers all of them.
   let all=await get('/api/notifications/settings');
   assert.equal(all.telegramSignals,true,'final-signal Telegram stays on by default');assert.equal(all.telegramPaper,false);assert.equal(all.windowsPaper,true);
+  assert.equal(all.paperTrading,false,'the settings page hides the paper switches while paper trading is off');
   assert.equal((await post('/api/notifications/settings',{telegramSignals:'off'})).status,400);
   all=(await post('/api/notifications/settings',{telegramSignals:false,telegramPaper:true})).body;
   assert.equal(all.telegramSignals,false);assert.equal(all.telegramPaper,true);
   assert.equal((await get('/api/paper/notifications')).telegram.enabled,true,'paper page sees the same switch');
   assert.match(html,/id="notifySettings"/);const panel=await (await request(base+'/notify_settings.js')).text();
   for(const key of ['telegramSignals','telegramPaper','windowsPaper','signalScreen','paperScreen','sound'])assert.match(panel,new RegExp(key));
+  assert.match(panel,/paper:true/);assert.match(panel,/server\?\.paperTrading===true/);
   await post('/api/paper/notifications/settings',{enabled:false});
   await stopChild(child,{killTree:true});
   launch();let restored;

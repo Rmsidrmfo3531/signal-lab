@@ -38,6 +38,7 @@ import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays,dca
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
+import {liveOverview,checkLiveLevels} from './live_overview.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
 
@@ -68,6 +69,10 @@ const CONFIG={
  tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
  // Paper entries / closes to Telegram (opt-in on the paper page; needs the bot token and chat ID above).
  paperTelegram:process.env.PAPER_TELEGRAM==='true'?true:process.env.PAPER_TELEGRAM==='false'?false:null,
+ // Automatic paper trading (new paper positions, 1/5/15m scalps, paper notices) is OFF by default since
+ // live/testnet orders are the main path (user, 2026-11-12). PAPER_TRADING=on brings it back.
+ // Off, stored paper records stay untouched in store.json.
+ paperTrading:/^(on|true|1|yes)$/i.test(String(process.env.PAPER_TRADING||'').trim()),
  newsMs:Math.max(60000,Number(process.env.NEWS_POLL_MS||90000)),
  maxRiskUSD:Number(process.env.PAPER_MAX_RISK_USD||6),
  // Paper positions open at once (1-10). Each new one is half the size of the newest open one.
@@ -166,7 +171,7 @@ persisted.paperNotify.telegram=persisted.paperNotify.telegram===true;
 // Server-side notification switches (알림 설정 page). Missing keys keep today's behaviour.
 if(!persisted.notifySettings||typeof persisted.notifySettings!=='object'||Array.isArray(persisted.notifySettings))persisted.notifySettings={};
 persisted.notifySettings.telegramSignals=persisted.notifySettings.telegramSignals!==false;
-function notificationSettings(){return {telegramSignals:persisted.notifySettings.telegramSignals,telegramPaper:paperTelegramOn(),windowsPaper:persisted.paperNotify.enabled===true,
+function notificationSettings(){return {paperTrading:CONFIG.paperTrading,telegramSignals:persisted.notifySettings.telegramSignals,telegramPaper:paperTelegramOn(),windowsPaper:persisted.paperNotify.enabled===true,
  telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),telegramPaperForced:CONFIG.paperTelegram!==null,windowsSupported:process.platform==='win32'}}
 const paperTelegramOn=()=>CONFIG.paperTelegram===true||CONFIG.paperTelegram===null&&persisted.paperNotify.telegram===true;
 // Create the first shared store file even if no trading event occurs yet.
@@ -233,8 +238,24 @@ function liveClients(){
  if(process.env.GATEIO_API_KEY&&process.env.GATEIO_API_SECRET)clients.GATEIO=new GateTradeClient({apiKey:process.env.GATEIO_API_KEY,secret:process.env.GATEIO_API_SECRET,mode,now:venueNow('GATEIO')});
  return clients;
 }
-const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status)});
-const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,maxPositions:CONFIG.paperMaxPositions,maxPerDirection:CONFIG.paperMaxPositions/2,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>emitPaperNotice(event)});
+const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),
+ priceOf:record=>livePublicPrice(record)});
+// The venue's public mid price for a live record (screen and exit estimates only; never an order input).
+function livePublicPrice(record){const book=venueBooks.get(record.venue+':'+record.symbol);return book?.ok&&Number.isFinite(book.mid)&&Date.now()-book.receivedAt<60000?book.mid:null}
+function liveRecordPrice(record){const p=record.position;return p?.markPrice>0&&Date.now()-p.at<90000?p.markPrice:livePublicPrice(record)}
+// Account equity for the 실매매 screen: read at most every 30 s, only while the screen asks for it.
+const liveBalance={venue:null,usd:null,at:0,error:'',pending:null};
+async function liveBalanceSnapshot(){
+ const venue=LIVE.venues.find(v=>live.credentials()[v]);
+ if(LIVE.mode==='OFF'||!venue)return null;
+ if(Date.now()-liveBalance.at>=30000&&!liveBalance.pending){
+  liveBalance.pending=live.accountBalance(venue).then(usd=>Object.assign(liveBalance,{venue,usd:Number.isFinite(usd)?usd:null,error:''}),
+   e=>Object.assign(liveBalance,{venue,error:e.code||'BALANCE_UNAVAILABLE'})).finally(()=>{liveBalance.at=Date.now();liveBalance.pending=null});
+ }
+ if(liveBalance.pending&&!liveBalance.at)await liveBalance.pending;
+ return {venue:liveBalance.venue,usd:liveBalance.usd,at:liveBalance.at||null,error:liveBalance.error||null,capUSD:LIVE.balanceCapUSD||null};
+}
+const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,maxPositions:CONFIG.paperMaxPositions,maxPerDirection:CONFIG.paperMaxPositions/2,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>{if(CONFIG.paperTrading)emitPaperNotice(event)}});
 
 // ---- Execution venue books (BingX / Gate.io) -------------------------------------
 // Latest validated book per venue+symbol. Refreshed for technically qualified setups
@@ -262,8 +283,23 @@ async function refreshVenueBook(venue,symbol,{maxAgeMs=0}={}){
 }
 function feedPaperFromVenue(venue,symbol,book){
  if(!book?.ok||!Number.isFinite(book.mid))return;
- paper.onPrice('CRYPTO',symbol,book.mid,book.sourceTime,{venue,halfSpreadBps:book.spreadBps/2,quoteFresh:true,
-  entryAllowed:cryptoEntryAllowed(symbol,Date.now())});
+ // Re-checks the symbol's approval on every venue quote: this publishes final signals (and so live
+ // entries) also for coins without a Binance price feed, with or without paper trading.
+ const entryAllowed=cryptoEntryAllowed(symbol,Date.now());
+ if(CONFIG.paperTrading)paper.onPrice('CRYPTO',symbol,book.mid,book.sourceTime,{venue,halfSpreadBps:book.spreadBps/2,quoteFresh:true,entryAllowed});
+}
+/** Manual stop / TP change of an open live position: checked against its current price, then only
+ * the changed levels go to LiveExecutor.setLevels (new stop before the old one is cancelled). */
+async function liveLevels(body){
+ if(typeof body?.key!=='string'||body.key.length>300)return [400,{ok:false,reasons:['KEY_REQUIRED']}];
+ if(LIVE.mode==='OFF')return [409,{ok:false,reasons:['LIVE_MODE_OFF']}];
+ const record=live.store.records.find(r=>r.signalKey===body.key&&r.status==='OPEN');
+ if(!record)return [404,{ok:false,reasons:['POSITION_NOT_FOUND']}];
+ const check=checkLiveLevels(record,{stop:body.stop??null,targets:Array.isArray(body.targets)?body.targets:null},{price:liveRecordPrice(record)});
+ if(!check.ok)return [400,check];
+ if(!check.changed)return [200,{ok:true,changed:false}];
+ const result=await live.setLevels(body.key,{stop:check.stop,targets:check.targets});
+ return [result.ok?200:409,{...result,changed:true,live:result}];
 }
 let venueRefreshActive=false,venueRefreshCycle=0;
 async function refreshVenueExecution(){
@@ -273,7 +309,9 @@ async function refreshVenueExecution(){
   const add=(map,v,s)=>{if(!map.has(v))map.set(v,new Set());map.get(v).add(s)};
   // Open/pending positions always get a quote every cycle (stops and TPs depend on it), including
   // positions on a venue that is now on hold, until they close.
-  for(const record of [...paper.store.pending,...paper.store.open]){const v=record.executionVenue;if(v&&venueQuotes.clients[v])add(held,v,record.symbol)}
+  if(CONFIG.paperTrading)for(const record of [...paper.store.pending,...paper.store.open]){const v=record.executionVenue;if(v&&venueQuotes.clients[v])add(held,v,record.symbol)}
+  // Live positions: a fresh public price for the screen (the executor reads the position itself).
+  for(const record of live.store.records)if(['SUBMITTING','OPEN','UNKNOWN'].includes(record.status)&&venueQuotes.clients[record.venue])add(held,record.venue,record.symbol);
   for(const row of state.analyses.values())if(row.technicalQualified===true&&row.executionVenue&&cand.has(row.executionVenue)&&now-row.scannedAt<2*3600000)
    add(cand,row.executionVenue,row.symbol);
   // BingX allows about one public request per second: held symbols first, then new candidates up to
@@ -623,7 +661,7 @@ function publishCryptoSignal(row,decision,now=Date.now()){
   })().catch(e=>console.error('[LIVE]',e.message));
  // The same fresh approval may be observed by a scan and many ticker events.
  // Persist each paper registration and alert once, including after a restart.
- if(!paper.store.seen[paperKey]){
+ if(CONFIG.paperTrading&&!paper.store.seen[paperKey]){
   const sizeScale=nextSizeScale(paper.store),adds=noAdds?null:zoneScaleInPlan(row,sizeScale);
   paper.register(adds?{...row,stop:adds.dca.stop,targetPlan:adds.targetPlan,dca:adds.dca,sizeScale,leverage:adds.leverage}:row,{market:'CRYPTO',symbol,quoteEligible:true});
  }
@@ -753,7 +791,8 @@ let marketWs, retryMs=1500; const changed=new Map();
 function cryptoEntryAllowed(symbol,now=Date.now()){
  if(!storageHealth.healthy||!scannedSymbol(symbol)||state.rest!=='connected')return false;
  // A scalp entry is approved by its own 5m detection; it lives until its short expiry.
- const scalpPending=paper.store.pending.find(x=>x.market==='CRYPTO'&&x.symbol===symbol&&isScalpStrategy(x.strategy));
+ // (Paper off: a stored scalp entry no longer holds the symbol.)
+ const scalpPending=CONFIG.paperTrading&&paper.store.pending.find(x=>x.market==='CRYPTO'&&x.symbol===symbol&&isScalpStrategy(x.strategy));
  if(scalpPending)return now<=scalpPending.expiresAt;
  const analysis=state.analyses.get(symbol);
  if(!analysis?.patternConfirmed||!analysis.technicalQualified)return false;
@@ -771,11 +810,11 @@ function cryptoEntryAllowed(symbol,now=Date.now()){
 }
 // ---- 5m reversal scalp mode (paper only) ----
 const moveTracker=new MoveTracker();
-const scalpState={enabled:CONFIG.scalpMode,mode:'PAPER_ONLY',minMovePct:CONFIG.scalpMinMovePct,dca:{enabled:CONFIG.dcaMode,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds,zoneDays:CONFIG.dcaZoneDays,paperBalanceUSD:CONFIG.paperBalanceUSD,marginMode:'CROSS'},lastRunAt:0,lastCandidates:[],checks:0,signals:[],recentRejects:[],error:''};
+const scalpState={enabled:CONFIG.scalpMode&&CONFIG.paperTrading,mode:'PAPER_ONLY',minMovePct:CONFIG.scalpMinMovePct,dca:{enabled:CONFIG.dcaMode,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct,maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds,zoneDays:CONFIG.dcaZoneDays,paperBalanceUSD:CONFIG.paperBalanceUSD,marginMode:'CROSS'},lastRunAt:0,lastCandidates:[],checks:0,signals:[],recentRejects:[],error:''};
 const scalpChecked=new Map(); // symbol -> last evaluated candle close time
 let scalpActive=false;
 async function runScalpCheck(now=Date.now()){
- if(!CONFIG.scalpMode||scalpActive||state.rest!=='connected'||!storageHealth.healthy)return;
+ if(!scalpState.enabled||scalpActive||state.rest!=='connected'||!storageHealth.healthy)return;
  scalpActive=true;
  try{
   // One job per (symbol, timeframe): the symbol moved at least that timeframe's move size within its window.
@@ -840,7 +879,8 @@ async function runScalpCheck(now=Date.now()){
  }catch(e){scalpState.error=e.message}
  finally{scalpActive=false}
 }
-if(CONFIG.scalpMode)setInterval(()=>void runScalpCheck(),CONFIG.scalpIntervalMs).unref?.();
+// Scalps are paper-only: they run only with paper trading on.
+if(scalpState.enabled)setInterval(()=>void runScalpCheck(),CONFIG.scalpIntervalMs).unref?.();
 function connectWS(){
  let endpoint=0;let retryTimer=null;
  const urls=['wss://fstream.binance.com/market/ws/!miniTicker@arr','wss://fstream.binance.com/market/stream?streams=!miniTicker@arr'];
@@ -872,8 +912,10 @@ function connectWS(){
      // Keep Binance's source event clock next to the receipt time.
      p.exchangePriceAt=typeof q.E==='number'&&Number.isFinite(q.E)&&q.E>0?q.E:null;
      if(q.q)p.quoteVolume=Number(q.q);state.quotes.set(q.s,p);changed.set(q.s,[q.s,p.price,p.priceAt]);
-     if(CONFIG.scalpMode)moveTracker.record(q.s,price,p.priceAt);
-     paper.onPrice('CRYPTO',q.s,p.price,p.priceAt,{venue:'BINANCE',entryAllowed:cryptoEntryAllowed(q.s,p.priceAt)});priceLevelTrigger(q.s,previous,p.price);valid++;
+     if(scalpState.enabled)moveTracker.record(q.s,price,p.priceAt);
+     // The approval check also publishes final signals (and live entries) without paper trading.
+     const entryAllowed=cryptoEntryAllowed(q.s,p.priceAt);
+     if(CONFIG.paperTrading)paper.onPrice('CRYPTO',q.s,p.price,p.priceAt,{venue:'BINANCE',entryAllowed});priceLevelTrigger(q.s,previous,p.price);valid++;
     }
     if(valid){received=true;state.ws='connected';state.lastTickerAt=Date.now();state.lastTickerCount+=valid;send('status',getStatus())}
     else if(payload.code || payload.error)state.error='바이낸스 시세 스트림 오류: '+JSON.stringify(payload).slice(0,140);
@@ -897,7 +939,7 @@ setInterval(()=>{
  }
 },30000);
 function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.researchSymbols,assess:row=>assessAnalysis(row)});}
-function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',sharedData:{dir:storage.dir,separateEnv:path.dirname(storage.envPath)!==storage.dir,pcs:sharedCheck.hosts.map(h=>({host:h.host,lastAt:h.lastAt,current:h.current})),conflicts:sharedCheck.conflicts,sharedEnvLeft:Boolean(storage.sharedEnvLeft)},venueOnly:{enabled:CONFIG.venueOnly.enabled,...state.venueOnlyInfo,referenceRatio:CONFIG.venueOnly.referenceRatio,references:CONFIG.venueOnly.references,symbols:[...state.venueOnlySet].slice(0,40)},live:{mode:LIVE.mode,armed:live.armed,killSwitch:live.store.killSwitch},paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
+function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',sharedData:{dir:storage.dir,separateEnv:path.dirname(storage.envPath)!==storage.dir,pcs:sharedCheck.hosts.map(h=>({host:h.host,lastAt:h.lastAt,current:h.current})),conflicts:sharedCheck.conflicts,sharedEnvLeft:Boolean(storage.sharedEnvLeft)},venueOnly:{enabled:CONFIG.venueOnly.enabled,...state.venueOnlyInfo,referenceRatio:CONFIG.venueOnly.referenceRatio,references:CONFIG.venueOnly.references,symbols:[...state.venueOnlySet].slice(0,40)},live:{mode:LIVE.mode,armed:live.armed,killSwitch:live.store.killSwitch},paperTrading:CONFIG.paperTrading,paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
  intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:{maxQuoteAgeSeconds:15,maxFeedAgeSeconds:90,maxSpreadBps:20,maxRiskUSD:CONFIG.maxRiskUSD,minNetRR:1.8,analysisOnly:true},
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
@@ -1086,7 +1128,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,marketError:state.marketError});
   if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:storageHealth.healthy,updatedByServer:true,...storageHealth,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
   if(pathname==='/api/paper'&&req.method==='GET')return response(res,200,{
-   ...paper.snapshot(),marginMode:'CROSS',accountBalanceUSD:Math.round(paperAccountBalance()*100)/100,storage:{...storageHealth},monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
+   enabled:CONFIG.paperTrading,...paper.snapshot(),marginMode:'CROSS',accountBalanceUSD:Math.round(paperAccountBalance()*100)/100,storage:{...storageHealth},monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
    scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,scanMode:state.scanMode,activeCount:state.activeSymbols.length}})
   });
   // One place for every server-side notification switch.
@@ -1130,6 +1172,9 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
+  // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
+  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,liveOverview({status:live.status(),records:live.store.records,
+   priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading}));
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
@@ -1161,6 +1206,7 @@ const server=http.createServer(async(req,res)=>{
     try{return response(res,200,{...(await live.testRoundTrip(row,{holdMs:5000})),liveStatus:live.status()})}
     catch(error){return response(res,error.httpStatus||500,{error:error.message})}
    }
+   if(pathname==='/api/live/levels'){const [status,payload]=await liveLevels(body);return response(res,status,payload)}
    if(pathname==='/api/live/reset-kill'){if(body.confirm!=='RESET')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,live.resetKill())}
    return response(res,404,{error:'LIVE_ROUTE_NOT_FOUND'});
   }
@@ -1245,6 +1291,10 @@ const server=http.createServer(async(req,res)=>{
    const body=await bodyJson(req);
    if(typeof body?.key!=='string'||body.key.length>300)return response(res,400,{ok:false,reasons:['KEY_REQUIRED']});
    const wanted={stop:body.stop??null,targets:Array.isArray(body.targets)?body.targets:null};
+   // A live position without a paper record (paper trading off): checked and applied on its own.
+   if(![...paper.store.open,...paper.store.pending].some(x=>x.key===body.key)&&live.store.records.some(r=>r.signalKey===body.key&&r.status==='OPEN')){
+    const [status,payload]=await liveLevels(body);return response(res,status,payload);
+   }
    const check=paper.setLevels(body.key,wanted,{dryRun:true});
    if(!check.ok)return response(res,400,check);
    if(!check.levels.changed)return response(res,200,{ok:true,changed:false,levels:check.levels});
@@ -1293,6 +1343,7 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
  if(awake.started){process.on('exit',awake.stop);console.log('[POWER] 서버가 켜져 있는 동안 PC 절전 진입을 막습니다 (화면은 꺼질 수 있음, KEEP_AWAKE=false로 끔).')}
  console.log(`\nSignal Lab (PC) → http://127.0.0.1:${CONFIG.port}`);
  console.log(`[DATA] Records: ${storage.dir}`);
+ console.log(CONFIG.paperTrading?'[PAPER] 자동 모의매매 켜짐 (PAPER_TRADING=on)':'[PAPER] 자동 모의매매 꺼짐 · 실매매 화면 사용 (다시 켜려면 PAPER_TRADING=on)');
  console.log(`[DATA] Settings (.env): ${storage.envPath}`);
  if(storage.movedSharedEnv)console.log('[DATA] 공유 폴더의 설정(.env)을 이 PC 전용 위치로 복사했습니다. 이제 이 PC 설정이 사용됩니다.');
  if(storage.sharedEnvLeft)console.warn(`[DATA] 주의: 공유(OneDrive) 폴더에 .env가 남아 있습니다 → ${storage.sharedEnvLeft}\n       텔레그램 토큰 등 비밀값이 클라우드에 올라가 있으니, 두 PC 모두 새 버전으로 한 번 실행한 뒤 이 파일을 지우세요.`);
@@ -1321,7 +1372,7 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
  setTimeout(()=>void runVenueOnlyScan(),CONFIG.venueOnly.startDelayMs);setInterval(()=>void runVenueOnlyScan(),CONFIG.venueOnly.intervalMs);
  // Retry market discovery quickly after an API failure rather than staying empty for 4 minutes.
  setInterval(()=>{if(!state.activeSymbols.length&&!state.researchSymbols.length&&!state.scanActive){state.marketLastRetry=Date.now();void runScan()}},20000);
- setInterval(()=>{try{if(!storageHealth.healthy)save();paper.expirePending()}catch(e){console.warn('[PAPER STORAGE]',e.message)}},15000);
+ setInterval(()=>{try{if(!storageHealth.healthy)save();if(CONFIG.paperTrading)paper.expirePending()}catch(e){console.warn('[PAPER STORAGE]',e.message)}},15000);
  setTimeout(()=>pollNews().catch(e=>console.warn('[NEWS]',e.message)),2000);setInterval(()=>pollNews().catch(e=>{state.newsStatus='offline';state.newsError=e.message;console.warn('[NEWS]',e.message)}),CONFIG.newsMs);
 });
 server.on('error',err=>{

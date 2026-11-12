@@ -1,6 +1,7 @@
 // 알림 설정: every notification can be switched on/off in one panel.
-// Server switches (Telegram final signals, Telegram/Windows paper notices) live on the server and
-// apply to every screen; screen switches (pop-ups, sound) are kept in this browser only.
+// Server switches (Telegram final signals; Telegram/Windows paper notices only while PAPER_TRADING=on)
+// live on the server and apply to every screen; screen switches (pop-ups, sound) stay in this browser.
+// Paper notice switches are hidden while automatic paper trading is off (the default).
 const KEY='signalLab.notify.v1';
 export const SCREEN_DEFAULTS=Object.freeze({signalScreen:true,paperScreen:true,sound:true});
 export function screenNotify(){
@@ -12,12 +13,14 @@ function saveScreen(next){try{localStorage.setItem(KEY,JSON.stringify(next))}cat
 
 const SERVER_ROWS=[
  {key:'telegramSignals',label:'텔레그램 · 최종 신호',hint:'90점 이상·검증 통과 신호 (종목·방향·배율·수량)'},
- {key:'telegramPaper',label:'텔레그램 · 모의 진입/청산',hint:'모의 포지션 진입·청산 결과 (실제 주문 없음)'},
- {key:'windowsPaper',label:'Windows · 모의 진입/청산',hint:'서버가 실행 중인 PC의 알림 센터'}];
+ {key:'telegramPaper',label:'텔레그램 · 모의 진입/청산',hint:'모의 포지션 진입·청산 결과 (실제 주문 없음)',paper:true},
+ {key:'windowsPaper',label:'Windows · 모의 진입/청산',hint:'서버가 실행 중인 PC의 알림 센터',paper:true}];
 const SCREEN_ROWS=[
  {key:'signalScreen',label:'화면 · 신호 팝업',hint:'이 브라우저의 신호 토스트·시스템 알림'},
- {key:'paperScreen',label:'화면 · 모의 진입/청산 팝업',hint:'모의 화면을 열어 둔 동안의 알림'},
- {key:'sound',label:'화면 · 알림 소리',hint:'신호·모의 알림 때 짧은 소리'}];
+ {key:'paperScreen',label:'화면 · 모의 진입/청산 팝업',hint:'모의 화면을 열어 둔 동안의 알림',paper:true},
+ {key:'sound',label:'화면 · 알림 소리',hint:'신호 알림 때 짧은 소리'}];
+// Paper rows only when the server reports automatic paper trading on.
+export const visibleRows=(rows,server)=>rows.filter(r=>!r.paper||server?.paperTrading===true);
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let server=null;
 async function loadServer(){try{const r=await fetch('/api/notifications/settings');server=r.ok?await r.json():null}catch{server=null}render()}
@@ -27,13 +30,13 @@ function row({key,label,hint},checked,disabled,note){
 function render(){
  const box=document.getElementById('notifySettings');if(!box)return;
  const screen=screenNotify();
- const serverRows=SERVER_ROWS.map(r=>{
+ const serverRows=visibleRows(SERVER_ROWS,server).map(r=>{
   if(!server)return row(r,false,true,'서버 설정을 불러오지 못했습니다');
   const tg=r.key.startsWith('telegram'),off=tg&&!server.telegramConfigured?'텔레그램 미설정 (.env에 TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID 필요)'
    :r.key==='telegramPaper'&&server.telegramPaperForced?'PAPER_TELEGRAM 설정으로 고정됨':r.key==='windowsPaper'&&!server.windowsSupported?'Windows가 아닌 서버':'';
   return row(r,server[r.key]===true,Boolean(off),off);
  }).join('');
- box.innerHTML=`<div class="notify-group"><p>서버 알림 · 모든 화면에 적용</p>${serverRows}</div><div class="notify-group"><p>화면 알림 · 이 브라우저만</p>${SCREEN_ROWS.map(r=>row(r,screen[r.key],false)).join('')}</div><p class="notify-status" id="notifySettingsStatus" aria-live="polite"></p>`;
+ box.innerHTML=`<div class="notify-group"><p>서버 알림 · 모든 화면에 적용</p>${serverRows}</div><div class="notify-group"><p>화면 알림 · 이 브라우저만</p>${visibleRows(SCREEN_ROWS,server).map(r=>row(r,screen[r.key],false)).join('')}</div><p class="notify-status" id="notifySettingsStatus" aria-live="polite"></p>`;
 }
 document.addEventListener('change',async e=>{
  const input=e.target.closest?.('input[data-notify]');if(!input)return;

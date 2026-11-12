@@ -6,13 +6,13 @@ import vm from 'node:vm';
 const html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
 const css=fs.readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');
 const script=fs.readFileSync(new URL('../public/workspace_nav.js',import.meta.url),'utf8');
-const routes=['overview','scanner','paper','news','alerts','journal'];
+const routes=['overview','scanner','live','news','alerts','journal'];
 
 test('navigation separates every functional panel without removing any stateful UI elements',()=>{
  const markers=[...html.matchAll(/<section\b[^>]*data-workspace-route="([^"]+)"/g)].map(x=>x[1]);
  assert.equal(markers.length,9,'TradFi and BingX·Gate.io quote pages were removed at the user\'s request');
  for(const route of routes)assert.ok(markers.includes(route),'missing route: '+route);
- for(const id of ['scanner','paper','workGrid','execution','news','alerts','journal','chartPanel'])
+ for(const id of ['scanner','live','workGrid','execution','news','alerts','journal','chartPanel'])
   assert.match(html,new RegExp('id="'+id+'"'),'missing existing view '+id);
  assert.match(html,/<script type="module" src="\/workspace_nav\.js"><\/script>/);
  assert.match(css,/\[data-workspace-route\]\[hidden\]\{display:none!important\}/);
@@ -20,7 +20,7 @@ test('navigation separates every functional panel without removing any stateful 
 });
 
 test('hash routing keeps panels mounted and routes chart aliases to overview',()=>{
- const sections=['scanner','paper','overview','overview','overview','overview','news','alerts','journal']
+ const sections=['scanner','live','overview','overview','overview','overview','news','alerts','journal']
   .map((route,i)=>({dataset:{workspaceRoute:route},id:'p'+i,hidden:false,attributes:{},
    setAttribute(k,v){this.attributes[k]=v}}));
  const mkLink=hash=>({hash,attributes:{},classList:{flags:new Set(),toggle(k,v){if(v)this.flags.add(k);else this.flags.delete(k)}},
@@ -38,9 +38,12 @@ test('hash routing keeps panels mounted and routes chart aliases to overview',()
  assert.equal(sections.filter(s=>!s.hidden).length,1);
  assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'scanner');
  assert.equal(links[1].attributes['aria-current'],'page');
- window.location.hash='#paper';window.handlers.hashchange();
+ window.location.hash='#live';window.handlers.hashchange();
  assert.equal(sections.filter(s=>!s.hidden).length,1);
- assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'paper');
+ assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'live');
+ // An old #paper bookmark opens the 실매매 page that replaced it.
+ window.location.hash='#paper';window.handlers.hashchange();
+ assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'live');
  window.location.hash='#chartPanel';window.handlers.hashchange();
  assert.equal(sections.filter(s=>!s.hidden).length,4);
  assert.ok(sections.filter(s=>!s.hidden).every(s=>s.dataset.workspaceRoute==='overview'));

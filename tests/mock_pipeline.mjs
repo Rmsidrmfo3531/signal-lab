@@ -29,6 +29,10 @@ globalThis.fetch=async(input,options={})=>{
   if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:'/sendMessage',text})+'\n');
   return json({ok:true,result:{message_id:1}});
  }
+ // BingX TESTNET (VST) host, only when a test asks for it (control().fakeBingxTestnet): an in-memory
+ // fake account so the live order path can run end to end. Nothing leaves this process. The real
+ // live host (open-api.bingx.com) still refuses every write below.
+ if(url.hostname==='open-api-vst.bingx.com'&&control().fakeBingxTestnet)return fakeBingxTestnet(url,options);
  if(!['GET','HEAD'].includes((options.method||'GET').toUpperCase()))throw Error('Test transport forbids external write methods');
  if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:url.pathname,interval:url.searchParams.get('interval')})+'\n');
  if(url.hostname==='fapi.binance.com'){
@@ -95,6 +99,32 @@ globalThis.fetch=async(input,options={})=>{
  if(['decrypt.co','www.coindesk.com','cointelegraph.com'].includes(url.hostname))return new Response('<rss><channel></channel></rss>',{headers:{'content-type':'application/xml'}});
  throw Error('Test transport blocked external destination: '+url.hostname);
 };
+const vst={orders:[],positions:new Map(),id:5000};
+function fakeBingxTestnet(url,options){
+ const method=(options.method||'GET').toUpperCase(),q=Object.fromEntries(url.searchParams),p=url.pathname,ok=data=>json({code:0,msg:'',data});
+ // Logged without the query (it carries the signature): method and path only.
+ if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,method,path:p,type:q.type??null,stopPrice:q.stopPrice??null})+'\n');
+ const mark=symbol=>price(String(symbol).replace('-',''));
+ if(p==='/openApi/swap/v1/positionSide/dual')return ok({dualSidePosition:'false'});
+ if(p==='/openApi/swap/v3/user/balance')return ok([{asset:'USDT',balance:'100000',equity:'100000',availableMargin:'100000'}]);
+ if(p==='/openApi/swap/v2/trade/marginType')return method==='GET'?ok({marginType:'CROSSED'}):ok({});
+ if(p==='/openApi/swap/v2/trade/leverage')return method==='GET'?ok({maxLongLeverage:50,maxShortLeverage:50}):ok({symbol:q.symbol,leverage:Number(q.leverage)});
+ if(p==='/openApi/swap/v2/trade/order'&&method==='POST'){
+  const o={orderId:String(++vst.id),symbol:q.symbol,type:q.type,side:q.side,clientOrderId:q.clientOrderId??null,quantity:q.quantity,price:q.price??null,stopPrice:q.stopPrice??null};
+  if(q.type==='MARKET'&&!q.reduceOnly){
+   const avg=mark(q.symbol),sign=q.side==='BUY'?1:-1;vst.positions.set(q.symbol,{amt:sign*Number(q.quantity),avg});o.avgPrice=String(avg);
+   if(q.stopLoss){const sl=JSON.parse(q.stopLoss);vst.orders.push({orderId:String(++vst.id),symbol:q.symbol,type:'STOP_MARKET',stopPrice:String(sl.stopPrice)})}
+  }else vst.orders.push(o);
+  return ok({order:o});
+ }
+ if(p==='/openApi/swap/v2/trade/order'&&method==='GET'){const o=vst.orders.find(x=>x.clientOrderId===q.clientOrderId);return o?ok({order:o}):json({code:80016,msg:'order not exist'})}
+ if(p==='/openApi/swap/v2/trade/order'&&method==='DELETE'){vst.orders=vst.orders.filter(o=>o.orderId!==q.orderId);return ok({order:{orderId:q.orderId}})}
+ if(p==='/openApi/swap/v2/trade/openOrders')return ok({orders:vst.orders.filter(o=>o.symbol===q.symbol)});
+ if(p==='/openApi/swap/v2/user/positions'){const x=vst.positions.get(q.symbol);
+  return ok(x&&x.amt?[{symbol:q.symbol,positionAmt:String(x.amt),avgPrice:String(x.avg),markPrice:String(mark(q.symbol)),unrealizedProfit:String((mark(q.symbol)-x.avg)*x.amt)}]:[])}
+ if(p==='/openApi/swap/v2/user/income')return ok([]);
+ throw Error('fake BingX testnet: unexpected '+method+' '+p);
+}
 globalThis.WebSocket=class SyntheticWebSocket extends EventTarget{
  static OPEN=1;
  constructor(url){super();this.url=String(url);this.readyState=0;this.lastTrigger=null;

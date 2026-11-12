@@ -1,9 +1,9 @@
 // Client-side section routing: panels remain mounted so streaming prices,
-// chart state and existing paper/journal data are never reset on navigation.
+// chart state, live positions and journal data are never reset on navigation.
 const workspaceRoutes = Object.freeze({
   overview: '대시보드 · 차트',
   scanner: '최종 신호 · 스캐너',
-  paper: '자동 모의매매 PNL',
+  live: '실매매',
   news: '시황 · 뉴스',
   alerts: '알림 · 시스템 상태',
   journal: '매매일지 · 위험관리'
@@ -12,7 +12,9 @@ const workspaceAliases = Object.freeze({
   chartPanel: 'overview',
   workGrid: 'overview',
   execution: 'overview',
-  matched: 'overview'
+  matched: 'overview',
+  // Old bookmarks of the removed 자동 모의매매 page open the 실매매 page.
+  paper: 'live'
 });
 const workspaceSections = [...document.querySelectorAll('.content > [data-workspace-route]')];
 const workspaceHeading = document.querySelector('.page-head h1');
