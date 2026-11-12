@@ -499,6 +499,13 @@ export class LiveExecutor{
   try{if(record.venue==='BINGX')await this.clients.BINGX.cancelOrder(record.venueSymbol,id);else{
    // Gate.io protective/target orders are price-triggered orders.
    await this.clients.GATEIO.cancelTrigger(id)}}
-  catch(error){this.#event(record,'CANCEL_FAILED',{orderId:id,reason:error.code||error.message})}
+  catch(error){
+   // BingX removes a position's stop/target orders by itself when the position goes flat, so a
+   // cancel of those fails (e.g. 109400). If the order is no longer open, that is not a failure.
+   if(record.venue==='BINGX'){
+    const open=await this.clients.BINGX.openOrders(record.venueSymbol).catch(()=>null),list=open?.orders??(Array.isArray(open)?open:null);
+    if(list&&!list.some(o=>String(o?.orderId??o?.orderID)===String(id))){this.#event(record,'ORDER_ALREADY_GONE',{orderId:id,reason:error.code||error.message});return}
+   }
+   this.#event(record,'CANCEL_FAILED',{orderId:id,reason:error.code||error.message})}
  }
 }
