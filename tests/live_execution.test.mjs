@@ -100,7 +100,8 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60,balanceCapUSD:0});
+ assert.equal(liveConfig({LIVE_BALANCE_CAP_USD:'400'}).balanceCapUSD,400);
  assert.equal(liveConfig({LIVE_SIZING:'risk_usd'}).sizing,'RISK_USD');
  assert.equal(liveConfig({LIVE_TRADING_MODE:'live',LIVE_TRADING_CONFIRM:'REAL_MONEY'}).liveConfirmed,true);
  assert.equal(liveConfig({LIVE_TRADING_MODE:'yolo'}).mode,'OFF');assert.equal(liveConfig({LIVE_MAX_RISK_USD:'1000'}).maxRiskUSD,2,'out-of-range values fall back');
@@ -313,4 +314,12 @@ test('an add that fills after the position went flat is closed at market and tra
  await gx.reconcile();const r=gx.store.records[0];
  assert.equal(r.status,'CLOSED');assert.equal(r.closeReason,'LATE_ADD_AFTER_FLAT');assert.equal(gx.store.killSwitch,true);
  assert.ok(g.calls.some(c=>c.method==='POST'&&c.body?.close===true&&c.path.endsWith('/orders')),'market close sent');
+});
+
+test('LIVE_BALANCE_CAP_USD: a 100,000 virtual USDT testnet is sized like a $400 account',async()=>{
+ const zones=[97,94,91].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ const m=mockBingX();
+ const ex=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60,balanceCapUSD:400}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}}),{signalKey:'cap'});
+ const r=ex.store.records[0];assert.equal(r.balanceUSD,400);assert.equal(r.quantity.total,0.13,'400 x 0.19% x 18 = 13.68 USDT -> 0.13 ETH');
 });
