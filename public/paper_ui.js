@@ -24,6 +24,13 @@ function crossLiquidation(t,open,balance){
  const x=t.direction==='LONG'?(cost-eq)/(q*(1-mm)):(eq+cost)/(q*(1+mm));
  return x>0?x:0;
 }
+// Split buys: each add (1차, 2차 ...) with its zone price, size and fill, or 대기 while resting.
+function addsLine(t){
+ const adds=t.dca?.adds;if(!Array.isArray(adds)||!adds.length)return '';
+ const base=esc(String(t.symbol||'').replace(/USDT$/,''));
+ const items=adds.map((a,i)=>`<li class="${a.filled?'add-filled':'add-waiting'}"><b>추매 ${i+1}차</b> ${fmt(a.price)} · ${fmt(a.quantity)} ${base} · ${a.filled?`체결 ${fmt(a.fill)}`:t.closeParts?.some(x=>x.type==='TARGET')?'취소(1차 익절 후)':'대기'}</li>`).join('');
+ return `<details class="paper-adds" ${t.dca.filledAdds?'open':''}><summary>추매 ${t.dca.filledAdds||0}/${adds.length}회 체결${Number.isFinite(t.firstEntryFill)?` · 첫 진입 ${fmt(t.firstEntryFill)} → 평균 ${fmt(t.entryFill)}`:''} · 손절 ${fmt(t.stop)}</summary><ul>${items}</ul></details>`;
+}
 const LEVEL_REASONS={STOP_ALREADY_CROSSED:'손절가가 이미 현재가를 넘었습니다',STOP_INVALID:'손절가 숫자 오류',STOP_BEYOND_TARGET:'손절가가 목표가보다 바깥에 있습니다',
  MANUAL_STOP_EXCEEDS_RISK_LIMIT:'실주문 1회 손실 한도를 넘는 손절폭입니다',LIVE_STOP_NOT_PLACED:'거래소에 새 손절 주문을 넣지 못했습니다(기존 손절 유지)',
  POSITION_NOT_FOUND:'포지션이 이미 종료되었습니다',SYMBOL_BUSY:'거래소 주문 처리 중입니다. 잠시 후 다시 시도하세요',LIVE_POSITION_FLAT:'거래소 포지션이 이미 없습니다'};
@@ -162,7 +169,7 @@ function render(payload){
   const dir=t.direction==='LONG'?1:-1,gain=t.qtyRemaining*dir*(t.markPrice-t.entryFill);
   const lev=positionLeverage(t),margin=lev?t.qtyRemaining*t.entryFill/lev.value:null,roe=margin>0?gain/margin*100:null;
   const liq=crossLiquidation(t,open,payload.accountBalanceUSD);
-  const base=esc(String(t.symbol||'').replace(/USDT$/,''));
+  const base=esc(String(t.symbol||'').replace(/USDT$/,'')),addsDone=t.dca?.adds?.some(a=>a.filled)&&Number.isFinite(t.firstEntryFill);
   const rows=t.closeParts?.map(p=>`<small>${p.type==='STOP'?'손절':p.type==='TIME'?'시간 청산':p.targetNumber+'차 익절'} ${fmt(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('')||'';
   const cell=(label,value,cls='')=>`<div class="pos-cell ${cls}"><span>${label}</span><b>${value}</b></div>`;
   return `<article class="paper-trade paper-position"><header class="position-head">
@@ -175,12 +182,14 @@ function render(payload){
     ${cell('수량',`${fmt(t.qtyRemaining)} ${base}${t.originalQty&&t.originalQty!==t.qtyRemaining?` <small>/ 처음 ${fmt(t.originalQty)}</small>`:''}`)}
     ${cell(frozen?'마지막 저장 시세 평가 (현재 평가 아님)':'미실현 손익',`<span class="${resultClass(gain)}">${usd(gain)}${roe!=null?` (${roe>=0?'+':''}${roe.toFixed(2)}%)`:''}</span>${frozen?' <small>최신 시세 미검증</small>':stale?' <small>시세 지연</small>':''}`)}
     ${cell('증거금',margin!=null?'$'+margin.toFixed(2):'—')}
-    ${cell('진입가',fmt(t.entryFill))}
+    ${addsDone?cell('진입가 <small>첫 진입</small>',fmt(t.firstEntryFill)):''}
+    ${cell(addsDone?'평균 진입가':'진입가',fmt(t.entryFill))}
     ${cell('현재가',fmt(t.markPrice))}
     ${cell('예상 청산가 <small>교차 마진</small>',liq!=null&&liq>0?fmt(liq):liq===0?'없음':'—')}
     ${cell('손절',fmt(t.stop))}
     ${cell('명목금액','$'+(t.qtyRemaining*t.entryFill).toFixed(2))}
    </div>
+   ${addsLine(t)}
    ${reasonLine(t)}
    <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))} · 분할익절 ${t.exitedPct||0}% · 수수료 등 $${fmt(t.feesUSD)}</small>
    <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div>${t.manualLevels?'<small class="paper-management-mode">손절·TP 직접 수정됨</small>':''}${dcaCaption(t)}${levelsEditor(t)}</article>`;
