@@ -52,7 +52,7 @@ export function positionCardHTML(p){
  const addsLine=pending.length?pending.map(a=>`${a.n}차 ${pf(a.price)} · ${qtyFmt(a.qty)} ${esc(p.asset)}`).join(' / '):'없음';
  const curNote=p.currentPriceSource==='EXCHANGE'?'거래소 표시가':p.currentPriceSource==='VENUE_BOOK'?'거래소 호가 중간값':'시세 대기';
  const pnl=u?`<b class="${pnlClass(u.usd)}">${usd(u.usd)}${fin(u.pct)?` (${Number(u.pct)>=0?'+':''}${Number(u.pct).toFixed(2)}%)`:''}</b><small>${u.source==='EXCHANGE'?'거래소 계산':'추정 (평균가·현재가)'}${fin(u.pct)?' · 증거금 대비':''}</small>`:'<b>—</b><small>시세 대기</small>';
- const ev=p.lastEvent?`${esc(p.lastEvent.label)}${p.lastEvent.reason?' · '+esc(p.lastEvent.reason):''} · ${time(p.lastEvent.at)}`:'—';
+ const ev=p.lastEvent?`${esc(p.lastEvent.label)}${p.lastEvent.reason?' · '+esc(p.lastEvent.reasonKo||p.lastEvent.reason):''} · ${time(p.lastEvent.at)}`:'—';
  return `<article class="paper-trade live-position${p.status==='UNKNOWN'?' live-warn':''}">
  <header><b>${esc(p.symbol)}</b>${side(p.direction)}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · ${esc(LABEL[p.venue]||p.venue)}</span><span class="live-state s-${esc(p.status)}">${esc(p.statusKo||LIVE_STATUS[p.status]||p.status)}</span></header>
  <div class="paper-trade-values live-values">
@@ -115,12 +115,12 @@ export const levelReason=r=>LEVEL_REASONS[r]||(/^TP(\d)_ALREADY_FILLED$/.test(r)
 
 function recordsRows(records){
  if(!records?.length)return '<tr><td colspan="8">주문 기록 없음</td></tr>';
- return records.map(r=>`<tr><td>${time(r.createdAt)}</td><td>${esc(LABEL[r.venue]||r.venue)}</td><td>${esc(r.symbol)}</td><td>${esc(r.direction)}</td><td>${esc(r.quantity?.total??'—')} ${r.quantity?.unit==='CONTRACT'?'계약':''}</td><td>$${Number(r.plannedRiskUSD||0).toFixed(2)}</td><td>${esc(LIVE_STATUS[r.status]||r.status)}${r.test?' · 시험':''}</td><td>${r.lastEvent?esc(r.lastEvent.type+(r.lastEvent.reason?' · '+r.lastEvent.reason:'')):'—'}${r.deletable?` <button type="button" class="ghost small" data-live-delete="${esc(r.signalKey)}">삭제</button>`:''}</td></tr>`).join('');
+ return records.map(r=>`<tr><td>${time(r.createdAt)}</td><td>${esc(LABEL[r.venue]||r.venue)}</td><td>${esc(r.symbol)}</td><td>${side(r.direction)}</td><td>${esc(r.quantity?.total??'—')} ${r.quantity?.unit==='CONTRACT'?'계약':''}</td><td>$${Number(r.plannedRiskUSD||0).toFixed(2)}</td><td>${esc(LIVE_STATUS[r.status]||r.status)}${r.test?' · 시험':''}</td><td>${r.lastEventKo?esc(r.lastEventKo):r.lastEvent?esc(r.lastEvent.type):'—'}${r.deletable?` <button type="button" class="ghost small" data-live-delete="${esc(r.signalKey)}">삭제</button>`:''}</td></tr>`).join('');
 }
 
 function render(o){
  const $=id=>document.getElementById(id),m=modeInfo(o.mode);
- for(const [id,text] of [['liveHeading',m.title],['navLiveLabel',m.title]])if($(id))$(id).textContent=text;
+ for(const [id,text] of [['liveHeading',m.title],['navLiveLabel','실매매']])if($(id))$(id).textContent=text;
  if($('navLiveMode'))$('navLiveMode').textContent=m.badge;
  if($('liveModeBadge'))$('liveModeBadge').innerHTML=modeBadgeHTML(o);
  const status=$('liveStatus');

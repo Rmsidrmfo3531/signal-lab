@@ -19,7 +19,14 @@ export const LIVE_EVENT_KO=Object.freeze({
  STOP_TO_BREAKEVEN:'손절을 본절로 이동',BREAKEVEN_SKIPPED_STOP_ALREADY_BETTER:'손절이 이미 본절보다 유리',CLOSED:'포지션 종료',SETTLED:'거래소 정산 확인',
  MANUAL_STOP:'손절 직접 수정',MANUAL_TARGET:'목표 직접 수정',TARGET_FAILED:'목표 주문 실패',STOP_FAILED:'손절 주문 실패',EMERGENCY_CLOSED:'긴급 청산',
  RECONCILE_ERROR:'거래소 확인 오류',ENTRY_REJECTED:'진입 거절',REJECTED:'주문 거절',ENTRY_OUTCOME_UNKNOWN:'진입 결과 불명',RESTART_WHILE_SUBMITTING:'주문 중 서버 재시작',
- TEST_CLOSED:'시험 주문 청산',SETTLE_READ_FAILED:'정산 조회 실패',ERROR:'오류'});
+ TEST_CLOSED:'시험 주문 청산',SETTLE_READ_FAILED:'정산 조회 실패',ERROR:'오류',ORDER_ALREADY_GONE:'거래소가 이미 정리한 주문',CANCELLED_BY_EXACT_ID:'주문 취소 (정확한 번호로)',
+ CANCEL_FAILED:'주문 취소 실패',TEST_CLOSE_DEFERRED:'시험 청산 대기',TEST_CLOSE_INCOMPLETE:'시험 청산 미완료',LATE_ADD_CLOSED:'청산 뒤 체결된 추매 정리',LATE_ADD_CLOSE_FAILED:'청산 뒤 추매 정리 실패'});
+/** A venue / internal reason code in short Korean (VENUE_ERROR_109400 -> 거래소 오류 109400). */
+export function liveCodeKo(code){
+ const t=String(code??'');if(!t)return '';
+ const m=/^VENUE_ERROR_(\w+)$/.exec(t);if(m)return '거래소 오류 '+m[1];
+ return LIVE_REASON_KO[t]||LIVE_EVENT_KO[t]||({NETWORK_UNREACHABLE:'네트워크 연결 실패',TIMEOUT:'응답 시간 초과',POSITION_CHECK_FAILED:'포지션 확인 실패'})[t]||t;
+}
 
 const num=v=>{if(v===null||v===undefined||v==='')return null;const x=Number(v);return Number.isFinite(x)?x:null};
 const pos=v=>{const x=num(v);return x!==null&&x>0?x:null};
@@ -33,7 +40,7 @@ const baseQty=(record,qty)=>qty===null?null:record.venueContract?.quantityUnit==
 const asset=symbol=>String(symbol||'').replace(/USDT$/,'');
 function lastEvent(record){
  const e=record.lastEvent??record.events?.at(-1);if(!e)return null;
- return {type:e.type,label:LIVE_EVENT_KO[e.type]||e.type,reason:e.reason??null,at:e.at??null};
+ return {type:e.type,label:LIVE_EVENT_KO[e.type]||e.type,reason:e.reason??null,reasonKo:e.reason?liveCodeKo(e.reason):null,at:e.at??null};
 }
 const FRESH_MS=90000;
 
@@ -94,7 +101,7 @@ export function liveOverview({status,records=[],priceOf=()=>null,balance=null,pa
   positions:active.map(r=>livePositionView(r,{price:price(r),now})),closed:closed.map(r=>liveClosedView(r,now)),summary:liveSummary(records,status.mode,now),
   skipped:(status.skipped||[]).slice(0,20).map(x=>({at:x.at,symbol:x.symbol??null,venue:x.venue??null,reasons:(x.reasons||[x.reason]).filter(Boolean),
    reasonsKo:(x.reasons||[x.reason]).filter(Boolean).map(liveReasonKo)})),
-  records:status.records||[]};
+  records:(status.records||[]).map(r=>({...r,statusKo:LIVE_STATUS_KO[r.status]||r.status,lastEventKo:r.lastEvent?(LIVE_EVENT_KO[r.lastEvent.type]||r.lastEvent.type)+(r.lastEvent.reason?' · '+liveCodeKo(r.lastEvent.reason):''):null}))};
 }
 
 /** Manual stop / target change on an open live position (the paper record no longer exists).
