@@ -381,3 +381,12 @@ test('a skipped signal is retried at most every 30 s (no balance read on every t
  ex.arm();assert.equal((await ex.onSignal(row('BINGX'),{signalKey:'w1'})).status,'OPEN','arming clears the wait');
  now+=1000;assert.deepEqual((await ex.onSignal(row('BINGX'),{signalKey:'w1'})).reasons,['DUPLICATE_SIGNAL']);
 });
+
+test('a record left SUBMITTING by a restart becomes UNKNOWN and blocks new entries',async()=>{
+ const dir=tmp(),m=mockBingX();const a=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});a.arm();
+ await a.onSignal(row('BINGX'),{signalKey:'s1'});
+ const file=path.join(dir,'live-orders.json'),stored=JSON.parse(fs.readFileSync(file,'utf8'));stored.records[0].status='SUBMITTING';fs.writeFileSync(file,JSON.stringify(stored));
+ const b=new LiveExecutor({config:config({maxOpen:4}),clients:{BINGX:m.client},directory:dir,now:()=>NOW});b.arm();
+ assert.equal(b.store.records[0].status,'UNKNOWN');assert.equal(b.canTry('x'),true);
+ assert.ok((await b.onSignal(row('BINGX',{symbol:'SOLUSDT'}),{signalKey:'s2'})).reasons.includes('UNRESOLVED_ORDER_STATE'));
+});

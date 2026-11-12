@@ -31,7 +31,7 @@ import {LiveExecutor} from './live_executor.mjs';
 import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
 import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues,routeLiveSignal,venueStop} from './venue_execution.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
-import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore,evenPositions} from './paper.mjs';
+import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore,evenPositions,PAPER_DEFAULTS} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays,dcaZoneDaysFor} from './dca_plan.mjs';
@@ -596,12 +596,19 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  // offered while the executor is armed, not only the first publication. So arming (or a restart)
  // trades the signals of the current hour right away; each signal is still ordered at most once.
  // Venue-only coins are paper only: their charts were never part of the validated backtest.
- if(LIVE.mode!=='OFF'&&!row.venueOnly&&live.armed&&!live.hasSignal(paperKey))
+ // Bounded like the paper entry: at most PAPER_DEFAULTS.entryTimeoutMs (20 min) after the 1H close
+ // (the backtest enters on the first 5m candle; later entries are not validated).
+ const liveWindow=Number.isFinite(row.patternConfirmedAt)&&now-row.patternConfirmedAt<=PAPER_DEFAULTS.entryTimeoutMs;
+ if(LIVE.mode!=='OFF'&&!row.venueOnly&&live.armed&&liveWindow&&!live.hasSignal(paperKey)&&live.canTry(paperKey))
   void (async()=>{
-   // The other venues' quotes are refreshed first, so a signal of the current hour can still be
-   // routed (routeLiveSignal needs a quote at most 15 s old).
-   const fresh=await freshLiveAlternatives(row).catch(()=>row.liveAlternatives);
-   return live.onSignal(routeLiveSignal({...row,liveAlternatives:fresh,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{enabled:LIVE.venues,credentials:live.credentials()}),{signalKey:paperKey});
+   // Only when the paper venue has no live keys, the other venues' quotes are refreshed so the
+   // signal can be routed (routeLiveSignal needs a quote at most 15 s old).
+   const keys=live.credentials(),needRoute=!(LIVE.venues.includes(row.executionVenue)&&keys[row.executionVenue]);
+   const fresh=needRoute?await freshLiveAlternatives(row).catch(()=>row.liveAlternatives):row.liveAlternatives;
+   // The approval is re-assessed after the wait: an approval that went stale meanwhile is not ordered.
+   const now2=Date.now(),current=assessAnalysis(row,now2);
+   if(!current.ready||now2-row.patternConfirmedAt>PAPER_DEFAULTS.entryTimeoutMs)return;
+   return live.onSignal(routeLiveSignal({...row,liveAlternatives:fresh,...(noAdds?{paperAddInputs:null}:{}),decision:current,execution:current.execution},{enabled:LIVE.venues,credentials:keys,now:now2}),{signalKey:paperKey});
   })().catch(e=>console.error('[LIVE]',e.message));
  // The same fresh approval may be observed by a scan and many ticker events.
  // Persist each paper registration and alert once, including after a restart.
