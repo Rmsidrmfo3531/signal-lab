@@ -8,6 +8,11 @@
 //  - A failed or timed-out entry is never resent blindly: its client id is looked up
 //    first. An unknown outcome blocks new entries until a person checks the account.
 //  - The kill switch blocks new entries and never removes protective stops.
+//  - BALANCE sizing (default): the account balance is read before every entry and the
+//    position follows the paper split-buy rule (1 unit, then resting limit adds of 1, 2, 4 ...
+//    units at volume zones, one stop beyond the last add for the whole position). Each new
+//    position while others are open is half the size. Filled adds resize the targets; adds
+//    still resting are cancelled once TP1 fills or the position is flat.
 //  - Before every entry the symbol is set to CROSS margin and the signal's leverage
 //    (score + market cap, 10-30x; capped at the venue maximum). If either cannot be set
 //    and read back, the entry is not sent.
@@ -15,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {leverageForScore} from './paper.mjs';
-import {bingxOrders,gateOrders,liveClientId,liveQuantity,preflight} from './live_orders.mjs';
+import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight} from './live_orders.mjs';
 
 const MAX_RECORDS=300,MAX_EVENTS=40;
 const pick=(data,...keys)=>{for(const k of keys)if(data?.[k]!==undefined&&data[k]!==null&&data[k]!=='')return data[k];return undefined};
@@ -34,7 +39,7 @@ export class LiveExecutor{
  credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
  status(){
   return {mode:this.config.mode,armed:this.armed,killSwitch:this.store.killSwitch,liveConfirmed:this.config.liveConfirmed,venues:this.config.venues,
-   credentialsConfigured:this.credentials(),limits:{maxRiskUSD:this.config.maxRiskUSD,dailyMaxRiskUSD:this.config.dailyMaxRiskUSD,maxOpen:this.config.maxOpen},
+   credentialsConfigured:this.credentials(),limits:{sizing:this.config.sizing,unitPct:this.config.unitPct,maxLossPct:this.config.maxLossPct,dailyMaxLossPct:this.config.dailyMaxLossPct,maxRiskUSD:this.config.maxRiskUSD,dailyMaxRiskUSD:this.config.dailyMaxRiskUSD,maxOpen:this.config.maxOpen},
    records:this.store.records.slice(-30).reverse().map(({events,...r})=>({...r,lastEvent:events?.at(-1)??null})),skipped:this.store.skipped.slice(-20).reverse()};
  }
  arm(){
@@ -50,15 +55,31 @@ export class LiveExecutor{
  /** Called once per newly published final signal (already venue-checked). */
  async onSignal(row,{signalKey}){
   const venue=row?.executionVenue,contract=row?.venueContract&&{...row.venueContract,symbol:row.symbol};
-  const qty=contract?liveQuantity({quantity:row.targetPlan?.quantity,estimatedStopLossUSD:row.execution?.estimatedStopLossUSD,maxRiskUSD:this.config.maxRiskUSD,contract}):null;
-  const check=preflight({config:this.config,armed:this.armed,killSwitch:this.store.killSwitch,credentials:this.credentials(),row,records:this.store.records,now:this.now(),qty});
   const clientOrderId=liveClientId(signalKey);
   if(this.store.records.some(r=>r.clientOrderId===clientOrderId))return {sent:false,reasons:['DUPLICATE_SIGNAL']};
+  const leverage=Number(row?.leverage)>0?Math.round(Number(row.leverage)):leverageForScore(row?.score,row?.marketCap)??10;
+  let qty=null,split=null,config=this.config,extra=[];
+  if(this.config.sizing==='BALANCE'){
+   // Read the balance only when an order could actually be sent.
+   const gateOpen=this.config.mode!=='OFF'&&this.armed&&!this.store.killSwitch&&this.config.venues.includes(venue)&&this.credentials()[venue]&&contract;
+   if(gateOpen){
+    let balanceUSD=null;try{balanceUSD=await this.#balance(venue)}catch(error){extra.push('BALANCE_UNAVAILABLE')}
+    if(balanceUSD>0){
+     const active=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).length;
+     split=liveSplitPlan({row,balanceUSD,leverage,sizeScale:.5**active,config:this.config});
+     if(split){qty=split.qty;row={...row,stop:split.stop}}
+     config={...this.config,dailyMaxRiskUSD:balanceUSD*this.config.dailyMaxLossPct/100};
+     split&&(split.balanceUSD=balanceUSD);
+    }else if(!extra.length)extra.push('BALANCE_EMPTY');
+   }
+  }else qty=contract?liveQuantity({quantity:row.targetPlan?.quantity,estimatedStopLossUSD:row.execution?.estimatedStopLossUSD,maxRiskUSD:this.config.maxRiskUSD,contract}):null;
+  const check=preflight({config,armed:this.armed,killSwitch:this.store.killSwitch,credentials:this.credentials(),row,records:this.store.records,now:this.now(),qty});
+  if(extra.length){check.ok=false;check.reasons=[...extra,...check.reasons.filter(r=>r!=='QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK')]}
   if(!check.ok){this.store.skipped=[...this.store.skipped,{at:this.now(),symbol:row?.symbol,venue,reasons:check.reasons}].slice(-50);this.onChange(this.status());return {sent:false,reasons:check.reasons}}
   if(this.busy.has(row.symbol))return {sent:false,reasons:['SYMBOL_BUSY']};
   this.busy.add(row.symbol);
-  const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,direction:row.direction,
-   stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage:Number(row.leverage)>0?Math.round(Number(row.leverage)):leverageForScore(row.score,row.marketCap)??10,plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
+  const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
+   stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,...(split?{balanceUSD:split.balanceUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
    entryOrderId:null,stopOrderId:null,targetOrderIds:[],breakevenMoved:false,events:[]};
   this.store.records.push(record);this.#save();
   try{
@@ -119,6 +140,7 @@ export class LiveExecutor{
    catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})} // the stop still protects the position
   }
   this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});
+  if(record.adds?.length)await this.#placeAdds(record);
  }
 
  async #openGate(record){
@@ -165,6 +187,58 @@ export class LiveExecutor{
    catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})}
   }
   this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});
+  if(record.adds?.length){if(filled!==record.quantity.total)record.peakSize=filled;await this.#placeAdds(record)}
+ }
+
+ /** Split buys: the stop must cover the whole future position (BingX: closePosition stop,
+  * placed before the entry's own stop is cancelled; Gate.io's stop already closes it all),
+  * then the resting limit adds. An add that cannot be placed is skipped, never retried blindly. */
+ async #placeAdds(record){
+  const client=this.clients[record.venue],full=record.adds.reduce((s,a)=>s+a.qty,record.quantity.total);
+  if(record.venue==='BINGX'){
+   const plan=this.#plan(record);
+   try{const s=await client.placeOrder(plan.wholeStop(record.stop,Number(full.toFixed(12))));const old=record.stopOrderId;record.stopOrderId=bingxOrderId(s);
+    if(old&&old!==record.stopOrderId)await this.#cancel(record,old);this.#event(record,'STOP_WHOLE_POSITION',{orderId:record.stopOrderId})}
+   catch(error){this.#event(record,'STOP_WHOLE_FAILED',{reason:error.code||error.message});this.#event(record,'ADDS_SKIPPED',{reason:'NO_WHOLE_POSITION_STOP'});record.adds.forEach(a=>a.skipped=true);return}
+  }
+  const plan=this.#plan(record);
+  for(const [i,a] of record.adds.entries()){
+   const id=record.venue==='BINGX'?record.clientOrderId+'a'+String.fromCharCode(97+i):record.clientOrderId.slice(0,24)+'a'+String.fromCharCode(97+i);
+   try{const o=await client.placeOrder(plan.add(a.price,a.qty,id));a.orderId=record.venue==='BINGX'?bingxOrderId(o):String(o.id)}
+   catch(error){a.orderId=null;a.skipped=true;this.#event(record,'ADD_FAILED',{reason:`${i+1}: `+(error.code||error.message)})}
+  }
+  this.#event(record,'ADDS_PLACED',{reason:`${record.adds.filter(a=>a.orderId).length}/${record.adds.length}`});
+ }
+ #plan(record){
+  return record.venue==='BINGX'?bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId})
+   :gateOrders({contract:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
+ }
+ async #cancelAdds(record,why){
+  for(const a of record.adds||[]){if(!a.orderId||a.filled||a.cancelled)continue;
+   try{if(record.venue==='BINGX')await this.clients.BINGX.cancelOrder(record.venueSymbol,a.orderId);else await this.clients.GATEIO.cancelOrder(a.orderId);a.cancelled=true}
+   catch(error){this.#event(record,'ADD_CANCEL_FAILED',{orderId:a.orderId,reason:error.code||error.message})}
+  }
+  this.#event(record,'ADDS_CANCELLED',{reason:why});
+ }
+ /** Filled adds: new 40/35/25 % targets for the larger position (old target cancelled first). */
+ async #resizeTargets(record,size){
+  if(!record.venueContract)return;
+  const client=this.clients[record.venue],parts=splitParts(size,record.venueContract),plan=this.#plan(record);
+  for(let i=0;i<3;i++){
+   const old=record.targetOrderIds?.[i];if(old)await this.#cancel(record,old);
+   if(!parts[i]){record.targetOrderIds[i]=null;continue}
+   const t=plan.targets[i];if(record.venue==='BINGX')t.quantity=String(parts[i]);else t.initial.size=Math.sign(t.initial.size)*parts[i];
+   try{const o=record.venue==='BINGX'?await client.placeOrder(t):await client.placeTrigger(t);record.targetOrderIds[i]=record.venue==='BINGX'?bingxOrderId(o):String(o.id)}
+   catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})}
+  }
+  record.targetParts=parts;
+ }
+ async #balance(venue){
+  if(venue==='BINGX'){
+   const data=await this.clients.BINGX.balance(),list=Array.isArray(data)?data:[data?.balance??data];
+   const usdt=list.find(x=>x?.asset==='USDT')??list[0];return Number(usdt?.equity??usdt?.balance)||0;
+  }
+  const a=await this.clients.GATEIO.account();return Number(a?.total)||Number(a?.available)||0;
  }
 
  /** Compare open records with the venue: detect closed positions and move the stop to
@@ -175,13 +249,25 @@ export class LiveExecutor{
     const {size,entryPrice}=await this.#position(record);
     if(size===0){
      record.status='CLOSED';record.closedAt=this.now();record.closeReason=record.closeReason||'POSITION_FLAT';
+     // Resting adds first: an add left behind would open a new position on its own.
+     if(record.adds?.length)await this.#cancelAdds(record,'POSITION_FLAT');
      for(const id of [record.stopOrderId,...record.targetOrderIds].filter(Boolean))await this.#cancel(record,id);
      this.#event(record,'CLOSED');continue;
     }
-    const original=record.venue==='GATEIO'?(record.filledContracts??record.quantity.total):record.quantity.total;
+    if(record.adds?.length&&!record.breakevenMoved&&size>(record.peakSize??record.quantity.total)*(1+1e-9)){
+     // One or more adds filled: count them, then resize the targets to the whole position.
+     let cum=record.peakSize??record.quantity.total;
+     for(const a of record.adds)if(!a.filled&&a.orderId&&cum+a.qty<=size*(1+1e-9)){a.filled=true;cum+=a.qty}
+     record.peakSize=size;record.filledAdds=record.adds.filter(a=>a.filled).length;
+     this.#event(record,'ADD_FILLED',{reason:`${record.filledAdds}/${record.adds.length} size ${size} avg ${entryPrice}`});
+     await this.#resizeTargets(record,size);
+    }
+    const original=record.peakSize??(record.venue==='GATEIO'?(record.filledContracts??record.quantity.total):record.quantity.total);
+    // TP1 filled: the position shrank by at least the first target part (40 %, floored to the grid).
+    const tp1Done=size<=original-Math.min(original*.4,Number(record.targetParts?.[0])||original*.4)+1e-9;
     const lockedIn=entryPrice>0&&(record.direction==='LONG'?record.stop>=entryPrice:record.stop<=entryPrice);
-    if(!record.breakevenMoved&&lockedIn&&size<=original*0.6+1e-9){record.breakevenMoved=true;this.#event(record,'BREAKEVEN_SKIPPED_STOP_ALREADY_BETTER',{stop:record.stop})}
-    if(!record.breakevenMoved&&size<=original*0.6+1e-9&&entryPrice>0){
+    if(!record.breakevenMoved&&lockedIn&&tp1Done){record.breakevenMoved=true;this.#event(record,'BREAKEVEN_SKIPPED_STOP_ALREADY_BETTER',{stop:record.stop})}
+    if(!record.breakevenMoved&&tp1Done&&entryPrice>0){
      const client=this.clients[record.venue];let placed;
      if(record.venue==='BINGX'){const plan=bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
       placed=bingxOrderId(await client.placeOrder(plan.breakeven(entryPrice,size)))}
@@ -191,6 +277,8 @@ export class LiveExecutor{
      if(old)await this.#cancel(record,old);
      this.#event(record,'STOP_TO_BREAKEVEN',{price:entryPrice,orderId:placed});
     }
+    // TP1 filled: no more adds (same rule as paper).
+    if(record.breakevenMoved&&record.adds?.some(a=>a.orderId&&!a.filled&&!a.cancelled))await this.#cancelAdds(record,'TP1_FILLED');
    }catch(error){this.#event(record,'RECONCILE_ERROR',{reason:error.code||error.message})}
   }
   this.#save();
@@ -215,10 +303,13 @@ export class LiveExecutor{
     const reference=entryPrice>0?entryPrice:null,wider=dir*(record.stop-stop)>0;
     if(wider&&reference){
      const initial=Math.abs(reference-(record.initialStop??record.stop))||Math.abs(reference-record.stop),risk=qty.riskUSD*Math.max(0,dir*(reference-stop))/initial*(size/original);
-     if(risk>this.config.maxRiskUSD*(1+1e-6))return {ok:false,live:true,reasons:['MANUAL_STOP_EXCEEDS_RISK_LIMIT'],riskUSD:risk,maxRiskUSD:this.config.maxRiskUSD};
+     const cap=record.sizing==='BALANCE'?record.plannedRiskUSD:this.config.maxRiskUSD;
+     if(risk>cap*(1+1e-6))return {ok:false,live:true,reasons:['MANUAL_STOP_EXCEEDS_RISK_LIMIT'],riskUSD:risk,maxRiskUSD:cap};
     }
     let placed;
-    try{placed=record.venue==='BINGX'?bingxOrderId(await client.placeOrder(plan.breakeven(stop,size))):String((await client.placeTrigger(plan.breakeven(stop))).id)}
+    // With adds still resting, the BingX stop must keep covering the whole future position.
+    const pendingAdds=(record.adds||[]).filter(a=>a.orderId&&!a.filled&&!a.cancelled).reduce((t,a)=>t+a.qty,0);
+    try{placed=record.venue==='BINGX'?bingxOrderId(await client.placeOrder(pendingAdds>0?plan.wholeStop(stop,Number((size+pendingAdds).toFixed(12))):plan.breakeven(stop,size))):String((await client.placeTrigger(plan.breakeven(stop))).id)}
     catch(error){this.#event(record,'MANUAL_STOP_FAILED',{reason:error.code||error.message});return {ok:false,live:true,reasons:['LIVE_STOP_NOT_PLACED'],detail:error.code||error.message}}
     const old=record.stopOrderId;record.initialStop??=record.stop;record.stopOrderId=placed;record.stop=stop;result.stopMoved=true;
     if(old)await this.#cancel(record,old);

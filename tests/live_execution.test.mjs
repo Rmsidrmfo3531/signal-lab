@@ -30,6 +30,7 @@ function mockBingX({margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,ent
   assert.equal(u.searchParams.get('signature'),createHmac('sha256',BINGX_SECRET).update(Object.keys(q).sort().map(k=>`${k}=${q[k]}`).join('&')).digest('hex'),'BingX signature');
   assert.ok(!url.includes(BINGX_SECRET));
   const call={method:options.method,path:u.pathname,params:q};calls.push(call);
+  if(u.pathname==='/openApi/swap/v3/user/balance')return json({code:0,data:[{asset:'USDT',balance:'1000',equity:'1000',availableMargin:'1000'}]});
   if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='GET')return json({code:0,data:{marginType:margin}});
   if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='POST'){if(marginFail)return json({code:80001,msg:'position exists'});margin=q.marginType;return json({code:0,data:{}})}
   if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='GET')return json({code:0,data:{longLeverage:5,shortLeverage:5,maxLongLeverage:maxLev,maxShortLeverage:maxLev}});
@@ -63,9 +64,11 @@ function mockGate({dual=false,fill=20,stop='ok',size=()=>20}={}){
   assert.equal(u.origin,LIVE_HOSTS.GATEIO.TESTNET);assert.equal(options.headers.KEY,'gate-key');
   assert.equal(options.headers.SIGN,gateSign({method:options.method,path:u.pathname,query:decodeURIComponent(u.search.slice(1)),body,timestamp:options.headers.Timestamp},GATE_SECRET),'Gate.io signature');
   const call={method:options.method,path:u.pathname,body:body?JSON.parse(body):null};calls.push(call);
-  if(u.pathname==='/api/v4/futures/usdt/accounts')return json({in_dual_mode:dual,available:'100'});
+  if(u.pathname==='/api/v4/futures/usdt/accounts')return json({in_dual_mode:dual,available:'1000',total:'1000'});
+  if(u.pathname.startsWith('/api/v4/futures/usdt/orders/')&&options.method==='DELETE')return json({id:u.pathname.split('/').pop(),status:'finished'});
   if(u.pathname==='/api/v4/futures/usdt/orders'&&options.method==='POST'){
    if(call.body.close)return json({id:++id,size:0,left:0,finish_as:'filled'});
+   if(call.body.tif==='gtc')return json({id:++id,size:call.body.size,left:call.body.size,status:'open'});
    return json({id:++id,size:call.body.size,left:call.body.size-Math.sign(call.body.size)*fill,fill_price:'100.01',finish_as:fill?'filled':'ioc'});
   }
   if(u.pathname==='/api/v4/futures/usdt/price_orders'&&options.method==='POST'){
@@ -97,7 +100,8 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:1});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:1,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60});
+ assert.equal(liveConfig({LIVE_SIZING:'risk_usd'}).sizing,'RISK_USD');
  assert.equal(liveConfig({LIVE_TRADING_MODE:'live',LIVE_TRADING_CONFIRM:'REAL_MONEY'}).liveConfirmed,true);
  assert.equal(liveConfig({LIVE_TRADING_MODE:'yolo'}).mode,'OFF');assert.equal(liveConfig({LIVE_MAX_RISK_USD:'1000'}).maxRiskUSD,2,'out-of-range values fall back');
 });
@@ -265,4 +269,35 @@ test('cross margin and leverage are set and confirmed before every live entry; a
  await gx.onSignal(row('GATEIO',{leverage:28}),{signalKey:'c5'});
  const gp=g.calls.filter(x=>x.method==='POST');assert.ok(gp[0].path.endsWith('/positions/ETH_USDT/leverage'));
  assert.deepEqual(gp[0].query,{leverage:'0',cross_leverage_limit:28});assert.equal(gx.store.records[0].leverage,25);assert.equal(gx.store.records[0].status,'OPEN');
+});
+
+test('balance sizing: the account balance sets the unit; adds 1, 2, 4 ... rest at zones, one whole-position stop, resized targets',async()=>{
+ const zones=[97,94,91,88,85,82].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ const split=row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}});
+ let amt='0.34';const m=mockBingX({positionAmt:()=>amt});
+ const ex=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(split,{signalKey:'b1'});
+ const r=ex.store.records[0];assert.equal(r.status,'OPEN',JSON.stringify(r.events));assert.equal(r.balanceUSD,1000);assert.equal(r.leverage,18);
+ // 1000 x 0.19% x 18 = 34.2 USDT at 100 -> 0.34 ETH on the 0.01 grid.
+ assert.equal(r.quantity.total,0.34);assert.deepEqual(r.quantity.parts,[0.13,0.11,0.1]);
+ assert.ok(r.adds.length>=1&&r.adds.length<=10);assert.deepEqual(r.adds.slice(0,3).map(a=>a.qty),[0.34,0.68,1.36],'adds of 1, 2, 4 units');
+ assert.ok(r.stop<r.adds.at(-1).price,'stop beyond the last add');
+ const orders=m.calls.filter(c=>c.method==='POST'&&c.path==='/openApi/swap/v2/trade/order').map(c=>c.params);
+ const whole=orders.find(o=>o.closePosition==='true');assert.equal(whole.type,'STOP_MARKET');assert.equal(Number(whole.stopPrice),r.stop);
+ const limits=orders.filter(o=>o.type==='LIMIT');assert.equal(limits.length,r.adds.length);assert.ok(limits.every(o=>o.side==='BUY'&&o.timeInForce==='GTC'&&!o.reduceOnly));
+ assert.ok(r.adds.every(a=>a.orderId));
+ // First add fills: targets are resized to the whole position (0.68).
+ amt='0.68';await ex.reconcile();assert.equal(r.filledAdds,1);assert.equal(r.peakSize,0.68);assert.deepEqual(r.targetParts,[0.27,0.23,0.18]);
+ // TP1 fills: the resting adds are cancelled.
+ amt='0.41';await ex.reconcile();assert.ok(r.adds.slice(1).every(a=>a.cancelled));
+ // Daily limit is a share of the balance, not a fixed dollar amount.
+ assert.ok(!ex.store.skipped.some(x=>x.reasons?.includes('DAILY_RISK_LIMIT')));
+ // Gate.io: contracts, GTC adds, flat position cancels what is still resting.
+ let size=34;const g=mockGate({size:()=>size,fill:34});
+ const gx=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60}),clients:{GATEIO:g.client},now:()=>NOW});gx.arm();
+ await gx.onSignal(row('GATEIO',{entry:100,score:95,marketCap:3e8,paperAddInputs:split.paperAddInputs}),{signalKey:'b2'});
+ const gr=gx.store.records[0];assert.equal(gr.status,'OPEN',JSON.stringify(gr.events));assert.equal(gr.quantity.total,34);assert.deepEqual(gr.adds.slice(0,2).map(a=>a.qty),[34,68]);
+ assert.ok(g.calls.filter(c=>c.method==='POST'&&c.body?.tif==='gtc').every(c=>c.body.size>0&&c.body.text.length<=28));
+ size=0;await gx.reconcile();assert.equal(gr.status,'CLOSED');assert.ok(gr.adds.every(a=>a.cancelled));
+ assert.ok(g.calls.some(c=>c.method==='DELETE'&&c.path.startsWith('/api/v4/futures/usdt/orders/')),'resting adds cancelled');
 });

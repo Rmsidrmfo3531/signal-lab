@@ -507,7 +507,7 @@ async function checkSymbolInternal(symbol, force=false){
    if(chosen){
     const contract=venueEntry(chosen.venue,symbol).contract;
     out.executionVenue=chosen.venue;out.venueSymbol=contract.venueSymbol;
-    out.venueContract={tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
+    out.venueContract={tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,minNotionalUSDT:contract.minNotionalUSDT??null,
      decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null};
     out.rawStop=out.stop;out.stop=chosen.stop;
    }
@@ -782,7 +782,7 @@ async function runScalpCheck(now=Date.now()){
    const row={symbol,direction:det.direction,pattern:det.pattern,entry:chosen.estimate.entryBasis,stop,atr:det.atr,patternConfirmedAt:det.barAt,...(dca?{dca}:{}),
     managementVersion:'VOLUME_PROFILE_V1',targetPlan:plan,targets:plan.targets,strategy:det.strategy,sizeScale,leverage:CONFIG.dcaLeverage,evidence:det.evidence,
     entryTimeoutMs:det.entryTimeoutMs,maxHoldMs:det.maxHoldMs,executionVenue:chosen.venue,venueSymbol:contract.venueSymbol,
-    venueContract:{tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,
+    venueContract:{tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,minNotionalUSDT:contract.minNotionalUSDT??null,
      decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null}};
    const accepted=paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
    const item={at:Date.now(),symbol,interval,direction:det.direction,pattern:det.pattern,venue:chosen.venue,entry:row.entry,stop:row.stop,targets:plan.targets,

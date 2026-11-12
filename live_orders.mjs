@@ -3,6 +3,7 @@
 // plus the pre-trade checks. No network, no keys.
 import {createHash} from 'node:crypto';
 import {roundDecimalToStep,multiplyDecimal} from './decimal_grid.mjs';
+import {planZoneDca,clampMaxAdds,DCA_DEFAULTS} from './dca_plan.mjs';
 
 export const LIVE_MODES=Object.freeze(['OFF','TESTNET','LIVE']);
 export const LIVE_CONFIRM_PHRASE='REAL_MONEY';
@@ -14,7 +15,13 @@ export function liveConfig(env=process.env){
  const num=(key,def,min,max)=>{const v=Number(env[key]);return Number.isFinite(v)&&v>=min&&v<=max?v:def};
  return {mode,liveConfirmed:env.LIVE_TRADING_CONFIRM===LIVE_CONFIRM_PHRASE,
   venues:String(env.LIVE_VENUES||'BINGX,GATEIO').split(',').map(x=>x.trim().toUpperCase()).filter(x=>['BINGX','GATEIO'].includes(x)),
-  maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),maxOpen:num('LIVE_MAX_OPEN_POSITIONS',1,1,5)};
+  maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),maxOpen:num('LIVE_MAX_OPEN_POSITIONS',1,1,5),
+  // BALANCE (default): the account balance is read before every entry and the position is
+  // sized like the paper one (unit = balance x DCA_UNIT_PCT x leverage, adds 1, 2, 4 ... units
+  // at volume zones, stop beyond the last add). RISK_USD: the old fixed LIVE_MAX_RISK_USD sizing.
+  sizing:String(env.LIVE_SIZING||'BALANCE').toUpperCase()==='RISK_USD'?'RISK_USD':'BALANCE',
+  unitPct:num('DCA_UNIT_PCT',DCA_DEFAULTS.unitPct,.01,10),maxLossPct:num('DCA_MAX_LOSS_PCT',DCA_DEFAULTS.maxLossPct,1,95),maxAdds:clampMaxAdds(env.DCA_MAX_ADDS),
+  dailyMaxLossPct:num('LIVE_DAILY_MAX_LOSS_PCT',60,1,100)};
 }
 
 /** Deterministic client order id from the signal key: the same signal can never be sent twice. */
@@ -39,6 +46,44 @@ export function liveQuantity({quantity,estimatedStopLossUSD,maxRiskUSD,contract}
  return {base,riskUSD,unit:'BASE_ASSET',total:base,parts};
 }
 
+/** Venue quantity grid in base units: BingX lots, Gate.io whole contracts. */
+function venueGrid(c){
+ if(c.quantityUnit==='CONTRACT')return {step:Number(multiplyDecimal(c.contractSizeBase,c.contractStep&&c.contractStep!=='0'?c.contractStep:'1')),contract:Number(c.contractSizeBase)};
+ return {step:Number(c.quantityStep),contract:null};
+}
+/** 40/35/25 % of a venue quantity, each on the venue grid; the last part takes the rest. */
+export function splitParts(total,c){
+ const g=venueGrid(c),unit=g.contract?1:g.step,n=Math.round(total/unit+1e-9),a=Math.floor(n*.4),b=Math.floor(n*.35);
+ return [a,b,n-a-b].map(k=>g.contract?k:Number((k*unit).toFixed(12)));
+}
+const venueQty=(base,c)=>{const g=venueGrid(c);return g.contract?Math.round(base/g.contract):Number(base.toFixed(12))};
+/** Live split-buy plan from the account balance (BALANCE sizing), the same rule as the paper
+ * 1H positions: first entry 1 unit, adds of 1, 2, 4 ... units at the volume zones (15m, then
+ * 1h / 4h), stop beyond the last add, worst loss <= maxLossPct of the balance. No zone that
+ * fits: one unit with the pattern stop. Quantities are in venue units (lots / contracts). */
+export function liveSplitPlan({row,balanceUSD,leverage,sizeScale=1,config}){
+ const c=row?.venueContract,inp=row?.paperAddInputs,entry=Number(row?.entry);
+ if(!c||!positive(balanceUSD)||!positive(entry)||!positive(leverage))return null;
+ const g=venueGrid(c),tick=Number(c.tickSize),minBase=Number(c.minQuantityBase)||0;
+ if(!positive(g.step)||!positive(tick))return null;
+ const unitPct=config.unitPct*sizeScale;
+ for(const set of inp?.zoneSets||[]){
+  const d=planZoneDca({direction:row.direction,entry,atr:inp.atr,zones:set.zones,balanceUSD,leverage,unitPct,tickSize:tick,quantityStep:g.step,
+   minQuantity:minBase,minNotional:Number(c.minNotionalUSDT)||0,takerRate:inp.takerRate,settings:{maxLossPct:config.maxLossPct,maxAdds:config.maxAdds}});
+  if(!d.ok||!d.adds.length)continue;
+  const total=venueQty(d.unitQty,c);if(!(total>0))continue;
+  return {stop:d.stop,zoneSource:set.label,riskUSD:d.full.maxLossUSD,leverage,
+   qty:{base:d.unitQty,riskUSD:d.full.maxLossUSD,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts:splitParts(total,c)},
+   adds:d.adds.map(a=>({price:a.price,units:a.units,qty:venueQty(a.quantity??a.units*d.unitQty,c),orderId:null,filled:false}))};
+ }
+ // No zone fits: one unit, pattern stop.
+ let base;try{base=Number(roundDecimalToStep(balanceUSD*unitPct/100*leverage/entry,g.step,'DOWN'))}catch{return null}
+ const stop=Number(row.stop);if(!(base>0)||base<minBase||!positive(stop))return null;
+ const total=venueQty(base,c),risk=base*Math.abs(entry-stop);
+ if(!(total>0)||risk>balanceUSD*config.maxLossPct/100)return null;
+ return {stop,zoneSource:null,riskUSD:risk,leverage,qty:{base,riskUSD:risk,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts:splitParts(total,c)},adds:[]};
+}
+
 /** BingX one-way mode requests. The entry carries an attached STOP_MARKET so the
  * position is protected from the moment it exists. */
 export function bingxOrders({symbol,direction,stop,targets,qty,clientOrderId}){
@@ -49,7 +94,10 @@ export function bingxOrders({symbol,direction,stop,targets,qty,clientOrderId}){
   stop:quantity=>({symbol,side:close,positionSide:'BOTH',type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(stop),reduceOnly:'true',workingType:'MARK_PRICE'}),
   targets:targets.map((price,i)=>({symbol,side:close,positionSide:'BOTH',type:'TAKE_PROFIT_MARKET',quantity:String(qty.parts[i]),stopPrice:String(price),reduceOnly:'true',workingType:'MARK_PRICE'})),
   emergencyClose:quantity=>({symbol,side:close,positionSide:'BOTH',type:'MARKET',quantity:String(quantity),reduceOnly:'true'}),
-  breakeven:(price,quantity)=>({symbol,side:close,positionSide:'BOTH',type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(price),reduceOnly:'true',workingType:'MARK_PRICE'})
+  breakeven:(price,quantity)=>({symbol,side:close,positionSide:'BOTH',type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(price),reduceOnly:'true',workingType:'MARK_PRICE'}),
+  // Split buys: resting limit adds, and a stop that closes the whole position whatever its size.
+  add:(price,quantity,id)=>({symbol,side:open,positionSide:'BOTH',type:'LIMIT',price:String(price),quantity:String(quantity),timeInForce:'GTC',clientOrderId:id}),
+  wholeStop:(price,quantity)=>({symbol,side:close,positionSide:'BOTH',type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(price),closePosition:'true',workingType:'MARK_PRICE'})
  };
 }
 
@@ -65,7 +113,8 @@ export function gateOrders({contract,direction,stop,targets,qty,clientOrderId}){
   targets:targets.map((price,i)=>({initial:{contract,size:-sign*qty.parts[i],price:'0',tif:'ioc',reduce_only:true},
    trigger:{strategy_type:0,price_type:1,price:String(price),rule:targetRule},order_type:planType})),
   emergencyClose:()=>({contract,size:0,price:'0',tif:'ioc',close:true}),
-  breakeven:price=>stopAt(price)
+  breakeven:price=>stopAt(price),
+  add:(price,contracts,id)=>({contract,size:sign*contracts,price:String(price),tif:'gtc',text:'t-'+id})
  };
 }
 
