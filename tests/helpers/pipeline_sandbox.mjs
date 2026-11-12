@@ -41,7 +41,7 @@ export async function sandbox(config){
  async function start(){
   child=trackChild(spawn(process.execPath,['--import','./tests/mock_pipeline.mjs','server.mjs'],{cwd:app,env:{PATH:process.env.PATH,
    PORT:String(port),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:data,SIGNAL_LAB_TEST_CONTROL:control,SIGNAL_LAB_TEST_REQUESTS:requests,
-   AUTO_UPDATE:'false',PAPER_VENUE_REFRESH_MS:'1000',VENUE_ONLY_START_MS:'300',VENUE_ONLY_INTERVAL_MS:'1000',VENUE_ONLY_REFERENCE:cfg.venueOnlyReference??'AKEUSDT',SIGNAL_PATTERNS:cfg.signalPatterns??'ALL',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',...(cfg.env||{}),
+   AUTO_UPDATE:'false',PAPER_VENUES:'BINGX,GATEIO',PAPER_VENUE_REFRESH_MS:'1000',VENUE_ONLY_START_MS:'300',VENUE_ONLY_INTERVAL_MS:'1000',VENUE_ONLY_REFERENCE:cfg.venueOnlyReference??'AKEUSDT',SIGNAL_PATTERNS:cfg.signalPatterns??'ALL',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',...(cfg.env||{}),
    ...(process.env.SystemRoot?{SystemRoot:process.env.SystemRoot}:{})},stdio:['ignore','pipe','pipe']}));
   child.stdout.on('data',chunk=>{logs+=String(chunk)});child.stderr.on('data',chunk=>{logs+=String(chunk)});
   await until(()=>get('/api/status'),s=>s.activeCount===(cfg.binanceOffline?0:Object.keys(cfg.scenarios).filter(symbol=>!cfg.unlisted?.includes(symbol)).length),{label:'market discovery '+logs});

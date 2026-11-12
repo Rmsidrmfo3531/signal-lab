@@ -21,7 +21,7 @@ test('the venue with the better executable entry is chosen; untradable, unlisted
  assert.deepEqual(blocked.candidates.map(c=>[c.venue,c.reasons[0]]),[['BINGX','VENUE_API_TRADING_DISABLED'],['GATEIO','VENUE_NOT_LISTED']]);
  const stale=selectExecutionVenue({signal:signal(),now:NOW,venues:{BINGX:{contract:bingxContract(),book:bingxBook(99.99,100.01,NOW-60000)}},allowed:['BINGX']});
  assert.equal(stale.chosen,null);assert.ok(stale.candidates[0].reasons.includes('BOOK_STALE'));
- assert.deepEqual(parsePaperVenues('gateio'),['GATEIO']);assert.deepEqual(parsePaperVenues(''),['BINGX','GATEIO']);assert.deepEqual(parsePaperVenues('OTHER'),['BINGX','GATEIO']);
+ assert.deepEqual(parsePaperVenues('gateio'),['GATEIO']);assert.deepEqual(parsePaperVenues(''),['BINGX']);assert.deepEqual(parsePaperVenues('OTHER'),['BINGX']);
 });
 
 test('Gate.io sizing uses whole contracts on the 20-lot split grid and its contract-count depth',()=>{

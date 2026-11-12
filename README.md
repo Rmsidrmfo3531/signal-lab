@@ -206,6 +206,8 @@ npm run test:strategy:compare -- --input 과거데이터.json
 
 ### 바이낸스에 없는 코인 (Gate.io·BingX 차트로 분석, 모의 전용)
 
+> **2026-11-12 변경:** Gate.io는 보류 중입니다(`PAPER_VENUES`·`LIVE_VENUES` 기본 `BINGX`). 바이낸스에 없는 코인은 **BingX 차트**로 판단하고, 테스트넷에서는 실주문 후보에도 넣습니다(실거래 LIVE에서는 계속 제외). Gate.io를 다시 쓰려면 `.env`에 `PAPER_VENUES=BINGX,GATEIO`, `LIVE_VENUES=BINGX,GATEIO`.
+
 - 바이낸스에 있는 종목은 지금처럼 바이낸스 차트로 판단합니다.
 - 바이낸스에 없고 Gate.io·BingX에만 있는 **코인**은 그 거래소 차트(1H·4H·15m, Gate.io 우선, 없으면 BingX)로 같은 규칙(패턴·90점·매물대 TP·손익비 1.8)을 적용합니다. 주식·원자재·지수 토큰은 제외합니다.
 - 대상: **시총**이 `VENUE_ONLY_REFERENCE`(기본 `AKEUSDT,JCTUSDT`, 원하는 규모의 예시) 중 더 작은 시총 × `VENUE_ONLY_REFERENCE_RATIO`(기본 0.5) 이상인 코인 **전부**(최소 `VENUE_ONLY_MIN_MARKET_CAP_USD` 1000만$). 24h 거래대금은 체결 가능한 최소치 `VENUE_ONLY_MIN_VOLUME_USDT`(기본 100만$)만 넘으면 됩니다. 상한 `VENUE_ONLY_MAX`(1000). 모든 코인을 약 40분 안에 한 번씩 확인하도록 1분당 확인 수가 자동으로 늘어납니다(최소 `VENUE_ONLY_BATCH` 6). 목록은 10분마다 갱신.

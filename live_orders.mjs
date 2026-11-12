@@ -15,7 +15,7 @@ export function liveConfig(env=process.env){
  const mode=LIVE_MODES.includes(String(env.LIVE_TRADING_MODE||'OFF').toUpperCase())?String(env.LIVE_TRADING_MODE||'OFF').toUpperCase():'OFF';
  const num=(key,def,min,max)=>{const v=Number(env[key]);return Number.isFinite(v)&&v>=min&&v<=max?v:def};
  return {mode,liveConfirmed:env.LIVE_TRADING_CONFIRM===LIVE_CONFIRM_PHRASE,
-  venues:String(env.LIVE_VENUES||'BINGX,GATEIO').split(',').map(x=>x.trim().toUpperCase()).filter(x=>['BINGX','GATEIO'].includes(x)),
+  venues:String(env.LIVE_VENUES||'BINGX').split(',').map(x=>x.trim().toUpperCase()).filter(x=>['BINGX','GATEIO'].includes(x)),
   maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),maxOpen:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,4,6),maxPerDirection:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,4,6)/2,
   // BALANCE (default): the account balance is read before every entry and the position is
   // sized like the paper one (unit = balance x DCA_UNIT_PCT x leverage, adds 1, 2, 4 ... units
@@ -130,6 +130,8 @@ export function preflight({config,armed,killSwitch,credentials,row,records,now=D
  if(!armed)reasons.push('NOT_ARMED');
  if(killSwitch)reasons.push('KILL_SWITCH_ON');
  if(!config.venues.includes(venue))reasons.push('VENUE_NOT_ENABLED_FOR_LIVE');
+ // Coins not on Binance were never part of the validated backtest: testnet only.
+ if(config.mode==='LIVE'&&row?.venueOnly)reasons.push('VENUE_ONLY_TESTNET_ONLY');
  else if(!credentials?.[venue])reasons.push('CREDENTIALS_MISSING');
  if(row?.decision?.ready!==true)reasons.push('SIGNAL_NOT_READY');
  if(!Array.isArray(row?.targets)||row.targets.length!==3||!positive(row?.stop))reasons.push('PLAN_INCOMPLETE');
