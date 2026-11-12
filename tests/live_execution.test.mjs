@@ -100,7 +100,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0});
  assert.equal(liveConfig({HOURLY_MAX_ADDS:'10'}).maxAdds,10);
  for(const bad of ['','abc'])assert.equal(liveConfig({HOURLY_MAX_ADDS:bad}).maxAdds,7,'garbage falls back to 7, not 10');
  assert.equal(liveConfig({LIVE_BALANCE_CAP_USD:'400'}).balanceCapUSD,400);

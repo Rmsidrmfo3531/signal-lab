@@ -74,7 +74,8 @@ const CONFIG={
  // Even maximum, split half long / half short (PAPER_MAX_POSITIONS 2-10, default 6: 3 long + 3 short).
  paperMaxPositions:evenPositions(process.env.PAPER_MAX_POSITIONS,6),
  // Paper fills use these venues' quotes and contract rules (best entry wins). Binance = chart only.
- paperVenues:parsePaperVenues(process.env.PAPER_VENUES),
+ // Gate.io on hold (user, 2026-11-12): BingX only unless PAPER_VENUES names Gate.io again.
+ paperVenues:parsePaperVenues(process.env.PAPER_VENUES??'BINGX'),
  // Venue book refresh for paper records; BingX's 1.1 s request spacing applies regardless.
  venueRefreshMs:Math.max(1000,Math.min(60000,Number(process.env.PAPER_VENUE_REFRESH_MS)||4000)),
  // HVN_THEN_R (default): volume-profile targets, open air beyond them filled in whole R steps. HVN_ONLY: strict.
@@ -269,7 +270,8 @@ async function refreshVenueExecution(){
  if(venueRefreshActive)return;venueRefreshActive=true;
  try{
   const now=Date.now(),wanted=new Map(CONFIG.paperVenues.map(v=>[v,new Set()]));
-  for(const record of [...paper.store.pending,...paper.store.open])if(wanted.has(record.executionVenue))wanted.get(record.executionVenue).add(record.symbol);
+  // Positions already opened on a venue that is now on hold keep their quotes until they close.
+  for(const record of [...paper.store.pending,...paper.store.open]){const v=record.executionVenue;if(!v||!venueQuotes.clients[v])continue;if(!wanted.has(v))wanted.set(v,new Set());wanted.get(v).add(record.symbol)}
   for(const row of state.analyses.values())if(row.technicalQualified===true&&row.executionVenue&&wanted.has(row.executionVenue)&&now-row.scannedAt<2*3600000)
    wanted.get(row.executionVenue).add(row.symbol);
   // BingX allows one public request per second: at most 4 symbols per venue per cycle.
@@ -379,7 +381,8 @@ const scannedSymbol=symbol=>state.activeSet.has(symbol)||state.researchSet.has(s
 const venueOnlySymbol=symbol=>state.venueOnlySet.has(symbol)&&!state.activeSet.has(symbol);
 // ---- Venue-only coins: chart, profile and volume from Gate.io (or BingX when Gate.io lacks it) ----
 const venueKlineCache=new Map();
-function chartVenueFor(symbol){const v=state.venueOnly.get(symbol)?.venues??[];return v.includes('GATEIO')?'GATEIO':v.includes('BINGX')?'BINGX':null}
+// Coins not on Binance: the BingX chart first (the venue that is traded), Gate.io only when enabled.
+function chartVenueFor(symbol){const v=state.venueOnly.get(symbol)?.venues??[];return v.includes('BINGX')?'BINGX':v.includes('GATEIO')&&CONFIG.paperVenues.includes('GATEIO')?'GATEIO':null}
 async function venueKlines(symbol,interval,limit){
  const venue=chartVenueFor(symbol);if(!venue)throw Error('VENUE_CHART_UNAVAILABLE');
  const key=`${venue}:${symbol}:${interval}:${limit}`,hit=venueKlineCache.get(key);
@@ -431,8 +434,9 @@ async function refreshVenueOnlyList(){
  if(!CONFIG.venueOnly.enabled||!state.activeSymbols.length)return;
  if(Date.now()-state.venueOnlyInfo.at<(state.venueOnlyInfo.error?60000:10*60000))return;
  try{
-  const [gc,bc,gt,bt]=await Promise.all([venueQuotes.clients.GATEIO.loadContracts(),venueQuotes.clients.BINGX.loadContracts(),
-   venueQuotes.clients.GATEIO.tickers(),venueQuotes.clients.BINGX.tickers()]);
+  const gateOn=CONFIG.paperVenues.includes('GATEIO');
+  const [gc,bc,gt,bt]=await Promise.all([gateOn?venueQuotes.clients.GATEIO.loadContracts():new Map(),venueQuotes.clients.BINGX.loadContracts(),
+   gateOn?venueQuotes.clients.GATEIO.tickers():[],venueQuotes.clients.BINGX.tickers()]);
   // Without market caps nothing is added: a coin whose size cannot be checked is not traded.
   const caps=await refreshMarketCaps();if(!caps)throw Error('시총 자료(CoinGecko) 조회 실패 — 바이낸스 미상장 코인 보류: '+(state.marketCaps.error||'원인 미상'));
   const volumes=venueVolumes({gateTickers:gt,bingxTickers:bt});
@@ -599,7 +603,8 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  // Bounded like the paper entry: at most PAPER_DEFAULTS.entryTimeoutMs (20 min) after the 1H close
  // (the backtest enters on the first 5m candle; later entries are not validated).
  const liveWindow=Number.isFinite(row.patternConfirmedAt)&&now-row.patternConfirmedAt<=PAPER_DEFAULTS.entryTimeoutMs;
- if(LIVE.mode!=='OFF'&&!row.venueOnly&&live.armed&&liveWindow&&!live.hasSignal(paperKey)&&live.canTry(paperKey))
+ // Coins not on Binance (BingX chart) were never part of the validated backtest: testnet only.
+ if(LIVE.mode!=='OFF'&&(!row.venueOnly||LIVE.mode==='TESTNET')&&live.armed&&liveWindow&&!live.hasSignal(paperKey)&&live.canTry(paperKey))
   void (async()=>{
    // Only when the paper venue has no live keys, the other venues' quotes are refreshed so the
    // signal can be routed (routeLiveSignal needs a quote at most 15 s old).

@@ -73,6 +73,9 @@ globalThis.fetch=async(input,options={})=>{
   if(url.pathname==='/openApi/swap/v2/quote/contracts')return json({code:0,msg:'',data:venueListed().map(symbol=>({symbol:symbol.slice(0,-4)+'-USDT',currency:'USDT',asset:symbol.slice(0,-4),
    pricePrecision:2,quantityPrecision:2,tradeMinQuantity:0.01,tradeMinUSDT:5,status:1,apiStateOpen:'true',apiStateClose:'true'}))});
   if(url.pathname==='/openApi/swap/v2/quote/ticker')return json({code:0,msg:'',data:venueListed().map(symbol=>({symbol:symbol.slice(0,-4)+'-USDT',lastPrice:String(price(symbol)),quoteVolume:'50000000'}))});
+  if(url.pathname==='/openApi/swap/v3/quote/klines'){const symbol=url.searchParams.get('symbol').replace('-',''),interval=url.searchParams.get('interval');
+   if(!['15m','1h','4h'].includes(interval))throw Error('Test transport forbids other venue candles');
+   return json({code:0,msg:'',data:venueCandles(symbol,interval,Number(url.searchParams.get('limit'))||100).map(k=>({time:k.t*1000,open:k.o,high:k.h,low:k.l,close:k.c,volume:String(Number(k.v)/100)}))})}
   if(url.pathname==='/openApi/swap/v2/quote/depth')return json({code:0,msg:'',data:venueBook(url.searchParams.get('symbol').replace('-',''))});
  }
  if(url.hostname==='api.gateio.ws'){
