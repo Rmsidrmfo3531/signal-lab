@@ -1179,7 +1179,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
-  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,liveOverview({status:live.status(),records:live.store.records,
+  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading}));
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
@@ -1189,6 +1189,8 @@ const server=http.createServer(async(req,res)=>{
     setTimeout(()=>{for(const symbol of state.analyses.keys()){try{cryptoEntryAllowed(symbol)}catch{}}},50);
     return response(res,200,status)}
    if(pathname==='/api/live/disarm')return response(res,200,live.disarm());
+   // Finished records only (positions, unchecked states and today's closed trades stay).
+   if(pathname==='/api/live/delete'){const r=live.deleteRecord(String(body.key||''));return response(res,r.ok?200:409,r)}
    if(pathname==='/api/live/kill')return response(res,200,live.kill('MANUAL'));
    if(pathname==='/api/live/test-order'){
     // TESTNET only: a small DOGE long through the real order path, closed after a few seconds

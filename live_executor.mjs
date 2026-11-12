@@ -24,7 +24,7 @@ import {roundDecimalToStep} from './decimal_grid.mjs';
 import {venueStop,venueCosts} from './venue_execution.mjs';
 import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight} from './live_orders.mjs';
 
-const MAX_RECORDS=300,MAX_EVENTS=40;
+const MAX_RECORDS=300,MAX_DELETED_KEYS=500,MAX_EVENTS=40;
 const pick=(data,...keys)=>{for(const k of keys)if(data?.[k]!==undefined&&data[k]!==null&&data[k]!=='')return data[k];return undefined};
 const orderOf=data=>data?.order??data;
 const bingxOrderId=data=>{const o=orderOf(data);const id=pick(o,'orderID','orderId');return id===undefined?null:String(id)};
@@ -42,21 +42,41 @@ export class LiveExecutor{
   Object.assign(this,{config,clients,now,log,onChange,priceOf});
   this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();
   const stored=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
-  this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[]};
+  this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[],
+   deletedKeys:Array.isArray(stored?.deletedKeys)?stored.deletedKeys.slice(-MAX_DELETED_KEYS):[]};
+  // Successful test orders are not kept (user, 2026-11-13); a failed one stays for checking.
+  this.store.records=this.store.records.filter(r=>!(r.test===true&&r.status==='CLOSED'));
   // An entry that was being submitted when the server stopped may have filled without its stop:
   // unknown state, which blocks new entries until a person checks the account.
   for(const r of this.store.records)if(r.status==='SUBMITTING'){r.status='UNKNOWN';r.events=[...(r.events||[]),{type:'RESTART_WHILE_SUBMITTING',at:now()}].slice(-MAX_EVENTS)}
  }
- #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records})}this.onChange(this.status())}
+ #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records,deletedKeys:this.store.deletedKeys})}this.onChange(this.status())}
  #event(record,type,detail={}){record.events=[...(record.events||[]),{type,at:this.now(),...detail}].slice(-MAX_EVENTS);this.log(`[LIVE ${record.venue} ${record.symbol}] ${type}`,detail.reason||'')}
  /** False while a just-evaluated signal waits before its next try (30 s, cleared by arming). */
  canTry(signalKey){const last=this.lastTry.get(signalKey);return !(last>this.now()-30000)||this.hasSignal(signalKey)}
- hasSignal(signalKey){return this.inFlight.has(signalKey)||this.store.records.some(r=>r.signalKey===signalKey)}
+ hasSignal(signalKey){return this.inFlight.has(signalKey)||this.store.records.some(r=>r.signalKey===signalKey)||this.store.deletedKeys.includes(signalKey)}
+ /** Why a record may not be deleted, or null. Positions and unchecked states stay; a closed trade of
+  * today (KST) stays because it counts toward today's risk limit. */
+ deleteBlock(record){
+  if(!record)return 'NOT_FOUND';
+  if(['SUBMITTING','OPEN','UNKNOWN'].includes(record.status))return 'ACTIVE';
+  if(record.test===true||record.status==='FAILED')return null;
+  if(record.status==='CLOSED'&&record.day===new Date(this.now()+9*3600000).toISOString().slice(0,10))return 'TODAY_COUNTS_FOR_DAILY_RISK';
+  return record.status==='CLOSED'?null:'NOT_FINISHED';
+ }
+ deleteRecord(signalKey){
+  const record=this.store.records.find(r=>r.signalKey===signalKey),block=this.deleteBlock(record);
+  if(block)return {ok:false,reason:block};
+  this.store.records=this.store.records.filter(r=>r!==record);
+  // The signal is remembered so the same signal is never entered again after its record is gone.
+  if(!record.test)this.store.deletedKeys=[...this.store.deletedKeys.filter(k=>k!==signalKey),signalKey].slice(-MAX_DELETED_KEYS);
+  this.#save();return {ok:true}
+ }
  credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
  status(){
   return {mode:this.config.mode,armed:this.armed,killSwitch:this.store.killSwitch,liveConfirmed:this.config.liveConfirmed,venues:this.config.venues,
    credentialsConfigured:this.credentials(),limits:{sizing:this.config.sizing,balanceCapUSD:this.config.balanceCapUSD||null,unitPct:this.config.unitPct,maxLossPct:this.config.maxLossPct,dailyMaxLossPct:this.config.dailyMaxLossPct,maxRiskUSD:this.config.maxRiskUSD,dailyMaxRiskUSD:this.config.dailyMaxRiskUSD,maxOpen:this.config.maxOpen,maxPerDirection:this.config.maxPerDirection},
-   records:this.store.records.slice(-30).reverse().map(({events,...r})=>({...r,lastEvent:events?.at(-1)??null})),skipped:this.store.skipped.slice(-20).reverse()};
+   records:this.store.records.slice(-30).reverse().map(({events,...r})=>({...r,lastEvent:events?.at(-1)??null,deletable:this.deleteBlock(r)===null})),skipped:this.store.skipped.slice(-20).reverse()};
  }
  arm(){
   if(this.config.mode==='OFF')throw Object.assign(Error('LIVE_MODE_OFF'),{httpStatus:409});
@@ -73,6 +93,7 @@ export class LiveExecutor{
   // One evaluation per signal at a time: price ticks can offer the same signal again while the
   // balance is being read; without this both could pass the duplicate check.
   if(this.inFlight.has(signalKey))return {sent:false,reasons:['SIGNAL_IN_FLIGHT']};
+  if(this.store.deletedKeys.includes(signalKey))return {sent:false,reasons:['DUPLICATE_SIGNAL']};
   // A signal that was just evaluated and skipped waits 30 s before the next try (each try reads
   // the balance and the venue book); arming clears the wait.
   const last=this.lastTry.get(signalKey);if(last>this.now()-30000&&!this.hasSignal(signalKey))return {sent:false,reasons:['RETRY_WAIT']};
@@ -292,8 +313,11 @@ export class LiveExecutor{
   if(!record)return {ok:false,reasons:sent?.reasons||['NOT_SENT']};
   record.test=true;
   if(record.status==='OPEN'){await sleep(holdMs);await this.#closeTest(record,sleep)}
+  const ok=record.status==='CLOSED'&&record.closeReason==='TEST_CLOSE';
+  // A successful test leaves no record (its steps are in this reply); a failed one stays for checking.
+  if(ok)this.store.records=this.store.records.filter(r=>r!==record);
   this.#save();
-  return {ok:record.status==='CLOSED'&&record.closeReason==='TEST_CLOSE',status:record.status,venue:record.venue,symbol:record.symbol,
+  return {ok,status:record.status,venue:record.venue,symbol:record.symbol,
    quantity:record.quantity,leverage:record.leverage,stop:record.stop,targets:record.targets,adds:(record.adds||[]).length,events:record.events.map(e=>({type:e.type,reason:e.reason??null,orderId:e.orderId??null}))};
  }
  /** Close order: adds cancelled first, then a reduce-only market close, the position confirmed

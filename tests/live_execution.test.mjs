@@ -359,12 +359,13 @@ test('testnet round trip: same order path, then everything cancelled and closed;
  const res=await ex.testRoundTrip(testRow,{holdMs:0,sleep:async()=>{amt='0'},maxBalanceUSD:1000});
  assert.equal(res.ok,true,JSON.stringify(res.events));assert.equal(res.status,'CLOSED');assert.ok(res.adds>=1);
  const types=res.events.map(e=>e.type);for(const t of ['MARGIN_SET','ENTRY_SENT','PROTECTED','ADDS_PLACED','ADDS_CANCELLED','TEST_CLOSED'])assert.ok(types.includes(t),t);
- assert.equal(ex.store.records[0].test,true);assert.equal(ex.store.killSwitch,false);
+ assert.equal(ex.store.records.length,0,'a successful test leaves no record');assert.equal(ex.store.killSwitch,false);
  // Position still there after the close order: stop trading.
  let amt2='0.2';const m2=mockBingX({positionAmt:()=>amt2}),ex2=new LiveExecutor({config:config(),clients:{BINGX:m2.client},now:()=>NOW});ex2.arm();
  const bad=await ex2.testRoundTrip(row('BINGX'),{holdMs:0,sleep:async()=>{}});
  assert.ok(bad.events.some(e=>e.type==='TEST_CLOSE_INCOMPLETE'));
  assert.ok(!m2.calls.some(c=>c.method==='DELETE'),'stop and targets stay while the position is open');assert.equal(bad.ok,false);assert.equal(ex2.store.killSwitch,true);
+ assert.equal(ex2.store.records[0].test,true,'a failed test stays for checking');
  await assert.rejects(new LiveExecutor({config:config({mode:'LIVE',liveConfirmed:true}),clients:{BINGX:m.client},now:()=>NOW}).testRoundTrip(row('BINGX')),/TEST_TESTNET_ONLY/);
 });
 
@@ -428,4 +429,22 @@ test('a rounded id saved earlier still finds and cancels the open order by its e
   const types=res.events.map(e=>e.type);
   assert.ok(types.includes('CANCELLED_BY_EXACT_ID'),JSON.stringify(res.events));assert.equal(m.orders.length,0);assert.equal(res.ok,true);
  }finally{delete globalThis.__bingxAutoCancel}
+});
+
+test('finished records can be deleted; positions, unchecked states and today\'s closed trades cannot; a deleted signal is not entered again',async()=>{
+ const fs=await import('node:fs'),os=await import('node:os'),path=await import('node:path');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'live-del-'));
+ const m=mockBingX(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});ex.arm();
+ await ex.onSignal(row('BINGX'),{signalKey:'d1'});const r=ex.store.records.find(x=>x.signalKey==='d1');
+ assert.equal(ex.deleteRecord('d1').reason,'ACTIVE');
+ r.status='CLOSED';r.closedAt=NOW;assert.equal(ex.deleteRecord('d1').reason,'TODAY_COUNTS_FOR_DAILY_RISK');
+ r.day='2000-01-01';assert.equal(ex.status().records[0].deletable,true);
+ assert.equal(ex.deleteRecord('d1').ok,true);assert.equal(ex.store.records.length,0);
+ assert.equal(ex.hasSignal('d1'),true,'deleted signal is remembered');
+ const sent=await ex.onSignal(row('BINGX'),{signalKey:'d1'});assert.notEqual(sent?.sent,true);
+ ex.store.records.push({signalKey:'f1',status:'FAILED',day:'2026-11-13'},{signalKey:'u1',status:'UNKNOWN'},{signalKey:'t1',test:true,status:'CLOSED'});
+ assert.equal(ex.deleteRecord('f1').ok,true);assert.equal(ex.deleteRecord('u1').reason,'ACTIVE');assert.equal(ex.deleteRecord('nope').reason,'NOT_FOUND');
+ // Reload: successful test records are dropped, deleted keys kept.
+ const ex2=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
+ assert.equal(ex2.store.records.some(x=>x.signalKey==='t1'),false);assert.equal(ex2.hasSignal('d1'),true);assert.ok(ex2.store.records.some(x=>x.signalKey==='u1'));
 });
