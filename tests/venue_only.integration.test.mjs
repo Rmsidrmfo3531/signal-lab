@@ -17,6 +17,8 @@ test('a coin only on Gate.io/BingX is analyzed on the Gate.io chart and paper-tr
   const rec=[...paper.open,...paper.pending].find(x=>x.symbol==='AKEUSDT');assert.ok(rec,'AKEUSDT entry');assert.equal(rec.direction,'LONG');
   const analyzed=(await app.get('/api/results')).signals.find(x=>x.symbol==='AKEUSDT');
   assert.equal(analyzed?.analysisVenue,'GATEIO','chart from Gate.io');assert.equal(analyzed?.venueOnly,true);
+  assert.equal(analyzed.marketCap,40e6,'market cap attached for the leverage rule');
+  const {leverageForScore}=await import('../paper.mjs');assert.equal(rec.leverage,leverageForScore(analyzed.score,40e6));assert.ok(rec.leverage>=10&&rec.leverage<=30);
   const btc=await app.get('/api/analyze?symbol=BTCUSDT');assert.equal(btc.analysisVenue,'BINANCE');
   const requests=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(requests.some(r=>r.path==='/api/v4/futures/usdt/candlesticks'&&r.interval==='1h'),'Gate.io 1h candles read');

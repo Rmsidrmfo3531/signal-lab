@@ -26,8 +26,8 @@ export function telegramMessage(signal,officialLinks,{paperPosition}={}){
    Number.isFinite(paperPosition.originalQty)&&paperPosition.originalQty>0&&
    Number.isFinite(paperPosition.qtyRemaining)&&paperPosition.qtyRemaining>0&&paperPosition.qtyRemaining<=paperPosition.originalQty
    ?paperPosition:null;
- // 배율: the paper position's, else the score rule (90점 10배 … 100점 20배).
- const leverage=Number.isFinite(position?.leverage)?position.leverage:leverageForScore(signal.score);
+ // 배율: the paper position's, else 10 + score points + market-cap points (10-30x).
+ const leverage=Number.isFinite(position?.leverage)?position.leverage:leverageForScore(signal.score,signal.marketCap);
  const multiple=typeof leverage==='number'&&Number.isFinite(leverage)&&leverage>0
    ? leverage.toLocaleString('ko-KR',{maximumFractionDigits:2})+'배 (모의 기준'+(Number.isFinite(signal.score)?`, ${signal.score}점`:'')+')' : '미설정';
  const base=signal.symbol.slice(0,-4),qtyText=q=>q.toLocaleString('en-US',{maximumFractionDigits:12})+' '+base;

@@ -65,13 +65,18 @@ export function signalKey({market,symbol,direction,pattern,barAt}){
 }
 // Closed trades grouped the way they are compared with the backtest: 1H on the Binance chart,
 // 1H on a venue chart (coins Binance does not list), and the 1m / 5m / 15m scalps.
-// Leverage (배율) from the score: 90 points -> 10x ... 100 points -> 20x (1 point = 1x), the user's
-// 10-20x range. Positions are sized by the stop-loss risk, so leverage sets the margin (증거금) a
-// position ties up, not the loss at the stop.
-export const LEVERAGE_RANGE=Object.freeze({min:10,max:20});
-export function leverageForScore(score){
- const x=Number(score);if(!Number.isFinite(x))return null;
- return Math.max(LEVERAGE_RANGE.min,Math.min(LEVERAGE_RANGE.max,Math.round(LEVERAGE_RANGE.min+(x-90))));
+// Leverage (배율), whole numbers from 10x to 30x = 10 + score points + market-cap points.
+//  score points: 1 per score point above 90 (90 -> 0 ... 100 -> 10)
+//  market-cap points: 1 per threshold reached (unknown market cap -> 0)
+// Positions are sized by the stop-loss risk, so leverage sets the margin (증거금) a position ties
+// up, not the loss at the stop.
+export const LEVERAGE_RANGE=Object.freeze({min:10,max:30});
+export const MCAP_LEVERAGE_STEPS=Object.freeze([50e6,100e6,200e6,500e6,1e9,2e9,5e9,10e9,30e9,100e9]);
+export const scoreLeveragePoints=score=>{const x=Number(score);return Number.isFinite(x)?Math.max(0,Math.min(10,Math.floor(x-90+1e-9))):0};
+export const capLeveragePoints=cap=>{const x=Number(cap);return Number.isFinite(x)&&x>0?MCAP_LEVERAGE_STEPS.filter(t=>x>=t).length:0};
+export function leverageForScore(score,marketCap=null){
+ if(!Number.isFinite(Number(score)))return null;
+ return Math.max(LEVERAGE_RANGE.min,Math.min(LEVERAGE_RANGE.max,LEVERAGE_RANGE.min+scoreLeveragePoints(score)+capLeveragePoints(marketCap)));
 }
 export const BREAKDOWN_GROUPS=Object.freeze([
  {key:'HOURLY_BINANCE',label:'1시간봉 · 바이낸스 차트'},{key:'HOURLY_VENUE',label:'1시간봉 · Gate.io/BingX 차트'},
@@ -209,7 +214,8 @@ export class PaperEngine {
   const chartVenue=['BINANCE','GATEIO','BINGX'].includes(signal.analysisVenue)?signal.analysisVenue:null,score=Number(signal.score);
   this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,sizeScale,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+entryTimeoutMs,
    ...(chartVenue?{chartVenue}:{}),...(Number.isFinite(score)&&score>=0&&score<=100?{score}:{}),
-   ...(()=>{const given=Number(signal.leverage),lev=Number.isFinite(given)&&given>=1&&given<=125?Math.round(given):leverageForScore(Number.isFinite(score)&&score>=0&&score<=100?score:NaN);return lev?{leverage:lev}:{}})(),
+   ...(()=>{const given=Number(signal.leverage),lev=Number.isFinite(given)&&given>=1&&given<=125?Math.round(given):leverageForScore(Number.isFinite(score)&&score>=0&&score<=100?score:NaN,signal.marketCap);return lev?{leverage:lev}:{}})(),
+   ...(Number(signal.marketCap)>0?{marketCap:Number(signal.marketCap)}:{}),
    ...(dca?{dca}:{}),
    ...(maxHoldMs?{maxHoldMs}:{}),...(typeof signal.strategy==='string'&&/^[A-Z0-9_]{1,40}$/.test(signal.strategy)?{strategy:signal.strategy}:{}),
    ...(executionVenue?{executionVenue,venueSymbol:typeof signal.venueSymbol==='string'?signal.venueSymbol:null,venueContract:signal.venueContract?structuredClone(signal.venueContract):null}:{}),

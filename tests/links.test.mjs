@@ -38,6 +38,7 @@ test('leverage follows the score (90 -> 10x ... 100 -> 20x); quantity is the ope
  assert.match(planned.text,/포지션 수량\(모의\): 1\.25 SOL \(진입 예정\) · 명목 \$125\.00 · 증거금 \$8\.33/);
  assert.match(telegramMessage({...valid,score:90},officialMarketLinks('SOLUSDT')).text,/배율: 10배/);
  assert.match(telegramMessage({...valid,score:100},officialMarketLinks('SOLUSDT')).text,/배율: 20배/);
+ assert.match(telegramMessage({...valid,score:100,marketCap:80e9},officialMarketLinks('SOLUSDT')).text,/배율: 29배/,'market cap adds leverage');
  // Without a plan quantity nothing is guessed (a final signal always has a score).
  const unknown=telegramMessage({...valid,targetPlan:{...valid.targetPlan,quantity:null}},officialMarketLinks('SOLUSDT'));
  assert.match(unknown.text,/포지션 수량\(모의\): 미확인/);assert.doesNotMatch(unknown.text,/명목|증거금/);

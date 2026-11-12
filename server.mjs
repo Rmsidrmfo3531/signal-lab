@@ -92,7 +92,7 @@ const CONFIG={
  // Zone scale-in for scalp paper trades: 1,1,2,4,... units on volume zones, cross margin.
  dcaMode:String(process.env.DCA_MODE||'ON').toUpperCase()!=='OFF',
  paperBalanceUSD:Math.max(10,Math.min(10000000,Number(process.env.PAPER_BALANCE_USD)||1000)),
- dcaLeverage:Math.max(10,Math.min(20,Number(process.env.DCA_LEVERAGE)||DCA_DEFAULTS.leverage)),
+ dcaLeverage:Math.max(10,Math.min(30,Math.round(Number(process.env.DCA_LEVERAGE)||DCA_DEFAULTS.leverage))),
  dcaUnitPct:Math.max(.01,Math.min(10,Number(process.env.DCA_UNIT_PCT)||DCA_DEFAULTS.unitPct)),
  dcaMaxLossPct:Math.max(1,Math.min(95,Number(process.env.DCA_MAX_LOSS_PCT)||DCA_DEFAULTS.maxLossPct)),
  // Adds per scale-in plan: 5-10 (default 10). Zones come from the 3-day profile plus a
@@ -481,6 +481,8 @@ async function checkSymbolInternal(symbol, force=false){
  if(venueOnly){const last=h1?.at(-1);if(last)meta.price=Number(last[4])}
  const out=analyze(symbol,h1,h4,[],meta.price,{quoteVolume:meta.quoteVolume,priceChangePercent:meta.change,btcH4Rows:btcH4??h4});
  out.analysisVenue=chartVenue;out.venueOnly=venueOnly;out.tradeApproval=false;out.scorePolicy=getSignalScorePolicy();
+ // Market cap (CoinGecko) feeds the leverage rule: bigger coins get more leverage.
+ {const caps=state.marketCaps.caps,cap=Number(meta.marketCap)>0?Number(meta.marketCap):caps?marketCapFor(symbol,meta.price,caps)?.marketCap:null;if(cap>0)out.marketCap=cap}
  if(out.pattern&&out.technicalQualified===true){
   try{
    // Binance = chart analysis. Size and entry come from the execution venue (BingX / Gate.io).
@@ -1178,6 +1180,8 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
  console.log(`Binance USDT perpetual live ticks + confirmed 1H/4H event scans; background ${Math.round(CONFIG.scanMs/60000)} min / news ${Math.round(CONFIG.newsMs/1000)} sec. Telegram ${CONFIG.tgChat?'enabled':'disabled'}.`);
  if(CONFIG.autoUpdate){setTimeout(()=>checkSoftwareUpdate().catch(()=>{}),8000);setInterval(()=>checkSoftwareUpdate().catch(()=>{}),6*3600000)}
  connectWS();setTimeout(runScan,1200);setInterval(()=>void runScan(),CONFIG.scanMs);
+ // Market caps for every coin (leverage rule), not only for the venue-only list.
+ setTimeout(()=>void refreshMarketCaps().catch(()=>{}),15000);setInterval(()=>void refreshMarketCaps().catch(()=>{}),30*60000);
  setTimeout(()=>void runVenueOnlyScan(),CONFIG.venueOnly.startDelayMs);setInterval(()=>void runVenueOnlyScan(),CONFIG.venueOnly.intervalMs);
  // Retry market discovery quickly after an API failure rather than staying empty for 4 minutes.
  setInterval(()=>{if(!state.activeSymbols.length&&!state.researchSymbols.length&&!state.scanActive){state.marketLastRetry=Date.now();void runScan()}},20000);
