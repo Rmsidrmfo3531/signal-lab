@@ -93,7 +93,7 @@ function setStatus(s){const previousVenue=app.status?.rest;app.status=s;renderSc
  $('scanProgress').textContent=s.scanning?'⟳ 실제 분석 중 · 이번 순환 '+(s.cycleScanned||0)+'개 검사':liveFresh?'● 봉 마감·선별 가격 이벤트 분석 · '+(s.liveAnalyzed||0)+'건':s.marketError?'⚠ Binance 종목 조회 재시도 중':'⏳ Binance 데이터 수신 대기';
  $('scanFoot').textContent=(liveFresh?'실시간 봉 이벤트 정상':'실시간 봉 수신 대기')+' · 최근 스캔 성공 '+(s.scanSuccess||0)+'건 / 실패 '+(s.scanFailed||0)+'건';
  const alive=Boolean(tickerFresh&&Date.now()-s.lastTickerAt<30000);
- $('socketStatus').innerHTML=`<i class="dot ${alive?'green':s.rest==='connected'?'amber':'red'}"></i><span>${alive?'LIVE STREAM':s.rest==='connected'?'REST ONLY':'연결 대기'}</span>`;
+ $('socketStatus').innerHTML=`<i class="dot ${alive?'green':s.rest==='connected'?'amber':'red'}"></i><span>${alive?'실시간 연결':s.rest==='connected'?'주기 조회':'연결 대기'}</span>`;
  $('sysLiveHealth').textContent=liveFresh?Math.round((Date.now()-s.lastLiveDataAt)/1000)+'초 전 · 이벤트 분석 '+(s.liveAnalyzed||0)+'건':(s.liveLastError||'시세 구독 후 실제 봉 데이터 수신 대기');
  $('sysSubscriptions').textContent=(s.liveSubscribeAcks||0)+'개 ACK / '+(s.liveSubscribeErrors||0)+'개 오류';
  if(s.storage?.healthy===false)banner('기록 저장 실패 · 모의매매 확인 필요',s.storage.error||'기록이 디스크에 저장되지 않았습니다. 데이터 경로와 저장 공간을 확인하세요.');
@@ -190,7 +190,19 @@ function volumeTargetHTML(row,{compact=false}={}){
  const targets=plan.targets.map((price,i)=>{const part=plan.parts?.[i],ratio=Number.isFinite(part?.fraction)?(part.fraction*100).toFixed(0)+'%':'비율 미확인';return `<div class="tp-line"><b>TP${i+1} ${fmt(price)}</b><span>${ratio} 청산${Number.isFinite(part?.quantity)?' · 수량 '+fmt(part.quantity):''}</span>${!compact&&part?.zone?`<small>매물대 ${fmt(part.zone.priceLow)} ~ ${fmt(part.zone.priceHigh)} 직전</small>`:part?.source==='R_MULTIPLE'?`<small>매물대 없음 · ${escapeHtml(part.rMultiple)}R 지점</small>`:''}</div>`}).join('');
  return `<div class="tp-list volume-targets">${targets}<small>예상 TP1 순손익비 ${rr} · 체결·비용 가정</small><details class="volume-evidence"><summary>매물대 계산 근거</summary><p>${escapeHtml(source)} · ${dateClock(evidence.windowStart)} ~ ${dateClock(evidence.windowEnd)} KST<br>커버리지 ${coverage} · ${Number.isFinite(evidence.candles)?'15분봉 '+escapeHtml(evidence.candles)+'개':'체결 '+escapeHtml(evidence.uniqueTrades??evidence.tradeCount??'미확인')+'건'} · 갱신 ${dateClock(evidence.generatedAt??evidence.receivedAt)} KST</p><p>POC ${fmt(evidence.poc?.price)} · Value Area ${fmt(evidence.valueArea?.low)} ~ ${fmt(evidence.valueArea?.high)}<br>HVN ${(evidence.hvn||[]).map(zone=>fmt(zone.price)).join(' / ')||'미확인'}</p><small>${evidence.dataSource==='BINANCE_KLINES_15M'?'15분봉 거래량을 고가~저가에 고르게 나눈 근사치입니다.':'1H 봉 거래량을 가격별 체결량으로 바꾸지 않습니다.'} 기존 거래의 TP/SL은 변경하지 않습니다.</small></details></div>`;
 }
-function renderAnalysis(){const a=app.analysis;
+function renderAnalysis(){
+// Score factor values: short readable numbers, objects as "이름 값" pairs (never [object Object]).
+const FACTOR_KO={adx:'ADX',plusDI:'+DI',minusDI:'-DI',histogram:'히스토그램',previousHistogram:'직전',ratio:'거래량 배수',requiredRatio:'기준',atr:'ATR',priceFraction:'가격 대비',bodyFraction:'몸통 비율',closePosition:'종가 위치',pattern:'패턴',directionConfirmed:'방향 확인'};
+function factorNum(v){const x=Number(v);if(!Number.isFinite(x))return String(v);const a=Math.abs(x);return a>=1000?x.toFixed(1):a>=1?String(+x.toFixed(2)):String(+x.toPrecision(3))}
+function factorValue(v){
+ if(v===null||v===undefined||v==='')return '미확인';
+ if(typeof v==='number'||(/^-?\d+(\.\d+)?(e-?\d+)?$/i.test(String(v))&&typeof v!=='boolean'))return factorNum(v);
+ if(typeof v==='boolean')return v?'예':'아니오';
+ if(typeof v==='object')return Object.entries(v).filter(([,x])=>x!==null&&x!==undefined&&typeof x!=='object').slice(0,3)
+  .map(([k,x])=>`${FACTOR_KO[k]||k} ${typeof x==='boolean'?(x?'예':'아니오'):typeof x==='number'?factorNum(x):x}`).join(' · ')||'—';
+ return String(v);
+}
+const a=app.analysis;
  if(!a||a.status==='insufficient'){$('analysisTag').textContent='평가 불가 · 데이터 확인';$('analysisTrend').textContent='—';$('supports').innerHTML='<div class="empty-small">마감된 1H·4H 데이터 부족</div>';$('resistances').innerHTML='<div class="empty-small">4H EMA200에 250~300개 확정봉 권장</div>';$('currentCandidate').innerHTML='<div class="empty-small">종합점수 평가 불가 · 값을 0점이나 100점으로 대체하지 않습니다.</div>';return}
  $('analysisTrend').textContent=a.trend==='up'?'▲ 상승 추세':a.trend==='down'?'▼ 하락 추세':'━ 중립 / 횡보';$('analysisTrend').className=a.trend==='up'?'positive':a.trend==='down'?'negative':'';
  $('supports').innerHTML=levelRows(a.supports,'sup');$('resistances').innerHTML=levelRows(a.resistances,'res');
@@ -201,7 +213,7 @@ function renderAnalysis(){const a=app.analysis;
   reasons=a.technicalValidation?.reasons??a.quality?.failed??[];
  $('analysisTag').textContent=ready&&timing.actionable?'최종 검증 통과 · 실제 주문 OFF':technical?'기술 검증 완료 · 최종 진입 별도':'기술 검증 미완료';
  const breakdown=Array.isArray(checks)?checks:Object.values(checks);
- const qualityInfo=`<div class="quality-checks"><h4>단일 종합점수 ${escapeHtml(score)} · 기술 판정 별도</h4>${breakdown.map(c=>`<div class="quality-row"><span class="${c.passed?'quality-ok':'quality-bonus'}">${c.passed?'✓':'○'}</span><span>${escapeHtml(c.label||c.key)} · ${Number.isFinite(c.earned)?c.earned:Number.isFinite(c.points)?c.points:'평가 불가'}/${escapeHtml(c.weight??'—')}점</span><small>${escapeHtml(String(c.value??c.reason??'미확인'))}</small></div>`).join('')}<small>4H EMA200 15 · EMA100 5 · 1H EMA20 10 · 패턴·확정 강도 25 · ADX/DMI 15 · RSI 10 · MACD 5 · 패턴별 거래량 10 · ATR 5. 점수는 승률이 아닙니다.</small></div>`;
+ const qualityInfo=`<div class="quality-checks"><h4>단일 종합점수 ${escapeHtml(score)} · 기술 판정 별도</h4>${breakdown.map(c=>`<div class="quality-row"><span class="${c.passed?'quality-ok':'quality-bonus'}">${c.passed?'✓':'○'}</span><span>${escapeHtml(c.label||c.key)} · ${Number.isFinite(c.earned)?c.earned:Number.isFinite(c.points)?c.points:'평가 불가'}/${escapeHtml(c.weight??'—')}점</span><small>${escapeHtml(factorValue(c.value??c.reason))}</small></div>`).join('')}<small>4H EMA200 15 · EMA100 5 · 1H EMA20 10 · 패턴·확정 강도 25 · ADX/DMI 15 · RSI 10 · MACD 5 · 패턴별 거래량 10 · ATR 5. 점수는 승률이 아닙니다.</small></div>`;
  const validation=`<div class="signal-check ${technical?'':'blocked'}">기술 검증 ${technical?'완료':'미완료'}<small>${escapeHtml(reasons.join(' · ')||'기술 결과와 호가·위험·매물대 목표·현재 진입 조건을 별도로 확인합니다.')}</small></div>`;
  const execution=a.execution?`<div class="signal-check ${a.execution.eligible?'':'blocked'}">거래소 호가·위험 ${a.execution.eligible?'검증 통과':'검증 보류'}<small>${escapeHtml(a.execution.reasons?.join(' · ')||'실제 거래소 주문 승인은 별도이며 현재 OFF입니다.')}</small></div>`:'';
  $('currentCandidate').innerHTML=`<div class="signal-heading">${a.direction?`<span class="dir ${a.direction==='LONG'?'long':'short'}">${escapeHtml(a.direction)}</span>`:''}<span class="subtle-tag">종합 ${escapeHtml(score)} · 승률 아님</span></div><div class="signal-pattern">${escapeHtml(a.pattern||'확정 패턴 없음')}</div><div class="signal-comment">선택 종목의 지표 상세입니다. 메인 신호 목록에는 최종 검증 통과 결과만 표시합니다.</div>${qualityInfo}${validation}${a.entry?`<div class="signal-grid"><div><span>패턴 기준 진입가</span><strong>${fmt(a.entry)}</strong></div><div><span>손절 무효화</span><strong>${fmt(a.stop)}</strong></div></div>`:''}${volumeTargetHTML(a)}${execution}`;

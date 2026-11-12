@@ -45,7 +45,7 @@ function showWorkspaceRoute() {
     if (route === 'overview') workspaceHeading.innerHTML = defaultHeading;
     else workspaceHeading.textContent = workspaceRoutes[route];
   }
-  if (workspaceEyebrow) workspaceEyebrow.textContent = route === 'overview' ? defaultEyebrow : 'SIGNAL LAB / WORKSPACE';
+  if (workspaceEyebrow) workspaceEyebrow.textContent = route === 'overview' ? defaultEyebrow : 'Signal Lab';
   document.title = 'Signal Lab · ' + workspaceRoutes[route];
   document.getElementById('sidebar')?.classList.remove('open');
   window.requestAnimationFrame(() => {

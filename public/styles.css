@@ -563,3 +563,92 @@
 .live-control [hidden]{display:none!important}
 .live-position header,.live-closed header{justify-content:flex-start;gap:6px 12px}
 .live-position header>.live-state,.live-closed header>span:last-child{margin-left:auto}
+
+/* ===== v6 design refresh (2026-11-13) =====
+   Presentation only. One calm, low-glare dark palette for long viewing; semantic colors used everywhere:
+   롱·이익 = --up (green), 숏·손실 = --down (red) — the app's existing convention, kept on every screen
+   (scan table, live cards, closed trades). Warning = --warn (amber), neutral info = --accent (blue).
+   Numbers use tabular figures so columns line up; mono font only for prices and codes. */
+:root{--bg:#0b111b;--aside:#0d1420;--panel:#111a27;--panel-deep:#0e1622;--panel-raise:#152031;--line:#223047;--line-soft:#1a2639;
+ --text:#e7edf6;--muted:#9aa9bd;--dim:#6f8098;--accent:#6ea8ff;--accent-soft:rgba(110,168,255,.12);--cyan:#5fd0c6;
+ --up:#3fcf9b;--up-soft:rgba(63,207,155,.12);--down:#ff7b8b;--down-soft:rgba(255,123,139,.12);--warn:#f2c46d;--warn-soft:rgba(242,196,109,.12);
+ --green:var(--up);--red:var(--down);--amber:var(--warn);--radius:14px;--r-sm:9px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px}
+body{font-size:13.5px;line-height:1.55;background:var(--bg);-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums}
+.sidebar{background:var(--aside);border-right:1px solid var(--line-soft)}
+.topbar{border-bottom:1px solid var(--line-soft);background:rgba(11,17,27,.88);backdrop-filter:blur(8px)}
+.breadcrumb{font-family:inherit;letter-spacing:0;font-size:12px;color:var(--muted)}
+.eyebrow,.panel-eyebrow{font-family:inherit;letter-spacing:.02em;text-transform:none;font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px}
+.panel-eyebrow{font-size:11.5px}
+.page-head h1{letter-spacing:-.01em}
+.intro{color:var(--muted)}
+/* Panels and cards */
+.panel,.metric{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
+.panel-header{border-bottom:1px solid var(--line-soft)}
+.panel h3{font-size:16px;letter-spacing:-.005em}
+.metric{padding:18px 20px}
+.metric p,.metric .label{font-family:inherit;letter-spacing:.01em;text-transform:none}
+/* Buttons: one shape, three roles */
+.outline-btn,.secondary-btn,.primary-btn,.danger-btn,.ghost{min-height:36px;border-radius:var(--r-sm);padding:8px 14px;font-size:12px;font-weight:600;line-height:1.2;transition:background .15s,border-color .15s,filter .15s}
+.outline-btn,.secondary-btn{background:var(--panel-raise);border:1px solid var(--line);color:var(--text)}
+.outline-btn:hover,.secondary-btn:hover{background:#1b2940;border-color:#33496a}
+.primary-btn{background:#3d7fe0;border:1px solid #4f8ff0;color:#fff}
+.danger-btn,.outline-btn.danger-btn{background:var(--down-soft);border:1px solid rgba(255,123,139,.45);color:#ffb3bd}
+.danger-btn:hover{background:rgba(255,123,139,.2)}
+.ghost{background:transparent;border:1px solid var(--line);color:var(--muted)}
+.ghost:hover{color:var(--text);border-color:#33496a}
+.ghost.small{min-height:28px;padding:4px 10px;font-size:11.5px}
+button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Tables */
+.scan-table th,.venues-table th{font-family:inherit;font-size:11.5px;letter-spacing:0;font-weight:600;color:var(--muted);background:var(--panel-deep);position:sticky;top:0;z-index:1}
+.scan-table td,.venues-table td{border-bottom:1px solid var(--line-soft)}
+.scan-table tbody tr:hover,.venues-table tbody tr:hover{background:rgba(110,168,255,.04)}
+.venues-table td{padding:9px 12px;vertical-align:middle}
+.venues-table th{padding:10px 12px;text-align:left}
+/* Long / short, profit / loss — same colors everywhere */
+.paper-long,.side-long{color:var(--up);font-weight:700}
+.paper-short,.side-short{color:var(--down);font-weight:700}
+.pnl-up,.positive,.up{color:var(--up)}
+.pnl-down,.negative,.down{color:var(--down)}
+/* 실매매 panel */
+.live-mode-box .live-mode{border-radius:12px}
+.live-mode.live{background:repeating-linear-gradient(135deg,rgba(255,123,139,.18) 0 10px,rgba(255,123,139,.08) 10px 20px);border:2px solid var(--down);color:#ffd0d6}
+.live-mode.testnet{background:var(--up-soft);border:1px solid rgba(63,207,155,.45)}
+.live-mode.off{background:var(--panel-raise);border:1px solid var(--line)}
+.live-actions{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+.live-actions .outline-btn{flex:0 1 auto}
+.paper-section h4{font-size:14px;margin:22px 0 10px}
+.paper-section h4 small{color:var(--dim);font-weight:500;margin-left:6px}
+.paper-trade{background:var(--panel-deep);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.paper-trade header{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:10px}
+.paper-trade header b{font-size:14px}
+.paper-trade header span{color:var(--muted);font-size:12px}
+.paper-trade-values{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px 18px}
+.paper-trade-values>span{display:flex;flex-direction:column;gap:3px;color:var(--dim);font-size:11.5px}
+.paper-trade-values>span b{color:var(--text);font-size:14px;font-weight:600}
+.live-closed button[data-live-delete]{margin-top:12px}
+.live-skipped{margin:8px 0 0;padding-left:18px;color:var(--muted)}
+.venues-details{border:1px solid var(--line-soft);border-radius:12px;padding:10px 14px;margin-top:12px;background:var(--panel-deep)}
+.venues-details summary{cursor:pointer;font-weight:600;color:var(--text)}
+.section-note,.empty-small{color:var(--muted)}
+/* Status badges */
+.badge,.status-pill{border-radius:999px;padding:3px 10px;font-size:11.5px;font-weight:600}
+/* Phone */
+@media(max-width:690px){
+ body{font-size:13.5px}
+ .content{padding:18px 16px 96px}
+ .outline-btn,.secondary-btn,.primary-btn,.danger-btn{min-height:44px;font-size:12.5px}
+ .ghost.small{min-height:36px}
+ .paper-trade-values{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .live-actions .outline-btn{flex:1 1 45%}
+ .eyebrow,.panel-eyebrow{font-size:11.5px}
+ .breadcrumb{display:none}
+}
+.brand-sub{letter-spacing:.02em;font-family:inherit;font-size:10.5px;color:var(--dim)}
+.navlink{white-space:nowrap}
+.navlink .navright{font-family:inherit;font-size:10.5px;color:var(--dim)}
+/* Score rows: label on the first line, measured values below it (no squeezed columns). */
+.quality-row,.quality-checks .quality-row{grid-template-columns:16px minmax(0,1fr);row-gap:2px}
+.quality-row small{grid-column:2;text-align:left;color:var(--dim);font-size:11px;word-break:keep-all}
+.metric-kicker{font-family:inherit!important;letter-spacing:.01em!important;text-transform:none;font-size:12px;color:var(--muted)}
+.metric-hint,.metric-foot{color:var(--dim)}
+@media(max-width:690px){.panel-header{flex-wrap:wrap;gap:10px}.panel-header>div:first-child{flex:1 1 100%}.panel-header h3{word-break:keep-all}.scan-toolbar{flex-wrap:wrap}}
