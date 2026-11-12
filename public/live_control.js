@@ -2,6 +2,15 @@
 const LABEL={BINGX:'BingX',GATEIO:'Gate.io'};
 function cell(row,value,small){const td=document.createElement('td');td.textContent=value;if(small){const s=document.createElement('small');s.textContent=small;td.append(s)}row.append(td);return td}
 const LIVE_STATUS={SUBMITTING:'주문 중',OPEN:'보유(손절 설정)',CLOSED:'종료',FAILED:'주문 실패',UNKNOWN:'확인 필요'};
+// The same facts as liveSummary, one per line (label, value) for the status box.
+export function liveRows(s){
+ const mode={OFF:'OFF(주문 없음)',TESTNET:'테스트넷',LIVE:'실거래'}[s.mode]||s.mode,L=s.limits||{};
+ return [['모드',mode],['상태',(s.armed?'활성화됨':'비활성')+(s.killSwitch?' · 긴급 정지 중':'')],
+  ['API 키',['BINGX','GATEIO'].map(v=>`${LABEL[v]} ${s.credentialsConfigured?.[v]?'설정됨':'없음'}`).join(' · ')],
+  ...(L.sizing==='BALANCE'?[['수량',`잔고${L.balanceCapUSD?`(최대 $${L.balanceCapUSD})`:''} × ${L.unitPct}% × 배율, 매물대 분할 추매`],['손실 한도',`1회 잔고 ${L.maxLossPct}% · 하루 ${L.dailyMaxLossPct}%`]]
+   :[['손실 한도',`1회 $${L.maxRiskUSD} · 하루 $${L.dailyMaxRiskUSD}`]]),
+  ['동시 포지션',`${L.maxOpen}개${L.maxPerDirection?` (롱·숏 각 ${L.maxPerDirection}개)`:''}`]];
+}
 export function liveSummary(s){
  const keys=['BINGX','GATEIO'].map(v=>`${LABEL[v]} 키 ${s.credentialsConfigured?.[v]?'설정됨':'없음'}`).join(' · ');
  const mode={OFF:'OFF(주문 없음)',TESTNET:'테스트넷',LIVE:'실거래'}[s.mode]||s.mode;
@@ -10,7 +19,8 @@ export function liveSummary(s){
 function renderLive(s){
  const status=document.getElementById('liveStatus'),rows=document.getElementById('liveRecords'),skipped=document.getElementById('liveSkipped');
  if(!status||!rows||!skipped)return;
- status.textContent=liveSummary(s);status.classList.toggle('warn',s.killSwitch||s.mode==='LIVE');
+ status.replaceChildren(...liveRows(s).map(([k,v])=>{const row=document.createElement('div'),dt=document.createElement('span'),dd=document.createElement('b');
+  row.className='kv-row';dt.textContent=k;dd.textContent=v;row.append(dt,dd);return row}));status.classList.add('kv-list');status.classList.toggle('warn',s.killSwitch||s.mode==='LIVE');
  rows.replaceChildren();
  for(const r of s.records||[]){const tr=document.createElement('tr');
   for(const v of [new Date(r.createdAt).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}),LABEL[r.venue]||r.venue,r.symbol,r.direction,

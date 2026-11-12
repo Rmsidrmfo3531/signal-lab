@@ -521,7 +521,7 @@ function renderNews(){
    </details>`;
  }).join(''):'<div class="empty-small" style="padding:24px">필터에 해당하는 기사가 없거나 RSS 수신이 지연되고 있습니다.</div>';
  const m=app.newsMeta||{};
- $('newsStatus').textContent=`${m.status==='connected'?'RSS 수신 정상':m.status==='partial'?'일부 소스만 연결':m.status==='offline'?'뉴스 조회 실패':'연결 확인 중'} · ${m.sourceCount||0}개 출처 · ${app.news.length}개 기사 · 마지막 확인 ${dateClock(m.checked)} KST · 분류는 제목 기반 추정`;
+ $('newsStatus').textContent=`${m.status==='connected'?'RSS 수신 정상':m.status==='partial'?'일부 소스만 연결':m.status==='offline'?'뉴스 조회 실패':'연결 확인 중'} · ${m.sourceCount||0}개 출처 · ${app.news.length}개 기사 · 마지막 확인 ${dateClock(m.checked)} KST${m.translation?.total?` · 한국어 번역 ${m.translation.done}/${m.translation.total}건${m.translation.done<m.translation.total&&m.translation.error?` (번역 실패: ${m.translation.error})`:''}`:''}`;
  $('newsPageCount').textContent=p.total?`${p.start+1}–${p.end} / ${p.total}개 기사 · 한 페이지 5개`:'0개 기사';
  $('newsPrev').disabled=p.page<=1;
  $('newsNext').disabled=p.page>=p.pages;
@@ -533,15 +533,6 @@ async function loadMarketCommentary(){
  const host=$('marketCommentary');if(!host)return;
  try{const data=await json('/api/market-commentary');const lines=Array.isArray(data.lines)?data.lines:data.summary?[data.summary]:[];host.textContent=lines.length?lines.join(' ')+' · '+dateClock(data.asOf??data.checkedAt)+' KST':'실측 시장 시황 자료 부족 · 원인·전망을 추정하지 않습니다.'}catch{host.textContent='실측 시장 시황 조회 미완료 · 가격 전망이나 원인을 추정하지 않습니다.'}
 }
-function newsNotify(article){
- if(!notifyOn('newsScreen'))return;
- const holder=$('toastHolder'),node=document.createElement('div');node.className='toast signal-toast';
- node.innerHTML=`<strong>📰 중요 기사 후보 · ${escapeHtml(article.source)}</strong><div>${escapeHtml(article.title)}</div><small>보도 원문 확인 전에는 사실·가격 영향을 확정할 수 없습니다.</small><div style="margin-top:8px"><a class="trade-link neutral" href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer">기사 원문 ↗</a></div>`;
- holder.prepend(node);setTimeout(()=>node.remove(),18000);
- if('Notification' in window&&Notification.permission==='granted')try{
-  const n=new Notification(`📰 [중요 기사 후보] ${article.source}`,{body:article.title,tag:'news-'+article.id});n.onclick=()=>{window.open(article.link,'_blank','noopener,noreferrer');n.close()};
- }catch{}
-}
 function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('status',e=>{try{setStatus(JSON.parse(e.data))}catch{}});
  es.addEventListener('market',e=>{try{applyMarket(JSON.parse(e.data))}catch{}});
@@ -550,7 +541,7 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('alert',e=>{try{const a=JSON.parse(e.data);if(a.kind==='WATCH'||a.alertType==='WATCH'||a.observationOnly===true)return;app.alerts.unshift(a);app.alerts=app.alerts.slice(0,60);renderAlerts();notify(a);loadResults()}catch{}});
  es.addEventListener('live',e=>{try{const d=JSON.parse(e.data);if(d.signals)app.signals=d.signals;if(d.patterns)app.patterns=d.patterns;if(d.watch)app.watch=d.watch;renderSignals();if(d.symbol===app.symbol){loadAnalysis();if(d.reason?.includes('close'))loadChart()}}catch{}});
  es.addEventListener('news',e=>{try{applyNews(JSON.parse(e.data))}catch{}});
- es.addEventListener('news-alert',e=>{try{newsNotify(JSON.parse(e.data))}catch{}});
+ 
  es.addEventListener('journal',()=>loadJournal());
  es.addEventListener('update',e=>{try{updateStatusText({...JSON.parse(e.data),version:'5.8.0'})}catch{}});
  es.onerror=()=>{if(es.readyState===EventSource.CLOSED)banner('서버 연결 종료','Node.js 서버를 다시 실행하세요.');$('socketStatus').innerHTML='<i class="dot red"></i><span>서버 재접속</span>'};

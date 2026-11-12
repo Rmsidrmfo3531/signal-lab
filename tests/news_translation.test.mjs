@@ -63,3 +63,14 @@ test('slow providers time out, bounded article batches remain explicit and alrea
  const korean=await translateNewsArticles([{...input,title:'이미 한국어로 제공된 기사'}],{now:NOW});assert.equal(korean[0].translation.status,'NOT_REQUIRED');
  assert.equal(korean[0].displayTitle,'이미 한국어로 제공된 기사');
 });
+
+test('Google provider: short text as GET, failures recorded for the news status line',async()=>{
+ const {googleTranslate,googleTranslateStatus}=await import('../news_translation.mjs');
+ const calls=[];
+ const ok=async(url,opt={})=>{calls.push([url,opt.method||'GET']);return new Response(JSON.stringify([[['비트코인 하락',"Bitcoin falls"]]]),{headers:{'Content-Type':'application/json'}})};
+ assert.equal((await googleTranslate({text:'Bitcoin falls',fetcher:ok})).translatedText,'비트코인 하락');
+ assert.equal(calls[0][1],'GET');assert.match(calls[0][0],/q=Bitcoin%20falls/);
+ await googleTranslate({text:'x'.repeat(2000),fetcher:ok});assert.equal(calls[1][1],'POST');
+ await assert.rejects(googleTranslate({text:'a',fetcher:async()=>new Response('no',{status:429})}),/TRANSLATION_HTTP/);
+ assert.equal(googleTranslateStatus.lastError,'HTTP 429');
+});

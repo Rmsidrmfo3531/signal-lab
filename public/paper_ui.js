@@ -54,7 +54,7 @@ function filledTargets(t){const q=t.targetQuantities,f=(t.closeParts||[]).filter
 function dcaCaption(t){
  const d=t.dca;if(!d||!Array.isArray(d.adds))return '';
  const next=d.adds.find(a=>!a.filled),full=d.full||{};
- return `<small class="paper-management-mode">매물대 분할 ${d.filledAdds||0}/${d.adds.length}회 추가${next?` · 다음 ${priceFmt(t)(next.price)} (${esc(next.units)}단위)`:''} · 손절(매물대) ${priceFmt(t)(t.stop)} · 교차 ${esc(d.leverage)}배 · 전부 체결 후 손절 시 손실 약 $${Number.isFinite(full.maxLossUSD)?full.maxLossUSD.toFixed(2):"—"} (잔고 ${Number.isFinite(full.maxLossPct)?full.maxLossPct.toFixed(1):'—'}%)${Number.isFinite(full.liquidationPrice)?' · 추정 청산가 '+fmt(full.liquidationPrice):''}</small>`;
+ return (`<small class="paper-management-mode">매물대 분할 ${d.filledAdds||0}/${d.adds.length}회 추가${next?` · 다음 ${priceFmt(t)(next.price)} (${esc(next.units)}단위)`:''} · 손절(매물대) ${priceFmt(t)(t.stop)} · 교차 ${esc(d.leverage)}배 · 전부 체결 후 손절 시 손실 약 $${Number.isFinite(full.maxLossUSD)?full.maxLossUSD.toFixed(2):"—"} (잔고 ${Number.isFinite(full.maxLossPct)?full.maxLossPct.toFixed(1):'—'}%)${Number.isFinite(full.liquidationPrice)?' · 추정 청산가 '+fmt(full.liquidationPrice):''}</small>`).replaceAll(' · ','<br>');
 }
 function levelsEditor(t){
  if(providerUnavailable(t))return '';const filled=filledTargets(t);
@@ -80,9 +80,10 @@ function positionLeverage(t){
 }
 function reasonLine(t){
  const r=Array.isArray(t?.entryReasons)?t.entryReasons:[];
- return `<p class="pos-reasons"><span>진입 이유</span>${esc(t.pattern||'')}${r.length?' · '+r.map(x=>esc(x)).join(' · '):Number.isFinite(t?.score)?'':' · 이전 기록(세부 근거 없음)'}</p>`;
+ const items=r.length?r.map(x=>`<li>${esc(x)}</li>`).join(''):Number.isFinite(t?.score)?'':'<li>이전 기록(세부 근거 없음)</li>';
+ return `<div class="pos-reasons"><span>진입 이유 · ${esc(t.pattern||'')}</span>${items?`<ul>${items}</ul>`:''}</div>`;
 }
-function targets(row){const pf=priceFmt(row);return (row.targets||[]).map((p,i)=>`<span>${i+1}차 ${pf(p)} / ${[40,35,25][i]}%</span>`).join(' · ')}
+function targets(row){const pf=priceFmt(row);return (row.targets||[]).map((p,i)=>`<span>${i+1}차 ${pf(p)} / ${[40,35,25][i]}%</span>`).join('<span class="sep"> · </span>')}
 function paperManagementCaption(row){
  const management=row.managementVersion??row.management?.version;
  if(management!=='VOLUME_PROFILE_V1')return '기존 기록 · 저장된 TP/SL 보존';
@@ -175,7 +176,11 @@ function render(payload){
   groups.map(g=>`<tr><td>${esc(g.label)}</td><td>${g.trades}</td><td>${g.winRatePct==null?'—':g.winRatePct.toFixed(0)+'%'}</td><td class="${resultClass(g.netUSD)}">${usd(g.netUSD)}</td><td>${g.profitFactor==null?'—':Number(g.profitFactor).toFixed(2)}</td><td>${g.averageR==null?'—':(g.averageR>=0?'+':'')+Number(g.averageR).toFixed(2)+'R'}</td></tr>`).join('')+'</tbody></table>'
   :'<p class="empty-small">전략별 성과: 아직 종료된 거래가 없습니다.</p>';
  find('paperMetrics').innerHTML=summaries.map((x,i)=>`<div><span>${['종료 거래','누적 실현 PNL','승률 (종료)','평가 손익 (참고)','종료 거래 낙폭'][i]}</span><strong>${x}</strong></div>`).join('');
- find('paperStatus').textContent=`${Number(payload.accountBalanceUSD)>0?`교차 마진 · 모의 계좌 $${Number(payload.accountBalanceUSD).toFixed(2)} (시작 자금 + 실현 손익)`:'시작자금·계좌잔고 가정 없음'} · ${payload.newPositionSizing==='VALIDATED_PROFILE_QUANTITY'?'신규 거래는 검증된 매물대·위험 수량 사용 / 구버전 명목 기록 보존':'구버전 모의 기준 명목 $'+fmt(payload.paperNotionalUSD)} · 누적 평가손익 ${usd(payload.totalMarkedPnLUSD)} · 진행 ${payload.openCount}건 · 진입 대기 ${payload.pendingCount}건 · 오늘 ${usd(payload.dailyPnLUSD)} · 이번 주 ${usd(payload.weeklyPnLUSD)} · ${payload.assumptions}`;
+ {const rows=[['계좌',Number(payload.accountBalanceUSD)>0?`교차 마진 · 모의 계좌 $${Number(payload.accountBalanceUSD).toFixed(2)} (시작 자금 + 실현 손익)`:'시작자금·계좌잔고 가정 없음'],
+  ['포지션',`진행 ${payload.openCount}건 · 진입 대기 ${payload.pendingCount}건`],['평가손익',`누적 ${usd(payload.totalMarkedPnLUSD)} · 오늘 ${usd(payload.dailyPnLUSD)} · 이번 주 ${usd(payload.weeklyPnLUSD)}`],
+  ['수량',payload.newPositionSizing==='VALIDATED_PROFILE_QUANTITY'?'검증된 매물대·위험 수량 (구버전 기록은 명목 그대로)':'구버전 모의 기준 명목 $'+fmt(payload.paperNotionalUSD)]];
+  const box=find('paperStatus');box.classList?.add('kv-list');
+  box.innerHTML=rows.map(([k,v])=>`<div class="kv-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')+(payload.assumptions?`<details class="kv-note"><summary>비용 가정</summary><p>${esc(payload.assumptions)}</p></details>`:'');}
  const open=[...(payload.open||[])];
  const cards=open.map(t=>{
   const frozen=providerUnavailable(t),stale=frozen||timeGap(t.lastPriceAt,90000);
@@ -204,7 +209,7 @@ function render(payload){
    </div>
    ${addsLine(t)}
    ${reasonLine(t)}
-   <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))} · 분할익절 ${t.exitedPct||0}% · 수수료 등 $${fmt(t.feesUSD)}</small>
+   <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))}<br>분할익절 ${t.exitedPct||0}% · 수수료 등 $${fmt(t.feesUSD)}</small>
    <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div>${t.manualLevels?'<small class="paper-management-mode">손절·TP 직접 수정됨</small>':''}${dcaCaption(t)}${levelsEditor(t)}</article>`;
  });
  const pending=(payload.pending||[]).map(t=>{

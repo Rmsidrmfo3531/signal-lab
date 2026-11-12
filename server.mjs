@@ -20,7 +20,7 @@ import {estimateBinanceExecution} from './binance_execution.mjs';
 import {VolumeProfileCollector} from './profile_collector.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
 import {finalTelegramMatch} from './telegram_final.mjs';
-import {translateNewsArticles,googleTranslate} from './news_translation.mjs';
+import {translateNewsArticles,googleTranslate,googleTranslateStatus} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
@@ -964,7 +964,12 @@ async function pollNews(){
  // English news is shown in Korean: the configured LibreTranslate URL, else Google's public endpoint
  // (NEWS_TRANSLATION=off keeps the original English).
  const provider=CONFIG.translationURL?{translate:translateArticle,id:'CONFIGURED_LIBRETRANSLATE'}:CONFIG.newsTranslation===true?{translate:googleTranslate,id:'GOOGLE_PUBLIC'}:{translate:undefined,id:'UNCONFIGURED'};
- const incoming=await translateNewsArticles(originalNews,{translate:provider.translate,providerId:provider.id});
+ // Titles and summaries of ~100 articles need a few hundred calls the first time: a longer budget,
+ // then the per-text cache makes later polls fast.
+ const incoming=await translateNewsArticles(originalNews,{translate:provider.translate,providerId:provider.id,timeoutMs:8000,budgetMs:45000});
+ {const need=incoming.filter(a=>a.translation?.status!=='NOT_REQUIRED'),done=need.filter(a=>['COMPLETE','PARTIAL'].includes(a.translation?.status)).length;
+  state.newsTranslation={provider:provider.id,done,total:need.length,error:googleTranslateStatus.lastError,checkedAt:Date.now()};
+  if(need.length)console.log(`[NEWS] 한국어 번역 ${done}/${need.length}건${done<need.length&&googleTranslateStatus.lastError?` · 최근 실패: ${googleTranslateStatus.lastError}`:''}`)}
  state.newsStatus=feeds.length===FEEDS.length?'connected':'partial';state.news=incoming;
  const newsSeen=new Set(Object.keys(persisted.newsSeen)),nextSeen={...persisted.newsSeen},notifications=[];let changed=false;
  for(const article of incoming){
@@ -978,7 +983,7 @@ async function pollNews(){
  // Failed writes must neither complete bootstrap nor deliver unrecorded news.
  newsBootstrapped=true;
  for(const article of notifications)send('news-alert',article);
- send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:feeds.length,error:state.newsError});
+ send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:feeds.length,error:state.newsError,translation:state.newsTranslation??null});
 }
 // A malformed, oversized or interrupted request body is the caller's error
 // (400/413). 502 stays reserved for failures of an upstream data source.
@@ -1103,7 +1108,7 @@ const server=http.createServer(async(req,res)=>{
    try{await refreshMarketStats()}catch{}
    return response(res,200,buildMarketCommentary(rawMarketTickers,{now:Date.now(),receivedAt:marketStatsReceivedAt,eligibleSymbols:state.activeSymbols,dataSource:'BINANCE_FUTURES_PUBLIC_24H'}));
   }
-  if(pathname==='/api/news')return response(res,200,{status:state.newsStatus,checked:state.newsChecked,sourceCount:state.newsSources.length,error:state.newsError,articles:state.news});
+  if(pathname==='/api/news')return response(res,200,{status:state.newsStatus,checked:state.newsChecked,sourceCount:state.newsSources.length,error:state.newsError,translation:state.newsTranslation??null,articles:state.news});
   if(pathname==='/api/journal'&&req.method==='GET')return response(res,200,{entries:persisted.journal.slice(0,200),summary:journalSummary(persisted.journal)});
   if(pathname==='/api/journal/export'&&req.method==='GET'){
    res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-trade-journal.csv"','Cache-Control':'no-store',...SECURITY_HEADERS});

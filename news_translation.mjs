@@ -80,11 +80,20 @@ export async function translateNewsArticles(articles,{translate,now=Date.now(),p
  * Default provider when NEWS_TRANSLATION_URL is not set: Google Translate's public web endpoint
  * (no key). English titles/summaries become Korean; failures leave the original text shown.
  */
+// Last provider failure (HTTP status or network error), for the server's news status line only.
+export const googleTranslateStatus={lastError:null,lastErrorAt:null,ok:0,failed:0};
 export async function googleTranslate({text,signal,fetcher=fetch}){
- const body=new URLSearchParams({q:String(text).slice(0,4500)});
- const r=await fetcher('https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ko&dt=t',
-  {method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body,signal});
- if(!r.ok)throw Object.assign(Error('TRANSLATION_HTTP'),{code:'TRANSLATION_HTTP'});
+ const q=String(text).slice(0,4500),base='https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ko&dt=t';
+ const fail=reason=>{googleTranslateStatus.failed++;googleTranslateStatus.lastError=reason;googleTranslateStatus.lastErrorAt=Date.now();
+  return Object.assign(Error('TRANSLATION_HTTP'),{code:'TRANSLATION_HTTP'})};
+ let r;
+ try{
+  // Short text as a plain GET (the endpoint's usual form); long text as a form POST.
+  r=q.length<=1500?await fetcher(base+'&q='+encodeURIComponent(q),{signal})
+   :await fetcher(base,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:new URLSearchParams({q}),signal});
+ }catch(error){if(error?.name==='AbortError')throw error;throw fail('NETWORK '+String(error?.cause?.code||error?.message||'error').slice(0,60))}
+ if(!r.ok)throw fail('HTTP '+r.status);
+ googleTranslateStatus.ok++;
  const data=await r.json();
  const parts=Array.isArray(data?.[0])?data[0].map(x=>Array.isArray(x)&&typeof x[0]==='string'?x[0]:'').join(''):'';
  return {translatedText:parts};
