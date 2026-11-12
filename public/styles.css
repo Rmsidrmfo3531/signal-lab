@@ -477,3 +477,18 @@
 .notify-row small{font-size:11px;color:#93a9bd;line-height:1.45}
 .notify-row.disabled{opacity:.55;cursor:not-allowed}
 .notify-status{margin:0;font-size:11px;color:#93a9bd;min-height:1em}
+
+.paper-position .position-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;justify-content:flex-start}
+.position-head .pos-symbol{font-size:15px}
+.position-head .pos-side{font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px;background:#1a2a3a}
+.position-head .pos-lev{font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #3b5268;color:#e2ecf5}
+.position-head .pos-venue{font-size:12px;padding:2px 8px;border-radius:4px;background:#16324a;color:#9cc9f0}
+.position-head .pos-meta{flex-basis:100%;font-size:11px;color:#93a9bd}
+.position-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:#22344a;border-radius:6px;overflow:hidden;margin:10px 0}
+.position-grid .pos-cell{background:#0f1c29;padding:9px 10px;display:grid;gap:4px;min-width:0}
+.position-grid .pos-cell span{font-size:11px;color:#93a9bd}
+.position-grid .pos-cell b{font-size:13px;font-weight:600;overflow-wrap:anywhere}
+.position-grid .pos-cell small{font-size:10px;color:#93a9bd;font-weight:400}
+@media (max-width:640px){.position-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.position-head .pos-side.paper-short{color:#ff7a8a;background:rgba(255,92,112,.14)}
+.position-head .pos-side.paper-long{color:#4fd1a5;background:rgba(63,182,140,.14)}

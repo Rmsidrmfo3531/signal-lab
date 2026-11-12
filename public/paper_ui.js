@@ -39,6 +39,15 @@ function captureLevelDrafts(){const drafts=new Map();if(typeof document.querySel
 function restoreLevelDrafts(drafts){if(typeof document.querySelectorAll!=='function')return;document.querySelectorAll('[data-levels-key]').forEach(d=>{const draft=drafts.get(d.dataset.levelsKey);if(!draft?.open)return;
  d.open=true;d.querySelectorAll('input').forEach(i=>{if(!i.disabled&&draft.values[i.name]!==undefined)i.value=draft.values[i.name]});if(draft.focus)d.querySelector(`input[name="${draft.focus}"]`)?.focus()})}
 function paperVenueBadge(t){const label=PAPER_VENUE_LABELS[t?.executionVenue];return `<small class="paper-venue">${label?esc(label)+' 호가':'Binance 시세(이전 기록)'}</small>`}
+// Leverage shown on a position: the stored one, else (positions opened by an older version) the
+// same rule the server uses now, from the stored score and market cap, marked as recalculated.
+const MCAP_STEPS=[50e6,100e6,200e6,500e6,1e9,2e9,5e9,10e9,30e9,100e9];
+function positionLeverage(t){
+ if(Number(t?.leverage)>0)return {value:Number(t.leverage),estimated:false};
+ const score=Number(t?.score);if(!Number.isFinite(score))return null;
+ const cap=Number(t?.marketCap),capPts=cap>0?MCAP_STEPS.filter(x=>cap>=x).length:0;
+ return {value:Math.max(10,Math.min(30,10+Math.max(0,Math.min(10,Math.floor(score-90+1e-9)))+capPts)),estimated:true};
+}
 function targets(row){return (row.targets||[]).map((p,i)=>`<span>${i+1}차 ${fmt(p)} / ${[40,35,25][i]}%</span>`).join(' · ')}
 function paperManagementCaption(row){
  const management=row.managementVersion??row.management?.version;
@@ -136,11 +145,28 @@ function render(payload){
  const open=[...(payload.open||[])];
  const cards=open.map(t=>{
   const frozen=providerUnavailable(t),stale=frozen||timeGap(t.lastPriceAt,90000);
-  const gain=t.qtyRemaining*(t.direction==='LONG'?1:-1)*(t.markPrice-t.entryFill);
+  const dir=t.direction==='LONG'?1:-1,gain=t.qtyRemaining*dir*(t.markPrice-t.entryFill);
+  const lev=positionLeverage(t),margin=lev?t.qtyRemaining*t.entryFill/lev.value:null,roe=margin>0?gain/margin*100:null;
+  const liq=lev?t.entryFill*(1-dir*(1/lev.value-.005)):null;
+  const base=esc(String(t.symbol||'').replace(/USDT$/,''));
   const rows=t.closeParts?.map(p=>`<small>${p.type==='STOP'?'손절':p.type==='TIME'?'시간 청산':p.targetNumber+'차 익절'} ${fmt(p.fill)} · ${usd(p.profitUSD-p.feeUSD)}</small>`).join('')||'';
-  return `<article class="paper-trade"><header><strong>${esc(t.symbol)} ${paperVenueBadge(t)} <span class="${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction}</span></strong><span>${esc(t.market)} · ${frozen?frozenPaperCaption:'진행 중'}</span></header>
-   <p>${esc(t.pattern)} · ${time(t.openedAt)} 진입</p><div class="paper-trade-values"><span>모의 진입 <b>${fmt(t.entryFill)}</b></span><span>기준 손절 <b>${fmt(t.stop)}</b></span><span>명목금액 <b>$${fmt(t.notionalUSD)}</b></span><span>${frozen?'마지막 저장 시세 평가 (현재 평가 아님)':'미실현'} <b class="${resultClass(gain)}">${usd(gain)}${frozen?' (최신 시세 미검증)':stale?' (시세 지연)':''}</b></span></div>
-   <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))}</small><p>수량 <b>${fmt(t.qtyRemaining)}</b>${t.originalQty&&t.originalQty!==t.qtyRemaining?` / 처음 ${fmt(t.originalQty)}`:''} ${esc(String(t.symbol||'').replace(/USDT$/,''))} · 배율 <b>${t.leverage?esc(t.leverage)+'배':'미설정'}</b>${t.marginUSD?` · 증거금 $${fmt(t.marginUSD)}`:''} · 분할익절 ${t.exitedPct||0}% · 진입 수수료 등 $${fmt(t.feesUSD)}</p>
+  const cell=(label,value,cls='')=>`<div class="pos-cell ${cls}"><span>${label}</span><b>${value}</b></div>`;
+  return `<article class="paper-trade paper-position"><header class="position-head">
+    <strong class="pos-symbol">${esc(t.symbol)}</strong><span class="pos-side ${t.direction==='LONG'?'paper-long':'paper-short'}">${t.direction==='LONG'?'롱':'숏'}</span>
+    <span class="pos-lev" title="${lev?.estimated?'예전 버전에서 열린 포지션: 점수로 다시 계산한 배율':'배율'}">${lev?lev.value+'X'+(lev.estimated?'*':''):'배율 미설정'}</span>
+    <span class="pos-venue">${esc(PAPER_VENUE_LABELS[t.executionVenue]||'Binance 시세(이전 기록)')}</span>
+    <span class="pos-meta">${esc(t.pattern)} · ${time(t.openedAt)} 진입 · ${frozen?frozenPaperCaption:'진행 중'}</span></header>
+   <div class="position-grid">
+    ${cell('수량',`${fmt(t.qtyRemaining)} ${base}${t.originalQty&&t.originalQty!==t.qtyRemaining?` <small>/ 처음 ${fmt(t.originalQty)}</small>`:''}`)}
+    ${cell(frozen?'마지막 저장 시세 평가 (현재 평가 아님)':'미실현 손익',`<span class="${resultClass(gain)}">${usd(gain)}${roe!=null?` (${roe>=0?'+':''}${roe.toFixed(2)}%)`:''}</span>${frozen?' <small>최신 시세 미검증</small>':stale?' <small>시세 지연</small>':''}`)}
+    ${cell('증거금',margin!=null?'$'+margin.toFixed(2):'—')}
+    ${cell('진입가',fmt(t.entryFill))}
+    ${cell('현재가',fmt(t.markPrice))}
+    ${cell('예상 청산가 <small>격리 가정</small>',liq!=null&&liq>0?fmt(liq):'—')}
+    ${cell('손절',fmt(t.stop))}
+    ${cell('명목금액','$'+(t.qtyRemaining*t.entryFill).toFixed(2))}
+   </div>
+   <p class="paper-targets">${targets(t)}</p><small class="paper-management-mode">${esc(paperManagementCaption(t))} · 분할익절 ${t.exitedPct||0}% · 수수료 등 $${fmt(t.feesUSD)}</small>
    <div class="paper-partials">${rows||''}${frozen?'<small>'+frozenPaperCaption+' · 저장된 TP/SL을 실행하거나 변경하지 않습니다.</small>':!rows?'<small>첫 익절 또는 손절 대기 중</small>':''}</div>${t.manualLevels?'<small class="paper-management-mode">손절·TP 직접 수정됨</small>':''}${dcaCaption(t)}${levelsEditor(t)}</article>`;
  });
  const pending=(payload.pending||[]).map(t=>{
