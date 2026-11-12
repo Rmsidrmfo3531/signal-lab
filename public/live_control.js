@@ -39,6 +39,17 @@ async function liveCall(path,body){
 if(typeof document!=='undefined'&&document.getElementById('liveControl')){
  const fail=e=>{const s=document.getElementById('liveStatus');if(s){s.textContent='실주문 요청 실패: '+e.message;s.classList.add('warn')}};
  document.getElementById('liveArm')?.addEventListener('click',()=>{if(confirm('실주문을 활성화합니다. 다음 최종 신호부터 거래소에 실제 주문이 나갑니다. 계속할까요?'))liveCall('/api/live/arm',{confirm:'ARM'}).catch(fail)});
+ document.getElementById('liveTest')?.addEventListener('click',async()=>{
+  if(!confirm('테스트넷에서 BTC 소액 롱을 실제 신호와 같은 순서로 주문하고 5초 뒤 청산합니다. 먼저 "활성화"가 되어 있어야 합니다. 진행할까요?'))return;
+  const s=document.getElementById('liveTestResult')||Object.assign(document.createElement('div'),{id:'liveTestResult',className:'kv-list live-test-result'});
+  document.getElementById('liveStatus')?.after(s);s.textContent='시험 주문 진행 중… (10~20초)';
+  try{const r=await fetch('/api/live/test-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'TEST'})}),d=await r.json();
+   if(d.liveStatus)renderLive(d.liveStatus);
+   if(!r.ok){s.textContent='시험 주문 불가: '+(d.error||'HTTP '+r.status);return}
+   const head=d.ok?'✅ 시험 주문 성공: 진입 → 보호 주문 → 청산까지 정상':'⚠️ 시험 주문 결과: '+(d.status||'')+' '+(d.reasons||[]).join(', ');
+   s.replaceChildren(Object.assign(document.createElement('b'),{textContent:head}),...(d.events||[]).map(e=>Object.assign(document.createElement('div'),{textContent:`· ${e.type}${e.reason?' — '+e.reason:''}`})));
+  }catch(e){s.textContent='시험 주문 요청 실패: '+e.message}
+ });
  document.getElementById('liveDisarm')?.addEventListener('click',()=>liveCall('/api/live/disarm').catch(fail));
  document.getElementById('liveKill')?.addEventListener('click',()=>liveCall('/api/live/kill').catch(fail));
  document.getElementById('liveResetKill')?.addEventListener('click',()=>{if(confirm('긴급 정지를 해제합니다. 거래소 계정 상태를 먼저 확인하셨나요?'))liveCall('/api/live/reset-kill',{confirm:'RESET'}).catch(fail)});

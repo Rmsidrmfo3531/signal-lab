@@ -246,6 +246,36 @@ export class LiveExecutor{
 
  /** Compare open records with the venue: detect closed positions and move the stop to
   * the entry once TP1 (40%) has filled. New protective stop first, old one second. */
+ /** TESTNET only: one order through the same path as a real signal (cross margin + leverage,
+  * entry with its stop, three targets, the whole-position stop and resting adds), held for
+  * holdMs, then everything cancelled and the position closed at market. Needs the executor armed.
+  * The record is marked test (left out of the daily risk). */
+ async testRoundTrip(row,{holdMs=5000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}={}){
+  if(this.config.mode!=='TESTNET')throw Object.assign(Error('TEST_TESTNET_ONLY'),{httpStatus:409});
+  const signalKey='TEST:'+this.now(),sent=await this.onSignal(row,{signalKey});
+  const record=this.store.records.find(r=>r.signalKey===signalKey);
+  if(!record)return {ok:false,reasons:sent.reasons||['NOT_SENT']};
+  record.test=true;
+  if(record.status==='OPEN'){await sleep(holdMs);await this.#closeTest(record)}
+  this.#save();
+  return {ok:record.status==='CLOSED'&&record.closeReason==='TEST_CLOSE',status:record.status,venue:record.venue,symbol:record.symbol,
+   quantity:record.quantity,leverage:record.leverage,stop:record.stop,targets:record.targets,adds:(record.adds||[]).length,events:record.events.map(e=>({type:e.type,reason:e.reason??null,orderId:e.orderId??null}))};
+ }
+ async #closeTest(record){
+  if(this.busy.has(record.symbol))return;this.busy.add(record.symbol);
+  try{
+   if(record.adds?.length)await this.#cancelAdds(record,'TEST_CLOSE');
+   for(const id of [...record.targetOrderIds,record.stopOrderId].filter(Boolean))await this.#cancel(record,id);
+   const {size}=await this.#position(record),plan=this.#plan(record);
+   if(size>0){
+    if(record.venue==='BINGX')await this.clients.BINGX.placeOrder(plan.emergencyClose(size));else await this.clients.GATEIO.placeOrder(plan.emergencyClose());
+    const after=await this.#position(record).catch(()=>null);
+    if(after&&after.size>0){record.status='UNKNOWN';this.#event(record,'TEST_CLOSE_INCOMPLETE',{reason:`size ${after.size}`});this.kill('TEST_CLOSE_INCOMPLETE');return}
+   }
+   record.status='CLOSED';record.closedAt=this.now();record.closeReason='TEST_CLOSE';this.#event(record,'TEST_CLOSED');
+  }catch(error){record.status='UNKNOWN';this.#event(record,'TEST_CLOSE_FAILED',{reason:error.code||error.message});this.kill('TEST_CLOSE_FAILED')}
+  finally{this.busy.delete(record.symbol)}
+ }
  async reconcile(){
   for(const record of this.store.records.filter(r=>r.status==='OPEN')){
    try{

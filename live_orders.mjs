@@ -144,7 +144,7 @@ export function preflight({config,armed,killSwitch,credentials,row,records,now=D
  // Decimal contracts sized in whole contracts (order_size_min 0 fallback) are safe to send.
  const vc=row?.venueContract;
  if(venue==='GATEIO'&&vc?.decimalSizes===true&&!(vc.decimalStepFallback===true&&vc.contractStep==='1'))reasons.push('GATEIO_DECIMAL_SIZE_UNVERIFIED');
- const todayRisk=records.filter(r=>r.day===day&&r.status!=='FAILED').reduce((s,r)=>s+(r.plannedRiskUSD||0),0);
+ const todayRisk=records.filter(r=>r.day===day&&r.status!=='FAILED'&&!r.test).reduce((s,r)=>s+(r.plannedRiskUSD||0),0);
  if(qty&&todayRisk+qty.riskUSD>config.dailyMaxRiskUSD+1e-9)reasons.push('DAILY_RISK_LIMIT');
  return {ok:reasons.length===0,reasons,day,todayRiskUSD:todayRisk};
 }

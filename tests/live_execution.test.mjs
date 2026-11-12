@@ -345,3 +345,18 @@ test('manual levels on a live record are put on its venue grid; NaN fields are l
  assert.equal(r.targets[2],113.01,'target toward the entry on the 0.01 grid');assert.equal(r.targets[0],105);
  const placed=m.calls.slice(before).filter(c=>c.method==='POST').map(c=>c.params);assert.equal(placed.length,1);assert.equal(placed[0].stopPrice,'113.01');
 });
+
+test('testnet round trip: same order path, then everything cancelled and closed; only on TESTNET; left out of daily risk',async()=>{
+ let amt='0.20';const m=mockBingX({positionAmt:()=>amt});
+ const ex=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ const zones=[97,95,93].map(p=>({priceLow:p-.1,priceHigh:p+.1}));
+ const testRow=row('BINGX',{entry:100,leverage:10,stop:99,targets:[101.5,102,103],paperAddInputs:{zoneSets:[{label:'시험',zones}],atr:.4,takerRate:.0005}});
+ const res=await ex.testRoundTrip(testRow,{holdMs:0,sleep:async()=>{amt='0'}});
+ assert.equal(res.ok,true,JSON.stringify(res.events));assert.equal(res.status,'CLOSED');assert.ok(res.adds>=1);
+ const types=res.events.map(e=>e.type);for(const t of ['MARGIN_SET','ENTRY_SENT','PROTECTED','ADDS_PLACED','ADDS_CANCELLED','TEST_CLOSED'])assert.ok(types.includes(t),t);
+ assert.equal(ex.store.records[0].test,true);assert.equal(ex.store.killSwitch,false);
+ // Position still there after the close order: stop trading.
+ let amt2='0.2';const m2=mockBingX({positionAmt:()=>amt2}),ex2=new LiveExecutor({config:config(),clients:{BINGX:m2.client},now:()=>NOW});ex2.arm();
+ const bad=await ex2.testRoundTrip(row('BINGX'),{holdMs:0,sleep:async()=>{}});assert.equal(bad.ok,false);assert.equal(ex2.store.killSwitch,true);
+ await assert.rejects(new LiveExecutor({config:config({mode:'LIVE',liveConfirmed:true}),clients:{BINGX:m.client},now:()=>NOW}).testRoundTrip(row('BINGX')),/TEST_TESTNET_ONLY/);
+});
