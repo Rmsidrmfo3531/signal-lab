@@ -100,7 +100,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:2,maxPerDirection:1,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60});
  assert.equal(liveConfig({LIVE_SIZING:'risk_usd'}).sizing,'RISK_USD');
  assert.equal(liveConfig({LIVE_TRADING_MODE:'live',LIVE_TRADING_CONFIRM:'REAL_MONEY'}).liveConfirmed,true);
  assert.equal(liveConfig({LIVE_TRADING_MODE:'yolo'}).mode,'OFF');assert.equal(liveConfig({LIVE_MAX_RISK_USD:'1000'}).maxRiskUSD,2,'out-of-range values fall back');

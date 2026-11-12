@@ -16,7 +16,7 @@ export function liveConfig(env=process.env){
  const num=(key,def,min,max)=>{const v=Number(env[key]);return Number.isFinite(v)&&v>=min&&v<=max?v:def};
  return {mode,liveConfirmed:env.LIVE_TRADING_CONFIRM===LIVE_CONFIRM_PHRASE,
   venues:String(env.LIVE_VENUES||'BINGX,GATEIO').split(',').map(x=>x.trim().toUpperCase()).filter(x=>['BINGX','GATEIO'].includes(x)),
-  maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),maxOpen:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,2,6),maxPerDirection:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,2,6)/2,
+  maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),maxOpen:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,4,6),maxPerDirection:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,4,6)/2,
   // BALANCE (default): the account balance is read before every entry and the position is
   // sized like the paper one (unit = balance x DCA_UNIT_PCT x leverage, adds 1, 2, 4 ... units
   // at volume zones, stop beyond the last add). RISK_USD: the old fixed LIVE_MAX_RISK_USD sizing.
