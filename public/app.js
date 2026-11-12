@@ -154,15 +154,7 @@ function applyMarket({markets,research=[],watchlist}){
  app.watch=app.watch.filter(x=>app.marketMap.has(x.symbol));
  app.alerts=app.alerts.filter(x=>app.marketMap.has(x.symbol));
  if(!app.marketMap.has(app.symbol)){app.analysis=null;renderAnalysis();}
- renderWatch();renderPair();renderSignals();renderRecentCoverage();renderAlerts();renderMatched();loadExecution();renderTradingView();
-}
-function renderWatch(){
- const symbols=app.watchlist.filter(x=>app.marketMap.has(x));
- $('watchlist').innerHTML=symbols.length?symbols.map(symbol=>{
-  const m=app.marketMap.get(symbol),change=Number(m.change)||0,base=m.baseAsset;
-  return `<button class="watchrow ${app.symbol===symbol?'selected':''}" data-symbol="${escapeHtml(symbol)}"><span class="watch-logo">${escapeHtml(base.slice(0,2))}</span><span class="watch-info">${escapeHtml(base)}<small>${'USDT 무기한'} · BINANCE ${escapeHtml(symbol)}</small></span><span class="watch-change ${change>=0?'positive':'negative'}">${pct(change)}</span></button>`;
- }).join(''):'<div class="tiny-muted">Binance 거래 가능 목록 확인 전이거나 등록된 관심 종목이 없습니다.</div>';
- document.querySelectorAll('.watchrow').forEach(b=>b.addEventListener('click',()=>selectSymbol(b.dataset.symbol)));
+ renderPair();renderSignals();renderRecentCoverage();renderAlerts();renderMatched();loadExecution();renderTradingView();
 }
 function renderPair(){
  const base=app.symbol.replace('USDT',''),m=app.marketMap.get(app.symbol)||{};
@@ -421,7 +413,7 @@ function viewChartOnly(raw){
  localStorage.setItem('sl-symbol',symbol);
  history.replaceState(null,'',`${location.pathname}?symbol=${encodeURIComponent(symbol)}${location.hash}`);
  app.chartMode='tradingview';
- renderTradingView();renderPair();renderWatch();renderAnalysis();renderNews();loadExecution();
+ renderTradingView();renderPair();renderAnalysis();renderNews();loadExecution();
  if(app.marketMap.has(symbol))loadAnalysis();
  else setExecutionView(null);
  return true;
@@ -446,7 +438,7 @@ async function toggleChartFullscreen(){
 }
 async function selectSymbol(symbol){
  if(!symbol||!app.marketMap.has(symbol)){toast('Binance 거래 가능 USDT 무기한 선물이 아닙니다.',true);return}
- app.symbol=symbol;localStorage.setItem('sl-symbol',symbol);renderTradingView();renderNews();history.replaceState(null,'',`${location.pathname}?symbol=${encodeURIComponent(symbol)}${location.hash}`);app.analysis=null;renderPair();renderWatch();renderAnalysis();renderDirectionalEntries();loadExecution();
+ app.symbol=symbol;localStorage.setItem('sl-symbol',symbol);renderTradingView();renderNews();history.replaceState(null,'',`${location.pathname}?symbol=${encodeURIComponent(symbol)}${location.hash}`);app.analysis=null;renderPair();renderAnalysis();renderDirectionalEntries();loadExecution();
  await Promise.allSettled([loadChart(),loadAnalysis()]);
 }
 async function loadAnalysis(){const symbol=app.symbol;if(!symbol||!app.marketMap.has(symbol))return;try{const result=await json('/api/analyze?symbol='+encodeURIComponent(symbol));if(app.symbol!==symbol)return;app.analysis=result;renderAnalysis();renderDirectionalEntries();drawChart()}catch(e){if(app.symbol===symbol){toast('분석 실패: '+e.message,true);$('analysisTag').textContent='연결 오류'}}}
@@ -495,7 +487,7 @@ function drawChart(){if(app.chartMode!=='basic')return;const canvas=$('chart'),f
 }
 function onQuote(arr){let selectedChanged=false;for(const [symbol,price,priceAt] of arr){const q=app.marketMap.get(symbol);const at=priceAt===undefined?Date.now():Number(priceAt);if(q&&Number.isFinite(Number(price))&&Number(price)>0&&Number.isFinite(at)&&at>0&&at<=Date.now()+60000&&at>=Number(q.priceAt||0)){q.price=Number(price);q.priceAt=at;if(symbol===app.symbol)selectedChanged=true}}
  if(selectedChanged){renderPair();drawChart();if(Date.now()-(app.lastTimingRender||0)>5000){renderAnalysis();app.lastTimingRender=Date.now()}}
- const now=Date.now();if(now-(app.lastWatchRender||0)>6000){renderWatch();renderSignals();renderAlerts();app.lastWatchRender=now}
+ const now=Date.now();if(now-(app.lastWatchRender||0)>6000){renderSignals();renderAlerts();app.lastWatchRender=now}
 }
 let audioContext;
 function ping(){try{audioContext??=new(window.AudioContext||window.webkitAudioContext)();const osc=audioContext.createOscillator(),g=audioContext.createGain();osc.frequency.value=880;g.gain.setValueAtTime(.0001,audioContext.currentTime);g.gain.exponentialRampToValueAtTime(.12,audioContext.currentTime+.02);g.gain.exponentialRampToValueAtTime(.0001,audioContext.currentTime+.35);osc.connect(g);g.connect(audioContext.destination);osc.start();osc.stop(audioContext.currentTime+.38)}catch{}}
@@ -579,14 +571,10 @@ async function loadAll(){
  if(st.status==='rejected'||market.status==='rejected')banner('시장 데이터 검증 대기','TradingView 차트는 이용 가능합니다. 매매 신호와 주문 링크는 검증 전 차단됩니다. Node.js 서버 및 API 연결을 확인하세요.');
  await Promise.allSettled([loadResults(),loadNews(),loadJournal(),...(app.marketMap.has(app.symbol)?[loadChart(),loadAnalysis(),loadExecution()]:[])]);
 }
-async function addWatch(){const sym=$('watchInput').value.toUpperCase().trim();if(!app.marketMap.has(sym)){$('watchError').textContent='Binance에서 TRADING 상태인 USDT 무기한 선물만 추가할 수 있습니다.';return}
- try{const res=await json('/api/watchlist',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbols:[...app.watchlist,sym]})});app.watchlist=res.watchlist;renderWatch();$('watchDialog').close();selectSymbol(sym)}catch(e){$('watchError').textContent=e.message}}
 $('journalForm').addEventListener('submit',saveJournal);
 $('journalForm').addEventListener('input',calcJournalPreview);
 $('journalReset').addEventListener('click',()=>{$('journalForm').reset();calcJournalPreview()});
 $('closeTradeSave').addEventListener('click',closeJournalTrade);
-$('addWatch').addEventListener('click',()=>{$('watchInput').value='';$('watchError').textContent='';$('watchDialog').showModal()});$('saveWatch').addEventListener('click',addWatch);
-$('watchInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();addWatch()}});
 $('notificationButton').addEventListener('click',async()=>{
  if(!('Notification' in window)){toast('이 브라우저는 알림 기능을 지원하지 않습니다.',true);return}
  const r=await Notification.requestPermission();$('notificationButton').textContent=r==='granted'?'✓ 브라우저 알림 ON':'♧ 알림 권한 확인';toast(r==='granted'?'브라우저를 열어 둔 상태에서 신호 알림을 받습니다.':'알림 권한이 허용되지 않았습니다.',r!=='granted');if(r==='granted')ping();

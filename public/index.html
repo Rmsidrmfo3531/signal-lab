@@ -20,8 +20,6 @@
       <a href="#news" class="navlink"><span class="navi">◈</span>시황·종목 뉴스<span class="navright">↗</span></a>
       <a href="#alerts" class="navlink"><span class="navi">◷</span>알림 · 시스템<span class="navright">↗</span></a><a href="#journal" class="navlink"><span class="navi">▦</span>매매일지 · 위험관리<span class="navright">05</span></a>
     </nav>
-    <div class="sidebar-label space-top">관심 종목 <button class="tiny-control" id="addWatch" title="관심종목 추가">＋</button></div>
-    <div class="watchlist" id="watchlist"><div class="tiny-muted">시장 데이터 연결 중…</div></div>
     <div class="sidebar-bottom">
       <div class="risk-card"><div class="mini-row"><span>PAPER POSITION SIZE</span><span class="risk-tag">SIMULATION ONLY</span></div><div class="risk-value">검증 수량 <small>신규 거래</small></div><div class="risk-sep"></div><div class="mini-row muted"><span>시작자금 가정</span><strong>없음</strong></div><div class="mini-row muted"><span>손절 손익</span><strong>가격·비용 반영</strong></div><div class="mini-row muted"><span>일간/주간 손익</span><strong>기록만 집계</strong></div></div>
       <div class="sidebar-footnote">차트 분석 → BingX·Gate.io 모의 체결<br>실주문 기본 OFF · 계좌 연결 없음</div>
@@ -206,7 +204,6 @@
   </main>
 </div>
 <div class="toast-holder" id="toastHolder" aria-live="polite"></div>
-<dialog id="watchDialog" class="dialog"><form method="dialog"><h3>관심 종목 추가</h3><p>Binance에서 거래 중인 USDT 무기한 선물만 추가 가능합니다.</p><input id="watchInput" placeholder="예: LINKUSDT" maxlength="25" autocomplete="off"><div id="watchError" class="dialog-error"></div><div class="dialog-buttons"><button class="secondary-btn" value="cancel">취소</button><button type="button" class="primary-btn" id="saveWatch">추가</button></div></form></dialog>
 <dialog id="closeTradeDialog" class="dialog"><form method="dialog"><h3>기록된 포지션 종료</h3><p>실제 체결한 청산 가격과 추가 비용을 입력합니다. 수동 기록이며 거래소에 주문을 보내지 않습니다.</p><input id="closeTradePrice" type="number" min="0.000000000001" step="any" placeholder="실제 청산 체결가" required><input id="closeTradeFee" type="number" min="0" step="any" value="0" placeholder="추가 수수료·스프레드 비용 ($)"><input id="closeTradeFunding" type="number" step="any" value="0" placeholder="추가 펀딩 지급 ($, 수취는 음수)"><div id="closeTradeError" class="dialog-error"></div><div class="dialog-buttons"><button class="secondary-btn" value="cancel">취소</button><button class="primary-btn" type="button" id="closeTradeSave">기록상 종료</button></div></form></dialog>
 <script type="module" src="/workspace_nav.js"></script>
 <script type="module" src="/notify_settings.js"></script>

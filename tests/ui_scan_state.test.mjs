@@ -27,7 +27,7 @@ const market=(price=100,priceAt)=>({symbol:'BTCUSDT',baseAsset:'BTC',price,price
 
 test('market snapshots preserve newer live prices and timestamps on PC/mobile',()=>{
  const {app,ctx}=ui();
- vm.runInContext(piece('function mergeMarketQuote(','function renderWatch(')+piece('function onQuote(','let audioContext'),ctx);
+ vm.runInContext(piece('function mergeMarketQuote(','function renderPair(')+piece('function onQuote(','let audioContext'),ctx);
  const now=Date.now();
  ctx.applyMarket({markets:[market()]});
  ctx.onQuote([['BTCUSDT',100.1,now]]);
@@ -44,7 +44,7 @@ test('market snapshots preserve newer live prices and timestamps on PC/mobile',(
 
 test('a metadata refresh never makes an old quote fresh or keeps a removed analysis',()=>{
  const {app,ctx}=ui();
- vm.runInContext(piece('function mergeMarketQuote(','function renderWatch('),ctx);
+ vm.runInContext(piece('function mergeMarketQuote(','function renderPair('),ctx);
  const old=Date.now()-100000;
  ctx.applyMarket({markets:[market(100,old)]});
  ctx.applyMarket({markets:[market(99)]});
@@ -129,17 +129,6 @@ test('final display independently requires fresh candles, Binance prices and val
  assert.equal(ctx.currentReadySignals(now).length,0,'research-only metadata never permits an entry');
  app.marketMap.get('BTCUSDT').researchOnly=false;app.marketMap.get('BTCUSDT').priceAt=now-100000;
  assert.equal(ctx.currentReadySignals(now).length,0,'a stalled price feed expires the local ready list');
-});
-
-test('a saved watchlist remains renderable during research-only venue outages',()=>{
- const {app,ctx,$}=ui();
- ctx.document={querySelectorAll:()=>[]};ctx.pct=String;
- vm.runInContext(piece('function renderWatch(','function renderPair('),ctx);
- app.watchlist=['BTCUSDT'];
- app.marketMap.set('BTCUSDT',{symbol:'BTCUSDT',baseAsset:'BTC',price:100,researchOnly:true});
- ctx.renderWatch();
- assert.match($('watchlist').innerHTML,/USDT 무기한/);
- assert.match($('watchlist').innerHTML,/BTCUSDT/);
 });
 
 test('the selected-analysis button recovers after asynchronous dispatch clears event.currentTarget',async()=>{
