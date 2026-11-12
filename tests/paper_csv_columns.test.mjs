@@ -39,11 +39,13 @@ test('closed trades are grouped by strategy and chart for the comparison table',
 });
 
 import {leverageForScore} from '../paper.mjs';
-test('leverage from the score: 90 -> 10x, 95 -> 15x, 100 -> 20x; a given leverage (scalps) wins',()=>{
- assert.deepEqual([80,90,92.4,95,100,120].map(leverageForScore),[10,10,12,15,20,20]);assert.equal(leverageForScore(undefined),null);
+test('leverage = 10 + score points (1 per point above 90) + market-cap points, whole numbers 10-30x; a given leverage wins',()=>{
+ assert.deepEqual([80,90,91,92.4,95,99.9,100,120].map(x=>leverageForScore(x)),[10,10,11,12,15,19,20,20]);assert.equal(leverageForScore(undefined),null);
+ assert.deepEqual([null,49e6,50e6,150e6,300e6,1.5e9,40e9,2e12].map(c=>leverageForScore(95,c)),[15,15,16,17,18,20,24,25]);
+ assert.equal(leverageForScore(100,2e12),30,'max 30x');assert.equal(leverageForScore(90,3e8),13);
  const engine=new PaperEngine({},{now:()=>START});
- engine.register(signal({score:95}),{quoteEligible:true});engine.register(signal({symbol:'CUSDT',leverage:10}),{quoteEligible:true});
- assert.equal(engine.store.pending.find(x=>x.symbol==='AKEUSDT').leverage,15);assert.equal(engine.store.pending.find(x=>x.symbol==='CUSDT').leverage,10);
+ engine.register(signal({score:95,marketCap:3e8}),{quoteEligible:true});engine.register(signal({symbol:'CUSDT',leverage:10}),{quoteEligible:true});
+ assert.equal(engine.store.pending.find(x=>x.symbol==='AKEUSDT').leverage,18);assert.equal(engine.store.pending.find(x=>x.symbol==='AKEUSDT').marketCap,3e8);assert.equal(engine.store.pending.find(x=>x.symbol==='CUSDT').leverage,10);
  const csv=paperCSV([{market:'CRYPTO',symbol:'AKEUSDT',originalQty:2.6,leverage:15,marginUSD:17.33}]).split('\r\n')[1];
  assert.match(csv,/"2\.6","15","17\.33"$/);
 });
