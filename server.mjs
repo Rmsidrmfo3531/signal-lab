@@ -30,7 +30,7 @@ import {liveConfig} from './live_orders.mjs';
 import {LiveExecutor} from './live_executor.mjs';
 import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
 import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues} from './venue_execution.mjs';
-import {PaperEngine,paperCSV,signalKey,nextSizeScale} from './paper.mjs';
+import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays,dcaZoneDaysFor} from './dca_plan.mjs';
@@ -92,6 +92,8 @@ const CONFIG={
  // Zone scale-in for scalp paper trades: 1,1,2,4,... units on volume zones, cross margin.
  dcaMode:String(process.env.DCA_MODE||'ON').toUpperCase()!=='OFF',
  paperBalanceUSD:Math.max(10,Math.min(10000000,Number(process.env.PAPER_BALANCE_USD)||1000)),
+ // 1H paper positions are split buys: adds at volume zones, stop beyond the last add (STOP_ZONE_ADDS=false: pattern stop, no adds).
+ stopZoneAdds:process.env.STOP_ZONE_ADDS!=='false',
  dcaLeverage:Math.max(10,Math.min(30,Math.round(Number(process.env.DCA_LEVERAGE)||DCA_DEFAULTS.leverage))),
  dcaUnitPct:Math.max(.01,Math.min(10,Number(process.env.DCA_UNIT_PCT)||DCA_DEFAULTS.unitPct)),
  dcaMaxLossPct:Math.max(1,Math.min(95,Number(process.env.DCA_MAX_LOSS_PCT)||DCA_DEFAULTS.maxLossPct)),
@@ -514,7 +516,15 @@ async function checkSymbolInternal(symbol, force=false){
      minNotional:estimate.minNotional,minQuantity:estimate.minQuantity,quantityStep:estimate.quantityStep,tickSize:estimate.tickSize,costAssumptions:costs,
      // Diagnostics only: keep the collector's own reason, which planVolumeTargets wraps as VOLUME_PROFILE_NOT_AVAILABLE.
      ...(targetPlan.ok?{}:{profileReasons:Array.isArray(profileResult?.reasons)?profileResult.reasons.slice(0,6):[]})};
-    if(targetPlan.ok){out.referenceEntry=out.entry;out.entry=estimate.entryBasis;[out.target1,out.target2,out.target3]=targetPlan.targets;out.targets=targetPlan.targets;}
+    if(targetPlan.ok){out.referenceEntry=out.entry;out.entry=estimate.entryBasis;[out.target1,out.target2,out.target3]=targetPlan.targets;out.targets=targetPlan.targets;
+     // Paper only: adds at volume zones before the stop (one trade per setup, same worst-case loss).
+     if(CONFIG.stopZoneAdds){
+      // Zones: the 3-day profile plus the deeper 15m window (Binance coins; venue-only coins use the 3-day one).
+      const deep=!venueOnly&&CONFIG.dcaZoneDays>3?await deepProfiles.get(symbol,{tickSize:chartTick,eligible:true}).catch(()=>null):null;
+      const zones=[...(profileResult?.profile?.hvn||[]),...(deep?.ok?deep.profile.hvn:[])].slice(0,60).map(z=>({priceLow:z.priceLow,priceHigh:z.priceHigh}));
+      out.paperAddInputs={zones,atr:Number(out.atr)||0,tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,takerRate:costs.takerRate};
+      const preview=zoneScaleInPlan(out,1);if(preview)out.paperAddsPreview={unitQty:preview.dca.unitQty,adds:preview.dca.adds.length,fullQty:preview.dca.full.quantity,stop:preview.dca.stop};
+     }}
    }
    else if(!chosen)out.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['EXECUTION_VENUE_UNAVAILABLE']};
   }catch{out.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['PUBLIC_EXECUTION_OR_PROFILE_UNAVAILABLE']};}
@@ -549,7 +559,8 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  // The same fresh approval may be observed by a scan and many ticker events.
  // Persist each paper registration and alert once, including after a restart.
  if(!paper.store.seen[paperKey]){
-  paper.register(row,{market:'CRYPTO',symbol,quoteEligible:true});
+  const sizeScale=nextSizeScale(paper.store),adds=zoneScaleInPlan(row,sizeScale);
+  paper.register(adds?{...row,stop:adds.dca.stop,targetPlan:adds.targetPlan,dca:adds.dca,sizeScale,leverage:adds.leverage}:row,{market:'CRYPTO',symbol,quoteEligible:true});
   // The same first publication may also open a live/testnet position (its own checks decide).
   // Venue-only coins are paper only: their charts were never part of the validated backtest.
   if(LIVE.mode!=='OFF'&&!row.venueOnly)void live.onSignal({...row,decision,execution:decision.execution},{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
@@ -560,6 +571,22 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  save({...persisted,seen:{...persisted.seen,[key]:now},alerts:[item,...persisted.alerts]});
  send('alert',item);void tgNotify(item);
  console.log('[SIGNAL]',symbol,direction,pattern,row.score);
+}
+// Paper 1H position as one split-buy trade: entry 1 unit, then adds of 1, 2, 4 ... units at the
+// volume zones against the position (DCA_MAX_ADDS, 5-10), and the stop BEYOND the last add
+// (planZoneDca, the same rule as the scalps). Unit = balance x DCA_UNIT_PCT x leverage, where the
+// leverage comes from the score and market cap; the margin / liquidation / max-loss checks of
+// planZoneDca apply. Null when no zone fits: the position then uses the pattern stop as before.
+function zoneScaleInPlan(row,sizeScale){
+ const inp=row.paperAddInputs;if(!inp||!row.targetPlan?.ok)return null;
+ const leverage=leverageForScore(row.score,row.marketCap)??10;
+ const balanceUSD=CONFIG.paperBalanceUSD+(paper.store.closed||[]).reduce((s,x)=>s+(Number(x.realizedPnLUSD)||0),0);
+ const dca=planZoneDca({direction:row.direction,entry:row.entry,atr:inp.atr,zones:inp.zones,balanceUSD,leverage,unitPct:CONFIG.dcaUnitPct*sizeScale,
+  tickSize:inp.tickSize,quantityStep:inp.quantityStep,minQuantity:inp.minQuantity,minNotional:inp.minNotional,takerRate:inp.takerRate,
+  settings:{maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds}});
+ if(!dca.ok||!dca.adds.length)return null;
+ const targetPlan=planWithQuantity(row.targetPlan,dca.unitQty);if(!targetPlan)return null;
+ return {targetPlan,dca,leverage};
 }
 // Event-driven scanner. The global mini-ticker stream supplies fast price updates;
 // per-symbol 1H + 4H kline close streams trigger re-analysis at candle completion.
