@@ -179,6 +179,11 @@ let marketStatsReceivedAt=0,marketStatsPending=null;
 const profiles=new VolumeProfileCollector({request:url=>binance(url,0)});
 const deepZoneProfile=DCA_DEEP_PROFILE(CONFIG.dcaZoneDays);
 const deepProfiles=new VolumeProfileCollector({request:url=>binance(url,0),candles:deepZoneProfile.candles,profileOptions:{minCandles:deepZoneProfile.minCandles,targetBins:deepZoneProfile.targetBins,hvnMinFractionOfPoc:deepZoneProfile.hvnMinFractionOfPoc}});
+// Fallback zone windows for 1H split buys: when the 15m zones give no add that fits, the next
+// timeframe is tried (1h over 30 days, then 4h over 90 days). Fetched only when needed.
+const ZONE_FALLBACKS=[{interval:'1h',candles:720,label:'1시간봉 30일'},{interval:'4h',candles:540,label:'4시간봉 90일'}];
+const zoneFallbackOptions={minCandles:96,targetBins:240,hvnMinFractionOfPoc:.05};
+const binanceZoneFallbacks=ZONE_FALLBACKS.map(f=>({...f,collector:new VolumeProfileCollector({request:url=>binance(url,0),interval:f.interval,candles:f.candles,profileOptions:zoneFallbackOptions})}));
 const structureBySymbol=new Map();
 const historyBySymbol=new Map();
 function recentStructures(){return [...structureBySymbol.values()].flat().filter(x=>Date.now()-x.observedAt<2*3600000).sort((a,b)=>b.observedAt-a.observedAt).slice(0,100)}
@@ -383,7 +388,9 @@ async function venueKlines(symbol,interval,limit){
 }
 function invalidateVenueCandles(symbol){for(const key of venueKlineCache.keys())if(key.split(':')[1]===symbol)venueKlineCache.delete(key)}
 // Same profile rules as Binance; the collector's Binance-style URL is answered from the venue.
-const venueProfiles=new VolumeProfileCollector({request:url=>{const q=new URL(url,'http://x').searchParams;return venueKlines(q.get('symbol'),q.get('interval'),Number(q.get('limit')))}});
+const venueKlineRequest=url=>{const q=new URL(url,'http://x').searchParams;return venueKlines(q.get('symbol'),q.get('interval'),Number(q.get('limit')))};
+const venueProfiles=new VolumeProfileCollector({request:venueKlineRequest});
+const venueZoneFallbacks=ZONE_FALLBACKS.map(f=>({...f,collector:new VolumeProfileCollector({request:venueKlineRequest,interval:f.interval,candles:f.candles,profileOptions:zoneFallbackOptions})}));
 // CoinGecko public pages, spaced to stay under the free rate limit; reused for 6 hours and kept
 // on disk (marketcaps.json in the data folder) so a restart or a later outage uses the last good
 // list for up to 3 days. 429 (rate limit) waits and retries. COINGECKO_API_KEY (free demo key) is optional.
@@ -521,9 +528,18 @@ async function checkSymbolInternal(symbol, force=false){
      if(CONFIG.stopZoneAdds){
       // Zones: the 3-day profile plus the deeper 15m window (Binance coins; venue-only coins use the 3-day one).
       const deep=!venueOnly&&CONFIG.dcaZoneDays>3?await deepProfiles.get(symbol,{tickSize:chartTick,eligible:true}).catch(()=>null):null;
-      const zones=[...(profileResult?.profile?.hvn||[]),...(deep?.ok?deep.profile.hvn:[])].slice(0,60).map(z=>({priceLow:z.priceLow,priceHigh:z.priceHigh}));
-      out.paperAddInputs={zones,atr:Number(out.atr)||0,tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,takerRate:costs.takerRate};
-      const preview=zoneScaleInPlan(out,1);if(preview)out.paperAddsPreview={unitQty:preview.dca.unitQty,adds:preview.dca.adds.length,fullQty:preview.dca.full.quantity,stop:preview.dca.stop};
+      const toZones=list=>list.slice(0,60).map(z=>({priceLow:z.priceLow,priceHigh:z.priceHigh}));
+      const zoneSets=[{label:'15분봉 '+(deep?.ok?`3일+${CONFIG.dcaZoneDays}일`:'3일'),zones:toZones([...(profileResult?.profile?.hvn||[]),...(deep?.ok?deep.profile.hvn:[])])}];
+      out.paperAddInputs={zoneSets,atr:Number(out.atr)||0,tickSize:estimate.tickSize,quantityStep:estimate.quantityStep,minQuantity:estimate.minQuantity,minNotional:estimate.minNotional,takerRate:costs.takerRate};
+      // No zone fits: change the timeframe (1h, then 4h) until one does.
+      let preview=zoneScaleInPlan(out,1);
+      for(const f of venueOnly?venueZoneFallbacks:binanceZoneFallbacks){
+       if(preview)break;
+       const r=await f.collector.get(symbol,{tickSize:chartTick,eligible:true}).catch(()=>null);
+       if(!r?.ok||!r.profile?.hvn?.length)continue;
+       zoneSets.push({label:f.label,zones:toZones(r.profile.hvn)});preview=zoneScaleInPlan(out,1);
+      }
+      if(preview)out.paperAddsPreview={unitQty:preview.dca.unitQty,adds:preview.dca.adds.length,fullQty:preview.dca.full.quantity,stop:preview.dca.stop,zoneSource:preview.zoneSource};
      }}
    }
    else if(!chosen)out.targetPlan={ok:false,code:'TP_PROFILE_UNAVAILABLE',reasons:['EXECUTION_VENUE_UNAVAILABLE']};
@@ -577,16 +593,22 @@ function publishCryptoSignal(row,decision,now=Date.now()){
 // (planZoneDca, the same rule as the scalps). Unit = balance x DCA_UNIT_PCT x leverage, where the
 // leverage comes from the score and market cap; the margin / liquidation / max-loss checks of
 // planZoneDca apply. Null when no zone fits: the position then uses the pattern stop as before.
+// Paper account (cross margin): PAPER_BALANCE_USD plus every realized paper result.
+function paperAccountBalance(){return CONFIG.paperBalanceUSD+(paper.store.closed||[]).reduce((s,x)=>s+(Number(x.realizedPnLUSD)||0),0)}
 function zoneScaleInPlan(row,sizeScale){
  const inp=row.paperAddInputs;if(!inp||!row.targetPlan?.ok)return null;
  const leverage=leverageForScore(row.score,row.marketCap)??10;
- const balanceUSD=CONFIG.paperBalanceUSD+(paper.store.closed||[]).reduce((s,x)=>s+(Number(x.realizedPnLUSD)||0),0);
- const dca=planZoneDca({direction:row.direction,entry:row.entry,atr:inp.atr,zones:inp.zones,balanceUSD,leverage,unitPct:CONFIG.dcaUnitPct*sizeScale,
-  tickSize:inp.tickSize,quantityStep:inp.quantityStep,minQuantity:inp.minQuantity,minNotional:inp.minNotional,takerRate:inp.takerRate,
-  settings:{maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds}});
- if(!dca.ok||!dca.adds.length)return null;
- const targetPlan=planWithQuantity(row.targetPlan,dca.unitQty);if(!targetPlan)return null;
- return {targetPlan,dca,leverage};
+ const balanceUSD=paperAccountBalance();
+ // Zone sets in timeframe order (15m, then the 1h / 4h fallbacks); the first that gives an add wins.
+ for(const set of inp.zoneSets||[{label:'15분봉',zones:inp.zones||[]}]){
+  const dca=planZoneDca({direction:row.direction,entry:row.entry,atr:inp.atr,zones:set.zones,balanceUSD,leverage,unitPct:CONFIG.dcaUnitPct*sizeScale,
+   tickSize:inp.tickSize,quantityStep:inp.quantityStep,minQuantity:inp.minQuantity,minNotional:inp.minNotional,takerRate:inp.takerRate,
+   settings:{maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds}});
+  if(!dca.ok||!dca.adds.length)continue;
+  const targetPlan=planWithQuantity(row.targetPlan,dca.unitQty);if(!targetPlan)continue;
+  return {targetPlan,dca:{...dca,zoneSource:set.label},leverage,zoneSource:set.label};
+ }
+ return null;
 }
 // Event-driven scanner. The global mini-ticker stream supplies fast price updates;
 // per-symbol 1H + 4H kline close streams trigger re-analysis at candle completion.
@@ -748,7 +770,7 @@ async function runScalpCheck(now=Date.now()){
     // Deeper zones are optional: if that fetch fails the plan uses the 3-day zones only.
     const deep=dcaZoneDaysFor(interval,CONFIG.dcaZoneDays)>3?await deepProfiles.get(symbol,{tickSize:chartTick,eligible:true}):null;
     const zones=[...profile.profile.hvn,...(deep?.ok?deep.profile.hvn:[])];
-    const balanceUSD=CONFIG.paperBalanceUSD+paper.store.closed.reduce((sum,x)=>sum+(Number(x.realizedPnLUSD)||0),0);
+    const balanceUSD=paperAccountBalance();
     dca=planZoneDca({direction:det.direction,entry:chosen.estimate.entryBasis,atr:det.atr,zones,balanceUSD,leverage:CONFIG.dcaLeverage,unitPct:CONFIG.dcaUnitPct*sizeScale,
      tickSize:chosen.estimate.tickSize,quantityStep:chosen.estimate.quantityStep,minQuantity:chosen.estimate.minQuantity,minNotional:chosen.estimate.minNotional,takerRate:costs.takerRate,
      settings:{maxLossPct:CONFIG.dcaMaxLossPct,maxAdds:CONFIG.dcaMaxAdds}});
@@ -1013,7 +1035,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/scan/diagnostics')return response(res,200,{structureCount:recentStructures().length,historicalPatternCount:recentHistory().length,at:Date.now(),...getScanFunnel(),scannedSinceBoot:state.scannedSinceBoot,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,scanMode:state.scanMode,marketError:state.marketError});
   if(pathname==='/api/storage')return response(res,200,{mode:'shared-persistent',persistent:storageHealth.healthy,updatedByServer:true,...storageHealth,paperOpen:persisted.paper?.open?.length||0,paperClosed:persisted.paper?.closed?.length||0,journal:persisted.journal.length,alerts:persisted.alerts.length});
   if(pathname==='/api/paper'&&req.method==='GET')return response(res,200,{
-   ...paper.snapshot(),storage:{...storageHealth},monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
+   ...paper.snapshot(),marginMode:'CROSS',accountBalanceUSD:Math.round(paperAccountBalance()*100)/100,storage:{...storageHealth},monitor:paperEngineHealth({paper:paper.store,telemetry:paper.telemetry,
    scanner:{analysisVenue:'BINANCE',ws:state.ws,lastTickerAt:state.lastTickerAt,scanMode:state.scanMode,activeCount:state.activeSymbols.length}})
   });
   // One place for every server-side notification switch.

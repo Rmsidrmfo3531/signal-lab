@@ -126,11 +126,11 @@ export const KLINE_INTERVAL_MS=900000;
  * lower-timeframe approximation of a visible-range profile. It covers the same
  * price scale as 1H/4H stops, which a few minutes of trades cannot. */
 export function buildKlineVolumeProfile(input={},options={}){
- const {now=Date.now(),maxAgeMs=90000,minCandles=96,targetBins=120,valueAreaFraction=.7,hvnMinFractionOfPoc=.1,intervalMs=KLINE_INTERVAL_MS}=options,
+ const {now=Date.now(),maxAgeMs=90000,minCandles=96,targetBins=120,valueAreaFraction=.7,hvnMinFractionOfPoc=.1,intervalMs=KLINE_INTERVAL_MS,interval='15m'}=options,
   {symbol,klines,receivedAt,tickSize,dataSource=KLINE_PROFILE_SOURCE}=input??{};
  const evidence={symbol:typeof symbol==='string'&&/^[A-Z0-9]{2,24}USDT$/.test(symbol)?symbol:null,dataSource:[KLINE_PROFILE_SOURCE,'SYNTHETIC_TEST'].includes(dataSource)?dataSource:'UNVERIFIED',
   windowStart:null,windowEnd:null,receivedAt:stamp(receivedAt)?receivedAt:null,generatedAt:stamp(now)?now:null,
-  coverage:{complete:false,ratio:null,pages:1,truncated:false},candles:Array.isArray(klines)?klines.length:null,interval:'15m',
+  coverage:{complete:false,ratio:null,pages:1,truncated:false},candles:Array.isArray(klines)?klines.length:null,interval,
   originIndependentlyVerified:false,methodology:'BINANCE_15M_KLINES_RANGE_SPREAD_BASE_VOLUME',version:'KLINE_VOLUME_PROFILE_V1'};
  if(!stamp(now)||!Number.isSafeInteger(maxAgeMs)||maxAgeMs<1||maxAgeMs>90000||!Number.isSafeInteger(minCandles)||minCandles<24||
   !Number.isSafeInteger(targetBins)||targetBins<20||targetBins>MAX_BINS)return fail(['PROFILE_SETTINGS_INVALID'],evidence);

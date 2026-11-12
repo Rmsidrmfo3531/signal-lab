@@ -38,7 +38,7 @@ export function telegramMessage(signal,officialLinks,{paperPosition}={}){
  const preview=!position&&Number(signal.paperAddsPreview?.unitQty)>0?signal.paperAddsPreview:null;
  const qty=position?position.qtyRemaining:preview?Number(preview.unitQty):Number.isFinite(plannedQty)&&plannedQty>0?plannedQty:null;
  const notional=qty!=null&&entryPrice>0?qty*entryPrice:null;
- const quantity=qty==null?'미확인':qtyText(qty)+(position?'':preview?' (첫 진입 예정)':' (진입 예정)')+(notional?` · 명목 ${usdText(notional)}`:'')+(notional&&leverage>0?` · 증거금 ${usdText(notional/leverage)}`:'')+(preview?` · 추매 최대 ${preview.adds}회 (최대 ${qtyText(Number(preview.fullQty))}) 후 손절`:'');
+ const quantity=qty==null?'미확인':qtyText(qty)+(position?'':preview?' (첫 진입 예정)':' (진입 예정)')+(notional?` · 명목 ${usdText(notional)}`:'')+(notional&&leverage>0?` · 증거금 ${usdText(notional/leverage)}`:'')+(preview?` · 추매 최대 ${preview.adds}회 (최대 ${qtyText(Number(preview.fullQty))}${preview.zoneSource?`, ${preview.zoneSource} 매물대`:''}) 후 손절`:'');
  const text=[
   '종목: '+signal.symbol,
   '방향: '+(signal.direction==='LONG'?'롱 (LONG)':'숏 (SHORT)'),

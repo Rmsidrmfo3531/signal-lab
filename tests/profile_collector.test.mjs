@@ -44,3 +44,15 @@ test('15m-candle profile: HVNs at the heavy levels, multi-day window, gaps and s
  const flat=build(wide);assert.equal(flat.ok,true);const vols=flat.profile.bins.map(b=>b.volume).slice(1,-1);
  assert.ok(Math.max(...vols)/Math.min(...vols.filter(v=>v>0))<1.5,'evenly spread');assert.equal(flat.profile.hvn.length,1,'a flat profile has one peak, not float-noise peaks');
 });
+
+test('fallback timeframes: 1h / 4h candle profiles for split-buy zones when the 15m ones do not fit',async()=>{
+ for(const [interval,step,n] of [['1h',3600000,720],['4h',14400000,540]]){
+  const last=Math.floor(NOW/step)*step,urls=[];
+  const rows=Array.from({length:n},(_,i)=>{const l=[110,90,80,70][i%4];return [last-(n-1-i)*step,String(l),String(l+0.05),String(l),String(l+0.05),'50',last-(n-1-i)*step+step-1,'0',1,'0','0','0']});
+  const c=new VolumeProfileCollector({now:()=>NOW,dataSource:'SYNTHETIC_TEST',interval,candles:n,profileOptions:{minCandles:96,targetBins:240,hvnMinFractionOfPoc:.05},request:async url=>{urls.push(url);return rows}});
+  const r=await c.get('SOLUSDT',{tickSize:.01,eligible:true});
+  assert.equal(r.ok,true,r.reasons?.join());assert.equal(urls[0],`/fapi/v1/klines?symbol=SOLUSDT&interval=${interval}&limit=${n}`);
+  assert.equal(r.evidence.interval,interval);assert.ok(r.profile.hvn.some(z=>Math.abs(z.price-70)<=1));
+ }
+ assert.throws(()=>new VolumeProfileCollector({request:async()=>[],interval:'2h'}),/CONFIG/);
+});
