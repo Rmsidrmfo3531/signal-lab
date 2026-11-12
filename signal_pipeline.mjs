@@ -1,7 +1,7 @@
 import {STRICT_MIN_SCORE} from './quality.mjs';
 import {scoreGatePassed} from './signal_policy.mjs';
 import {entryTiming} from './public/trade_plan.js';
-import {estimateBinanceExecution} from './binance_execution.mjs';
+import {estimateBinanceExecution,netRewardRisk} from './binance_execution.mjs';
 
 // One Binance-only decision for diagnostics, screen, alerts and simulated entries.
 // Analysis approval never authorizes an exchange order.
@@ -32,11 +32,7 @@ export function evaluateBinanceSignal(row,{market,book,verified=false,venueConne
   execution.reasons.push('현재 호가 기준 매물대 계획 수량이 최대 손실 허용 수량 초과');
  if(Number.isFinite(execution.entryBasis)&&Array.isArray(plan?.targets)&&costs&&
   ['takerRate','spreadBps','slippageBps','fundingRate'].every(key=>Number.isFinite(costs[key]))){
-  const friction=(costs.spreadBps/2+costs.slippageBps)/10000,entry=execution.entryBasis*(1+sign*friction),
-   stop=row.stop*(1-sign*friction),target=plan.targets[0]*(1-sign*friction),funding=entry*Math.abs(costs.fundingRate),
-   risk=sign*(entry-stop)+(entry+stop)*costs.takerRate+funding,
-   reward=sign*(target-entry)-(entry+target)*costs.takerRate-funding;
-  if(risk>0&&Number.isFinite(reward))currentNetRR=reward/risk;
+  currentNetRR=netRewardRisk({direction:row.direction,entry:execution.entryBasis,stop:row.stop,target:plan.targets[0],costs});
  }
  if(!Number.isFinite(currentNetRR)||currentNetRR<1.8)execution.reasons.push('매물대 TP1 현재 비용 가정 반영 손익비 1.8 미만/평가 불가');
  execution.estimatedNetRR=currentNetRR;

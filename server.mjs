@@ -29,7 +29,7 @@ import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
 import {liveConfig} from './live_orders.mjs';
 import {LiveExecutor} from './live_executor.mjs';
 import {BingXTradeClient,GateTradeClient} from './live_clients.mjs';
-import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues} from './venue_execution.mjs';
+import {selectExecutionVenue,venueSizingInputs,venueCosts,venueOrderQuantity,parsePaperVenues,routeLiveSignal} from './venue_execution.mjs';
 import {PaperEngine,paperCSV,signalKey,nextSizeScale,planWithQuantity,leverageForScore,evenPositions} from './paper.mjs';
 import {paperEngineHealth} from './paper_health.mjs';
 import {detectScalpReversal,buildScalpPlan,MoveTracker,SCALP_DEFAULTS,SCALP_TIMEFRAMES,isScalpStrategy,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
@@ -511,6 +511,11 @@ async function checkSymbolInternal(symbol, force=false){
     out.venueContract={tickSize:contract.tickSize,quantityStep:contract.quantityStep,quantityUnit:contract.quantityUnit,contractSizeBase:contract.contractSizeBase,minQuantityBase:contract.minQuantityBase,minNotionalUSDT:contract.minNotionalUSDT??null,
      decimalSizes:contract.decimalSizes===true,decimalStepFallback:contract.decimalStepFallback===true,contractStep:contract.contractStep??null};
     out.rawStop=out.stop;out.stop=chosen.stop;
+    // Other venues that list the coin and could take the same entry: the live order goes there when
+    // the paper venue has no live keys (routeLiveSignal).
+    out.liveAlternatives=selection.candidates.filter(c=>c.eligible&&c.venue!==chosen.venue).map(c=>{const k=venueEntry(c.venue,symbol).contract;
+     return {venue:c.venue,venueSymbol:k.venueSymbol,entryBasis:c.entryBasis,quantity:c.quantity,estimatedStopLossUSD:c.estimatedStopLossUSD,spreadBps:c.spreadBps,quotedAt:Date.now(),venueContract:{tickSize:k.tickSize,quantityStep:k.quantityStep,quantityUnit:k.quantityUnit,contractSizeBase:k.contractSizeBase,minQuantityBase:k.minQuantityBase,minNotionalUSDT:k.minNotionalUSDT??null,
+      decimalSizes:k.decimalSizes===true,decimalStepFallback:k.decimalStepFallback===true,contractStep:k.contractStep??null}}});
    }
    if(estimate.eligible&&Number.isFinite(chartTick)&&chartTick>0){
     const contract=venueEntry(chosen.venue,symbol).contract;
@@ -581,7 +586,7 @@ function publishCryptoSignal(row,decision,now=Date.now()){
   paper.register(adds?{...row,stop:adds.dca.stop,targetPlan:adds.targetPlan,dca:adds.dca,sizeScale,leverage:adds.leverage}:row,{market:'CRYPTO',symbol,quoteEligible:true});
   // The same first publication may also open a live/testnet position (its own checks decide).
   // Venue-only coins are paper only: their charts were never part of the validated backtest.
-  if(LIVE.mode!=='OFF'&&!row.venueOnly)void live.onSignal({...row,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
+  if(LIVE.mode!=='OFF'&&!row.venueOnly)void live.onSignal(routeLiveSignal({...row,...(noAdds?{paperAddInputs:null}:{}),decision,execution:decision.execution},{enabled:LIVE.venues,credentials:live.credentials()}),{signalKey:paperKey}).catch(e=>console.error('[LIVE]',e.message));
  }
  const key=`${symbol}:${direction}:${pattern}:${row.time}`;
  if(persisted.seen[key])return;
@@ -1180,7 +1185,12 @@ const server=http.createServer(async(req,res)=>{
    if(!check.levels.changed)return response(res,200,{ok:true,changed:false,levels:check.levels});
    let liveResult={live:false};
    if(LIVE.mode!=='OFF'){
-    liveResult=await live.setLevels(body.key,{stop:check.levels.stop,targets:check.levels.targets});
+    // Only what the user changed goes to the exchange (the live stop / targets may sit on another
+    // venue's grid or, with zone adds, at another stop than the paper record).
+    const current=[...paper.store.open,...paper.store.pending].find(x=>x.key===body.key);
+    const changedStop=wanted.stop!==null&&Number(check.levels.stop)!==Number(current?.stop)?check.levels.stop:NaN;
+    const changedTargets=(check.levels.targets||[]).map((t,i)=>Array.isArray(wanted.targets)&&Number(t)!==Number(current?.targets?.[i])?t:NaN);
+    liveResult=await live.setLevels(body.key,{stop:changedStop,targets:changedTargets});
     if(!liveResult.ok)return response(res,409,{ok:false,reasons:liveResult.reasons,live:liveResult});
    }
    const applied=paper.setLevels(body.key,wanted,{source:liveResult.live?'MANUAL_PAPER_AND_LIVE':'MANUAL'});

@@ -1,7 +1,7 @@
 // Paper execution on the actual trading venues (BingX, Gate.io). Binance supplies
 // the chart analysis only; sizing, entry basis and fills use the venue contract
 // rules and the venue order book. Pure functions: no network, no keys, no orders.
-import {estimateBinanceExecution,BINANCE_PAPER_ASSUMPTIONS} from './binance_execution.mjs';
+import {estimateBinanceExecution,BINANCE_PAPER_ASSUMPTIONS,netRewardRisk} from './binance_execution.mjs';
 import {roundDecimalToStep,multiplyDecimal} from './decimal_grid.mjs';
 import {VENUES} from './venue_market_data.mjs';
 
@@ -60,7 +60,38 @@ export function selectExecutionVenue({signal,venues={},allowed=VENUES,now=Date.n
  const eligible=candidates.filter(c=>c.eligible),sign=signal?.direction==='SHORT'?-1:1;
  // Better = lower entry for LONG, higher for SHORT; ties keep the listed order.
  const chosen=eligible.reduce((best,c)=>!best||sign*(c.estimate.entryBasis-best.estimate.entryBasis)<0?c:best,null);
- return {chosen,candidates:candidates.map(({venue,eligible,reasons,estimate})=>({venue,eligible,reasons,entryBasis:estimate?.entryBasis??null}))};
+ return {chosen,candidates:candidates.map(({venue,eligible,reasons,estimate})=>({venue,eligible,reasons,entryBasis:estimate?.entryBasis??null,
+  quantity:estimate?.quantity??null,estimatedStopLossUSD:estimate?.estimatedStopLossUSD??null,spreadBps:estimate?.spreadBps??null}))};
+}
+
+/** Live order on another venue than the paper one: when the paper venue has no live keys (or is
+ * not enabled), the same signal goes to the first venue in `liveAlternatives` that is enabled, has
+ * keys, lists the coin and still clears the TP1 net reward/risk (minNetRR, costs both ways) at its
+ * own entry (signal_pipeline's cost formula, that venue's spread) with a quote at most 15 s old. Stop and targets move onto that venue's tick grid: the stop away from the entry
+ * (never tighter), the targets toward the entry (never further); entry, quantity and estimated
+ * stop loss are that venue's. When no venue fits, the row is returned unchanged (preflight then
+ * reports the missing keys). */
+export function routeLiveSignal(row,{enabled=[],credentials={},minNetRR=1.8,now=Date.now(),maxQuoteAgeMs=15000}={}){
+ const ok=v=>enabled.includes(v)&&credentials[v]===true;
+ if(!row||ok(row.executionVenue))return row;
+ const dir=row.direction==='LONG'?1:-1;
+ for(const alt of row.liveAlternatives||[]){
+  if(!ok(alt.venue)||!alt.venueSymbol||!alt.venueContract||!positive(Number(alt.venueContract.tickSize))||!positive(alt.entryBasis))continue;
+  // The other venue's quote is from the analysis: too old (or unknown age), no routing.
+  if(!Number.isFinite(alt.quotedAt)||now-alt.quotedAt>maxQuoteAgeMs||alt.quotedAt>now+5000)continue;
+  const tick=String(alt.venueContract.tickSize),entry=alt.entryBasis;
+  const stop=venueStop(row.rawStop??row.stop,row.direction,alt.venueContract.tickSize);
+  const targets=(row.targets||[]).map(t=>Number(roundDecimalToStep(t,tick,dir===1?'DOWN':'UP')));
+  if(!positive(stop)||targets.length!==3||!targets.every(positive))continue;
+  // Same TP1 net reward/risk formula as the final decision, with this venue's spread.
+  const costs=row.targetPlan?.costAssumptions?{...row.targetPlan.costAssumptions,...(Number.isFinite(alt.spreadBps)?{spreadBps:alt.spreadBps}:{})}:null;
+  const rr=netRewardRisk({direction:row.direction,entry,stop,target:targets[0],costs});
+  if(!(rr>=minNetRR))continue;
+  return {...row,executionVenue:alt.venue,venueSymbol:alt.venueSymbol,venueContract:alt.venueContract,entry,stop,targets,
+   targetPlan:row.targetPlan?{...row.targetPlan,quantity:alt.quantity??row.targetPlan.quantity}:row.targetPlan,
+   execution:{...(row.execution||{}),estimatedStopLossUSD:alt.estimatedStopLossUSD??row.execution?.estimatedStopLossUSD},liveRoutedFrom:row.executionVenue};
+ }
+ return row;
 }
 
 /** Venue order size for display: base quantity for BingX, whole contracts for Gate.io. */

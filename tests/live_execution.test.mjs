@@ -323,3 +323,25 @@ test('LIVE_BALANCE_CAP_USD: a 100,000 virtual USDT testnet is sized like a $400 
  await ex.onSignal(row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}}),{signalKey:'cap'});
  const r=ex.store.records[0];assert.equal(r.balanceUSD,400);assert.equal(r.quantity.total,0.13,'400 x 0.19% x 18 = 13.68 USDT -> 0.13 ETH');
 });
+
+test('a signal routed from Gate.io is ordered on BingX with BingX symbol and grid, and recorded as routed',async()=>{
+ const {routeLiveSignal}=await import('../venue_execution.mjs');
+ const gate=row('GATEIO');const bingx=row('BINGX');
+ const routed=routeLiveSignal({...gate,targetPlan:{quantity:.6,costAssumptions:{takerRate:.0005,makerRate:.0002,slippageBps:2,spreadBps:2,fundingRate:0}},entry:100,rawStop:97.987,stop:97.95,targets:[105.057,108.003,112.009],
+  liveAlternatives:[{venue:'BINGX',venueSymbol:'ETH-USDT',entryBasis:100.01,quantity:0.6,estimatedStopLossUSD:6,spreadBps:2,quotedAt:NOW,venueContract:bingx.venueContract}]},{enabled:['BINGX'],credentials:{BINGX:true},now:NOW});
+ const m=mockBingX(),ex=new LiveExecutor({config:config({venues:['BINGX']}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(routed,{signalKey:'route1'});
+ const r=ex.store.records[0];assert.equal(r.status,'OPEN',JSON.stringify(r.events));assert.equal(r.venue,'BINGX');assert.equal(r.venueSymbol,'ETH-USDT');assert.equal(r.routedFrom,'GATEIO');
+ const entry=m.calls.find(c=>c.method==='POST'&&c.path==='/openApi/swap/v2/trade/order').params;assert.equal(entry.symbol,'ETH-USDT');
+ assert.equal(JSON.parse(entry.stopLoss).stopPrice,97.98);assert.deepEqual(r.targets,[105.05,108,112]);
+});
+
+test('manual levels on a live record are put on its venue grid; NaN fields are left alone',async()=>{
+ const m=mockBingX(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(row('BINGX'),{signalKey:'lv'});const r=ex.store.records[0];assert.equal(r.status,'OPEN');
+ const before=m.calls.length;
+ const res=await ex.setLevels('lv',{stop:NaN,targets:[NaN,NaN,113.017]});
+ assert.equal(res.ok,true);assert.equal(res.stopMoved,false,'stop untouched');assert.deepEqual(res.targetsMoved,[3]);
+ assert.equal(r.targets[2],113.01,'target toward the entry on the 0.01 grid');assert.equal(r.targets[0],105);
+ const placed=m.calls.slice(before).filter(c=>c.method==='POST').map(c=>c.params);assert.equal(placed.length,1);assert.equal(placed[0].stopPrice,'113.01');
+});
