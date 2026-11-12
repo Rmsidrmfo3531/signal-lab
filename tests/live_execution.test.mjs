@@ -302,3 +302,15 @@ test('balance sizing: the account balance sets the unit; adds 1, 2, 4 ... rest a
  size=0;await gx.reconcile();assert.equal(gr.status,'CLOSED');assert.ok(gr.adds.every(a=>a.cancelled));
  assert.ok(g.calls.some(c=>c.method==='DELETE'&&c.path.startsWith('/api/v4/futures/usdt/orders/')),'resting adds cancelled');
 });
+
+test('an add that fills after the position went flat is closed at market and trading stops',async()=>{
+ const zones=[97,94,91].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ const sizes=[0,34];let size=()=>34;const g=mockGate({size:()=>size(),fill:34});
+ const gx=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60}),clients:{GATEIO:g.client},now:()=>NOW});gx.arm();
+ await gx.onSignal(row('GATEIO',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}}),{signalKey:'late'});
+ assert.equal(gx.store.records[0].status,'OPEN');
+ size=()=>sizes.shift()??0; // flat on the first look, 34 contracts again right after the cancel
+ await gx.reconcile();const r=gx.store.records[0];
+ assert.equal(r.status,'CLOSED');assert.equal(r.closeReason,'LATE_ADD_AFTER_FLAT');assert.equal(gx.store.killSwitch,true);
+ assert.ok(g.calls.some(c=>c.method==='POST'&&c.body?.close===true&&c.path.endsWith('/orders')),'market close sent');
+});

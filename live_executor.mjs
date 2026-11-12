@@ -250,7 +250,20 @@ export class LiveExecutor{
     if(size===0){
      record.status='CLOSED';record.closedAt=this.now();record.closeReason=record.closeReason||'POSITION_FLAT';
      // Resting adds first: an add left behind would open a new position on its own.
-     if(record.adds?.length)await this.#cancelAdds(record,'POSITION_FLAT');
+     if(record.adds?.length){
+      await this.#cancelAdds(record,'POSITION_FLAT');
+      // An add can fill between the stop-out and its cancel (the stop uses the mark price, the
+      // add the last price). Such a position has no stop: close it at market and stop trading.
+      const again=await this.#position(record).catch(()=>null);
+      if(!again||again.size>0){
+       const plan=this.#plan(record);
+       try{if(!again)throw Object.assign(Error('position unknown'),{code:'POSITION_CHECK_FAILED'});
+        if(record.venue==='BINGX')await this.clients.BINGX.placeOrder(plan.emergencyClose(again.size));else await this.clients.GATEIO.placeOrder(plan.emergencyClose());
+        this.#event(record,'LATE_ADD_CLOSED',{reason:`size ${again.size}`})}
+       catch(error){this.#event(record,'LATE_ADD_CLOSE_FAILED',{reason:error.code||error.message})}
+       record.closeReason='LATE_ADD_AFTER_FLAT';this.kill('LATE_ADD_'+record.venue);
+      }
+     }
      for(const id of [record.stopOrderId,...record.targetOrderIds].filter(Boolean))await this.#cancel(record,id);
      this.#event(record,'CLOSED');continue;
     }
