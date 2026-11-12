@@ -89,6 +89,7 @@ export function closedCardHTML(c){
   <span>추매<b>${esc(c.adds?.filled??0)}차 / 최대 ${esc(c.adds?.max??0)}차</b></span>
   <span>실현 손익 (수수료 반영)${realizedHTML(c.realized)}</span>
  </div>
+ ${c.deletable?`<button type="button" class="ghost small" data-live-delete="${esc(c.signalKey)}">기록 삭제</button>`:''}
 </article>`;
 }
 
@@ -114,7 +115,7 @@ export const levelReason=r=>LEVEL_REASONS[r]||(/^TP(\d)_ALREADY_FILLED$/.test(r)
 
 function recordsRows(records){
  if(!records?.length)return '<tr><td colspan="8">주문 기록 없음</td></tr>';
- return records.map(r=>`<tr><td>${time(r.createdAt)}</td><td>${esc(LABEL[r.venue]||r.venue)}</td><td>${esc(r.symbol)}</td><td>${esc(r.direction)}</td><td>${esc(r.quantity?.total??'—')} ${r.quantity?.unit==='CONTRACT'?'계약':''}</td><td>$${Number(r.plannedRiskUSD||0).toFixed(2)}</td><td>${esc(LIVE_STATUS[r.status]||r.status)}${r.test?' · 시험':''}</td><td>${r.lastEvent?esc(r.lastEvent.type+(r.lastEvent.reason?' · '+r.lastEvent.reason:'')):'—'}</td></tr>`).join('');
+ return records.map(r=>`<tr><td>${time(r.createdAt)}</td><td>${esc(LABEL[r.venue]||r.venue)}</td><td>${esc(r.symbol)}</td><td>${esc(r.direction)}</td><td>${esc(r.quantity?.total??'—')} ${r.quantity?.unit==='CONTRACT'?'계약':''}</td><td>$${Number(r.plannedRiskUSD||0).toFixed(2)}</td><td>${esc(LIVE_STATUS[r.status]||r.status)}${r.test?' · 시험':''}</td><td>${r.lastEvent?esc(r.lastEvent.type+(r.lastEvent.reason?' · '+r.lastEvent.reason:'')):'—'}${r.deletable?` <button type="button" class="ghost small" data-live-delete="${esc(r.signalKey)}">삭제</button>`:''}</td></tr>`).join('');
 }
 
 function render(o){
@@ -164,6 +165,13 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
    const head=d.ok?'시험 주문 성공: 진입 → 보호 주문 → 청산까지 정상':'시험 주문 결과: '+(d.status||'')+' '+(d.reasons||[]).join(', ');
    s.replaceChildren(Object.assign(document.createElement('b'),{textContent:head}),...(d.events||[]).map(e=>Object.assign(document.createElement('div'),{textContent:`· ${e.type}${e.reason?' — '+e.reason:''}`})));
   }catch(e){s.textContent='시험 주문 요청 실패: '+e.message}
+ });
+const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 삭제할 수 없습니다',TODAY_COUNTS_FOR_DAILY_RISK:'오늘 종료된 거래는 하루 손실 한도 계산에 쓰여 내일부터 삭제할 수 있습니다',NOT_FOUND:'이미 삭제된 기록입니다',SAFETY_RECORD:'긴급 정지를 일으킨 기록이라 남겨 둡니다'};
+ document.addEventListener('click',async e=>{
+  const b=e.target.closest?.('[data-live-delete]');if(!b)return;
+  if(!confirm('이 기록을 삭제합니다. 되돌릴 수 없습니다. 계속할까요?'))return;
+  try{const r=await fetch('/api/live/delete',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:b.dataset.liveDelete})}),d=await r.json();
+   if(!r.ok)throw Error(DELETE_REASONS[d.reason]||d.reason||'HTTP '+r.status);await load()}catch(err){fail(err)}
  });
  document.addEventListener('submit',async e=>{
   const form=e.target.closest?.('form[data-live-levels]');if(!form)return;e.preventDefault();
