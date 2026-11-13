@@ -7,7 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 
-const run=(cwd,args,env)=>new Promise((ok,fail)=>execFile('git',args,{cwd,env:{...process.env,...env},timeout:60000},(e,out,err)=>e?fail(Error(String(err||e.message).trim().split('\n').pop())):ok(String(out).trim())));
+// git gets only what it needs (never the server's keys or tokens from the environment).
+const run=(cwd,args,env)=>new Promise((ok,fail)=>execFile('git',args,{cwd,env:{PATH:process.env.PATH,HOME:process.env.HOME,LANG:'C',...env},timeout:60000},(e,out,err)=>e?fail(Error(String(err||e.message).trim().split('\n').pop())):ok(String(out).trim())));
 const SECRET=/(api[_-]?key|secret|token|password|passphrase|signature)/i;
 
 /** Plain results for one closed live record (no order ids, no client ids). */
