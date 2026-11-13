@@ -100,8 +100,8 @@ test('copy review fixes: new stop before the old is cancelled; no stop at all ->
  // A close refused by the venue is retried.
  v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.failMarket=true;await ex.handle({id:2,date:1e12,text:CLOSE});
  assert.equal(v.size,98);assert.equal(ex.status().pending,1);v.failMarket=false;await ex.reconcile();assert.equal(v.size,0);assert.equal(ex.status().pending,0);
- // Ledger loss limit: open loss -110 on 400 equity (25 %) closes everything and stops new copies.
- v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.unreal='-110';await ex.reconcile();
+ // Ledger loss limit (user 2026-11-13: 50 %): -110 on 400 (27 %) keeps going, -210 (52 %) closes everything and stops new copies.
+ v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.unreal='-110';await ex.reconcile();assert.equal(ex.status().killed,false);v.unreal='-210';await ex.reconcile();
  assert.equal(v.size,0);assert.equal(ex.status().killed,true);await ex.handle({id:5,date:1e12,text:OPEN});assert.equal(v.size,0);
  ex.resume();assert.equal(ex.status().killed,false);
  // A 1-unit cut of a 3-unit position (trader 300 -> 200) is not lost to rounding down.
