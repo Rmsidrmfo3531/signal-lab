@@ -145,27 +145,27 @@ export class LiveExecutor{
    const gateOpen=this.config.mode!=='OFF'&&this.armed&&!this.store.killSwitch&&this.config.venues.includes(venue)&&this.credentials()[venue]&&contract;
    if(gateOpen){
     let bal=null;try{bal=await this.#funds(venue)}catch(error){extra.push('BALANCE_UNAVAILABLE')}
-    // Size from the margin still free (what earlier positions and their resting adds have not
-    // taken), so each new position is proportional to what is left and always fits. The account
-    // equity still sets the daily / open-loss limits.
+    // Every position the same size (user 2026-11-13: "일정하게"): sized from the account equity, not
+    // from what earlier positions left free. The whole plan (entry + every resting add) uses at most
+    // marginUsePct of the equity (shrunk once to fit) and must fit in the free margin, else it is
+    // skipped (MARGIN_SHORT) rather than made smaller. The open-risk cap and the position count bound
+    // how many such positions can be open at once.
     let balanceUSD=bal?.equity||0,freeUSD=bal?.available??balanceUSD;
     if(balanceUSD>0&&this.config.balanceCapUSD>0){const used=Math.max(0,balanceUSD-freeUSD);balanceUSD=Math.min(balanceUSD,this.config.balanceCapUSD);freeUSD=Math.max(0,Math.min(freeUSD,balanceUSD-used))}
     if(balanceUSD>0&&!(freeUSD>0)&&!extra.length)extra.push('MARGIN_SHORT');
     if(balanceUSD>0&&freeUSD>0){
-     // The whole plan (entry + every resting add) uses at most marginUsePct of the free margin:
-     // shrunk once to fit, refused if it still does not.
-     const budget=freeUSD*(this.config.marginUsePct??25)/100;
-     split=liveSplitPlan({row,balanceUSD:freeUSD,leverage,config:this.config});
+     const budget=balanceUSD*(this.config.marginUsePct??25)/100;
+     split=liveSplitPlan({row,balanceUSD,leverage,config:this.config});
      const need=planMargin(split,row,leverage);
-     if(split&&need>budget)split=liveSplitPlan({row,balanceUSD:freeUSD,leverage,sizeScale:budget/need*.98,config:this.config});
-     if(split&&planMargin(split,row,leverage)>budget){split=null;extra.push('MARGIN_SHORT')}
+     if(split&&need>budget)split=liveSplitPlan({row,balanceUSD,leverage,sizeScale:budget/need*.98,config:this.config});
+     if(split&&planMargin(split,row,leverage)>Math.min(budget,freeUSD*.9)){split=null;extra.push('MARGIN_SHORT')}
      if(split){qty=split.qty;row={...row,stop:split.stop}}
      config={...this.config,dailyMaxRiskUSD:balanceUSD*this.config.dailyMaxLossPct/100};
      // Open-risk cap: the worst losses of every open position plus this one stay within the daily
      // loss limit of the balance — positions opened on earlier days count too (margin floor safety).
      const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
      if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
-     split&&Object.assign(split,{balanceUSD,freeUSD}); // equity for readiness drawdown, free margin it was sized from
+     split&&Object.assign(split,{balanceUSD,freeUSD}); // equity (sizing and readiness drawdown), free margin at the entry
     }else if(!extra.length)extra.push('BALANCE_EMPTY');
    }
   }else qty=contract?liveQuantity({quantity:row.targetPlan?.quantity,estimatedStopLossUSD:row.execution?.estimatedStopLossUSD,maxRiskUSD:this.config.maxRiskUSD,contract}):null;

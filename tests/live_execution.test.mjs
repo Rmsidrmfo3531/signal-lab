@@ -597,7 +597,7 @@ test('reconcile: rounds start at a different position so a 429 does not starve t
  assert.deepEqual(seen.map(m=>m.match(/\[LIVE BINGX (\w+)\]/)?.[1]).sort(),['AUSDT','BUSDT','CUSDT'],'each round hit a different position first');
 });
 
-test('free-margin sizing: each new position is sized from the margin still free and its whole plan fits in 25 % of it',async()=>{
+test('constant sizing (user 2026-11-13): every position sized from the equity, whole plan within 25 % of it and inside the free margin, else skipped',async()=>{
  const zones=[97,94,91,88,85,82].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
  const sig=(k)=>row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}});
  const run=async(avail,cfg={})=>{const m=mockBingX({available:()=>avail});
@@ -605,7 +605,7 @@ test('free-margin sizing: each new position is sized from the margin still free 
   const res=await ex.onSignal(sig(),{signalKey:'f'+avail+JSON.stringify(cfg)});return {ex,res,r:ex.store.records[0]}};
  const full=await run('1000'),half=await run('500');
  assert.equal(full.r.status,'OPEN');assert.equal(half.r.status,'OPEN');
- assert.equal(half.r.quantity.total,0.17,'half the free margin -> half the unit (0.34 -> 0.17)');
+ assert.equal(half.r.quantity.total,0.34,'same size whatever is already used (equity 1,000)');
  assert.equal(half.r.balanceUSD,1000,'equity kept for readiness');assert.equal(half.r.freeUSD,500);
  const margin=r=>(r.quantity.total*100+r.adds.reduce((t,a)=>t+a.qty*a.price,0))/r.leverage;
  assert.ok(margin(half.r)<=500*.25+1e-9,'whole plan within 25 % of free margin: '+margin(half.r));
