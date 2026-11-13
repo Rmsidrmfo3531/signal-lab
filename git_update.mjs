@@ -23,10 +23,10 @@ export async function gitCheck(root,{git=run}={}){
 }
 
 /** Fast-forward to origin/main; roll back if the new server.mjs does not parse. Caller restarts. */
-export async function gitApply(root,{git=run,checkSyntax}={}){
- const before=await gitCheck(root,{git});
+export async function gitApply(root,{git=run,checkSyntax,onStep=()=>{}}={}){
+ const before=await gitCheck(root,{git});onStep('fetched');
  if(before.state!=='available')return {ok:before.state==='current',...before};
- await git(root,['merge','--ff-only','origin/main']);
+ await git(root,['merge','--ff-only','origin/main']);onStep('merged');
  const after=await git(root,['rev-parse','--short','HEAD']);
  try{await checkSyntax(root)}
  catch(error){await git(root,['reset','--hard',before.current]);return {ok:false,state:'rolled-back',current:before.current,latest:before.latest,message:'새 버전 검사 실패로 되돌렸습니다: '+error.message}}
@@ -35,11 +35,11 @@ export async function gitApply(root,{git=run,checkSyntax}={}){
 
 /** Every .mjs at the root and every public script parses, and every relative import of the root
  * modules points at a file that exists (node --check does not follow imports). */
-export async function checkTree(root,{nodeCheck}){
+export async function checkTree(root,{nodeCheck,onFile=()=>{}}){
  const files=fs.readdirSync(root).filter(f=>f.endsWith('.mjs')).map(f=>path.join(root,f))
   .concat(fs.existsSync(path.join(root,'public'))?fs.readdirSync(path.join(root,'public')).filter(f=>f.endsWith('.js')).map(f=>path.join(root,'public',f)):[]);
- for(const file of files){
-  await nodeCheck(file);
+ for(const [i,file] of files.entries()){
+  await nodeCheck(file);onFile(i+1,files.length);
   if(!file.endsWith('.mjs'))continue;
   for(const m of fs.readFileSync(file,'utf8').matchAll(/(?:^|\n)\s*import\s[^'"]*?from\s*['"](\.[^'"]+)['"]/g)){
    const target=path.resolve(path.dirname(file),m[1]);
