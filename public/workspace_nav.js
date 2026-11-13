@@ -2,7 +2,8 @@
 // chart state, live positions and journal data are never reset on navigation.
 const workspaceRoutes = Object.freeze({
   overview: '대시보드 · 차트',
-  live: '실매매',
+  real: '실계좌 · 카피 매매',
+  live: '테스트넷 · 신호 전략',
   news: '시황 · 뉴스',
   alerts: '알림 · 시스템 상태',
   journal: '매매일지 · 위험관리'
@@ -12,7 +13,7 @@ const workspaceAliases = Object.freeze({
   workGrid: 'overview',
   execution: 'overview',
   matched: 'overview',
-  // Old bookmarks of the removed 자동 모의매매 page open the 실매매 page.
+  // Old bookmarks of the removed 자동 모의매매 page open the 테스트넷 page.
   paper: 'live',
   // The 시그널 스캐너 page was removed at the user's request (the scan itself keeps feeding live trades).
   scanner: 'live'
@@ -26,7 +27,8 @@ const workspaceIntro = document.querySelector('.page-head .intro');
 const defaultIntro = workspaceIntro?.textContent ?? '';
 // One line per page that says what is on it (the generic line was the same on every page).
 const workspaceIntros = {
-  live: 'BingX 주문 상태 · 보유 포지션 · 종료된 거래',
+  real: '실제 돈 · BingX 실계좌 카피 매매 (테스트넷과 분리)',
+  live: 'BingX 테스트넷 · 신호 전략 주문 · 보유 포지션 · 종료된 거래',
   news: '한국어 번역 뉴스와 실측 시장 시황',
   alerts: '텔레그램·화면 알림 설정과 최근 알림 기록',
   journal: '매매 기록, 패턴별 결과와 위험 한도'
