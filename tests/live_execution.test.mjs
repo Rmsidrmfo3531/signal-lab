@@ -507,6 +507,21 @@ test('first-entry margin floor: at least 1 USD of margin per unit, worst-loss ca
  assert.equal(liveSplitPlan({row:r,balanceUSD:400,leverage:10,config:cfg({minUnitMarginUSD:0})}).qty.base,15,'floor off: 0.76 USD');
  // 2300 × 0.19 % = 4.37 USD margin is above the floor: unchanged.
  assert.equal(liveSplitPlan({row:r,balanceUSD:2300,leverage:10,config:cfg()}).qty.base,87);
+ // A scaled-down position is raised to the floor too (the open-risk cap bounds the total).
+ assert.equal(liveSplitPlan({row:r,balanceUSD:400,leverage:10,sizeScale:.5,config:cfg()}).qty.base,20);
+ assert.equal(liveSplitPlan({row:r,balanceUSD:2300,leverage:10,sizeScale:.5,config:cfg()}).qty.base,43,'2300: half of 4.37 = 2.19 USD, above the floor');
  assert.equal(liveConfig({LIVE_MIN_UNIT_MARGIN_USD:'2'}).minUnitMarginUSD,2);
  assert.equal(liveConfig({LIVE_MIN_UNIT_MARGIN_USD:'0'}).minUnitMarginUSD,0);
+});
+
+test('open-risk cap: worst losses of all open positions plus the new one stay within the daily loss limit',async()=>{
+ const m=mockBingX(),cfg=config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60,maxOpen:4,maxPerDirection:4});
+ const ex=new LiveExecutor({config:cfg,clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ // An older open position (another day) with a planned worst loss of 599.95 on a 1000 balance (limit 600).
+ ex.store.records.push({signalKey:'old',symbol:'XRPUSDT',venue:'BINGX',direction:'SHORT',status:'OPEN',day:'2000-01-01',plannedRiskUSD:599.95,createdAt:NOW-86400000});
+ const r=await ex.onSignal(row('BINGX',{entry:100,leverage:10,stop:90,targets:[101.5,102,103]}),{signalKey:'new'});
+ assert.equal(r.sent,false);assert.ok(r.reasons.includes('OPEN_RISK_LIMIT'),JSON.stringify(r.reasons));
+ ex.store.records[0].plannedRiskUSD=10;
+ const ok=await ex.onSignal(row('BINGX',{entry:100,leverage:10,stop:90,targets:[101.5,102,103]}),{signalKey:'new2'});
+ assert.equal(ok.reasons?.includes('OPEN_RISK_LIMIT')??false,false);
 });

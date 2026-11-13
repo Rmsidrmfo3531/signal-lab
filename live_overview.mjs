@@ -5,7 +5,7 @@
 
 export const LIVE_ACTIVE_STATUSES=Object.freeze(['SUBMITTING','OPEN','UNKNOWN']);
 export const LIVE_STATUS_KO=Object.freeze({SUBMITTING:'주문 접수 중',OPEN:'보유 중',UNKNOWN:'확인 필요 (거래소에서 직접 확인)',CLOSED:'종료',FAILED:'주문 실패'});
-export const LIVE_REASON_KO=Object.freeze({
+export const LIVE_REASON_KO=Object.freeze({OPEN_RISK_LIMIT:'열린 포지션 최대 손실 합계 한도',
  LIVE_MODE_OFF:'실매매 꺼짐',LIVE_CONFIRM_MISSING:'실거래 확인 문구 없음',NOT_ARMED:'활성화 안 됨',KILL_SWITCH_ON:'긴급 정지 중',
  VENUE_NOT_ENABLED_FOR_LIVE:'실매매 거래소가 아님',VENUE_ONLY_TESTNET_ONLY:'바이낸스 미상장 코인 (테스트넷 전용)',CREDENTIALS_MISSING:'API 키 없음',
  SIGNAL_NOT_READY:'신호 조건 미충족',PLAN_INCOMPLETE:'손절·목표 계획 불완전',UNRESOLVED_ORDER_STATE:'확인이 필요한 주문이 있음',

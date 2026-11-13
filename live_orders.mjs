@@ -72,7 +72,8 @@ export function liveSplitPlan({row,balanceUSD,leverage,sizeScale=1,config}){
  if(!c||!positive(balanceUSD)||!positive(entry)||!positive(leverage))return null;
  const g=venueGrid(c),tick=Number(c.tickSize),minBase=Number(c.minQuantityBase)||0;
  if(!positive(g.step)||!positive(tick))return null;
- // Unit margin = balance × unitPct; never below the margin floor (the worst-loss cap below still applies).
+ // Unit margin = balance × unitPct × sizeScale, never below the margin floor (user, 2026-11-13).
+ // The per-trade worst-loss cap below and the open-risk cap in the executor still bound it.
  const floorPct=positive(config.minUnitMarginUSD)?config.minUnitMarginUSD/balanceUSD*100:0;
  const unitPct=Math.min(100,Math.max(config.unitPct*sizeScale,floorPct));
  for(const set of inp?.zoneSets||[]){
