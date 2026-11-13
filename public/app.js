@@ -577,6 +577,16 @@ async function loadMarketCommentary(){
  const host=$('marketCommentary');if(!host)return;
  try{const data=await json('/api/market-commentary');const lines=Array.isArray(data.lines)?data.lines:data.summary?[data.summary]:[];host.textContent=lines.length?lines.join(' ')+' · '+dateClock(data.asOf??data.checkedAt)+' KST':'실측 시장 시황 자료 부족 · 원인·전망을 추정하지 않습니다.'}catch{host.textContent='실측 시장 시황 조회 미완료 · 가격 전망이나 원인을 추정하지 않습니다.'}
 }
+// Live (testnet) trade notices as Chrome / system notifications and an on-page toast.
+function liveNotice(n){
+ if(!n?.text||!notifyOn('liveScreen'))return;
+ const [title,...rest]=String(n.text).split('\n'),body=rest.join('\n');
+ toast(title);
+ if('Notification' in window&&Notification.permission==='granted'){
+  try{const x=new Notification(title,{body,tag:'live-'+(n.symbol||'')+'-'+(n.type||''),renotify:true,requireInteraction:/문제|긴급/.test(title)});x.onclick=()=>{window.focus();location.hash='#live';x.close()}}catch{}
+ }
+ if(notifyOn('sound'))try{ping()}catch{}
+}
 function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('status',e=>{try{setStatus(JSON.parse(e.data))}catch{}});
  es.addEventListener('market',e=>{try{applyMarket(JSON.parse(e.data))}catch{}});
@@ -586,6 +596,7 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('live',e=>{try{const d=JSON.parse(e.data);if(d.signals)app.signals=d.signals;if(d.patterns)app.patterns=d.patterns;if(d.watch)app.watch=d.watch;renderSignals();if(d.symbol===app.symbol){loadAnalysis();if(d.reason?.includes('close'))loadChart()}}catch{}});
  es.addEventListener('news',e=>{try{applyNews(JSON.parse(e.data))}catch{}});
  
+ es.addEventListener('live-notice',e=>{try{liveNotice(JSON.parse(e.data))}catch{}});
  es.addEventListener('journal',()=>loadJournal());
  es.addEventListener('update',e=>{try{updateStatusText({...JSON.parse(e.data),version:'5.8.0'})}catch{}});
  es.onerror=()=>{if(es.readyState===EventSource.CLOSED)banner('서버 연결 종료','Node.js 서버를 다시 실행하세요.');$('socketStatus').innerHTML='<i class="dot red"></i><span>서버 재접속</span>'};

@@ -3,7 +3,7 @@
 // live on the server and apply to every screen; screen switches (pop-ups, sound) stay in this browser.
 // Paper notice switches are hidden while automatic paper trading is off (the default).
 const KEY='signalLab.notify.v1';
-export const SCREEN_DEFAULTS=Object.freeze({signalScreen:true,paperScreen:true,sound:true});
+export const SCREEN_DEFAULTS=Object.freeze({signalScreen:true,liveScreen:true,paperScreen:true,sound:true});
 export function screenNotify(){
  try{const saved=JSON.parse(localStorage.getItem(KEY)||'{}');return {...SCREEN_DEFAULTS,...Object.fromEntries(Object.entries(saved).filter(([k,v])=>k in SCREEN_DEFAULTS&&typeof v==='boolean'))}}
  catch{return {...SCREEN_DEFAULTS}}
@@ -18,6 +18,7 @@ const SERVER_ROWS=[
  {key:'windowsPaper',label:'Windows · 모의 진입/청산',hint:'서버가 실행 중인 PC의 알림 센터',paper:true}];
 const SCREEN_ROWS=[
  {key:'signalScreen',label:'화면 · 신호 팝업',hint:'이 브라우저의 신호 토스트·시스템 알림'},
+ {key:'liveScreen',label:'크롬 알림 · 실매매 진입/청산',hint:'대시보드를 열어 둔 동안 Chrome·Windows 알림 (알림 켜기 필요)'},
  {key:'paperScreen',label:'화면 · 모의 진입/청산 팝업',hint:'모의 화면을 열어 둔 동안의 알림',paper:true},
  {key:'sound',label:'화면 · 알림 소리',hint:'신호 알림 때 짧은 소리'}];
 // Paper rows only when the server reports automatic paper trading on.

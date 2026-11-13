@@ -477,8 +477,10 @@ async function uploadReport(force=false){
 setInterval(()=>{void uploadReport()},15*60000).unref?.();setTimeout(()=>{void uploadReport(true)},90000).unref?.();
 // Live trade notices to Telegram (live_telegram.mjs), on unless switched off in 알림 설정.
 function liveTelegramNotice(record,type,detail){
- if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
  const text=liveEventText(record,type,detail);if(!text)return;
+ // Open dashboards show it as a Chrome/system notification (public/app.js 'live-notice').
+ try{send('live-notice',{type,symbol:record?.symbol??null,text,at:Date.now()})}catch{}
+ if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
  telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[LIVE TELEGRAM] HTTP',r.status)}).catch(e=>console.error('[LIVE TELEGRAM]',e.message));
 }
 async function checkSoftwareUpdate(){

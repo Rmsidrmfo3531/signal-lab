@@ -30,3 +30,13 @@ test('drawdown, losses, order problems, test orders and old-rule trades',()=>{
  const transient=liveReadiness([...base,trade(43,1,{events:[{type:'RECONCILE_ERROR',at:T0}]})],{since:T0,now:T0+30*DAY});
  assert.equal(transient.reconcileErrors,1);assert.equal(transient.checks.find(c=>c.key==='errors').ok,true,'a passing venue check error is reported, not blocking');
 });
+
+test('average holding time for closed and open trades; open positions with their unrealized result',()=>{
+ const H=3600000;
+ const rs=[trade(0,2,{createdAt:T0,closedAt:T0+4*H}),trade(1,-1,{createdAt:T0,closedAt:T0+8*H}),
+  {signalKey:'o1',symbol:'OUSDT',direction:'SHORT',mode:'TESTNET',status:'OPEN',createdAt:T0,position:{unrealizedPnLUSD:-1.5}}];
+ const r=liveReadiness(rs,{since:T0,now:T0+10*H});
+ assert.equal(r.avgHoldHours,6);assert.equal(r.openAvgHoldHours,10);
+ assert.deepEqual(r.openPositions,[{symbol:'OUSDT',direction:'SHORT',createdAt:T0,unrealizedUSD:-1.5}]);
+ assert.match(readinessText(r),/미실현 −\$1\.50/);assert.match(readinessText(r),/평균 보유 6\.0시간/);
+});

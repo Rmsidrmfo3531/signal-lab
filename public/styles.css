@@ -707,3 +707,6 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .update-pct{font-variant-numeric:tabular-nums;color:var(--text);font-size:14px}
 .update-note{margin:12px 0 0;font-size:12px;color:var(--dim)}
 .update-close{margin-top:14px;width:100%}
+.readiness-stats>span small{font-size:10px;color:var(--dim)}
+.readiness-open{display:flex;flex-wrap:wrap;gap:4px 14px;margin:-2px 0 10px;font-size:12px;color:var(--muted)}
+.readiness-open span{white-space:nowrap}
