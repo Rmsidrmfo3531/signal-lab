@@ -211,7 +211,8 @@ export class LiveExecutor{
   record.entryOrderId=bingxOrderId(entry);record.status='OPEN';this.#event(record,'ENTRY_SENT',{orderId:record.entryOrderId});
   {const avg=posNum(pick(orderOf(entry),'avgPrice'));if(avg)record.firstEntryPrice=avg} // else read from the first position check
   // Confirm the attached stop exists; otherwise place one; otherwise close at market.
-  const open=await client.openOrders(record.venueSymbol).catch(()=>null);
+  // A failed read is "not checked", not "no stop": it is read once more before a second stop is sent.
+  const open=await client.openOrders(record.venueSymbol).catch(()=>null)??await client.openOrders(record.venueSymbol).catch(()=>null);
   const stopOrder=(open?.orders??(Array.isArray(open)?open:[])).find(o=>String(o.type).startsWith('STOP'));
   if(stopOrder){record.stopOrderId=bingxOrderId(stopOrder);this.#event(record,'STOP_CONFIRMED',{orderId:record.stopOrderId})}
   else{
@@ -436,9 +437,14 @@ export class LiveExecutor{
  /** True while nothing is being ordered, cancelled or checked (safe moment to restart). */
  idle(){return !this.reconciling&&!this.inFlight.size&&!this.busy.size&&!this.closing.size&&!this.store.records.some(r=>r.status==='SUBMITTING')}
  async #reconcileOpen(){
-  for(const record of this.store.records.filter(r=>r.status==='OPEN')){
+  this.posCache=null; // one fresh all-symbols read per check
+  let limited=false;
+  // Each round starts one position further on, so a round cut short by a 429 does not always
+  // leave the same positions unchecked.
+  const open=this.store.records.filter(r=>r.status==='OPEN'),start=open.length?(this.roundStart=((this.roundStart||0)+1)%open.length):0;
+  for(const record of [...open.slice(start),...open.slice(0,start)]){
    try{
-    const pos=await this.#position(record),{size,entryPrice}=pos;
+    const pos=await this.#position(record,{cached:true}),{size,entryPrice}=pos;
     this.#observe(record,pos);
     if(size===0){
      record.status='CLOSED';record.closedAt=this.now();record.closeReason=record.closeReason||'POSITION_FLAT';
@@ -486,10 +492,19 @@ export class LiveExecutor{
     }
     // TP1 filled: no more adds (same rule as paper).
     if(record.breakevenMoved&&record.adds?.some(a=>a.orderId&&!a.filled&&!a.cancelled))await this.#cancelAdds(record,'TP1_FILLED');
-   }catch(error){this.#event(record,'RECONCILE_ERROR',{reason:error.code||error.message})}
+   }catch(error){
+    // A rate-limit answer is a pause, not a problem with this trade: logged, not recorded on it.
+    // The rest of this round is skipped (every call would wait out the same pause). If the venue
+    // keeps refusing for 5 minutes, it is recorded once so a stalled check is visible.
+    if(error.code==='HTTP_429'){this.posCache=null;this.rateLimitedSince??=this.now();
+     this.log(`[LIVE ${record.venue} ${record.symbol}] rate limited, next check later`);
+     if(!this.rateLimitNoted&&this.now()-this.rateLimitedSince>=5*60_000){this.rateLimitNoted=true;this.#event(record,'RECONCILE_ERROR',{reason:'HTTP_429 for 5+ min'})}
+     limited=true;break}
+    else this.#event(record,'RECONCILE_ERROR',{reason:error.code||error.message})}
   }
+  if(!limited){this.rateLimitedSince=null;this.rateLimitNoted=false}
   // Realized result of closed trades (read only): the venue's own settlement, else an estimate.
-  for(const record of this.store.records.filter(r=>r.status==='CLOSED'&&!r.test&&!r.realized&&(r.settleAttempts||0)<SETTLE_TRIES&&r.closedAt>0&&this.now()-r.closedAt>=SETTLE_DELAY_MS&&this.now()-r.closedAt<SETTLE_WINDOW_MS)){
+  if(!limited)for(const record of this.store.records.filter(r=>r.status==='CLOSED'&&!r.test&&!r.realized&&(r.settleAttempts||0)<SETTLE_TRIES&&r.closedAt>0&&this.now()-r.closedAt>=SETTLE_DELAY_MS&&this.now()-r.closedAt<SETTLE_WINDOW_MS)){
    try{await this.#settle(record)}catch(error){this.#event(record,'SETTLE_ERROR',{reason:error.code||error.message})}
   }
   this.#save();
@@ -599,10 +614,15 @@ export class LiveExecutor{
   finally{this.busy.delete(record.symbol);this.#save()}
   return result;
  }
- async #position(record){
+ async #position(record,{cached=false}={}){
   const client=this.clients[record.venue];
   if(record.venue==='BINGX'){
-   const list=await client.positions(record.venueSymbol),rows=Array.isArray(list)?list:[];
+   // The routine check reads all symbols in one call (rate limit); every other caller (orders, closes,
+   // recovery) reads its own symbol fresh.
+   let list;
+   if(cached){if(!this.posCache)this.posCache={at:this.now(),list:await client.positions()};list=this.posCache.list}
+   else list=await client.positions(record.venueSymbol);
+   const rows=Array.isArray(list)?list:[];
    const row=rows.find(p=>p.symbol===record.venueSymbol);
    return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
     marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit),

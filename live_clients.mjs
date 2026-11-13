@@ -31,12 +31,35 @@ export class BingXTradeClient{
   if(!apiKey||!secret)throw Error('LIVE_CREDENTIALS_MISSING');
   const host=LIVE_HOSTS.BINGX[mode];
   // Keep the secret in a closure, not on the instance.
-  this.request=async(method,path,params={})=>{
+  // BingX limits request rates per key: signed calls go out one at a time with a small gap, and an
+  // HTTP 429 pauses every call for the time the venue asks (Retry-After, else 10 s). A read (GET)
+  // is tried once more after the pause; an order refused with 429 (not taken) is sent again up to twice.
+  let chain=Promise.resolve(),last=0,cooldownUntil=0;
+  // Gap between signed calls: BINGX_MIN_INTERVAL_MS, else 250 ms (0 with an injected test transport).
+  const envGap=process.env.BINGX_MIN_INTERVAL_MS,gapMs=envGap!==undefined&&envGap!==''&&Number(envGap)>=0?Number(envGap):fetcher===globalThis.fetch?250:0;
+  const sleep=ms=>ms>0?new Promise(r=>setTimeout(r,ms)):Promise.resolve();
+  // A read (GET) waits out a 429 pause before it joins the queue, so it never holds the queue;
+  // an order (POST) inside the queue waits at most 3 s of a pause, so a stop or an emergency close
+  // is not held back. If the venue still refuses, the caller sees HTTP_429 and handles it.
+  const slot=maxPause=>{const p=chain.then(async()=>{await sleep(Math.max(Math.min(cooldownUntil-Date.now(),maxPause),last+gapMs-Date.now()));last=Date.now()});chain=p.catch(()=>{});return p};
+  this.request=async(method,path,params={},retried=false)=>{
+   if(method==='GET')while(cooldownUntil>Date.now())await sleep(cooldownUntil-Date.now());
+   await slot(method==='GET'?0:3000);
    const signed={...params,recvWindow,timestamp:now()};
    const url=`${host}${path}?${bingxQuery(signed,bingxSign(signed,secret))}`;
    let response;
    try{response=await fetcher(url,{method,redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'X-BX-APIKEY':apiKey,Accept:'application/json'}})}
    catch(error){throw new VenueHttpError('NETWORK_UNREACHABLE',clean(error?.message))}
+   if(response.status===429){ // checked before the body: a 429 page is often not JSON
+    const after=Number(response.headers?.get?.('retry-after'));cooldownUntil=Date.now()+(after>0&&after<120?after*1000:10000);
+    if(method==='GET'&&!retried)return this.request(method,path,params,true);
+    // A 429 means the venue did not take the order, so an order (often a stop or an emergency
+    // close) is sent again up to twice, each time after the pause (at most 10 s of it).
+    const tries=Number(retried)||0;
+    if(method!=='GET'&&tries<2){await sleep(Math.min(cooldownUntil-Date.now(),10000));return this.request(method,path,params,tries+1)}
+    let msg='';try{msg=(await readLimitedJSON(response,200_000))?.msg}catch{}
+    throw new VenueHttpError('HTTP_429',clean(msg));
+   }
    const body=await readLimitedJSON(response,2_000_000,{bigIds:true});
    if(!response.ok)throw new VenueHttpError('HTTP_'+response.status,clean(body?.msg));
    if(body?.code!==0)throw new VenueHttpError('VENUE_ERROR_'+String(body?.code??'UNKNOWN').slice(0,12),clean(body?.msg));
@@ -46,7 +69,7 @@ export class BingXTradeClient{
  }
  positionMode(){return this.request('GET','/openApi/swap/v1/positionSide/dual')}
  balance(){return this.request('GET','/openApi/swap/v3/user/balance')}
- positions(symbol){return this.request('GET','/openApi/swap/v2/user/positions',{symbol})}
+ positions(symbol){return this.request('GET','/openApi/swap/v2/user/positions',symbol?{symbol}:{})}
  /** Fund flow (read only): realized PnL, trading fees and funding rows, for the closed-trade result. */
  income({symbol,startTime,endTime,limit=1000}={}){return this.request('GET','/openApi/swap/v2/user/income',Object.fromEntries(Object.entries({symbol,startTime,endTime,limit}).filter(([,v])=>v!==undefined&&v!==null&&v!=='')))}
  marginType(symbol){return this.request('GET','/openApi/swap/v2/trade/marginType',{symbol})}
