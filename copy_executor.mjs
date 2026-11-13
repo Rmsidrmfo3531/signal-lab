@@ -64,8 +64,8 @@ export function copyConfig(env=process.env,liveMode='OFF'){
 }
 
 export class CopyExecutor{
- constructor({config,client,contractOf,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
-  Object.assign(this,{config,client,contractOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent});
+ constructor({config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
+  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent});
   this.file=directory?path.join(directory,'copy-store.json'):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
@@ -185,6 +185,14 @@ export class CopyExecutor{
   const c=await this.#contract(m.symbol),venueSymbol=c.venueSymbol||venueSymbolOf(m.symbol);
   // A '- → q' change has no leverage: the last one seen for the symbol (else 10).
   if(m.leverage)this.store.leverageOf[m.symbol]=m.leverage;
+  // The venue contract must be the same thing at the same price: card price x unit multiplier within
+  // 10 % of the venue's last price (a stock perpetual or a 1000-coin contract that is something else, or a
+  // contract that is not 1 share / 1000 coins, is refused). A contract found under another name is not
+  // traded without that check.
+  {const venuePrice=await Promise.race([this.markOf(venueSymbol),new Promise(r=>setTimeout(()=>r(null),3000).unref?.())]).catch(()=>null);
+   const cardPrice=(pos(m.price)??pos(m.entry))*(Number(c.unitMultiplier)||1);
+   if(!(venuePrice>0)){if(c.alias){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}}
+   else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
   let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.config.maxLeverage));
   try{const info=await this.client.leverage(venueSymbol),maxL=Number(info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
   try{await this.client.setMarginType(venueSymbol,'CROSSED')}catch{}
@@ -205,7 +213,7 @@ export class CopyExecutor{
   if(qty<minQ||qty*price<minN){qty=this.#qty(c,Math.max(minQ,minN/price*1.02),'UP');minOrder=true}
   // The card's quantity must be coins: with a 마진 line, quantity x price must match margin x leverage
   // (within 30 %), else it may be a contract count and is not traded.
-  if(scale!=null&&m.marginUSD>0&&m.leverage>0){const implied=m.quantity*price/(m.marginUSD*m.leverage);
+  if(scale!=null&&m.marginUSD>0&&m.leverage>0){const implied=m.quantity*(price/mult)/(m.marginUSD*m.leverage);
    if(implied<.7||implied>1.3)throw Object.assign(Error('QUANTITY_UNIT_UNCLEAR'),{code:'QUANTITY_UNIT_UNCLEAR'})}
   {const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
    if(eq&&used+qty*price/leverage>eq*this.config.maxTotalMarginPct/100){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_MARGIN_CAP'});return {ok:false,reason:'COPY_MARGIN_CAP'}}}

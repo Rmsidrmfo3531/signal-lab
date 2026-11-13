@@ -220,8 +220,23 @@ test('copy: SNDKUSDT follows the BingX stock perpetual, PEPEUSDT the 1000-coin c
  const client={leverage:async()=>({maxLongLeverage:50}),setMarginType:async()=>({}),setLeverage:async()=>({}),cancelOrder:async()=>({}),
   positions:async()=>size>0?[{symbol:'1000PEPE-USDT',positionAmt:String(size),avgPrice:'0.01',markPrice:'0.01',unrealizedProfit:'0'}]:[],
   placeOrder:async p=>{calls.push(p);if(p.type==='MARKET')size+=Number(p.quantity);return {order:{orderId:String(calls.length)}}}};
- const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client,contractOf:async()=>pepe,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client,contractOf:async()=>pepe,markOf:async()=>0.01,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // 10,000,000 PEPE at 0.00001 x 0.02 = 200,000 PEPE = 200 contracts of 1000 at 0.01.
  await ex.handle({id:1,date:1e12,text:'📌 포지션 진입\nPEPEUSDT 🟢 Long ×10\n진입가 0.00001 USDT\n현재가 0.00001 USDT\n수량 10000000'});
  assert.equal(calls.find(c=>c.type==='MARKET').quantity,'200');assert.equal(calls.find(c=>c.type==='MARKET').symbol,'1000PEPE-USDT');
+});
+
+test('copy: a contract at another price is refused (a stock perpetual matched to a coin of the same letters); an alias without a price is not traded',async()=>{
+ const coin={symbol:'NCSKCOIN2USDUSDT',venueSymbol:'NCSKCOIN2USD-USDT',quantityStep:'1',tickSize:'0.01',minQuantityBase:'1',minNotionalUSDT:2,tradable:true,alias:'NCSKCOIN2USDUSDT'};
+ const card='📌 포지션 진입\nCOINUSDT 🟢 Long ×10\n진입가 0.05 USDT\n현재가 0.05 USDT\n수량 10000';
+ let v=venue(),ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>coin,markOf:async()=>250,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ assert.equal((await ex.handle({id:1,date:1e12,text:card})).reason,'PRICE_MISMATCH');assert.equal(v.calls.filter(c=>c.op==='order').length,0);
+ v=venue();ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>coin,markOf:async()=>null,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ assert.equal((await ex.handle({id:1,date:1e12,text:card})).reason,'PRICE_UNVERIFIED');
+ // A 1000-coin card with a 마진 line passes the unit check (coin price used there).
+ const {resolveCopyContract}=await import('../copy_executor.mjs');
+ const pepe=resolveCopyContract(new Map([['1000PEPEUSDT',{symbol:'1000PEPEUSDT',venueSymbol:'1000PEPE-USDT',quantityStep:'1',tickSize:'0.000001',minQuantityBase:'1',minNotionalUSDT:2,tradable:true}]]),'PEPEUSDT');
+ v=venue();ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>pepe,markOf:async()=>0.01,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const r=await ex.handle({id:2,date:1e12,text:'📌 포지션 진입\nPEPEUSDT 🟢 Long ×10\n진입가 0.00001 USDT\n현재가 0.00001 USDT\n수량 10000000\u3000마진 10 USDT'});
+ assert.notEqual(r.reason,'QUANTITY_UNIT_UNCLEAR');
 });

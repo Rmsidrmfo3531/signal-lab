@@ -256,11 +256,15 @@ const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage
  externalHeld:()=>copyTrader?.heldSymbols()??new Set(),
  priceOf:record=>livePublicPrice(record),onEvent:(record,type,detail)=>liveTelegramNotice(record,type,detail)});
 // Copy trading of the followed Telegram channel (copy_executor.mjs): TESTNET only, its own ledger.
+let copyTickers={at:0,rows:[]};
 // Messages arrive from the local listener (deploy/linux/copy_listener.py) with COPY_LISTENER_TOKEN.
 const COPY=copyConfig(process.env,LIVE.mode);
 copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
  contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.loadContracts(),symbol),
+ // Last price on BingX (tickers cached 20 s) for the copy price check.
+ markOf:async venueSymbol=>{if(!copyTickers.at||Date.now()-copyTickers.at>20000)copyTickers={at:Date.now(),rows:await venueQuotes.clients.BINGX.tickers()};
+  const t=copyTickers.rows.find(x=>x.symbol===venueSymbol);return Number(t?.lastPrice)||null},
  // Candles for the volume-confirmed zone break (Binance, or the venue for coins not on Binance).
  candlesOf:(symbol,interval,limit)=>state.activeSet.has(symbol)||!chartVenueFor(symbol)?klines(symbol,interval,limit):venueKlines(symbol,interval,limit),
  // Volume zones for the copy stop: Binance 1h (30 d) and 4h (90 d) profiles, or the venue's for coins not on Binance.
