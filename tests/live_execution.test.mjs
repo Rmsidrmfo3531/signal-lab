@@ -530,3 +530,17 @@ test('open-risk cap: worst losses of all open positions plus the new one stay wi
  const ok=await ex.onSignal(row('BINGX',{entry:100,leverage:10,stop:90,targets:[101.5,102,103]}),{signalKey:'new2'});
  assert.equal(ok.reasons?.includes('OPEN_RISK_LIMIT')??false,false);
 });
+
+test('BingX 429: a read waits and is tried once more, an order is never re-sent; positions read all symbols in one call',async()=>{
+ const {BingXTradeClient}=await import('../live_clients.mjs');
+ const calls=[];let first=true;
+ const fetcher=async(url,o)=>{calls.push(o.method+' '+new URL(url).pathname);
+  if(first){first=false;return new Response(JSON.stringify({code:100410,msg:'rate limit'}),{status:429,headers:{'retry-after':'1'}})}
+  return new Response(JSON.stringify({code:0,data:[]}),{status:200})};
+ const c=new BingXTradeClient({apiKey:'k',secret:'s',mode:'TESTNET',fetcher});
+ const t0=Date.now();assert.deepEqual(await c.positions(),[]);assert.ok(Date.now()-t0>=900,'waited for Retry-After');
+ assert.deepEqual(calls,['GET /openApi/swap/v2/user/positions','GET /openApi/swap/v2/user/positions']);
+ first=true;calls.length=0;
+ await assert.rejects(c.placeOrder({symbol:'ETH-USDT',side:'BUY',type:'MARKET',quantity:1}),{code:'HTTP_429'});
+ assert.equal(calls.length,1,'an order is not re-sent');
+});

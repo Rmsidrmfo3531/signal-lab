@@ -39,7 +39,7 @@ export async function sandbox(config){
  const base='http://127.0.0.1:'+port;
  const get=async endpoint=>{const response=await fetchLocal(base+endpoint);assert.equal(response.status,200,endpoint);return response.json()};
  async function start(){
-  child=trackChild(spawn(process.execPath,['--import','./tests/mock_pipeline.mjs','server.mjs'],{cwd:app,env:{PATH:process.env.PATH,
+  child=trackChild(spawn(process.execPath,['--import','./tests/mock_pipeline.mjs','server.mjs'],{cwd:app,env:{PATH:process.env.PATH,BINGX_MIN_INTERVAL_MS:'0',
    PORT:String(port),HOST:'127.0.0.1',SIGNAL_LAB_DATA_DIR:data,SIGNAL_LAB_TEST_CONTROL:control,SIGNAL_LAB_TEST_REQUESTS:requests,
    AUTO_UPDATE:'false',PAPER_VENUES:'BINGX,GATEIO',PAPER_VENUE_REFRESH_MS:'1000',VENUE_ONLY_START_MS:'300',VENUE_ONLY_INTERVAL_MS:'1000',VENUE_ONLY_REFERENCE:cfg.venueOnlyReference??'AKEUSDT',SIGNAL_PATTERNS:cfg.signalPatterns??'ALL',TELEGRAM_NEWS_ALERTS:'false',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:'',
    // These pipeline tests exercise the paper engine (off by default since 2026-11-12); cfg.env can turn it off again.
