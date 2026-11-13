@@ -24,6 +24,11 @@ export function liveReadiness(records=[],{mode='TESTNET',now=Date.now(),since=RE
  const serious=[];
  for(const r of mine){for(const e of r.events||[])if(SERIOUS_EVENTS.includes(e.type))serious.push({symbol:r.symbol,type:e.type,reason:e.reason??null,at:e.at??null});
   if(r.status==='UNKNOWN')serious.push({symbol:r.symbol,type:'STATUS_UNKNOWN',reason:null,at:r.createdAt??null})}
+ // Holding time: closed trades (entry to close) and positions still open (entry to now).
+ const hours=list=>list.length?Math.round(list.reduce((n,x)=>n+x,0)/list.length*10)/10:null;
+ const avgHoldHours=hours(closed.filter(r=>r.closedAt>r.createdAt).map(r=>(r.closedAt-r.createdAt)/3600000));
+ const openList=mine.filter(r=>r.status==='OPEN');
+ const openAvgHoldHours=hours(openList.filter(r=>r.createdAt).map(r=>(now-r.createdAt)/3600000));
  const reconcileErrors=mine.reduce((n,r)=>n+(r.events||[]).filter(e=>e.type==='RECONCILE_ERROR').length,0);
  const ddPct=balanceUSD>0?maxDD/balanceUSD*100:null,net=Math.round(run*100)/100;
  const checks=[
@@ -35,14 +40,18 @@ export function liveReadiness(records=[],{mode='TESTNET',now=Date.now(),since=RE
  return {mode,since,at:now,balanceUSD,ready:checks.every(c=>c.ok),checks,trades:closed.length,settled:settled.length,wins,
   winRatePct:settled.length?Math.round(wins/settled.length*1000)/10:null,netUSD:net,maxDrawdownUSD:Math.round(maxDD*100)/100,
   drawdownPct:ddPct===null?null:Math.round(ddPct*10)/10,days:Math.round(days*10)/10,open:mine.filter(r=>r.status==='OPEN').length,
-  serious:serious.slice(-10),reconcileErrors};
+  serious:serious.slice(-10),reconcileErrors,avgHoldHours,openAvgHoldHours,
+  openPositions:openList.map(r=>({symbol:r.symbol,direction:r.direction,createdAt:r.createdAt,unrealizedUSD:Number.isFinite(Number(r.position?.unrealizedPnLUSD))?Number(r.position.unrealizedPnLUSD):null}))};
 }
 
+const hold=h=>h==null?'—':h<24?h.toFixed(1)+'시간':(h/24).toFixed(1)+'일';
+const unreal=r=>{const v=(r.openPositions||[]).map(p=>p.unrealizedUSD).filter(x=>x!=null);if(!v.length)return '';const u=v.reduce((a,b)=>a+b,0);return ` (미실현 ${u>=0?'+':'−'}$${Math.abs(u).toFixed(2)})`};
 /** Short daily Telegram text (no keys, no account numbers). */
 export function readinessText(r){
  const head=r.ready?'✅ 실매매 전환 기준을 모두 충족했습니다':'📊 테스트넷 실매매 점검';
  return [head,`거래 ${r.settled}건 · 승률 ${r.winRatePct??'—'}% · 누적 ${r.netUSD>=0?'+':'−'}$${Math.abs(r.netUSD).toFixed(2)} · 최대 손실 구간 ${r.drawdownPct??'—'}%`,
-  `운영 ${r.days}일 · 보유 ${r.open}건 · 심각한 주문 문제 ${r.serious.length}건${r.reconcileErrors?` · 일시적 확인 오류 ${r.reconcileErrors}회`:''}`,
+  `운영 ${r.days}일 · 보유 ${r.open}건${unreal(r)} · 평균 보유 ${hold(r.avgHoldHours)}(마감) / ${hold(r.openAvgHoldHours)}(진행 중)`,
+  `심각한 주문 문제 ${r.serious.length}건${r.reconcileErrors?` · 일시적 확인 오류 ${r.reconcileErrors}회`:''}`,
   ...r.checks.map(c=>`${c.ok?'✓':'·'} ${c.label}: ${c.value}`),
   r.ready?'실제 돈 전환은 설정 파일을 직접 바꿔야 합니다. 작은 금액부터 시작하세요.':''].filter(Boolean).join('\n');
 }

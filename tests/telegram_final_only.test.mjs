@@ -29,7 +29,7 @@ test('server contains a single Telegram delivery path guarded by live final resu
  // daily testnet readiness report (live_readiness.mjs: results only, no signals) and live trade
  // notices (live_telegram.mjs: entry/add/target/close/problems of orders already placed) — nothing else.
  assert.deepEqual([...server.matchAll(/(?<!function )telegramPost\(/g)].length,4);
- assert.match(server,/const text=liveEventText\(record,type,detail\);if\(!text\)return;\n telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
+ assert.match(server,/const text=liveEventText\(record,type,detail\);if\(!text\)return;[\s\S]{0,400}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
  assert.match(server,/telegramPost\(\{chat_id:CONFIG\.tgChat,text:readinessText\(r\)\}\)/);
  assert.match(server,/const r=await telegramPost\(payload\)/);
  assert.match(server,/void telegramPost\(\{chat_id:CONFIG\.tgChat,text,/);

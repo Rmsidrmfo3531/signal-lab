@@ -122,18 +122,23 @@ function recordsRows(records){
 
 const SERIOUS_KO={ENTRY_OUTCOME_UNKNOWN:'진입 결과 불명',STATUS_UNKNOWN:'확인 필요 상태',STOP_FAILED:'손절 주문 실패',TARGET_FAILED:'목표 주문 실패',CANCEL_FAILED:'주문 취소 실패',EMERGENCY_CLOSED:'긴급 청산',LATE_ADD_CLOSE_FAILED:'청산 뒤 추매 정리 실패',RESTART_WHILE_SUBMITTING:'주문 중 서버 재시작'};
 /** Real-money readiness checklist (measured on testnet trades under the current rules). */
-export function readinessHTML(r){
+export function readinessHTML(r,positions){
  if(!r)return '';
  const pct=v=>v===null||v===undefined?'—':v+'%';
+ // Open positions: the unrealized result from the position cards (venue figure when fresh), summed.
+ const open=positions||[],uv=open.map(p=>p.unrealizedUSD).filter(x=>x!=null),u=uv.length?Math.round(uv.reduce((a,b)=>a+b,0)*100)/100:null;
+ const total=Math.round(((r.netUSD||0)+(u||0))*100)/100,money=v=>`${v>=0?'+':'−'}$${Math.abs(v).toFixed(2)}`,cls=v=>v>0?'paper-profit':v<0?'paper-loss':'';
+ const hold=h=>h==null?'—':h<24?h.toFixed(1)+'시간':(h/24).toFixed(1)+'일';
  return `<div class="readiness-head"><b>${r.ready?'✅ 실매매 전환 기준 충족':'실매매 전환 점검'}</b><small>${r.ready?'실제 돈 전환은 설정 파일을 직접 바꿔야 합니다 · 작은 금액부터':'테스트넷 결과로 매일 자동 점검 · 기준을 모두 채우면 텔레그램으로 알려 드립니다'}</small></div>
- <div class="readiness-stats"><span>거래<b>${esc(r.settled)}건</b></span><span>승률<b>${pct(r.winRatePct)}</b></span><span>누적 손익<b class="${r.netUSD>0?'paper-profit':r.netUSD<0?'paper-loss':''}">${r.netUSD>=0?'+':'−'}$${Math.abs(r.netUSD).toFixed(2)}</b></span><span>최대 손실 구간<b>${pct(r.drawdownPct)}</b></span><span>운영<b>${esc(r.days)}일</b></span></div>
+ <div class="readiness-stats"><span>거래<b>${esc(r.settled)}건</b></span><span>승률<b>${pct(r.winRatePct)}</b></span><span>실현 누적<b class="${cls(r.netUSD)}">${money(r.netUSD)}</b></span><span>미실현 합계<b class="${cls(u)}">${u==null?'—':money(u)}</b><small>진행 중 ${open.length}건</small></span><span>실현+미실현<b class="${cls(total)}">${money(total)}</b></span><span>최대 손실 구간<b>${pct(r.drawdownPct)}</b></span><span>평균 보유<b>${hold(r.avgHoldHours)}</b><small>진행 중 평균 ${hold(r.openAvgHoldHours)}</small></span><span>운영<b>${esc(r.days)}일</b></span></div>
+ ${open.length?`<div class="readiness-open">진행 중: ${open.map(p=>`<span>${esc(p.symbol.replace(/USDT$/,''))} ${p.direction==='LONG'?'롱':'숏'} <b class="${cls(p.unrealizedUSD)}">${p.unrealizedUSD==null?'—':money(p.unrealizedUSD)}</b></span>`).join('')}</div>`:''}
  <ul class="readiness-checks">${r.checks.map(c=>`<li class="${c.ok?'ok':'todo'}"><i>${c.ok?'✓':'·'}</i>${esc(c.label)}<small>${esc(c.value)}</small></li>`).join('')}</ul>
  ${r.serious?.length?`<p class="live-warn-text">주문 문제: ${r.serious.map(s=>esc(s.symbol+' '+(SERIOUS_KO[s.type]||s.type))).join(', ')}</p>`:''}`;
 }
 
 function render(o){
  const $=id=>document.getElementById(id),m=modeInfo(o.mode);
- if($('liveReadiness')){$('liveReadiness').hidden=!o.readiness;$('liveReadiness').innerHTML=readinessHTML(o.readiness)}
+ if($('liveReadiness')){$('liveReadiness').hidden=!o.readiness;$('liveReadiness').innerHTML=readinessHTML(o.readiness,(o.positions||[]).map(p=>({symbol:p.symbol,direction:p.direction,unrealizedUSD:p.unrealized?.usd??null})))}
  for(const [id,text] of [['liveHeading',m.title],['navLiveLabel','실매매']])if($(id))$(id).textContent=text;
  if($('navLiveMode'))$('navLiveMode').textContent=m.badge;
  if($('liveModeBadge'))$('liveModeBadge').innerHTML=modeBadgeHTML(o);
