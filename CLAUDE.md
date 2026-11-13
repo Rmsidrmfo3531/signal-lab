@@ -21,6 +21,6 @@ Binance 확정 1H·4H 차트로 신호를 분석하고 BingX·Gate.io 호가로 
 
 - 실제 주문을 실행하거나 실거래를 기본으로 켜지 않습니다.
 - 개발·테스트는 별도 `SIGNAL_LAB_DATA_DIR`을 사용하고 운영 `.env`·`store.json`을 건드리지 않습니다.
-- `SIGNAL_FINAL_MIN_SCORE` 등 안전 임계값을 완화하지 않습니다. 예외(사용자 승인 2026-11-12): `signal_policy.mjs`의 `TREND_GATE_PATTERNS` 6개 패턴만 90점 대신 4H 추세 일치 + 75점 이상(`TREND_GATE_MIN_SCORE`)으로 진입합니다(추매 없음). 이 목록을 늘릴 때는 다시 승인을 받습니다. 예외(사용자 승인 2026-11-13): 실매매 동시 포지션 개수 제한(`LIVE_MAX_OPEN_POSITIONS`)을 기본으로 풀고, 열린 포지션 최대 손실 합계 한도(`OPEN_RISK_LIMIT`, 잔고 × 하루 손실 한도)로 노출을 관리합니다. 첫 진입 증거금 하한(`LIVE_MIN_UNIT_MARGIN_USD`)은 기본 0(사용 안 함)입니다.
+- `SIGNAL_FINAL_MIN_SCORE` 등 안전 임계값을 완화하지 않습니다. 예외(사용자 승인 2026-11-12): `signal_policy.mjs`의 `TREND_GATE_PATTERNS` 6개 패턴만 90점 대신 4H 추세 일치 + 75점 이상(`TREND_GATE_MIN_SCORE`)으로 진입합니다(추매 없음). 이 목록을 늘릴 때는 다시 승인을 받습니다. 예외(사용자 승인 2026-11-13): 실매매 동시 포지션 개수 제한(`LIVE_MAX_OPEN_POSITIONS`)을 기본으로 풀고, 열린 포지션 최대 손실 합계 한도(`OPEN_RISK_LIMIT`, 잔고 × 하루 손실 한도)로 노출을 관리합니다. 첫 진입 증거금 하한(`LIVE_MIN_UNIT_MARGIN_USD`)은 기본 0(사용 안 함)입니다. 위험 프로필(사용자 요청 2026-11-13): 테스트넷·OFF는 `CONSERVATIVE`(거래당 1%, 하루 3%, 동시 4개·방향별 2개)이고, 실거래(LIVE)는 사용자 승인 전까지 기존 값(`CURRENT`)을 유지합니다. 추매 횟수는 0회부터 설정할 수 있습니다.
 - 비밀키·토큰을 코드·로그·커밋에 남기지 않습니다.
 - 보고는 한국어 합니다체로 합니다.

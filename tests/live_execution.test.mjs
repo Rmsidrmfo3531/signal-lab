@@ -101,10 +101,18 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:0,maxPerDirection:0,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25});
+ // OFF / TESTNET: conservative risk profile (1 % a trade, 3 % a day, 4 positions).
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:1,maxAdds:7,dailyMaxLossPct:3,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25,riskProfile:'CONSERVATIVE'});
+ {const t=liveConfig({LIVE_TRADING_MODE:'TESTNET',DCA_MAX_LOSS_PCT:'30',LIVE_DAILY_MAX_LOSS_PCT:'60'});assert.deepEqual([t.riskProfile,t.maxLossPct,t.dailyMaxLossPct,t.maxOpen],['CONSERVATIVE',1,3,4],'profile wins over single values on testnet')}
+ // LIVE keeps the earlier values until the user approves the change.
+ {const l=liveConfig({LIVE_TRADING_MODE:'LIVE'});assert.deepEqual([l.riskProfile,l.maxLossPct,l.dailyMaxLossPct,l.maxOpen],['CURRENT',30,60,0])}
+ {const c=liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_RISK_PROFILE:'current'});assert.deepEqual([c.riskProfile,c.maxLossPct,c.maxOpen],['CURRENT',30,0])}
  // No count limit by default (user, 2026-11-13); LIVE_MAX_OPEN_POSITIONS=N brings it back.
- assert.deepEqual([liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxOpen,liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxPerDirection],[6,3]);
- assert.equal(liveConfig({LIVE_MAX_OPEN_POSITIONS:'0'}).maxOpen,0);
+ assert.deepEqual([liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxOpen,liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxPerDirection],[4,2],'the profile is a ceiling');
+ assert.deepEqual([liveConfig({LIVE_MAX_OPEN_POSITIONS:'6',LIVE_TRADING_MODE:'LIVE'}).maxOpen],[6]);
+ assert.equal(liveConfig({LIVE_DAILY_MAX_LOSS_PCT:'2'}).dailyMaxLossPct,2,'a stricter single value is kept');
+ assert.equal(liveConfig({LIVE_MAX_OPEN_POSITIONS:'0'}).maxOpen,4,'0 = no explicit count: the conservative profile keeps 4');
+ assert.equal(liveConfig({LIVE_MAX_OPEN_POSITIONS:'0',LIVE_TRADING_MODE:'LIVE'}).maxOpen,0);
  assert.deepEqual([liveConfig({LIVE_SIZING:'risk_usd'}).maxOpen,liveConfig({LIVE_SIZING:'risk_usd'}).maxPerDirection],[4,2],'RISK_USD has no open-risk cap: keeps the count');
  assert.equal(preflight({config:config({maxOpen:0,maxPerDirection:0}),armed:true,killSwitch:false,credentials:{BINGX:true},row:row('BINGX',{symbol:'NEWUSDT'}),records:Array.from({length:12},(_,i)=>({status:'OPEN',symbol:'S'+i,direction:'LONG'})),now:NOW,qty:{total:1,riskUSD:1,parts:[1]}}).reasons.some(r=>r.startsWith('MAX_')),false);
  assert.equal(liveConfig({HOURLY_MAX_ADDS:'10'}).maxAdds,10);
