@@ -6,7 +6,7 @@
 export const READINESS_DEFAULTS=Object.freeze({since:Date.parse('2026-11-12T14:00:00Z'),minTrades:30,minDays:14,maxDrawdownPct:30,balanceUSD:400});
 // Order problems that would lose money or leave a position unprotected with real funds.
 export const SERIOUS_EVENTS=Object.freeze(['ENTRY_OUTCOME_UNKNOWN','STOP_FAILED','TARGET_FAILED','CANCEL_FAILED','EMERGENCY_CLOSED',
- 'LATE_ADD_CLOSE_FAILED','RESTART_WHILE_SUBMITTING']);
+ 'LATE_ADD_CLOSE_FAILED','RESTART_WHILE_SUBMITTING','UNPROTECTED_AFTER_RESTART','RECOVERY_ERROR']);
 const DAY=86400000,fin=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
 
 export function liveReadiness(records=[],{mode='TESTNET',now=Date.now(),since=READINESS_DEFAULTS.since,minTrades=READINESS_DEFAULTS.minTrades,
