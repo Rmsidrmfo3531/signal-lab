@@ -360,6 +360,20 @@ function fillJournalFromSignal(symbol){
  if(a?.symbol===symbol){$('journalSide').value=a.direction||'LONG';$('journalEntry').value=a.entry||'';$('journalStop').value=a.stop||'';$('journalNotional').value=a.risk?.nominal||500;$('journalLeverage').value=a.risk?.leverage|| (symbol.startsWith('BTC')?20:symbol.startsWith('ETH')?10:symbol.startsWith('SOL')?10:3);$('journalNote').value='차트 패턴 참고: '+(a.pattern||'');}
  $('journalExit').value='';calcJournalPreview();$('journal').scrollIntoView({behavior:'smooth'});toast('참고값만 입력했습니다. 실제 체결·손절 가격을 확인하고 저장하세요.');
 }
+// Automatic journal entries from live trades: result, likely reasons, what to change next.
+const OUTCOME_KO={PROFIT:'수익',LOSS:'손절',BREAKEVEN:'본절',UNKNOWN:'확인 불가'};
+function autoJournalHTML(t){
+ const v=t.review||{},pnl=Number(t.realizedPnLUSD),cls=pnl>0?'journal-pnl-positive':pnl<0?'journal-pnl-negative':'';
+ const list=a=>a?.length?`<ul>${a.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul>`:'';
+ return `<div class="journal-record journal-auto"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side==='LONG'?'롱':'숏'} · ${escapeHtml(v.pattern||'')}</span><span class="${cls}">${OUTCOME_KO[v.outcome]||''} ${Number.isFinite(pnl)?(pnl>=0?'+':'−')+'$'+Math.abs(pnl).toFixed(2):'—'}${t.realizedSource==='ESTIMATE'?' 추정':''}</span></div>
+ <p class="journal-facts">진입 ${fmt(t.entry)} · 평균 ${fmt(t.averageEntry)} · 손절 ${fmt(t.stop)} · ${escapeHtml(t.leverage)}배 · 추매 ${escapeHtml(v.addsFilled??0)}/${escapeHtml(v.addsMax??0)}회${v.holdHours!=null?` · 보유 ${escapeHtml(v.holdHours)}시간`:''}${v.score!=null?` · 점수 ${escapeHtml(v.score)}`:''}</p>
+ <div class="journal-review"><b>원인 분석</b>${list(v.reasons)}${v.next?.length?`<b>다음 개선</b>${list(v.next)}`:''}</div>
+ <small>${dateClock(t.closedAt)} KST 마감 · 자동 기록 (테스트넷)</small><div class="journal-record-actions"><button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`;
+}
+function insightsHTML(rows){
+ if(!rows?.length)return '<p class="empty-small">실매매 거래가 쌓이면 패턴별 결과와 개선 방향을 여기에 정리합니다.</p>';
+ return `<table class="venues-table"><thead><tr><th>패턴</th><th>거래</th><th>승률</th><th>누적 손익</th><th>개선 방향</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${escapeHtml(r.pattern)}</td><td>${r.trades}</td><td>${r.winRatePct}%</td><td class="${r.netUSD>0?'positive':r.netUSD<0?'negative':''}">${r.netUSD>=0?'+':'−'}$${Math.abs(r.netUSD).toFixed(2)}</td><td>${r.suggestions.length?r.suggestions.map(escapeHtml).join('<br>'):r.trades<5?'5건 이상 쌓이면 판단':'유지'}</td></tr>`).join('')}</tbody></table>`;
+}
 function renderJournal(){
  const j=app.journalSummary||{};const cur=v=>'$'+Number(v||0).toFixed(2);const signed=v=>Number(v||0)>0?'positive':Number(v||0)<0?'negative':'';
  $('journalToday').textContent=cur(j.todayPnL);$('journalToday').className=signed(j.todayPnL);
@@ -368,12 +382,13 @@ function renderJournal(){
  $('journalOpenRisk').textContent=cur(j.stopRiskOpen)+' ('+(j.open||0)+'건)';
  $('journalRiskBanner').className='journal-risk-banner';
  $('journalRiskBanner').textContent=`계좌 자산 가정 없음 · 열린 포지션 ${j.open||0}건 계획손절 합계 ${cur(j.stopRiskOpen)} · 오늘 ${cur(j.todayPnL)} / 이번 주 ${cur(j.weekPnL)} (기록 참고용). 실제 청산 위험과 누락 거래는 별도입니다.`;
- $('journalList').innerHTML=app.journal.length?app.journal.slice(0,50).map(t=>`<div class="journal-record"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side}</span><span class="${t.realizedPnLUSD>0?'journal-pnl-positive':t.realizedPnLUSD<0?'journal-pnl-negative':''}">${t.status==='OPEN'?'진행 중':cur(t.realizedPnLUSD)}</span></div><p>진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)} · ${t.status==='CLOSED'?'청산 '+fmt(t.exit)+' · ':''}명목 ${cur(t.notional)} · ${t.leverage}x<br>계획 손절 ${cur(t.stopRiskUSD)} · 기록된 비용 ${cur(t.fees)} · 펀딩 ${cur(t.funding)}</p><small>${dateClock(t.createdAt)} KST · ${escapeHtml(t.note||'메모 없음')}</small><div class="journal-record-actions">${t.status==='OPEN'?`<button data-close="${escapeHtml(t.id)}">청산 기록</button>`:''}<button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`).join(''):'<div class="empty-small">저장된 거래 기록이 없습니다. 수동으로 입력하거나 시그널에서 ‘매매일지에 입력’을 사용하세요.</div>';
+ $('journalInsights')&&($('journalInsights').innerHTML=insightsHTML(app.journalInsights));
+ $('journalList').innerHTML=app.journal.length?app.journal.slice(0,50).map(t=>t.source==='LIVE_AUTO'?autoJournalHTML(t):`<div class="journal-record"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side}</span><span class="${t.realizedPnLUSD>0?'journal-pnl-positive':t.realizedPnLUSD<0?'journal-pnl-negative':''}">${t.status==='OPEN'?'진행 중':cur(t.realizedPnLUSD)}</span></div><p>진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)} · ${t.status==='CLOSED'?'청산 '+fmt(t.exit)+' · ':''}명목 ${cur(t.notional)} · ${t.leverage}x<br>계획 손절 ${cur(t.stopRiskUSD)} · 기록된 비용 ${cur(t.fees)} · 펀딩 ${cur(t.funding)}</p><small>${dateClock(t.createdAt)} KST · ${escapeHtml(t.note||'메모 없음')}</small><div class="journal-record-actions">${t.status==='OPEN'?`<button data-close="${escapeHtml(t.id)}">청산 기록</button>`:''}<button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`).join(''):'<div class="empty-small">저장된 거래 기록이 없습니다. 수동으로 입력하거나 시그널에서 ‘매매일지에 입력’을 사용하세요.</div>';
  document.querySelectorAll('#journalList [data-close]').forEach(b=>b.addEventListener('click',()=>{closingTradeId=b.dataset.close;$('closeTradePrice').value='';$('closeTradeFee').value='0';$('closeTradeFunding').value='0';$('closeTradeError').textContent='';$('closeTradeDialog').showModal()}));
  document.querySelectorAll('#journalList [data-delete]').forEach(b=>b.addEventListener('click',async()=>{if(!confirm('이 수동 거래 기록을 삭제할까요?'))return;try{await json('/api/journal/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:b.dataset.delete})});await loadJournal();toast('삭제 완료')}catch(e){toast('삭제 실패: '+e.message,true)}}));
  calcJournalPreview();
 }
-async function loadJournal(){try{const data=await json('/api/journal');app.journal=data.entries||[];app.journalSummary=data.summary;renderJournal()}catch(e){toast('매매일지 조회 실패: '+e.message,true)}}
+async function loadJournal(){try{const data=await json('/api/journal');app.journal=data.entries||[];app.journalSummary=data.summary;app.journalInsights=data.insights||[];renderJournal()}catch(e){toast('매매일지 조회 실패: '+e.message,true)}}
 let closingTradeId='';
 async function saveJournal(e){e.preventDefault();if(!app.marketMap.has($('journalSymbol').value)){toast('상장 목록이 확인되지 않았습니다.',true);return}try{const body=journalFormData();await json('/api/journal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('journalForm').reset();await loadJournal();toast('수동 매매 기록 저장 완료')}catch(e){toast('저장 실패: '+e.message,true)}}
 async function closeJournalTrade(){try{await json('/api/journal/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:closingTradeId,exit:$('closeTradePrice').value,fees:$('closeTradeFee').value,funding:$('closeTradeFunding').value})});$('closeTradeDialog').close();await loadJournal();toast('수동 청산 기록 완료')}catch(e){$('closeTradeError').textContent=e.message}}

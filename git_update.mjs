@@ -28,7 +28,23 @@ export async function gitApply(root,{git=run,checkSyntax}={}){
  if(before.state!=='available')return {ok:before.state==='current',...before};
  await git(root,['merge','--ff-only','origin/main']);
  const after=await git(root,['rev-parse','--short','HEAD']);
- try{await checkSyntax(path.join(root,'server.mjs'))}
+ try{await checkSyntax(root)}
  catch(error){await git(root,['reset','--hard',before.current]);return {ok:false,state:'rolled-back',current:before.current,latest:before.latest,message:'새 버전 검사 실패로 되돌렸습니다: '+error.message}}
  return {ok:true,state:'applied',from:before.current,to:after,changes:before.changes};
+}
+
+/** Every .mjs at the root and every public script parses, and every relative import of the root
+ * modules points at a file that exists (node --check does not follow imports). */
+export async function checkTree(root,{nodeCheck}){
+ const files=fs.readdirSync(root).filter(f=>f.endsWith('.mjs')).map(f=>path.join(root,f))
+  .concat(fs.existsSync(path.join(root,'public'))?fs.readdirSync(path.join(root,'public')).filter(f=>f.endsWith('.js')).map(f=>path.join(root,'public',f)):[]);
+ for(const file of files){
+  await nodeCheck(file);
+  if(!file.endsWith('.mjs'))continue;
+  for(const m of fs.readFileSync(file,'utf8').matchAll(/(?:^|\n)\s*import\s[^'"]*?from\s*['"](\.[^'"]+)['"]/g)){
+   const target=path.resolve(path.dirname(file),m[1]);
+   if(!fs.existsSync(target))throw Error(`${path.basename(file)}: ${m[1]} 없음`);
+  }
+ }
+ return files.length;
 }

@@ -1,8 +1,9 @@
 import http from 'node:http';
 import {exec,execFile} from 'node:child_process';
-import {gitUpdateAvailable,gitCheck,gitApply} from './git_update.mjs';
+import {gitUpdateAvailable,gitCheck,gitApply,checkTree} from './git_update.mjs';
 import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
+import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -418,7 +419,7 @@ const GIT_UPDATE=gitUpdateAvailable(__dirname);
 // A short Telegram report every morning (09:00 KST) and once when every criterion is met.
 const readinessFile=path.join(storage.dir,'readiness.json');
 const readiness=()=>liveReadiness([...live.store.records,...(live.store.archived||[])],{mode:LIVE.mode==='LIVE'?'LIVE':'TESTNET',
- since:Number.isFinite(Date.parse(process.env.LIVE_READINESS_SINCE||''))?Date.parse(process.env.LIVE_READINESS_SINCE):undefined,balanceUSD:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:400});
+ since:Number.isFinite(Date.parse(process.env.LIVE_READINESS_SINCE||''))?Date.parse(process.env.LIVE_READINESS_SINCE):undefined,balanceUSD:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:undefined});
 async function readinessReport(){
  if(LIVE.mode==='OFF'||!CONFIG.tgToken||!CONFIG.tgChat)return;
  let saved={};try{saved=JSON.parse(fs.readFileSync(readinessFile,'utf8'))}catch{}
@@ -430,6 +431,19 @@ async function readinessReport(){
  try{fs.writeFileSync(readinessFile,JSON.stringify({lastDay:daily?day:saved.lastDay,readyNotified:saved.readyNotified||r.ready,at:Date.now()}))}catch{}
 }
 setInterval(()=>{void readinessReport()},10*60000).unref?.();setTimeout(()=>{void readinessReport()},60000).unref?.();
+// Finished live trades go into the trade journal by themselves, with a review (live_review.mjs).
+function syncLiveJournal(){
+ const have=new Set([...persisted.journal.map(x=>x.id),...(persisted.journalHidden||[])]);let added=0;
+ for(const r of live.store.records){
+  if(r.test===true||r.status!=='CLOSED'||!r.realized||!['EXCHANGE','ESTIMATE'].includes(r.realized.source))continue;
+  const entry=journalEntryFor(r);if(have.has(entry.id))continue;
+  persisted.journal.unshift(entry);have.add(entry.id);added++;
+ }
+ if(!added)return;
+ if(persisted.journal.length>500)persisted.journal=persisted.journal.slice(0,500);
+ save();send('journal',{summary:journalSummary(persisted.journal)});console.log('[JOURNAL] 실매매 거래',added,'건 자동 기록');
+}
+setInterval(syncLiveJournal,5*60000).unref?.();setTimeout(syncLiveJournal,30000).unref?.();
 async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
  updateCheckPromise=(async()=>{
@@ -1252,12 +1266,19 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/update/git'&&req.method==='POST'){
    if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});
    const body=await bodyJson(req).catch(()=>({}));if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
-   // Never restart in the middle of an order.
-   if(live.inFlight.size||live.busy.size||live.closing?.size||live.store.records.some(r=>r.status==='SUBMITTING'))return response(res,409,{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'});
+   // Never restart in the middle of an order: stop new orders first, then wait until the executor
+   // is idle (no order, cancel or position check running) before the restart.
+   if(!live.idle())return response(res,409,{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'});
+   const wasArmed=live.armed;live.disarm();
    try{
-    const result=await gitApply(__dirname,{checkSyntax:file=>new Promise((ok,fail)=>execFile(process.execPath,['--check',file],{timeout:30000},e=>e?fail(Error(String(e.message).split('\n')[0])):ok()))});
-    response(res,result.ok?200:409,result);
-    if(result.state==='applied'){console.log('[UPDATE]',result.from,'→',result.to,'restarting');setTimeout(()=>process.kill(process.pid,'SIGTERM'),1500)}
+    const nodeCheck=file=>new Promise((ok,fail)=>execFile(process.execPath,['--check',file],{timeout:30000},e=>e?fail(Error(path.basename(file)+': '+String(e.message).split('\n')[1]||'문법 오류')):ok()));
+    const result=await gitApply(__dirname,{checkSyntax:root=>checkTree(root,{nodeCheck})});
+    if(result.state!=='applied'){if(wasArmed&&result.state==='current')live.arm();response(res,result.ok?200:409,result);return}
+    response(res,200,result);
+    console.log('[UPDATE]',result.from,'→',result.to,'waiting for idle, then restarting');
+    (async()=>{for(let i=0;i<1200&&!live.idle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
+     // Paused only once idle; if never idle in 10 minutes the restart waits for the next tap.
+     if(live.idle())process.kill(process.pid,'SIGTERM');else{live.paused=false;console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
     return;
    }catch(e){return response(res,502,{error:e.message})}
   }
@@ -1275,7 +1296,8 @@ const server=http.createServer(async(req,res)=>{
    return response(res,200,await articleDetail(article,{translate}));
   }
   if(pathname==='/api/news')return response(res,200,{status:state.newsStatus,checked:state.newsChecked,sourceCount:state.newsSources.length,error:state.newsError,translation:state.newsTranslation??null,articles:state.news});
-  if(pathname==='/api/journal'&&req.method==='GET')return response(res,200,{entries:persisted.journal.slice(0,200),summary:journalSummary(persisted.journal)});
+  if(pathname==='/api/journal'&&req.method==='GET')return response(res,200,{entries:persisted.journal.slice(0,200),summary:journalSummary(persisted.journal),
+   insights:patternInsights(persisted.journal.filter(x=>x.source==='LIVE_AUTO'&&x.review).map(x=>x.review))});
   if(pathname==='/api/journal/export'&&req.method==='GET'){
    res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-trade-journal.csv"','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(exportTradesCSV(persisted.journal));
@@ -1296,6 +1318,8 @@ const server=http.createServer(async(req,res)=>{
    const body=await bodyJson(req);const count=persisted.journal.length;
    persisted.journal=persisted.journal.filter(x=>x.id!==body?.id);
    if(persisted.journal.length===count)return response(res,404,{error:'삭제할 기록이 없음'});
+   // An automatic entry that was deleted is not added back.
+   if(String(body?.id).startsWith('live-'))persisted.journalHidden=[...(persisted.journalHidden||[]),String(body.id)].slice(-1000);
    save();send('journal',{summary:journalSummary(persisted.journal)});return response(res,200,{summary:journalSummary(persisted.journal)});
   }
   if(pathname==='/api/execution'){

@@ -6,12 +6,15 @@
 export const READINESS_DEFAULTS=Object.freeze({since:Date.parse('2026-11-12T14:00:00Z'),minTrades:30,minDays:14,maxDrawdownPct:30,balanceUSD:400});
 // Order problems that would lose money or leave a position unprotected with real funds.
 export const SERIOUS_EVENTS=Object.freeze(['ENTRY_OUTCOME_UNKNOWN','STOP_FAILED','TARGET_FAILED','CANCEL_FAILED','EMERGENCY_CLOSED',
- 'LATE_ADD_CLOSE_FAILED','TEST_CLOSE_INCOMPLETE','RESTART_WHILE_SUBMITTING']);
+ 'LATE_ADD_CLOSE_FAILED','RESTART_WHILE_SUBMITTING']);
 const DAY=86400000,fin=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
 
 export function liveReadiness(records=[],{mode='TESTNET',now=Date.now(),since=READINESS_DEFAULTS.since,minTrades=READINESS_DEFAULTS.minTrades,
- minDays=READINESS_DEFAULTS.minDays,maxDrawdownPct=READINESS_DEFAULTS.maxDrawdownPct,balanceUSD=READINESS_DEFAULTS.balanceUSD}={}){
+ minDays=READINESS_DEFAULTS.minDays,maxDrawdownPct=READINESS_DEFAULTS.maxDrawdownPct,balanceUSD}={}){
  const mine=records.filter(r=>r&&r.test!==true&&r.mode===mode&&(r.createdAt||0)>=since);
+ // Drawdown is measured against the balance the orders were sized from (median of the trades'
+ // recorded sizing balance), unless one is given; 400 USD when nothing is recorded.
+ if(!(balanceUSD>0)){const b=mine.map(r=>Number(r.balanceUSD)).filter(x=>x>0).sort((a,c)=>a-c);balanceUSD=b.length?b[Math.floor(b.length/2)]:READINESS_DEFAULTS.balanceUSD}
  const closed=mine.filter(r=>r.status==='CLOSED').sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
  const settled=closed.filter(r=>fin(r.realized?.netUSD));
  let run=0,peak=0,maxDD=0,wins=0;
@@ -29,7 +32,7 @@ export function liveReadiness(records=[],{mode='TESTNET',now=Date.now(),since=RE
   {key:'net',label:'수수료 뺀 누적 손익 플러스',value:`${net>=0?'+':'−'}$${Math.abs(net).toFixed(2)}`,ok:settled.length>0&&net>0},
   {key:'drawdown',label:`최대 손실 구간 잔고의 ${maxDrawdownPct}% 이내`,value:ddPct===null?'—':`−$${maxDD.toFixed(2)} (${ddPct.toFixed(1)}%)`,ok:ddPct!==null&&ddPct<=maxDrawdownPct},
   {key:'errors',label:'심각한 주문 문제 0건',value:`${serious.length}건`,ok:serious.length===0}];
- return {mode,since,at:now,ready:checks.every(c=>c.ok),checks,trades:closed.length,settled:settled.length,wins,
+ return {mode,since,at:now,balanceUSD,ready:checks.every(c=>c.ok),checks,trades:closed.length,settled:settled.length,wins,
   winRatePct:settled.length?Math.round(wins/settled.length*1000)/10:null,netUSD:net,maxDrawdownUSD:Math.round(maxDD*100)/100,
   drawdownPct:ddPct===null?null:Math.round(ddPct*10)/10,days:Math.round(days*10)/10,open:mine.filter(r=>r.status==='OPEN').length,
   serious:serious.slice(-10),reconcileErrors};

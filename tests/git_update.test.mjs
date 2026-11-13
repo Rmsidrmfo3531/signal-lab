@@ -42,3 +42,15 @@ test('apply fast-forwards only, and rolls back when the new server.mjs does not 
  const cur=await gitApply('/app',{git:fakeGit({origin:'aaa1111'}).git,checkSyntax:async()=>{}});
  assert.equal(cur.ok,true);assert.equal(cur.state,'current');
 });
+
+test('the whole tree is checked: every module parses and every relative import exists',async()=>{
+ const {checkTree}=await import('../git_update.mjs');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gt-'));
+ const imp=f=>'import {x} f'+'rom '+"'./"+f+"';";
+ fs.writeFileSync(path.join(dir,'a.mjs'),imp('b.mjs')+'\nexport const y=x;');
+ fs.writeFileSync(path.join(dir,'b.mjs'),'export const x=1;');
+ const checked=[];const nodeCheck=async f=>{checked.push(path.basename(f))};
+ assert.equal(await checkTree(dir,{nodeCheck}),2);assert.deepEqual(checked.sort(),['a.mjs','b.mjs']);
+ fs.writeFileSync(path.join(dir,'c.mjs'),imp('missing.mjs'));
+ await assert.rejects(checkTree(dir,{nodeCheck}),/missing\.mjs 없음/);
+});
