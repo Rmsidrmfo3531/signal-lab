@@ -6,11 +6,11 @@ import vm from 'node:vm';
 const html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
 const css=fs.readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');
 const script=fs.readFileSync(new URL('../public/workspace_nav.js',import.meta.url),'utf8');
-const routes=['overview','live','news','alerts','journal'];
+const routes=['overview','real','live','news','alerts','journal'];
 
 test('navigation separates every functional panel without removing any stateful UI elements',()=>{
  const markers=[...html.matchAll(/<section\b[^>]*data-workspace-route="([^"]+)"/g)].map(x=>x[1]);
- assert.equal(markers.length,9,'TradFi and BingX·Gate.io quote pages were removed at the user\'s request');
+ assert.equal(markers.length,10,'TradFi and BingX·Gate.io quote pages were removed at the user\'s request');
  for(const route of routes)assert.ok(markers.includes(route),'missing route: '+route);
  assert.ok(!/href="#scanner"/.test(html),'시그널 스캐너 menu removed at the user\'s request');
  for(const id of ['scanner','live','workGrid','execution','news','alerts','journal','chartPanel'])
@@ -21,7 +21,7 @@ test('navigation separates every functional panel without removing any stateful 
 });
 
 test('hash routing keeps panels mounted and routes chart aliases to overview',()=>{
- const sections=['scanner','live','overview','overview','overview','overview','news','alerts','journal']
+ const sections=['scanner','real','live','overview','overview','overview','overview','news','alerts','journal']
   .map((route,i)=>({dataset:{workspaceRoute:route},id:'p'+i,hidden:false,attributes:{},
    setAttribute(k,v){this.attributes[k]=v}}));
  const mkLink=hash=>({hash,attributes:{},classList:{flags:new Set(),toggle(k,v){if(v)this.flags.add(k);else this.flags.delete(k)}},
@@ -38,10 +38,14 @@ test('hash routing keeps panels mounted and routes chart aliases to overview',()
  vm.runInNewContext(script,{document,window,Event:class{}});
  assert.equal(sections.filter(s=>!s.hidden).length,1);
  // Each page names itself once: breadcrumb and intro follow the page, no repeated eyebrow.
- assert.equal(crumb.textContent,'실매매');assert.match(intro.textContent,/BingX 주문 상태/);assert.equal(eyebrow.hidden,true);
+ assert.equal(crumb.textContent,'테스트넷 · 신호 전략');assert.match(intro.textContent,/BingX 테스트넷/);assert.equal(eyebrow.hidden,true);
  // An old #scanner bookmark opens 실매매 (the scanner page was removed).
  assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'live');
- assert.equal(links[1].attributes['aria-current'],'page');
+ assert.equal(links[2].attributes['aria-current'],'page');
+ assert.equal(links[1].attributes['aria-current'],undefined);
+ window.location.hash='#real';window.handlers.hashchange();
+ assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'real');assert.equal(crumb.textContent,'실계좌 · 카피 매매');
+ assert.match(html,/id="realCopy"/);
  window.location.hash='#live';window.handlers.hashchange();
  assert.equal(sections.filter(s=>!s.hidden).length,1);
  assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'live');

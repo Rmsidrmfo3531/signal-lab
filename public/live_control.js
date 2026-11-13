@@ -175,10 +175,16 @@ export function readinessHTML(r,positions){
  ${r.serious?.length?`<p class="live-warn-text">주문 문제: ${r.serious.map(s=>esc(s.symbol+' '+(SERIOUS_KO[s.type]||s.type))).join(', ')}</p>`:''}`;
 }
 
+function bindCopyButtons(el){
+ if(!el||el.dataset.bound)return;el.dataset.bound='1';el.addEventListener('click',async e=>{
+  if(e.target.closest('[data-copy-resume]')){try{await fetch('/api/copy/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_RESUME'})})}catch{}return}
+  if(e.target.closest('[data-copy-disarm]')){try{await fetch('/api/copy/disarm',{method:'POST'})}catch{}return}
+  if(e.target.closest('[data-copy-arm]')&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?')){try{await fetch('/api/copy/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_ARM'})})}catch{}}})}
+
 function render(o){
  const $=id=>document.getElementById(id),m=modeInfo(o.mode);
  if($('liveReadiness')){$('liveReadiness').hidden=!o.readiness;$('liveReadiness').innerHTML=readinessHTML(o.readiness,(o.positions||[]).map(p=>({symbol:p.symbol,direction:p.direction,unrealizedUSD:p.unrealized?.usd??null})))}
- for(const [id,text] of [['liveHeading',m.title],['navLiveLabel','실매매']])if($(id))$(id).textContent=text;
+ for(const [id,text] of [['liveHeading',m.title],['navLiveLabel',o.mode==='LIVE'?'실매매':'테스트넷']])if($(id))$(id).textContent=text;
  if($('navLiveMode'))$('navLiveMode').textContent=m.badge;
  if($('liveModeBadge'))$('liveModeBadge').innerHTML=modeBadgeHTML(o);
  const status=$('liveStatus');
@@ -195,11 +201,14 @@ function render(o){
  }
  if($('livePositionCount'))$('livePositionCount').textContent=`${o.positions?.length||0}개`;
  if($('liveSummary'))$('liveSummary').innerHTML=summaryHTML(o.summary);
- if($('liveCopy')&&!$('liveCopy').dataset.bound){$('liveCopy').dataset.bound='1';$('liveCopy').addEventListener('click',async e=>{
-  if(e.target.closest('[data-copy-resume]')){try{await fetch('/api/copy/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_RESUME'})})}catch{}return}
-  if(e.target.closest('[data-copy-disarm]')){try{await fetch('/api/copy/disarm',{method:'POST'})}catch{}return}
-  if(e.target.closest('[data-copy-arm]')&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?')){try{await fetch('/api/copy/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_ARM'})})}catch{}}})}
- if($('liveCopySection')){$('liveCopySection').hidden=!o.copy;if(o.copy&&$('liveCopy'))$('liveCopy').innerHTML=copyHTML(o.copy)}
+ // Real-money copy has its own page (실계좌); the testnet page keeps only testnet copies.
+ const copy=o.copy,real=copy?.mode==='LIVE';
+ for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));
+ if($('liveCopySection')){$('liveCopySection').hidden=!copy||real;if(copy&&!real&&$('liveCopy'))$('liveCopy').innerHTML=copyHTML(copy)}
+ if($('realCopy'))$('realCopy').innerHTML=real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>';
+ const realBadge=!real?'설정 안 됨':!copy.enabled?'꺼짐':copy.killed?'손실 한도 정지':copy.armed?'활성화':'비활성';
+ if($('navRealMode'))$('navRealMode').textContent=!real?'—':copy.armed&&!copy.killed?'ON':'OFF';
+ if($('realModeBadge'))$('realModeBadge').innerHTML=`<span class="live-flag ${real&&copy.killed?'kill':real&&copy.armed?'armed':''}">실계좌 카피 · ${esc(realBadge)}</span>`;
  if($('liveClosed'))$('liveClosed').innerHTML=o.closed?.length?o.closed.map(closedCardHTML).join(''):'<p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p>';
  if($('liveSkipped'))$('liveSkipped').innerHTML=skippedHTML(o.skipped);
  if($('liveRecords'))$('liveRecords').innerHTML=recordsRows(o.records);
