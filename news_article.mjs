@@ -35,7 +35,14 @@ export async function articleDetail(article,{fetcher=fetch,translate,now=Date.no
  const hit=cache.get(article.link);if(hit&&now-hit.at<6*3600000)return hit.value;
  let html;
  try{
-  const r=await fetcher(article.link,{headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36','Accept':'text/html'},redirect:'follow',signal:AbortSignal.timeout(timeoutMs)});
+  // Redirects are followed by hand so every hop stays on a source site (never an internal address).
+  let link=article.link,r;
+  for(let hop=0;;hop++){
+   r=await fetcher(link,{headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36','Accept':'text/html'},redirect:'manual',signal:AbortSignal.timeout(timeoutMs)});
+   const st=r.status??(r.ok?200:0);if(!(st>=300&&st<400))break;
+   const next=r.headers?.get?.('location');if(!next||hop>=3)return {ok:false,error:'TOO_MANY_REDIRECTS'};
+   link=new URL(next,link).href;if(!articleAllowed(link))return {ok:false,error:'REDIRECTED_OUTSIDE_SOURCE'};
+  }
   if(!r.ok)return {ok:false,error:'HTTP_'+r.status};
   if(r.url&&!articleAllowed(r.url))return {ok:false,error:'REDIRECTED_OUTSIDE_SOURCE'};
   html=(await r.text()).slice(0,3_000_000);
