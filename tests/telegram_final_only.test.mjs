@@ -28,7 +28,9 @@ test('server contains a single Telegram delivery path guarded by live final resu
  // Callers of the transport: final signals, opt-in simulation notices (paper entries/closes) and the
  // daily testnet readiness report (live_readiness.mjs: results only, no signals) and live trade
  // notices (live_telegram.mjs: entry/add/target/close/problems of orders already placed) — nothing else.
- assert.deepEqual([...server.matchAll(/(?<!function )telegramPost\(/g)].length,4);
+ assert.deepEqual([...server.matchAll(/(?<!function )telegramPost\(/g)].length,5);
+ // The copy-trading notice (copy_telegram.mjs text only, guarded by the live-notice setting).
+ assert.match(server,/const text=copyEventText\(e\);if\(!text\)return;[\s\S]{0,400}?telegramLive===false[\s\S]{0,200}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
  assert.match(server,/const text=liveEventText\(record,type,detail\);if\(!text\)return;[\s\S]{0,400}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
  assert.match(server,/telegramPost\(\{chat_id:CONFIG\.tgChat,text:readinessText\(r\)\}\)/);
  assert.match(server,/const r=await telegramPost\(payload\)/);

@@ -5,8 +5,10 @@ import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
+import {CopyExecutor,copyConfig} from './copy_executor.mjs';
+import {copyEventText} from './copy_telegram.mjs';
 import {liveEventText} from './live_telegram.mjs';
-import {randomUUID,randomBytes} from 'node:crypto';
+import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
 import {stageUpdate,pendingInfo} from './updater.mjs';
@@ -249,8 +251,26 @@ function liveClients(){
  if(process.env.GATEIO_API_KEY&&process.env.GATEIO_API_SECRET)clients.GATEIO=new GateTradeClient({apiKey:process.env.GATEIO_API_KEY,secret:process.env.GATEIO_API_SECRET,mode,now:venueNow('GATEIO')});
  return clients;
 }
+let copyTrader=null;
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),
+ externalHeld:()=>copyTrader?.heldSymbols()??new Set(),
  priceOf:record=>livePublicPrice(record),onEvent:(record,type,detail)=>liveTelegramNotice(record,type,detail)});
+// Copy trading of the followed Telegram channel (copy_executor.mjs): TESTNET only, its own ledger.
+// Messages arrive from the local listener (deploy/linux/copy_listener.py) with COPY_LISTENER_TOKEN.
+const COPY=copyConfig(process.env,LIVE.mode);
+copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
+ contractOf:async symbol=>(await venueQuotes.clients.BINGX.loadContracts()).get(symbol)??null,
+ gate:()=>LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
+ // Also a symbol the live executor is entering right now (busy), not only recorded positions.
+ isBusy:symbol=>live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol),
+ balance:()=>live.accountFunds('BINGX'),directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
+if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
+function copyNotice(e){
+ const text=copyEventText(e);if(!text)return;
+ try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
+ if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
+ telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[COPY TELEGRAM] HTTP',r.status)}).catch(e2=>console.error('[COPY TELEGRAM]',e2.message));
+}
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never
 // armed by itself; any other restart (reboot, crash) also starts disarmed.
@@ -1254,9 +1274,20 @@ const server=http.createServer(async(req,res)=>{
    return res.end(paperCSV(paper.store.closed));
   }
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
+  if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,copyTrader.status());
+  if(pathname==='/api/copy/resume'&&req.method==='POST')return response(res,200,copyTrader.resume());
+  // From the local channel listener only: a shared token (COPY_LISTENER_TOKEN in .env), compared in constant time.
+  if(pathname==='/api/copy/message'&&req.method==='POST'){
+   const token=String(req.headers['x-copy-token']||''),want=String(process.env.COPY_LISTENER_TOKEN||'');
+   const ok=want.length>=24&&token.length===want.length&&timingSafeEqual(Buffer.from(token),Buffer.from(want));
+   if(!ok)return response(res,403,{error:'FORBIDDEN'});
+   const body=await bodyJson(req);
+   if(typeof body?.text!=='string'||body.text.length>4000)return response(res,400,{error:'TEXT_REQUIRED'});
+   return response(res,200,await copyTrader.handle({id:body.id,date:Number(body.date)||Date.now(),text:body.text}));
+  }
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
-  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?copyTrader.status():null,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading})});
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);

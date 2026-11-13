@@ -71,6 +71,7 @@
           <p id="livePaperNote" class="section-note" hidden><strong>자동 모의매매도 켜져 있습니다</strong> (<code>PAPER_TRADING=on</code>). 모의 기록은 화면에 표시하지 않으며 <a href="/api/paper/export" download>CSV로 내려받을</a> 수 있습니다.</p>
           <div id="liveReadiness" class="readiness" hidden></div>
           <div class="paper-section"><h4>보유 중인 포지션 <small id="livePositionCount">—</small></h4><div id="livePositions" class="paper-grid live-grid"><p class="empty-small">실매매 상태를 불러오는 중입니다.</p></div></div>
+          <div class="paper-section" id="liveCopySection" hidden><h4>카피 매매 <small id="liveCopyNote">텔레그램 채널 따라가기 · 테스트넷 · 별도 원장</small></h4><div id="liveCopy"></div></div>
           <div class="paper-section"><h4>종료된 거래 <small>수수료 반영 · 시험 주문 제외</small></h4><div class="paper-metrics live-metrics" id="liveSummary"></div><div id="liveClosed" class="paper-grid live-grid live-closed-list"><p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p></div></div>
           <details class="venues-details"><summary>최근 진입 제외 사유</summary><ul id="liveSkipped" class="live-skipped"><li>없음</li></ul></details>
           <details class="venues-details"><summary>전체 주문 기록 (최근 30건)</summary><div class="table-scroll"><table class="venues-table"><thead><tr><th>시각</th><th>거래소</th><th>종목</th><th>방향</th><th>수량</th><th>계획 위험</th><th>상태</th><th>최근 이벤트</th></tr></thead><tbody id="liveRecords"><tr><td colspan="8">주문 기록 없음</td></tr></tbody></table></div></details>
