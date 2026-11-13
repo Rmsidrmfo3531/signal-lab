@@ -29,6 +29,7 @@ const pick=(data,...keys)=>{for(const k of keys)if(data?.[k]!==undefined&&data[k
 const orderOf=data=>data?.order??data;
 const bingxOrderId=data=>{const o=orderOf(data);const id=pick(o,'orderID','orderId');return id===undefined?null:String(id)};
 const num=v=>{const x=Number(v);return Number.isFinite(x)?x:null};
+const given=v=>v===undefined||v===null||v===''||!Number.isFinite(Number(v))?null:Number(v);
 const posNum=v=>{const x=num(v);return x>0?x:null};
 // Venue units (lots / contracts) to base-asset units.
 const baseUnits=(record,qty)=>record.venueContract?.quantityUnit==='CONTRACT'?qty*(Number(record.venueContract.contractSizeBase)||0):qty;
@@ -429,13 +430,13 @@ export class LiveExecutor{
  }
  /** Observation only (never changes an order): the venue's position snapshot for the screen, the
   * first entry price, and each size reduction (a target or stop fill) with the price seen now. */
- #observe(record,{size,entryPrice,markPrice=null,unrealizedPnLUSD=null}){
+ #observe(record,{size,entryPrice,markPrice=null,unrealizedPnLUSD=null,marginUSD=null,realizedPnLUSD=null}){
   const prev=record.position,at=this.now(),seen=posNum(markPrice)??this.#publicPrice(record);
   if(prev&&size<prev.size-1e-12)record.exits=[...(record.exits||[]),{qty:Number((prev.size-size).toFixed(12)),price:seen??prev.markPrice??null,at}].slice(-30);
   if(size>0){
    const original=record.peakSize??(record.venue==='GATEIO'?(record.filledContracts??record.quantity?.total):record.quantity?.total);
    if(!record.firstEntryPrice&&entryPrice>0&&!(size>original*(1+1e-9)))record.firstEntryPrice=entryPrice;
-   record.position={size,entryPrice:posNum(entryPrice),markPrice:seen,markSource:posNum(markPrice)?'EXCHANGE':seen?'VENUE_BOOK':null,unrealizedPnLUSD:num(unrealizedPnLUSD),at};
+   record.position={size,entryPrice:posNum(entryPrice),markPrice:seen,markSource:posNum(markPrice)?'EXCHANGE':seen?'VENUE_BOOK':null,unrealizedPnLUSD:num(unrealizedPnLUSD),marginUSD:posNum(marginUSD),realizedPnLUSD:given(realizedPnLUSD),at};
   }else record.position={...(prev||{}),size:0,unrealizedPnLUSD:null,at};
  }
  #publicPrice(record){try{return posNum(this.priceOf(record))}catch{return null}}
@@ -536,10 +537,12 @@ export class LiveExecutor{
   if(record.venue==='BINGX'){
    const list=await client.positions(record.venueSymbol),rows=Array.isArray(list)?list:[];
    const row=rows.find(p=>p.symbol===record.venueSymbol);
-   return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null};
+   return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
+    marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit)};
   }
   const p=await client.position(record.venueSymbol);
-  return {size:Math.abs(Number(p?.size)||0),entryPrice:Number(p?.entry_price)||0,markPrice:posNum(p?.mark_price),unrealizedPnLUSD:p?num(p.unrealised_pnl):null};
+  return {size:Math.abs(Number(p?.size)||0),entryPrice:Number(p?.entry_price)||0,markPrice:posNum(p?.mark_price),unrealizedPnLUSD:p?num(p.unrealised_pnl):null,
+   marginUSD:p?posNum(p.margin):null,realizedPnLUSD:given(p?.realised_pnl)};
  }
  async #cancel(record,id){
   try{if(record.venue==='BINGX')await this.clients.BINGX.cancelOrder(record.venueSymbol,id);else{

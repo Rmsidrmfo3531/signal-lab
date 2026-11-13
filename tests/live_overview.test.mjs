@@ -101,7 +101,7 @@ test('executor observation: position snapshot, first entry, exits and the venue 
  const ex=new LiveExecutor({config:liveConfig({LIVE_TRADING_MODE:'TESTNET'}),clients:{BINGX:fake.client},directory:tmp(),now:()=>now,priceOf:()=>0.204});
  const record=openRecord({firstEntryPrice:undefined});ex.store.records.push(record);
  await ex.reconcile();
- assert.deepEqual({...record.position},{size:100,entryPrice:0.2,markPrice:0.205,markSource:'EXCHANGE',unrealizedPnLUSD:0.5,at:now});
+ assert.deepEqual({...record.position},{size:100,entryPrice:0.2,markPrice:0.205,markSource:'EXCHANGE',unrealizedPnLUSD:0.5,marginUSD:null,realizedPnLUSD:null,at:now});
  assert.equal(record.firstEntryPrice,0.2,'first entry read from the first position check');
  assert.equal(await ex.accountBalance('BINGX'),321.5);
  // TP1 (40) fills: an exit is noted, and the existing breakeven logic still runs.
@@ -157,4 +157,14 @@ test('live screen code never uses its $ helper before declaring it (a blank ì‹¤ë
   const body=m[2],decl=body.search(/const \$=/);if(decl<0)continue;
   assert.equal(/\$\(/.test(body.slice(0,decl)),false,m[1]+' uses $( before const $=');
  }
+});
+
+test('open position shows margin in use and realized result so far (venue figures, estimate marked)',async()=>{
+ const {livePositionView}=await import('../live_overview.mjs');
+ const NOWX=Date.parse('2026-11-13T02:00:00Z');
+ const base={signalKey:'m1',symbol:'DOGEUSDT',venue:'BINGX',direction:'LONG',leverage:10,status:'OPEN',quantity:{total:1000,unit:'BASE_ASSET'},firstEntryPrice:0.2,venueContract:{tickSize:'0.0001'}};
+ const fresh=livePositionView({...base,position:{size:1000,entryPrice:0.2,markPrice:0.21,marginUSD:20.5,realizedPnLUSD:1.25,unrealizedPnLUSD:10,at:NOWX-5000}},{now:NOWX});
+ assert.deepEqual(fresh.margin,{usd:20.5,source:'EXCHANGE'});assert.deepEqual(fresh.realizedOpen,{usd:1.25,source:'EXCHANGE'});
+ const est=livePositionView({...base,position:{size:1000,entryPrice:0.2,at:NOWX-5000}},{now:NOWX});
+ assert.deepEqual(est.margin,{usd:20,source:'ESTIMATE'});assert.equal(est.realizedOpen,null);
 });

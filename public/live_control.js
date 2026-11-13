@@ -61,6 +61,8 @@ export function positionCardHTML(p){
   <span>현재가<b>${pf(p.currentPrice)}</b><small>${curNote}</small></span>
   <span>수량<b>${qty}</b></span>
   <span>미실현 손익${pnl}</span>
+  <span>증거금<b>${p.margin?'$'+Number(p.margin.usd).toFixed(2):'—'}</b><small>${p.margin?.source==='EXCHANGE'?'거래소':p.margin?'추정 (평균가×수량÷배율)':''}</small></span>
+  <span>실현 손익<b class="${p.realizedOpen?pnlClass(p.realizedOpen.usd):''}">${p.realizedOpen?usd(p.realizedOpen.usd):'—'}</b><small>${p.realizedOpen?'부분 익절·수수료 포함':'거래소 값 없음'}</small></span>
   <span>추매<b>${esc(p.adds?.filled??0)}차 / 최대 ${esc(p.adds?.max??0)}차</b>${p.adds?.skipped?`<small>주문 못 낸 추매 ${esc(p.adds.skipped)}건</small>`:''}</span>
   <span>손절가<b>${pf(p.stop)}</b>${p.breakevenMoved?'<small>TP1 체결 후 본절 이동</small>':''}</span>
   <span class="tp-cell">TP1 · TP2 · TP3<b>${(p.targets||[]).map(pf).join(' · ')||'—'}</b>${p.targetsFilled?.tp1?'<small>TP1 체결됨</small>':''}</span>

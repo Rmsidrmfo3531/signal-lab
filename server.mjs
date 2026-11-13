@@ -4,6 +4,7 @@ import {gitUpdateAvailable,gitCheck,gitApply,checkTree} from './git_update.mjs';
 import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
+import {buildReport,pushReport} from './reports_push.mjs';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -246,6 +247,16 @@ function liveClients(){
 }
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),
  priceOf:record=>livePublicPrice(record)});
+// Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
+// started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never
+// armed by itself; any other restart (reboot, crash) also starts disarmed.
+{
+ const marker=path.join(storage.dir,'rearm-after-update.json');
+ try{
+  const m=JSON.parse(fs.readFileSync(marker,'utf8'));fs.rmSync(marker,{force:true});
+  if(m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'&&Date.now()-Number(m.at)<15*60000&&!live.store.killSwitch){live.arm();console.log('[LIVE] 업데이트 전 활성화 상태 복원 (테스트넷)')}
+ }catch{}
+}
 // The venue's public mid price for a live record (screen and exit estimates only; never an order input).
 function livePublicPrice(record){const book=venueBooks.get(record.venue+':'+record.symbol);return book?.ok&&Number.isFinite(book.mid)&&Date.now()-book.receivedAt<60000?book.mid:null}
 function liveRecordPrice(record){const p=record.position;return p?.markPrice>0&&Date.now()-p.at<90000?p.markPrice:livePublicPrice(record)}
@@ -442,9 +453,26 @@ function syncLiveJournal(){
  if(!added)return;
  // Over 500 entries: drop the oldest automatic ones, never manual entries.
  while(persisted.journal.length>500){const i=persisted.journal.findLastIndex(x=>x.source==='LIVE_AUTO');if(i<0)break;persisted.journal.splice(i,1)}
- save();send('journal',{summary:journalSummary(persisted.journal)});console.log('[JOURNAL] 실매매 거래',added,'건 자동 기록');
+ save();send('journal',{summary:journalSummary(persisted.journal)});console.log('[JOURNAL] 실매매 거래',added,'건 자동 기록');reportsDirty=true;
 }
 setInterval(syncLiveJournal,5*60000).unref?.();setTimeout(syncLiveJournal,30000).unref?.();
+// Results upload (reports_push.mjs): once a day after 09:00 KST and after new journal entries.
+const REPORTS_DIR=process.env.SIGNAL_LAB_REPORTS_DIR||path.join(path.dirname(storage.dir),'reports');
+const REPORTS_KEY=path.join(path.dirname(storage.dir),'.ssh','reports_ed25519');
+let reportsDay=null,reportsDirty=false,reportsBusy=false;
+async function uploadReport(force=false){
+ if(reportsBusy||!fs.existsSync(path.join(REPORTS_DIR,'.git')))return;
+ const day=new Date(Date.now()+9*3600000).toISOString().slice(0,10),hour=new Date(Date.now()+9*3600000).getUTCHours();
+ if(!force&&!reportsDirty&&!(hour>=9&&reportsDay!==day))return;
+ reportsBusy=true;
+ try{
+  const report=buildReport({readiness:readiness(),insights:patternInsights(persisted.journal.filter(x=>x.source==='LIVE_AUTO'&&x.review).map(x=>x.review)),
+   journal:persisted.journal,records:[...live.store.records,...(live.store.archived||[])]});
+  const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null});
+  reportsDay=day;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
+ }catch(e){console.error('[REPORTS]',e.message)}finally{reportsBusy=false}
+}
+setInterval(()=>{void uploadReport()},15*60000).unref?.();setTimeout(()=>{void uploadReport(true)},90000).unref?.();
 async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
  updateCheckPromise=(async()=>{
@@ -1278,11 +1306,13 @@ const server=http.createServer(async(req,res)=>{
     const linkCheck=root=>new Promise((ok,fail)=>execFile(process.execPath,['--no-warnings','--experimental-vm-modules',path.join(root,'link_check.mjs'),path.join(root,'server.mjs')],{timeout:60000},(e,out,err)=>e?fail(Error(String(err||e.message).trim().split('\n').pop())):ok()));
     const result=await gitApply(__dirname,{checkSyntax:async root=>{await checkTree(root,{nodeCheck});await linkCheck(root)}});
     if(result.state!=='applied'){live.updating=false;if(wasArmed&&result.state==='current')live.arm();response(res,result.ok?200:409,result);return}
-    response(res,200,result);
+    // Remember that trading was on, so it is switched back on after the restart (TESTNET only).
+    if(wasArmed&&LIVE.mode==='TESTNET')try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,at:Date.now(),from:result.from,to:result.to}))}catch{}
+    response(res,200,{...result,rearm:wasArmed&&LIVE.mode==='TESTNET'});
     console.log('[UPDATE]',result.from,'→',result.to,'waiting for idle, then restarting');
     (async()=>{for(let i=0;i<1200&&!live.idle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
      // Paused only once idle; if never idle in 10 minutes the restart waits for the next tap.
-     if(live.idle())process.kill(process.pid,'SIGTERM');else{live.paused=false;live.updating=false;console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
+     if(live.idle())process.kill(process.pid,'SIGTERM');else{live.paused=false;live.updating=false;try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
     return;
    }catch(e){live.updating=false;return response(res,502,{error:e.message})}
   }
