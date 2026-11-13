@@ -440,6 +440,7 @@ test('finished records can be deleted; positions, unchecked states and today\'s 
  r.status='CLOSED';r.closedAt=NOW;assert.equal(ex.deleteRecord('d1').reason,'TODAY_COUNTS_FOR_DAILY_RISK');
  r.day='2000-01-01';assert.equal(ex.status().records[0].deletable,true);
  assert.equal(ex.deleteRecord('d1').ok,true);assert.equal(ex.store.records.length,0);
+ assert.equal(ex.store.archived.length,1,'the deleted trade still counts for readiness');assert.equal(ex.store.archived[0].signalKey,'d1');
  assert.equal(ex.hasSignal('d1'),true,'deleted signal is remembered');
  const sent=await ex.onSignal(row('BINGX'),{signalKey:'d1'});assert.notEqual(sent?.sent,true);
  ex.store.records.push({signalKey:'f1',status:'FAILED',day:'2026-11-13'},{signalKey:'u1',status:'UNKNOWN'},{signalKey:'t1',test:true,status:'CLOSED',closeReason:'TEST_CLOSE'},{signalKey:'t2',test:true,status:'CLOSED',closeReason:'EMERGENCY_NO_STOP'});
