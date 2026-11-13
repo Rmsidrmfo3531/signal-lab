@@ -531,7 +531,7 @@ test('open-risk cap: worst losses of all open positions plus the new one stay wi
  assert.equal(ok.reasons?.includes('OPEN_RISK_LIMIT')??false,false);
 });
 
-test('BingX 429: a read waits and is tried once more, an order is never re-sent; positions read all symbols in one call',async()=>{
+test('BingX 429: a read waits and is tried once more, a refused order is sent again after the pause; positions read all symbols in one call',async()=>{
  const {BingXTradeClient}=await import('../live_clients.mjs');
  const calls=[];let first=true;
  const fetcher=async(url,o)=>{calls.push(o.method+' '+new URL(url).pathname);
@@ -541,8 +541,12 @@ test('BingX 429: a read waits and is tried once more, an order is never re-sent;
  const t0=Date.now();assert.deepEqual(await c.positions(),[]);assert.ok(Date.now()-t0>=900,'waited for Retry-After');
  assert.deepEqual(calls,['GET /openApi/swap/v2/user/positions','GET /openApi/swap/v2/user/positions']);
  first=true;calls.length=0;
- await assert.rejects(c.placeOrder({symbol:'ETH-USDT',side:'BUY',type:'MARKET',quantity:1}),{code:'HTTP_429'});
- assert.equal(calls.length,1,'an order is not re-sent');
+ await c.placeOrder({symbol:'ETH-USDT',side:'BUY',type:'MARKET',quantity:1});
+ assert.equal(calls.length,2,'429 = not taken: sent once more after the pause');
+ // A venue that keeps refusing: three sends in all, then the caller gets HTTP_429.
+ const always=new BingXTradeClient({apiKey:'k',secret:'s',mode:'TESTNET',fetcher:async()=>{calls.push('x');return new Response('{}',{status:429,headers:{'retry-after':'1'}})}});
+ calls.length=0;await assert.rejects(always.placeOrder({symbol:'ETH-USDT',side:'SELL',type:'MARKET',quantity:1}),{code:'HTTP_429'});
+ assert.equal(calls.length,3);
 });
 
 test('BingX 429: a non-JSON 429 page still pauses calls; an order waits at most 3 s of a long pause',async()=>{

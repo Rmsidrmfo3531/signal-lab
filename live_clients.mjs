@@ -33,7 +33,7 @@ export class BingXTradeClient{
   // Keep the secret in a closure, not on the instance.
   // BingX limits request rates per key: signed calls go out one at a time with a small gap, and an
   // HTTP 429 pauses every call for the time the venue asks (Retry-After, else 10 s). A read (GET)
-  // is tried once more after the pause; an order is never re-sent automatically.
+  // is tried once more after the pause; an order refused with 429 (not taken) is sent again up to twice.
   let chain=Promise.resolve(),last=0,cooldownUntil=0;
   // Gap between signed calls: BINGX_MIN_INTERVAL_MS, else 250 ms (0 with an injected test transport).
   const envGap=process.env.BINGX_MIN_INTERVAL_MS,gapMs=envGap!==undefined&&envGap!==''&&Number(envGap)>=0?Number(envGap):fetcher===globalThis.fetch?250:0;
@@ -53,6 +53,10 @@ export class BingXTradeClient{
    if(response.status===429){ // checked before the body: a 429 page is often not JSON
     const after=Number(response.headers?.get?.('retry-after'));cooldownUntil=Date.now()+(after>0&&after<120?after*1000:10000);
     if(method==='GET'&&!retried)return this.request(method,path,params,true);
+    // A 429 means the venue did not take the order, so an order (often a stop or an emergency
+    // close) is sent again up to twice, each time after the pause (at most 10 s of it).
+    const tries=Number(retried)||0;
+    if(method!=='GET'&&tries<2){await sleep(Math.min(cooldownUntil-Date.now(),10000));return this.request(method,path,params,tries+1)}
     let msg='';try{msg=(await readLimitedJSON(response,200_000))?.msg}catch{}
     throw new VenueHttpError('HTTP_429',clean(msg));
    }

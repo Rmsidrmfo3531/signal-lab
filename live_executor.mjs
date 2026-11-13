@@ -211,7 +211,8 @@ export class LiveExecutor{
   record.entryOrderId=bingxOrderId(entry);record.status='OPEN';this.#event(record,'ENTRY_SENT',{orderId:record.entryOrderId});
   {const avg=posNum(pick(orderOf(entry),'avgPrice'));if(avg)record.firstEntryPrice=avg} // else read from the first position check
   // Confirm the attached stop exists; otherwise place one; otherwise close at market.
-  const open=await client.openOrders(record.venueSymbol).catch(()=>null);
+  // A failed read is "not checked", not "no stop": it is read once more before a second stop is sent.
+  const open=await client.openOrders(record.venueSymbol).catch(()=>null)??await client.openOrders(record.venueSymbol).catch(()=>null);
   const stopOrder=(open?.orders??(Array.isArray(open)?open:[])).find(o=>String(o.type).startsWith('STOP'));
   if(stopOrder){record.stopOrderId=bingxOrderId(stopOrder);this.#event(record,'STOP_CONFIRMED',{orderId:record.stopOrderId})}
   else{
