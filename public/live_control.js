@@ -49,7 +49,7 @@ export function positionCardHTML(p){
  const pf=priceFmt(p),u=p.unrealized,q=p.quantity||{};
  const qty=`${qtyFmt(q.base)} ${esc(p.asset)}${q.unit==='CONTRACT'&&fin(q.venue)?` (${qtyFmt(q.venue)}계약)`:''}`;
  const pending=p.adds?.pending||[];
- const addsLine=pending.length?pending.map(a=>`${a.n}차 ${pf(a.price)} · ${qtyFmt(a.qty)} ${esc(p.asset)}`).join(' / '):'없음';
+ const addsLine=pending.length?`<span class="add-chips">${pending.map(a=>`<span class="add-chip"><i>${a.n}차</i>${pf(a.price)}<small>${qtyFmt(a.qty)}</small></span>`).join('')}</span>`:'없음';
  const curNote=p.currentPriceSource==='EXCHANGE'?'거래소 표시가':p.currentPriceSource==='VENUE_BOOK'?'거래소 호가 중간값':'시세 대기';
  const pnl=u?`<b class="${pnlClass(u.usd)}">${usd(u.usd)}${fin(u.pct)?` (${Number(u.pct)>=0?'+':''}${Number(u.pct).toFixed(2)}%)`:''}</b><small>${u.source==='EXCHANGE'?'거래소 계산':'추정 (평균가·현재가)'}${fin(u.pct)?' · 증거금 대비':''}</small>`:'<b>—</b><small>시세 대기</small>';
  const ev=p.lastEvent?`${esc(p.lastEvent.label)}${p.lastEvent.reason?' · '+esc(p.lastEvent.reasonKo||p.lastEvent.reason):''} · ${time(p.lastEvent.at)}`:'—';
@@ -63,7 +63,7 @@ export function positionCardHTML(p){
   <span>미실현 손익${pnl}</span>
   <span>추매<b>${esc(p.adds?.filled??0)}차 / 최대 ${esc(p.adds?.max??0)}차</b>${p.adds?.skipped?`<small>주문 못 낸 추매 ${esc(p.adds.skipped)}건</small>`:''}</span>
   <span>손절가<b>${pf(p.stop)}</b>${p.breakevenMoved?'<small>TP1 체결 후 본절 이동</small>':''}</span>
-  <span>TP1 · TP2 · TP3<b>${(p.targets||[]).map(pf).join(' · ')||'—'}</b>${p.targetsFilled?.tp1?'<small>TP1 체결됨</small>':''}</span>
+  <span class="tp-cell">TP1 · TP2 · TP3<b>${(p.targets||[]).map(pf).join(' · ')||'—'}</b>${p.targetsFilled?.tp1?'<small>TP1 체결됨</small>':''}</span>
  </div>
  <p class="live-line"><span>대기 중인 추매 주문</span>${addsLine}</p>
  <p class="live-line"><span>최근 처리</span>${ev}</p>

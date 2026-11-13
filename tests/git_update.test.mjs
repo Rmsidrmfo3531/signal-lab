@@ -1,0 +1,44 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {gitUpdateAvailable,gitCheck,gitApply} from '../git_update.mjs';
+
+// A fake git: HEAD / origin/main shas and a log; records every call.
+function fakeGit({head='aaa1111',origin='bbb2222',log='bbb2222 Fix stop order\nccc3333 New screen'}={}){
+ const calls=[];let h=head;
+ const git=async(root,args)=>{calls.push(args.join(' '));
+  if(args[0]==='fetch')return '';
+  if(args[0]==='rev-parse')return args.at(-1)==='HEAD'?h:origin;
+  if(args[0]==='log')return h===origin?'':log;
+  if(args[0]==='merge'){h=origin;return ''}
+  if(args[0]==='reset'){h=args.at(-1);return ''}
+  throw Error('unexpected git '+args.join(' '))};
+ return {git,calls,head:()=>h};
+}
+
+test('only a git checkout under systemd offers the one-tap update',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gu-'));
+ assert.equal(gitUpdateAvailable(dir,{INVOCATION_ID:'x'}),false,'not a git checkout');
+ fs.mkdirSync(path.join(dir,'.git'));
+ assert.equal(gitUpdateAvailable(dir,{}),false,'a PC run (no systemd) keeps its own update path');
+ assert.equal(gitUpdateAvailable(dir,{INVOCATION_ID:'x'}),true);
+});
+
+test('check lists the new commits; current when nothing new',async()=>{
+ const f=fakeGit();const c=await gitCheck('/app',{git:f.git});
+ assert.equal(c.state,'available');assert.deepEqual(c.changes.map(x=>x.subject),['Fix stop order','New screen']);
+ assert.equal((await gitCheck('/app',{git:fakeGit({origin:'aaa1111'}).git})).state,'current');
+ assert.equal((await gitCheck('/app',{git:fakeGit({log:''}).git})).state,'diverged','server ahead or diverged: no automatic merge');
+});
+
+test('apply fast-forwards only, and rolls back when the new server.mjs does not parse',async()=>{
+ const ok=fakeGit();const r=await gitApply('/app',{git:ok.git,checkSyntax:async()=>{}});
+ assert.equal(r.state,'applied');assert.equal(r.from,'aaa1111');assert.equal(r.to,'bbb2222');
+ assert.ok(ok.calls.includes('merge --ff-only origin/main'));assert.ok(!ok.calls.some(c=>c.startsWith('pull')||c.includes('--force')));
+ const bad=fakeGit();const b=await gitApply('/app',{git:bad.git,checkSyntax:async()=>{throw Error('SyntaxError')}});
+ assert.equal(b.ok,false);assert.equal(b.state,'rolled-back');assert.equal(bad.head(),'aaa1111');
+ const cur=await gitApply('/app',{git:fakeGit({origin:'aaa1111'}).git,checkSyntax:async()=>{}});
+ assert.equal(cur.ok,true);assert.equal(cur.state,'current');
+});

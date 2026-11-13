@@ -1,5 +1,6 @@
 import http from 'node:http';
-import {exec} from 'node:child_process';
+import {exec,execFile} from 'node:child_process';
+import {gitUpdateAvailable,gitCheck,gitApply} from './git_update.mjs';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -410,6 +411,7 @@ function telegramPost(payload){
 }
 
 let updateCheckPromise=null;
+const GIT_UPDATE=gitUpdateAvailable(__dirname);
 async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
  updateCheckPromise=(async()=>{
@@ -1227,7 +1229,21 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/tradfi')return response(res,200,tradfiPublic());
   if(pathname==='/api/tradfi/refresh'&&req.method==='POST')return response(res,409,{accepted:false,...tradfiPublic()});
   if(pathname==='/api/scan'&&req.method==='POST'){if(state.scanActive)return response(res,202,{accepted:false,reason:'스캔 진행 중',status:getStatus()});void runScan();return response(res,202,{accepted:true,message:'백그라운드 스캔 시작',status:getStatus()})}
-  if(pathname==='/api/update')return response(res,200,{...state.update,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
+  // Cloud server (git checkout under systemd): check / apply from GitHub with one tap.
+  if(pathname==='/api/update/git'&&req.method==='GET'){if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});try{return response(res,200,await gitCheck(__dirname))}catch(e){return response(res,502,{error:e.message})}}
+  if(pathname==='/api/update/git'&&req.method==='POST'){
+   if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});
+   const body=await bodyJson(req).catch(()=>({}));if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
+   // Never restart in the middle of an order.
+   if(live.inFlight.size||live.busy.size||live.closing?.size||live.store.records.some(r=>r.status==='SUBMITTING'))return response(res,409,{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'});
+   try{
+    const result=await gitApply(__dirname,{checkSyntax:file=>new Promise((ok,fail)=>execFile(process.execPath,['--check',file],{timeout:30000},e=>e?fail(Error(String(e.message).split('\n')[0])):ok()))});
+    response(res,result.ok?200:409,result);
+    if(result.state==='applied'){console.log('[UPDATE]',result.from,'→',result.to,'restarting');setTimeout(()=>process.kill(process.pid,'SIGTERM'),1500)}
+    return;
+   }catch(e){return response(res,502,{error:e.message})}
+  }
+  if(pathname==='/api/update')return response(res,200,{...state.update,git:GIT_UPDATE,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
   if(pathname==='/api/market-commentary'){
    try{await refreshMarketStats()}catch{}
