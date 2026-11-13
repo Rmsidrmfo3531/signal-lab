@@ -9,7 +9,7 @@ const why=r=>REASON[r]||r||'';
 export function copyEventText(e){
  if(!e)return null;
  const head=`📋 카피 · ${e.symbol||''}`;
- if(e.type==='OPENED')return `${head} ${SIDE[e.direction]||''} ${e.leverage}배 진입 (테스트넷)\n수량 ${e.qty} · 평균 ${e.avg??'—'}${e.stop?` · 보호 손절 ${e.stop}`:''}`;
+ if(e.type==='OPENED')return `${head} ${SIDE[e.direction]||''} ${e.leverage}배 진입 (테스트넷)\n수량 ${e.qty} · 평균 ${e.avg??'—'}${e.stop?` · 손절 ${e.stop}${e.stopSource==='ZONE'?` (매물대, 진입가에서 ${e.stopDistPct}%)`:' (잔고 한도)'}`:''}`;
  if(e.type==='ADDED')return `${head} 추매 ${e.n}차 (테스트넷)\n+${e.qty} → 총 ${e.total} · 평균 ${e.avg??'—'}${e.stop?` · 보호 손절 ${e.stop}`:''}`;
  if(e.type==='REDUCED')return `${head} 일부 청산 (테스트넷)\n−${e.qty} → 남은 ${e.left}`;
  if(e.type==='CLOSED')return `${head} 청산 (테스트넷) · ${why(e.reason)}\n손익 ${money(e.netUSD)} (수수료 전 추정)${e.theirPnlUSD!=null?` · 트레이더 ${money(e.theirPnlUSD)}`:''} · 추매 ${e.adds||0}회`;

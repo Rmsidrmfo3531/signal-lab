@@ -260,6 +260,10 @@ const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage
 const COPY=copyConfig(process.env,LIVE.mode);
 copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
  contractOf:async symbol=>(await venueQuotes.clients.BINGX.loadContracts()).get(symbol)??null,
+ // Volume zones for the copy stop: Binance 1h (30 d) and 4h (90 d) profiles, or the venue's for coins not on Binance.
+ zonesOf:async(symbol,{tickSize})=>{const list=state.activeSet.has(symbol)||!chartVenueFor(symbol)?binanceZoneFallbacks:venueZoneFallbacks,out=[];
+  for(const f of list){const r=await f.collector.get(symbol,{tickSize:Number(tickSize),eligible:true}).catch(()=>null);if(r?.ok)out.push(...r.profile.hvn.map(z=>({priceLow:z.priceLow,priceHigh:z.priceHigh})))}
+  return out},
  gate:()=>LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
  // Also a symbol the live executor is entering right now (busy), not only recorded positions.
  isBusy:symbol=>live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol),

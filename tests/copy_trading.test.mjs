@@ -131,3 +131,19 @@ test('copy (user 2026-11-13): first buy 1 $, a later 진입 card of 0.4 = 1 $, 0
  await ex.handle({id:6,date:1e12+999000,text:CLOSE});assert.equal(v.size,0);
  assert.equal(ex.status().events.find(e=>e.type==='ADDED').marginUSD,2);
 });
+
+test('copy stop at a volume zone at least 10 % away (user 2026-11-13); balance cap only when no zone fits or as a ceiling',async()=>{
+ const v=venue(),zones=[{priceLow:.0515,priceHigh:.0518},{priceLow:.0565,priceHigh:.0570},{priceLow:.0700,priceHigh:.0710}];
+ const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,zonesOf:async()=>zones,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ // Short at 0.051: the 0.0518 zone is 1.6 % away (too close, the trader's first adds), 0.0570 is 11.8 % -> stop just above it.
+ assert.deepEqual(ex.zoneStop({direction:'SHORT',entry:.051,zones}).zone,{priceLow:.0565,priceHigh:.057});
+ await ex.handle({id:1,date:1e12,text:OPEN});
+ const stop=v.calls.find(c=>c.type==='STOP_MARKET');assert.ok(Math.abs(Number(stop.stopPrice)-.057*1.003)<1e-5,stop.stopPrice);
+ const p=ex.status().positions[0];assert.equal(p.stopSource,'ZONE');assert.ok(p.stopDistPct>=10);
+ // No zone in 10-40 %: the balance-cap stop.
+ const v2=venue(),ex2=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v2.client,contractOf:async()=>contract,zonesOf:async()=>[zones[0]],balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ await ex2.handle({id:1,date:1e12,text:OPEN});assert.equal(ex2.status().positions[0].stopSource,'BALANCE_CAP');
+ // A position grown so large that the zone stop would lose more than 25 % of the balance: the cap wins.
+ const v3=venue(),ex3=new CopyExecutor({config:copyConfig({COPY_MARGIN_USD:'200'},'TESTNET'),client:v3.client,contractOf:async()=>contract,zonesOf:async()=>zones,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ await ex3.handle({id:1,date:1e12,text:OPEN});assert.equal(ex3.status().positions[0].stopSource,'BALANCE_CAP');
+});
