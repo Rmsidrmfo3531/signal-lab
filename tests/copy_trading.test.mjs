@@ -33,7 +33,7 @@ function venue({free=500}={}){
  return {client,calls,setSize:v=>{size=v},get size(){return size},set failStop(v){failStop=v},set failMarket(v){failMarket=v},set unreal(v){unreal=v}};
 }
 const contract={symbol:'TNSRUSDT',venueSymbol:'TNSR-USDT',tickSize:'0.00001',quantityStep:'1',minQuantityBase:'1',minNotionalUSDT:2,tradable:true};
-const make=(v,extra={})=>new CopyExecutor({config:{...copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),...extra.config},client:v.client,contractOf:async()=>contract,
+const make=(v,extra={})=>new CopyExecutor({config:{...copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),...extra.config},client:v.client,contractOf:async()=>contract,
  balance:async()=>({equity:400,available:extra.free??300}),isBusy:extra.isBusy??(()=>false),gate:extra.gate??(()=>({ok:true})),now:()=>1e12});
 
 test('copy: 1 $ margin at the trader leverage (capped by the venue), doubles with the trader, cuts in proportion, closes, protective stop each time',async()=>{
@@ -69,16 +69,16 @@ test('copy: no entry right after a monitor restart, while disarmed, or on a symb
 test('copy: the protective stop closing it is booked; an error is reported, not thrown; LIVE never copies',async()=>{
  const v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);await ex.reconcile();
  assert.equal(ex.status().closed[0].closeReason,'STOP_OR_EXTERNAL');
- const bad=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:venue().client,contractOf:async()=>null,balance:async()=>null,now:()=>1});
+ const bad=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),client:venue().client,contractOf:async()=>null,balance:async()=>null,now:()=>1});
  const r=await bad.handle({id:9,date:1,text:OPEN});assert.equal(r.reason,'NO_BINGX_CONTRACT');assert.equal(bad.status().events[0].type,'ERROR');
  assert.equal(copyConfig({},'LIVE').enabled,false);assert.equal(copyConfig({COPY_TRADING:'off'},'TESTNET').enabled,false);
 });
 
 test('copy: ledger survives a restart; notices read well',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'copy-'));const v=venue();
- const a=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),directory:dir,now:()=>1e12});
+ const a=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),directory:dir,now:()=>1e12});
  await a.handle({id:1,date:1e12,text:OPEN});
- const b=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),directory:dir,now:()=>1e12});
+ const b=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),directory:dir,now:()=>1e12});
  assert.equal(b.status().positions.length,1);assert.equal((await b.handle({id:1,date:1e12,text:OPEN})).duplicate,true);
  assert.match(copyEventText({type:'OPENED',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:98,avg:.051,stop:1.07}),/📋 카피 · TNSRUSDT 숏 5배 진입 \(테스트넷\)/);
  assert.match(copyEventText({type:'CLOSED',symbol:'TNSRUSDT',reason:'TRADER_CLOSE',netUSD:-.12,theirPnlUSD:1.72,adds:1}),/손익 −\$0\.12 .* 트레이더 \+\$1\.72/);
@@ -145,7 +145,7 @@ test('copy (user 2026-11-13): first buy 1 $, a later 진입 card of 0.4 = 1 $, 0
 test('copy exit at a volume zone at least 20 % away, only when a 15m candle closes beyond it on 1.5x volume; exchange stop = balance cap; at most 10 adds',async()=>{
  const zones=[{priceLow:.0515,priceHigh:.0518},{priceLow:.0560,priceHigh:.0570},{priceLow:.0630,priceHigh:.0640}];
  let candles=[];const v=venue();
- const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,zonesOf:async()=>zones,candlesOf:async()=>candles,
+ const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),client:v.client,contractOf:async()=>contract,zonesOf:async()=>zones,candlesOf:async()=>candles,
   balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // Short at 0.051: 0.0518 (1.6 %) and 0.0570 (11.8 %) are where the trader adds; 0.0640 (25 %) is the exit zone.
  assert.deepEqual(ex.zoneStop({direction:'SHORT',entry:.051,zones}).zone,{priceLow:.063,priceHigh:.064});
@@ -158,7 +158,7 @@ test('copy exit at a volume zone at least 20 % away, only when a 15m candle clos
  candles=[...Array.from({length:29},(_,i)=>bar(i,.06,100)),bar(29,.065,200)];await ex.reconcile();
  assert.equal(v.size,0);assert.equal(ex.status().closed[0].closeReason,'ZONE_BREAK_VOLUME');
  // At most 10 adds.
- const v2=venue(),ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_MAX_TOTAL_MARGIN_PCT:'100'},'TESTNET'),client:v2.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:400}),now:()=>1e12});
+ const v2=venue(),ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on',COPY_MAX_TOTAL_MARGIN_PCT:'100'},'TESTNET'),client:v2.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:400}),now:()=>1e12});
  await ex2.handle({id:1,date:1e12,text:OPEN});let q=880;
  for(let k=0;k<12;k++){await ex2.handle({id:10+k,date:1e12,text:CHANGE(q,q+880)});q+=880}
  assert.equal(ex2.status().positions[0].adds,10);assert.ok(ex2.status().events.some(e=>e.reason==='COPY_MAX_ADDS'));
@@ -245,4 +245,15 @@ test('copy: a contract at another price is refused (a stock perpetual matched to
  v=venue();ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>pepe,markOf:async()=>0.01,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  const r=await ex.handle({id:2,date:1e12,text:'📌 포지션 진입\nPEPEUSDT 🟢 Long ×10\n진입가 0.00001 USDT\n현재가 0.00001 USDT\n수량 10000000\u3000마진 10 USDT'});
  assert.notEqual(r.reason,'QUANTITY_UNIT_UNCLEAR');
+});
+
+test('copy stops off by default (user 2026-11-13, testnet): no exchange stop, no zone exit; an old stop is removed; the ledger loss limit stays',async()=>{
+ assert.equal(copyConfig({},'TESTNET').stops,false);
+ const v=venue();let candles=[];
+ const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,zonesOf:async()=>[{priceLow:.063,priceHigh:.064}],candlesOf:async()=>candles,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(v.calls.filter(c=>c.type==='STOP_MARKET').length,0);assert.equal(ex.status().positions[0].stopSource,'NONE');
+ const bar=(i,c,vol)=>[1e12-(30-i)*900000,c,c,c,c,vol,1e12-(30-i)*900000+899999];
+ candles=[...Array.from({length:29},(_,i)=>bar(i,.06,100)),bar(29,.065,300)];await ex.reconcile();assert.equal(v.size,98,'no zone exit');
+ v.unreal='-210';await ex.reconcile();assert.equal(v.size,0,'ledger loss limit still closes');
 });
