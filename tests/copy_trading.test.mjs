@@ -26,7 +26,7 @@ function venue({free=500}={}){
  const client={
   leverage:async()=>({maxLongLeverage:20}),setMarginType:async()=>({}),setLeverage:async(s,side,l)=>{calls.push({op:'lev',l});return {}},
   positions:async()=>size>0?[{symbol:'TNSR-USDT',positionAmt:String(-size),avgPrice:String(avg),markPrice:'0.053',unrealizedProfit:unreal}]:[],
-  placeOrder:async p=>{if(failStop&&p.type==='STOP_MARKET')throw Object.assign(Error('rate'),{code:'HTTP_429'});if(failMarket&&p.type==='MARKET'&&p.reduceOnly)throw Object.assign(Error('rate'),{code:'HTTP_429'});calls.push({op:'order',...p});
+  placeOrder:async p=>{if(failStop&&p.type==='STOP_MARKET')throw Object.assign(Error('rate'),{code:failStop===true?'HTTP_429':failStop});if(failMarket&&p.type==='MARKET'&&p.reduceOnly)throw Object.assign(Error('rate'),{code:'HTTP_429'});calls.push({op:'order',...p});
    if(p.type==='MARKET'){const q=Number(p.quantity);if(p.reduceOnly){size=Math.max(0,+(size-q).toFixed(6))}else{avg=size?(avg*size+0.053*q)/(size+q):0.051;size=+(size+q).toFixed(6)}}
    return {order:{orderId:String(id++),avgPrice:'0.051'}}},
   cancelOrder:async(s,o)=>{calls.push({op:'cancel',o});return {}}};
@@ -43,8 +43,8 @@ test('copy: 1 $ margin at the trader leverage (capped by the venue), doubles wit
  // 1 $ x 5x / 0.051 = 98 coins (step 1).
  assert.equal(open.side,'SELL');assert.equal(open.quantity,'98');assert.ok(v.calls.some(c=>c.op==='lev'&&c.l===5));
  const stop=v.calls.find(c=>c.type==='STOP_MARKET');assert.equal(stop.closePosition,'true');assert.equal(stop.side,'BUY');
- // 25 % of 400 = 100 $ over 98 coins above 0.051 -> about 1.071.
- assert.ok(Math.abs(Number(stop.stopPrice)-(0.051+100/98))<1e-4,stop.stopPrice);
+ // The balance cap (25 % of 400 over 98 coins) would be 20x the price away: the 50 % backstop instead, with the quantity.
+ assert.ok(Math.abs(Number(stop.stopPrice)-0.051*1.5)<1e-4,stop.stopPrice);assert.equal(stop.quantity,'98');
  await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
  assert.equal(v.size,192,'the trader added as much as its first buy: 1 $ more (5x at 0.053 = 94)');assert.ok(v.calls.some(c=>c.op==='cancel'),'old stop replaced');
  await ex.handle({id:3,date:1e12,text:CHANGE(1760,440)});
@@ -95,8 +95,11 @@ test('copy review fixes: new stop before the old is cancelled; no stop at all ->
  const p=ex.status().positions[0];assert.ok(p.stopOrderId,'old stop kept');assert.equal(p.stopStale,true);
  v.failStop=false;await ex.reconcile();assert.equal(ex.status().positions[0].stopStale,false);
  // A first stop that cannot be placed: the position is closed at market.
- v=venue();ex=make(v);v.failStop=true;await ex.handle({id:1,date:1e12,text:OPEN});
+ v=venue();ex=make(v);v.failStop='VENUE_ERROR_101204';await ex.handle({id:1,date:1e12,text:OPEN});
  assert.equal(v.size,0);assert.equal(ex.status().closed[0].closeReason,'NO_STOP');
+ // A rate limit is not a refusal: kept (stale), placed again by the routine check.
+ v=venue();ex=make(v);v.failStop=true;await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(v.size,98);assert.equal(ex.status().positions[0].stopStale,true);
+ v.failStop=false;await ex.reconcile();assert.equal(ex.status().positions[0].stopStale,false);
  // A close refused by the venue is retried.
  v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.failMarket=true;await ex.handle({id:2,date:1e12,text:CLOSE});
  assert.equal(v.size,98);assert.equal(ex.status().pending,1);v.failMarket=false;await ex.reconcile();assert.equal(v.size,0);assert.equal(ex.status().pending,0);
@@ -140,7 +143,7 @@ test('copy exit at a volume zone at least 20 % away, only when a 15m candle clos
  // Short at 0.051: 0.0518 (1.6 %) and 0.0570 (11.8 %) are where the trader adds; 0.0640 (25 %) is the exit zone.
  assert.deepEqual(ex.zoneStop({direction:'SHORT',entry:.051,zones}).zone,{priceLow:.063,priceHigh:.064});
  await ex.handle({id:1,date:1e12,text:OPEN});
- const p=ex.status().positions[0];assert.equal(p.stopSource,'BALANCE_CAP');assert.ok(Math.abs(p.stopDistPct-25.5)<.2,p.stopDistPct);
+ const p=ex.status().positions[0];assert.equal(p.stopSource,'BACKSTOP');assert.ok(Math.abs(p.stopDistPct-25.5)<.2,p.stopDistPct);
  const bar=(i,c,vol)=>[1e12-(30-i)*900000,c,c,c,c,vol,1e12-(30-i)*900000+899999];
  // Beyond the zone on ordinary volume: kept.
  candles=[...Array.from({length:29},(_,i)=>bar(i,.06,100)),bar(29,.065,120)];await ex.reconcile();assert.equal(v.size,98);
@@ -198,4 +201,11 @@ test('copy: a card whose quantity does not match its margin x leverage is not tr
  await ex.handle({id:4,date:1e12+600000,text:card(1000,'0.05100')});assert.equal(v.size,100);
  await ex.handle({id:5,date:1e12+700000,text:card(1000,'0.05200')});assert.equal(v.size,140,'carried adds bought together');
  await ex.handle({id:6,date:1e12+800000,text:card(1000,'0.05300')});assert.equal(v.size,140,'the next small one carried again');
+});
+
+test('copy stop: a venue that refuses the far backstop gets 30 %, then 20 %',async()=>{
+ const v=venue(),ex=make(v),place=v.client.placeOrder;
+ v.client.placeOrder=async q=>{if(q.type==='STOP_MARKET'&&Number(q.stopPrice)>0.051*1.35)throw Object.assign(Error('trigger price out of range'),{code:'VENUE_ERROR_101204'});return place(q)};
+ await ex.handle({id:1,date:1e12,text:OPEN});
+ const p=ex.status().positions[0];assert.equal(p.stopDistPctActual,30);assert.ok(Math.abs(p.stop-0.051*1.3)<1e-5);
 });
