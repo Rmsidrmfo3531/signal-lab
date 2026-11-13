@@ -21,7 +21,8 @@ export const dcaZoneDaysFor=(interval,zoneDays)=>interval==='1m'?3:zoneDays;
 // 7 adds +$1150, first half +$12, max drawdown -$134, worst trade -12.7 % (without the single best
 // trade: 7 -> +$532, 8 -> +$504, 10 -> +$461, 6 -> +$348).
 export const HOURLY_MAX_ADDS_DEFAULT=7;
-export const DCA_MAX_ADDS_RANGE=Object.freeze({min:5,max:10});
+// 0 = no adds (entry only, stop beyond the first zone); user request 2026-11-13.
+export const DCA_MAX_ADDS_RANGE=Object.freeze({min:0,max:10});
 export const clampZoneDays=v=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(3,Math.min(15,n)):DCA_DEFAULTS.zoneDays};
 export const clampMaxAdds=(v,fallback=DCA_DEFAULTS.maxAdds)=>{const n=Math.round(Number(v));return Number.isFinite(n)&&v!==''&&v!=null?Math.max(DCA_MAX_ADDS_RANGE.min,Math.min(DCA_MAX_ADDS_RANGE.max,n)):fallback};
 // maxLossPct: loss at the stop with every add filled may not exceed this share of the balance.
@@ -56,7 +57,8 @@ export function planZoneDca({direction,entry,atr,zones=[],balanceUSD,leverage=DC
   .sort((a,b)=>dir*(edge(b)-edge(a)));
  const picked=[];
  const addCap=Math.min(units.length-1,clampMaxAdds(s.maxAdds));
- for(const z of against){if(picked.length>=addCap)break;if(picked.length&&dir*(edge(picked.at(-1))-edge(z))<spacing)continue;picked.push(z)}
+ // With 0 adds one zone is still picked: the stop goes beyond it.
+ for(const z of against){if(picked.length>=Math.max(1,addCap))break;if(picked.length&&dir*(edge(picked.at(-1))-edge(z))<spacing)continue;picked.push(z)}
  const round=(p,mode)=>Number(roundDecimalToStep(p,tickSize,mode));
  const build=count=>{
   const levels=picked.slice(0,count).map((z,i)=>({price:round(edge(z),dir===1?'DOWN':'UP'),units:units[i+1],quantity:Number((units[i+1]*unitQty).toFixed(12)),zone:{priceLow:z.priceLow,priceHigh:z.priceHigh,volume:z.peakVolume??z.volume}}));
@@ -76,11 +78,11 @@ export function planZoneDca({direction,entry,atr,zones=[],balanceUSD,leverage=DC
    limits:{marginFits:margin<=balanceUSD,lossWithinCap:maxLossUSD<=balanceUSD*s.maxLossPct/100,stopBeforeLiquidation:safe}};
  };
  if(!picked.length)return {ok:false,reasons:['DCA_NO_VOLUME_ZONE_AGAINST_ENTRY']};
- let plan=null,count=picked.length;
+ let plan=null,count=Math.min(picked.length,addCap);
  for(;count>=0;count--){plan=build(count);if(plan?.fits)break}
  if(!plan?.fits)return {ok:false,reasons:['DCA_LOSS_OR_LIQUIDATION_LIMIT'],unitQty};
  return {ok:true,direction,entry,unitQty,unitNotional:unitQty*entry,leverage,unitPct,balanceUSD,
-  adds:plan.levels,addsDropped:picked.length-count,stop:plan.stop,
+  adds:plan.levels,addsDropped:Math.min(picked.length,addCap)-count,stop:plan.stop,
   full:{quantity:plan.quantity,averageEntry:plan.averageEntry,marginUSD:plan.marginUSD,maxLossUSD:plan.maxLossUSD,maxLossPct:plan.maxLossPct,liquidationPrice:plan.liquidationPrice},
   maxAdds:addCap,marginMode:'CROSS',maintenanceRate:s.maintenanceRate,maxLossPctCap:s.maxLossPct,method:'HVN_ZONES_1_1_2_4',calculationOnly:true};
 }
