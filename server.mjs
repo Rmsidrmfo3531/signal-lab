@@ -440,7 +440,8 @@ function syncLiveJournal(){
   persisted.journal.unshift(entry);have.add(entry.id);added++;
  }
  if(!added)return;
- if(persisted.journal.length>500)persisted.journal=persisted.journal.slice(0,500);
+ // Over 500 entries: drop the oldest automatic ones, never manual entries.
+ while(persisted.journal.length>500){const i=persisted.journal.findLastIndex(x=>x.source==='LIVE_AUTO');if(i<0)break;persisted.journal.splice(i,1)}
  save();send('journal',{summary:journalSummary(persisted.journal)});console.log('[JOURNAL] 실매매 거래',added,'건 자동 기록');
 }
 setInterval(syncLiveJournal,5*60000).unref?.();setTimeout(syncLiveJournal,30000).unref?.();
@@ -1269,18 +1270,21 @@ const server=http.createServer(async(req,res)=>{
    // Never restart in the middle of an order: stop new orders first, then wait until the executor
    // is idle (no order, cancel or position check running) before the restart.
    if(!live.idle())return response(res,409,{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'});
-   const wasArmed=live.armed;live.disarm();
+   const wasArmed=live.armed;live.updating=true;live.disarm();
    try{
-    const nodeCheck=file=>new Promise((ok,fail)=>execFile(process.execPath,['--check',file],{timeout:30000},e=>e?fail(Error(path.basename(file)+': '+String(e.message).split('\n')[1]||'문법 오류')):ok()));
-    const result=await gitApply(__dirname,{checkSyntax:root=>checkTree(root,{nodeCheck})});
-    if(result.state!=='applied'){if(wasArmed&&result.state==='current')live.arm();response(res,result.ok?200:409,result);return}
+    const nodeCheck=file=>new Promise((ok,fail)=>execFile(process.execPath,['--check',file],{timeout:30000},e=>e?fail(Error(path.basename(file)+': '+(String(e.message).split('\n')[1]||'문법 오류'))):ok()));
+    // Every file parses, every import resolves, and server.mjs links with all its named imports
+    // (link_check.mjs loads the modules without running them).
+    const linkCheck=root=>new Promise((ok,fail)=>execFile(process.execPath,['--no-warnings','--experimental-vm-modules',path.join(root,'link_check.mjs'),path.join(root,'server.mjs')],{timeout:60000},(e,out,err)=>e?fail(Error(String(err||e.message).trim().split('\n').pop())):ok()));
+    const result=await gitApply(__dirname,{checkSyntax:async root=>{await checkTree(root,{nodeCheck});await linkCheck(root)}});
+    if(result.state!=='applied'){live.updating=false;if(wasArmed&&result.state==='current')live.arm();response(res,result.ok?200:409,result);return}
     response(res,200,result);
     console.log('[UPDATE]',result.from,'→',result.to,'waiting for idle, then restarting');
     (async()=>{for(let i=0;i<1200&&!live.idle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
      // Paused only once idle; if never idle in 10 minutes the restart waits for the next tap.
-     if(live.idle())process.kill(process.pid,'SIGTERM');else{live.paused=false;console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
+     if(live.idle())process.kill(process.pid,'SIGTERM');else{live.paused=false;live.updating=false;console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
     return;
-   }catch(e){return response(res,502,{error:e.message})}
+   }catch(e){live.updating=false;return response(res,502,{error:e.message})}
   }
   if(pathname==='/api/update')return response(res,200,{...state.update,git:GIT_UPDATE,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
@@ -1454,5 +1458,10 @@ server.on('error',err=>{
  else if(err.code==='EACCES') console.error('Access denied to local port. Try another PORT in .env.');
  process.exit(1);
 });
-const gracefulShutdown=()=>{try{save()}catch(e){console.error('[SHUTDOWN STORE]',e.message)}server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),2000)};
+let shuttingDown=false;
+const gracefulShutdown=async()=>{
+ if(shuttingDown)return;shuttingDown=true;
+ // No new venue work, then wait (max 15 s) for an order, cancel or position check in progress.
+ try{live.updating=true;live.paused=true;live.disarm();for(let i=0;i<30&&!live.idle();i++)await new Promise(r=>setTimeout(r,500))}catch{}
+ try{save()}catch(e){console.error('[SHUTDOWN STORE]',e.message)}server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),2000)};
 process.on('SIGINT',gracefulShutdown);process.on('SIGTERM',gracefulShutdown);

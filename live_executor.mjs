@@ -86,6 +86,8 @@ export class LiveExecutor{
    records:this.store.records.slice(-30).reverse().map(({events,...r})=>({...r,lastEvent:events?.at(-1)??null,deletable:this.deleteBlock(r)===null})),skipped:this.store.skipped.slice(-20).reverse()};
  }
  arm(){
+  // updating: the server is applying an update and will restart; trading stays off until then.
+  if(this.updating)throw Object.assign(Error('UPDATING'),{httpStatus:409});
   if(this.config.mode==='OFF')throw Object.assign(Error('LIVE_MODE_OFF'),{httpStatus:409});
   if(this.config.mode==='LIVE'&&!this.config.liveConfirmed)throw Object.assign(Error('LIVE_CONFIRM_MISSING'),{httpStatus:409});
   if(this.store.killSwitch)throw Object.assign(Error('KILL_SWITCH_ON'),{httpStatus:409});
@@ -97,6 +99,7 @@ export class LiveExecutor{
 
  /** Called once per newly published final signal (already venue-checked). */
  async onSignal(row,{signalKey}){
+  if(this.updating||this.paused)return {sent:false,reasons:['UPDATING']};
   // One evaluation per signal at a time: price ticks can offer the same signal again while the
   // balance is being read; without this both could pass the duplicate check.
   if(this.inFlight.has(signalKey))return {sent:false,reasons:['SIGNAL_IN_FLIGHT']};
@@ -313,6 +316,7 @@ export class LiveExecutor{
   * holdMs, then everything cancelled and the position closed at market. Needs the executor armed.
   * The record is marked test (left out of the daily risk). */
  async testRoundTrip(row,{holdMs=5000,sleep=ms=>new Promise(r=>setTimeout(r,ms)),maxBalanceUSD=400}={}){
+  if(this.updating||this.paused)throw Object.assign(Error('UPDATING'),{httpStatus:409});
   if(this.config.mode!=='TESTNET')throw Object.assign(Error('TEST_TESTNET_ONLY'),{httpStatus:409});
   // Small on purpose: size from at most maxBalanceUSD of the (virtual) balance.
   const config=this.config;this.config={...config,balanceCapUSD:Math.min(config.balanceCapUSD>0?config.balanceCapUSD:maxBalanceUSD,maxBalanceUSD)};
@@ -471,6 +475,7 @@ export class LiveExecutor{
   * push the position's risk above the per-trade cap. A target is replaced only after its
   * old order was cancelled, so a target can never be doubled. */
  async setLevels(signalKey,{stop,targets}){
+  if(this.updating||this.paused)return {ok:false,live:true,reasons:['UPDATING']};
   const record=this.store.records.find(r=>r.signalKey===signalKey&&r.status==='OPEN');
   if(!record)return {ok:true,live:false};
   if(this.busy.has(record.symbol))return {ok:false,live:true,reasons:['SYMBOL_BUSY']};

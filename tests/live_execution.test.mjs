@@ -451,3 +451,13 @@ test('finished records can be deleted; positions, unchecked states and today\'s 
  const ex2=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
  assert.equal(ex2.store.records.some(x=>x.signalKey==='t1'),false);assert.ok(ex2.store.records.some(x=>x.signalKey==='t2'),'a failed test stays');assert.equal(ex2.hasSignal('d1'),true);assert.ok(ex2.store.records.some(x=>x.signalKey==='u1'));
 });
+
+test('while an update is applied, nothing new is ordered and arming is refused',async()=>{
+ const m=mockBingX(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ ex.updating=true;ex.disarm();
+ assert.throws(()=>ex.arm(),/UPDATING/);
+ assert.deepEqual((await ex.onSignal(row('BINGX'),{signalKey:'u1'})).reasons,['UPDATING']);
+ assert.equal(m.calls.length,0);
+ await assert.rejects(ex.testRoundTrip(row('BINGX')),/UPDATING/);
+ ex.updating=false;ex.arm();assert.equal(ex.armed,true);
+});
