@@ -101,7 +101,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:0,maxPerDirection:0,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0,minUnitMarginUSD:1});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:0,maxPerDirection:0,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0,minUnitMarginUSD:0});
  // No count limit by default (user, 2026-11-13); LIVE_MAX_OPEN_POSITIONS=N brings it back.
  assert.deepEqual([liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxOpen,liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxPerDirection],[6,3]);
  assert.equal(liveConfig({LIVE_MAX_OPEN_POSITIONS:'0'}).maxOpen,0);
@@ -502,7 +502,7 @@ test('restart cut an entry short: the stop is found or placed, a missing positio
  assert.equal(fail.rec.closeReason,'EMERGENCY_NO_STOP');assert.ok(fail.types.includes('EMERGENCY_CLOSED'));assert.equal(fail.ex.store.killSwitch,true);
 });
 
-test('first-entry margin floor: at least 1 USD of margin per unit, worst-loss cap still applies',async()=>{
+test('optional first-entry margin floor (off by default): at least N USD of margin per unit, worst-loss cap still applies',async()=>{
  const {liveSplitPlan}=await import('../live_orders.mjs');
  const c={tickSize:'0.0001',quantityStep:'1',quantityUnit:'BASE_ASSET',contractSizeBase:'1',minQuantityBase:'1'};
  const r={direction:'LONG',entry:0.5,stop:0.45,venueContract:c,paperAddInputs:null};

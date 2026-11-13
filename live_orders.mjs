@@ -32,8 +32,8 @@ export function liveConfig(env=process.env){
   // Size from at most this much of the account (0 = the whole balance). Lets a testnet with 100,000
   // virtual USDT trade like the real $400 account, or a live account use only part of its funds.
   balanceCapUSD:num('LIVE_BALANCE_CAP_USD',0,0,10000000),
-  // First-entry margin floor (user, 2026-11-13): at least this much margin per unit; 0 = off.
-  minUnitMarginUSD:num('LIVE_MIN_UNIT_MARGIN_USD',1,0,1000)};
+  // Optional first-entry margin floor: at least this much margin per unit; 0 = off (default, user 2026-11-13).
+  minUnitMarginUSD:num('LIVE_MIN_UNIT_MARGIN_USD',0,0,1000)};
 }
 
 /** Deterministic client order id from the signal key: the same signal can never be sent twice. */
