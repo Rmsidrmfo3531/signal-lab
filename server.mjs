@@ -5,6 +5,7 @@ import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
+import {liveEventText} from './live_telegram.mjs';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -178,7 +179,7 @@ persisted.paperNotify.telegram=persisted.paperNotify.telegram===true;
 // Server-side notification switches (알림 설정 page). Missing keys keep today's behaviour.
 if(!persisted.notifySettings||typeof persisted.notifySettings!=='object'||Array.isArray(persisted.notifySettings))persisted.notifySettings={};
 persisted.notifySettings.telegramSignals=persisted.notifySettings.telegramSignals!==false;
-function notificationSettings(){return {paperTrading:CONFIG.paperTrading,telegramSignals:persisted.notifySettings.telegramSignals,telegramPaper:paperTelegramOn(),windowsPaper:persisted.paperNotify.enabled===true,
+function notificationSettings(){return {paperTrading:CONFIG.paperTrading,telegramSignals:persisted.notifySettings.telegramSignals,telegramLive:persisted.notifySettings.telegramLive!==false,telegramPaper:paperTelegramOn(),windowsPaper:persisted.paperNotify.enabled===true,
  telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),telegramPaperForced:CONFIG.paperTelegram!==null,windowsSupported:process.platform==='win32'}}
 const paperTelegramOn=()=>CONFIG.paperTelegram===true||CONFIG.paperTelegram===null&&persisted.paperNotify.telegram===true;
 // Create the first shared store file even if no trading event occurs yet.
@@ -246,7 +247,7 @@ function liveClients(){
  return clients;
 }
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),
- priceOf:record=>livePublicPrice(record)});
+ priceOf:record=>livePublicPrice(record),onEvent:(record,type,detail)=>liveTelegramNotice(record,type,detail)});
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never
 // armed by itself; any other restart (reboot, crash) also starts disarmed.
@@ -473,6 +474,12 @@ async function uploadReport(force=false){
  }catch(e){console.error('[REPORTS]',e.message)}finally{reportsBusy=false}
 }
 setInterval(()=>{void uploadReport()},15*60000).unref?.();setTimeout(()=>{void uploadReport(true)},90000).unref?.();
+// Live trade notices to Telegram (live_telegram.mjs), on unless switched off in 알림 설정.
+function liveTelegramNotice(record,type,detail){
+ if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
+ const text=liveEventText(record,type,detail);if(!text)return;
+ telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[LIVE TELEGRAM] HTTP',r.status)}).catch(e=>console.error('[LIVE TELEGRAM]',e.message));
+}
 async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
  updateCheckPromise=(async()=>{
@@ -1203,10 +1210,11 @@ const server=http.createServer(async(req,res)=>{
   // One place for every server-side notification switch.
   if(pathname==='/api/notifications/settings'&&req.method==='GET')return response(res,200,notificationSettings());
   if(pathname==='/api/notifications/settings'&&req.method==='POST'){
-   const body=await bodyJson(req),keys=['telegramSignals','telegramPaper','windowsPaper'].filter(k=>typeof body?.[k]==='boolean');
+   const body=await bodyJson(req),keys=['telegramSignals','telegramLive','telegramPaper','windowsPaper'].filter(k=>typeof body?.[k]==='boolean');
    if(!keys.length)return response(res,400,{error:'telegramSignals, telegramPaper or windowsPaper must be a boolean'});
    const before=structuredClone({notifySettings:persisted.notifySettings,paperNotify:{enabled:persisted.paperNotify.enabled,telegram:persisted.paperNotify.telegram}});
    if(typeof body.telegramSignals==='boolean')persisted.notifySettings.telegramSignals=body.telegramSignals;
+   if(typeof body.telegramLive==='boolean')persisted.notifySettings.telegramLive=body.telegramLive;
    if(typeof body.telegramPaper==='boolean')persisted.paperNotify.telegram=body.telegramPaper;
    if(typeof body.windowsPaper==='boolean')persisted.paperNotify.enabled=body.windowsPaper;
    try{save()}catch(e){persisted.notifySettings=before.notifySettings;Object.assign(persisted.paperNotify,before.paperNotify);throw e}

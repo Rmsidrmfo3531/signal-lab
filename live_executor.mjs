@@ -38,9 +38,9 @@ const baseUnits=(record,qty)=>record.venueContract?.quantityUnit==='CONTRACT'?qt
 const SETTLE_TRIES=4,SETTLE_WINDOW_MS=2*3600000,SETTLE_DELAY_MS=150000;
 
 export class LiveExecutor{
- constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null}={}){
+ constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null,onEvent=null}={}){
   // priceOf(record): the venue's public mid price, used only to estimate an exit when the venue gives none.
-  Object.assign(this,{config,clients,now,log,onChange,priceOf});
+  Object.assign(this,{config,clients,now,log,onChange,priceOf,onEvent});
   this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();this.reconciling=false;
   const stored=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[],
@@ -54,7 +54,9 @@ export class LiveExecutor{
   for(const r of this.store.records)if(r.status==='SUBMITTING'){r.status='UNKNOWN';r.events=[...(r.events||[]),{type:'RESTART_WHILE_SUBMITTING',at:now()}].slice(-MAX_EVENTS)}
  }
  #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records,deletedKeys:this.store.deletedKeys,archived:this.store.archived})}this.onChange(this.status())}
- #event(record,type,detail={}){record.events=[...(record.events||[]),{type,at:this.now(),...detail}].slice(-MAX_EVENTS);this.log(`[LIVE ${record.venue} ${record.symbol}] ${type}`,detail.reason||'')}
+ #event(record,type,detail={}){record.events=[...(record.events||[]),{type,at:this.now(),...detail}].slice(-MAX_EVENTS);this.log(`[LIVE ${record.venue} ${record.symbol}] ${type}`,detail.reason||'')
+  // Notices only (Telegram); a failing listener never affects orders.
+  try{this.onEvent?.(record,type,detail)}catch{}}
  /** False while a just-evaluated signal waits before its next try (30 s, cleared by arming). */
  canTry(signalKey){const last=this.lastTry.get(signalKey);return !(last>this.now()-30000)||this.hasSignal(signalKey)}
  hasSignal(signalKey){return this.inFlight.has(signalKey)||this.store.records.some(r=>r.signalKey===signalKey)||this.store.deletedKeys.includes(signalKey)}
@@ -95,7 +97,9 @@ export class LiveExecutor{
   this.armed=true;this.lastTry.clear();this.onChange(this.status());return this.status();
  }
  disarm(){this.armed=false;this.onChange(this.status());return this.status()}
- kill(reason='MANUAL'){this.armed=false;this.store.killSwitch=true;this.store.skipped.push({at:this.now(),reason:'KILL_SWITCH:'+reason});this.#save();return this.status()}
+ kill(reason='MANUAL'){this.armed=false;this.store.killSwitch=true;this.store.skipped.push({at:this.now(),reason:'KILL_SWITCH:'+reason});this.#save();
+  try{this.onEvent?.({symbol:'실매매 전체',mode:this.config.mode},'KILL_SWITCH',{reason})}catch{}
+  return this.status()}
  resetKill(){this.store.killSwitch=false;this.#save();return this.status()}
 
  /** Called once per newly published final signal (already venue-checked). */
@@ -461,6 +465,7 @@ export class LiveExecutor{
    if(record.settleAttempts<SETTLE_TRIES)return;
   }
   record.realized=this.#estimate(record);
+  this.#event(record,'SETTLED',{reason:'estimate '+record.realized?.netUSD});
  }
  #estimate(record){
   const avg=posNum(record.position?.entryPrice)??posNum(record.firstEntryPrice),exits=record.exits||[],at=this.now();
