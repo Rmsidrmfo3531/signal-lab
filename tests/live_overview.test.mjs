@@ -150,3 +150,11 @@ test('summary counts only the current mode; a close with no settlement after 2 h
  assert.equal(liveClosedView(closed({}),NOW+2*3600000+1).realized.source,'UNKNOWN');
  assert.equal(liveSummary([closed({})],null,NOW+3*3600000).unknown,1);
 });
+
+test('live screen code never uses its $ helper before declaring it (a blank 실매매 screen otherwise)',async()=>{
+ const fs=await import('node:fs');const src=fs.readFileSync(new URL('../public/live_control.js',import.meta.url),'utf8');
+ for(const m of src.matchAll(/function (\w+)\([^)]*\)\{([\s\S]*?)\n\}/g)){
+  const body=m[2],decl=body.search(/const \$=/);if(decl<0)continue;
+  assert.equal(/\$\(/.test(body.slice(0,decl)),false,m[1]+' uses $( before const $=');
+ }
+});
