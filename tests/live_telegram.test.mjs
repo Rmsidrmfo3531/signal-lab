@@ -16,3 +16,10 @@ test('live notices: entry, add, first target, settled close and problems — no 
  assert.equal(liveEventText({...r,test:true},'PROTECTED'),null,'test orders: only problems');
  for(const t of ['PROTECTED','ADD_FILLED','STOP_TO_BREAKEVEN','SETTLED','STOP_FAILED'])assert.equal(/1736012449498123737|slabc/.test(liveEventText(r,t)),false,t);
 });
+
+test('test orders, partial add fills and the kill switch',()=>{
+ assert.equal(liveEventText({...r,signalKey:'TEST:1'},'PROTECTED'),null,'test order before it is marked test');
+ assert.equal(liveEventText({...r,adds:[{filled:false}]},'ADD_FILLED'),null,'partial fill: no "0차" notice');
+ assert.match(liveEventText({symbol:'실매매 전체',mode:'TESTNET'},'KILL_SWITCH',{reason:'MANUAL'}),/긴급 정지/);
+ assert.match(liveEventText(r,'ERROR',{reason:'X'}),/주문 처리 오류/);
+});

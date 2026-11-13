@@ -97,7 +97,9 @@ export class LiveExecutor{
   this.armed=true;this.lastTry.clear();this.onChange(this.status());return this.status();
  }
  disarm(){this.armed=false;this.onChange(this.status());return this.status()}
- kill(reason='MANUAL'){this.armed=false;this.store.killSwitch=true;this.store.skipped.push({at:this.now(),reason:'KILL_SWITCH:'+reason});this.#save();return this.status()}
+ kill(reason='MANUAL'){this.armed=false;this.store.killSwitch=true;this.store.skipped.push({at:this.now(),reason:'KILL_SWITCH:'+reason});this.#save();
+  try{this.onEvent?.({symbol:'실매매 전체',mode:this.config.mode},'KILL_SWITCH',{reason})}catch{}
+  return this.status()}
  resetKill(){this.store.killSwitch=false;this.#save();return this.status()}
 
  /** Called once per newly published final signal (already venue-checked). */
@@ -463,6 +465,7 @@ export class LiveExecutor{
    if(record.settleAttempts<SETTLE_TRIES)return;
   }
   record.realized=this.#estimate(record);
+  this.#event(record,'SETTLED',{reason:'estimate '+record.realized?.netUSD});
  }
  #estimate(record){
   const avg=posNum(record.position?.entryPrice)??posNum(record.firstEntryPrice),exits=record.exits||[],at=this.now();
