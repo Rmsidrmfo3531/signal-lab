@@ -10,8 +10,9 @@ export const SERIOUS_EVENTS=Object.freeze(['ENTRY_OUTCOME_UNKNOWN','STOP_FAILED'
 const DAY=86400000,fin=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
 
 export function liveReadiness(records=[],{mode='TESTNET',now=Date.now(),since=READINESS_DEFAULTS.since,minTrades=READINESS_DEFAULTS.minTrades,
- minDays=READINESS_DEFAULTS.minDays,maxDrawdownPct=READINESS_DEFAULTS.maxDrawdownPct,balanceUSD}={}){
- const mine=records.filter(r=>r&&r.test!==true&&r.mode===mode&&(r.createdAt||0)>=since);
+ minDays=READINESS_DEFAULTS.minDays,maxDrawdownPct=READINESS_DEFAULTS.maxDrawdownPct,balanceUSD,strategyProfile=null}={}){
+ // strategyProfile: only that profile's trades count (its own ledger); untagged records are CURRENT.
+ const mine=records.filter(r=>r&&r.test!==true&&r.mode===mode&&(r.createdAt||0)>=since&&(!strategyProfile||(r.strategyProfile||'CURRENT')===strategyProfile));
  // Drawdown is measured against the balance the orders were sized from (median of the trades'
  // recorded sizing balance), unless one is given; 400 USD when nothing is recorded.
  if(!(balanceUSD>0)){const b=mine.map(r=>Number(r.balanceUSD)).filter(x=>x>0).sort((a,c)=>a-c);balanceUSD=b.length?b[Math.floor(b.length/2)]:READINESS_DEFAULTS.balanceUSD}

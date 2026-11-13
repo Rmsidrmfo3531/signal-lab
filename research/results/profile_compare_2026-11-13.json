@@ -1,0 +1,2212 @@
+{
+ "startBalance": 1000,
+ "windows": {
+  "full": [
+   1764547200000,
+   1794528000000
+  ],
+  "train": [
+   1764547200000,
+   1782864000000
+  ],
+  "validation": [
+   1782864000000,
+   1794528000000
+  ],
+  "stressAug2026": [
+   1785542400000,
+   1788220800000
+  ]
+ },
+ "signals": 3182,
+ "seeds": 30,
+ "pickedOnTrain": "C HYBRID 1·1·2·4 매물대",
+ "distribution": {
+  "full": {
+   "A CURRENT (30%/7회, 무제한)": {
+    "returnPct": {
+     "p10": 2.774287715882573,
+     "median": 89.39824449558556,
+     "p90": 119.18263855447675
+    },
+    "profitFactor": {
+     "median": 1.508867998414857
+    },
+    "maxDrawdownPct": {
+     "median": 38.905783659828394,
+     "p90": 48.73166324660738
+    },
+    "trades": {
+     "median": 468
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 매물대": {
+    "returnPct": {
+     "p10": -4.278202813796506,
+     "median": 3.4510951448040617,
+     "p90": 7.880453145935484
+    },
+    "profitFactor": {
+     "median": 1.2105585838687587
+    },
+    "maxDrawdownPct": {
+     "median": 6.224531302967002,
+     "p90": 8.21289349733326
+    },
+    "trades": {
+     "median": 142
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4 매물대": {
+    "returnPct": {
+     "p10": 6.41239896687511,
+     "median": 12.105897063965255,
+     "p90": 15.78021747956564
+    },
+    "profitFactor": {
+     "median": 1.6020551098894138
+    },
+    "maxDrawdownPct": {
+     "median": 4.77590994923597,
+     "p90": 6.446265748180504
+    },
+    "trades": {
+     "median": 149
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 고정수량 4회 매물대": {
+    "returnPct": {
+     "p10": 2.181864128954647,
+     "median": 5.938991372965274,
+     "p90": 10.724247504384344
+    },
+    "profitFactor": {
+     "median": 1.386039623870627
+    },
+    "maxDrawdownPct": {
+     "median": 4.326392689758576,
+     "p90": 5.8302972657101035
+    },
+    "trades": {
+     "median": 133
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 완만 4회 매물대": {
+    "returnPct": {
+     "p10": -1.071128970165125,
+     "median": 5.77122712681466,
+     "p90": 11.814689293496961
+    },
+    "profitFactor": {
+     "median": 1.3397067008552057
+    },
+    "maxDrawdownPct": {
+     "median": 5.0209220070310625,
+     "p90": 6.715725855598777
+    },
+    "trades": {
+     "median": 133
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 고정2%": {
+    "returnPct": {
+     "p10": -0.18478823628009788,
+     "median": 8.011462972160444,
+     "p90": 12.45803246041759
+    },
+    "profitFactor": {
+     "median": 1.1919658696115434
+    },
+    "maxDrawdownPct": {
+     "median": 11.513625667545254,
+     "p90": 13.338412609933734
+    },
+    "trades": {
+     "median": 209
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 ATR1.5": {
+    "returnPct": {
+     "p10": -4.504975129290623,
+     "median": -1.6713965666723785,
+     "p90": 2.0188764436876783
+    },
+    "profitFactor": {
+     "median": 0.9684212028605881
+    },
+    "maxDrawdownPct": {
+     "median": 9.849465496389548,
+     "p90": 11.92801386608234
+    },
+    "trades": {
+     "median": 257
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 추매 0회": {
+    "returnPct": {
+     "p10": -30.68008006104138,
+     "median": -19.551844586323263,
+     "p90": -12.510254655849328
+    },
+    "profitFactor": {
+     "median": 0.9041285703275161
+    },
+    "maxDrawdownPct": {
+     "median": 32.536497312983215,
+     "p90": 39.13386016722565
+    },
+    "trades": {
+     "median": 507
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "B TRADER_REPLICA (가정)": {
+    "returnPct": {
+     "p10": -100,
+     "median": -100,
+     "p90": -100
+    },
+    "profitFactor": {
+     "median": 0.11961280716868034
+    },
+    "maxDrawdownPct": {
+     "median": 40.12622710842984,
+     "p90": 40.157526362822864
+    },
+    "trades": {
+     "median": 336
+    },
+    "liquidatedRuns": 30,
+    "runs": 30
+   }
+  },
+  "train": {
+   "A CURRENT (30%/7회, 무제한)": {
+    "returnPct": {
+     "p10": 9.993414591110383,
+     "median": 40.60729691813512,
+     "p90": 76.7452979802507
+    },
+    "profitFactor": {
+     "median": 1.4544957126684666
+    },
+    "maxDrawdownPct": {
+     "median": 35.04993480475474,
+     "p90": 45.85143246716325
+    },
+    "trades": {
+     "median": 324
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 매물대": {
+    "returnPct": {
+     "p10": -0.4627948223271283,
+     "median": 2.9933842964407598,
+     "p90": 10.296335760399277
+    },
+    "profitFactor": {
+     "median": 1.2644884372714291
+    },
+    "maxDrawdownPct": {
+     "median": 4.561601269479647,
+     "p90": 5.469183020877445
+    },
+    "trades": {
+     "median": 95
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4 매물대": {
+    "returnPct": {
+     "p10": 2.424195772400517,
+     "median": 6.992917876016236,
+     "p90": 11.085776528429214
+    },
+    "profitFactor": {
+     "median": 1.5898901378764327
+    },
+    "maxDrawdownPct": {
+     "median": 4.99699255705385,
+     "p90": 5.758684577470517
+    },
+    "trades": {
+     "median": 96
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 고정수량 4회 매물대": {
+    "returnPct": {
+     "p10": 1.6686046747395045,
+     "median": 5.277272760526652,
+     "p90": 8.31034143900986
+    },
+    "profitFactor": {
+     "median": 1.5990628253974675
+    },
+    "maxDrawdownPct": {
+     "median": 3.6038935121357634,
+     "p90": 4.776264296641801
+    },
+    "trades": {
+     "median": 79
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 완만 4회 매물대": {
+    "returnPct": {
+     "p10": 2.250801782481804,
+     "median": 6.124123707847251,
+     "p90": 8.811566804848049
+    },
+    "profitFactor": {
+     "median": 1.6817594197099108
+    },
+    "maxDrawdownPct": {
+     "median": 3.38259743227168,
+     "p90": 4.808754809104634
+    },
+    "trades": {
+     "median": 86
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 고정2%": {
+    "returnPct": {
+     "p10": 2.011613978139315,
+     "median": 5.691844818699199,
+     "p90": 11.055559329713116
+    },
+    "profitFactor": {
+     "median": 1.2637181236300732
+    },
+    "maxDrawdownPct": {
+     "median": 10.815139611882042,
+     "p90": 13.338464258548715
+    },
+    "trades": {
+     "median": 125
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 ATR1.5": {
+    "returnPct": {
+     "p10": -0.728211449730376,
+     "median": 2.9781512387638154,
+     "p90": 6.809786581728661
+    },
+    "profitFactor": {
+     "median": 1.127560075130029
+    },
+    "maxDrawdownPct": {
+     "median": 5.758835883236127,
+     "p90": 8.127761660340802
+    },
+    "trades": {
+     "median": 136
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 추매 0회": {
+    "returnPct": {
+     "p10": -24.75491552443546,
+     "median": -16.841047870236668,
+     "p90": -12.4569057331969
+    },
+    "profitFactor": {
+     "median": 0.8509001103582802
+    },
+    "maxDrawdownPct": {
+     "median": 33.60925291985492,
+     "p90": 36.57608287924626
+    },
+    "trades": {
+     "median": 278
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "B TRADER_REPLICA (가정)": {
+    "returnPct": {
+     "p10": -100,
+     "median": -100,
+     "p90": -100
+    },
+    "profitFactor": {
+     "median": 0.119623098617004
+    },
+    "maxDrawdownPct": {
+     "median": 40.124675488706465,
+     "p90": 40.14934460065472
+    },
+    "trades": {
+     "median": 336
+    },
+    "liquidatedRuns": 30,
+    "runs": 30
+   }
+  },
+  "validation": {
+   "A CURRENT (30%/7회, 무제한)": {
+    "returnPct": {
+     "p10": 22.868750252792204,
+     "median": 87.88391275631935,
+     "p90": 135.65284927676186
+    },
+    "profitFactor": {
+     "median": 2.4898017411752966
+    },
+    "maxDrawdownPct": {
+     "median": 18.455571464820697,
+     "p90": 40.47343788315311
+    },
+    "trades": {
+     "median": 208
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 매물대": {
+    "returnPct": {
+     "p10": -2.6919667761407418,
+     "median": 0.44238140766053036,
+     "p90": 3.2991985487781372
+    },
+    "profitFactor": {
+     "median": 1.0509419250923264
+    },
+    "maxDrawdownPct": {
+     "median": 3.5689523745587364,
+     "p90": 4.632874557123974
+    },
+    "trades": {
+     "median": 66
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4 매물대": {
+    "returnPct": {
+     "p10": 0.9977342016105561,
+     "median": 4.773415586012497,
+     "p90": 7.8211366477073385
+    },
+    "profitFactor": {
+     "median": 1.4576091639367679
+    },
+    "maxDrawdownPct": {
+     "median": 3.550461087957106,
+     "p90": 4.266624375159372
+    },
+    "trades": {
+     "median": 77
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 고정수량 4회 매물대": {
+    "returnPct": {
+     "p10": 0.36569160878232587,
+     "median": 2.16319856328282,
+     "p90": 4.3933401156046825
+    },
+    "profitFactor": {
+     "median": 1.3051969732264959
+    },
+    "maxDrawdownPct": {
+     "median": 3.4256354848756194,
+     "p90": 4.036195796316678
+    },
+    "trades": {
+     "median": 67
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 완만 4회 매물대": {
+    "returnPct": {
+     "p10": -0.9059107652929166,
+     "median": 3.417972053480045,
+     "p90": 6.642377251619047
+    },
+    "profitFactor": {
+     "median": 1.5388315424204024
+    },
+    "maxDrawdownPct": {
+     "median": 2.366743589836961,
+     "p90": 3.372018012841344
+    },
+    "trades": {
+     "median": 66
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 고정2%": {
+    "returnPct": {
+     "p10": -8.183539139389339,
+     "median": -3.4305991446600737,
+     "p90": 2.102201267062176
+    },
+    "profitFactor": {
+     "median": 0.8686383418645336
+    },
+    "maxDrawdownPct": {
+     "median": 10.528622304338718,
+     "p90": 13.62717975846364
+    },
+    "trades": {
+     "median": 99
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 ATR1.5": {
+    "returnPct": {
+     "p10": -7.434463901576049,
+     "median": -2.992397696036675,
+     "p90": -0.5480713120298408
+    },
+    "profitFactor": {
+     "median": 0.896664502545449
+    },
+    "maxDrawdownPct": {
+     "median": 7.283062899385595,
+     "p90": 10.865092235309717
+    },
+    "trades": {
+     "median": 122
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 추매 0회": {
+    "returnPct": {
+     "p10": -10.534951045074582,
+     "median": -2.873564308834775,
+     "p90": 10.157870956291571
+    },
+    "profitFactor": {
+     "median": 0.9738287226362982
+    },
+    "maxDrawdownPct": {
+     "median": 16.277056501464884,
+     "p90": 20.568015491972112
+    },
+    "trades": {
+     "median": 236
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "B TRADER_REPLICA (가정)": {
+    "returnPct": {
+     "p10": -61.48682365619425,
+     "median": -61.34411642728605,
+     "p90": -61.245273392956754
+    },
+    "profitFactor": {
+     "median": 0.8736647113410839
+    },
+    "maxDrawdownPct": {
+     "median": 70.44939902855461,
+     "p90": 70.46521984795585
+    },
+    "trades": {
+     "median": 824
+    },
+    "liquidatedRuns": 30,
+    "runs": 30
+   }
+  },
+  "stressAug2026": {
+   "A CURRENT (30%/7회, 무제한)": {
+    "returnPct": {
+     "p10": 24.80668574879834,
+     "median": 38.42732769408273,
+     "p90": 54.72233010167369
+    },
+    "profitFactor": {
+     "median": 2.9935780267784677
+    },
+    "maxDrawdownPct": {
+     "median": 13.378725475322687,
+     "p90": 15.572012344813954
+    },
+    "trades": {
+     "median": 112
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 매물대": {
+    "returnPct": {
+     "p10": 0.4129651307140936,
+     "median": 2.2207458077263986,
+     "p90": 3.4820160273046907
+    },
+    "profitFactor": {
+     "median": 2.9804898564086564
+    },
+    "maxDrawdownPct": {
+     "median": 1.0899918672672884,
+     "p90": 2.724263091412786
+    },
+    "trades": {
+     "median": 32
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4 매물대": {
+    "returnPct": {
+     "p10": 2.104877720817866,
+     "median": 3.4600754087891206,
+     "p90": 4.69558217027759
+    },
+    "profitFactor": {
+     "median": 2.0769590163493916
+    },
+    "maxDrawdownPct": {
+     "median": 1.7158752818348622,
+     "p90": 3.0397355484127306
+    },
+    "trades": {
+     "median": 34
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 고정수량 4회 매물대": {
+    "returnPct": {
+     "p10": 0.06585963754137669,
+     "median": 1.7627822238535762,
+     "p90": 2.5954550598294324
+    },
+    "profitFactor": {
+     "median": 1.9281643654047922
+    },
+    "maxDrawdownPct": {
+     "median": 1.2629523361732502,
+     "p90": 2.5685699957826014
+    },
+    "trades": {
+     "median": 35
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 완만 4회 매물대": {
+    "returnPct": {
+     "p10": 0.13920715394164507,
+     "median": 1.9208603702201676,
+     "p90": 2.919847884589366
+    },
+    "profitFactor": {
+     "median": 1.9749429828057385
+    },
+    "maxDrawdownPct": {
+     "median": 1.2559363118951696,
+     "p90": 2.4444033998965
+    },
+    "trades": {
+     "median": 33
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 고정2%": {
+    "returnPct": {
+     "p10": -6.3049956195635914,
+     "median": -4.200309509523025,
+     "p90": -2.6397639647696813
+    },
+    "profitFactor": {
+     "median": 0.54025150047818
+    },
+    "maxDrawdownPct": {
+     "median": 7.355464506306797,
+     "p90": 8.251420664787993
+    },
+    "trades": {
+     "median": 45
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 1·1·2·4·8 ATR1.5": {
+    "returnPct": {
+     "p10": -5.2358386890859805,
+     "median": -3.040978713709408,
+     "p90": -0.20085092187855924
+    },
+    "profitFactor": {
+     "median": 0.6482056355557207
+    },
+    "maxDrawdownPct": {
+     "median": 6.252616164933074,
+     "p90": 7.832331629068317
+    },
+    "trades": {
+     "median": 46
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "C HYBRID 추매 0회": {
+    "returnPct": {
+     "p10": -2.9162788834389386,
+     "median": -0.5894044863714365,
+     "p90": 3.8319827429023956
+    },
+    "profitFactor": {
+     "median": 0.9830426033679281
+    },
+    "maxDrawdownPct": {
+     "median": 12.16617130834757,
+     "p90": 13.571488834385036
+    },
+    "trades": {
+     "median": 67
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   },
+   "B TRADER_REPLICA (가정)": {
+    "returnPct": {
+     "p10": 180.80017104277798,
+     "median": 180.81487862989886,
+     "p90": 180.8311510949813
+    },
+    "profitFactor": {
+     "median": 0
+    },
+    "maxDrawdownPct": {
+     "median": 39.39624317946266,
+     "p90": 39.39784156103281
+    },
+    "trades": {
+     "median": 419
+    },
+    "liquidatedRuns": 0,
+    "runs": 30
+   }
+  }
+ },
+ "results": {
+  "full": {
+   "A CURRENT (30%/7회, 무제한)": {
+    "trades": 466,
+    "netUSD": 1054.321255707648,
+    "returnPct": 105.43212557076482,
+    "winRatePct": 90.55793991416309,
+    "profitFactor": 1.5251221019708712,
+    "expectancyUSD": 2.2624919650378716,
+    "maxDrawdownPct": 30.517318649996206,
+    "maxDrawdownUSD": 825.8479784537617,
+    "worstOpenUSD": -397.96576171631904,
+    "worstTradeUSD": -403.118985416799,
+    "feesUSD": 114.49704588651971,
+    "fundingUSD": 187.777546624327,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 294,
+      "netUSD": 321.7093131350419
+     },
+     "1": {
+      "n": 83,
+      "netUSD": 333.2325401261769
+     },
+     "2": {
+      "n": 37,
+      "netUSD": 384.3454298990998
+     },
+     "3": {
+      "n": 21,
+      "netUSD": 439.4496058506705
+     },
+     "4": {
+      "n": 17,
+      "netUSD": 370.3124427394763
+     },
+     "5+": {
+      "n": 14,
+      "netUSD": -794.7280760428188
+     }
+    },
+    "skipped": {
+     "OPEN_RISK_LIMIT": 1356,
+     "DCA_UNIT_BELOW_MINIMUM_ORDER": 209,
+     "SYMBOL_BUSY": 1101
+    }
+   },
+   "C HYBRID 1·1·2·4·8 매물대": {
+    "trades": 122,
+    "netUSD": 49.59161105015414,
+    "returnPct": 4.959161105015419,
+    "winRatePct": 81.9672131147541,
+    "profitFactor": 1.2720074709728353,
+    "expectancyUSD": 0.4064886151651979,
+    "maxDrawdownPct": 5.022000354856236,
+    "maxDrawdownUSD": 54.98642957250877,
+    "worstOpenUSD": -11.642304220444792,
+    "worstTradeUSD": -11.712790925852794,
+    "feesUSD": 10.552408316133128,
+    "fundingUSD": 11.559333671252999,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 63,
+      "netUSD": 50.223571100756686
+     },
+     "1": {
+      "n": 29,
+      "netUSD": 11.547891907856128
+     },
+     "2": {
+      "n": 8,
+      "netUSD": 35.774991245298736
+     },
+     "3": {
+      "n": 7,
+      "netUSD": 7.232935716171893
+     },
+     "4": {
+      "n": 15,
+      "netUSD": -55.187778919928064
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 2137,
+     "SYMBOL_BUSY": 302,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 118,
+     "OPEN_RISK_LIMIT": 453
+    }
+   },
+   "C HYBRID 1·1·2·4 매물대": {
+    "trades": 159,
+    "netUSD": 101.8545241432962,
+    "returnPct": 10.185452414329621,
+    "winRatePct": 84.27672955974843,
+    "profitFactor": 1.481897774086481,
+    "expectancyUSD": 0.6405944914672718,
+    "maxDrawdownPct": 5.9448942013300705,
+    "maxDrawdownUSD": 59.99447488030978,
+    "worstOpenUSD": -11.498691200000007,
+    "worstTradeUSD": -11.639957686848017,
+    "feesUSD": 20.071560180723683,
+    "fundingUSD": 16.933148132350002,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 94,
+      "netUSD": 73.66424735358041
+     },
+     "1": {
+      "n": 32,
+      "netUSD": 46.716339539221295
+     },
+     "2": {
+      "n": 13,
+      "netUSD": 114.91892616581977
+     },
+     "3": {
+      "n": 20,
+      "netUSD": -133.44498891532615
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 2261,
+     "SYMBOL_BUSY": 297,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 19,
+     "OPEN_RISK_LIMIT": 396
+    }
+   },
+   "C HYBRID 고정수량 4회 매물대": {
+    "trades": 131,
+    "netUSD": 43.42314406412447,
+    "returnPct": 4.34231440641244,
+    "winRatePct": 85.49618320610686,
+    "profitFactor": 1.2747126110467788,
+    "expectancyUSD": 0.3314743821688891,
+    "maxDrawdownPct": 5.940245242193335,
+    "maxDrawdownUSD": 64.19066558916438,
+    "worstOpenUSD": -11.320171320974396,
+    "worstTradeUSD": -11.36324148718167,
+    "feesUSD": 12.329655637908683,
+    "fundingUSD": 12.203740021575001,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 71,
+      "netUSD": 54.4663797602411
+     },
+     "1": {
+      "n": 31,
+      "netUSD": 33.696301288571675
+     },
+     "2": {
+      "n": 10,
+      "netUSD": 35.229820777119514
+     },
+     "3": {
+      "n": 6,
+      "netUSD": 1.6357169599940784
+     },
+     "4": {
+      "n": 13,
+      "netUSD": -81.60507472180288
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 2147,
+     "SYMBOL_BUSY": 334,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 38,
+     "OPEN_RISK_LIMIT": 482
+    }
+   },
+   "C HYBRID 완만 4회 매물대": {
+    "trades": 130,
+    "netUSD": 37.988229314614046,
+    "returnPct": 3.7988229314614097,
+    "winRatePct": 86.15384615384616,
+    "profitFactor": 1.2447218054186615,
+    "expectancyUSD": 0.2922171485739542,
+    "maxDrawdownPct": 5.595853885882251,
+    "maxDrawdownUSD": 60.13171711659595,
+    "worstOpenUSD": -11.228463919182783,
+    "worstTradeUSD": -11.275125398910786,
+    "feesUSD": 11.689314023860085,
+    "fundingUSD": 12.431581976749998,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 69,
+      "netUSD": 43.55035216199379
+     },
+     "1": {
+      "n": 31,
+      "netUSD": 28.872900338461555
+     },
+     "2": {
+      "n": 12,
+      "netUSD": 48.88879617015587
+     },
+     "3": {
+      "n": 6,
+      "netUSD": 3.1564174535231677
+     },
+     "4": {
+      "n": 12,
+      "netUSD": -86.4802368095201
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 2243,
+     "SYMBOL_BUSY": 358,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 50,
+     "OPEN_RISK_LIMIT": 351
+    }
+   },
+   "C HYBRID 1·1·2·4·8 고정2%": {
+    "trades": 213,
+    "netUSD": 88.11158460929141,
+    "returnPct": 8.811158460929146,
+    "winRatePct": 81.69014084507043,
+    "profitFactor": 1.2238623559551807,
+    "expectancyUSD": 0.4136694113112273,
+    "maxDrawdownPct": 11.513625667545254,
+    "maxDrawdownUSD": 121.87386018243353,
+    "worstOpenUSD": -13.27871953694266,
+    "worstTradeUSD": -13.719203775669056,
+    "feesUSD": 30.489008287956693,
+    "fundingUSD": 19.982068242175,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 113,
+      "netUSD": 66.91049326949202
+     },
+     "1": {
+      "n": 28,
+      "netUSD": 69.96357920896222
+     },
+     "2": {
+      "n": 19,
+      "netUSD": 112.26865491796613
+     },
+     "3": {
+      "n": 14,
+      "netUSD": 195.41639882873218
+     },
+     "4": {
+      "n": 39,
+      "netUSD": -356.44754161586184
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 2284,
+     "SYMBOL_BUSY": 307,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 22,
+     "OPEN_RISK_LIMIT": 294,
+     "DAILY_LOSS_LIMIT": 12
+    }
+   },
+   "C HYBRID 1·1·2·4·8 ATR1.5": {
+    "trades": 260,
+    "netUSD": -40.74532161897639,
+    "returnPct": -4.074532161897637,
+    "winRatePct": 78.46153846153847,
+    "profitFactor": 0.9233232464035094,
+    "expectancyUSD": -0.1567127754576015,
+    "maxDrawdownPct": 9.432616781767686,
+    "maxDrawdownUSD": 96.8981743318675,
+    "worstOpenUSD": -10.584244700673516,
+    "worstTradeUSD": -10.953801565889487,
+    "feesUSD": 57.061637621424595,
+    "fundingUSD": 22.493051692508004,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 120,
+      "netUSD": 74.26603537018136
+     },
+     "1": {
+      "n": 42,
+      "netUSD": 83.76630489439138
+     },
+     "2": {
+      "n": 30,
+      "netUSD": 178.3589450449402
+     },
+     "3": {
+      "n": 10,
+      "netUSD": 100.32013872804241
+     },
+     "4": {
+      "n": 58,
+      "netUSD": -477.45674565653144
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 2394,
+     "SYMBOL_BUSY": 310,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 16,
+     "OPEN_RISK_LIMIT": 152
+    }
+   },
+   "C HYBRID 추매 0회": {
+    "trades": 529,
+    "netUSD": -255.51756494546964,
+    "returnPct": -25.55175649454696,
+    "winRatePct": 51.60680529300568,
+    "profitFactor": 0.8776191052707121,
+    "expectancyUSD": -0.48301997154153054,
+    "maxDrawdownPct": 33.241183515209386,
+    "maxDrawdownUSD": 343.3108482707212,
+    "worstOpenUSD": -10.916741935075194,
+    "worstTradeUSD": -11.14865215639118,
+    "feesUSD": 326.7984179326077,
+    "fundingUSD": 32.90441329371499,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 529,
+      "netUSD": -255.5175649454701
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 2105,
+     "SYMBOL_BUSY": 351,
+     "OPEN_RISK_LIMIT": 88,
+     "DAILY_LOSS_LIMIT": 59
+    }
+   },
+   "B TRADER_REPLICA (가정)": {
+    "trades": 336,
+    "netUSD": -1000,
+    "returnPct": -100,
+    "winRatePct": 97.32142857142857,
+    "profitFactor": 0.11964834741092376,
+    "expectancyUSD": -2.9761904761904763,
+    "maxDrawdownPct": 40.11325050667459,
+    "maxDrawdownUSD": 593.5215755032174,
+    "worstOpenUSD": -1935.1970433600961,
+    "worstTradeUSD": -1960.1349981056953,
+    "feesUSD": 252.26236957100883,
+    "fundingUSD": 25.42397273764,
+    "liquidated": true,
+    "byAdds": {
+     "0": {
+      "n": 242,
+      "netUSD": 255.03551325011074
+     },
+     "1": {
+      "n": 48,
+      "netUSD": 97.58336772065962
+     },
+     "2": {
+      "n": 32,
+      "netUSD": 76.11854139817544
+     },
+     "3": {
+      "n": 4,
+      "netUSD": 31.519069607602898
+     },
+     "4": {
+      "n": 5,
+      "netUSD": -895.6239550867288
+     },
+     "5+": {
+      "n": 5,
+      "netUSD": -3598.8057565148856
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 47
+    }
+   }
+  },
+  "train": {
+   "A CURRENT (30%/7회, 무제한)": {
+    "trades": 365,
+    "netUSD": 260.86899067934814,
+    "returnPct": 26.086899067934823,
+    "winRatePct": 88.4931506849315,
+    "profitFactor": 1.2450238674785914,
+    "expectancyUSD": 0.7147095635050634,
+    "maxDrawdownPct": 39.68498906293273,
+    "maxDrawdownUSD": 792.3078838462759,
+    "worstOpenUSD": -295.7451034702527,
+    "worstTradeUSD": -300.1639651495614,
+    "feesUSD": 60.485252500331306,
+    "fundingUSD": 65.80963744942599,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 215,
+      "netUSD": 202.5318799068549
+     },
+     "1": {
+      "n": 75,
+      "netUSD": 192.6005007170314
+     },
+     "2": {
+      "n": 35,
+      "netUSD": 187.87240969692414
+     },
+     "3": {
+      "n": 25,
+      "netUSD": 387.71838102988954
+     },
+     "4": {
+      "n": 9,
+      "netUSD": -30.160602743962304
+     },
+     "5+": {
+      "n": 6,
+      "netUSD": -679.6935779273892
+     }
+    },
+    "skipped": {
+     "OPEN_RISK_LIMIT": 374,
+     "DCA_UNIT_BELOW_MINIMUM_ORDER": 135,
+     "SYMBOL_BUSY": 709
+    }
+   },
+   "C HYBRID 1·1·2·4·8 매물대": {
+    "trades": 89,
+    "netUSD": 32.141160671750185,
+    "returnPct": 3.21411606717501,
+    "winRatePct": 86.51685393258427,
+    "profitFactor": 1.269905289778882,
+    "expectancyUSD": 0.36113663676123803,
+    "maxDrawdownPct": 4.266496635014718,
+    "maxDrawdownUSD": 44.11778065071462,
+    "worstOpenUSD": -10.610413484896759,
+    "worstTradeUSD": -10.797507080647138,
+    "feesUSD": 9.43339470524016,
+    "fundingUSD": 6.465492160632002,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 48,
+      "netUSD": 34.73049547996461
+     },
+     "1": {
+      "n": 25,
+      "netUSD": 14.83317438514839
+     },
+     "2": {
+      "n": 5,
+      "netUSD": 11.320007849823924
+     },
+     "3": {
+      "n": 3,
+      "netUSD": -10.95114015157999
+     },
+     "4": {
+      "n": 8,
+      "netUSD": -17.79137689160612
+     }
+    },
+    "skipped": {
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 59,
+     "MAX_PER_DIRECTION": 1148,
+     "SYMBOL_BUSY": 125,
+     "OPEN_RISK_LIMIT": 162
+    }
+   },
+   "C HYBRID 1·1·2·4 매물대": {
+    "trades": 92,
+    "netUSD": 70.10449237067382,
+    "returnPct": 7.010449237067373,
+    "winRatePct": 86.95652173913044,
+    "profitFactor": 1.6235807690801551,
+    "expectancyUSD": 0.7620053518551503,
+    "maxDrawdownPct": 4.99699255705385,
+    "maxDrawdownUSD": 50.52270763401805,
+    "worstOpenUSD": -10.31906711961999,
+    "worstTradeUSD": -10.769420619773976,
+    "feesUSD": 11.370135985614086,
+    "fundingUSD": 10.947997207568001,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 49,
+      "netUSD": 40.82028292851911
+     },
+     "1": {
+      "n": 24,
+      "netUSD": 41.16553808965364
+     },
+     "2": {
+      "n": 7,
+      "netUSD": 52.48182974760426
+     },
+     "3": {
+      "n": 12,
+      "netUSD": -64.36315839510375
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 1077,
+     "SYMBOL_BUSY": 170,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 8,
+     "OPEN_RISK_LIMIT": 236
+    }
+   },
+   "C HYBRID 고정수량 4회 매물대": {
+    "trades": 86,
+    "netUSD": 25.769679346876956,
+    "returnPct": 2.5769679346876906,
+    "winRatePct": 87.20930232558139,
+    "profitFactor": 1.2309817276838655,
+    "expectancyUSD": 0.2996474342660111,
+    "maxDrawdownPct": 5.071562557041246,
+    "maxDrawdownUSD": 51.857128141739395,
+    "worstOpenUSD": -10.500338005229203,
+    "worstTradeUSD": -10.773830196090056,
+    "feesUSD": 8.385075150826143,
+    "fundingUSD": 7.122209254362001,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 42,
+      "netUSD": 32.43268292871249
+     },
+     "1": {
+      "n": 24,
+      "netUSD": 29.00519498393831
+     },
+     "2": {
+      "n": 8,
+      "netUSD": 22.379572387814115
+     },
+     "3": {
+      "n": 3,
+      "netUSD": 1.4252471030131106
+     },
+     "4": {
+      "n": 9,
+      "netUSD": -59.473018056600736
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 1167,
+     "SYMBOL_BUSY": 176,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 19,
+     "OPEN_RISK_LIMIT": 135
+    }
+   },
+   "C HYBRID 완만 4회 매물대": {
+    "trades": 85,
+    "netUSD": 27.745535161459657,
+    "returnPct": 2.7745535161459722,
+    "winRatePct": 85.88235294117646,
+    "profitFactor": 1.2292723653057647,
+    "expectancyUSD": 0.3264180607230548,
+    "maxDrawdownPct": 5.048861737304748,
+    "maxDrawdownUSD": 51.97603523139344,
+    "worstOpenUSD": -10.574449212619156,
+    "worstTradeUSD": -10.865979062739678,
+    "feesUSD": 7.96871400033225,
+    "fundingUSD": 6.610602377673995,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 42,
+      "netUSD": 29.18297771432419
+     },
+     "1": {
+      "n": 24,
+      "netUSD": 34.17461835749439
+     },
+     "2": {
+      "n": 6,
+      "netUSD": 18.832752812111202
+     },
+     "3": {
+      "n": 3,
+      "netUSD": 4.531400293017133
+     },
+     "4": {
+      "n": 10,
+      "netUSD": -58.97621401548741
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 1177,
+     "SYMBOL_BUSY": 171,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 19,
+     "OPEN_RISK_LIMIT": 131
+    }
+   },
+   "C HYBRID 1·1·2·4·8 고정2%": {
+    "trades": 124,
+    "netUSD": 66.57057279229525,
+    "returnPct": 6.657057279229517,
+    "winRatePct": 83.06451612903226,
+    "profitFactor": 1.3390650031336753,
+    "expectancyUSD": 0.5368594580023811,
+    "maxDrawdownPct": 14.948766525815053,
+    "maxDrawdownUSD": 161.32394338193637,
+    "worstOpenUSD": -11.447690258375948,
+    "worstTradeUSD": -11.788710363719924,
+    "feesUSD": 16.55563937848668,
+    "fundingUSD": 14.077070775149998,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 67,
+      "netUSD": 37.070417519466496
+     },
+     "1": {
+      "n": 14,
+      "netUSD": 30.31909199968166
+     },
+     "2": {
+      "n": 14,
+      "netUSD": 83.02341711228715
+     },
+     "3": {
+      "n": 10,
+      "netUSD": 108.46612641277466
+     },
+     "4": {
+      "n": 19,
+      "netUSD": -192.30848025191492
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 1221,
+     "SYMBOL_BUSY": 170,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 9,
+     "OPEN_RISK_LIMIT": 59
+    }
+   },
+   "C HYBRID 1·1·2·4·8 ATR1.5": {
+    "trades": 123,
+    "netUSD": 21.88447767634466,
+    "returnPct": 2.1884477676344716,
+    "winRatePct": 79.67479674796748,
+    "profitFactor": 1.0908961089609899,
+    "expectancyUSD": 0.17792258273450942,
+    "maxDrawdownPct": 4.993096642482142,
+    "maxDrawdownUSD": 53.355067361470674,
+    "worstOpenUSD": -11.128099171459171,
+    "worstTradeUSD": -11.51664512461114,
+    "feesUSD": 28.360782970444003,
+    "fundingUSD": 12.137414851280006,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 55,
+      "netUSD": 40.73699774759591
+     },
+     "1": {
+      "n": 21,
+      "netUSD": 41.0494916965344
+     },
+     "2": {
+      "n": 16,
+      "netUSD": 103.25547615040863
+     },
+     "3": {
+      "n": 7,
+      "netUSD": 77.5991403001588
+     },
+     "4": {
+      "n": 24,
+      "netUSD": -240.7566282183528
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 1222,
+     "SYMBOL_BUSY": 147,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 9,
+     "OPEN_RISK_LIMIT": 82
+    }
+   },
+   "C HYBRID 추매 0회": {
+    "trades": 282,
+    "netUSD": -184.91355244818521,
+    "returnPct": -18.491355244818518,
+    "winRatePct": 50.35460992907801,
+    "profitFactor": 0.8494672890597746,
+    "expectancyUSD": -0.6557218171921462,
+    "maxDrawdownPct": 30.316609956011813,
+    "maxDrawdownUSD": 313.6999402755014,
+    "worstOpenUSD": -10.717595306304002,
+    "worstTradeUSD": -11.045653524329166,
+    "feesUSD": 194.39022249077192,
+    "fundingUSD": 18.57216135694,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 282,
+      "netUSD": -184.91355244818516
+     }
+    },
+    "skipped": {
+     "MAX_PER_DIRECTION": 1062,
+     "SYMBOL_BUSY": 160,
+     "OPEN_RISK_LIMIT": 35,
+     "DAILY_LOSS_LIMIT": 44
+    }
+   },
+   "B TRADER_REPLICA (가정)": {
+    "trades": 336,
+    "netUSD": -1000,
+    "returnPct": -100,
+    "winRatePct": 97.32142857142857,
+    "profitFactor": 0.11962730895166925,
+    "expectancyUSD": -2.9761904761904763,
+    "maxDrawdownPct": 40.115436601896434,
+    "maxDrawdownUSD": 593.5186578751154,
+    "worstOpenUSD": -1935.1970433600961,
+    "worstTradeUSD": -1960.1349981056953,
+    "feesUSD": 252.23542117391264,
+    "fundingUSD": 25.421326529420007,
+    "liquidated": true,
+    "byAdds": {
+     "0": {
+      "n": 242,
+      "netUSD": 254.9824328355424
+     },
+     "1": {
+      "n": 48,
+      "netUSD": 97.58960545773883
+     },
+     "2": {
+      "n": 32,
+      "netUSD": 76.1143051543421
+     },
+     "3": {
+      "n": 4,
+      "netUSD": 31.519069607602898
+     },
+     "4": {
+      "n": 5,
+      "netUSD": -895.6372671822567
+     },
+     "5+": {
+      "n": 5,
+      "netUSD": -3598.8888240420056
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 47
+    }
+   }
+  },
+  "validation": {
+   "A CURRENT (30%/7회, 무제한)": {
+    "trades": 198,
+    "netUSD": 986.3591541680535,
+    "returnPct": 98.63591541680535,
+    "winRatePct": 93.43434343434343,
+    "profitFactor": 3.7250994233042767,
+    "expectancyUSD": 4.981611889737644,
+    "maxDrawdownPct": 22.382088561862727,
+    "maxDrawdownUSD": 513.5368608353078,
+    "worstOpenUSD": -208.6558647958393,
+    "worstTradeUSD": -212.78633965965983,
+    "feesUSD": 28.647205768286845,
+    "fundingUSD": 64.35270120451598,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 134,
+      "netUSD": 148.90056744478963
+     },
+     "1": {
+      "n": 35,
+      "netUSD": 158.5038355643155
+     },
+     "2": {
+      "n": 11,
+      "netUSD": 130.25935113339943
+     },
+     "3": {
+      "n": 10,
+      "netUSD": 367.6721730615028
+     },
+     "4": {
+      "n": 4,
+      "netUSD": 189.01071486849278
+     },
+     "5+": {
+      "n": 4,
+      "netUSD": -7.987487904447164
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 480,
+     "OPEN_RISK_LIMIT": 770,
+     "DCA_UNIT_BELOW_MINIMUM_ORDER": 101
+    }
+   },
+   "C HYBRID 1·1·2·4·8 매물대": {
+    "trades": 67,
+    "netUSD": -5.170987879580139,
+    "returnPct": -0.5170987879580147,
+    "winRatePct": 82.08955223880598,
+    "profitFactor": 0.9517067014766718,
+    "expectancyUSD": -0.07717892357582297,
+    "maxDrawdownPct": 3.562799402758341,
+    "maxDrawdownUSD": 36.04247762720104,
+    "worstOpenUSD": -10.253074638545584,
+    "worstTradeUSD": -10.907924996988534,
+    "feesUSD": 7.9337513750212825,
+    "fundingUSD": 5.389487665692,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 34,
+      "netUSD": 15.142631105776438
+     },
+     "1": {
+      "n": 14,
+      "netUSD": 21.183763540437248
+     },
+     "2": {
+      "n": 4,
+      "netUSD": 27.962419917058313
+     },
+     "3": {
+      "n": 6,
+      "netUSD": 22.924778644883347
+     },
+     "4": {
+      "n": 9,
+      "netUSD": -92.38458108773563
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 127,
+     "MAX_PER_DIRECTION": 1233,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 52,
+     "OPEN_RISK_LIMIT": 70
+    }
+   },
+   "C HYBRID 1·1·2·4 매물대": {
+    "trades": 90,
+    "netUSD": 34.23561763894668,
+    "returnPct": 3.423561763894667,
+    "winRatePct": 85.55555555555556,
+    "profitFactor": 1.27414187172628,
+    "expectancyUSD": 0.38039575154385197,
+    "maxDrawdownPct": 3.550461087957106,
+    "maxDrawdownUSD": 35.796202026704805,
+    "worstOpenUSD": -10.199076818496001,
+    "worstTradeUSD": -11.420085135439878,
+    "feesUSD": 15.58915540512402,
+    "fundingUSD": 7.519542140519999,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 49,
+      "netUSD": 49.36337952897997
+     },
+     "1": {
+      "n": 23,
+      "netUSD": 51.09653148422514
+     },
+     "2": {
+      "n": 6,
+      "netUSD": 54.750401559673726
+     },
+     "3": {
+      "n": 12,
+      "netUSD": -120.97469493393183
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 141,
+     "MAX_PER_DIRECTION": 1208,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 10,
+     "OPEN_RISK_LIMIT": 100
+    }
+   },
+   "C HYBRID 고정수량 4회 매물대": {
+    "trades": 77,
+    "netUSD": 31.86361600228406,
+    "returnPct": 3.1863616002284045,
+    "winRatePct": 87.01298701298701,
+    "profitFactor": 1.383520720930785,
+    "expectancyUSD": 0.41381319483485796,
+    "maxDrawdownPct": 2.9605600410479704,
+    "maxDrawdownUSD": 29.720411059281446,
+    "worstOpenUSD": -10.290539306588807,
+    "worstTradeUSD": -10.681114252958466,
+    "feesUSD": 6.761741159670665,
+    "fundingUSD": 5.802065316031999,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 46,
+      "netUSD": 29.26329560316133
+     },
+     "1": {
+      "n": 14,
+      "netUSD": 34.50742344397499
+     },
+     "2": {
+      "n": 5,
+      "netUSD": 26.68448130682359
+     },
+     "3": {
+      "n": 5,
+      "netUSD": 10.84967317493922
+     },
+     "4": {
+      "n": 7,
+      "netUSD": -69.44125752661543
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 130,
+     "MAX_PER_DIRECTION": 1235,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 21,
+     "OPEN_RISK_LIMIT": 86
+    }
+   },
+   "C HYBRID 완만 4회 매물대": {
+    "trades": 73,
+    "netUSD": 6.0501170272542595,
+    "returnPct": 0.605011702725422,
+    "winRatePct": 84.93150684931507,
+    "profitFactor": 1.0573085276488963,
+    "expectancyUSD": 0.08287831544183917,
+    "maxDrawdownPct": 3.5843003897583747,
+    "maxDrawdownUSD": 36.640170897590224,
+    "worstOpenUSD": -10.31728563482399,
+    "worstTradeUSD": -10.424668388994391,
+    "feesUSD": 5.775668207161417,
+    "fundingUSD": 6.034976975534001,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 39,
+      "netUSD": 24.07704984867995
+     },
+     "1": {
+      "n": 14,
+      "netUSD": 26.888101195456954
+     },
+     "2": {
+      "n": 5,
+      "netUSD": 33.630140949440374
+     },
+     "3": {
+      "n": 7,
+      "netUSD": 3.1737022178661682
+     },
+     "4": {
+      "n": 8,
+      "netUSD": -81.71887718418857
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 159,
+     "MAX_PER_DIRECTION": 1196,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 36,
+     "OPEN_RISK_LIMIT": 85
+    }
+   },
+   "C HYBRID 1·1·2·4·8 고정2%": {
+    "trades": 82,
+    "netUSD": -21.581830098351475,
+    "returnPct": -2.158183009835146,
+    "winRatePct": 68.29268292682927,
+    "profitFactor": 0.9039227799815505,
+    "expectancyUSD": -0.263193049979896,
+    "maxDrawdownPct": 8.98151442438125,
+    "maxDrawdownUSD": 91.36506220422677,
+    "worstOpenUSD": -10.195262214620707,
+    "worstTradeUSD": -10.56326211032629,
+    "feesUSD": 14.135124393346477,
+    "fundingUSD": 6.3815396707289995,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 36,
+      "netUSD": 21.81646215079456
+     },
+     "1": {
+      "n": 10,
+      "netUSD": 23.91772422962957
+     },
+     "2": {
+      "n": 9,
+      "netUSD": 32.98349051714561
+     },
+     "3": {
+      "n": 3,
+      "netUSD": 59.470318978980956
+     },
+     "4": {
+      "n": 24,
+      "netUSD": -159.7698259749026
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 130,
+     "MAX_PER_DIRECTION": 1212,
+     "OPEN_RISK_LIMIT": 103,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 11,
+     "DAILY_LOSS_LIMIT": 11
+    }
+   },
+   "C HYBRID 1·1·2·4·8 ATR1.5": {
+    "trades": 111,
+    "netUSD": -11.918613774941718,
+    "returnPct": -1.1918613774941744,
+    "winRatePct": 79.27927927927928,
+    "profitFactor": 0.9433161985796621,
+    "expectancyUSD": -0.10737489887334882,
+    "maxDrawdownPct": 5.478140832370264,
+    "maxDrawdownUSD": 56.61260295714908,
+    "worstOpenUSD": -10.30975481222407,
+    "worstTradeUSD": -11.141972191439613,
+    "feesUSD": 27.244934131060564,
+    "fundingUSD": 11.810560985707005,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 58,
+      "netUSD": 43.64058305161694
+     },
+     "1": {
+      "n": 15,
+      "netUSD": 40.448841686170084
+     },
+     "2": {
+      "n": 11,
+      "netUSD": 52.25186147411961
+     },
+     "3": {
+      "n": 4,
+      "netUSD": 43.59610384036352
+     },
+     "4": {
+      "n": 23,
+      "netUSD": -191.85600382721185
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 155,
+     "MAX_PER_DIRECTION": 1215,
+     "OPEN_RISK_LIMIT": 65,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 3
+    }
+   },
+   "C HYBRID 추매 0회": {
+    "trades": 200,
+    "netUSD": -102.1810889823787,
+    "returnPct": -10.218108898237865,
+    "winRatePct": 52,
+    "profitFactor": 0.8865984489970969,
+    "expectancyUSD": -0.5109054449118935,
+    "maxDrawdownPct": 17.194747493470828,
+    "maxDrawdownUSD": 176.07128593155846,
+    "worstOpenUSD": -9.985508610807997,
+    "worstTradeUSD": -10.452203571419787,
+    "feesUSD": 135.0050338828178,
+    "fundingUSD": 14.575809109848992,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 200,
+      "netUSD": -102.18108898237861
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 159,
+     "MAX_PER_DIRECTION": 1093,
+     "DAILY_LOSS_LIMIT": 25,
+     "OPEN_RISK_LIMIT": 72
+    }
+   },
+   "B TRADER_REPLICA (가정)": {
+    "trades": 824,
+    "netUSD": -614.725929756801,
+    "returnPct": -61.47259297568011,
+    "winRatePct": 98.7864077669903,
+    "profitFactor": 0.8734399606466815,
+    "expectancyUSD": -0.7460266137825254,
+    "maxDrawdownPct": 70.45849046311244,
+    "maxDrawdownUSD": 3466.697315789731,
+    "worstOpenUSD": -2932.332147298974,
+    "worstTradeUSD": -2975.1575423020104,
+    "feesUSD": 1377.510532894554,
+    "fundingUSD": 145.75822678676005,
+    "liquidated": true,
+    "byAdds": {
+     "0": {
+      "n": 576,
+      "netUSD": 1218.7745386012323
+     },
+     "1": {
+      "n": 119,
+      "netUSD": 509.2801229558827
+     },
+     "2": {
+      "n": 78,
+      "netUSD": -53.33550455745919
+     },
+     "3": {
+      "n": 27,
+      "netUSD": -269.39180210503275
+     },
+     "4": {
+      "n": 5,
+      "netUSD": -437.85838531817797
+     },
+     "5+": {
+      "n": 19,
+      "netUSD": -1582.194899333252
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 52
+    }
+   }
+  },
+  "stressAug2026": {
+   "A CURRENT (30%/7회, 무제한)": {
+    "trades": 113,
+    "netUSD": 547.223301016737,
+    "returnPct": 54.72233010167369,
+    "winRatePct": 91.1504424778761,
+    "profitFactor": 3.3269058701147594,
+    "expectancyUSD": 4.842684079794132,
+    "maxDrawdownPct": 13.940034248914843,
+    "maxDrawdownUSD": 189.30441808116643,
+    "worstOpenUSD": -72.54634012723997,
+    "worstTradeUSD": -72.94435822099994,
+    "feesUSD": 19.828403209357838,
+    "fundingUSD": 17.178533343915007,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 75,
+      "netUSD": 67.80651275586752
+     },
+     "1": {
+      "n": 16,
+      "netUSD": 56.44760582110956
+     },
+     "2": {
+      "n": 7,
+      "netUSD": 112.36616331969684
+     },
+     "3": {
+      "n": 7,
+      "netUSD": 85.69493041086223
+     },
+     "4": {
+      "n": 4,
+      "netUSD": 176.32982551336704
+     },
+     "5+": {
+      "n": 4,
+      "netUSD": 48.57826319583356
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 182,
+     "DCA_UNIT_BELOW_MINIMUM_ORDER": 26,
+     "OPEN_RISK_LIMIT": 115
+    }
+   },
+   "C HYBRID 1·1·2·4·8 매물대": {
+    "trades": 36,
+    "netUSD": 4.129651307140989,
+    "returnPct": 0.4129651307140936,
+    "winRatePct": 88.88888888888889,
+    "profitFactor": 1.136215004452006,
+    "expectancyUSD": 0.11471253630947192,
+    "maxDrawdownPct": 2.724263091412786,
+    "maxDrawdownUSD": 27.612966521119688,
+    "worstOpenUSD": -10.113334113400809,
+    "worstTradeUSD": -10.325051087090383,
+    "feesUSD": 2.7128254186271605,
+    "fundingUSD": 1.3449835941200001,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 26,
+      "netUSD": 15.047682794799519
+     },
+     "1": {
+      "n": 4,
+      "netUSD": 3.425962621168317
+     },
+     "2": {
+      "n": 2,
+      "netUSD": 14.576750263694084
+     },
+     "3": {
+      "n": 1,
+      "netUSD": 1.38945930051555
+     },
+     "4": {
+      "n": 3,
+      "netUSD": -30.31020367303637
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 40,
+     "MAX_PER_DIRECTION": 333,
+     "OPEN_RISK_LIMIT": 16,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 11
+    }
+   },
+   "C HYBRID 1·1·2·4 매물대": {
+    "trades": 37,
+    "netUSD": 35.980936682668926,
+    "returnPct": 3.5980936682668885,
+    "winRatePct": 86.48648648648648,
+    "profitFactor": 1.8565166559403485,
+    "expectancyUSD": 0.9724577481802412,
+    "maxDrawdownPct": 2.988927365060614,
+    "maxDrawdownUSD": 30.842522863530917,
+    "worstOpenUSD": -10.280096420844101,
+    "worstTradeUSD": -11.208359472223622,
+    "feesUSD": 6.566141850987902,
+    "fundingUSD": 1.93331660835,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 23,
+      "netUSD": 20.811940598314607
+     },
+     "1": {
+      "n": 7,
+      "netUSD": 21.61915823730622
+     },
+     "2": {
+      "n": 3,
+      "netUSD": 35.527009547291534
+     },
+     "3": {
+      "n": 4,
+      "netUSD": -41.977171700243574
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 39,
+     "MAX_PER_DIRECTION": 331,
+     "OPEN_RISK_LIMIT": 27,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 2
+    }
+   },
+   "C HYBRID 고정수량 4회 매물대": {
+    "trades": 38,
+    "netUSD": 0.6585963754137083,
+    "returnPct": 0.06585963754137669,
+    "winRatePct": 86.8421052631579,
+    "profitFactor": 1.0171680190422805,
+    "expectancyUSD": 0.01733148356351864,
+    "maxDrawdownPct": 2.854317264619193,
+    "maxDrawdownUSD": 28.92658141060099,
+    "worstOpenUSD": -10.164839025400802,
+    "worstTradeUSD": -10.27056452419679,
+    "feesUSD": 2.9309639945274624,
+    "fundingUSD": 1.6521301547960001,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 27,
+      "netUSD": 20.89875326186861
+     },
+     "1": {
+      "n": 4,
+      "netUSD": 5.473977620562823
+     },
+     "2": {
+      "n": 2,
+      "netUSD": 11.867428784930143
+     },
+     "3": {
+      "n": 2,
+      "netUSD": -7.009266743812562
+     },
+     "4": {
+      "n": 3,
+      "netUSD": -30.572296548135387
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 54,
+     "MAX_PER_DIRECTION": 321,
+     "OPEN_RISK_LIMIT": 19,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 4
+    }
+   },
+   "C HYBRID 완만 4회 매물대": {
+    "trades": 37,
+    "netUSD": 1.39207153941652,
+    "returnPct": 0.13920715394164507,
+    "winRatePct": 86.48648648648648,
+    "profitFactor": 1.0361388006273538,
+    "expectancyUSD": 0.0376235551193654,
+    "maxDrawdownPct": 2.7680142835969876,
+    "maxDrawdownUSD": 28.066283476950503,
+    "worstOpenUSD": -10.1664105743424,
+    "worstTradeUSD": -10.305782049484783,
+    "feesUSD": 2.8140955658465616,
+    "fundingUSD": 1.622628186002,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 26,
+      "netUSD": 18.364214731362324
+     },
+     "1": {
+      "n": 4,
+      "netUSD": 4.46664667522032
+     },
+     "2": {
+      "n": 2,
+      "netUSD": 15.914607707454383
+     },
+     "3": {
+      "n": 2,
+      "netUSD": -6.659496335708577
+     },
+     "4": {
+      "n": 3,
+      "netUSD": -30.693901238912186
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 53,
+     "MAX_PER_DIRECTION": 320,
+     "OPEN_RISK_LIMIT": 19,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 7
+    }
+   },
+   "C HYBRID 1·1·2·4·8 고정2%": {
+    "trades": 46,
+    "netUSD": -27.80058776593694,
+    "returnPct": -2.780058776593697,
+    "winRatePct": 73.91304347826086,
+    "profitFactor": 0.6910304770091263,
+    "expectancyUSD": -0.6043606036073248,
+    "maxDrawdownPct": 7.820380366871346,
+    "maxDrawdownUSD": 80.66476349905008,
+    "worstOpenUSD": -10.045757453902784,
+    "worstTradeUSD": -10.35860984700356,
+    "feesUSD": 6.056065869837283,
+    "fundingUSD": 2.15510561105,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 29,
+      "netUSD": 13.832005585899863
+     },
+     "1": {
+      "n": 3,
+      "netUSD": 6.573848666949765
+     },
+     "2": {
+      "n": 3,
+      "netUSD": 19.046935319885623
+     },
+     "3": {
+      "n": 2,
+      "netUSD": 22.682849891664816
+     },
+     "4": {
+      "n": 9,
+      "netUSD": -89.93622723033708
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 46,
+     "MAX_PER_DIRECTION": 312,
+     "OPEN_RISK_LIMIT": 19,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 4,
+     "DAILY_LOSS_LIMIT": 9
+    }
+   },
+   "C HYBRID 1·1·2·4·8 ATR1.5": {
+    "trades": 48,
+    "netUSD": -38.92089397137829,
+    "returnPct": -3.8920893971378323,
+    "winRatePct": 75,
+    "profitFactor": 0.6045239145927701,
+    "expectancyUSD": -0.8108519577370478,
+    "maxDrawdownPct": 6.141653474754688,
+    "maxDrawdownUSD": 62.510770711623536,
+    "worstOpenUSD": -9.886407017087924,
+    "worstTradeUSD": -10.284152688327895,
+    "feesUSD": 11.819984854057857,
+    "fundingUSD": 3.0163600062499993,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 25,
+      "netUSD": 14.781721744023237
+     },
+     "1": {
+      "n": 10,
+      "netUSD": 26.665606639415557
+     },
+     "2": {
+      "n": 1,
+      "netUSD": 6.486058120833218
+     },
+     "3": {
+      "n": 1,
+      "netUSD": 5.3111028415484425
+     },
+     "4": {
+      "n": 11,
+      "netUSD": -92.16538331719856
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 55,
+     "MAX_PER_DIRECTION": 307,
+     "OPEN_RISK_LIMIT": 12,
+     "DAILY_LOSS_LIMIT": 11,
+     "PROFILE_UNIT_BELOW_MINIMUM_ORDER": 3
+    }
+   },
+   "C HYBRID 추매 0회": {
+    "trades": 64,
+    "netUSD": -15.533462195183233,
+    "returnPct": -1.5533462195183256,
+    "winRatePct": 50,
+    "profitFactor": 0.9517979039121639,
+    "expectancyUSD": -0.24271034679973802,
+    "maxDrawdownPct": 12.165215559698954,
+    "maxDrawdownUSD": 133.22418356615128,
+    "worstOpenUSD": -10.499484274176012,
+    "worstTradeUSD": -11.076114212939773,
+    "feesUSD": 59.46674564910734,
+    "fundingUSD": 5.013858099600002,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 64,
+      "netUSD": -15.533462195183468
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 49,
+     "MAX_PER_DIRECTION": 285,
+     "OPEN_RISK_LIMIT": 28,
+     "DAILY_LOSS_LIMIT": 10
+    }
+   },
+   "B TRADER_REPLICA (가정)": {
+    "trades": 419,
+    "netUSD": 1808.1031002345635,
+    "returnPct": 180.81031002345634,
+    "winRatePct": 100,
+    "profitFactor": null,
+    "expectancyUSD": 4.315281862134996,
+    "maxDrawdownPct": 39.396801826718765,
+    "maxDrawdownUSD": 997.0328399701925,
+    "worstOpenUSD": -1379.8813398155348,
+    "worstTradeUSD": 0.452007697945707,
+    "feesUSD": 533.2144547451993,
+    "fundingUSD": 51.2946456458,
+    "liquidated": false,
+    "byAdds": {
+     "0": {
+      "n": 298,
+      "netUSD": 371.90359017449885
+     },
+     "1": {
+      "n": 58,
+      "netUSD": 144.55500269317798
+     },
+     "2": {
+      "n": 37,
+      "netUSD": 189.10070528771936
+     },
+     "3": {
+      "n": 9,
+      "netUSD": 110.712035139737
+     },
+     "5+": {
+      "n": 17,
+      "netUSD": 991.8317669394283
+     }
+    },
+    "skipped": {
+     "SYMBOL_BUSY": 17
+    }
+   }
+  }
+ }
+}

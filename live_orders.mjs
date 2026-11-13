@@ -4,7 +4,7 @@
 import {createHash} from 'node:crypto';
 import {roundDecimalToStep,multiplyDecimal} from './decimal_grid.mjs';
 import {evenPositions} from './paper.mjs';
-import {planZoneDca,clampMaxAdds,DCA_DEFAULTS,HOURLY_MAX_ADDS_DEFAULT} from './dca_plan.mjs';
+import {planZoneDca,planProfile,clampMaxAdds,DCA_DEFAULTS,HOURLY_MAX_ADDS_DEFAULT} from './dca_plan.mjs';
 
 export const LIVE_MODES=Object.freeze(['OFF','TESTNET','LIVE']);
 export const LIVE_CONFIRM_PHRASE='REAL_MONEY';
@@ -22,6 +22,15 @@ export const RISK_PROFILES=Object.freeze({CONSERVATIVE:Object.freeze({maxLossPct
 export function liveConfig(env=process.env){
  const base=liveConfigBase(env),asked=String(env.LIVE_RISK_PROFILE||'').toUpperCase();
  const riskProfile=['CURRENT','CONSERVATIVE'].includes(asked)?asked:base.mode==='LIVE'?'CURRENT':'CONSERVATIVE';
+ // Strategy profile (stage 5, 2026-11-13): TESTNET / OFF trade HYBRID — the first quantity worked
+ // back from the risk limit (loss at the stop with every add filled = maxLossPct of the balance),
+ // adds 1·1·2·4 (3 adds) at volume zones — the best profile of the train / validation backtest.
+ // LIVE keeps CURRENT until the user approves. LIVE_STRATEGY_PROFILE=CURRENT|HYBRID overrides;
+ // LIVE_HYBRID_MAX_ADDS (0-10, default 3).
+ const askedStrategy=String(env.LIVE_STRATEGY_PROFILE||'').toUpperCase();
+ const strategyProfile=['CURRENT','HYBRID'].includes(askedStrategy)?askedStrategy:base.mode==='LIVE'?'CURRENT':'HYBRID';
+ const hybridMaxAdds=clampMaxAdds(env.LIVE_HYBRID_MAX_ADDS,3);
+ base.strategyProfile=strategyProfile;base.hybridMaxAdds=hybridMaxAdds;
  if(!(riskProfile==='CONSERVATIVE'&&base.sizing==='BALANCE'))return {...base,riskProfile};
  // An explicit LIVE_MAX_OPEN_POSITIONS=N (N > 0) still sets the count; otherwise the profile's 4.
  // The profile is a ceiling: a stricter single value (e.g. LIVE_DAILY_MAX_LOSS_PCT=2) is kept.
@@ -102,6 +111,7 @@ export function liveSplitPlan({row,balanceUSD,leverage,sizeScale=1,config}){
  // The per-trade worst-loss cap below and the open-risk cap in the executor still bound it.
  const floorPct=positive(config.minUnitMarginUSD)?config.minUnitMarginUSD/balanceUSD*100:0;
  const unitPct=Math.min(100,Math.max(config.unitPct*sizeScale,floorPct));
+ if(config.strategyProfile==='HYBRID')return hybridSplitPlan({row,c,g,tick,minBase,entry,inp,balanceUSD,leverage,sizeScale,config});
  for(const set of inp?.zoneSets||[]){
   const d=planZoneDca({direction:row.direction,entry,atr:inp.atr,zones:set.zones,balanceUSD,leverage,unitPct,tickSize:tick,quantityStep:g.step,
    minQuantity:minBase,minNotional:Number(c.minNotionalUSDT)||0,takerRate:inp.takerRate,settings:{maxLossPct:config.maxLossPct,maxAdds:config.maxAdds}});
@@ -117,6 +127,27 @@ export function liveSplitPlan({row,balanceUSD,leverage,sizeScale=1,config}){
  const total=venueQty(base,c),risk=base*Math.abs(entry-stop);
  if(!(total>0)||risk>balanceUSD*config.maxLossPct/100)return null;
  return {stop,zoneSource:null,riskUSD:risk,leverage,qty:{base,riskUSD:risk,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts:splitParts(total,c)},adds:[]};
+}
+
+/** HYBRID: the risk limit sets the size (see planProfile); adds 1·1·2·4… at the first zone set that
+ * gives a plan; no zone set -> one entry at the pattern stop, sized the same way. */
+function hybridSplitPlan({row,c,g,tick,minBase,entry,inp,balanceUSD,leverage,sizeScale,config}){
+ const common={profile:'HYBRID',direction:row.direction,entry,atr:inp?.atr,signalStop:Number(row.stop),balanceUSD,leverage,tickSize:tick,quantityStep:g.step,
+  minQuantity:minBase,minNotional:Number(c.minNotionalUSDT)||0,takerRate:inp?.takerRate??.0006,riskPct:config.maxLossPct*sizeScale,schedule:'DOUBLE',spacing:'ZONE'};
+ // Each take-profit part (40/35/25 %) must be a valid order on its own (as planZoneDca checks):
+ // a plan whose parts would round to 0 or below the minimum is not used.
+ const minPart=g.contract?1:Math.max(g.step,minBase);
+ const build=(d,label)=>{const total=venueQty(d.entryQty,c);if(!(total>0))return null;
+  if(splitParts(total,c).some(p=>!(p>=minPart-1e-12)))return null;
+  return {stop:d.stop,zoneSource:label,riskUSD:d.fullLossUSD,leverage,strategyProfile:'HYBRID',
+   qty:{base:d.entryQty,riskUSD:d.fullLossUSD,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts:splitParts(total,c)},
+   adds:d.adds.map(a=>({price:a.price,units:Math.round(a.quantity/d.unitQty),qty:venueQty(a.quantity,c),orderId:null,filled:false})).filter(a=>a.qty>0)}};
+ if(config.hybridMaxAdds>0&&positive(inp?.atr))for(const set of inp?.zoneSets||[]){
+  const d=planProfile({...common,zones:set.zones,maxAdds:config.hybridMaxAdds});
+  if(d.ok&&d.adds.length){const out=build(d,set.label);if(out)return out}
+ }
+ const d=planProfile({...common,atr:positive(inp?.atr)?inp.atr:Math.abs(entry-Number(row.stop))||1,zones:[],maxAdds:0});
+ return d.ok?build(d,null):null;
 }
 
 /** BingX one-way mode requests. The entry carries an attached STOP_MARKET so the
