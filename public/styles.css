@@ -671,3 +671,8 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .add-chip small{color:var(--dim);font-size:10px}
 .live-position .paper-levels summary{font-size:11.5px;margin-top:6px}
 @media(max-width:690px){.live-values{grid-template-columns:repeat(2,minmax(0,1fr))}.live-line{flex-direction:column;gap:3px}.live-line>span:first-child{flex:none}}
+/* Position values on one line when the screen allows (cells sized to their content). */
+.live-values{display:flex;flex-wrap:wrap;gap:6px 22px;padding:9px 12px}
+.live-values>span{flex:0 0 auto;min-width:0}
+.live-values .tp-cell{grid-column:auto}
+@media(max-width:690px){.live-values{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px}}
