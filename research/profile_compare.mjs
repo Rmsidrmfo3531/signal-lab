@@ -23,6 +23,13 @@ const base=s=>({direction:s.direction,entry:s.entry,atr:s.atr,zones:s.zones,sign
 const CONFIGS={
  'A CURRENT (30%/7회, 무제한)':{profile:{profile:'CURRENT',maxAdds:7,maxLossPct:30},limits:{dailyLossPct:60,openRiskPct:60}},
  'C HYBRID 1·1·2·4·8 매물대':{profile:{profile:'HYBRID',maxAdds:4,schedule:'DOUBLE',spacing:'ZONE'}},
+ ...(process.env.MORE_ADDS?{
+ 'C HYBRID 추매 5회 매물대':{profile:{profile:'HYBRID',maxAdds:5,schedule:'DOUBLE',spacing:'ZONE'}},
+ 'C HYBRID 추매 7회 매물대':{profile:{profile:'HYBRID',maxAdds:7,schedule:'DOUBLE',spacing:'ZONE'}},
+ 'C HYBRID 고정수량 7회 매물대':{profile:{profile:'HYBRID',maxAdds:7,schedule:'FIXED',spacing:'ZONE'}},
+ 'C HYBRID 완만 7회 매물대':{profile:{profile:'HYBRID',maxAdds:7,schedule:'GENTLE',spacing:'ZONE'}},
+ 'C HYBRID 추매 7회 위험2%':{profile:{profile:'HYBRID',maxAdds:7,schedule:'DOUBLE',spacing:'ZONE'},riskPct:2},
+ 'C HYBRID 1·1·2·4 위험2%':{profile:{profile:'HYBRID',maxAdds:3,schedule:'DOUBLE',spacing:'ZONE'},riskPct:2}}:{}),
  'C HYBRID 1·1·2·4 매물대':{profile:{profile:'HYBRID',maxAdds:3,schedule:'DOUBLE',spacing:'ZONE'}},
  'C HYBRID 고정수량 4회 매물대':{profile:{profile:'HYBRID',maxAdds:4,schedule:'FIXED',spacing:'ZONE'}},
  'C HYBRID 완만 4회 매물대':{profile:{profile:'HYBRID',maxAdds:4,schedule:'GENTLE',spacing:'ZONE'}},
@@ -42,7 +49,7 @@ function run(name,cfg,[from,to],seed=0){
  const cs=Object.fromEntries(Object.entries(candles).map(([k,v])=>[k,v.filter(c=>c.t>=from&&c.t<to+30*86400000)]));
  const isHybrid=cfg.profile.profile==='HYBRID';
  const r=runPortfolio({candles:cs,signals:sigs,startBalance,barMs:HOUR,limits:isHybrid?HYBRID_LIMITS:{...cfg.limits},
-  plan:(s,acc)=>{const p=planProfile({...base(s),...cfg.profile,balanceUSD:acc.balance,riskPct:1});if(!p.ok){acc.skip(p.reasons[0]);return null}
+  plan:(s,acc)=>{const p=planProfile({...base(s),...cfg.profile,balanceUSD:acc.balance,riskPct:cfg.riskPct??1});if(!p.ok){acc.skip(p.reasons[0]);return null}
    return {entryRef:s.entry,stop:p.stop,targets:s.targets,quantity:p.entryQty,adds:p.adds,riskUSD:p.fullLossUSD??0,targetsFromAveragePct:p.targetsFromAveragePct??null,
     breakeven:cfg.replica?false:true,meta:{profile:name}}}});
  // Positions still open when the window ends are closed at the last candle (counted).
