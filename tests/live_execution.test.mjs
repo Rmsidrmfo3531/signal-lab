@@ -627,3 +627,13 @@ test('HYBRID on testnet: the risk limit sets the size, adds 1·1·2·4 at zones,
  const full=r.quantity.total*(100-r.stop)+r.adds.reduce((t,a)=>t+a.qty*(a.price-r.stop),0);
  assert.ok(full<=1000*.01*1.0001&&full>=1000*.01*.8,'full loss about 1 % of the 1,000 free margin: '+full);
 });
+
+test('HYBRID: a plan whose take-profit parts round below the minimum order is not used',async()=>{
+ const {liveSplitPlan}=await import('../live_orders.mjs');
+ const zones=[97,94,91].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ const sig=row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}});
+ const cfg=config({sizing:'BALANCE',maxLossPct:1,strategyProfile:'HYBRID',hybridMaxAdds:3});
+ const small=liveSplitPlan({row:sig,balanceUSD:40,leverage:18,config:cfg});
+ assert.ok(small===null||small.qty.parts.every(p=>p>0),'never a zero part: '+JSON.stringify(small?.qty));
+ const big=liveSplitPlan({row:sig,balanceUSD:1000,leverage:18,config:cfg});assert.ok(big&&big.qty.parts.every(p=>p>0));
+});

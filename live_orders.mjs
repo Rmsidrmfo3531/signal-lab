@@ -134,7 +134,11 @@ export function liveSplitPlan({row,balanceUSD,leverage,sizeScale=1,config}){
 function hybridSplitPlan({row,c,g,tick,minBase,entry,inp,balanceUSD,leverage,sizeScale,config}){
  const common={profile:'HYBRID',direction:row.direction,entry,atr:inp?.atr,signalStop:Number(row.stop),balanceUSD,leverage,tickSize:tick,quantityStep:g.step,
   minQuantity:minBase,minNotional:Number(c.minNotionalUSDT)||0,takerRate:inp?.takerRate??.0006,riskPct:config.maxLossPct*sizeScale,schedule:'DOUBLE',spacing:'ZONE'};
+ // Each take-profit part (40/35/25 %) must be a valid order on its own (as planZoneDca checks):
+ // a plan whose parts would round to 0 or below the minimum is not used.
+ const minPart=g.contract?1:Math.max(g.step,minBase);
  const build=(d,label)=>{const total=venueQty(d.entryQty,c);if(!(total>0))return null;
+  if(splitParts(total,c).some(p=>!(p>=minPart-1e-12)))return null;
   return {stop:d.stop,zoneSource:label,riskUSD:d.fullLossUSD,leverage,strategyProfile:'HYBRID',
    qty:{base:d.entryQty,riskUSD:d.fullLossUSD,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts:splitParts(total,c)},
    adds:d.adds.map(a=>({price:a.price,units:Math.round(a.quantity/d.unitQty),qty:venueQty(a.quantity,c),orderId:null,filled:false})).filter(a=>a.qty>0)}};
