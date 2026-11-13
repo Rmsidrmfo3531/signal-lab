@@ -33,7 +33,10 @@ export function liveConfig(env=process.env){
   // virtual USDT trade like the real $400 account, or a live account use only part of its funds.
   balanceCapUSD:num('LIVE_BALANCE_CAP_USD',0,0,10000000),
   // Optional first-entry margin floor: at least this much margin per unit; 0 = off (default, user 2026-11-13).
-  minUnitMarginUSD:num('LIVE_MIN_UNIT_MARGIN_USD',0,0,1000)};
+  minUnitMarginUSD:num('LIVE_MIN_UNIT_MARGIN_USD',0,0,1000),
+  // A new position (entry + all its resting adds) uses at most this share of the margin still free,
+  // so each next position is sized from what is left: 25 %, then 25 % of the remaining 75 %, ...
+  marginUsePct:num('LIVE_MARGIN_USE_PCT',25,1,100)};
 }
 
 /** Deterministic client order id from the signal key: the same signal can never be sent twice. */

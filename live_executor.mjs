@@ -25,6 +25,9 @@ import {venueStop,venueCosts} from './venue_execution.mjs';
 import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight} from './live_orders.mjs';
 
 const MAX_RECORDS=300,MAX_DELETED_KEYS=500,MAX_EVENTS=40;
+/** Margin a plan ties up at the venue: the first entry plus every resting add, at the given leverage. */
+const planMargin=(split,row,leverage)=>{if(!split)return 0;const cs=split.qty.unit==='CONTRACT'?Number(row?.venueContract?.contractSizeBase)||1:1;
+ return (Number(split.qty.base)*Number(row?.entry)+(split.adds||[]).reduce((t,a)=>t+Number(a.qty)*cs*Number(a.price),0))/leverage};
 const pick=(data,...keys)=>{for(const k of keys)if(data?.[k]!==undefined&&data[k]!==null&&data[k]!=='')return data[k];return undefined};
 const orderOf=data=>data?.order??data;
 const bingxOrderId=data=>{const o=orderOf(data);const id=pick(o,'orderID','orderId');return id===undefined?null:String(id)};
@@ -97,7 +100,7 @@ export class LiveExecutor{
  credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
  status(){
   return {mode:this.config.mode,armed:this.armed,killSwitch:this.store.killSwitch,liveConfirmed:this.config.liveConfirmed,venues:this.config.venues,
-   credentialsConfigured:this.credentials(),limits:{sizing:this.config.sizing,balanceCapUSD:this.config.balanceCapUSD||null,unitPct:this.config.unitPct,maxLossPct:this.config.maxLossPct,dailyMaxLossPct:this.config.dailyMaxLossPct,maxRiskUSD:this.config.maxRiskUSD,dailyMaxRiskUSD:this.config.dailyMaxRiskUSD,maxOpen:this.config.maxOpen,maxPerDirection:this.config.maxPerDirection},
+   credentialsConfigured:this.credentials(),limits:{sizing:this.config.sizing,marginUsePct:this.config.marginUsePct??25,balanceCapUSD:this.config.balanceCapUSD||null,unitPct:this.config.unitPct,maxLossPct:this.config.maxLossPct,dailyMaxLossPct:this.config.dailyMaxLossPct,maxRiskUSD:this.config.maxRiskUSD,dailyMaxRiskUSD:this.config.dailyMaxRiskUSD,maxOpen:this.config.maxOpen,maxPerDirection:this.config.maxPerDirection},
    records:this.store.records.slice(-30).reverse().map(({events,...r})=>({...r,lastEvent:events?.at(-1)??null,deletable:this.deleteBlock(r)===null})),skipped:this.store.skipped.slice(-20).reverse()};
  }
  arm(){
@@ -138,18 +141,28 @@ export class LiveExecutor{
    // Read the balance only when an order could actually be sent.
    const gateOpen=this.config.mode!=='OFF'&&this.armed&&!this.store.killSwitch&&this.config.venues.includes(venue)&&this.credentials()[venue]&&contract;
    if(gateOpen){
-    let balanceUSD=null;try{balanceUSD=await this.#balance(venue)}catch(error){extra.push('BALANCE_UNAVAILABLE')}
-    if(balanceUSD>0&&this.config.balanceCapUSD>0)balanceUSD=Math.min(balanceUSD,this.config.balanceCapUSD);
-    if(balanceUSD>0){
-     const active=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).length;
-     split=liveSplitPlan({row,balanceUSD,leverage,sizeScale:.5**active,config:this.config});
+    let bal=null;try{bal=await this.#funds(venue)}catch(error){extra.push('BALANCE_UNAVAILABLE')}
+    // Size from the margin still free (what earlier positions and their resting adds have not
+    // taken), so each new position is proportional to what is left and always fits. The account
+    // equity still sets the daily / open-loss limits.
+    let balanceUSD=bal?.equity||0,freeUSD=bal?.available??balanceUSD;
+    if(balanceUSD>0&&this.config.balanceCapUSD>0){const used=Math.max(0,balanceUSD-freeUSD);balanceUSD=Math.min(balanceUSD,this.config.balanceCapUSD);freeUSD=Math.max(0,Math.min(freeUSD,balanceUSD-used))}
+    if(balanceUSD>0&&!(freeUSD>0)&&!extra.length)extra.push('MARGIN_SHORT');
+    if(balanceUSD>0&&freeUSD>0){
+     // The whole plan (entry + every resting add) uses at most marginUsePct of the free margin:
+     // shrunk once to fit, refused if it still does not.
+     const budget=freeUSD*(this.config.marginUsePct??25)/100;
+     split=liveSplitPlan({row,balanceUSD:freeUSD,leverage,config:this.config});
+     const need=planMargin(split,row,leverage);
+     if(split&&need>budget)split=liveSplitPlan({row,balanceUSD:freeUSD,leverage,sizeScale:budget/need*.98,config:this.config});
+     if(split&&planMargin(split,row,leverage)>budget){split=null;extra.push('MARGIN_SHORT')}
      if(split){qty=split.qty;row={...row,stop:split.stop}}
      config={...this.config,dailyMaxRiskUSD:balanceUSD*this.config.dailyMaxLossPct/100};
      // Open-risk cap: the worst losses of every open position plus this one stay within the daily
      // loss limit of the balance — positions opened on earlier days count too (margin floor safety).
      const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
      if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
-     split&&(split.balanceUSD=balanceUSD);
+     split&&(split.balanceUSD=freeUSD);
     }else if(!extra.length)extra.push('BALANCE_EMPTY');
    }
   }else qty=contract?liveQuantity({quantity:row.targetPlan?.quantity,estimatedStopLossUSD:row.execution?.estimatedStopLossUSD,maxRiskUSD:this.config.maxRiskUSD,contract}):null;
@@ -322,6 +335,17 @@ export class LiveExecutor{
    catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})}
   }
   record.targetParts=parts;
+ }
+ /** Account equity and the margin still free (BingX availableMargin, Gate available). */
+ async #funds(venue){
+  if(venue==='BINGX'){
+   const data=await this.clients.BINGX.balance(),list=Array.isArray(data)?data:[data?.balance??data];
+   const usdt=list.find(x=>x?.asset==='USDT')??list[0],equity=Number(usdt?.equity??usdt?.balance)||0;
+   const raw=usdt?.availableMargin,free=Number(raw);
+   return {equity,available:raw!==undefined&&raw!==null&&raw!==''&&Number.isFinite(free)?Math.max(0,free):equity};
+  }
+  const a=await this.clients.GATEIO.account(),total=Number(a?.total)||0,free=Number(a?.available);
+  return {equity:total||free||0,available:Number.isFinite(free)?Math.max(0,free):total};
  }
  async #balance(venue){
   if(venue==='BINGX'){
