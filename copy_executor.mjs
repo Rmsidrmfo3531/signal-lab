@@ -44,14 +44,20 @@ export function resolveCopyContract(contracts,symbol){
  for(const [key,c] of contracts)if(re.test(key))return {...c,alias:key};
  return null;
 }
+// Real money (user 2026-11-14, "실계좌, 지금 설정 그대로"): only with COPY_MODE=LIVE and
+// COPY_LIVE_CONFIRM=REAL_MONEY_COPY in the server's .env (set by the user), on its own BingX live client,
+// independent of the signal strategy (which stays on the testnet). Starts disarmed after every restart;
+// the copy arm button (or POST /api/copy/arm) turns it on.
+export const COPY_LIVE_PHRASE='REAL_MONEY_COPY';
 export function copyConfig(env=process.env,liveMode='OFF'){
  const n=(k,d,lo,hi)=>{const v=Number(env[k]);return Number.isFinite(v)&&v>=lo&&v<=hi?v:d};
  // TESTNET only. COPY_TRADING=off turns it off.
- const enabled=String(env.COPY_TRADING||'').toLowerCase()!=='off'&&liveMode==='TESTNET';
+ const mode=String(env.COPY_MODE||'').toUpperCase()==='LIVE'&&env.COPY_LIVE_CONFIRM===COPY_LIVE_PHRASE?'LIVE':liveMode==='TESTNET'?'TESTNET':'OFF';
+ const enabled=String(env.COPY_TRADING||'').toLowerCase()!=='off'&&mode!=='OFF';
  // BALANCE_RATIO (user 2026-11-13, default): the trader's quantities x our equity / the trader's balance
  // (20,000 $), no 1 $ floor. FIRST_1USD: the earlier rule (first buy 1 $ of margin, later buys in proportion).
  const sizing=String(env.COPY_SIZING||'').toUpperCase()==='FIRST_1USD'?'FIRST_1USD':'BALANCE_RATIO';
- return {enabled,sizing,traderBalanceUSD:n('COPY_TRADER_BALANCE_USD',COPY_DEFAULTS.traderBalanceUSD,100,1e9),marginUSD:n('COPY_MARGIN_USD',COPY_DEFAULTS.marginUSD,.1,1000),maxLossPct:n('COPY_MAX_LOSS_PCT',COPY_DEFAULTS.maxLossPct,1,90),
+ return {enabled,mode,sizing,traderBalanceUSD:n('COPY_TRADER_BALANCE_USD',COPY_DEFAULTS.traderBalanceUSD,100,1e9),marginUSD:n('COPY_MARGIN_USD',COPY_DEFAULTS.marginUSD,.1,1000),maxLossPct:n('COPY_MAX_LOSS_PCT',COPY_DEFAULTS.maxLossPct,1,90),
   snapshotMs:n('COPY_SNAPSHOT_MS',COPY_DEFAULTS.snapshotMs,0,3600000),maxLeverage:n('COPY_MAX_LEVERAGE',COPY_DEFAULTS.maxLeverage,1,125),
   // All copy positions together: margin at most this share of the equity (adds beyond it skipped), and
   // when their open loss reaches COPY_LEDGER_LOSS_PCT of the equity everything is closed and copying stops.
@@ -68,23 +74,27 @@ export function copyConfig(env=process.env,liveMode='OFF'){
 }
 
 export class CopyExecutor{
- constructor({config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
+ constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
   Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent});
-  this.file=directory?path.join(directory,'copy-store.json'):null;
+  this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
-  this.queue=Promise.resolve();this.reserved=new Set();
+  this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;
  }
+ arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
+ disarm(){this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
  #save(){if(!this.file)return;this.store.closed=this.store.closed.slice(-MAX_CLOSED);this.store.events=this.store.events.slice(-MAX_EVENTS);this.store.seen=this.store.seen.slice(-MAX_SEEN);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...this.store})}
- #event(type,detail={}){const e={type,at:this.now(),...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
+ #event(type,detail={}){const e={type,at:this.now(),mode:this.config.mode,...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
- status(){return {stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+ status(){return {mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:this.store.closed.slice(-50).reverse(),events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
 
  /** One channel message ({id, date (ms), text}); processed one at a time, each id once. */
- handle(message){const p=this.queue.then(()=>this.#handle(message));this.queue=p.catch(()=>{});return p}
+ handle(message){this.pendingCount=(this.pendingCount||0)+1;const p=this.queue.then(()=>this.#handle(message)).finally(()=>{this.pendingCount--});this.queue=p.catch(()=>{});return p}
+ /** No message being processed (the update restart waits for this). */
+ idle(){return !(this.pendingCount>0)}
  async #handle({id,date,text}){
   const key=String(id??createHash('sha1').update(String(text)).digest('hex'));
   if(this.store.seen.includes(key))return {ok:true,duplicate:true};
@@ -248,7 +258,7 @@ export class CopyExecutor{
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
   this.store.positions[key]=p;
   const fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'});
-  p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});
+  p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
   await this.#protect(p);
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('OPENED',{symbol:m.symbol,direction:m.direction,leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
@@ -294,7 +304,7 @@ export class CopyExecutor{
   if(eq&&used+buy*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(buy*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
   if(free!==null&&buy*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(buy*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
   const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:'add'+(p.adds+1)});p.adds++;
-  p.steps.push({kind:'ADD',at:this.now(),qty:buy,avg:fill.avg,theirQty,marginUSD});
+  p.steps.push({kind:'ADD',at:this.now(),qty:buy,avg:fill.avg,theirQty,marginUSD});this.#save();
   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('ADDED',{symbol:p.symbol,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
   return {ok:true};
