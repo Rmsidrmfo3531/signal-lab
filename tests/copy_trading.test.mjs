@@ -112,12 +112,13 @@ test('copy review fixes: new stop before the old is cancelled; no stop at all ->
  const before=v.size;await ex.handle({id:2,date:1e12,text:CHANGE(300,200)});assert.equal(before-v.size,Math.round(before/3));
 });
 
-test('copy: a venue that refuses a second close-position stop gets the swap the other way round',async()=>{
+test('copy: a venue that refuses a second close-position stop keeps the first one (never cancelled first)',async()=>{
  const v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});
- const place=v.client.placeOrder;let stops=0;
- v.client.placeOrder=async p=>{if(p.type==='STOP_MARKET'&&++stops===1)throw Object.assign(Error('exists'),{code:'VENUE_ERROR_101400'});return place(p)};
+ const first=ex.status().positions[0].stopOrderId,place=v.client.placeOrder;
+ v.client.placeOrder=async p=>{if(p.type==='STOP_MARKET')throw Object.assign(Error('exists'),{code:'VENUE_ERROR_101400'});return place(p)};
  await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
- const p=ex.status().positions[0];assert.equal(p.stopStale,false);assert.ok(p.stopOrderId);assert.equal(v.size,192);
+ const p=ex.status().positions[0];assert.equal(p.stopOrderId,first,'old stop kept');assert.equal(p.stopStale,true);assert.equal(v.size,192);
+ assert.equal(v.calls.filter(c=>c.op==='cancel').length,0,'nothing cancelled');
 });
 
 test('copy (user 2026-11-13): first buy 1 $, a later 진입 card of 0.4 = 1 $, 0.8 = 2 $; the same card twice is one buy; a 청산 card with a quantity closes that share',async()=>{

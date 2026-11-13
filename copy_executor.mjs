@@ -128,12 +128,11 @@ export class CopyExecutor{
     p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopOrderId=res?.orderId??null;p.stopStale=false;
     if(old&&old!==p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
     return}
-   catch(error){last=error;if(error.code==='HTTP_429')break;
-    // A venue that refuses a second close-position stop: cancel the old one and try again once.
-    if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId);p.stopOrderId=null}catch{}
-     try{const res=orderOf(await this.client.placeOrder(params));p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopOrderId=res?.orderId??null;p.stopStale=false;return}catch(e2){last=e2}}
-   }
+   catch(error){last=error;if(error.code==='HTTP_429')break}
   }
+  // Nothing placed. An old stop is never cancelled for this: it is a close-position stop, so it still
+  // protects the whole (larger) position — kept, and the routine check tries again. (A venue that
+  // refuses a second close-position stop simply keeps the first one.)
   p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:last?.code||last?.message||'UNKNOWN',detail:String(last?.message||'').slice(0,160)});
   if(!p.stopOrderId&&last?.code!=='HTTP_429')await this.#emergency(p,'NO_STOP');
  }
