@@ -179,8 +179,8 @@ test('copy review: the trader total follows the trader even when our buy is skip
 });
 
 test('copy BALANCE_RATIO: the trader quantity x our equity / 20,000 $, no 1 $ floor; each cut has its own order id',async()=>{
- // Default again (user 2026-11-14): 1 $ first margin, up to 100 % of the equity as margin.
- assert.equal(copyConfig({},'TESTNET').sizing,'FIRST_1USD');assert.equal(copyConfig({},'TESTNET').maxTotalMarginPct,100);assert.equal(copyConfig({},'TESTNET').marginUSD,1);
+ // Default (user 2026-11-14): balance ratio, up to 100 % of the equity as margin.
+ assert.equal(copyConfig({},'TESTNET').sizing,'BALANCE_RATIO');assert.equal(copyConfig({},'TESTNET').maxTotalMarginPct,100);assert.equal(copyConfig({},'TESTNET').marginUSD,1);
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const v=venue();const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_MAX_TOTAL_MARGIN_PCT:'30'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // 880 x 400 / 20,000 = 17.6 -> 17 coins (0.87 $ of notional... venue minimum 2 $ -> raised to the minimum).
@@ -215,14 +215,14 @@ test('copy entries need 90 % of the free margin; a venue minimum above 5 $ of ma
  const v=venue(),ex=make(v,{free:1});
  assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).reason,'MARGIN_SHORT');assert.equal(v.size,0);
  const big={...contract,minQuantityBase:'1000'};// 1000 coins x 0.05 / 5 = 10 $ of margin > 5 $
- const v2=venue(),ex2=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v2.client,contractOf:async()=>big,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const v2=venue(),ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v2.client,contractOf:async()=>big,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  const card=`📌 포지션 진입\nTNSRUSDT 🔴 Short ×5\n진입가 0.05 USDT\n현재가 0.05000 USDT\n수량 100`;
  assert.equal((await ex2.handle({id:1,date:1e12,text:card})).reason,'MIN_ORDER_TOO_LARGE');assert.equal(v2.size,0);
 });
 
-test('copy FIRST_1USD (default): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
+test('copy FIRST_1USD (selectable): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
- const v=venue(),ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // The first buy: 1 $ of margin (raised to the venue minimum of 2 $ notional when smaller).
  await ex.handle({id:1,date:1e12,text:card(1000,'0.05000')});const first=v.size;assert.ok(first>0);
  assert.ok(first*0.05>=2&&first*0.05/ex.status().positions[0].leverage<=1.05,'about 1 $ of margin');
