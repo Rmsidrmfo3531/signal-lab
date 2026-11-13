@@ -20,7 +20,9 @@ export function liveConfig(env=process.env){
   // positions' worst losses within the daily loss limit) bounds exposure. LIVE_MAX_OPEN_POSITIONS=N
   // brings back N positions, half per direction.
   ...(()=>{const n=Number(env.LIVE_MAX_OPEN_POSITIONS);const on=env.LIVE_MAX_OPEN_POSITIONS!==undefined&&env.LIVE_MAX_OPEN_POSITIONS!==''&&n>0;
-   return on?{maxOpen:evenPositions(n,4,20),maxPerDirection:evenPositions(n,4,20)/2}:{maxOpen:0,maxPerDirection:0}})(),
+   // RISK_USD sizing has no open-risk cap: it keeps the old 4 positions (2 per direction).
+   const riskUsd=String(env.LIVE_SIZING||'').toUpperCase()==='RISK_USD';
+   return on?{maxOpen:evenPositions(n,4,20),maxPerDirection:evenPositions(n,4,20)/2}:riskUsd?{maxOpen:4,maxPerDirection:2}:{maxOpen:0,maxPerDirection:0}})(),
   // BALANCE (default): the account balance is read before every entry and the position is
   // sized like the paper one (unit = balance x DCA_UNIT_PCT x leverage, adds 1, 2, 4 ... units
   // at volume zones, stop beyond the last add). RISK_USD: the old fixed LIVE_MAX_RISK_USD sizing.
