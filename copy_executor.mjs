@@ -26,7 +26,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:30,ledgerLossPct:50});
+export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:30,ledgerLossPct:50});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -57,6 +57,10 @@ export function copyConfig(env=process.env,liveMode='OFF'){
   // when their open loss reaches COPY_LEDGER_LOSS_PCT of the equity everything is closed and copying stops.
   // Up to COPY_MAX_ADDS adds are followed (user 2026-11-13: 10); the position is closed when the price
   // closes beyond the stop zone on a 15m candle whose volume is COPY_BREAK_VOLUME_MULT x its 20-candle average.
+  // COPY_STOPS=on brings back the exchange backstop and the volume-zone exit. Off by default (user
+  // 2026-11-13, testnet: "손절라인을 없애보자"): the copy follows the trader's own exits; only the ledger
+  // loss limit (COPY_LEDGER_LOSS_PCT) and the margin caps stay.
+  stops:String(env.COPY_STOPS||'').toLowerCase()==='on',
   backstopPct:n('COPY_BACKSTOP_PCT',COPY_DEFAULTS.backstopPct,5,90),
   maxAdds:n('COPY_MAX_ADDS',COPY_DEFAULTS.maxAdds,0,100),breakVolumeMult:n('COPY_BREAK_VOLUME_MULT',COPY_DEFAULTS.breakVolumeMult,1,10),
   stopMinPct:n('COPY_STOP_MIN_PCT',COPY_DEFAULTS.stopMinPct,.5,80),stopMaxPct:n('COPY_STOP_MAX_PCT',COPY_DEFAULTS.stopMaxPct,1,95),stopBufferPct:n('COPY_STOP_BUFFER_PCT',COPY_DEFAULTS.stopBufferPct,0,5),
@@ -76,7 +80,7 @@ export class CopyExecutor{
  #event(type,detail={}){const e={type,at:this.now(),...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
- status(){return {maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+ status(){return {stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:this.store.closed.slice(-50).reverse(),events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
 
  /** One channel message ({id, date (ms), text}); processed one at a time, each id once. */
@@ -115,6 +119,8 @@ export class CopyExecutor{
  // cannot be placed, the old one stays (the routine check tries again); with no stop at all — or a
  // stop price already passed — the position is closed at market.
  async #protect(p){
+  if(!this.config.stops){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}p.stopOrderId=null;p.stop=null;p.stopStale=false;p.stopSource='NONE';
+   const now=await this.#position(p);p.qty=now.size;if(now.avg)p.avg=now.avg;return}
   const now=await this.#position(p);p.qty=now.size;if(now.avg)p.avg=now.avg;
   if(!(p.qty>0))return;
   const bal=await this.balance().catch(()=>null),equity=pos(bal?.equity);
@@ -139,11 +145,28 @@ export class CopyExecutor{
     p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopOrderId=res?.orderId??null;p.stopStale=false;
     if(old&&old!==p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
     return}
-   catch(error){last=error;if(error.code==='HTTP_429')break}
+   catch(error){last=error;if(error.code==='HTTP_429')break;
+    // BingX allows one stop per position (VENUE_ERROR_110406 "a Stop Loss order already exists"): swap it —
+    // cancel the old one and place the new one right away (3 tries); if that fails, the old price is put
+    // back; if even that fails, the position is closed (never left without a stop).
+    if(p.stopOrderId&&/110406/.test(String(error.code||error.message))){
+     const oldId=p.stopOrderId,oldStop=p.stop;
+     try{await this.client.cancelOrder(p.venueSymbol,oldId)}catch(e){last=e;break}
+     p.stopOrderId=null;
+     for(const [k,attempt] of [params,params,params,oldStop?{...params,stopPrice:String(oldStop)}:null].entries()){
+      if(!attempt)continue;
+      try{const res=orderOf(await this.client.placeOrder(attempt));
+       if(k<3){p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopStale=false}else p.stopStale=true;
+       p.stopOrderId=res?.orderId??null;return}
+      catch(e){last=e;if(k<2)await new Promise(r=>setTimeout(r,500*(k+1)))}
+     }
+     this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:last?.code||last?.message||'UNKNOWN',detail:'stop swap failed'});await this.#emergency(p,'NO_STOP');return;
+    }
+   }
   }
   // Nothing placed. An old stop is never cancelled for this: it is a close-position stop, so it still
   // protects the whole (larger) position — kept, and the routine check tries again. (A venue that
-  // refuses a second close-position stop simply keeps the first one.)
+  // refuses a second close-position stop is handled above by swapping.)
   p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:last?.code||last?.message||'UNKNOWN',detail:String(last?.message||'').slice(0,160)});
   if(!p.stopOrderId&&last?.code!=='HTTP_429')await this.#emergency(p,'NO_STOP');
  }
@@ -310,8 +333,8 @@ export class CopyExecutor{
    try{const now=await this.#position(p);
     if(!(now.size>0)){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}this.#closed(p,'STOP_OR_EXTERNAL',now);continue}
     p.qty=now.size;p.avg=now.avg??p.avg;p.unrealized=now.unrealized;p.mark=now.mark;unrealized+=Number(now.unrealized)||0;
-    if(!p.stopOrderId||p.stopStale)await this.#protect(p);
-    if(p.stopZone&&await this.#zoneBroken(p).catch(()=>false)){await this.#emergency(p,'ZONE_BREAK_VOLUME');continue}
+    if(this.config.stops&&(!p.stopOrderId||p.stopStale)||!this.config.stops&&p.stopOrderId)await this.#protect(p);
+    if(this.config.stops&&p.stopZone&&await this.#zoneBroken(p).catch(()=>false)){await this.#emergency(p,'ZONE_BREAK_VOLUME');continue}
    }catch(error){if(error.code==='HTTP_429')break}
   }
   const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity);
