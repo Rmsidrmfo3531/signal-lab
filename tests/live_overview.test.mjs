@@ -43,7 +43,7 @@ test('open position view: exchange numbers when fresh, estimates marked, pending
  assert.equal(priceDecimals(v),3);const pf=priceFmt(v);assert.equal(pf(0.2),'0.200');assert.equal(pf(0.205),'0.205');
  const html=positionCardHTML(v);
  assert.match(html,/첫 진입가<b>0\.200<\/b>/);assert.match(html,/평균 진입가<b>0\.200<\/b>/);assert.match(html,/현재가<b>0\.205<\/b>/);
- assert.match(html,/0차 \/ 최대 2차/);assert.match(html,/1차 0\.195/);assert.match(html,/\+\$0\.50 \(\+50\.00%\)/);assert.match(html,/보유 중/);
+ assert.match(html,/0차 \/ 최대 2차/);assert.match(html,/<i>1차<\/i>0\.195/);assert.match(html,/\+\$0\.50 \(\+50\.00%\)/);assert.match(html,/보유 중/);
  assert.match(html,/손절·TP 직접 수정/);assert.match(positionCardHTML(stale),/추정/);
  assert.doesNotMatch(positionCardHTML({...v,status:'SUBMITTING'}),/손절·TP 직접 수정/,'only an OPEN position can be edited');
 });

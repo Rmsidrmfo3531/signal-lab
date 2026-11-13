@@ -592,7 +592,30 @@ $('testNotificationButton').addEventListener('click',()=>{
 $('scanButton').addEventListener('click',async e=>{const button=e.currentTarget;button.disabled=true;button.textContent='분석 중…';try{await loadAnalysis();toast(app.symbol+' 선택 종목 최신 분석 완료')}finally{button.disabled=false;button.textContent='✦ 선택 종목 분석'}});
 $('refreshButton').addEventListener('click',()=>loadAll());
 $('runScanNow').addEventListener('click',async()=>{const b=$('runScanNow');b.disabled=true;b.textContent='스캔 요청 중…';try{const x=await json('/api/scan',{method:'POST'});toast(x.accepted?'전체 보완 스캔을 시작했습니다. 처리 건수는 자동 갱신됩니다.':'이미 자동 스캔이 진행 중입니다.');}catch(e){toast('스캔 요청 실패: '+e.message,true)}finally{b.disabled=false;b.textContent='↻ 지금 스캔'}});
-$('updateButton').addEventListener('click',async()=>{const b=$('updateButton');b.disabled=true;try{const x=await json('/api/update/check',{method:'POST'});updateStatusText({...x,version:'5.8.0'});toast(x.message||'업데이트 확인 완료',x.state==='error')}catch(e){toast('업데이트 확인 실패: '+e.message,true)}finally{b.disabled=false}});
+// Cloud server: one tap fetches the GitHub version, lists the changes, applies and restarts.
+let gitUpdate=false;
+fetch('/api/update',{cache:'no-store'}).then(r=>r.json()).then(u=>{gitUpdate=u.git===true;if(gitUpdate){$('updateButton').textContent='↻ 업데이트';$('updateButton').title='GitHub 최신 버전을 확인하고 적용합니다';const el=$('updateStatus');if(el)el.textContent='클라우드 서버 · 업데이트 버튼으로 최신 버전 적용'}}).catch(()=>{});
+async function waitForRestart(){
+ const el=$('updateStatus');let down=false;
+ for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,3000));
+  try{const r=await fetch('/api/update',{cache:'no-store'});if(r.ok&&down){location.reload();return}if(!r.ok)down=true}catch{down=true}
+  if(el)el.textContent=down?'서버 재시작 중… 곧 새로고침됩니다':'적용 중…';
+ }
+ location.reload();
+}
+async function runGitUpdate(b){
+ const check=await json('/api/update/git');
+ if(check.state==='current'){toast('이미 최신 버전입니다 ('+check.current+')');return}
+ if(check.state!=='available'){toast(check.message||'업데이트를 확인하지 못했습니다',true);return}
+ const list=check.changes.map(c=>'· '+c.subject).join('\n');
+ if(!confirm(`새 버전 ${check.changes.length}건을 적용하고 서버를 재시작합니다.\n\n${list}\n\n재시작 후 실매매는 비활성으로 시작합니다. 실매매 화면에서 활성화를 다시 눌러 주세요.`))return;
+ const r=await fetch('/api/update/git',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'UPDATE'})}),x=await r.json().catch(()=>({}));
+ if(!r.ok||!x.ok)throw Error(x.message||x.error||'HTTP '+r.status);
+ toast(`업데이트 적용 (${x.from} → ${x.to}) · 서버 재시작 중`);b.textContent='재시작 중…';await waitForRestart();
+}
+$('updateButton').addEventListener('click',async()=>{const b=$('updateButton');b.disabled=true;
+ if(gitUpdate){try{await runGitUpdate(b)}catch(e){toast('업데이트 실패: '+e.message,true)}finally{b.disabled=false}return}
+ try{const x=await json('/api/update/check',{method:'POST'});updateStatusText({...x,version:'5.8.0'});toast(x.message||'업데이트 확인 완료',x.state==='error')}catch(e){toast('업데이트 확인 실패: '+e.message,true)}finally{b.disabled=false}});
  $('executionSide').addEventListener('change',loadExecution);$('executionSize').addEventListener('change',loadExecution);$('executionRefresh').addEventListener('click',loadExecution);$('dismissError').addEventListener('click',clearBanner);
 $('newsFilter').addEventListener('change',()=>{app.newsPage=1;app.expandedNewsId=null;renderNews()});
 $('newsSearch').addEventListener('input',()=>{app.newsPage=1;app.expandedNewsId=null;renderNews()});
