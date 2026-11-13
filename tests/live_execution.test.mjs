@@ -22,7 +22,7 @@ test('signatures reproduce the official examples (BingX openssl example, Gate.io
 });
 
 // ---- Mock venues that verify every signature exactly as documented ---------------
-function mockBingX({margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,entry='ok',stopAttached=true,positionAmt=()=>'0.20',stopPlacement='ok'}={}){
+function mockBingX({available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,entry='ok',stopAttached=true,positionAmt=()=>'0.20',stopPlacement='ok'}={}){
  const calls=[],orders=[];let id=1000;
  const fetcher=async(url,options)=>{
   const u=new URL(url),q=Object.fromEntries([...u.searchParams].filter(([k])=>k!=='signature'));
@@ -30,7 +30,7 @@ function mockBingX({margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,ent
   assert.equal(u.searchParams.get('signature'),createHmac('sha256',BINGX_SECRET).update(Object.keys(q).sort().map(k=>`${k}=${q[k]}`).join('&')).digest('hex'),'BingX signature');
   assert.ok(!url.includes(BINGX_SECRET));
   const call={method:options.method,path:u.pathname,params:q};calls.push(call);
-  if(u.pathname==='/openApi/swap/v3/user/balance')return json({code:0,data:[{asset:'USDT',balance:'1000',equity:'1000',availableMargin:'1000'}]});
+  if(u.pathname==='/openApi/swap/v3/user/balance')return json({code:0,data:[{asset:'USDT',balance:'1000',equity:'1000',availableMargin:available()}]});
   if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='GET')return json({code:0,data:{marginType:margin}});
   if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='POST'){if(marginFail)return json({code:80001,msg:'position exists'});margin=q.marginType;return json({code:0,data:{}})}
   if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='GET')return json({code:0,data:{longLeverage:5,shortLeverage:5,maxLongLeverage:maxLev,maxShortLeverage:maxLev}});
@@ -101,7 +101,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:0,maxPerDirection:0,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0,minUnitMarginUSD:0});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:0,maxPerDirection:0,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25});
  // No count limit by default (user, 2026-11-13); LIVE_MAX_OPEN_POSITIONS=N brings it back.
  assert.deepEqual([liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxOpen,liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxPerDirection],[6,3]);
  assert.equal(liveConfig({LIVE_MAX_OPEN_POSITIONS:'0'}).maxOpen,0);
@@ -586,4 +586,23 @@ test('reconcile: rounds start at a different position so a 429 does not starve t
  ex.log=m=>{seen.push(m)};
  for(let i=0;i<3;i++)await ex.reconcile();
  assert.deepEqual(seen.map(m=>m.match(/\[LIVE BINGX (\w+)\]/)?.[1]).sort(),['AUSDT','BUSDT','CUSDT'],'each round hit a different position first');
+});
+
+test('free-margin sizing: each new position is sized from the margin still free and its whole plan fits in 25 % of it',async()=>{
+ const zones=[97,94,91,88,85,82].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ const sig=(k)=>row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}});
+ const run=async(avail,cfg={})=>{const m=mockBingX({available:()=>avail});
+  const ex=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60,maxOpen:0,...cfg}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+  const res=await ex.onSignal(sig(),{signalKey:'f'+avail+JSON.stringify(cfg)});return {ex,res,r:ex.store.records[0]}};
+ const full=await run('1000'),half=await run('500');
+ assert.equal(full.r.status,'OPEN');assert.equal(half.r.status,'OPEN');
+ assert.equal(half.r.quantity.total,0.17,'half the free margin -> half the unit (0.34 -> 0.17)');
+ assert.equal(half.r.balanceUSD,1000,'equity kept for readiness');assert.equal(half.r.freeUSD,500);
+ const margin=r=>(r.quantity.total*100+r.adds.reduce((t,a)=>t+a.qty*a.price,0))/r.leverage;
+ assert.ok(margin(half.r)<=500*.25+1e-9,'whole plan within 25 % of free margin: '+margin(half.r));
+ // A tight share shrinks the plan to fit instead of failing at the venue.
+ const tight=await run('1000',{marginUsePct:2});
+ assert.equal(tight.r?.status,'OPEN',JSON.stringify(tight.res));assert.ok(margin(tight.r)<=20+1e-9,'plan shrunk to 2 %: '+margin(tight.r));
+ // No free margin: not sent, with a clear reason.
+ const none=await run('0');assert.equal(none.res.sent,false);assert.ok(none.res.reasons.includes('MARGIN_SHORT'),JSON.stringify(none.res.reasons));
 });
