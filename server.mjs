@@ -1,6 +1,7 @@
 import http from 'node:http';
 import {exec,execFile} from 'node:child_process';
 import {gitUpdateAvailable,gitCheck,gitApply} from './git_update.mjs';
+import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -412,6 +413,22 @@ function telegramPost(payload){
 
 let updateCheckPromise=null;
 const GIT_UPDATE=gitUpdateAvailable(__dirname);
+// Real-money readiness, measured on testnet trades under the current rules (live_readiness.mjs).
+// A short Telegram report every morning (09:00 KST) and once when every criterion is met.
+const readinessFile=path.join(storage.dir,'readiness.json');
+const readiness=()=>liveReadiness([...live.store.records,...(live.store.archived||[])],{mode:LIVE.mode==='LIVE'?'LIVE':'TESTNET',
+ since:Number.isFinite(Date.parse(process.env.LIVE_READINESS_SINCE||''))?Date.parse(process.env.LIVE_READINESS_SINCE):undefined,balanceUSD:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:400});
+async function readinessReport(){
+ if(LIVE.mode==='OFF'||!CONFIG.tgToken||!CONFIG.tgChat)return;
+ let saved={};try{saved=JSON.parse(fs.readFileSync(readinessFile,'utf8'))}catch{}
+ const r=readiness(),kst=new Date(Date.now()+9*3600000),day=kst.toISOString().slice(0,10),hour=kst.getUTCHours();
+ const daily=hour>=9&&saved.lastDay!==day,first=r.ready&&!saved.readyNotified;
+ if(!daily&&!first)return;
+ try{const res=await telegramPost({chat_id:CONFIG.tgChat,text:readinessText(r)});if(!res.ok)return console.error('[READINESS] Telegram HTTP',res.status)}
+ catch(e){return console.error('[READINESS] Telegram',e.message)}
+ try{fs.writeFileSync(readinessFile,JSON.stringify({lastDay:daily?day:saved.lastDay,readyNotified:saved.readyNotified||r.ready,at:Date.now()}))}catch{}
+}
+setInterval(()=>{void readinessReport()},10*60000).unref?.();setTimeout(()=>{void readinessReport()},60000).unref?.();
 async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
  updateCheckPromise=(async()=>{
@@ -1181,8 +1198,8 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
-  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
-   priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading}));
+  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+   priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading})});
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});

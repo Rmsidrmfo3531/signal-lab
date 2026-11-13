@@ -43,14 +43,16 @@ export class LiveExecutor{
   this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();
   const stored=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[],
-   deletedKeys:Array.isArray(stored?.deletedKeys)?stored.deletedKeys.slice(-MAX_DELETED_KEYS):[]};
+   deletedKeys:Array.isArray(stored?.deletedKeys)?stored.deletedKeys.slice(-MAX_DELETED_KEYS):[],
+   // Results of deleted trades (no orders, no keys): the readiness check still counts them.
+   archived:Array.isArray(stored?.archived)?stored.archived.slice(-MAX_RECORDS):[]};
   // Successful test orders are not kept (user, 2026-11-13); a failed one stays for checking.
   this.store.records=this.store.records.filter(r=>!(r.test===true&&r.status==='CLOSED'&&r.closeReason==='TEST_CLOSE'));
   // An entry that was being submitted when the server stopped may have filled without its stop:
   // unknown state, which blocks new entries until a person checks the account.
   for(const r of this.store.records)if(r.status==='SUBMITTING'){r.status='UNKNOWN';r.events=[...(r.events||[]),{type:'RESTART_WHILE_SUBMITTING',at:now()}].slice(-MAX_EVENTS)}
  }
- #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records,deletedKeys:this.store.deletedKeys})}this.onChange(this.status())}
+ #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records,deletedKeys:this.store.deletedKeys,archived:this.store.archived})}this.onChange(this.status())}
  #event(record,type,detail={}){record.events=[...(record.events||[]),{type,at:this.now(),...detail}].slice(-MAX_EVENTS);this.log(`[LIVE ${record.venue} ${record.symbol}] ${type}`,detail.reason||'')}
  /** False while a just-evaluated signal waits before its next try (30 s, cleared by arming). */
  canTry(signalKey){const last=this.lastTry.get(signalKey);return !(last>this.now()-30000)||this.hasSignal(signalKey)}
@@ -72,6 +74,9 @@ export class LiveExecutor{
   this.store.records=this.store.records.filter(r=>r!==record);
   // The signal is remembered so the same signal is never entered again after its record is gone.
   if(!record.test)this.store.deletedKeys=[...this.store.deletedKeys.filter(k=>k!==signalKey),signalKey].slice(-MAX_DELETED_KEYS);
+  if(!record.test&&record.status==='CLOSED')this.store.archived=[...this.store.archived,{signalKey,symbol:record.symbol,mode:record.mode,status:'CLOSED',createdAt:record.createdAt,
+   closedAt:record.closedAt,realized:record.realized?{source:record.realized.source,netUSD:record.realized.netUSD}:null,
+   events:(record.events||[]).filter(e=>e.type!=='RECONCILE_ERROR').map(e=>({type:e.type,at:e.at}))}].slice(-MAX_RECORDS);
   this.#save();return {ok:true}
  }
  credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
