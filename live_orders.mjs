@@ -15,14 +15,14 @@ const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
 //  CONSERVATIVE — 1 % of the balance per trade (loss at the stop with every add filled), 3 % a day,
 //                 4 open positions (2 per direction); adds are dropped until the plan fits.
 //  CURRENT      — the earlier values (30 % per trade, 60 % a day, no position count limit).
-//  GROWTH       — 3 % per trade, 18 % open risk / day, 8 positions (4 per direction): the highest
-//                 train-window return of the HYBRID grid (research/hybrid_grid.mjs), user 2026-11-13
-//                 ("수익을 극대화"); worst single trade stays about 5 % of the balance.
+//  GROWTH       — 3 % per trade, 9 % open risk / day, 8 positions (4 per direction): about the top
+//                 return of the HYBRID grid (research/hybrid_grid.mjs, +49 % vs +51 % median a year) with
+//                 a smaller drawdown (17.6 % vs 25.5 %); user approved 2026-11-13. Worst trade about 5 %.
 // TESTNET and OFF use GROWTH; LIVE keeps CURRENT until the user approves the change.
 // LIVE_RISK_PROFILE=CURRENT|CONSERVATIVE|GROWTH overrides; the profile wins over DCA_MAX_LOSS_PCT and
 // LIVE_DAILY_MAX_LOSS_PCT unless they are stricter; LIVE_MAX_OPEN_POSITIONS may only lower the count.
 export const RISK_PROFILES=Object.freeze({CONSERVATIVE:Object.freeze({maxLossPct:1,dailyMaxLossPct:3,maxOpen:4,maxPerDirection:2}),
- GROWTH:Object.freeze({maxLossPct:3,dailyMaxLossPct:18,maxOpen:8,maxPerDirection:4})});
+ GROWTH:Object.freeze({maxLossPct:3,dailyMaxLossPct:9,maxOpen:8,maxPerDirection:4})});
 export function liveConfig(env=process.env){
  const base=liveConfigBase(env),asked=String(env.LIVE_RISK_PROFILE||'').toUpperCase();
  const riskProfile=['CURRENT','CONSERVATIVE','GROWTH'].includes(asked)?asked:base.mode==='LIVE'?'CURRENT':'GROWTH';

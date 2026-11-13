@@ -101,10 +101,10 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- // OFF / TESTNET: growth risk profile (3 % a trade, 18 % open risk / day, 8 positions).
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:8,maxPerDirection:4,sizing:'BALANCE',unitPct:.19,maxLossPct:3,maxAdds:7,dailyMaxLossPct:18,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25,strategyProfile:'HYBRID',hybridMaxAdds:3,riskProfile:'GROWTH'});
+ // OFF / TESTNET: growth risk profile (3 % a trade, 9 % open risk / day, 8 positions).
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:8,maxPerDirection:4,sizing:'BALANCE',unitPct:.19,maxLossPct:3,maxAdds:7,dailyMaxLossPct:9,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25,strategyProfile:'HYBRID',hybridMaxAdds:3,riskProfile:'GROWTH'});
  {const c=liveConfig({LIVE_RISK_PROFILE:'conservative'});assert.deepEqual([c.maxLossPct,c.dailyMaxLossPct,c.maxOpen],[1,3,4])}
- {const t=liveConfig({LIVE_TRADING_MODE:'TESTNET',DCA_MAX_LOSS_PCT:'30',LIVE_DAILY_MAX_LOSS_PCT:'60'});assert.deepEqual([t.riskProfile,t.maxLossPct,t.dailyMaxLossPct,t.maxOpen],['GROWTH',3,18,8],'profile is a ceiling on testnet')}
+ {const t=liveConfig({LIVE_TRADING_MODE:'TESTNET',DCA_MAX_LOSS_PCT:'30',LIVE_DAILY_MAX_LOSS_PCT:'60'});assert.deepEqual([t.riskProfile,t.maxLossPct,t.dailyMaxLossPct,t.maxOpen],['GROWTH',3,9,8],'profile is a ceiling on testnet')}
  // LIVE keeps the earlier values until the user approves the change.
  {const l=liveConfig({LIVE_TRADING_MODE:'LIVE'});assert.deepEqual([l.riskProfile,l.maxLossPct,l.dailyMaxLossPct,l.maxOpen],['CURRENT',30,60,0])}
  {const c=liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_RISK_PROFILE:'current'});assert.deepEqual([c.riskProfile,c.maxLossPct,c.maxOpen],['CURRENT',30,0])}
