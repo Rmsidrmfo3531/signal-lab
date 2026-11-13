@@ -144,7 +144,8 @@ export function copyHTML(c){
  const done=x=>`<li><b>${esc(x.symbol)}</b> ${side(x.direction)} <span>추매 ${esc(x.adds||0)}회</span> <b class="${cls(x.netUSD)}">${money(x.netUSD)}</b>${x.theirPnlUSD!=null?` <small>트레이더 ${money(x.theirPnlUSD)}</small>`:''} <small>${esc(x.closeReason==='TRADER_CLOSE'?'트레이더 청산':x.closeReason==='STOP_OR_EXTERNAL'?'보호 손절·외부 청산':x.closeReason||'')}</small></li>`;
  const notes=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET'].includes(e.type)).slice(0,5);
  const kill=c.killed?`<p class="live-warn-text">카피 손실 한도(잔고 ${esc(c.ledgerLossPct)}%)에 닿아 모두 청산하고 멈췄습니다. <button type="button" class="outline-btn small" data-copy-resume>카피 다시 시작</button></p>`:'';
- return kill+head+(open.length?`<ul class="copy-list">${open.map(row).join('')}</ul>`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 ${c.sizing==='BALANCE_RATIO'?'트레이더 수량 × 내 잔고 비율로':`${esc(c.marginUSD)}달러 증거금으로`} 들어갑니다.</p>`)+
+ const live=c.mode==='LIVE'?`<div class="copy-live ${c.armed?'on':''}"><b>⚠ 실계좌 카피</b> <span>${c.armed?'활성화됨 · 실제 돈으로 주문합니다':'비활성 · 주문하지 않습니다 (서버 재시작 후에는 항상 비활성)'}</span> ${c.armed?'<button type="button" class="outline-btn small" data-copy-disarm>카피 비활성화</button>':'<button type="button" class="outline-btn small danger-btn" data-copy-arm>실계좌 카피 활성화</button>'}</div>`:'';
+ return live+kill+head+(open.length?`<ul class="copy-list">${open.map(row).join('')}</ul>`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 ${c.sizing==='BALANCE_RATIO'?'트레이더 수량 × 내 잔고 비율로':`${esc(c.marginUSD)}달러 증거금으로`} 들어갑니다.</p>`)+
   (closed.length?`<h5 class="copy-sub">최근 종료</h5><ul class="copy-list">${closed.slice(0,10).map(done).join('')}</ul>`:'')+
   (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li>${esc(e.symbol||'')} · ${esc(COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}</li>`).join('')}</ul>`:'');
 }
@@ -182,7 +183,10 @@ function render(o){
  }
  if($('livePositionCount'))$('livePositionCount').textContent=`${o.positions?.length||0}개`;
  if($('liveSummary'))$('liveSummary').innerHTML=summaryHTML(o.summary);
- if($('liveCopy')&&!$('liveCopy').dataset.bound){$('liveCopy').dataset.bound='1';$('liveCopy').addEventListener('click',async e=>{if(!e.target.closest('[data-copy-resume]'))return;try{await fetch('/api/copy/resume',{method:'POST'})}catch{}})}
+ if($('liveCopy')&&!$('liveCopy').dataset.bound){$('liveCopy').dataset.bound='1';$('liveCopy').addEventListener('click',async e=>{
+  if(e.target.closest('[data-copy-resume]')){try{await fetch('/api/copy/resume',{method:'POST'})}catch{}return}
+  if(e.target.closest('[data-copy-disarm]')){try{await fetch('/api/copy/disarm',{method:'POST'})}catch{}return}
+  if(e.target.closest('[data-copy-arm]')&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?')){try{await fetch('/api/copy/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_ARM'})})}catch{}}})}
  if($('liveCopySection')){$('liveCopySection').hidden=!o.copy;if(o.copy&&$('liveCopy'))$('liveCopy').innerHTML=copyHTML(o.copy)}
  if($('liveClosed'))$('liveClosed').innerHTML=o.closed?.length?o.closed.map(closedCardHTML).join(''):'<p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p>';
  if($('liveSkipped'))$('liveSkipped').innerHTML=skippedHTML(o.skipped);

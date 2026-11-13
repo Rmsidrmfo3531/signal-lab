@@ -257,3 +257,14 @@ test('copy stops off by default (user 2026-11-13, testnet): no exchange stop, no
  candles=[...Array.from({length:29},(_,i)=>bar(i,.06,100)),bar(29,.065,300)];await ex.reconcile();assert.equal(v.size,98,'no zone exit');
  v.unreal='-210';await ex.reconcile();assert.equal(v.size,0,'ledger loss limit still closes');
 });
+
+test('real-money copy only with COPY_MODE=LIVE and the confirm phrase; its own switch, off at start; notices say 실계좌',async()=>{
+ const {COPY_LIVE_PHRASE}=await import('../copy_executor.mjs');
+ assert.equal(copyConfig({COPY_MODE:'LIVE'},'TESTNET').mode,'TESTNET','no phrase: stays testnet');
+ assert.equal(copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'yes'},'OFF').enabled,false);
+ const cfg=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:COPY_LIVE_PHRASE},'TESTNET');assert.equal(cfg.mode,'LIVE');assert.equal(cfg.enabled,true);
+ const v=venue();let ex;ex=new CopyExecutor({config:cfg,client:v.client,contractOf:async()=>contract,gate:()=>ex.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'},balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ assert.equal(ex.status().armed,false);await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(v.size,0);
+ ex.arm();await ex.handle({id:2,date:1e12+1,text:OPEN.replace('TNSRUSDT','TNSRUSDT')});
+ assert.match(copyEventText({type:'OPENED',mode:'LIVE',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:1}),/카피·실계좌 .* \(실계좌\)/);
+});

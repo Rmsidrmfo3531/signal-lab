@@ -253,13 +253,21 @@ function liveClients(){
 }
 let copyTrader=null;
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),
- externalHeld:()=>copyTrader?.heldSymbols()??new Set(),
+ // Copy positions on the same testnet account are kept apart; a real-money copy uses another account.
+ externalHeld:()=>COPY_ON_SAME_ACCOUNT()?copyTrader?.heldSymbols()??new Set():new Set(),
  priceOf:record=>livePublicPrice(record),onEvent:(record,type,detail)=>liveTelegramNotice(record,type,detail)});
 // Copy trading of the followed Telegram channel (copy_executor.mjs): TESTNET only, its own ledger.
 let copyTickers={at:0,rows:[]};
 // Messages arrive from the local listener (deploy/linux/copy_listener.py) with COPY_LISTENER_TOKEN.
 const COPY=copyConfig(process.env,LIVE.mode);
-copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
+function COPY_ON_SAME_ACCOUNT(){return COPY.mode==='TESTNET'}
+// Real-money copy (COPY_MODE=LIVE + COPY_LIVE_CONFIRM): its own BingX live client and ledger file.
+const copyClient=COPY.mode==='LIVE'&&process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET
+ ?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'LIVE',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)})
+ :live.clients.BINGX;
+const bingxFunds=data=>{const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>x?.asset==='USDT')??list[0],equity=Number(u?.equity??u?.balance)||0,free=Number(u?.availableMargin);
+ return {equity,available:Number.isFinite(free)?Math.max(0,free):equity}};
+copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
  contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.loadContracts(),symbol),
  // Last price on BingX (tickers cached 20 s) for the copy price check.
@@ -271,11 +279,12 @@ copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
  zonesOf:async(symbol,{tickSize})=>{const list=state.activeSet.has(symbol)||!chartVenueFor(symbol)?binanceZoneFallbacks:venueZoneFallbacks,out=[];
   for(const f of list){const r=await f.collector.get(symbol,{tickSize:Number(tickSize),eligible:true}).catch(()=>null);if(r?.ok)out.push(...r.profile.hvn.map(z=>({priceLow:z.priceLow,priceHigh:z.priceHigh})))}
   return out},
- gate:()=>LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
+ // Testnet copy follows the signal strategy's switch; real-money copy has its own (off after every restart).
+ gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:COPY.mode==='LIVE'?(copyTrader.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'}):LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
  // Also a symbol the live executor is entering right now (busy), not only recorded positions.
- isBusy:symbol=>live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol),
+ isBusy:symbol=>COPY_ON_SAME_ACCOUNT()&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol)),
  // The same balance cap as the signal strategy (a 100,000 virtual USDT testnet trades like the real account).
- balance:async()=>{const f=await live.accountFunds('BINGX');const cap=LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
+ balance:async()=>{const f=COPY.mode==='LIVE'?bingxFunds(await copyClient.balance()):await live.accountFunds('BINGX');const cap=LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
   const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
 if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
@@ -1290,6 +1299,8 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
   if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,copyTrader.status());
   if(pathname==='/api/copy/resume'&&req.method==='POST')return response(res,200,copyTrader.resume());
+  if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,copyTrader.arm())}
+  if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
   // From the local channel listener only: a shared token (COPY_LISTENER_TOKEN in .env), compared in constant time.
   if(pathname==='/api/copy/message'&&req.method==='POST'){
    const token=String(req.headers['x-copy-token']||''),want=String(process.env.COPY_LISTENER_TOKEN||'');
