@@ -405,7 +405,8 @@ export class LiveExecutor{
   if(!(pos.size>0)){
    if(record.status==='UNKNOWN'){
     // Filled and already stopped out, or never filled: the entry order tells which.
-    const found=await client.getOrder(record.venueSymbol,{clientOrderId:record.clientOrderId}).catch(()=>null),o=orderOf(found);
+    // A failed lookup is retried at the next check (never guessed as 'not filled').
+    const found=await client.getOrder(record.venueSymbol,{clientOrderId:record.clientOrderId}).catch(e=>{if(e?.code==='VENUE_ERROR_80016'||/not exist/i.test(e?.message||''))return null;throw e}),o=orderOf(found);
     const filled=Number(pick(o,'executedQty'))>0||String(pick(o,'status')).toUpperCase()==='FILLED';
     if(filled){record.status='CLOSED';record.closedAt=this.now();record.closeReason='NO_POSITION_AFTER_RESTART'}
     else{record.status='FAILED';record.closeReason='ENTRY_NOT_FILLED_AFTER_RESTART'}
@@ -601,7 +602,8 @@ export class LiveExecutor{
    const row=rows.find(p=>p.symbol===record.venueSymbol);
    return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
     marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit),
-    side:row?(['LONG','SHORT'].includes(row.positionSide)?row.positionSide:Number(row.positionAmt)>0?'LONG':Number(row.positionAmt)<0?'SHORT':null):null};
+    // Side only when the venue states it (positionSide LONG/SHORT); an unsigned amount is not guessed.
+    side:row&&['LONG','SHORT'].includes(row.positionSide)?row.positionSide:null};
   }
   const p=await client.position(record.venueSymbol);
   return {size:Math.abs(Number(p?.size)||0),entryPrice:Number(p?.entry_price)||0,markPrice:posNum(p?.mark_price),unrealizedPnLUSD:p?num(p.unrealised_pnl):null,
