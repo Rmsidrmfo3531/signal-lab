@@ -26,7 +26,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
+export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'FIRST_1USD',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -54,11 +54,12 @@ export function copyConfig(env=process.env,liveMode='OFF'){
  // TESTNET only. COPY_TRADING=off turns it off.
  const mode=String(env.COPY_MODE||'').toUpperCase()==='LIVE'&&env.COPY_LIVE_CONFIRM===COPY_LIVE_PHRASE?'LIVE':liveMode==='TESTNET'?'TESTNET':'OFF';
  const enabled=String(env.COPY_TRADING||'').toLowerCase()!=='off'&&mode!=='OFF';
- // BALANCE_RATIO (default, user 2026-11-14 after the review): the trader's quantities x our equity / the
- // trader's balance (20,000 $), so our exposure follows theirs in proportion. FIRST_1USD (1 $ first margin,
- // adds in proportion) is selectable. The copy may use up to 100 % of the equity as margin (user 2026-11-14),
- // read from the exchange before every order; each order still needs 90 % of the free margin to cover it.
- const sizing=String(env.COPY_SIZING||'').toUpperCase()==='FIRST_1USD'?'FIRST_1USD':'BALANCE_RATIO';
+ // FIRST_1USD (default, user 2026-11-14 04:30 "최초 증거금을 1달러로", after being told of the review's
+ // liquidation warning): the first buy is 1 $ of margin, later buys and partial closes in proportion to the
+ // trader's quantities. BALANCE_RATIO (trader quantity x our equity / 20,000 $) is selectable. The copy may
+ // use up to 100 % of the equity as margin, read from the exchange before every order; each order still
+ // needs 90 % of the free margin to cover it.
+ const sizing=String(env.COPY_SIZING||'').toUpperCase()==='BALANCE_RATIO'?'BALANCE_RATIO':'FIRST_1USD';
  return {enabled,mode,sizing,traderBalanceUSD:n('COPY_TRADER_BALANCE_USD',COPY_DEFAULTS.traderBalanceUSD,100,1e9),marginUSD:n('COPY_MARGIN_USD',COPY_DEFAULTS.marginUSD,.1,1000),maxLossPct:n('COPY_MAX_LOSS_PCT',COPY_DEFAULTS.maxLossPct,1,90),
   snapshotMs:n('COPY_SNAPSHOT_MS',COPY_DEFAULTS.snapshotMs,0,3600000),maxLeverage:n('COPY_MAX_LEVERAGE',COPY_DEFAULTS.maxLeverage,1,125),
   // All copy positions together: margin at most this share of the equity (adds beyond it skipped), and
