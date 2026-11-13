@@ -139,11 +139,28 @@ export class CopyExecutor{
     p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopOrderId=res?.orderId??null;p.stopStale=false;
     if(old&&old!==p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
     return}
-   catch(error){last=error;if(error.code==='HTTP_429')break}
+   catch(error){last=error;if(error.code==='HTTP_429')break;
+    // BingX allows one stop per position (VENUE_ERROR_110406 "a Stop Loss order already exists"): swap it —
+    // cancel the old one and place the new one right away (3 tries); if that fails, the old price is put
+    // back; if even that fails, the position is closed (never left without a stop).
+    if(p.stopOrderId&&/110406/.test(String(error.code||error.message))){
+     const oldId=p.stopOrderId,oldStop=p.stop;
+     try{await this.client.cancelOrder(p.venueSymbol,oldId)}catch(e){last=e;break}
+     p.stopOrderId=null;
+     for(const [k,attempt] of [params,params,params,oldStop?{...params,stopPrice:String(oldStop)}:null].entries()){
+      if(!attempt)continue;
+      try{const res=orderOf(await this.client.placeOrder(attempt));
+       if(k<3){p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopStale=false}else p.stopStale=true;
+       p.stopOrderId=res?.orderId??null;return}
+      catch(e){last=e;if(k<2)await new Promise(r=>setTimeout(r,500*(k+1)))}
+     }
+     this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:last?.code||last?.message||'UNKNOWN',detail:'stop swap failed'});await this.#emergency(p,'NO_STOP');return;
+    }
+   }
   }
   // Nothing placed. An old stop is never cancelled for this: it is a close-position stop, so it still
   // protects the whole (larger) position — kept, and the routine check tries again. (A venue that
-  // refuses a second close-position stop simply keeps the first one.)
+  // refuses a second close-position stop is handled above by swapping.)
   p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:last?.code||last?.message||'UNKNOWN',detail:String(last?.message||'').slice(0,160)});
   if(!p.stopOrderId&&last?.code!=='HTTP_429')await this.#emergency(p,'NO_STOP');
  }

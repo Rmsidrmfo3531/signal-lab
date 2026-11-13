@@ -112,13 +112,19 @@ test('copy review fixes: new stop before the old is cancelled; no stop at all ->
  const before=v.size;await ex.handle({id:2,date:1e12,text:CHANGE(300,200)});assert.equal(before-v.size,Math.round(before/3));
 });
 
-test('copy: a venue that refuses a second close-position stop keeps the first one (never cancelled first)',async()=>{
- const v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});
- const first=ex.status().positions[0].stopOrderId,place=v.client.placeOrder;
- v.client.placeOrder=async p=>{if(p.type==='STOP_MARKET')throw Object.assign(Error('exists'),{code:'VENUE_ERROR_101400'});return place(p)};
+test('copy: BingX allows one stop per position (110406): the stop is swapped — cancelled, then placed at the new price; on failure the old price is put back',async()=>{
+ let v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});
+ const place=v.client.placeOrder;let live=1;
+ v.client.cancelOrder=async()=>{live--;return {}};
+ v.client.placeOrder=async p=>{if(p.type==='STOP_MARKET'){if(live>0)throw Object.assign(Error('A Stop Loss order already exists'),{code:'VENUE_ERROR_110406'});live++}return place(p)};
  await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
- const p=ex.status().positions[0];assert.equal(p.stopOrderId,first,'old stop kept');assert.equal(p.stopStale,true);assert.equal(v.size,192);
- assert.equal(v.calls.filter(c=>c.op==='cancel').length,0,'nothing cancelled');
+ let p=ex.status().positions[0];assert.equal(p.stopStale,false);assert.equal(live,1,'exactly one stop');assert.equal(v.size,192);
+ // The new stop keeps failing after the cancel: the old price is placed again (stale, retried later).
+ v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});const first=ex.status().positions[0].stop;let n=0;
+ const place2=v.client.placeOrder;
+ v.client.placeOrder=async p=>{if(p.type==='STOP_MARKET'){n++;if(n===1)throw Object.assign(Error('exists'),{code:'VENUE_ERROR_110406'});if(Number(p.stopPrice)!==first)throw Object.assign(Error('busy'),{code:'VENUE_ERROR_100500'})}return place2(p)};
+ await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
+ p=ex.status().positions[0];assert.equal(p.stopStale,true);assert.ok(p.stopOrderId);assert.equal(v.size,192);
 });
 
 test('copy (user 2026-11-13): first buy 1 $, a later 진입 card of 0.4 = 1 $, 0.8 = 2 $; the same card twice is one buy; a 청산 card with a quantity closes that share',async()=>{
