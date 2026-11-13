@@ -46,10 +46,10 @@ test('copy: 1 $ margin at the trader leverage (capped by the venue), doubles wit
  // 25 % of 400 = 100 $ over 98 coins above 0.051 -> about 1.071.
  assert.ok(Math.abs(Number(stop.stopPrice)-(0.051+100/98))<1e-4,stop.stopPrice);
  await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
- assert.equal(v.size,196,'doubled');assert.ok(v.calls.some(c=>c.op==='cancel'),'old stop replaced');
+ assert.equal(v.size,192,'the trader added as much as its first buy: 1 $ more (5x at 0.053 = 94)');assert.ok(v.calls.some(c=>c.op==='cancel'),'old stop replaced');
  await ex.handle({id:3,date:1e12,text:CHANGE(1760,440)});
- assert.equal(v.size,49,'cut to a quarter');assert.equal(v.calls.filter(c=>c.reduceOnly==='true').length,1);
- await ex.handle({id:3,date:1e12,text:CHANGE(1760,440)});assert.equal(v.size,49,'same message id once');
+ assert.equal(v.size,48,'cut to a quarter');assert.equal(v.calls.filter(c=>c.reduceOnly==='true').length,1);
+ await ex.handle({id:3,date:1e12,text:CHANGE(1760,440)});assert.equal(v.size,48,'same message id once');
  await ex.handle({id:4,date:1e12,text:CLOSE});
  assert.equal(v.size,0);const st=ex.status();assert.equal(st.positions.length,0);assert.equal(st.closed[0].closeReason,'TRADER_CLOSE');assert.equal(st.closed[0].theirPnlUSD,1.72);
  assert.equal(new Set(v.calls.filter(c=>c.clientOrderId).map(c=>c.clientOrderId)).size,v.calls.filter(c=>c.clientOrderId).length,'every order has its own client id');
@@ -114,5 +114,20 @@ test('copy: a venue that refuses a second close-position stop gets the swap the 
  const place=v.client.placeOrder;let stops=0;
  v.client.placeOrder=async p=>{if(p.type==='STOP_MARKET'&&++stops===1)throw Object.assign(Error('exists'),{code:'VENUE_ERROR_101400'});return place(p)};
  await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
- const p=ex.status().positions[0];assert.equal(p.stopStale,false);assert.ok(p.stopOrderId);assert.equal(v.size,196);
+ const p=ex.status().positions[0];assert.equal(p.stopStale,false);assert.ok(p.stopOrderId);assert.equal(v.size,192);
+});
+
+test('copy (user 2026-11-13): first buy 1 $, a later 진입 card of 0.4 = 1 $, 0.8 = 2 $; the same card twice is one buy; a 청산 card with a quantity closes that share',async()=>{
+ const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
+ const v=venue(),ex=make(v);
+ await ex.handle({id:1,date:1e12,text:card(0.4,'0.05000')});const first=v.size;
+ assert.equal(first,100,'1 $ x 5 / 0.05');
+ await ex.handle({id:2,date:1e12+1000,text:card(0.4,'0.05000')});assert.equal(v.size,100,'same card again (same entry within 3 min): not a buy');
+ await ex.handle({id:3,date:1e12+600000,text:card(0.4,'0.05100')});assert.equal(v.size,200,'0.4 more = 1 $ more');
+ await ex.handle({id:4,date:1e12+900000,text:card(0.8,'0.05200')});assert.equal(v.size,400,'0.8 more = 2 $ more');
+ // The trader holds 1.6; a 청산 card of 0.4 closes a quarter of ours.
+ await ex.handle({id:5,date:1e12+990000,text:'✅ 포지션 청산\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short\n━━━━━━━━━━━━━━━━\n진입가 0.05000 USDT\n수량 0.4\n최종손익 🟢 +0.3 USDT'});
+ assert.equal(v.size,300,'a quarter closed');assert.equal(ex.status().positions.length,1);
+ await ex.handle({id:6,date:1e12+999000,text:CLOSE});assert.equal(v.size,0);
+ assert.equal(ex.status().events.find(e=>e.type==='ADDED').marginUSD,2);
 });

@@ -1,10 +1,12 @@
 // Copy trading of the followed Telegram channel on the BingX TESTNET (user 2026-11-13: "모두 그대로
 // 따라가보고 대신 증거금은 1달러부터 시작하기"). Its own ledger (copy-store.json), never real money.
 //
-//  진입 (OPEN)      -> a market entry with COPY_MARGIN_USD (1 $) of margin at the trader's leverage (capped
-//                      at the venue's maximum); the trader's quantity is not copied, only the direction.
-//  변경 (CHANGE)    -> the same proportion: 200 -> 400 doubles our position, 400 -> 100 closes 3/4 of it.
-//  청산 (CLOSE)     -> everything closed at market.
+//  진입 (OPEN)      -> the first one: COPY_MARGIN_USD (1 $) of margin at the trader's leverage (capped at the
+//                      venue's maximum). The trader's quantity sets the scale: each later buy gets
+//                      1 $ x (its quantity / the first quantity) — 0.4 first = 1 $, then 0.4 = 1 $, 0.8 = 2 $
+//                      (user 2026-11-13). A later 진입 card for a position already held is such a buy.
+//  변경 (CHANGE)    -> an increase is a buy sized the same way (to - from); a decrease cuts the same share.
+//  청산 (CLOSE)     -> with a quantity smaller than the trader's position: the same share; otherwise all.
 //  모니터 시작       -> the monitor restarted: the 진입 cards within COPY_SNAPSHOT_MS re-announce positions
 //                      it already had; they are not entered (no late entries).
 // Safety kept (user's standing rules: stop protection, reduce-only exits, duplicate-order guard,
@@ -118,7 +120,14 @@ export class CopyExecutor{
  }
  async #open(m,at){
   const key=this.#key(m),prev=this.store.positions[key];
-  if(prev?.status==='OPEN')return {ok:true,already:true};
+  if(prev?.status==='OPEN'){
+   // The same card again (both alert formats, or a repeat) is not a new buy: same entry price within 3 min.
+   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs)return {ok:true,snapshot:true};
+   if(prev.lastTheirEntry===m.entry&&at-(prev.lastTheirAt||0)<180000)return {ok:true,already:true};
+   if(!(m.quantity>0))return {ok:true,already:true};
+   prev.lastTheirEntry=m.entry;prev.lastTheirAt=at;
+   return this.#buyMore(prev,m,m.quantity,{price:pos(m.price)??pos(m.entry)});
+  }
   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs){this.#event('SKIPPED',{symbol:m.symbol,reason:'MONITOR_RESTART_SNAPSHOT'});return {ok:false,reason:'SNAPSHOT'}}
   const g=this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   if(this.isBusy(m.symbol)){this.#event('SKIPPED',{symbol:m.symbol,reason:'SYMBOL_HELD_BY_SIGNAL_STRATEGY'});return {ok:false,reason:'SYMBOL_BUSY'}}
@@ -143,7 +152,7 @@ export class CopyExecutor{
   if(qty<minQ||qty*price<minN)qty=this.#qty(c,Math.max(minQ,minN/price*1.02),'UP');
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
   const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
-   theirEntry:m.entry,theirQty:m.quantity??null,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
+   theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
   this.store.positions[key]=p;
   const fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'});
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});
@@ -160,27 +169,44 @@ export class CopyExecutor{
   const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#position(p);p.qty=now.size;
   if(!(p.qty>0)){p.status='CLOSED';this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
   if(ratio>1){
-   const g=this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
-   const add=this.#qty(c,p.qty*(ratio-1)),price=pos(m.price)??now.mark;
-   if(!(add>0))return {ok:true,tooSmall:true};
-   const bal=await this.balance().catch(()=>null),free=num(bal?.available);
-   const eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
-   if(eq&&used+add*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:m.symbol,reason:'COPY_MARGIN_CAP',need:+(add*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
-   if(free!==null&&add*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:m.symbol,reason:'MARGIN_SHORT',need:+(add*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
-   const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',add,{tag:'add'+(p.adds+1)});p.adds++;p.steps.push({kind:'ADD',at:this.now(),qty:add,avg:fill.avg,ratio});
-   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};this.#event('ADDED',{symbol:m.symbol,qty:add,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds});
+   const r=await this.#buyMore(p,m,m.to-m.from,{price:pos(m.price)??now.mark,ratio,c,now});p.theirTotal=m.to;return r;
   }else{
    const down=this.#qty(c,p.qty*(1-ratio)),up=this.#qty(c,p.qty*(1-ratio),'UP'),want=p.qty*(1-ratio);
    const cut=Math.min(p.qty,want-down<=up-want?down:up);if(!(cut>0))return {ok:true,tooSmall:true};
+   p.theirTotal=m.to;
    if(cut>=p.qty)return this.#close(m,'TRADER_CUT_ALL');
    await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:cut,ratio});
    await this.#protect(p);this.#event('REDUCED',{symbol:m.symbol,qty:cut,left:p.qty});
   }
   return {ok:true};
  }
+ // One more buy of the trader's `theirQty`: 1 $ x theirQty / their first quantity (when known), else the
+ // same proportion of our position as theirQty is of theirs.
+ async #buyMore(p,m,theirQty,{price,ratio=null,c=null,now=null}={}){
+  c??=await this.#contract(p.symbol);now??=await this.#position(p);p.qty=now.size;
+  if(!(p.qty>0)){this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
+  const g=this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  price??=now.mark;
+  const marginUSD=p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
+  const add=marginUSD!=null?this.#qty(c,marginUSD*p.leverage/price):this.#qty(c,p.qty*((ratio??((p.theirTotal+theirQty)/p.theirTotal))-1));
+  if(!(add>0))return {ok:true,tooSmall:true};
+  const bal=await this.balance().catch(()=>null),free=num(bal?.available);
+  const eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
+  if(eq&&used+add*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(add*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
+  if(free!==null&&add*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(add*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
+  const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',add,{tag:'add'+(p.adds+1)});p.adds++;
+  if(p.theirTotal>0&&m.kind==='OPEN')p.theirTotal+=theirQty;
+  p.steps.push({kind:'ADD',at:this.now(),qty:add,avg:fill.avg,theirQty,marginUSD});
+  await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
+  this.#event('ADDED',{symbol:p.symbol,qty:add,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
+  return {ok:true};
+ }
  async #close(m,reason){
   const key=this.#key(m),p=this.store.positions[key];
   if(!p||p.status!=='OPEN')return {ok:true,notOpen:true};
+  // A 청산 card with a quantity below the trader's position is a partial close: the same share of ours.
+  if(m.kind==='CLOSE'&&m.quantity>0&&p.theirTotal>0&&m.quantity<p.theirTotal*.999)
+   return this.#change({...m,kind:'CHANGE',from:p.theirTotal,to:p.theirTotal-m.quantity},this.now());
   const now=await this.#position(p);
   if(now.size>0)await this.#market(p,p.direction==='LONG'?'SELL':'BUY',now.size,{reduceOnly:true,tag:'close'});
   if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}
