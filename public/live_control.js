@@ -24,6 +24,7 @@ export function liveRows(s){
  return [['상태',(s.armed?'활성화됨 · 신호가 오면 주문':'비활성 · 주문 안 함')+(s.killSwitch?' · 긴급 정지 중':'')],
   ['거래소',(s.venues||[]).map(v=>LABEL[v]||v).join(' · ')||'—'],['잔고',balance],
   ['API 키',['BINGX','GATEIO'].map(v=>`${LABEL[v]} ${s.credentialsConfigured?.[v]?'설정됨':'없음'}`).join(' · ')],
+  ...(L.strategyProfile?[['전략',L.strategyProfile==='HYBRID'?`HYBRID · 위험 한도로 수량 역산 · 추매 1·1·2·4(최대 ${L.hybridMaxAdds}회) 매물대`:'CURRENT (기존 규칙)']]:[]),
   ...(L.riskProfile?[['위험 프로필',L.riskProfile==='CONSERVATIVE'?'보수(거래당 1% · 하루 3% · 동시 4개)':'기존(승인 전 실거래 값)']]:[]),
   ...(L.sizing==='BALANCE'?[['수량',`남은 증거금${L.balanceCapUSD?`(최대 $${L.balanceCapUSD})`:''} × ${L.unitPct}% × 배율 · 포지션당 남은 증거금의 ${L.marginUsePct??25}% 이내, 매물대 분할 추매`],['손실 한도',`1회 잔고 ${L.maxLossPct}% · 하루 ${L.dailyMaxLossPct}%`]]
    :[['손실 한도',`1회 $${L.maxRiskUSD} · 하루 $${L.dailyMaxRiskUSD}`]]),

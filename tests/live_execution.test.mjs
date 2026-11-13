@@ -102,7 +102,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
  // OFF / TESTNET: conservative risk profile (1 % a trade, 3 % a day, 4 positions).
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:1,maxAdds:7,dailyMaxLossPct:3,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25,riskProfile:'CONSERVATIVE'});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:1,maxAdds:7,dailyMaxLossPct:3,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25,strategyProfile:'HYBRID',hybridMaxAdds:3,riskProfile:'CONSERVATIVE'});
  {const t=liveConfig({LIVE_TRADING_MODE:'TESTNET',DCA_MAX_LOSS_PCT:'30',LIVE_DAILY_MAX_LOSS_PCT:'60'});assert.deepEqual([t.riskProfile,t.maxLossPct,t.dailyMaxLossPct,t.maxOpen],['CONSERVATIVE',1,3,4],'profile wins over single values on testnet')}
  // LIVE keeps the earlier values until the user approves the change.
  {const l=liveConfig({LIVE_TRADING_MODE:'LIVE'});assert.deepEqual([l.riskProfile,l.maxLossPct,l.dailyMaxLossPct,l.maxOpen],['CURRENT',30,60,0])}
@@ -613,4 +613,17 @@ test('free-margin sizing: each new position is sized from the margin still free 
  assert.equal(tight.r?.status,'OPEN',JSON.stringify(tight.res));assert.ok(margin(tight.r)<=20+1e-9,'plan shrunk to 2 %: '+margin(tight.r));
  // No free margin: not sent, with a clear reason.
  const none=await run('0');assert.equal(none.res.sent,false);assert.ok(none.res.reasons.includes('MARGIN_SHORT'),JSON.stringify(none.res.reasons));
+});
+
+test('HYBRID on testnet: the risk limit sets the size, adds 1·1·2·4 at zones, records tagged; LIVE stays CURRENT',async()=>{
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET'}).strategyProfile,'HYBRID');assert.equal(liveConfig({LIVE_TRADING_MODE:'LIVE'}).strategyProfile,'CURRENT');
+ const zones=[97,94,91,88,85,82].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ const sig=row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}});
+ const m=mockBingX({positionAmt:()=>'0.01'});
+ const ex=new LiveExecutor({config:config({sizing:'BALANCE',unitPct:.19,maxLossPct:1,maxAdds:7,dailyMaxLossPct:3,maxOpen:4,maxPerDirection:2,strategyProfile:'HYBRID',hybridMaxAdds:3}),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ await ex.onSignal(sig,{signalKey:'h1'});
+ const r=ex.store.records[0];assert.equal(r.status,'OPEN',JSON.stringify(r.events||ex.store.skipped));assert.equal(r.strategyProfile,'HYBRID');
+ assert.equal(r.adds.length,3);assert.deepEqual(r.adds.map(a=>+(a.qty/r.quantity.total).toFixed(1)),[1,2,4]);
+ const full=r.quantity.total*(100-r.stop)+r.adds.reduce((t,a)=>t+a.qty*(a.price-r.stop),0);
+ assert.ok(full<=1000*.01*1.0001&&full>=1000*.01*.8,'full loss about 1 % of the 1,000 free margin: '+full);
 });

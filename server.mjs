@@ -435,7 +435,7 @@ let updateJob={active:false,pct:0,label:''};
 // A short Telegram report every morning (09:00 KST) and once when every criterion is met.
 const readinessFile=path.join(storage.dir,'readiness.json');
 const readiness=()=>liveReadiness([...live.store.records,...(live.store.archived||[])],{mode:LIVE.mode==='LIVE'?'LIVE':'TESTNET',
- since:Number.isFinite(Date.parse(process.env.LIVE_READINESS_SINCE||''))?Date.parse(process.env.LIVE_READINESS_SINCE):undefined,balanceUSD:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:undefined});
+ since:Number.isFinite(Date.parse(process.env.LIVE_READINESS_SINCE||''))?Date.parse(process.env.LIVE_READINESS_SINCE):undefined,balanceUSD:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:undefined,strategyProfile:LIVE.strategyProfile||null});
 async function readinessReport(){
  if(LIVE.mode==='OFF'||!CONFIG.tgToken||!CONFIG.tgChat)return;
  let saved={};try{saved=JSON.parse(fs.readFileSync(readinessFile,'utf8'))}catch{}

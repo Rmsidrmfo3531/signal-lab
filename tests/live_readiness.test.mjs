@@ -40,3 +40,11 @@ test('average holding time for closed and open trades; open positions with their
  assert.deepEqual(r.openPositions,[{symbol:'OUSDT',direction:'SHORT',createdAt:T0,unrealizedUSD:-1.5}]);
  assert.match(readinessText(r),/미실현 −\$1\.50/);assert.match(readinessText(r),/평균 보유 6\.0시간/);
 });
+
+test('readiness counts only the running strategy profile (its own ledger); untagged records are CURRENT',async()=>{
+ const {liveReadiness}=await import('../live_readiness.mjs');
+ const now=Date.UTC(2026,10,20),rec=(p,i)=>({mode:'TESTNET',status:'CLOSED',createdAt:now-86400000*(i+1),closedAt:now-86400000*i,realizedPnLUSD:1,balanceUSD:400,...(p?{strategyProfile:p}:{})});
+ const records=[rec(null,1),rec('CURRENT',2),rec('HYBRID',3),rec('HYBRID',4)];
+ assert.equal(liveReadiness(records,{now,strategyProfile:'HYBRID',since:0}).closedTrades??liveReadiness(records,{now,strategyProfile:'HYBRID',since:0}).trades,2);
+ assert.equal(liveReadiness(records,{now,strategyProfile:'CURRENT',since:0}).closedTrades??liveReadiness(records,{now,strategyProfile:'CURRENT',since:0}).trades,2);
+});
