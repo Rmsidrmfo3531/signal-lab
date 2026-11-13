@@ -93,7 +93,7 @@ API 실주문이 확인되어 **자동 모의매매는 기본으로 꺼졌습니
 - 같은 신호는 고정 주문 ID로 한 번만 보냅니다. 주문 결과가 불확실(시간 초과)하면 다시 보내지 않고 주문 ID로 조회하며, 확인되지 않으면 **긴급 정지 후 사람 확인을 요구**합니다.
 - **수량 (`LIVE_SIZING=BALANCE`, 기본)**: 진입 직전에 거래소 잔고(BingX 순자산·Gate.io 총액)를 조회해 모의매매와 같은 규칙으로 정합니다. 첫 진입 1단위 = 잔고 × `DCA_UNIT_PCT`(0.19%) × 배율, 매물대마다 1·1·2·4·8 … 단위 지정가 추매(포지션 1 → 2 → 4 → 8배로 커짐, 최대 `HOURLY_MAX_ADDS`회, 기본 7), 손절은 마지막 추매 바깥에 포지션 전체 기준 하나. 다른 포지션이 열려 있으면 새 포지션은 절반 크기. 추매가 체결되면 익절 3개를 커진 포지션의 40/35/25%로 다시 걸고, 1차 익절이 체결되거나 포지션이 0이 되면 남은 추매 주문을 취소합니다. 맞는 매물대가 없으면 1단위 + 패턴 손절.
 - 첫 진입 증거금 하한: 잔고 × `DCA_UNIT_PCT`(기본 0.19%)가 `LIVE_MIN_UNIT_MARGIN_USD`(기본 1달러)보다 작으면 1달러로 올립니다(0이면 끔). 잔고 2,300달러면 0.19% = 4.37달러라 하한이 적용되지 않습니다. 최대 손실 한도는 그대로 적용됩니다.
-- 한도: 1회 최대 손실(모든 추매 체결 후 손절) 잔고의 `DCA_MAX_LOSS_PCT`(기본 30%), 하루 계획 손실 합계 잔고의 `LIVE_DAILY_MAX_LOSS_PCT`(기본 60%), 동시 포지션 `LIVE_MAX_OPEN_POSITIONS`(짝수 2~6, 기본 4, 롱·숏 각 절반: 기본 롱 2 + 숏 2), 거래소 `LIVE_VENUES`(기본 둘 다). `LIVE_BALANCE_CAP_USD`(기본 0 = 잔고 전체)를 넣으면 잔고가 그보다 많아도 그 금액까지만 기준으로 씁니다(예: 테스트넷 가상 100,000 USDT를 실제 $400처럼, `LIVE_BALANCE_CAP_USD=400`). `LIVE_SIZING=RISK_USD`로 바꾸면 예전 고정 금액 방식(`LIVE_MAX_RISK_USD` $2, `LIVE_DAILY_MAX_RISK_USD` $6)을 씁니다.
+- 한도: 1회 최대 손실(모든 추매 체결 후 손절) 잔고의 `DCA_MAX_LOSS_PCT`(기본 30%), 하루 계획 손실 합계 잔고의 `LIVE_DAILY_MAX_LOSS_PCT`(기본 60%), 동시 포지션 개수는 기본 제한 없음(`LIVE_MAX_OPEN_POSITIONS`에 숫자를 넣으면 짝수·롱숏 반반으로 제한), 대신 열린 포지션들의 최대 손실 합계가 잔고 × 하루 손실 한도 이내(`OPEN_RISK_LIMIT`), 거래소 `LIVE_VENUES`(기본 둘 다). `LIVE_BALANCE_CAP_USD`(기본 0 = 잔고 전체)를 넣으면 잔고가 그보다 많아도 그 금액까지만 기준으로 씁니다(예: 테스트넷 가상 100,000 USDT를 실제 $400처럼, `LIVE_BALANCE_CAP_USD=400`). `LIVE_SIZING=RISK_USD`로 바꾸면 예전 고정 금액 방식(`LIVE_MAX_RISK_USD` $2, `LIVE_DAILY_MAX_RISK_USD` $6)을 씁니다.
 - **긴급 정지**는 신규 진입만 막고 손절 주문은 그대로 둡니다(재시작해도 유지). 보유 포지션 청산은 거래소에서 직접 하세요.
 - 실제 손익·체결가·수수료의 기준은 거래소 계정입니다. 이 화면의 기록은 주문 상태 기록입니다.
 
@@ -117,7 +117,7 @@ API 실주문이 확인되어 **자동 모의매매는 기본으로 꺼졌습니
 | `LIVE_TRADING_MODE` | `OFF` | 실주문 모드 `OFF`·`TESTNET`·`LIVE` (LIVE는 `LIVE_TRADING_CONFIRM=REAL_MONEY` 필요) |
 | `LIVE_SIZING` | `BALANCE` | 실주문 수량: `BALANCE`(잔고 비율 + 매물대 분할 추매) · `RISK_USD`(고정 금액) |
 | `LIVE_DAILY_MAX_LOSS_PCT` | `60` | BALANCE: 하루 계획 손실 합계 한도(잔고 %) |
-| `LIVE_MAX_RISK_USD` / `LIVE_DAILY_MAX_RISK_USD` / `LIVE_MAX_OPEN_POSITIONS` | `2` / `6` / `4` | RISK_USD 방식 위험 한도 / 동시 포지션(짝수, 롱·숏 반반) |
+| `LIVE_MAX_RISK_USD` / `LIVE_DAILY_MAX_RISK_USD` / `LIVE_MAX_OPEN_POSITIONS` | `2` / `6` / 없음 | RISK_USD 방식 위험 한도 / 동시 포지션 개수(기본 제한 없음, 숫자를 넣으면 짝수·롱숏 반반으로 제한). 개수 대신 열린 포지션 최대 손실 합계가 잔고 × 하루 손실 한도 이내 |
 | `ALLOWED_HOSTS` | 없음 | IP 주소·`localhost`·PC 이름 외에 직접 정한 접속 이름(예: `signal.lan`)을 쉼표로 추가. 목록에 없는 이름으로 들어온 요청과 다른 웹사이트에서 보낸 요청은 403으로 차단 |
 | `SCAN_INTERVAL_MS` | `60000` | 보완 스캔 간격, 최소 30000ms |
 | `SCAN_HOT_BATCH` / `SCAN_ROTATING_BATCH` | `12` / `18` | 스캔 범위 |

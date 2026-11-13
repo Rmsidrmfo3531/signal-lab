@@ -16,7 +16,11 @@ export function liveConfig(env=process.env){
  const num=(key,def,min,max)=>{const v=Number(env[key]);return Number.isFinite(v)&&v>=min&&v<=max?v:def};
  return {mode,liveConfirmed:env.LIVE_TRADING_CONFIRM===LIVE_CONFIRM_PHRASE,
   venues:String(env.LIVE_VENUES||'BINGX').split(',').map(x=>x.trim().toUpperCase()).filter(x=>['BINGX','GATEIO'].includes(x)),
-  maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),maxOpen:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,4,6),maxPerDirection:evenPositions(env.LIVE_MAX_OPEN_POSITIONS,4,6)/2,
+  maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),// Position count (user, 2026-11-13): no count limit by default — the open-risk cap (all open
+  // positions' worst losses within the daily loss limit) bounds exposure. LIVE_MAX_OPEN_POSITIONS=N
+  // brings back N positions, half per direction.
+  ...(()=>{const n=Number(env.LIVE_MAX_OPEN_POSITIONS);const on=env.LIVE_MAX_OPEN_POSITIONS!==undefined&&env.LIVE_MAX_OPEN_POSITIONS!==''&&n>0;
+   return on?{maxOpen:evenPositions(n,4,20),maxPerDirection:evenPositions(n,4,20)/2}:{maxOpen:0,maxPerDirection:0}})(),
   // BALANCE (default): the account balance is read before every entry and the position is
   // sized like the paper one (unit = balance x DCA_UNIT_PCT x leverage, adds 1, 2, 4 ... units
   // at volume zones, stop beyond the last add). RISK_USD: the old fixed LIVE_MAX_RISK_USD sizing.
@@ -142,7 +146,7 @@ export function preflight({config,armed,killSwitch,credentials,row,records,now=D
  if(!Array.isArray(row?.targets)||row.targets.length!==3||!positive(row?.stop))reasons.push('PLAN_INCOMPLETE');
  const active=records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status));
  if(active.some(r=>r.status==='UNKNOWN'))reasons.push('UNRESOLVED_ORDER_STATE');
- if(active.length>=config.maxOpen)reasons.push('MAX_OPEN_POSITIONS');
+ if(config.maxOpen>0&&active.length>=config.maxOpen)reasons.push('MAX_OPEN_POSITIONS');
  // Long / short split: half of the even maximum on each side.
  if(config.maxPerDirection>0&&active.filter(r=>r.direction===row?.direction).length>=config.maxPerDirection)reasons.push('MAX_SAME_DIRECTION_POSITIONS');
  if(active.some(r=>r.symbol===row?.symbol))reasons.push('SYMBOL_ALREADY_ACTIVE');
