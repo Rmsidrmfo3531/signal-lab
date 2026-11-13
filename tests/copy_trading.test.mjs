@@ -34,7 +34,7 @@ function venue({free=500}={}){
 }
 const contract={symbol:'TNSRUSDT',venueSymbol:'TNSR-USDT',tickSize:'0.00001',quantityStep:'1',minQuantityBase:'1',minNotionalUSDT:2,tradable:true};
 const make=(v,extra={})=>new CopyExecutor({config:{...copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),...extra.config},client:v.client,contractOf:async()=>contract,
- balance:async()=>({equity:400,available:extra.free??300}),isBusy:extra.isBusy??(()=>false),gate:extra.gate??(()=>({ok:true})),now:()=>1e12});
+ balance:async()=>({equity:400,available:typeof extra.free==='function'?extra.free():extra.free??300}),isBusy:extra.isBusy??(()=>false),gate:extra.gate??(()=>({ok:true})),now:()=>1e12});
 
 test('copy: 1 $ margin at the trader leverage (capped by the venue), doubles with the trader, cuts in proportion, closes, protective stop each time',async()=>{
  const v=venue(),ex=make(v);
@@ -61,7 +61,7 @@ test('copy: no entry right after a monitor restart, while disarmed, or on a symb
  assert.equal(v.calls.filter(c=>c.op==='order').length,0);assert.equal(ex.status().events[0].reason,'MONITOR_RESTART_SNAPSHOT');
  v=venue();ex=make(v,{gate:()=>({ok:false,reason:'LIVE_DISARMED'})});await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(v.calls.length,0);
  v=venue();ex=make(v,{isBusy:()=>true});await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(v.calls.length,0);
- v=venue();ex=make(v,{free:.5});await ex.handle({id:1,date:1e12,text:OPEN});await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
+ v=venue();{let n=0;ex=make(v,{free:()=>n++<1?300:.5})}await ex.handle({id:1,date:1e12,text:OPEN});await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
  assert.equal(v.size,98,'add needs about 1 $ of margin, 0.45 free');assert.equal(ex.status().events[0].type,'ADD_SKIPPED');
  assert.equal(ex.heldSymbols().has('TNSRUSDT'),true);
 });
@@ -167,7 +167,7 @@ test('copy exit at a volume zone at least 20 % away, only when a 15m candle clos
 test('copy review: the trader total follows the trader even when our buy is skipped; a failed partial close retries the same share; "- → q" positions keep their scale',async()=>{
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const closeQ=q=>`✅ 포지션 청산\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short\n━━━━━━━━━━━━━━━━\n진입가 0.05000 USDT\n수량 ${q}\n최종손익 🟢 +0.3 USDT`;
- let v=venue(),ex=make(v,{free:.5});
+ let v=venue(),ex;{let n=0;ex=make(v,{free:()=>n++<1?300:.5})}
  await ex.handle({id:1,date:1e12,text:card(0.4,'0.05000')});await ex.handle({id:2,date:1e12+600000,text:card(0.4,'0.05100')});
  assert.equal(v.size,100,'add skipped (margin)');assert.equal(ex.status().positions[0].theirTotal,.8,'trader total still 0.8');
  await ex.handle({id:3,date:1e12+700000,text:closeQ(0.4)});assert.equal(v.size,50,'half of ours, not all');
@@ -178,10 +178,11 @@ test('copy review: the trader total follows the trader even when our buy is skip
  assert.equal(ex.status().positions[0].theirFirstQty,880);
 });
 
-test('copy default (user 2026-11-13): the trader quantity x our equity / 20,000 $, no 1 $ floor; each cut has its own order id',async()=>{
- assert.equal(copyConfig({},'TESTNET').sizing,'BALANCE_RATIO');
+test('copy BALANCE_RATIO: the trader quantity x our equity / 20,000 $, no 1 $ floor; each cut has its own order id',async()=>{
+ // Default (user 2026-11-14): balance ratio, up to 100 % of the equity as margin.
+ assert.equal(copyConfig({},'TESTNET').sizing,'BALANCE_RATIO');assert.equal(copyConfig({},'TESTNET').maxTotalMarginPct,100);assert.equal(copyConfig({},'TESTNET').marginUSD,1);
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
- const v=venue();const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const v=venue();const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_MAX_TOTAL_MARGIN_PCT:'30'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // 880 x 400 / 20,000 = 17.6 -> 17 coins (0.87 $ of notional... venue minimum 2 $ -> raised to the minimum).
  await ex.handle({id:1,date:1e12,text:card(5000,'0.05000')});
  assert.equal(v.size,100,'5,000 x 0.02 = 100 coins');assert.equal(ex.status().positions[0].scale,.02);
@@ -191,12 +192,12 @@ test('copy default (user 2026-11-13): the trader quantity x our equity / 20,000 
  const cuts=v.calls.filter(c=>c.reduceOnly==='true').map(c=>c.clientOrderId);assert.equal(cuts.length,2);assert.notEqual(cuts[0],cuts[1]);
  assert.equal(ex.status().positions[0].reduces,2);
  // Tiny trader order: below the venue minimum -> the minimum, flagged.
- const v2=venue();const ex2=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v2.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const v2=venue();const ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_MAX_TOTAL_MARGIN_PCT:'30'},'TESTNET'),client:v2.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  await ex2.handle({id:1,date:1e12,text:card(100,'0.05000')});assert.equal(ex2.status().positions[0].minOrder,true);
 });
 
 test('copy: a card whose quantity does not match its margin x leverage is not traded; first entries respect the total margin cap; small adds are carried',async()=>{
- const v=venue(),ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_MAX_TOTAL_MARGIN_PCT:'30'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // 880 coins x 0.051 = 44.9 $ but 마진 9.01 x 5 = 45 $: coins. 88 "contracts" with the same margin would not match.
  const bad=OPEN.replace('수량　　880','수량　　88');
  assert.equal((await ex.handle({id:1,date:1e12,text:bad})).reason,'QUANTITY_UNIT_UNCLEAR');assert.equal(v.size,0);
@@ -208,6 +209,27 @@ test('copy: a card whose quantity does not match its margin x leverage is not tr
  await ex.handle({id:4,date:1e12+600000,text:card(1000,'0.05100')});assert.equal(v.size,100);
  await ex.handle({id:5,date:1e12+700000,text:card(1000,'0.05200')});assert.equal(v.size,140,'carried adds bought together');
  await ex.handle({id:6,date:1e12+800000,text:card(1000,'0.05300')});assert.equal(v.size,140,'the next small one carried again');
+});
+
+test('copy entries need 90 % of the free margin; a venue minimum above 5 $ of margin is not taken',async()=>{
+ const v=venue(),ex=make(v,{free:1});
+ assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).reason,'MARGIN_SHORT');assert.equal(v.size,0);
+ const big={...contract,minQuantityBase:'1000'};// 1000 coins x 0.05 / 5 = 10 $ of margin > 5 $
+ const v2=venue(),ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v2.client,contractOf:async()=>big,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const card=`📌 포지션 진입\nTNSRUSDT 🔴 Short ×5\n진입가 0.05 USDT\n현재가 0.05000 USDT\n수량 100`;
+ assert.equal((await ex2.handle({id:1,date:1e12,text:card})).reason,'MIN_ORDER_TOO_LARGE');assert.equal(v2.size,0);
+});
+
+test('copy FIRST_1USD (selectable): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
+ const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
+ const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ // The first buy: 1 $ of margin (raised to the venue minimum of 2 $ notional when smaller).
+ await ex.handle({id:1,date:1e12,text:card(1000,'0.05000')});const first=v.size;assert.ok(first>0);
+ assert.ok(first*0.05>=2&&first*0.05/ex.status().positions[0].leverage<=1.05,'about 1 $ of margin');
+ // Trader adds 10 (1 % of the first): far below the minimum -> carried, nothing sent.
+ const sent=v.calls.length;await ex.handle({id:2,date:1e12+600000,text:card(10,'0.05100')});assert.equal(v.size,first,'carried');
+ // Trader adds 1000 (same as the first): about the first quantity again, carry included.
+ await ex.handle({id:3,date:1e12+700000,text:card(1000,'0.05200')});assert.ok(v.size>first*1.8,'proportional add: '+v.size);
 });
 
 test('copy stop: a venue that refuses the far backstop gets 30 %, then 20 %',async()=>{
@@ -226,7 +248,7 @@ test('copy: SNDKUSDT follows the BingX stock perpetual, PEPEUSDT the 1000-coin c
  const client={leverage:async()=>({maxLongLeverage:50}),setMarginType:async()=>({}),setLeverage:async()=>({}),cancelOrder:async()=>({}),
   positions:async()=>size>0?[{symbol:'1000PEPE-USDT',positionAmt:String(size),avgPrice:'0.01',markPrice:'0.01',unrealizedProfit:'0'}]:[],
   placeOrder:async p=>{calls.push(p);if(p.type==='MARKET')size+=Number(p.quantity);return {order:{orderId:String(calls.length)}}}};
- const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client,contractOf:async()=>pepe,markOf:async()=>0.01,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO'},'TESTNET'),client,contractOf:async()=>pepe,markOf:async()=>0.01,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // 10,000,000 PEPE at 0.00001 x 0.02 = 200,000 PEPE = 200 contracts of 1000 at 0.01.
  await ex.handle({id:1,date:1e12,text:'📌 포지션 진입\nPEPEUSDT 🟢 Long ×10\n진입가 0.00001 USDT\n현재가 0.00001 USDT\n수량 10000000'});
  assert.equal(calls.find(c=>c.type==='MARKET').quantity,'200');assert.equal(calls.find(c=>c.type==='MARKET').symbol,'1000PEPE-USDT');

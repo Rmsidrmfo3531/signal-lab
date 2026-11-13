@@ -26,7 +26,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:30,ledgerLossPct:50});
+export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -54,8 +54,10 @@ export function copyConfig(env=process.env,liveMode='OFF'){
  // TESTNET only. COPY_TRADING=off turns it off.
  const mode=String(env.COPY_MODE||'').toUpperCase()==='LIVE'&&env.COPY_LIVE_CONFIRM===COPY_LIVE_PHRASE?'LIVE':liveMode==='TESTNET'?'TESTNET':'OFF';
  const enabled=String(env.COPY_TRADING||'').toLowerCase()!=='off'&&mode!=='OFF';
- // BALANCE_RATIO (user 2026-11-13, default): the trader's quantities x our equity / the trader's balance
- // (20,000 $), no 1 $ floor. FIRST_1USD: the earlier rule (first buy 1 $ of margin, later buys in proportion).
+ // BALANCE_RATIO (default, user 2026-11-14 after the review): the trader's quantities x our equity / the
+ // trader's balance (20,000 $), so our exposure follows theirs in proportion. FIRST_1USD (1 $ first margin,
+ // adds in proportion) is selectable. The copy may use up to 100 % of the equity as margin (user 2026-11-14),
+ // read from the exchange before every order; each order still needs 90 % of the free margin to cover it.
  const sizing=String(env.COPY_SIZING||'').toUpperCase()==='FIRST_1USD'?'FIRST_1USD':'BALANCE_RATIO';
  return {enabled,mode,sizing,traderBalanceUSD:n('COPY_TRADER_BALANCE_USD',COPY_DEFAULTS.traderBalanceUSD,100,1e9),marginUSD:n('COPY_MARGIN_USD',COPY_DEFAULTS.marginUSD,.1,1000),maxLossPct:n('COPY_MAX_LOSS_PCT',COPY_DEFAULTS.maxLossPct,1,90),
   snapshotMs:n('COPY_SNAPSHOT_MS',COPY_DEFAULTS.snapshotMs,0,3600000),maxLeverage:n('COPY_MAX_LEVERAGE',COPY_DEFAULTS.maxLeverage,1,125),
@@ -70,7 +72,9 @@ export function copyConfig(env=process.env,liveMode='OFF'){
   backstopPct:n('COPY_BACKSTOP_PCT',COPY_DEFAULTS.backstopPct,5,90),
   maxAdds:n('COPY_MAX_ADDS',COPY_DEFAULTS.maxAdds,0,100),breakVolumeMult:n('COPY_BREAK_VOLUME_MULT',COPY_DEFAULTS.breakVolumeMult,1,10),
   stopMinPct:n('COPY_STOP_MIN_PCT',COPY_DEFAULTS.stopMinPct,.5,80),stopMaxPct:n('COPY_STOP_MAX_PCT',COPY_DEFAULTS.stopMaxPct,1,95),stopBufferPct:n('COPY_STOP_BUFFER_PCT',COPY_DEFAULTS.stopBufferPct,0,5),
-  maxTotalMarginPct:n('COPY_MAX_TOTAL_MARGIN_PCT',COPY_DEFAULTS.maxTotalMarginPct,1,100),ledgerLossPct:n('COPY_LEDGER_LOSS_PCT',COPY_DEFAULTS.ledgerLossPct,1,90)};
+  maxTotalMarginPct:n('COPY_MAX_TOTAL_MARGIN_PCT',COPY_DEFAULTS.maxTotalMarginPct,1,100),ledgerLossPct:n('COPY_LEDGER_LOSS_PCT',COPY_DEFAULTS.ledgerLossPct,1,90),
+  // The venue-minimum bump may raise the first margin to at most this much (user 2026-11-14: start at 1 $).
+  minOrderMaxMarginUSD:n('COPY_MIN_ORDER_MAX_MARGIN_USD',COPY_DEFAULTS.minOrderMaxMarginUSD,.1,1000)};
 }
 
 export class CopyExecutor{
@@ -249,7 +253,11 @@ export class CopyExecutor{
   if(scale!=null&&m.marginUSD>0&&m.leverage>0){const implied=m.quantity*(price/mult)/(m.marginUSD*m.leverage);
    if(implied<.7||implied>1.3)throw Object.assign(Error('QUANTITY_UNIT_UNCLEAR'),{code:'QUANTITY_UNIT_UNCLEAR'})}
   {const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
-   if(eq&&used+qty*price/leverage>eq*this.config.maxTotalMarginPct/100){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_MARGIN_CAP'});return {ok:false,reason:'COPY_MARGIN_CAP'}}}
+   if(eq&&used+qty*price/leverage>eq*this.config.maxTotalMarginPct/100){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_MARGIN_CAP'});return {ok:false,reason:'COPY_MARGIN_CAP'}}
+   // Entries too must fit in 90 % of the free margin (the same check as the adds).
+   const free=num(bal?.available);if(free!==null&&qty*price/leverage>free*.9){this.#event('SKIPPED',{symbol:m.symbol,reason:'MARGIN_SHORT',need:+(qty*price/leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}}
+  // A venue minimum far above the planned size (an expensive stock perp, a low leverage) is not taken.
+  if(minOrder&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
   const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
    scale,mult,venueAlias:c.alias??null,minOrder,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
@@ -295,7 +303,8 @@ export class CopyExecutor{
   const add=p.scale!=null?this.#qty(c,theirQty*p.scale/(p.mult||1)):marginUSD!=null?this.#qty(c,marginUSD*p.leverage/price):this.#qty(c,p.qty*((ratio??((p.theirTotal+theirQty)/p.theirTotal))-1));
   // Adds below the venue minimum are carried until they add up to a valid order (no drift from the trader).
   let buy=add;
-  if(p.scale!=null){const raw=theirQty*p.scale/(p.mult||1)+(p.addCarry||0),minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
+  // Both sizings: adds below the venue minimum are carried until they add up to a valid order.
+  if(p.scale!=null||marginUSD!=null){const raw=(p.scale!=null?theirQty*p.scale/(p.mult||1):marginUSD*p.leverage/price)+(p.addCarry||0),minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
    buy=this.#qty(c,raw);if(!(buy>0)||buy<minQ||buy*price<minN){p.addCarry=raw;this.#event('ADD_CARRIED',{symbol:p.symbol,carry:+raw.toPrecision(6)});return {ok:true,carried:true}}
    p.addCarry=Math.max(0,raw-buy)}
   else if(!(add>0))return {ok:true,tooSmall:true};
