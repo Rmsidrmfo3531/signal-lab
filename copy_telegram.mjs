@@ -3,7 +3,7 @@ const SIDE={LONG:'롱',SHORT:'숏'};
 const money=v=>v==null?'—':`${v>=0?'+':'−'}$${Math.abs(v).toFixed(2)}`;
 const REASON={MARGIN_SHORT:'여유 증거금 부족',SYMBOL_HELD_BY_SIGNAL_STRATEGY:'같은 종목을 신호 전략이 보유 중',OPPOSITE_COPY_OPEN:'같은 종목 반대 방향 보유 중',
  MONITOR_RESTART_SNAPSHOT:'채널 모니터 재시작 직후의 기존 포지션 재알림',LIVE_DISARMED:'실매매 비활성 상태',KILL_SWITCH:'긴급 정지 중',NOT_TESTNET:'테스트넷이 아님',
- NO_BINGX_CONTRACT:'BingX에 없는 종목',TRADER_CLOSE:'트레이더 청산',STOP_OR_EXTERNAL:'보호 손절 또는 외부 청산',POSITION_GONE:'거래소에 포지션 없음',COPY_OFF:'카피 매매 꺼짐',NO_STOP:'보호 손절을 걸지 못해 청산',LOSS_CAP_REACHED:'손실 한도 도달로 청산',COPY_LOSS_LIMIT:'카피 손실 한도',COPY_MARGIN_CAP:'카피 전체 증거금 한도',TRADER_CUT_ALL:'트레이더 전량 축소'};
+ NO_BINGX_CONTRACT:'BingX에 없는 종목',TRADER_CLOSE:'트레이더 청산',STOP_OR_EXTERNAL:'보호 손절 또는 외부 청산',POSITION_GONE:'거래소에 포지션 없음',COPY_OFF:'카피 매매 꺼짐',TRADER_QUANTITY_MISSING:'트레이더 수량이 없는 알림',NO_BALANCE:'잔고 조회 실패',NO_STOP:'보호 손절을 걸지 못해 청산',LOSS_CAP_REACHED:'손실 한도 도달로 청산',COPY_LOSS_LIMIT:'카피 손실 한도',COPY_MARGIN_CAP:'카피 전체 증거금 한도',TRADER_CUT_ALL:'트레이더 전량 축소'};
 const why=r=>REASON[r]||r||'';
 /** Text for one copy event, or null when not worth a notice. */
 export function copyEventText(e){
