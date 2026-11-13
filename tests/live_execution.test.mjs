@@ -101,7 +101,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0,minUnitMarginUSD:1});
  assert.equal(liveConfig({HOURLY_MAX_ADDS:'10'}).maxAdds,10);
  for(const bad of ['','abc'])assert.equal(liveConfig({HOURLY_MAX_ADDS:bad}).maxAdds,7,'garbage falls back to 7, not 10');
  assert.equal(liveConfig({LIVE_BALANCE_CAP_USD:'400'}).balanceCapUSD,400);
@@ -495,4 +495,18 @@ test('restart cut an entry short: the stop is found or placed, a missing positio
  assert.equal(withAdds.m.orders.filter(o=>String(o.clientOrderId||'').startsWith(withAdds.rec.clientOrderId+'a')).length,0);
  const fail=await scenario({stopPlacement:'fail'});
  assert.equal(fail.rec.closeReason,'EMERGENCY_NO_STOP');assert.ok(fail.types.includes('EMERGENCY_CLOSED'));assert.equal(fail.ex.store.killSwitch,true);
+});
+
+test('first-entry margin floor: at least 1 USD of margin per unit, worst-loss cap still applies',async()=>{
+ const {liveSplitPlan}=await import('../live_orders.mjs');
+ const c={tickSize:'0.0001',quantityStep:'1',quantityUnit:'BASE_ASSET',contractSizeBase:'1',minQuantityBase:'1'};
+ const r={direction:'LONG',entry:0.5,stop:0.45,venueContract:c,paperAddInputs:null};
+ const cfg=x=>({unitPct:.19,maxLossPct:30,maxAdds:7,minUnitMarginUSD:1,...x});
+ // 400 × 0.19 % = 0.76 USD margin → raised to 1 USD: 1 × 10 / 0.5 = 20 units.
+ assert.equal(liveSplitPlan({row:r,balanceUSD:400,leverage:10,config:cfg()}).qty.base,20);
+ assert.equal(liveSplitPlan({row:r,balanceUSD:400,leverage:10,config:cfg({minUnitMarginUSD:0})}).qty.base,15,'floor off: 0.76 USD');
+ // 2300 × 0.19 % = 4.37 USD margin is above the floor: unchanged.
+ assert.equal(liveSplitPlan({row:r,balanceUSD:2300,leverage:10,config:cfg()}).qty.base,87);
+ assert.equal(liveConfig({LIVE_MIN_UNIT_MARGIN_USD:'2'}).minUnitMarginUSD,2);
+ assert.equal(liveConfig({LIVE_MIN_UNIT_MARGIN_USD:'0'}).minUnitMarginUSD,0);
 });
