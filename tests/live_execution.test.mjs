@@ -102,7 +102,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
  // OFF / TESTNET: growth risk profile (3 % a trade, 9 % open risk / day, 8 positions).
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:8,maxPerDirection:4,sizing:'BALANCE',unitPct:.19,maxLossPct:3,maxAdds:7,dailyMaxLossPct:9,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25,strategyProfile:'HYBRID',hybridMaxAdds:3,riskProfile:'GROWTH'});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,signalLiveLocked:true,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:8,maxPerDirection:4,sizing:'BALANCE',unitPct:.19,maxLossPct:3,maxAdds:7,dailyMaxLossPct:9,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25,strategyProfile:'HYBRID',hybridMaxAdds:3,riskProfile:'GROWTH'});
  {const c=liveConfig({LIVE_RISK_PROFILE:'conservative'});assert.deepEqual([c.maxLossPct,c.dailyMaxLossPct,c.maxOpen],[1,3,4])}
  {const t=liveConfig({LIVE_TRADING_MODE:'TESTNET',DCA_MAX_LOSS_PCT:'30',LIVE_DAILY_MAX_LOSS_PCT:'60'});assert.deepEqual([t.riskProfile,t.maxLossPct,t.dailyMaxLossPct,t.maxOpen],['GROWTH',3,9,8],'profile is a ceiling on testnet')}
  // LIVE keeps the earlier values until the user approves the change.
@@ -120,7 +120,10 @@ test('configuration defaults are OFF and conservative; LIVE needs the confirmati
  for(const bad of ['','abc'])assert.equal(liveConfig({HOURLY_MAX_ADDS:bad}).maxAdds,7,'garbage falls back to 7, not 10');
  assert.equal(liveConfig({LIVE_BALANCE_CAP_USD:'400'}).balanceCapUSD,400);
  assert.equal(liveConfig({LIVE_SIZING:'risk_usd'}).sizing,'RISK_USD');
- assert.equal(liveConfig({LIVE_TRADING_MODE:'live',LIVE_TRADING_CONFIRM:'REAL_MONEY'}).liveConfirmed,true);
+ // The signal strategy is locked off the real account (user 2026-11-14): the old phrase alone no longer arms it.
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'live',LIVE_TRADING_CONFIRM:'REAL_MONEY'}).liveConfirmed,false);
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'live',LIVE_TRADING_CONFIRM:'REAL_MONEY'}).signalLiveLocked,true);
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'live',LIVE_TRADING_CONFIRM:'REAL_MONEY',SIGNAL_LIVE_UNLOCK:'REAL_MONEY_SIGNALS'}).liveConfirmed,true);
  assert.equal(liveConfig({LIVE_TRADING_MODE:'yolo'}).mode,'OFF');assert.equal(liveConfig({LIVE_MAX_RISK_USD:'1000'}).maxRiskUSD,2,'out-of-range values fall back');
 });
 

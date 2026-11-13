@@ -8,6 +8,10 @@ import {planZoneDca,planProfile,clampMaxAdds,DCA_DEFAULTS,HOURLY_MAX_ADDS_DEFAUL
 
 export const LIVE_MODES=Object.freeze(['OFF','TESTNET','LIVE']);
 export const LIVE_CONFIRM_PHRASE='REAL_MONEY';
+// The signal strategy stays off the real account (user 2026-11-14: test it on the testnet, real money
+// only for copy trading). LIVE also needs SIGNAL_LIVE_UNLOCK=REAL_MONEY_SIGNALS, which only the user
+// adds after a new approval; without it LIVE places no signal orders and cannot be armed.
+export const SIGNAL_LIVE_UNLOCK_PHRASE='REAL_MONEY_SIGNALS';
 const FRACTIONS=[.4,.35,.25];
 const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
 
@@ -44,7 +48,7 @@ export function liveConfig(env=process.env){
 function liveConfigBase(env){
  const mode=LIVE_MODES.includes(String(env.LIVE_TRADING_MODE||'OFF').toUpperCase())?String(env.LIVE_TRADING_MODE||'OFF').toUpperCase():'OFF';
  const num=(key,def,min,max)=>{const v=Number(env[key]);return Number.isFinite(v)&&v>=min&&v<=max?v:def};
- return {mode,liveConfirmed:env.LIVE_TRADING_CONFIRM===LIVE_CONFIRM_PHRASE,
+ return {mode,liveConfirmed:env.LIVE_TRADING_CONFIRM===LIVE_CONFIRM_PHRASE&&env.SIGNAL_LIVE_UNLOCK===SIGNAL_LIVE_UNLOCK_PHRASE,signalLiveLocked:env.SIGNAL_LIVE_UNLOCK!==SIGNAL_LIVE_UNLOCK_PHRASE,
   venues:String(env.LIVE_VENUES||'BINGX').split(',').map(x=>x.trim().toUpperCase()).filter(x=>['BINGX','GATEIO'].includes(x)),
   maxRiskUSD:num('LIVE_MAX_RISK_USD',2,0.1,100),dailyMaxRiskUSD:num('LIVE_DAILY_MAX_RISK_USD',6,0.1,500),// Position count (user, 2026-11-13): no count limit by default — the open-risk cap (all open
   // positions' worst losses within the daily loss limit) bounds exposure. LIVE_MAX_OPEN_POSITIONS=N
