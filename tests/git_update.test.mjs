@@ -42,3 +42,27 @@ test('apply fast-forwards only, and rolls back when the new server.mjs does not 
  const cur=await gitApply('/app',{git:fakeGit({origin:'aaa1111'}).git,checkSyntax:async()=>{}});
  assert.equal(cur.ok,true);assert.equal(cur.state,'current');
 });
+
+test('the whole tree is checked: every module parses and every relative import exists',async()=>{
+ const {checkTree}=await import('../git_update.mjs');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gt-'));
+ const imp=f=>'import {x} f'+'rom '+"'./"+f+"';";
+ fs.writeFileSync(path.join(dir,'a.mjs'),imp('b.mjs')+'\nexport const y=x;');
+ fs.writeFileSync(path.join(dir,'b.mjs'),'export const x=1;');
+ const checked=[];const nodeCheck=async f=>{checked.push(path.basename(f))};
+ assert.equal(await checkTree(dir,{nodeCheck}),2);assert.deepEqual(checked.sort(),['a.mjs','b.mjs']);
+ fs.writeFileSync(path.join(dir,'c.mjs'),imp('missing.mjs'));
+ await assert.rejects(checkTree(dir,{nodeCheck}),/missing\.mjs 없음/);
+});
+
+test('link check finds a missing named export without running the module',async()=>{
+ const {linkCheck}=await import('../link_check.mjs').catch(()=>({}));
+ if(!linkCheck)return;
+ const {execFileSync}=await import('node:child_process');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lc-'));
+ fs.writeFileSync(path.join(dir,'a.mjs'),'import {nope} f'+"rom './b.mjs';\nthrow Error('must not run');");
+ fs.writeFileSync(path.join(dir,'b.mjs'),'export const x=1;');
+ const run=f=>{try{return execFileSync(process.execPath,['--no-warnings','--experimental-vm-modules',new URL('../link_check.mjs',import.meta.url).pathname,f],{encoding:'utf8',stdio:'pipe'})}catch(e){return 'FAIL '+e.stderr}};
+ assert.match(run(path.join(dir,'a.mjs')),/FAIL LINK_FAIL .*nope/);
+ assert.match(run(new URL('../server.mjs',import.meta.url).pathname),/LINK_OK/);
+});

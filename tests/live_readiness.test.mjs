@@ -19,6 +19,8 @@ test('drawdown, losses, order problems, test orders and old-rule trades',()=>{
  const base=Array.from({length:32},(_,i)=>trade(i,2));
  const dd=liveReadiness([...base,trade(40,-150)],{since:T0,now:T0+30*DAY,balanceUSD:400});
  assert.equal(dd.checks.find(c=>c.key==='drawdown').ok,false,'a 150 drop on a 400 balance is 37.5%');
+ const sized=liveReadiness([...base,trade(40,-150)].map(r=>({...r,balanceUSD:1000})),{since:T0,now:T0+30*DAY});
+ assert.equal(sized.balanceUSD,1000);assert.equal(sized.checks.find(c=>c.key==='drawdown').ok,true,'150 of a 1000 sizing balance is 15%');
  const bad=liveReadiness([...base,trade(41,1,{events:[{type:'CANCEL_FAILED',at:T0}]})],{since:T0,now:T0+30*DAY});
  assert.equal(bad.checks.find(c=>c.key==='errors').ok,false);assert.equal(bad.ready,false);
  const unknown=liveReadiness([...base,{...trade(42,0),status:'UNKNOWN',realized:null}],{since:T0,now:T0+30*DAY});

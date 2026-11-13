@@ -190,6 +190,23 @@ function volumeTargetHTML(row,{compact=false}={}){
  const targets=plan.targets.map((price,i)=>{const part=plan.parts?.[i],ratio=Number.isFinite(part?.fraction)?(part.fraction*100).toFixed(0)+'%':'비율 미확인';return `<div class="tp-line"><b>TP${i+1} ${fmt(price)}</b><span>${ratio} 청산${Number.isFinite(part?.quantity)?' · 수량 '+fmt(part.quantity):''}</span>${!compact&&part?.zone?`<small>매물대 ${fmt(part.zone.priceLow)} ~ ${fmt(part.zone.priceHigh)} 직전</small>`:part?.source==='R_MULTIPLE'?`<small>매물대 없음 · ${escapeHtml(part.rMultiple)}R 지점</small>`:''}</div>`}).join('');
  return `<div class="tp-list volume-targets">${targets}<small>예상 TP1 순손익비 ${rr} · 체결·비용 가정</small><details class="volume-evidence"><summary>매물대 계산 근거</summary><p>${escapeHtml(source)} · ${dateClock(evidence.windowStart)} ~ ${dateClock(evidence.windowEnd)} KST<br>커버리지 ${coverage} · ${Number.isFinite(evidence.candles)?'15분봉 '+escapeHtml(evidence.candles)+'개':'체결 '+escapeHtml(evidence.uniqueTrades??evidence.tradeCount??'미확인')+'건'} · 갱신 ${dateClock(evidence.generatedAt??evidence.receivedAt)} KST</p><p>POC ${fmt(evidence.poc?.price)} · Value Area ${fmt(evidence.valueArea?.low)} ~ ${fmt(evidence.valueArea?.high)}<br>HVN ${(evidence.hvn||[]).map(zone=>fmt(zone.price)).join(' / ')||'미확인'}</p><small>${evidence.dataSource==='BINANCE_KLINES_15M'?'15분봉 거래량을 고가~저가에 고르게 나눈 근사치입니다.':'1H 봉 거래량을 가격별 체결량으로 바꾸지 않습니다.'} 기존 거래의 TP/SL은 변경하지 않습니다.</small></details></div>`;
 }
+// Article body: fetched from the publisher when an item is opened, translated to Korean.
+const newsBodies=new Map();
+function newsBodyHTML(id){
+ const b=newsBodies.get(id);
+ if(!b)return '<p class="news-body-wait">본문을 불러오는 중입니다…</p>';
+ if(!b.ok)return `<p class="news-body-wait">본문을 가져오지 못했습니다 (${escapeHtml(b.error||'오류')}). 아래 원문 링크에서 확인해 주세요.</p>`;
+ const ko=b.paragraphsKo,en=b.paragraphs||[];
+ return (ko||en).map(p=>`<p>${escapeHtml(p)}</p>`).join('')+(ko?`<details class="news-original"><summary>영문 원문 보기</summary>${en.map(p=>`<p>${escapeHtml(p)}</p>`).join('')}</details>`:'<p class="news-body-wait">번역을 하지 못해 영문으로 표시합니다.</p>');
+}
+async function loadNewsBody(id){
+ if(!id||newsBodies.has(id))return;
+ newsBodies.set(id,null);
+ let b;try{const r=await fetch('/api/news/detail?id='+encodeURIComponent(id),{cache:'no-store'});b=await r.json()}catch{b={ok:false,error:'연결 실패'}}
+ newsBodies.set(id,b);while(newsBodies.size>60)newsBodies.delete(newsBodies.keys().next().value);
+ const host=document.querySelector(`[data-news-body="${CSS.escape(id)}"]`);if(host)host.innerHTML=newsBodyHTML(id);
+}
+if(typeof document!=='undefined')document.addEventListener('toggle',e=>{const d=e.target;if(d?.classList?.contains('news-entry')&&d.open)void loadNewsBody(d.dataset.newsId)},true);
 function renderAnalysis(){
 // Score factor values: short readable numbers, objects as "이름 값" pairs (never [object Object]).
 const FACTOR_KO={adx:'ADX',plusDI:'+DI',minusDI:'-DI',histogram:'히스토그램',previousHistogram:'직전',ratio:'거래량 배수',requiredRatio:'기준',atr:'ATR',priceFraction:'가격 대비',bodyFraction:'몸통 비율',closePosition:'종가 위치',pattern:'패턴',directionConfirmed:'방향 확인'};
@@ -343,6 +360,20 @@ function fillJournalFromSignal(symbol){
  if(a?.symbol===symbol){$('journalSide').value=a.direction||'LONG';$('journalEntry').value=a.entry||'';$('journalStop').value=a.stop||'';$('journalNotional').value=a.risk?.nominal||500;$('journalLeverage').value=a.risk?.leverage|| (symbol.startsWith('BTC')?20:symbol.startsWith('ETH')?10:symbol.startsWith('SOL')?10:3);$('journalNote').value='차트 패턴 참고: '+(a.pattern||'');}
  $('journalExit').value='';calcJournalPreview();$('journal').scrollIntoView({behavior:'smooth'});toast('참고값만 입력했습니다. 실제 체결·손절 가격을 확인하고 저장하세요.');
 }
+// Automatic journal entries from live trades: result, likely reasons, what to change next.
+const OUTCOME_KO={PROFIT:'수익',LOSS:'손절',BREAKEVEN:'본절',UNKNOWN:'확인 불가'};
+function autoJournalHTML(t){
+ const v=t.review||{},pnl=Number(t.realizedPnLUSD),cls=pnl>0?'journal-pnl-positive':pnl<0?'journal-pnl-negative':'';
+ const list=a=>a?.length?`<ul>${a.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul>`:'';
+ return `<div class="journal-record journal-auto"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side==='LONG'?'롱':'숏'} · ${escapeHtml(v.pattern||'')}</span><span class="${cls}">${OUTCOME_KO[v.outcome]||''} ${Number.isFinite(pnl)?(pnl>=0?'+':'−')+'$'+Math.abs(pnl).toFixed(2):'—'}${t.realizedSource==='ESTIMATE'?' 추정':''}</span></div>
+ <p class="journal-facts">진입 ${fmt(t.entry)} · 평균 ${fmt(t.averageEntry)} · 손절 ${fmt(t.stop)} · ${escapeHtml(t.leverage)}배 · 추매 ${escapeHtml(v.addsFilled??0)}/${escapeHtml(v.addsMax??0)}회${v.holdHours!=null?` · 보유 ${escapeHtml(v.holdHours)}시간`:''}${v.score!=null?` · 점수 ${escapeHtml(v.score)}`:''}</p>
+ <div class="journal-review"><b>원인 분석</b>${list(v.reasons)}${v.next?.length?`<b>다음 개선</b>${list(v.next)}`:''}</div>
+ <small>${dateClock(t.closedAt)} KST 마감 · 자동 기록 (테스트넷)</small><div class="journal-record-actions"><button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`;
+}
+function insightsHTML(rows){
+ if(!rows?.length)return '<p class="empty-small">실매매 거래가 쌓이면 패턴별 결과와 개선 방향을 여기에 정리합니다.</p>';
+ return `<table class="venues-table"><thead><tr><th>패턴</th><th>거래</th><th>승률</th><th>누적 손익</th><th>개선 방향</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${escapeHtml(r.pattern)}</td><td>${r.trades}</td><td>${r.winRatePct}%</td><td class="${r.netUSD>0?'positive':r.netUSD<0?'negative':''}">${r.netUSD>=0?'+':'−'}$${Math.abs(r.netUSD).toFixed(2)}</td><td>${r.suggestions.length?r.suggestions.map(escapeHtml).join('<br>'):r.trades<5?'5건 이상 쌓이면 판단':'유지'}</td></tr>`).join('')}</tbody></table>`;
+}
 function renderJournal(){
  const j=app.journalSummary||{};const cur=v=>'$'+Number(v||0).toFixed(2);const signed=v=>Number(v||0)>0?'positive':Number(v||0)<0?'negative':'';
  $('journalToday').textContent=cur(j.todayPnL);$('journalToday').className=signed(j.todayPnL);
@@ -351,12 +382,13 @@ function renderJournal(){
  $('journalOpenRisk').textContent=cur(j.stopRiskOpen)+' ('+(j.open||0)+'건)';
  $('journalRiskBanner').className='journal-risk-banner';
  $('journalRiskBanner').textContent=`계좌 자산 가정 없음 · 열린 포지션 ${j.open||0}건 계획손절 합계 ${cur(j.stopRiskOpen)} · 오늘 ${cur(j.todayPnL)} / 이번 주 ${cur(j.weekPnL)} (기록 참고용). 실제 청산 위험과 누락 거래는 별도입니다.`;
- $('journalList').innerHTML=app.journal.length?app.journal.slice(0,50).map(t=>`<div class="journal-record"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side}</span><span class="${t.realizedPnLUSD>0?'journal-pnl-positive':t.realizedPnLUSD<0?'journal-pnl-negative':''}">${t.status==='OPEN'?'진행 중':cur(t.realizedPnLUSD)}</span></div><p>진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)} · ${t.status==='CLOSED'?'청산 '+fmt(t.exit)+' · ':''}명목 ${cur(t.notional)} · ${t.leverage}x<br>계획 손절 ${cur(t.stopRiskUSD)} · 기록된 비용 ${cur(t.fees)} · 펀딩 ${cur(t.funding)}</p><small>${dateClock(t.createdAt)} KST · ${escapeHtml(t.note||'메모 없음')}</small><div class="journal-record-actions">${t.status==='OPEN'?`<button data-close="${escapeHtml(t.id)}">청산 기록</button>`:''}<button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`).join(''):'<div class="empty-small">저장된 거래 기록이 없습니다. 수동으로 입력하거나 시그널에서 ‘매매일지에 입력’을 사용하세요.</div>';
+ $('journalInsights')&&($('journalInsights').innerHTML=insightsHTML(app.journalInsights));
+ $('journalList').innerHTML=app.journal.length?app.journal.slice(0,50).map(t=>t.source==='LIVE_AUTO'?autoJournalHTML(t):`<div class="journal-record"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side}</span><span class="${t.realizedPnLUSD>0?'journal-pnl-positive':t.realizedPnLUSD<0?'journal-pnl-negative':''}">${t.status==='OPEN'?'진행 중':cur(t.realizedPnLUSD)}</span></div><p>진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)} · ${t.status==='CLOSED'?'청산 '+fmt(t.exit)+' · ':''}명목 ${cur(t.notional)} · ${t.leverage}x<br>계획 손절 ${cur(t.stopRiskUSD)} · 기록된 비용 ${cur(t.fees)} · 펀딩 ${cur(t.funding)}</p><small>${dateClock(t.createdAt)} KST · ${escapeHtml(t.note||'메모 없음')}</small><div class="journal-record-actions">${t.status==='OPEN'?`<button data-close="${escapeHtml(t.id)}">청산 기록</button>`:''}<button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`).join(''):'<div class="empty-small">저장된 거래 기록이 없습니다. 수동으로 입력하거나 시그널에서 ‘매매일지에 입력’을 사용하세요.</div>';
  document.querySelectorAll('#journalList [data-close]').forEach(b=>b.addEventListener('click',()=>{closingTradeId=b.dataset.close;$('closeTradePrice').value='';$('closeTradeFee').value='0';$('closeTradeFunding').value='0';$('closeTradeError').textContent='';$('closeTradeDialog').showModal()}));
  document.querySelectorAll('#journalList [data-delete]').forEach(b=>b.addEventListener('click',async()=>{if(!confirm('이 수동 거래 기록을 삭제할까요?'))return;try{await json('/api/journal/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:b.dataset.delete})});await loadJournal();toast('삭제 완료')}catch(e){toast('삭제 실패: '+e.message,true)}}));
  calcJournalPreview();
 }
-async function loadJournal(){try{const data=await json('/api/journal');app.journal=data.entries||[];app.journalSummary=data.summary;renderJournal()}catch(e){toast('매매일지 조회 실패: '+e.message,true)}}
+async function loadJournal(){try{const data=await json('/api/journal');app.journal=data.entries||[];app.journalSummary=data.summary;app.journalInsights=data.insights||[];renderJournal()}catch(e){toast('매매일지 조회 실패: '+e.message,true)}}
 let closingTradeId='';
 async function saveJournal(e){e.preventDefault();if(!app.marketMap.has($('journalSymbol').value)){toast('상장 목록이 확인되지 않았습니다.',true);return}try{const body=journalFormData();await json('/api/journal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('journalForm').reset();await loadJournal();toast('수동 매매 기록 저장 완료')}catch(e){toast('저장 실패: '+e.message,true)}}
 async function closeJournalTrade(){try{await json('/api/journal/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:closingTradeId,exit:$('closeTradePrice').value,fees:$('closeTradeFee').value,funding:$('closeTradeFunding').value})});$('closeTradeDialog').close();await loadJournal();toast('수동 청산 기록 완료')}catch(e){$('closeTradeError').textContent=e.message}}
@@ -529,7 +561,7 @@ function renderNews(){
   const detailLink=safeLink?`<a class="news-detail-link" href="${safeLink}" target="_blank" rel="noopener noreferrer">기사 원문 전체 보기 ↗</a>`:'';
   return `<details class="news-entry" data-news-id="${escapeHtml(n.id)}" ${app.expandedNewsId===n.id?'open':''}>
     <summary class="news-entry-head"><span class="news-main"><span class="news-title">${escapeHtml(title)}</span><span class="news-summary">${summaryText}</span><span class="news-meta"><span class="news-tag ${escapeHtml(n.tone)}">${toneLabel}</span><span>${escapeHtml(n.source)}</span><span class="news-translation-state">${escapeHtml(translationLabel)}</span><span>${dateClock(n.published)} KST</span>${n.impact==='high'?'<span>주요 키워드</span>':''}${n.symbols?.length?`<span>${escapeHtml(n.symbols.join(', '))}</span>`:''}</span></span><span class="news-open-hint">상세 보기 <span aria-hidden="true">⌄</span></span></summary>
-    <div class="news-detail"><div class="news-detail-heading">제공처 RSS 기사 설명 · 발췌</div><p>${sourceText}</p><details class="news-original"><summary>원문 제목·요약·제공 발췌</summary><strong>${escapeHtml(n.original?.title??n.originalTitle??n.title)}</strong><p>${escapeHtml(n.original?.summary??n.originalSummary??n.summary??'')}</p><p>${escapeHtml(n.original?.detail??n.originalDetail??n.detail??'')}</p></details>${n.translation?.errorCode||n.translation?.error?`<p class="news-translation-error">번역 상태: ${escapeHtml(n.translation.errorCode??n.translation.error)}</p>`:''}<div class="news-detail-foot"><span>원문·번역은 제공처 RSS 발췌 범위만 표시합니다. 번역 오류는 원문으로 표시하며 가격 전망이나 사건 원인을 만들지 않습니다.</span>${detailLink}</div></div>
+    <div class="news-detail"><div class="news-detail-heading">기사 본문 · 한국어 번역 (앞부분 발췌)</div><div class="news-body" data-news-body="${escapeHtml(n.id)}">${newsBodyHTML(n.id)}</div><details class="news-original"><summary>RSS 요약</summary><p>${sourceText}</p></details><details class="news-original"><summary>원문 제목·요약·제공 발췌</summary><strong>${escapeHtml(n.original?.title??n.originalTitle??n.title)}</strong><p>${escapeHtml(n.original?.summary??n.originalSummary??n.summary??'')}</p><p>${escapeHtml(n.original?.detail??n.originalDetail??n.detail??'')}</p></details>${n.translation?.errorCode||n.translation?.error?`<p class="news-translation-error">번역 상태: ${escapeHtml(n.translation.errorCode??n.translation.error)}</p>`:''}<div class="news-detail-foot"><span>원문·번역은 제공처 RSS 발췌 범위만 표시합니다. 번역 오류는 원문으로 표시하며 가격 전망이나 사건 원인을 만들지 않습니다.</span>${detailLink}</div></div>
    </details>`;
  }).join(''):'<div class="empty-small" style="padding:24px">필터에 해당하는 기사가 없거나 RSS 수신이 지연되고 있습니다.</div>';
  const m=app.newsMeta||{};

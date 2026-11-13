@@ -40,7 +40,7 @@ export class LiveExecutor{
  constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null}={}){
   // priceOf(record): the venue's public mid price, used only to estimate an exit when the venue gives none.
   Object.assign(this,{config,clients,now,log,onChange,priceOf});
-  this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();
+  this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();this.reconciling=false;
   const stored=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[],
    deletedKeys:Array.isArray(stored?.deletedKeys)?stored.deletedKeys.slice(-MAX_DELETED_KEYS):[],
@@ -86,6 +86,8 @@ export class LiveExecutor{
    records:this.store.records.slice(-30).reverse().map(({events,...r})=>({...r,lastEvent:events?.at(-1)??null,deletable:this.deleteBlock(r)===null})),skipped:this.store.skipped.slice(-20).reverse()};
  }
  arm(){
+  // updating: the server is applying an update and will restart; trading stays off until then.
+  if(this.updating)throw Object.assign(Error('UPDATING'),{httpStatus:409});
   if(this.config.mode==='OFF')throw Object.assign(Error('LIVE_MODE_OFF'),{httpStatus:409});
   if(this.config.mode==='LIVE'&&!this.config.liveConfirmed)throw Object.assign(Error('LIVE_CONFIRM_MISSING'),{httpStatus:409});
   if(this.store.killSwitch)throw Object.assign(Error('KILL_SWITCH_ON'),{httpStatus:409});
@@ -97,6 +99,7 @@ export class LiveExecutor{
 
  /** Called once per newly published final signal (already venue-checked). */
  async onSignal(row,{signalKey}){
+  if(this.updating||this.paused)return {sent:false,reasons:['UPDATING']};
   // One evaluation per signal at a time: price ticks can offer the same signal again while the
   // balance is being read; without this both could pass the duplicate check.
   if(this.inFlight.has(signalKey))return {sent:false,reasons:['SIGNAL_IN_FLIGHT']};
@@ -142,6 +145,8 @@ export class LiveExecutor{
   this.busy.add(row.symbol);
   const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
    plannedEntry:posNum(row.entry),stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,...(row.liveRoutedFrom?{routedFrom:row.liveRoutedFrom}:{}),...(split?{balanceUSD:split.balanceUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
+   // Signal context for the trade journal review (no effect on orders).
+   signal:{pattern:row.pattern??null,score:Number.isFinite(Number(row.score))?Number(row.score):null,btcTrend:row.btcContext?.trend??null,trend4h:typeof row.trend==='string'?row.trend:null},
    entryOrderId:null,stopOrderId:null,targetOrderIds:[],breakevenMoved:false,events:[]};
   this.store.records.push(record);this.#save();
   try{
@@ -311,6 +316,7 @@ export class LiveExecutor{
   * holdMs, then everything cancelled and the position closed at market. Needs the executor armed.
   * The record is marked test (left out of the daily risk). */
  async testRoundTrip(row,{holdMs=5000,sleep=ms=>new Promise(r=>setTimeout(r,ms)),maxBalanceUSD=400}={}){
+  if(this.updating||this.paused)throw Object.assign(Error('UPDATING'),{httpStatus:409});
   if(this.config.mode!=='TESTNET')throw Object.assign(Error('TEST_TESTNET_ONLY'),{httpStatus:409});
   // Small on purpose: size from at most maxBalanceUSD of the (virtual) balance.
   const config=this.config;this.config={...config,balanceCapUSD:Math.min(config.balanceCapUSD>0?config.balanceCapUSD:maxBalanceUSD,maxBalanceUSD)};
@@ -356,6 +362,13 @@ export class LiveExecutor{
   finally{this.busy.delete(record.symbol)}
  }
  async reconcile(){
+  // paused: the server is about to restart (update); no new venue work may start.
+  if(this.reconciling||this.paused)return;this.reconciling=true;
+  try{await this.#reconcileOpen()}finally{this.reconciling=false}
+ }
+ /** True while nothing is being ordered, cancelled or checked (safe moment to restart). */
+ idle(){return !this.reconciling&&!this.inFlight.size&&!this.busy.size&&!this.closing.size&&!this.store.records.some(r=>r.status==='SUBMITTING')}
+ async #reconcileOpen(){
   for(const record of this.store.records.filter(r=>r.status==='OPEN')){
    try{
     const pos=await this.#position(record),{size,entryPrice}=pos;
@@ -462,6 +475,7 @@ export class LiveExecutor{
   * push the position's risk above the per-trade cap. A target is replaced only after its
   * old order was cancelled, so a target can never be doubled. */
  async setLevels(signalKey,{stop,targets}){
+  if(this.updating||this.paused)return {ok:false,live:true,reasons:['UPDATING']};
   const record=this.store.records.find(r=>r.signalKey===signalKey&&r.status==='OPEN');
   if(!record)return {ok:true,live:false};
   if(this.busy.has(record.symbol))return {ok:false,live:true,reasons:['SYMBOL_BUSY']};
