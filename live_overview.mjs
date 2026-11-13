@@ -54,13 +54,18 @@ export function livePositionView(record,{price=null,now=Date.now()}={}){
  let unrealized=null;
  if(fresh&&num(p.unrealizedPnLUSD)!==null)unrealized={usd:round(num(p.unrealizedPnLUSD),2),source:'EXCHANGE'};
  else if(avg&&current&&base)unrealized={usd:round(dir*(current-avg)*base,2),source:'ESTIMATE'};
- if(unrealized){const margin=avg&&base&&leverage?avg*base/leverage:null;unrealized.pct=margin?round(unrealized.usd/margin*100,2):null}
+ // Margin in use: the venue's figure when fresh, otherwise average entry × size / leverage (estimate).
+ const marginEst=avg&&base&&leverage?avg*base/leverage:null;
+ const margin=fresh&&pos(p.marginUSD)?{usd:round(pos(p.marginUSD),2),source:'EXCHANGE'}:marginEst?{usd:round(marginEst,2),source:'ESTIMATE'}:null;
+ // Realized so far on this open position (partial take-profits, fees, funding), from the venue.
+ const realizedOpen=fresh&&num(p.realizedPnLUSD)!==null?{usd:round(num(p.realizedPnLUSD),2),source:'EXCHANGE'}:null;
+ if(unrealized){const m=margin?.usd??marginEst;unrealized.pct=m?round(unrealized.usd/m*100,2):null}
  const adds=Array.isArray(record.adds)?record.adds:[];
  const pending=adds.map((a,i)=>({n:i+1,price:pos(a.price),qty:baseQty(record,num(a.qty)),units:num(a.units)})).filter((_,i)=>adds[i].orderId&&!adds[i].filled&&!adds[i].cancelled);
  return {signalKey:record.signalKey,symbol:record.symbol,asset:asset(record.symbol),venue:record.venue,venueSymbol:record.venueSymbol,mode:record.mode,direction:record.direction,
   leverage,status:record.status,statusKo:LIVE_STATUS_KO[record.status]||record.status,createdAt:record.createdAt??null,test:record.test===true,routedFrom:record.routedFrom??null,
   plannedEntry:pos(record.plannedEntry),firstEntryPrice:pos(record.firstEntryPrice),averageEntryPrice:avg,currentPrice:current,currentPriceSource:currentSource,
-  quantity:{venue:size,base:round(base,10),unit:record.quantity?.unit||'BASE_ASSET',source:p&&p.size>0?'EXCHANGE':'ORDER'},unrealized,
+  quantity:{venue:size,base:round(base,10),unit:record.quantity?.unit||'BASE_ASSET',source:p&&p.size>0?'EXCHANGE':'ORDER'},unrealized,margin,realizedOpen,
   adds:{filled:adds.filter(a=>a.filled).length,max:adds.length,pending,skipped:adds.filter(a=>a.skipped).length},
   stop:pos(record.stop),targets:Array.isArray(record.targets)?record.targets.map(pos):[],targetsFilled:{tp1:record.breakevenMoved===true},breakevenMoved:record.breakevenMoved===true,
   plannedRiskUSD:num(record.plannedRiskUSD),tickSize:record.venueContract?.tickSize??null,positionCheckedAt:p?.at??null,lastEvent:lastEvent(record)};

@@ -640,10 +640,10 @@ async function runGitUpdate(b){
  if(check.state==='current'){toast('이미 최신 버전입니다 ('+check.current+')');return}
  if(check.state!=='available'){toast(check.message||'업데이트를 확인하지 못했습니다',true);return}
  const list=check.changes.map(c=>'· '+c.subject).join('\n');
- if(!confirm(`새 버전 ${check.changes.length}건을 적용하고 서버를 재시작합니다.\n\n${list}\n\n재시작 후 실매매는 비활성으로 시작합니다. 실매매 화면에서 활성화를 다시 눌러 주세요.`))return;
+ if(!confirm(`새 버전 ${check.changes.length}건을 적용하고 서버를 재시작합니다.\n\n${list}\n\n활성화 상태였다면 재시작 후 자동으로 다시 활성화됩니다 (테스트넷).`))return;
  const r=await fetch('/api/update/git',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'UPDATE'})}),x=await r.json().catch(()=>({}));
  if(!r.ok||!x.ok)throw Error(x.message||x.error||'HTTP '+r.status);
- toast(`업데이트 적용 (${x.from} → ${x.to}) · 서버 재시작 중`);b.textContent='재시작 중…';await waitForRestart();
+ toast(`업데이트 적용 (${x.from} → ${x.to}) · 서버 재시작 중${x.rearm?' · 재시작 후 자동 활성화':''}`);b.textContent='재시작 중…';await waitForRestart();
 }
 $('updateButton').addEventListener('click',async()=>{const b=$('updateButton');b.disabled=true;
  if(gitUpdate){try{await runGitUpdate(b)}catch(e){toast('업데이트 실패: '+e.message,true)}finally{b.disabled=false}return}
