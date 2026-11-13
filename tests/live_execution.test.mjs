@@ -597,6 +597,7 @@ test('free-margin sizing: each new position is sized from the margin still free 
  const full=await run('1000'),half=await run('500');
  assert.equal(full.r.status,'OPEN');assert.equal(half.r.status,'OPEN');
  assert.equal(half.r.quantity.total,0.17,'half the free margin -> half the unit (0.34 -> 0.17)');
+ assert.equal(half.r.balanceUSD,1000,'equity kept for readiness');assert.equal(half.r.freeUSD,500);
  const margin=r=>(r.quantity.total*100+r.adds.reduce((t,a)=>t+a.qty*a.price,0))/r.leverage;
  assert.ok(margin(half.r)<=500*.25+1e-9,'whole plan within 25 % of free margin: '+margin(half.r));
  // A tight share shrinks the plan to fit instead of failing at the venue.

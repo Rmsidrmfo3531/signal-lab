@@ -162,7 +162,7 @@ export class LiveExecutor{
      // loss limit of the balance — positions opened on earlier days count too (margin floor safety).
      const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
      if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
-     split&&(split.balanceUSD=freeUSD);
+     split&&Object.assign(split,{balanceUSD,freeUSD}); // equity for readiness drawdown, free margin it was sized from
     }else if(!extra.length)extra.push('BALANCE_EMPTY');
    }
   }else qty=contract?liveQuantity({quantity:row.targetPlan?.quantity,estimatedStopLossUSD:row.execution?.estimatedStopLossUSD,maxRiskUSD:this.config.maxRiskUSD,contract}):null;
@@ -178,7 +178,7 @@ export class LiveExecutor{
   if(this.busy.has(row.symbol))return {sent:false,reasons:['SYMBOL_BUSY']};
   this.busy.add(row.symbol);
   const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
-   plannedEntry:posNum(row.entry),stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,...(row.liveRoutedFrom?{routedFrom:row.liveRoutedFrom}:{}),...(split?{balanceUSD:split.balanceUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
+   plannedEntry:posNum(row.entry),stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,...(row.liveRoutedFrom?{routedFrom:row.liveRoutedFrom}:{}),...(split?{balanceUSD:split.balanceUSD,freeUSD:split.freeUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
    // Signal context for the trade journal review (no effect on orders).
    signal:{pattern:row.pattern??null,score:Number.isFinite(Number(row.score))?Number(row.score):null,btcTrend:row.btcContext?.trend??null,trend4h:typeof row.trend==='string'?row.trend:null},
    entryOrderId:null,stopOrderId:null,targetOrderIds:[],breakevenMoved:false,events:[]};
