@@ -102,3 +102,20 @@ import {dcaZoneDaysFor} from '../dca_plan.mjs';
 test('1m scalps use only the 3-day zones; 5m and 15m keep the configured window',()=>{
  assert.equal(dcaZoneDaysFor('1m',14),3);assert.equal(dcaZoneDaysFor('5m',14),14);assert.equal(dcaZoneDaysFor('15m',10),10);
 });
+
+import {planProfile,addPrices} from '../dca_plan.mjs';
+test('profiles: HYBRID works the first quantity back from the account risk; CURRENT is planZoneDca; replica is marked assumed',()=>{
+ const zones=[97,94,91,88,85].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ const b={direction:'LONG',entry:100,atr:1,zones,signalStop:97,balanceUSD:400,leverage:18,tickSize:.01,quantityStep:.001,takerRate:.0006};
+ const h=planProfile({...b,profile:'HYBRID',riskPct:1,maxAdds:4});
+ assert.equal(h.ok,true);assert.equal(h.adds.length,4);
+ assert.deepEqual(h.adds.map(a=>+(a.quantity/h.unitQty).toFixed(1)),[1,2,4,8],'1·1·2·4·8');
+ assert.ok(h.fullLossUSD<=4+1e-9&&h.fullLossUSD>3.8,'full loss ≈ 1 % of 400: '+h.fullLossUSD);
+ assert.ok(h.stop<h.adds.at(-1).price);
+ const z=planProfile({...b,profile:'HYBRID',maxAdds:0});assert.equal(z.adds.length,0);assert.equal(z.stop,97);assert.ok(z.fullLossUSD<=4+1e-9);
+ const pct=addPrices({direction:'SHORT',entry:100,atr:1,spacing:'PCT',spacingPct:2,count:2});assert.deepEqual(pct.map(p=>p.price),[102,104]);
+ const atr=addPrices({direction:'LONG',entry:100,atr:2,spacing:'ATR',spacingAtr:1.5,count:2});assert.deepEqual(atr.map(p=>p.price),[97,94]);
+ const c=planProfile({...b,profile:'CURRENT',maxAdds:7});assert.equal(c.ok,true);
+ const r=planProfile({...b,profile:'TRADER_REPLICA',maxAdds:7});assert.equal(r.assumed,true);assert.equal(r.adds.length,7);assert.deepEqual(r.targetsFromAveragePct,[.56]);
+ assert.equal(planProfile({...b,profile:'HYBRID',schedule:'NOPE'}).ok,false);
+});

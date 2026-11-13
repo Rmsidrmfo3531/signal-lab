@@ -86,3 +86,89 @@ export function planZoneDca({direction,entry,atr,zones=[],balanceUSD,leverage=DC
   full:{quantity:plan.quantity,averageEntry:plan.averageEntry,marginUSD:plan.marginUSD,maxLossUSD:plan.maxLossUSD,maxLossPct:plan.maxLossPct,liquidationPrice:plan.liquidationPrice},
   maxAdds:addCap,marginMode:'CROSS',maintenanceRate:s.maintenanceRate,maxLossPctCap:s.maxLossPct,method:'HVN_ZONES_1_1_2_4',calculationOnly:true};
 }
+
+// ---------------------------------------------------------------------------------------------
+// Strategy profiles for research comparison (stage 3, 2026-11-13). planZoneDca above stays the
+// CURRENT live rule and is not changed by anything below.
+//  CURRENT        — planZoneDca: unit = balance x unitPct x leverage, adds 1·1·2·4… at volume zones,
+//                   adds dropped until the full loss fits maxLossPct.
+//  HYBRID         — the first quantity is worked back from the risk limit: the loss at the stop
+//                   with every add filled = balance x riskPct. Add count, size schedule and spacing
+//                   (volume zone / fixed % / ATR) are options; 0 adds = one entry at the pattern stop.
+//  TRADER_REPLICA — comparison only. Rules read from the trader's Telegram log (2026-06-21 ~ 11-11):
+//                   adds double the position (confirmed); spacing from the entry 1.8 / 3.6 / 6.9 /
+//                   9.7 / 13.9 / 17.4 / 18.4 % (ASSUMED: medians of the log); take profit about
+//                   0.56 % above the average for the whole position (ASSUMED); no stop seen in the log
+//                   (ASSUMED: none; only the account liquidation ends a losing trade); first margin
+//                   ASSUMED 1 % of the balance at 20x (median leverage in the log).
+export const STRATEGY_PROFILES=Object.freeze(['CURRENT','HYBRID','TRADER_REPLICA']);
+export const SIZE_SCHEDULES=Object.freeze({
+ DOUBLE:Object.freeze([1,1,2,4,8,16,32,64,128,256,512]), // 1·1·2·4·8 = 16 units with 4 adds
+ FIXED:Object.freeze([1,1,1,1,1,1,1,1,1,1,1]),
+ GENTLE:Object.freeze([1,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5])});
+export const TRADER_REPLICA_ASSUMPTIONS=Object.freeze({spacingFromEntryPct:Object.freeze([1.8,3.6,6.9,9.7,13.9,17.4,18.4]),takeProfitFromAveragePct:.56,
+ firstMarginPct:1,leverage:20,stop:null,source:'TELEGRAM_LOG_MEDIANS_ASSUMED'});
+
+/** Add prices against the position: 'ZONE' (volume zones), 'PCT' (every spacingPct %), 'ATR' (every spacingAtr ATR). */
+export function addPrices({direction,entry,atr,zones=[],spacing='ZONE',count,spacingPct=2,spacingAtr=1.5,minSpacingAtr=DCA_DEFAULTS.minSpacingAtr}){
+ const dir=direction==='LONG'?1:-1;
+ if(count<=0)return [];
+ if(spacing==='PCT')return Array.from({length:count},(_,i)=>({price:entry*(1-dir*spacingPct/100*(i+1))}));
+ if(spacing==='ATR')return Array.from({length:count},(_,i)=>({price:entry-dir*spacingAtr*atr*(i+1)}));
+ const gap=minSpacingAtr*atr,edge=z=>dir===1?z.priceHigh:z.priceLow,far=z=>dir===1?z.priceLow:z.priceHigh,out=[];
+ for(const z of zones.filter(z=>positive(z?.priceLow)&&positive(z?.priceHigh)&&dir*(entry-edge(z))>=gap).sort((a,b)=>dir*(edge(b)-edge(a)))){
+  if(out.length>=count)break;if(out.length&&dir*(out.at(-1).price-edge(z))<gap)continue;out.push({price:edge(z),farEdge:far(z)});
+ }
+ return out;
+}
+
+/**
+ * Research plan for one signal under a profile. Returns {ok, unitQty, entryQty, adds:[{price,quantity}], stop,
+ * fullLossUSD, marginUSD, targetsFromAveragePct?} or {ok:false, reasons}. Quantities in base asset.
+ *  signalStop: the pattern stop (used with 0 adds). riskPct: account risk limit for HYBRID (default 1).
+ */
+export function planProfile({profile='HYBRID',direction,entry,atr,zones=[],signalStop,balanceUSD,leverage=DCA_DEFAULTS.leverage,tickSize,quantityStep,minQuantity=0,minNotional=0,takerRate=.0006,
+ riskPct=1,maxAdds=4,schedule='DOUBLE',spacing='ZONE',spacingPct=2,spacingAtr=1.5,stopAtr=DCA_DEFAULTS.stopAtr,unitPct=DCA_DEFAULTS.unitPct,maxLossPct=DCA_DEFAULTS.maxLossPct,maxMarginPct=100}={}){
+ const dir=direction==='LONG'?1:-1;
+ if(!['LONG','SHORT'].includes(direction)||!positive(entry)||!positive(atr)||!positive(balanceUSD)||!positive(tickSize)||!positive(quantityStep))return {ok:false,reasons:['PROFILE_INPUT_INVALID']};
+ const roundQty=q=>{try{return Number(roundDecimalToStep(q,quantityStep,'DOWN'))}catch{return 0}};
+ const roundPx=(p,mode)=>Number(roundDecimalToStep(p,tickSize,mode));
+ const tooSmall=q=>!positive(q)||q<minQuantity||q*entry<minNotional;
+ if(profile==='CURRENT'){
+  const d=planZoneDca({direction,entry,atr,zones,balanceUSD,leverage,unitPct,tickSize,quantityStep,minQuantity,minNotional,takerRate,settings:{maxLossPct,maxAdds}});
+  if(!d.ok)return d;
+  return {ok:true,profile,unitQty:d.unitQty,entryQty:d.unitQty,adds:d.adds.map(a=>({price:a.price,quantity:a.quantity})),stop:d.stop,fullLossUSD:d.full.maxLossUSD,marginUSD:d.full.marginUSD};
+ }
+ if(profile==='TRADER_REPLICA'){
+  const A=TRADER_REPLICA_ASSUMPTIONS,units=SIZE_SCHEDULES.DOUBLE;
+  const unitQty=roundQty(balanceUSD*A.firstMarginPct/100*A.leverage/entry);if(tooSmall(unitQty))return {ok:false,reasons:['PROFILE_UNIT_BELOW_MINIMUM_ORDER']};
+  const adds=A.spacingFromEntryPct.slice(0,Math.max(0,maxAdds)).map((pct,i)=>({price:roundPx(entry*(1-dir*pct/100),dir===1?'DOWN':'UP'),quantity:roundQty(units[i+1]*unitQty)}));
+  // No stop: a price far beyond any add (the engine's account liquidation ends it first).
+  const stop=dir===1?roundPx(entry*.01,'DOWN')||tickSize:roundPx(entry*100,'UP');
+  const qty=unitQty+adds.reduce((s,a)=>s+a.quantity,0),cost=unitQty*entry+adds.reduce((s,a)=>s+a.quantity*a.price,0);
+  return {ok:true,profile,unitQty,entryQty:unitQty,adds,stop,fullLossUSD:null,marginUSD:cost/A.leverage,leverage:A.leverage,targetsFromAveragePct:[A.takeProfitFromAveragePct],assumed:true,quantity:qty};
+ }
+ if(profile!=='HYBRID')return {ok:false,reasons:['PROFILE_UNKNOWN']};
+ const units=SIZE_SCHEDULES[schedule];if(!units)return {ok:false,reasons:['PROFILE_SCHEDULE_UNKNOWN']};
+ const count=Math.max(0,Math.min(Math.round(maxAdds),units.length-1));
+ const prices=addPrices({direction,entry,atr,zones,spacing,count,spacingPct,spacingAtr});
+ if(count>0&&!prices.length)return {ok:false,reasons:['PROFILE_NO_ADD_LEVEL']};
+ let stop;
+ if(!prices.length){if(!positive(signalStop)||dir*(entry-signalStop)<=0)return {ok:false,reasons:['PROFILE_STOP_INVALID']};stop=signalStop}
+ else{const last=prices.at(-1),beyond=last.farEdge??last.price;stop=roundPx(beyond-dir*stopAtr*atr,dir===1?'DOWN':'UP')}
+ if(!positive(stop)||dir*(entry-stop)<=0)return {ok:false,reasons:['PROFILE_STOP_INVALID']};
+ const levels=prices.map((p,i)=>({price:roundPx(p.price,dir===1?'DOWN':'UP'),units:units[i+1]}));
+ // Loss per one unit of quantity with everything filled, fees at entry and stop included.
+ const fills=[{price:entry,units:units[0]},...levels];
+ const perUnit=fills.reduce((s,f)=>s+f.units*(dir*(f.price-stop)+(f.price+stop)*takerRate),0);
+ if(!(perUnit>0))return {ok:false,reasons:['PROFILE_STOP_INVALID']};
+ const riskUSD=balanceUSD*riskPct/100;
+ let unitQty=roundQty(riskUSD/perUnit);
+ // Margin with every add filled must fit the share of the balance allowed.
+ const notionalPerUnit=fills.reduce((s,f)=>s+f.units*f.price,0);
+ if(unitQty*notionalPerUnit/leverage>balanceUSD*maxMarginPct/100)unitQty=roundQty(balanceUSD*maxMarginPct/100*leverage/notionalPerUnit);
+ if(tooSmall(unitQty))return {ok:false,reasons:['PROFILE_UNIT_BELOW_MINIMUM_ORDER'],riskUSD,perUnit};
+ const adds=levels.map(l=>({price:l.price,quantity:roundQty(l.units*unitQty)})).filter(a=>a.quantity>0);
+ const fullLossUSD=unitQty*units[0]*(dir*(entry-stop)+(entry+stop)*takerRate)+adds.reduce((s,a)=>s+a.quantity*(dir*(a.price-stop)+(a.price+stop)*takerRate),0);
+ return {ok:true,profile,unitQty,entryQty:unitQty*units[0],adds,stop,fullLossUSD,marginUSD:(unitQty*entry+adds.reduce((s,a)=>s+a.quantity*a.price,0))/leverage,riskUSD};
+}
