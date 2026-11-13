@@ -564,3 +564,22 @@ test('reconcile: a 429 ends the round (no waits per position); 5 minutes of 429 
  t+=6*60_000;await ex.reconcile();await ex.reconcile();
  assert.equal(ex.store.records.flatMap(r=>r.events||[]).filter(e=>e.type==='RECONCILE_ERROR').length,1,'recorded once');
 });
+
+test('BingX 429: an order is not held behind a read that waits out a long pause',async()=>{
+ const {BingXTradeClient}=await import('../live_clients.mjs');
+ let n=0;const fetcher=async(url,o)=>{n++;if(n===1)return new Response('busy',{status:429,headers:{'retry-after':'6'}});return new Response(JSON.stringify({code:0,data:o.method==='GET'?[]:{orderId:'1'}}),{status:200})};
+ const c=new BingXTradeClient({apiKey:'k',secret:'s',mode:'TESTNET',fetcher});
+ const read=c.positions();await new Promise(r=>setTimeout(r,50));
+ const t0=Date.now();await c.placeOrder({symbol:'ETH-USDT',side:'BUY',type:'MARKET',quantity:1});const waited=Date.now()-t0;
+ assert.ok(waited<4000,'order waited '+waited+' ms, not the 6 s pause');
+ assert.deepEqual(await read,[]);
+});
+
+test('reconcile: rounds start at a different position so a 429 does not starve the same ones',async()=>{
+ const seen=[];const client={positions:async()=>{throw Object.assign(Error('rate'),{code:'HTTP_429'})}};
+ const ex=new LiveExecutor({config:config(),clients:{BINGX:client},now:()=>NOW});
+ for(const k of ['A','B','C'])ex.store.records.push({signalKey:k,symbol:k+'USDT',venue:'BINGX',venueSymbol:'ETH-USDT',direction:'LONG',status:'OPEN',quantity:{total:1},targetOrderIds:[],events:[],createdAt:NOW});
+ ex.log=m=>{seen.push(m)};
+ for(let i=0;i<3;i++)await ex.reconcile();
+ assert.deepEqual(seen.map(m=>m.match(/\[LIVE BINGX (\w+)\]/)?.[1]).sort(),['AUSDT','BUSDT','CUSDT'],'each round hit a different position first');
+});

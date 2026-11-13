@@ -438,7 +438,10 @@ export class LiveExecutor{
  async #reconcileOpen(){
   this.posCache=null; // one fresh all-symbols read per check
   let limited=false;
-  for(const record of this.store.records.filter(r=>r.status==='OPEN')){
+  // Each round starts one position further on, so a round cut short by a 429 does not always
+  // leave the same positions unchecked.
+  const open=this.store.records.filter(r=>r.status==='OPEN'),start=open.length?(this.roundStart=((this.roundStart||0)+1)%open.length):0;
+  for(const record of [...open.slice(start),...open.slice(0,start)]){
    try{
     const pos=await this.#position(record,{cached:true}),{size,entryPrice}=pos;
     this.#observe(record,pos);

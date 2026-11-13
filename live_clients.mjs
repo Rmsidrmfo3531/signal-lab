@@ -38,11 +38,13 @@ export class BingXTradeClient{
   // Gap between signed calls: BINGX_MIN_INTERVAL_MS, else 250 ms (0 with an injected test transport).
   const envGap=process.env.BINGX_MIN_INTERVAL_MS,gapMs=envGap!==undefined&&envGap!==''&&Number(envGap)>=0?Number(envGap):fetcher===globalThis.fetch?250:0;
   const sleep=ms=>ms>0?new Promise(r=>setTimeout(r,ms)):Promise.resolve();
-  // An order (POST) waits at most 3 s of a 429 pause, so a stop or an emergency close is not held
-  // back for the whole pause; if the venue still refuses, the caller sees HTTP_429 and handles it.
-  const slot=(maxPause=Infinity)=>{const p=chain.then(async()=>{await sleep(Math.max(Math.min(cooldownUntil-Date.now(),maxPause),last+gapMs-Date.now()));last=Date.now()});chain=p.catch(()=>{});return p};
+  // A read (GET) waits out a 429 pause before it joins the queue, so it never holds the queue;
+  // an order (POST) inside the queue waits at most 3 s of a pause, so a stop or an emergency close
+  // is not held back. If the venue still refuses, the caller sees HTTP_429 and handles it.
+  const slot=maxPause=>{const p=chain.then(async()=>{await sleep(Math.max(Math.min(cooldownUntil-Date.now(),maxPause),last+gapMs-Date.now()));last=Date.now()});chain=p.catch(()=>{});return p};
   this.request=async(method,path,params={},retried=false)=>{
-   await slot(method==='GET'?Infinity:3000);
+   if(method==='GET')while(cooldownUntil>Date.now())await sleep(cooldownUntil-Date.now());
+   await slot(method==='GET'?0:3000);
    const signed={...params,recvWindow,timestamp:now()};
    const url=`${host}${path}?${bingxQuery(signed,bingxSign(signed,secret))}`;
    let response;
