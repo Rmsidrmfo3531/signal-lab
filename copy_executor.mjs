@@ -99,7 +99,16 @@ export class CopyExecutor{
   if(now.mark&&dir*(now.mark-stop)<=0){this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'LOSS_CAP_REACHED'});await this.#emergency(p,'LOSS_CAP_REACHED');return}
   let res;
   try{res=orderOf(await this.client.placeOrder({symbol:p.venueSymbol,side:dir===1?'SELL':'BUY',positionSide:'BOTH',type:'STOP_MARKET',stopPrice:String(stop),closePosition:'true',workingType:'MARK_PRICE'}))}
-  catch(error){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:error.code||error.message});if(!p.stopOrderId)await this.#emergency(p,'NO_STOP');return}
+  catch(error){
+   // A venue that refuses a second close-position stop (not a rate limit): swap them the other way —
+   // cancel the old one, then place the new one; if that fails too, the position is closed.
+   if(p.stopOrderId&&error.code!=='HTTP_429'){
+    try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId);p.stopOrderId=null;
+     res=orderOf(await this.client.placeOrder({symbol:p.venueSymbol,side:dir===1?'SELL':'BUY',positionSide:'BOTH',type:'STOP_MARKET',stopPrice:String(stop),closePosition:'true',workingType:'MARK_PRICE'}));
+     p.stop=stop;p.stopOrderId=res?.orderId??null;p.stopStale=false;return}
+    catch(e2){this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e2.code||e2.message});if(!p.stopOrderId)await this.#emergency(p,'NO_STOP');else p.stopStale=true;return}
+   }
+   p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:error.code||error.message});if(!p.stopOrderId)await this.#emergency(p,'NO_STOP');return}
   const old=p.stopOrderId;p.stop=stop;p.stopOrderId=res?.orderId??null;p.stopStale=false;
   if(old&&old!==p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
  }
@@ -139,6 +148,7 @@ export class CopyExecutor{
   const fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'});
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});
   await this.#protect(p);
+  if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('OPENED',{symbol:m.symbol,direction:m.direction,leverage,qty:p.qty,avg:p.avg,stop:p.stop});
   return {ok:true};
  }
@@ -150,7 +160,7 @@ export class CopyExecutor{
   const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#position(p);p.qty=now.size;
   if(!(p.qty>0)){p.status='CLOSED';this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
   if(ratio>1){
-   const g=this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+   const g=this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
    const add=this.#qty(c,p.qty*(ratio-1)),price=pos(m.price)??now.mark;
    if(!(add>0))return {ok:true,tooSmall:true};
    const bal=await this.balance().catch(()=>null),free=num(bal?.available);
@@ -158,7 +168,7 @@ export class CopyExecutor{
    if(eq&&used+add*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:m.symbol,reason:'COPY_MARGIN_CAP',need:+(add*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
    if(free!==null&&add*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:m.symbol,reason:'MARGIN_SHORT',need:+(add*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
    const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',add,{tag:'add'+(p.adds+1)});p.adds++;p.steps.push({kind:'ADD',at:this.now(),qty:add,avg:fill.avg,ratio});
-   await this.#protect(p);this.#event('ADDED',{symbol:m.symbol,qty:add,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds});
+   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};this.#event('ADDED',{symbol:m.symbol,qty:add,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds});
   }else{
    const down=this.#qty(c,p.qty*(1-ratio)),up=this.#qty(c,p.qty*(1-ratio),'UP'),want=p.qty*(1-ratio);
    const cut=Math.min(p.qty,want-down<=up-want?down:up);if(!(cut>0))return {ok:true,tooSmall:true};

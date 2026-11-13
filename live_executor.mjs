@@ -179,6 +179,8 @@ export class LiveExecutor{
     this.store.skipped=[...this.store.skipped,{at:this.now(),symbol:row?.symbol,venue,reasons:check.reasons}].slice(-50);this.onChange(this.status())}
    return {sent:false,reasons:check.reasons}}
   if(this.busy.has(row.symbol))return {sent:false,reasons:['SYMBOL_BUSY']};
+  // Checked again after the balance read: copy trading may have reserved the symbol meanwhile.
+  try{if(this.externalHeld?.()?.has?.(row.symbol))return {sent:false,reasons:['SYMBOL_HELD_BY_COPY']}}catch{}
   this.busy.add(row.symbol);
   const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
    plannedEntry:posNum(row.entry),stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,strategyProfile:split?.strategyProfile||'CURRENT',...(row.liveRoutedFrom?{routedFrom:row.liveRoutedFrom}:{}),...(split?{balanceUSD:split.balanceUSD,freeUSD:split.freeUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),

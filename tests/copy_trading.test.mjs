@@ -108,3 +108,11 @@ test('copy review fixes: new stop before the old is cancelled; no stop at all ->
  v=venue();ex=make(v,{config:{marginUSD:.03}});await ex.handle({id:1,date:1e12,text:OPEN});
  const before=v.size;await ex.handle({id:2,date:1e12,text:CHANGE(300,200)});assert.equal(before-v.size,Math.round(before/3));
 });
+
+test('copy: a venue that refuses a second close-position stop gets the swap the other way round',async()=>{
+ const v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});
+ const place=v.client.placeOrder;let stops=0;
+ v.client.placeOrder=async p=>{if(p.type==='STOP_MARKET'&&++stops===1)throw Object.assign(Error('exists'),{code:'VENUE_ERROR_101400'});return place(p)};
+ await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
+ const p=ex.status().positions[0];assert.equal(p.stopStale,false);assert.ok(p.stopOrderId);assert.equal(v.size,196);
+});
