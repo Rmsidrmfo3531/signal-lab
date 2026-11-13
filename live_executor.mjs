@@ -41,7 +41,9 @@ const baseUnits=(record,qty)=>record.venueContract?.quantityUnit==='CONTRACT'?qt
 const SETTLE_TRIES=4,SETTLE_WINDOW_MS=2*3600000,SETTLE_DELAY_MS=150000;
 
 export class LiveExecutor{
- constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null,onEvent=null}={}){
+ constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null,onEvent=null,externalHeld=null}={}){
+  // externalHeld(): symbols another ledger (copy trading) holds on the same account: not traded here.
+  this.externalHeld=externalHeld;
   // priceOf(record): the venue's public mid price, used only to estimate an exit when the venue gives none.
   Object.assign(this,{config,clients,now,log,onChange,priceOf,onEvent});
   this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();this.reconciling=false;
@@ -137,6 +139,7 @@ export class LiveExecutor{
   if(this.store.records.some(r=>r.clientOrderId===clientOrderId))return {sent:false,reasons:['DUPLICATE_SIGNAL']};
   const leverage=Number(row?.leverage)>0?Math.round(Number(row.leverage)):leverageForScore(row?.score,row?.marketCap)??10;
   let qty=null,split=null,config=this.config,extra=[];
+  try{if(this.externalHeld?.()?.has?.(row.symbol))extra.push('SYMBOL_HELD_BY_COPY')}catch{}
   if(this.config.sizing==='BALANCE'){
    // Read the balance only when an order could actually be sent.
    const gateOpen=this.config.mode!=='OFF'&&this.armed&&!this.store.killSwitch&&this.config.venues.includes(venue)&&this.credentials()[venue]&&contract;
@@ -576,6 +579,8 @@ export class LiveExecutor{
   return {source:'ESTIMATE',pnlUSD:r(pnl),feeUSD:r(-fee),fundingUSD:null,netUSD:r(pnl-fee),takerRate:rate,at};
  }
  /** Account equity for the status screen (read only). */
+ /** Equity and free margin, for the copy-trading ledger. */
+ accountFunds(venue){if(!this.clients[venue])return Promise.reject(Object.assign(Error('CREDENTIALS_MISSING'),{code:'CREDENTIALS_MISSING'}));return this.#funds(venue)}
  accountBalance(venue){if(!this.clients[venue])return Promise.reject(Object.assign(Error('CREDENTIALS_MISSING'),{code:'CREDENTIALS_MISSING'}));return this.#balance(venue)}
  /** Manual stop/target change on an open live position. The new stop is placed before
   * the old one is cancelled, so the position is never unprotected. A wider stop may not

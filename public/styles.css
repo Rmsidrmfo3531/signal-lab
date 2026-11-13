@@ -720,3 +720,10 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .live-mode-inline .live-mode strong{font-size:18px}
 .live-status-full{border-block:1px solid #2c4357}
 .breadcrumb b{font-weight:600;color:var(--text)}
+
+/* Copy-trading ledger on the live screen */
+.copy-stats{display:flex;flex-wrap:wrap;gap:6px 22px;margin:4px 0 10px}
+.copy-stats>span{display:flex;flex-direction:column;font-size:10.5px;color:var(--dim)}.copy-stats b{font-size:13px;color:var(--text)}.copy-stats small{font-size:10px;color:var(--dim)}
+.copy-list{list-style:none;margin:0 0 8px;padding:0;display:grid;gap:4px;font-size:12px}
+.copy-list li{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#0e1b2a}
+.copy-list.muted li{color:var(--muted)}.copy-sub{margin:10px 0 6px;font-size:12px;color:var(--muted)}
