@@ -22,6 +22,15 @@ const workspaceHeading = document.querySelector('.page-head h1');
 const defaultHeading = workspaceHeading?.innerHTML ?? '';
 const workspaceEyebrow = document.querySelector('.page-head .eyebrow');
 const defaultEyebrow = workspaceEyebrow?.textContent ?? '';
+const workspaceIntro = document.querySelector('.page-head .intro');
+const defaultIntro = workspaceIntro?.textContent ?? '';
+// One line per page that says what is on it (the generic line was the same on every page).
+const workspaceIntros = {
+  live: 'BingX 주문 상태 · 보유 포지션 · 종료된 거래',
+  news: '한국어 번역 뉴스와 실측 시장 시황',
+  alerts: '텔레그램·화면 알림 설정과 최근 알림 기록',
+  journal: '매매 기록, 패턴별 결과와 위험 한도'
+};
 
 function workspaceRouteForHash(hash = window.location.hash) {
   const requested = String(hash).replace(/^#/, '');
@@ -46,7 +55,10 @@ function showWorkspaceRoute() {
     if (route === 'overview') workspaceHeading.innerHTML = defaultHeading;
     else workspaceHeading.textContent = workspaceRoutes[route];
   }
-  if (workspaceEyebrow) workspaceEyebrow.textContent = route === 'overview' ? defaultEyebrow : 'Signal Lab';
+  if (workspaceEyebrow) { workspaceEyebrow.textContent = route === 'overview' ? defaultEyebrow : ''; workspaceEyebrow.hidden = route !== 'overview'; }
+  if (workspaceIntro) workspaceIntro.textContent = route === 'overview' ? defaultIntro : (workspaceIntros[route] || defaultIntro);
+  const crumb = document.getElementById('crumbPage');
+  if (crumb) crumb.textContent = route === 'overview' ? '대시보드' : workspaceRoutes[route];
   document.title = 'Signal Lab · ' + workspaceRoutes[route];
   document.getElementById('sidebar')?.classList.remove('open');
   window.requestAnimationFrame(() => {

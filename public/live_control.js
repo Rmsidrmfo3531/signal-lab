@@ -7,7 +7,13 @@ const MODE={OFF:{badge:'OFF',text:'주문 없음',title:'실매매 (꺼짐)',cls
  LIVE:{badge:'LIVE',text:'실제 돈',title:'실매매 (실거래)',cls:'live'}};
 export const modeInfo=mode=>MODE[mode]||{badge:String(mode||'?'),text:'확인 필요',title:'실매매',cls:'off'};
 const LIVE_STATUS={SUBMITTING:'주문 접수 중',OPEN:'보유 중',CLOSED:'종료',FAILED:'주문 실패',UNKNOWN:'확인 필요'};
-const horizonTag=x=>x?.horizon?`<span class="horizon-tag h-${x.horizon.code==='SHORT_TERM'?'short':'long'}" title="${esc((x.pattern?x.pattern+' · ':'')+x.horizon.hint)}">${esc(x.horizon.label)}</span>`:'';
+const HZ_CLASS={ULTRA_SHORT:'ultra',SHORT_TERM:'short',MID_TERM:'mid',LONG_TERM:'long'};
+const holdText=h=>h<1?Math.max(1,Math.round(h*60))+'분':h<48?(+h.toFixed(1))+'시간':(+(h/24).toFixed(1))+'일';
+// Open position: the expected tier (and how long it has been held); closed trade: the actual tier.
+const horizonTag=x=>{const closed=x?.actualHorizon,t=closed||x?.horizon;if(!t)return '';
+ const held=!closed&&x.createdAt>0?(Date.now()-x.createdAt)/3600000:null;
+ const title=closed?`실제 보유 ${holdText(x.holdHours)} · ${t.range}${x.horizon?` (예상 ${x.horizon.label})`:''}`:`예상 ${t.label} · ${t.hint||t.range}${x.pattern?' · '+x.pattern:''}`;
+ return `<span class="horizon-tag h-${HZ_CLASS[t.code]||'mid'}" title="${esc(title)}">${esc(closed?t.label:t.label+' 예상')}${held!==null?` · ${holdText(held)}째`:''}${closed&&Number.isFinite(x.holdHours)?` · ${holdText(x.holdHours)}`:''}</span>`};
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fin=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
 const qtyFmt=v=>fin(v)?Number(v).toLocaleString('en-US',{maximumFractionDigits:8}):'—';
@@ -35,7 +41,7 @@ export function liveRows(s){
 export function modeBadgeHTML(s){
  const m=modeInfo(s.mode);
  const state=s.killSwitch?'<b class="live-flag kill">긴급 정지 중</b>':s.mode==='OFF'?'<b class="live-flag">주문 안 함</b>':s.armed?'<b class="live-flag armed">활성화됨</b>':'<b class="live-flag">비활성</b>';
- return `<div class="live-mode ${m.cls}"><strong>${esc(m.badge)}</strong><span>${esc(m.text)}</span></div>${state}`;
+ return `<span class="live-mode ${m.cls}"><strong>${esc(m.badge)}</strong><span>${esc(m.text)}</span></span>${state}`;
 }
 
 function levelsEditor(p){
