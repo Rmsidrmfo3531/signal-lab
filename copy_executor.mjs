@@ -77,12 +77,12 @@ export class CopyExecutor{
   }catch(error){
    this.#event('ERROR',{symbol:m.symbol,kind:m.kind,reason:error.code||error.message});
    // A close or a cut that failed (e.g. rate limit) is tried again by the routine check; a late entry or add is not.
-   if(m.kind==='CLOSE'||m.kind==='CHANGE'&&m.to<m.from)this.store.pending.push({m,at,tries:0});
+   const job=error.retryAs??m;if(job.kind==='CLOSE'||job.kind==='CHANGE'&&job.to<job.from)this.store.pending.push({m:job,at,tries:0});
    this.#save();return {ok:false,reason:error.code||error.message}}
  }
  #key(m){return `${m.symbol}|${m.direction}`}
  async #contract(symbol){const c=await this.contractOf(symbol);if(!c||c.tradable===false)throw Object.assign(Error('NO_BINGX_CONTRACT'),{code:'NO_BINGX_CONTRACT'});return c}
- #qty(c,raw,mode='DOWN'){try{return Number(roundDecimalToStep(raw,c.quantityStep,mode))}catch{return 0}}
+ #qty(c,raw,mode='DOWN'){try{return Number(roundDecimalToStep(mode==='DOWN'?raw*(1+1e-9):raw,c.quantityStep,mode))}catch{return 0}} // 1e-9: 299.99999… is 300
  async #position(p){const list=await this.client.positions(p.venueSymbol),row=(Array.isArray(list)?list:[]).find(x=>x.symbol===p.venueSymbol);
   return {size:row?Math.abs(Number(row.positionAmt)||0):0,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null}}
  async #market(p,side,quantity,{reduceOnly=false,tag}){
@@ -141,9 +141,11 @@ export class CopyExecutor{
   if(prev?.status==='OPEN'){
    // The same card again (both alert formats, or a repeat) is not a new buy: same entry price within 3 min.
    if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs)return {ok:true,snapshot:true};
-   if(prev.lastTheirEntry===m.entry&&at-(prev.lastTheirAt||0)<180000)return {ok:true,already:true};
+   if(prev.lastTheirEntry===m.entry&&prev.lastTheirQty===m.quantity&&at-(prev.lastTheirAt||0)<180000)return {ok:true,already:true};
    if(!(m.quantity>0))return {ok:true,already:true};
-   prev.lastTheirEntry=m.entry;prev.lastTheirAt=at;
+   prev.lastTheirEntry=m.entry;prev.lastTheirQty=m.quantity;prev.lastTheirAt=at;
+   // The trader's total follows the trader, whether or not our buy goes through.
+   if(prev.theirTotal>0)prev.theirTotal+=m.quantity;
    return this.#buyMore(prev,m,m.quantity,{price:pos(m.price)??pos(m.entry)});
   }
   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs){this.#event('SKIPPED',{symbol:m.symbol,reason:'MONITOR_RESTART_SNAPSHOT'});return {ok:false,reason:'SNAPSHOT'}}
@@ -170,7 +172,7 @@ export class CopyExecutor{
   if(qty<minQ||qty*price<minN)qty=this.#qty(c,Math.max(minQ,minN/price*1.02),'UP');
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
   const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
-   theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
+   theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
   try{const zs=this.zoneStop({direction:m.direction,entry:price,zones:await this.zonesOf(m.symbol,{tickSize:c.tickSize})});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
   this.store.positions[key]=p;
   const fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'});
@@ -183,18 +185,18 @@ export class CopyExecutor{
  async #change(m,at){
   const key=this.#key(m),p=this.store.positions[key];
   if(m.to===0)return this.#close(m,'TRADER_CLOSE');
-  if(m.from===0&&(!p||p.status!=='OPEN'))return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage},at);
+  if(m.from===0&&(!p||p.status!=='OPEN'))return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to},at);
   if(!p||p.status!=='OPEN'){this.#event('SKIPPED',{symbol:m.symbol,reason:'NOT_COPIED'});return {ok:false,reason:'NOT_COPIED'}}
   const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#position(p);p.qty=now.size;
   if(!(p.qty>0)){p.status='CLOSED';this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
   if(ratio>1){
-   const r=await this.#buyMore(p,m,m.to-m.from,{price:pos(m.price)??now.mark,ratio,c,now});p.theirTotal=m.to;return r;
+   p.theirTotal=m.to;return this.#buyMore(p,m,m.to-m.from,{price:pos(m.price)??now.mark,ratio,c,now});
   }else{
    const down=this.#qty(c,p.qty*(1-ratio)),up=this.#qty(c,p.qty*(1-ratio),'UP'),want=p.qty*(1-ratio);
    const cut=Math.min(p.qty,want-down<=up-want?down:up);if(!(cut>0))return {ok:true,tooSmall:true};
-   p.theirTotal=m.to;
    if(cut>=p.qty)return this.#close(m,'TRADER_CUT_ALL');
-   await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:cut,ratio});
+   await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});
+   p.theirTotal=m.to; // after our cut went through: a retried cut uses the same from / top.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:cut,ratio});
    await this.#protect(p);this.#event('REDUCED',{symbol:m.symbol,qty:cut,left:p.qty});
   }
   return {ok:true};
@@ -214,7 +216,6 @@ export class CopyExecutor{
   if(eq&&used+add*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(add*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
   if(free!==null&&add*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(add*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
   const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',add,{tag:'add'+(p.adds+1)});p.adds++;
-  if(p.theirTotal>0&&m.kind==='OPEN')p.theirTotal+=theirQty;
   p.steps.push({kind:'ADD',at:this.now(),qty:add,avg:fill.avg,theirQty,marginUSD});
   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('ADDED',{symbol:p.symbol,qty:add,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
@@ -224,8 +225,10 @@ export class CopyExecutor{
   const key=this.#key(m),p=this.store.positions[key];
   if(!p||p.status!=='OPEN')return {ok:true,notOpen:true};
   // A 청산 card with a quantity below the trader's position is a partial close: the same share of ours.
-  if(m.kind==='CLOSE'&&m.quantity>0&&p.theirTotal>0&&m.quantity<p.theirTotal*.999)
-   return this.#change({...m,kind:'CHANGE',from:p.theirTotal,to:p.theirTotal-m.quantity},this.now());
+  // Fixed from / to, so a retry after a failure cuts the same share.
+  if(m.kind==='CLOSE'&&m.quantity>0&&p.theirTotal>0&&m.quantity<p.theirTotal*.999){
+   const cm={...m,kind:'CHANGE',from:p.theirTotal,to:p.theirTotal-m.quantity};
+   try{return await this.#change(cm,this.now())}catch(error){error.retryAs=cm;throw error}}
   const now=await this.#position(p);
   if(now.size>0)await this.#market(p,p.direction==='LONG'?'SELL':'BUY',now.size,{reduceOnly:true,tag:'close'});
   if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}

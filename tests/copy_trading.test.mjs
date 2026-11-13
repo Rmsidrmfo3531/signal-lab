@@ -147,3 +147,17 @@ test('copy stop at a volume zone at least 10 % away (user 2026-11-13); balance c
  const v3=venue(),ex3=new CopyExecutor({config:copyConfig({COPY_MARGIN_USD:'200'},'TESTNET'),client:v3.client,contractOf:async()=>contract,zonesOf:async()=>zones,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  await ex3.handle({id:1,date:1e12,text:OPEN});assert.equal(ex3.status().positions[0].stopSource,'BALANCE_CAP');
 });
+
+test('copy review: the trader total follows the trader even when our buy is skipped; a failed partial close retries the same share; "- → q" positions keep their scale',async()=>{
+ const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
+ const closeQ=q=>`✅ 포지션 청산\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short\n━━━━━━━━━━━━━━━━\n진입가 0.05000 USDT\n수량 ${q}\n최종손익 🟢 +0.3 USDT`;
+ let v=venue(),ex=make(v,{free:.5});
+ await ex.handle({id:1,date:1e12,text:card(0.4,'0.05000')});await ex.handle({id:2,date:1e12+600000,text:card(0.4,'0.05100')});
+ assert.equal(v.size,100,'add skipped (margin)');assert.equal(ex.status().positions[0].theirTotal,.8,'trader total still 0.8');
+ await ex.handle({id:3,date:1e12+700000,text:closeQ(0.4)});assert.equal(v.size,50,'half of ours, not all');
+ v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:card(0.4,'0.05000')});await ex.handle({id:2,date:1e12+600000,text:card(1.2,'0.05100')});
+ assert.equal(v.size,400);v.failMarket=true;await ex.handle({id:3,date:1e12+700000,text:closeQ(0.4)});assert.equal(v.size,400);
+ v.failMarket=false;await ex.reconcile();assert.equal(v.size,300,'a quarter, once');await ex.reconcile();assert.equal(v.size,300);
+ v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:CHANGE('-','880')});
+ assert.equal(ex.status().positions[0].theirFirstQty,880);
+});
