@@ -145,9 +145,12 @@ export function copyHTML(c){
  const gross=closed.filter(x=>x.netUSD>0).reduce((a,x)=>a+x.netUSD,0),loss=-closed.filter(x=>x.netUSD<0).reduce((a,x)=>a+x.netUSD,0);
  const unreal=open.reduce((a,p)=>a+(Number(p.unrealized)||0),0),isLive=c.mode==='LIVE';
  // Mode line: which account, on/off, the switch.
- const modeLine=`<div class="copy-mode ${isLive?'live':''} ${isLive&&c.armed?'on':''}"><span class="copy-chip">${isLive?'실계좌':'테스트넷'}</span>
-  <span>${!c.enabled?'꺼짐':isLive?(c.armed?'활성화됨 · 실제 돈으로 주문합니다':'비활성 · 주문하지 않습니다 (서버 재시작 후 항상 비활성)'):'실매매 활성화 상태를 따릅니다'}</span>
-  ${isLive?(c.armed?'<button type="button" class="outline-btn small" data-copy-disarm>카피 비활성화</button>':'<button type="button" class="outline-btn small danger-btn" data-copy-arm>실계좌 카피 활성화</button>'):''}</div>`;
+ // Mode line: which account, a clear ON/OFF state, and the switch.
+ const on=isLive?Boolean(c.armed&&c.enabled&&!c.killed):Boolean(c.enabled&&c.followArmed&&!c.killed);
+ const state=c.killed?'<b class="copy-state kill">■ 정지됨 (손실 한도)</b>':on?'<b class="copy-state on">● 활성화됨</b>':'<b class="copy-state off">○ 비활성</b>';
+ const detail=!c.enabled?'카피 꺼짐':isLive?(on?'실제 돈으로 주문합니다':'주문하지 않습니다 · 서버 재시작 후 항상 비활성'):(on?'테스트넷 활성화 상태를 따라 주문합니다':'테스트넷 페이지에서 활성화해야 주문합니다');
+ const modeLine=`<div class="copy-mode ${isLive?'live':''} ${on?'on':''}"><span class="copy-chip">${isLive?'실계좌':'테스트넷'}</span>${state}<span>${detail}</span>
+  ${isLive&&c.enabled&&!c.killed?(c.armed?'<button type="button" class="outline-btn small" data-copy-disarm>비활성화하기</button>':'<button type="button" class="outline-btn small danger-btn" data-copy-arm>활성화하기</button>'):''}<span class="copy-msg" data-copy-msg></span></div>`;
  const kill=c.killed?`<p class="live-warn-text">카피 손실 한도(잔고 ${esc(c.ledgerLossPct)}%)에 닿아 모두 청산하고 멈췄습니다. <button type="button" class="outline-btn small" data-copy-resume>카피 다시 시작</button></p>`:'';
  const f=c.funds,stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
  const stats=`<div class="copy-stats">${stat(isLive?'실계좌 잔고':'잔고',usd(f?.equity))}${stat('사용 가능',usd(f?.available))}${stat('보유',open.length+'개')}${stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}
@@ -176,10 +179,19 @@ export function readinessHTML(r,positions){
 }
 
 function bindCopyButtons(el){
- if(!el||el.dataset.bound)return;el.dataset.bound='1';el.addEventListener('click',async e=>{
-  if(e.target.closest('[data-copy-resume]')){try{await fetch('/api/copy/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_RESUME'})})}catch{}return}
-  if(e.target.closest('[data-copy-disarm]')){try{await fetch('/api/copy/disarm',{method:'POST'})}catch{}return}
-  if(e.target.closest('[data-copy-arm]')&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?')){try{await fetch('/api/copy/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_ARM'})})}catch{}}})}
+ if(!el||el.dataset.bound)return;el.dataset.bound='1';
+ const call=async(btn,path,body,busy)=>{
+  const msg=el.querySelector('[data-copy-msg]');btn.disabled=true;btn.textContent=busy;
+  try{const r=await fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}),d=await r.json().catch(()=>({}));
+   if(!r.ok)throw Error(d.error||'HTTP '+r.status);
+   if(msg)msg.textContent=d.armed===true?'✓ 활성화됐습니다':d.armed===false?'✓ 비활성화됐습니다':'✓ 완료'}
+  catch(e){if(msg){msg.textContent='실패: '+e.message;msg.classList.add('err')}}
+  document.getElementById('liveRefresh')?.click()};
+ el.addEventListener('click',e=>{
+  const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
+  if(resume)return call(resume,'/api/copy/resume',{confirm:'COPY_RESUME'},'다시 시작하는 중…');
+  if(disarm)return call(disarm,'/api/copy/disarm',null,'끄는 중…');
+  if(arm&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?'))return call(arm,'/api/copy/arm',{confirm:'COPY_ARM'},'켜는 중…')})}
 
 function render(o){
  const $=id=>document.getElementById(id),m=modeInfo(o.mode);
@@ -191,6 +203,10 @@ function render(o){
  if(status){status.replaceChildren(...liveRows(o).map(([k,v])=>{const row=document.createElement('div'),dt=document.createElement('span'),dd=document.createElement('b');
   row.className='kv-row';dt.textContent=k;dd.textContent=v;row.append(dt,dd);return row}));status.classList.toggle('warn',Boolean(o.killSwitch||o.mode==='LIVE'))}
  if($('liveTest'))$('liveTest').hidden=o.mode!=='TESTNET';
+ // The button for the current state is shown as selected and cannot be pressed again.
+ const armedNow=Boolean(o.armed&&o.mode!=='OFF');
+ if($('liveArm')){$('liveArm').disabled=armedNow||o.mode==='OFF';$('liveArm').textContent=armedNow?'● 활성화됨':'활성화';$('liveArm').classList.toggle('is-current',armedNow)}
+ if($('liveDisarm')){$('liveDisarm').disabled=!armedNow;$('liveDisarm').textContent=armedNow?'비활성화':'○ 비활성';$('liveDisarm').classList.toggle('is-current',!armedNow)}
  if($('livePaperNote'))$('livePaperNote').hidden=!o.paperTrading;
  const box=$('livePositions');
  if(box){
@@ -204,9 +220,9 @@ function render(o){
  // Real-money copy has its own page (실계좌); the testnet page keeps only testnet copies.
  const copy=o.copy,real=copy?.mode==='LIVE';
  for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));
- if($('liveCopySection')){$('liveCopySection').hidden=!copy||real;if(copy&&!real&&$('liveCopy'))$('liveCopy').innerHTML=copyHTML(copy)}
+ if($('liveCopySection')){$('liveCopySection').hidden=!copy||real;if(copy&&!real&&$('liveCopy'))$('liveCopy').innerHTML=copyHTML({...copy,followArmed:Boolean(o.armed&&!o.killSwitch)})}
  if($('realCopy'))$('realCopy').innerHTML=real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>';
- const realBadge=!real?'설정 안 됨':!copy.enabled?'꺼짐':copy.killed?'손실 한도 정지':copy.armed?'활성화':'비활성';
+ const realBadge=!real?'설정 안 됨':!copy.enabled?'꺼짐':copy.killed?'손실 한도 정지':copy.armed?'● 활성화됨':'○ 비활성';
  if($('navRealMode'))$('navRealMode').textContent=!real?'—':copy.armed&&!copy.killed?'ON':'OFF';
  if($('realModeBadge'))$('realModeBadge').innerHTML=`<span class="live-flag ${real&&copy.killed?'kill':real&&copy.armed?'armed':''}">실계좌 카피 · ${esc(realBadge)}</span>`;
  if($('liveClosed'))$('liveClosed').innerHTML=o.closed?.length?o.closed.map(closedCardHTML).join(''):'<p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p>';
