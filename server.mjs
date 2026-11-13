@@ -5,7 +5,7 @@ import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
-import {CopyExecutor,copyConfig} from './copy_executor.mjs';
+import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
 import {liveEventText} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
@@ -259,7 +259,8 @@ const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage
 // Messages arrive from the local listener (deploy/linux/copy_listener.py) with COPY_LISTENER_TOKEN.
 const COPY=copyConfig(process.env,LIVE.mode);
 copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
- contractOf:async symbol=>(await venueQuotes.clients.BINGX.loadContracts()).get(symbol)??null,
+ // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
+ contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.loadContracts(),symbol),
  // Candles for the volume-confirmed zone break (Binance, or the venue for coins not on Binance).
  candlesOf:(symbol,interval,limit)=>state.activeSet.has(symbol)||!chartVenueFor(symbol)?klines(symbol,interval,limit):venueKlines(symbol,interval,limit),
  // Volume zones for the copy stop: Binance 1h (30 d) and 4h (90 d) profiles, or the venue's for coins not on Binance.

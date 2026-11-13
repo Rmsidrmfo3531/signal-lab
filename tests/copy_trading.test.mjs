@@ -210,3 +210,18 @@ test('copy stop: a venue that refuses the far backstop gets 30 %, then 20 %',asy
  await ex.handle({id:1,date:1e12,text:OPEN});
  const p=ex.status().positions[0];assert.equal(p.stopDistPctActual,30);assert.ok(Math.abs(p.stop-0.051*1.3)<1e-5);
 });
+
+test('copy: SNDKUSDT follows the BingX stock perpetual, PEPEUSDT the 1000-coin contract (quantity / 1000, price x 1000)',async()=>{
+ const {resolveCopyContract}=await import('../copy_executor.mjs');
+ const m=new Map([['NCSKSNDK2USDUSDT',{symbol:'NCSKSNDK2USDUSDT',venueSymbol:'NCSKSNDK2USD-USDT'}],['1000PEPEUSDT',{symbol:'1000PEPEUSDT',venueSymbol:'1000PEPE-USDT',quantityStep:'1',tickSize:'0.000001',minQuantityBase:'1',minNotionalUSDT:2,tradable:true}]]);
+ assert.equal(resolveCopyContract(m,'SNDKUSDT').venueSymbol,'NCSKSNDK2USD-USDT');assert.equal(resolveCopyContract(m,'AKEUSDT'),null);
+ const pepe=resolveCopyContract(m,'PEPEUSDT');assert.equal(pepe.unitMultiplier,1000);
+ const calls=[];let size=0;
+ const client={leverage:async()=>({maxLongLeverage:50}),setMarginType:async()=>({}),setLeverage:async()=>({}),cancelOrder:async()=>({}),
+  positions:async()=>size>0?[{symbol:'1000PEPE-USDT',positionAmt:String(size),avgPrice:'0.01',markPrice:'0.01',unrealizedProfit:'0'}]:[],
+  placeOrder:async p=>{calls.push(p);if(p.type==='MARKET')size+=Number(p.quantity);return {order:{orderId:String(calls.length)}}}};
+ const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client,contractOf:async()=>pepe,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ // 10,000,000 PEPE at 0.00001 x 0.02 = 200,000 PEPE = 200 contracts of 1000 at 0.01.
+ await ex.handle({id:1,date:1e12,text:'📌 포지션 진입\nPEPEUSDT 🟢 Long ×10\n진입가 0.00001 USDT\n현재가 0.00001 USDT\n수량 10000000'});
+ assert.equal(calls.find(c=>c.type==='MARKET').quantity,'200');assert.equal(calls.find(c=>c.type==='MARKET').symbol,'1000PEPE-USDT');
+});
