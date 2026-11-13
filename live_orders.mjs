@@ -64,8 +64,8 @@ function liveConfigBase(env){
   balanceCapUSD:num('LIVE_BALANCE_CAP_USD',0,0,10000000),
   // Optional first-entry margin floor: at least this much margin per unit; 0 = off (default, user 2026-11-13).
   minUnitMarginUSD:num('LIVE_MIN_UNIT_MARGIN_USD',0,0,1000),
-  // A new position (entry + all its resting adds) uses at most this share of the margin still free,
-  // so each next position is sized from what is left: 25 %, then 25 % of the remaining 75 %, ...
+  // A new position (entry + all its resting adds) uses at most this share of the equity; every position
+  // gets the same size (user 2026-11-13); one that does not fit in the free margin is skipped.
   marginUsePct:num('LIVE_MARGIN_USE_PCT',25,1,100)};
 }
 

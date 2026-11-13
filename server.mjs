@@ -260,6 +260,8 @@ const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage
 const COPY=copyConfig(process.env,LIVE.mode);
 copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
  contractOf:async symbol=>(await venueQuotes.clients.BINGX.loadContracts()).get(symbol)??null,
+ // Candles for the volume-confirmed zone break (Binance, or the venue for coins not on Binance).
+ candlesOf:(symbol,interval,limit)=>state.activeSet.has(symbol)||!chartVenueFor(symbol)?klines(symbol,interval,limit):venueKlines(symbol,interval,limit),
  // Volume zones for the copy stop: Binance 1h (30 d) and 4h (90 d) profiles, or the venue's for coins not on Binance.
  zonesOf:async(symbol,{tickSize})=>{const list=state.activeSet.has(symbol)||!chartVenueFor(symbol)?binanceZoneFallbacks:venueZoneFallbacks,out=[];
   for(const f of list){const r=await f.collector.get(symbol,{tickSize:Number(tickSize),eligible:true}).catch(()=>null);if(r?.ok)out.push(...r.profile.hvn.map(z=>({priceLow:z.priceLow,priceHigh:z.priceHigh})))}
@@ -267,7 +269,10 @@ copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
  gate:()=>LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
  // Also a symbol the live executor is entering right now (busy), not only recorded positions.
  isBusy:symbol=>live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol),
- balance:()=>live.accountFunds('BINGX'),directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
+ // The same balance cap as the signal strategy (a 100,000 virtual USDT testnet trades like the real account).
+ balance:async()=>{const f=await live.accountFunds('BINGX');const cap=LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
+  const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
+ directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
 if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
 function copyNotice(e){
  const text=copyEventText(e);if(!text)return;

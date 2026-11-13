@@ -132,20 +132,26 @@ test('copy (user 2026-11-13): first buy 1 $, a later 진입 card of 0.4 = 1 $, 0
  assert.equal(ex.status().events.find(e=>e.type==='ADDED').marginUSD,2);
 });
 
-test('copy stop at a volume zone at least 10 % away (user 2026-11-13); balance cap only when no zone fits or as a ceiling',async()=>{
- const v=venue(),zones=[{priceLow:.0515,priceHigh:.0518},{priceLow:.0565,priceHigh:.0570},{priceLow:.0700,priceHigh:.0710}];
- const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,zonesOf:async()=>zones,balance:async()=>({equity:400,available:300}),now:()=>1e12});
- // Short at 0.051: the 0.0518 zone is 1.6 % away (too close, the trader's first adds), 0.0570 is 11.8 % -> stop just above it.
- assert.deepEqual(ex.zoneStop({direction:'SHORT',entry:.051,zones}).zone,{priceLow:.0565,priceHigh:.057});
+test('copy exit at a volume zone at least 20 % away, only when a 15m candle closes beyond it on 1.5x volume; exchange stop = balance cap; at most 10 adds',async()=>{
+ const zones=[{priceLow:.0515,priceHigh:.0518},{priceLow:.0560,priceHigh:.0570},{priceLow:.0630,priceHigh:.0640}];
+ let candles=[];const v=venue();
+ const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,zonesOf:async()=>zones,candlesOf:async()=>candles,
+  balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ // Short at 0.051: 0.0518 (1.6 %) and 0.0570 (11.8 %) are where the trader adds; 0.0640 (25 %) is the exit zone.
+ assert.deepEqual(ex.zoneStop({direction:'SHORT',entry:.051,zones}).zone,{priceLow:.063,priceHigh:.064});
  await ex.handle({id:1,date:1e12,text:OPEN});
- const stop=v.calls.find(c=>c.type==='STOP_MARKET');assert.ok(Math.abs(Number(stop.stopPrice)-.057*1.003)<1e-5,stop.stopPrice);
- const p=ex.status().positions[0];assert.equal(p.stopSource,'ZONE');assert.ok(p.stopDistPct>=10);
- // No zone in 10-40 %: the balance-cap stop.
- const v2=venue(),ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v2.client,contractOf:async()=>contract,zonesOf:async()=>[zones[0]],balance:async()=>({equity:400,available:300}),now:()=>1e12});
- await ex2.handle({id:1,date:1e12,text:OPEN});assert.equal(ex2.status().positions[0].stopSource,'BALANCE_CAP');
- // A position grown so large that the zone stop would lose more than 25 % of the balance: the cap wins.
- const v3=venue(),ex3=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_MARGIN_USD:'200'},'TESTNET'),client:v3.client,contractOf:async()=>contract,zonesOf:async()=>zones,balance:async()=>({equity:400,available:300}),now:()=>1e12});
- await ex3.handle({id:1,date:1e12,text:OPEN});assert.equal(ex3.status().positions[0].stopSource,'BALANCE_CAP');
+ const p=ex.status().positions[0];assert.equal(p.stopSource,'BALANCE_CAP');assert.ok(Math.abs(p.stopDistPct-25.5)<.2,p.stopDistPct);
+ const bar=(i,c,vol)=>[1e12-(30-i)*900000,c,c,c,c,vol,1e12-(30-i)*900000+899999];
+ // Beyond the zone on ordinary volume: kept.
+ candles=[...Array.from({length:29},(_,i)=>bar(i,.06,100)),bar(29,.065,120)];await ex.reconcile();assert.equal(v.size,98);
+ // Beyond the zone on 2x volume: closed.
+ candles=[...Array.from({length:29},(_,i)=>bar(i,.06,100)),bar(29,.065,200)];await ex.reconcile();
+ assert.equal(v.size,0);assert.equal(ex.status().closed[0].closeReason,'ZONE_BREAK_VOLUME');
+ // At most 10 adds.
+ const v2=venue(),ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_MAX_TOTAL_MARGIN_PCT:'100'},'TESTNET'),client:v2.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:400}),now:()=>1e12});
+ await ex2.handle({id:1,date:1e12,text:OPEN});let q=880;
+ for(let k=0;k<12;k++){await ex2.handle({id:10+k,date:1e12,text:CHANGE(q,q+880)});q+=880}
+ assert.equal(ex2.status().positions[0].adds,10);assert.ok(ex2.status().events.some(e=>e.reason==='COPY_MAX_ADDS'));
 });
 
 test('copy review: the trader total follows the trader even when our buy is skipped; a failed partial close retries the same share; "- → q" positions keep their scale',async()=>{
@@ -177,4 +183,19 @@ test('copy default (user 2026-11-13): the trader quantity x our equity / 20,000 
  // Tiny trader order: below the venue minimum -> the minimum, flagged.
  const v2=venue();const ex2=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v2.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  await ex2.handle({id:1,date:1e12,text:card(100,'0.05000')});assert.equal(ex2.status().positions[0].minOrder,true);
+});
+
+test('copy: a card whose quantity does not match its margin x leverage is not traded; first entries respect the total margin cap; small adds are carried',async()=>{
+ const v=venue(),ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ // 880 coins x 0.051 = 44.9 $ but 마진 9.01 x 5 = 45 $: coins. 88 "contracts" with the same margin would not match.
+ const bad=OPEN.replace('수량　　880','수량　　88');
+ assert.equal((await ex.handle({id:1,date:1e12,text:bad})).reason,'QUANTITY_UNIT_UNCLEAR');assert.equal(v.size,0);
+ const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
+ // 30 % of 400 = 120 $ of margin: 1,000,000 coins x 0.02 = 20,000 coins = 1,000 $ notional / 5 = 200 $ -> skipped.
+ assert.equal((await ex.handle({id:2,date:1e12,text:card(1000000,'0.05000')})).reason,'COPY_MARGIN_CAP');
+ await ex.handle({id:3,date:1e12,text:card(5000,'0.05000')});assert.equal(v.size,100);
+ // 1,000 more x 0.02 = 20 coins = 1 $ < 2 $ venue minimum: carried; the next 1,000 makes 40 coins = 2 $: bought together.
+ await ex.handle({id:4,date:1e12+600000,text:card(1000,'0.05100')});assert.equal(v.size,100);
+ await ex.handle({id:5,date:1e12+700000,text:card(1000,'0.05200')});assert.equal(v.size,140,'carried adds bought together');
+ await ex.handle({id:6,date:1e12+800000,text:card(1000,'0.05300')});assert.equal(v.size,140,'the next small one carried again');
 });

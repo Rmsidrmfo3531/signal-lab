@@ -10,7 +10,8 @@
 //  모니터 시작       -> the monitor restarted: the 진입 cards within COPY_SNAPSHOT_MS re-announce positions
 //                      it already had; they are not entered (no late entries).
 // Safety kept (user's standing rules: stop protection, reduce-only exits, duplicate-order guard,
-// kill switch): every copied position carries a whole-position stop at a VOLUME ZONE (user 2026-11-13:
+// kill switch): (updated 2026-11-13, see #zoneBroken) the exchange stop is the balance cap; the volume zone
+// below is the soft exit: closed when a 15m candle closes beyond it on rising volume. Originally a stop at a VOLUME ZONE (user 2026-11-13:
 // "매물대를 봐야"): beyond the first 1h/4h volume zone at least COPY_STOP_MIN_PCT (10 %) away from the
 // entry — past where the trader's first adds usually fill (1.8 / 3.6 / 6.9 / 9.7 %), before the deep
 // adds that made the big losses (13.9 % +) — and at most COPY_STOP_MAX_PCT (40 %). Without such a zone
@@ -25,7 +26,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({sizing:'BALANCE_RATIO',traderBalanceUSD:20000,stopMinPct:10,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:30,ledgerLossPct:50});
+export const COPY_DEFAULTS=Object.freeze({sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:30,ledgerLossPct:50});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -43,13 +44,16 @@ export function copyConfig(env=process.env,liveMode='OFF'){
   snapshotMs:n('COPY_SNAPSHOT_MS',COPY_DEFAULTS.snapshotMs,0,3600000),maxLeverage:n('COPY_MAX_LEVERAGE',COPY_DEFAULTS.maxLeverage,1,125),
   // All copy positions together: margin at most this share of the equity (adds beyond it skipped), and
   // when their open loss reaches COPY_LEDGER_LOSS_PCT of the equity everything is closed and copying stops.
+  // Up to COPY_MAX_ADDS adds are followed (user 2026-11-13: 10); the position is closed when the price
+  // closes beyond the stop zone on a 15m candle whose volume is COPY_BREAK_VOLUME_MULT x its 20-candle average.
+  maxAdds:n('COPY_MAX_ADDS',COPY_DEFAULTS.maxAdds,0,100),breakVolumeMult:n('COPY_BREAK_VOLUME_MULT',COPY_DEFAULTS.breakVolumeMult,1,10),
   stopMinPct:n('COPY_STOP_MIN_PCT',COPY_DEFAULTS.stopMinPct,.5,80),stopMaxPct:n('COPY_STOP_MAX_PCT',COPY_DEFAULTS.stopMaxPct,1,95),stopBufferPct:n('COPY_STOP_BUFFER_PCT',COPY_DEFAULTS.stopBufferPct,0,5),
   maxTotalMarginPct:n('COPY_MAX_TOTAL_MARGIN_PCT',COPY_DEFAULTS.maxTotalMarginPct,1,100),ledgerLossPct:n('COPY_LEDGER_LOSS_PCT',COPY_DEFAULTS.ledgerLossPct,1,90)};
 }
 
 export class CopyExecutor{
- constructor({config,client,contractOf,zonesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
-  Object.assign(this,{config,client,contractOf,zonesOf,gate,isBusy,balance,now,log,onEvent});
+ constructor({config,client,contractOf,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
+  Object.assign(this,{config,client,contractOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent});
   this.file=directory?path.join(directory,'copy-store.json'):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
@@ -60,7 +64,7 @@ export class CopyExecutor{
  #event(type,detail={}){const e={type,at:this.now(),...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
- status(){return {sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+ status(){return {maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:this.store.closed.slice(-50).reverse(),events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
 
  /** One channel message ({id, date (ms), text}); processed one at a time, each id once. */
@@ -104,10 +108,9 @@ export class CopyExecutor{
   const bal=await this.balance().catch(()=>null),equity=pos(bal?.equity);
   if(!equity||!p.avg){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'NO_BALANCE'});if(!p.stopOrderId)await this.#emergency(p,'NO_STOP');return}
   const dir=p.direction==='LONG'?1:-1,cap=p.avg-dir*(equity*this.config.maxLossPct/100)/p.qty;
-  // Volume-zone stop (fixed at the entry), never looser than the balance cap.
-  let raw=p.zoneStop??null;
-  if(raw==null||(cap>0&&dir*(cap-raw)>0))raw=cap>0?cap:null;
-  p.stopSource=raw===p.zoneStop&&raw!=null?'ZONE':'BALANCE_CAP';
+  // The exchange stop is the balance cap (it works even if this server is down); the volume zone is
+  // watched by the routine check and exits only on a break with rising volume (user 2026-11-13).
+  const raw=cap>0?cap:null;p.stopSource='BALANCE_CAP';
   if(!(raw>0)){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}p.stop=null;p.stopOrderId=null;p.stopStale=false;return} // a long whose loss cannot reach the cap
   let stop;try{stop=Number(roundDecimalToStep(raw,p.tickSize,dir===1?'DOWN':'UP'))}catch{stop=raw}
   if(now.mark&&dir*(now.mark-stop)<=0){this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'LOSS_CAP_REACHED'});await this.#emergency(p,'LOSS_CAP_REACHED');return}
@@ -181,6 +184,12 @@ export class CopyExecutor{
   // Below the venue minimum: the smallest valid order instead (flagged: larger than the ratio asks).
   let minOrder=false;
   if(qty<minQ||qty*price<minN){qty=this.#qty(c,Math.max(minQ,minN/price*1.02),'UP');minOrder=true}
+  // The card's quantity must be coins: with a 마진 line, quantity x price must match margin x leverage
+  // (within 30 %), else it may be a contract count and is not traded.
+  if(scale!=null&&m.marginUSD>0&&m.leverage>0){const implied=m.quantity*price/(m.marginUSD*m.leverage);
+   if(implied<.7||implied>1.3)throw Object.assign(Error('QUANTITY_UNIT_UNCLEAR'),{code:'QUANTITY_UNIT_UNCLEAR'})}
+  {const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
+   if(eq&&used+qty*price/leverage>eq*this.config.maxTotalMarginPct/100){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_MARGIN_CAP'});return {ok:false,reason:'COPY_MARGIN_CAP'}}}
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
   const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
    scale,minOrder,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
@@ -220,19 +229,24 @@ export class CopyExecutor{
  async #buyMore(p,m,theirQty,{price,ratio=null,c=null,now=null}={}){
   c??=await this.#contract(p.symbol);now??=await this.#position(p);p.qty=now.size;
   if(!(p.qty>0)){this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
-  const g=this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  const g=this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(g.reason==='COPY_MAX_ADDS'?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   price??=now.mark;
   const marginUSD=p.scale==null&&p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
   const add=p.scale!=null?this.#qty(c,theirQty*p.scale):marginUSD!=null?this.#qty(c,marginUSD*p.leverage/price):this.#qty(c,p.qty*((ratio??((p.theirTotal+theirQty)/p.theirTotal))-1));
-  if(!(add>0))return {ok:true,tooSmall:true};
+  // Adds below the venue minimum are carried until they add up to a valid order (no drift from the trader).
+  let buy=add;
+  if(p.scale!=null){const raw=theirQty*p.scale+(p.addCarry||0),minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
+   buy=this.#qty(c,raw);if(!(buy>0)||buy<minQ||buy*price<minN){p.addCarry=raw;this.#event('ADD_CARRIED',{symbol:p.symbol,carry:+raw.toPrecision(6)});return {ok:true,carried:true}}
+   p.addCarry=Math.max(0,raw-buy)}
+  else if(!(add>0))return {ok:true,tooSmall:true};
   const bal=await this.balance().catch(()=>null),free=num(bal?.available);
   const eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
-  if(eq&&used+add*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(add*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
-  if(free!==null&&add*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(add*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
-  const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',add,{tag:'add'+(p.adds+1)});p.adds++;
-  p.steps.push({kind:'ADD',at:this.now(),qty:add,avg:fill.avg,theirQty,marginUSD});
+  if(eq&&used+buy*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(buy*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
+  if(free!==null&&buy*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(buy*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
+  const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:'add'+(p.adds+1)});p.adds++;
+  p.steps.push({kind:'ADD',at:this.now(),qty:buy,avg:fill.avg,theirQty,marginUSD});
   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('ADDED',{symbol:p.symbol,qty:add,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
+  this.#event('ADDED',{symbol:p.symbol,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
   return {ok:true};
  }
  async #close(m,reason){
@@ -270,6 +284,7 @@ export class CopyExecutor{
     if(!(now.size>0)){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}this.#closed(p,'STOP_OR_EXTERNAL',now);continue}
     p.qty=now.size;p.avg=now.avg??p.avg;p.unrealized=now.unrealized;p.mark=now.mark;unrealized+=Number(now.unrealized)||0;
     if(!p.stopOrderId||p.stopStale)await this.#protect(p);
+    if(p.stopZone&&await this.#zoneBroken(p).catch(()=>false)){await this.#emergency(p,'ZONE_BREAK_VOLUME');continue}
    }catch(error){if(error.code==='HTTP_429')break}
   }
   const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity);
@@ -278,6 +293,16 @@ export class CopyExecutor{
    for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'))await this.#emergency(p,'COPY_LOSS_LIMIT');
   }
   this.#save();
+ }
+ /** The last closed 15m candle closed beyond the stop zone on volume >= breakVolumeMult x the 20 before it. */
+ async #zoneBroken(p){
+  const rows=await Promise.race([this.candlesOf(p.symbol,'15m',30),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);
+  const closed=(rows||[]).filter(r=>Number(r[6])<this.now());if(closed.length<21)return false;
+  const last=closed.at(-1),prev=closed.slice(-21,-1),avgVol=prev.reduce((t,r)=>t+Number(r[5]),0)/prev.length;
+  const dir=p.direction==='LONG'?1:-1,edge=dir===1?p.stopZone.priceLow:p.stopZone.priceHigh,close=Number(last[4]);
+  const beyond=dir*(edge-close)>0,heavy=avgVol>0&&Number(last[5])>=avgVol*this.config.breakVolumeMult;
+  if(beyond&&heavy)this.#event('ZONE_BREAK',{symbol:p.symbol,close,edge,volumeX:+(Number(last[5])/avgVol).toFixed(2)});
+  return beyond&&heavy;
  }
  /** After the loss limit: copying resumes only when asked. */
  resume(){this.store.killed=false;this.#save();return this.status()}
