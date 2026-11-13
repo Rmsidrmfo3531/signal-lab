@@ -178,7 +178,10 @@ if(!Array.isArray(persisted.paperNotify.history))persisted.paperNotify.history=[
 persisted.paperNotify.telegram=persisted.paperNotify.telegram===true;
 // Server-side notification switches (알림 설정 page). Missing keys keep today's behaviour.
 if(!persisted.notifySettings||typeof persisted.notifySettings!=='object'||Array.isArray(persisted.notifySettings))persisted.notifySettings={};
-persisted.notifySettings.telegramSignals=persisted.notifySettings.telegramSignals!==false;
+// Scanner (final-signal) Telegram alerts are off by default since the scanner page was removed;
+// the one-time switch below turns them off once on existing installs, and the toggle still works.
+if(persisted.notifySettings.scannerAlertsOffV1!==true){persisted.notifySettings.telegramSignals=false;persisted.notifySettings.scannerAlertsOffV1=true}
+persisted.notifySettings.telegramSignals=persisted.notifySettings.telegramSignals===true;
 function notificationSettings(){return {paperTrading:CONFIG.paperTrading,telegramSignals:persisted.notifySettings.telegramSignals,telegramLive:persisted.notifySettings.telegramLive!==false,telegramPaper:paperTelegramOn(),windowsPaper:persisted.paperNotify.enabled===true,
  telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),telegramPaperForced:CONFIG.paperTelegram!==null,windowsSupported:process.platform==='win32'}}
 const paperTelegramOn=()=>CONFIG.paperTelegram===true||CONFIG.paperTelegram===null&&persisted.paperNotify.telegram===true;

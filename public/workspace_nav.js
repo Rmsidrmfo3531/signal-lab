@@ -2,7 +2,6 @@
 // chart state, live positions and journal data are never reset on navigation.
 const workspaceRoutes = Object.freeze({
   overview: '대시보드 · 차트',
-  scanner: '최종 신호 · 스캐너',
   live: '실매매',
   news: '시황 · 뉴스',
   alerts: '알림 · 시스템 상태',
@@ -14,7 +13,9 @@ const workspaceAliases = Object.freeze({
   execution: 'overview',
   matched: 'overview',
   // Old bookmarks of the removed 자동 모의매매 page open the 실매매 page.
-  paper: 'live'
+  paper: 'live',
+  // The 시그널 스캐너 page was removed at the user's request (the scan itself keeps feeding live trades).
+  scanner: 'live'
 });
 const workspaceSections = [...document.querySelectorAll('.content > [data-workspace-route]')];
 const workspaceHeading = document.querySelector('.page-head h1');
