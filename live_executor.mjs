@@ -52,6 +52,14 @@ export class LiveExecutor{
   // An entry that was being submitted when the server stopped may have filled without its stop:
   // unknown state, which blocks new entries until a person checks the account.
   for(const r of this.store.records)if(r.status==='SUBMITTING'){r.status='UNKNOWN';r.events=[...(r.events||[]),{type:'RESTART_WHILE_SUBMITTING',at:now()}].slice(-MAX_EVENTS)}
+  // Protection recovery (BingX): an entry cut off by a stop/crash, or an open position whose stop was
+  // never confirmed, is checked against the venue at the next reconcile — the stop is found or placed,
+  // otherwise the position is closed and trading stops. Other venues stay UNKNOWN and stop trading.
+  for(const r of this.store.records){
+   const cut=r.status==='UNKNOWN'&&(r.events||[]).some(e=>e.type==='RESTART_WHILE_SUBMITTING')&&!r.recovery;
+   const unprotected=r.status==='OPEN'&&!r.stopOrderId&&!(r.events||[]).some(e=>e.type==='PROTECTED'||e.type==='PROTECTION_RECOVERED')&&!r.test;
+   if(cut||unprotected){if(r.venue==='BINGX')r.recovery='PENDING';else this.store.killSwitch=true}
+  }
  }
  #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records,deletedKeys:this.store.deletedKeys,archived:this.store.archived})}this.onChange(this.status())}
  #event(record,type,detail={}){record.events=[...(record.events||[]),{type,at:this.now(),...detail}].slice(-MAX_EVENTS);this.log(`[LIVE ${record.venue} ${record.symbol}] ${type}`,detail.reason||'')
@@ -369,7 +377,36 @@ export class LiveExecutor{
  async reconcile(){
   // paused: the server is about to restart (update); no new venue work may start.
   if(this.reconciling||this.paused)return;this.reconciling=true;
-  try{await this.#reconcileOpen()}finally{this.reconciling=false}
+  try{
+   for(const record of this.store.records.filter(r=>r.recovery==='PENDING'&&!this.busy.has(r.symbol))){
+    this.busy.add(record.symbol);
+    try{await this.#recover(record)}catch(error){this.#event(record,'RECOVERY_ERROR',{reason:error.code||error.message})}
+    finally{this.busy.delete(record.symbol);this.#save()}
+   }
+   await this.#reconcileOpen();
+  }finally{this.reconciling=false}
+ }
+ /** After a restart cut an entry short: find or place the stop for whatever the venue holds. */
+ async #recover(record){
+  const client=this.clients.BINGX,pos=await this.#position(record);
+  if(!(pos.size>0)){
+   if(record.status==='UNKNOWN'){record.status='CLOSED';record.closedAt=this.now();record.closeReason='NO_POSITION_AFTER_RESTART'}
+   record.recovery='DONE';this.#event(record,'RECOVERY_NO_POSITION');return;
+  }
+  const plan=this.#plan(record),open=await client.openOrders(record.venueSymbol);
+  const list=open?.orders??(Array.isArray(open)?open:[]),stop=list.find(o=>String(o.type).startsWith('STOP'));
+  record.position={...(record.position||{}),size:pos.size,entryPrice:posNum(pos.entryPrice),at:this.now()};
+  if(!record.firstEntryPrice&&posNum(pos.entryPrice))record.firstEntryPrice=posNum(pos.entryPrice);
+  if(stop){record.stopOrderId=bingxOrderId(stop);record.status='OPEN';record.recovery='DONE';this.#event(record,'PROTECTION_RECOVERED',{orderId:record.stopOrderId,reason:'STOP_FOUND'});return}
+  try{
+   const s=await client.placeOrder(plan.stop(pos.size));record.stopOrderId=bingxOrderId(s);record.status='OPEN';record.recovery='DONE';
+   this.#event(record,'PROTECTION_RECOVERED',{orderId:record.stopOrderId,reason:'STOP_PLACED'});
+  }catch(error){
+   this.#event(record,'STOP_FAILED',{reason:error.code||error.message});record.recovery='FAILED';
+   try{await client.placeOrder(plan.emergencyClose(pos.size));record.status='CLOSED';record.closedAt=this.now();record.closeReason='EMERGENCY_NO_STOP';this.#event(record,'EMERGENCY_CLOSED')}
+   catch(e){record.status='UNKNOWN';this.#event(record,'EMERGENCY_CLOSE_FAILED',{reason:e.code||e.message})}
+   this.kill('RECOVERY_NO_STOP');
+  }
  }
  /** True while nothing is being ordered, cancelled or checked (safe moment to restart). */
  idle(){return !this.reconciling&&!this.inFlight.size&&!this.busy.size&&!this.closing.size&&!this.store.records.some(r=>r.status==='SUBMITTING')}

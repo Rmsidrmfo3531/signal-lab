@@ -461,3 +461,30 @@ test('while an update is applied, nothing new is ordered and arming is refused',
  await assert.rejects(ex.testRoundTrip(row('BINGX')),/UPDATING/);
  ex.updating=false;ex.arm();assert.equal(ex.armed,true);
 });
+
+test('restart cut an entry short: the stop is found or placed, a missing position is closed out, a failed stop closes and stops trading',async()=>{
+ const fs=await import('node:fs'),os=await import('node:os'),path=await import('node:path');
+ const scenario=async({amt='0.20',keepStop=false,stopPlacement='ok',statusAtCut='SUBMITTING'}={})=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'live-rec-'));
+  const m=mockBingX({positionAmt:()=>amt,stopPlacement});
+  const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});ex.arm();
+  await ex.onSignal(row('BINGX'),{signalKey:'cut'});
+  // What a crash between the fill and the protection leaves behind.
+  const file=path.join(dir,'live-orders.json'),saved=JSON.parse(fs.readFileSync(file,'utf8')),r=saved.records[0];
+  r.status=statusAtCut;r.stopOrderId=null;r.targetOrderIds=[];r.events=r.events.filter(e=>!['PROTECTED','STOP_CONFIRMED','STOP_PLACED'].includes(e.type));
+  fs.writeFileSync(file,JSON.stringify(saved));
+  if(!keepStop)m.orders.length=0;
+  const ex2=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
+  assert.equal(ex2.store.records[0].recovery,'PENDING');
+  await ex2.reconcile();
+  return {rec:ex2.store.records[0],ex:ex2,m,types:ex2.store.records[0].events.map(e=>e.type)};
+ };
+ const placed=await scenario();
+ assert.equal(placed.rec.status,'OPEN');assert.equal(placed.rec.recovery,'DONE');assert.ok(placed.rec.stopOrderId);
+ assert.equal(placed.rec.events.find(e=>e.type==='PROTECTION_RECOVERED').reason,'STOP_PLACED');assert.equal(placed.ex.store.killSwitch,false);
+ const found=await scenario({keepStop:true});assert.equal(found.rec.events.find(e=>e.type==='PROTECTION_RECOVERED').reason,'STOP_FOUND');
+ const open=await scenario({statusAtCut:'OPEN'});assert.equal(open.rec.recovery,'DONE');assert.ok(open.rec.stopOrderId,'an OPEN record saved without its stop is protected too');
+ const none=await scenario({amt:'0'});assert.equal(none.rec.status,'CLOSED');assert.equal(none.rec.closeReason,'NO_POSITION_AFTER_RESTART');
+ const fail=await scenario({stopPlacement:'fail'});
+ assert.equal(fail.rec.closeReason,'EMERGENCY_NO_STOP');assert.ok(fail.types.includes('EMERGENCY_CLOSED'));assert.equal(fail.ex.store.killSwitch,true);
+});
