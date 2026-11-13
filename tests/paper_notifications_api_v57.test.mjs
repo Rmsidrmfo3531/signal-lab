@@ -48,7 +48,7 @@ test('paper notification API: get/toggle/test/store history without synthetic po
   const html=await (await request(base+'/')).text();assert.doesNotMatch(html,/paperNoticeToggle|paper_ui\.js/);
   // 알림 설정: one endpoint for every server-side switch; the page offers all of them.
   let all=await get('/api/notifications/settings');
-  assert.equal(all.telegramSignals,true,'final-signal Telegram stays on by default');assert.equal(all.telegramPaper,false);assert.equal(all.windowsPaper,true);
+  assert.equal(all.telegramSignals,false,'scanner Telegram alerts are off by default (live alerts stay on)');assert.equal(all.telegramLive,true);assert.equal(all.telegramPaper,false);assert.equal(all.windowsPaper,true);
   assert.equal(all.paperTrading,false,'the settings page hides the paper switches while paper trading is off');
   assert.equal((await post('/api/notifications/settings',{telegramSignals:'off'})).status,400);
   all=(await post('/api/notifications/settings',{telegramSignals:false,telegramPaper:true})).body;

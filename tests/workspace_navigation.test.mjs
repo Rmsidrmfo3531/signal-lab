@@ -6,12 +6,13 @@ import vm from 'node:vm';
 const html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
 const css=fs.readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');
 const script=fs.readFileSync(new URL('../public/workspace_nav.js',import.meta.url),'utf8');
-const routes=['overview','scanner','live','news','alerts','journal'];
+const routes=['overview','live','news','alerts','journal'];
 
 test('navigation separates every functional panel without removing any stateful UI elements',()=>{
  const markers=[...html.matchAll(/<section\b[^>]*data-workspace-route="([^"]+)"/g)].map(x=>x[1]);
  assert.equal(markers.length,9,'TradFi and BingX·Gate.io quote pages were removed at the user\'s request');
  for(const route of routes)assert.ok(markers.includes(route),'missing route: '+route);
+ assert.ok(!/href="#scanner"/.test(html),'시그널 스캐너 menu removed at the user\'s request');
  for(const id of ['scanner','live','workGrid','execution','news','alerts','journal','chartPanel'])
   assert.match(html,new RegExp('id="'+id+'"'),'missing existing view '+id);
  assert.match(html,/<script type="module" src="\/workspace_nav\.js"><\/script>/);
@@ -36,7 +37,8 @@ test('hash routing keeps panels mounted and routes chart aliases to overview',()
   getElementById(id){if(id==='sidebar')return sidebar;if(id==='chartPanel')return chart;return null}};
  vm.runInNewContext(script,{document,window,Event:class{}});
  assert.equal(sections.filter(s=>!s.hidden).length,1);
- assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'scanner');
+ // An old #scanner bookmark opens 실매매 (the scanner page was removed).
+ assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'live');
  assert.equal(links[1].attributes['aria-current'],'page');
  window.location.hash='#live';window.handlers.hashchange();
  assert.equal(sections.filter(s=>!s.hidden).length,1);

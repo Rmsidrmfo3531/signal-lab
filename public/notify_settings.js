@@ -12,7 +12,7 @@ export const notifyOn=key=>screenNotify()[key]!==false;
 function saveScreen(next){try{localStorage.setItem(KEY,JSON.stringify(next))}catch{}}
 
 const SERVER_ROWS=[
- {key:'telegramSignals',label:'텔레그램 · 최종 신호',hint:'90점 이상·검증 통과 신호 (종목·방향·배율·수량)'},
+ {key:'telegramSignals',label:'텔레그램 · 스캐너 신호',hint:'기본 꺼짐 · 90점 이상 신호를 주문과 관계없이 알림'},
  {key:'telegramLive',label:'텔레그램 · 실매매 진입/청산',hint:'진입·추매·1차 목표·마감 손익·주문 문제 (테스트넷 포함)'},
  {key:'telegramPaper',label:'텔레그램 · 모의 진입/청산',hint:'모의 포지션 진입·청산 결과 (실제 주문 없음)',paper:true},
  {key:'windowsPaper',label:'Windows · 모의 진입/청산',hint:'서버가 실행 중인 PC의 알림 센터',paper:true}];

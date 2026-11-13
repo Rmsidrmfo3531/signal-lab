@@ -300,7 +300,7 @@ function renderSignals(){
  if(filter==='LONG'||filter==='SHORT')data=data.filter(x=>x.direction===filter);
  data=[...data].sort((a,b)=>b.score-a.score||(b.patternConfirmedAt||0)-(a.patternConfirmedAt||0)||a.symbol.localeCompare(b.symbol,'en'));
  $('metricSignals').textContent=approved.length;
- $('navSignalCount').textContent=approved.length;
+ {const n=$('navSignalCount');if(n)n.textContent=approved.length}
  $('signalFoot').textContent=`현재 최종 검증 통과 ${approved.length}건 · 실제 주문 OFF`;
  const paged=paginateScan(data,app.signalPage,SCAN_PAGE_SIZE);app.signalPage=paged.page;
  scanPagination('scanPageControls','scanPageInfo',paged,page=>{app.signalPage=page;renderSignals()});
