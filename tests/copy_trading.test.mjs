@@ -22,15 +22,15 @@ test('parser: both formats, dash quantities, monitor restart',()=>{
 });
 
 function venue({free=500}={}){
- const calls=[];let size=0,avg=0,id=1;
+ const calls=[];let size=0,avg=0,id=1,failStop=false,failMarket=false,unreal='-0.12';
  const client={
   leverage:async()=>({maxLongLeverage:20}),setMarginType:async()=>({}),setLeverage:async(s,side,l)=>{calls.push({op:'lev',l});return {}},
-  positions:async()=>size>0?[{symbol:'TNSR-USDT',positionAmt:String(-size),avgPrice:String(avg),markPrice:'0.053',unrealizedProfit:'-0.12'}]:[],
-  placeOrder:async p=>{calls.push({op:'order',...p});
+  positions:async()=>size>0?[{symbol:'TNSR-USDT',positionAmt:String(-size),avgPrice:String(avg),markPrice:'0.053',unrealizedProfit:unreal}]:[],
+  placeOrder:async p=>{if(failStop&&p.type==='STOP_MARKET')throw Object.assign(Error('rate'),{code:'HTTP_429'});if(failMarket&&p.type==='MARKET'&&p.reduceOnly)throw Object.assign(Error('rate'),{code:'HTTP_429'});calls.push({op:'order',...p});
    if(p.type==='MARKET'){const q=Number(p.quantity);if(p.reduceOnly){size=Math.max(0,+(size-q).toFixed(6))}else{avg=size?(avg*size+0.053*q)/(size+q):0.051;size=+(size+q).toFixed(6)}}
    return {order:{orderId:String(id++),avgPrice:'0.051'}}},
   cancelOrder:async(s,o)=>{calls.push({op:'cancel',o});return {}}};
- return {client,calls,setSize:v=>{size=v},get size(){return size}};
+ return {client,calls,setSize:v=>{size=v},get size(){return size},set failStop(v){failStop=v},set failMarket(v){failMarket=v},set unreal(v){unreal=v}};
 }
 const contract={symbol:'TNSRUSDT',venueSymbol:'TNSR-USDT',tickSize:'0.00001',quantityStep:'1',minQuantityBase:'1',minNotionalUSDT:2,tradable:true};
 const make=(v,extra={})=>new CopyExecutor({config:{...copyConfig({},'TESTNET'),...extra.config},client:v.client,contractOf:async()=>contract,
@@ -83,4 +83,28 @@ test('copy: ledger survives a restart; notices read well',async()=>{
  assert.match(copyEventText({type:'OPENED',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:98,avg:.051,stop:1.07}),/📋 카피 · TNSRUSDT 숏 5배 진입 \(테스트넷\)/);
  assert.match(copyEventText({type:'CLOSED',symbol:'TNSRUSDT',reason:'TRADER_CLOSE',netUSD:-.12,theirPnlUSD:1.72,adds:1}),/손익 −\$0\.12 .* 트레이더 \+\$1\.72/);
  fs.rmSync(dir,{recursive:true,force:true});
+});
+
+test('copy review fixes: new stop before the old is cancelled; no stop at all -> closed; failed close retried; ledger loss limit; small cuts follow',async()=>{
+ let v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});
+ await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
+ const iStop=v.calls.map((c,i)=>c.type==='STOP_MARKET'?i:-1).filter(i=>i>=0)[1],iCancel=v.calls.findIndex(c=>c.op==='cancel');
+ assert.ok(iStop<iCancel,'new stop placed before the old one is cancelled');
+ // The new stop fails after an add: the old stop stays, retried by the routine check.
+ v.failStop=true;await ex.handle({id:3,date:1e12,text:CHANGE(1760,3520)});
+ const p=ex.status().positions[0];assert.ok(p.stopOrderId,'old stop kept');assert.equal(p.stopStale,true);
+ v.failStop=false;await ex.reconcile();assert.equal(ex.status().positions[0].stopStale,false);
+ // A first stop that cannot be placed: the position is closed at market.
+ v=venue();ex=make(v);v.failStop=true;await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(v.size,0);assert.equal(ex.status().closed[0].closeReason,'NO_STOP');
+ // A close refused by the venue is retried.
+ v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.failMarket=true;await ex.handle({id:2,date:1e12,text:CLOSE});
+ assert.equal(v.size,98);assert.equal(ex.status().pending,1);v.failMarket=false;await ex.reconcile();assert.equal(v.size,0);assert.equal(ex.status().pending,0);
+ // Ledger loss limit: open loss -110 on 400 equity (25 %) closes everything and stops new copies.
+ v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.unreal='-110';await ex.reconcile();
+ assert.equal(v.size,0);assert.equal(ex.status().killed,true);await ex.handle({id:5,date:1e12,text:OPEN});assert.equal(v.size,0);
+ ex.resume();assert.equal(ex.status().killed,false);
+ // A 1-unit cut of a 3-unit position (trader 300 -> 200) is not lost to rounding down.
+ v=venue();ex=make(v,{config:{marginUSD:.03}});await ex.handle({id:1,date:1e12,text:OPEN});
+ const before=v.size;await ex.handle({id:2,date:1e12,text:CHANGE(300,200)});assert.equal(before-v.size,Math.round(before/3));
 });

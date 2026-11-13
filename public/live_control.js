@@ -134,16 +134,17 @@ const SERIOUS_KO={ENTRY_OUTCOME_UNKNOWN:'진입 결과 불명',STATUS_UNKNOWN:'�
 /** Copy-trading ledger (copy_executor.mjs): open copies, recent closes, recent skips/problems. */
 const COPY_WHY={MARGIN_SHORT:'여유 증거금 부족',SYMBOL_BUSY:'같은 종목 보유 중',SYMBOL_HELD_BY_SIGNAL_STRATEGY:'신호 전략이 같은 종목 보유 중',OPPOSITE_COPY_OPEN:'반대 방향 보유 중',
  MONITOR_RESTART_SNAPSHOT:'채널 재시작 직후 기존 포지션 재알림',LIVE_DISARMED:'실매매 비활성',KILL_SWITCH:'긴급 정지 중',NOT_TESTNET:'테스트넷 아님',NO_BINGX_CONTRACT:'BingX에 없는 종목',
- NOT_COPIED:'따라 들어가지 않은 포지션',QUANTITY_INVALID:'수량 계산 불가',NO_BALANCE:'잔고 조회 실패',HTTP_429:'요청 과다(잠시 후 재시도)'};
+ NOT_COPIED:'따라 들어가지 않은 포지션',QUANTITY_INVALID:'수량 계산 불가',NO_BALANCE:'잔고 조회 실패',HTTP_429:'요청 과다(잠시 후 재시도)',COPY_MARGIN_CAP:'카피 전체 증거금 한도',COPY_LOSS_LIMIT:'카피 손실 한도로 정지',LOSS_CAP_REACHED:'손실 한도 도달',NO_STOP:'보호 손절 실패로 청산'};
 export function copyHTML(c){
  if(!c)return '';
  const money=v=>v==null?'—':`${v>=0?'+':'−'}$${Math.abs(v).toFixed(2)}`,cls=v=>v>0?'paper-profit':v<0?'paper-loss':'';
  const open=c.positions||[],closed=c.closed||[],net=closed.reduce((a,x)=>a+(Number(x.netUSD)||0),0),wins=closed.filter(x=>x.netUSD>0).length;
- const head=`<div class="copy-stats"><span>상태<b>${c.enabled?'켜짐':'꺼짐'}</b></span><span>첫 증거금<b>$${esc(c.marginUSD)}</b></span><span>보호 손절<b>잔고 ${esc(c.maxLossPct)}%</b></span><span>보유<b>${open.length}개</b></span><span>종료<b>${closed.length}건</b></span><span>승률<b>${closed.length?Math.round(wins/closed.length*100)+'%':'—'}</b></span><span>누적 손익<b class="${cls(net)}">${money(net)}</b><small>수수료 전 추정</small></span></div>`;
+ const head=`<div class="copy-stats"><span>상태<b>${c.enabled?'켜짐':'꺼짐'}</b></span><span>첫 증거금<b>$${esc(c.marginUSD)}</b></span><span>보호 손절<b>포지션당 잔고 ${esc(c.maxLossPct)}%</b></span><span>전체 한도<b>증거금 ${esc(c.maxTotalMarginPct)}% · 손실 ${esc(c.ledgerLossPct)}%</b></span><span>보유<b>${open.length}개</b></span><span>종료<b>${closed.length}건</b></span><span>승률<b>${closed.length?Math.round(wins/closed.length*100)+'%':'—'}</b></span><span>누적 손익<b class="${cls(net)}">${money(net)}</b><small>수수료 전 추정</small></span></div>`;
  const row=p=>`<li><b>${esc(p.symbol)}</b> ${side(p.direction)} <span>${esc(p.leverage)}배</span> <span>수량 ${esc(p.qty)}${p.avg?` · 평균 ${esc(p.avg)}`:''}</span> <span>추매 ${esc(p.adds||0)}회</span>${p.unrealized!=null?` <b class="${cls(p.unrealized)}">${money(p.unrealized)}</b>`:''}${p.stop?` <small>보호 손절 ${esc(p.stop)}</small>`:''}</li>`;
  const done=x=>`<li><b>${esc(x.symbol)}</b> ${side(x.direction)} <span>추매 ${esc(x.adds||0)}회</span> <b class="${cls(x.netUSD)}">${money(x.netUSD)}</b>${x.theirPnlUSD!=null?` <small>트레이더 ${money(x.theirPnlUSD)}</small>`:''} <small>${esc(x.closeReason==='TRADER_CLOSE'?'트레이더 청산':x.closeReason==='STOP_OR_EXTERNAL'?'보호 손절·외부 청산':x.closeReason||'')}</small></li>`;
  const notes=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET'].includes(e.type)).slice(0,5);
- return head+(open.length?`<ul class="copy-list">${open.map(row).join('')}</ul>`:'<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 1달러 증거금으로 들어갑니다.</p>')+
+ const kill=c.killed?`<p class="live-warn-text">카피 손실 한도(잔고 ${esc(c.ledgerLossPct)}%)에 닿아 모두 청산하고 멈췄습니다. <button type="button" class="outline-btn small" data-copy-resume>카피 다시 시작</button></p>`:'';
+ return kill+head+(open.length?`<ul class="copy-list">${open.map(row).join('')}</ul>`:'<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 1달러 증거금으로 들어갑니다.</p>')+
   (closed.length?`<h5 class="copy-sub">최근 종료</h5><ul class="copy-list">${closed.slice(0,10).map(done).join('')}</ul>`:'')+
   (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li>${esc(e.symbol||'')} · ${esc(COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}</li>`).join('')}</ul>`:'');
 }
@@ -181,6 +182,7 @@ function render(o){
  }
  if($('livePositionCount'))$('livePositionCount').textContent=`${o.positions?.length||0}개`;
  if($('liveSummary'))$('liveSummary').innerHTML=summaryHTML(o.summary);
+ if($('liveCopy')&&!$('liveCopy').dataset.bound){$('liveCopy').dataset.bound='1';$('liveCopy').addEventListener('click',async e=>{if(!e.target.closest('[data-copy-resume]'))return;try{await fetch('/api/copy/resume',{method:'POST'})}catch{}})}
  if($('liveCopySection')){$('liveCopySection').hidden=!o.copy;if(o.copy&&$('liveCopy'))$('liveCopy').innerHTML=copyHTML(o.copy)}
  if($('liveClosed'))$('liveClosed').innerHTML=o.closed?.length?o.closed.map(closedCardHTML).join(''):'<p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p>';
  if($('liveSkipped'))$('liveSkipped').innerHTML=skippedHTML(o.skipped);

@@ -5,3 +5,7 @@ backtest_output.txt
 # Diagnostic reports written next to the program
 scanner_diagnostics.txt
 scan_universe.csv
+
+# Python bytecode
+__pycache__/
+*.pyc

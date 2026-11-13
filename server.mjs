@@ -261,7 +261,8 @@ const COPY=copyConfig(process.env,LIVE.mode);
 copyTrader=new CopyExecutor({config:COPY,client:live.clients.BINGX,
  contractOf:async symbol=>(await venueQuotes.clients.BINGX.loadContracts()).get(symbol)??null,
  gate:()=>LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
- isBusy:symbol=>live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol),
+ // Also a symbol the live executor is entering right now (busy), not only recorded positions.
+ isBusy:symbol=>live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol),
  balance:()=>live.accountFunds('BINGX'),directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
 if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
 function copyNotice(e){
@@ -1274,6 +1275,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
   if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,copyTrader.status());
+  if(pathname==='/api/copy/resume'&&req.method==='POST')return response(res,200,copyTrader.resume());
   // From the local channel listener only: a shared token (COPY_LISTENER_TOKEN in .env), compared in constant time.
   if(pathname==='/api/copy/message'&&req.method==='POST'){
    const token=String(req.headers['x-copy-token']||''),want=String(process.env.COPY_LISTENER_TOKEN||'');
