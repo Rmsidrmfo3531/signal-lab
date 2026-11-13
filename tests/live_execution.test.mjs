@@ -108,7 +108,9 @@ test('configuration defaults are OFF and conservative; LIVE needs the confirmati
  {const l=liveConfig({LIVE_TRADING_MODE:'LIVE'});assert.deepEqual([l.riskProfile,l.maxLossPct,l.dailyMaxLossPct,l.maxOpen],['CURRENT',30,60,0])}
  {const c=liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_RISK_PROFILE:'current'});assert.deepEqual([c.riskProfile,c.maxLossPct,c.maxOpen],['CURRENT',30,0])}
  // No count limit by default (user, 2026-11-13); LIVE_MAX_OPEN_POSITIONS=N brings it back.
- assert.deepEqual([liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxOpen,liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxPerDirection],[6,3]);
+ assert.deepEqual([liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxOpen,liveConfig({LIVE_MAX_OPEN_POSITIONS:'6'}).maxPerDirection],[4,2],'the profile is a ceiling');
+ assert.deepEqual([liveConfig({LIVE_MAX_OPEN_POSITIONS:'6',LIVE_TRADING_MODE:'LIVE'}).maxOpen],[6]);
+ assert.equal(liveConfig({LIVE_DAILY_MAX_LOSS_PCT:'2'}).dailyMaxLossPct,2,'a stricter single value is kept');
  assert.equal(liveConfig({LIVE_MAX_OPEN_POSITIONS:'0'}).maxOpen,4,'0 = no explicit count: the conservative profile keeps 4');
  assert.equal(liveConfig({LIVE_MAX_OPEN_POSITIONS:'0',LIVE_TRADING_MODE:'LIVE'}).maxOpen,0);
  assert.deepEqual([liveConfig({LIVE_SIZING:'risk_usd'}).maxOpen,liveConfig({LIVE_SIZING:'risk_usd'}).maxPerDirection],[4,2],'RISK_USD has no open-risk cap: keeps the count');
