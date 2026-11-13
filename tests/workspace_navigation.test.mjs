@@ -27,16 +27,18 @@ test('hash routing keeps panels mounted and routes chart aliases to overview',()
  const mkLink=hash=>({hash,attributes:{},classList:{flags:new Set(),toggle(k,v){if(v)this.flags.add(k);else this.flags.delete(k)}},
   getAttribute(k){return k==='href'?hash:null},setAttribute(k,v){this.attributes[k]=v},removeAttribute(k){delete this.attributes[k]}});
  const links=routes.map(r=>mkLink('#'+r)).concat(mkLink('#chartPanel'));
- const heading={innerHTML:'<span>기본 대시보드</span>',textContent:''},eyebrow={textContent:'BINANCE SIGNAL MONITOR'};
+ const heading={innerHTML:'<span>기본 대시보드</span>',textContent:''},eyebrow={textContent:'BINANCE SIGNAL MONITOR'},intro={textContent:'기본 설명'},crumb={textContent:''};
  const sidebar={classList:{remove(){}}},chart={scrollIntoView(){}};
  const window={location:{hash:'#scanner'},handlers:{},scrollTo(){},dispatchEvent(){},requestAnimationFrame(fn){fn()},
   addEventListener(k,fn){this.handlers[k]=fn}};
  const document={title:'',querySelectorAll(s){if(s==='.content > [data-workspace-route]')return sections;
    if(s==='.navlink, .mobile-bottom-nav a')return links;throw Error(s)},
-  querySelector(s){if(s==='.page-head h1')return heading;if(s==='.page-head .eyebrow')return eyebrow;throw Error(s)},
-  getElementById(id){if(id==='sidebar')return sidebar;if(id==='chartPanel')return chart;return null}};
+  querySelector(s){if(s==='.page-head h1')return heading;if(s==='.page-head .eyebrow')return eyebrow;if(s==='.page-head .intro')return intro;throw Error(s)},
+  getElementById(id){if(id==='sidebar')return sidebar;if(id==='chartPanel')return chart;if(id==='crumbPage')return crumb;return null}};
  vm.runInNewContext(script,{document,window,Event:class{}});
  assert.equal(sections.filter(s=>!s.hidden).length,1);
+ // Each page names itself once: breadcrumb and intro follow the page, no repeated eyebrow.
+ assert.equal(crumb.textContent,'실매매');assert.match(intro.textContent,/BingX 주문 상태/);assert.equal(eyebrow.hidden,true);
  // An old #scanner bookmark opens 실매매 (the scanner page was removed).
  assert.equal(sections.find(s=>!s.hidden).dataset.workspaceRoute,'live');
  assert.equal(links[1].attributes['aria-current'],'page');

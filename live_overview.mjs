@@ -1,4 +1,4 @@
-import {tradeHorizon} from './trade_horizon.mjs';
+import {tradeHorizon,holdTier} from './trade_horizon.mjs';
 // Read-only view of the live / testnet executor for the 실매매 screen: open positions as cards,
 // closed trades with their realized result, a summary and the recent skip reasons in Korean.
 // Pure functions: no network, no keys, no order changes. Numbers the venue did not give are
@@ -81,6 +81,8 @@ export function liveClosedView(record,now=Date.now()){
   :{source:r.source,netUSD:num(r.netUSD),pnlUSD:num(r.pnlUSD),feeUSD:num(r.feeUSD),fundingUSD:num(r.fundingUSD),takerRate:num(r.takerRate)};
  return {signalKey:record.signalKey,deletable:record.deletable===true,symbol:record.symbol,asset:asset(record.symbol),venue:record.venue,mode:record.mode,direction:record.direction,
   pattern:record.signal?.pattern??null,horizon:tradeHorizon(record.signal?.pattern),leverage:pos(record.leverage),
+  holdHours:record.closedAt>0&&record.createdAt>0?Math.round((record.closedAt-record.createdAt)/360000)/10:null,
+  actualHorizon:record.closedAt>0&&record.createdAt>0?holdTier((record.closedAt-record.createdAt)/3600000):null,
   createdAt:record.createdAt??null,closedAt:record.closedAt??null,closeReason:record.closeReason??null,closeReasonKo:LIVE_CLOSE_KO[record.closeReason]||record.closeReason||'종료',
   firstEntryPrice:pos(record.firstEntryPrice),averageEntryPrice:pos(record.position?.entryPrice)??pos(record.firstEntryPrice),
   adds:{filled:adds.filter(a=>a.filled).length,max:adds.length},stop:pos(record.stop),targets:Array.isArray(record.targets)?record.targets.map(pos):[],
