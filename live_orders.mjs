@@ -15,13 +15,17 @@ const positive=x=>typeof x==='number'&&Number.isFinite(x)&&x>0;
 //  CONSERVATIVE — 1 % of the balance per trade (loss at the stop with every add filled), 3 % a day,
 //                 4 open positions (2 per direction); adds are dropped until the plan fits.
 //  CURRENT      — the earlier values (30 % per trade, 60 % a day, no position count limit).
-// TESTNET and OFF use CONSERVATIVE; LIVE keeps CURRENT until the user approves the change.
-// LIVE_RISK_PROFILE=CURRENT|CONSERVATIVE overrides; the profile wins over DCA_MAX_LOSS_PCT and
+//  GROWTH       — 3 % per trade, 9 % open risk / day, 8 positions (4 per direction): about the top
+//                 return of the HYBRID grid (research/hybrid_grid.mjs, +49 % vs +51 % median a year) with
+//                 a smaller drawdown (17.6 % vs 25.5 %); user approved 2026-11-13. Worst trade about 5 %.
+// TESTNET and OFF use GROWTH; LIVE keeps CURRENT until the user approves the change.
+// LIVE_RISK_PROFILE=CURRENT|CONSERVATIVE|GROWTH overrides; the profile wins over DCA_MAX_LOSS_PCT and
 // LIVE_DAILY_MAX_LOSS_PCT unless they are stricter; LIVE_MAX_OPEN_POSITIONS may only lower the count.
-export const RISK_PROFILES=Object.freeze({CONSERVATIVE:Object.freeze({maxLossPct:1,dailyMaxLossPct:3,maxOpen:4,maxPerDirection:2})});
+export const RISK_PROFILES=Object.freeze({CONSERVATIVE:Object.freeze({maxLossPct:1,dailyMaxLossPct:3,maxOpen:4,maxPerDirection:2}),
+ GROWTH:Object.freeze({maxLossPct:3,dailyMaxLossPct:9,maxOpen:8,maxPerDirection:4})});
 export function liveConfig(env=process.env){
  const base=liveConfigBase(env),asked=String(env.LIVE_RISK_PROFILE||'').toUpperCase();
- const riskProfile=['CURRENT','CONSERVATIVE'].includes(asked)?asked:base.mode==='LIVE'?'CURRENT':'CONSERVATIVE';
+ const riskProfile=['CURRENT','CONSERVATIVE','GROWTH'].includes(asked)?asked:base.mode==='LIVE'?'CURRENT':'GROWTH';
  // Strategy profile (stage 5, 2026-11-13): TESTNET / OFF trade HYBRID — the first quantity worked
  // back from the risk limit (loss at the stop with every add filled = maxLossPct of the balance),
  // adds 1·1·2·4 (3 adds) at volume zones — the best profile of the train / validation backtest.
@@ -31,10 +35,10 @@ export function liveConfig(env=process.env){
  const strategyProfile=['CURRENT','HYBRID'].includes(askedStrategy)?askedStrategy:base.mode==='LIVE'?'CURRENT':'HYBRID';
  const hybridMaxAdds=clampMaxAdds(env.LIVE_HYBRID_MAX_ADDS,3);
  base.strategyProfile=strategyProfile;base.hybridMaxAdds=hybridMaxAdds;
- if(!(riskProfile==='CONSERVATIVE'&&base.sizing==='BALANCE'))return {...base,riskProfile};
+ if(!(RISK_PROFILES[riskProfile]&&base.sizing==='BALANCE'))return {...base,riskProfile};
  // An explicit LIVE_MAX_OPEN_POSITIONS=N (N > 0) still sets the count; otherwise the profile's 4.
  // The profile is a ceiling: a stricter single value (e.g. LIVE_DAILY_MAX_LOSS_PCT=2) is kept.
- const P=RISK_PROFILES.CONSERVATIVE,count=base.maxOpen>0?{maxOpen:Math.min(base.maxOpen,P.maxOpen),maxPerDirection:Math.min(base.maxPerDirection,P.maxPerDirection)}:{maxOpen:P.maxOpen,maxPerDirection:P.maxPerDirection};
+ const P=RISK_PROFILES[riskProfile],count=base.maxOpen>0?{maxOpen:Math.min(base.maxOpen,P.maxOpen),maxPerDirection:Math.min(base.maxPerDirection,P.maxPerDirection)}:{maxOpen:P.maxOpen,maxPerDirection:P.maxPerDirection};
  return {...base,maxLossPct:Math.min(base.maxLossPct,P.maxLossPct),dailyMaxLossPct:Math.min(base.dailyMaxLossPct,P.dailyMaxLossPct),...count,riskProfile};
 }
 function liveConfigBase(env){
