@@ -26,7 +26,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:30,ledgerLossPct:50});
+export const COPY_DEFAULTS=Object.freeze({backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:30,ledgerLossPct:50});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -46,6 +46,7 @@ export function copyConfig(env=process.env,liveMode='OFF'){
   // when their open loss reaches COPY_LEDGER_LOSS_PCT of the equity everything is closed and copying stops.
   // Up to COPY_MAX_ADDS adds are followed (user 2026-11-13: 10); the position is closed when the price
   // closes beyond the stop zone on a 15m candle whose volume is COPY_BREAK_VOLUME_MULT x its 20-candle average.
+  backstopPct:n('COPY_BACKSTOP_PCT',COPY_DEFAULTS.backstopPct,5,90),
   maxAdds:n('COPY_MAX_ADDS',COPY_DEFAULTS.maxAdds,0,100),breakVolumeMult:n('COPY_BREAK_VOLUME_MULT',COPY_DEFAULTS.breakVolumeMult,1,10),
   stopMinPct:n('COPY_STOP_MIN_PCT',COPY_DEFAULTS.stopMinPct,.5,80),stopMaxPct:n('COPY_STOP_MAX_PCT',COPY_DEFAULTS.stopMaxPct,1,95),stopBufferPct:n('COPY_STOP_BUFFER_PCT',COPY_DEFAULTS.stopBufferPct,0,5),
   maxTotalMarginPct:n('COPY_MAX_TOTAL_MARGIN_PCT',COPY_DEFAULTS.maxTotalMarginPct,1,100),ledgerLossPct:n('COPY_LEDGER_LOSS_PCT',COPY_DEFAULTS.ledgerLossPct,1,90)};
@@ -106,28 +107,34 @@ export class CopyExecutor{
   const now=await this.#position(p);p.qty=now.size;if(now.avg)p.avg=now.avg;
   if(!(p.qty>0))return;
   const bal=await this.balance().catch(()=>null),equity=pos(bal?.equity);
-  if(!equity||!p.avg){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'NO_BALANCE'});if(!p.stopOrderId)await this.#emergency(p,'NO_STOP');return}
-  const dir=p.direction==='LONG'?1:-1,cap=p.avg-dir*(equity*this.config.maxLossPct/100)/p.qty;
-  // The exchange stop is the balance cap (it works even if this server is down); the volume zone is
-  // watched by the routine check and exits only on a break with rising volume (user 2026-11-13).
-  const raw=cap>0?cap:null;p.stopSource='BALANCE_CAP';
-  if(!(raw>0)){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}p.stop=null;p.stopOrderId=null;p.stopStale=false;return} // a long whose loss cannot reach the cap
-  let stop;try{stop=Number(roundDecimalToStep(raw,p.tickSize,dir===1?'DOWN':'UP'))}catch{stop=raw}
-  if(now.mark&&dir*(now.mark-stop)<=0){this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'LOSS_CAP_REACHED'});await this.#emergency(p,'LOSS_CAP_REACHED');return}
-  let res;
-  try{res=orderOf(await this.client.placeOrder({symbol:p.venueSymbol,side:dir===1?'SELL':'BUY',positionSide:'BOTH',type:'STOP_MARKET',stopPrice:String(stop),closePosition:'true',workingType:'MARK_PRICE'}))}
-  catch(error){
-   // A venue that refuses a second close-position stop (not a rate limit): swap them the other way —
-   // cancel the old one, then place the new one; if that fails too, the position is closed.
-   if(p.stopOrderId&&error.code!=='HTTP_429'){
-    try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId);p.stopOrderId=null;
-     res=orderOf(await this.client.placeOrder({symbol:p.venueSymbol,side:dir===1?'SELL':'BUY',positionSide:'BOTH',type:'STOP_MARKET',stopPrice:String(stop),closePosition:'true',workingType:'MARK_PRICE'}));
-     p.stop=stop;p.stopOrderId=res?.orderId??null;p.stopStale=false;return}
-    catch(e2){this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e2.code||e2.message});if(!p.stopOrderId)await this.#emergency(p,'NO_STOP');else p.stopStale=true;return}
-   }
-   p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:error.code||error.message});if(!p.stopOrderId)await this.#emergency(p,'NO_STOP');return}
-  const old=p.stopOrderId;p.stop=stop;p.stopOrderId=res?.orderId??null;p.stopStale=false;
-  if(old&&old!==p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
+  const dir=p.direction==='LONG'?1:-1,avg=p.avg||now.mark;
+  if(!avg){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'NO_PRICE'});return}
+  // The exchange stop is a backstop (it works even if this server is down); the volume zone is the
+  // exit the routine check acts on (break with rising volume, user 2026-11-13). Backstop = the tighter
+  // of the balance cap (loss = maxLossPct of the equity) and COPY_BACKSTOP_PCT (50 %) from the average:
+  // a small copy's balance cap can sit several times the price away, which the venue refuses (NO_STOP
+  // seen on the testnet 2026-11-13). If the venue still refuses, closer distances are tried.
+  const capDist=equity?(equity*this.config.maxLossPct/100)/p.qty/avg:Infinity;
+  const tries=[...new Set([Math.min(capDist,this.config.backstopPct/100),.3,.2].filter(d=>d>0&&d<=Math.min(capDist,this.config.backstopPct/100)+1e-12))];
+  if(!tries.length)tries.push(Math.min(capDist,.2));
+  let last=null;
+  for(const d of tries){
+   const raw=dir===1?avg*(1-d):avg*(1+d);if(!(raw>0))continue;
+   let stop;try{stop=Number(roundDecimalToStep(raw,p.tickSize,dir===1?'DOWN':'UP'))}catch{stop=raw}
+   if(now.mark&&dir*(now.mark-stop)<=0){this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'LOSS_CAP_REACHED'});await this.#emergency(p,'LOSS_CAP_REACHED');return}
+   // Same request shape as the signal strategy's whole-position stop (quantity + closePosition).
+   const params={symbol:p.venueSymbol,side:dir===1?'SELL':'BUY',positionSide:'BOTH',type:'STOP_MARKET',quantity:String(p.qty),stopPrice:String(stop),closePosition:'true',workingType:'MARK_PRICE'};
+   try{const res=orderOf(await this.client.placeOrder(params));const old=p.stopOrderId;
+    p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopOrderId=res?.orderId??null;p.stopStale=false;
+    if(old&&old!==p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
+    return}
+   catch(error){last=error;if(error.code==='HTTP_429')break}
+  }
+  // Nothing placed. An old stop is never cancelled for this: it is a close-position stop, so it still
+  // protects the whole (larger) position — kept, and the routine check tries again. (A venue that
+  // refuses a second close-position stop simply keeps the first one.)
+  p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:last?.code||last?.message||'UNKNOWN',detail:String(last?.message||'').slice(0,160)});
+  if(!p.stopOrderId&&last?.code!=='HTTP_429')await this.#emergency(p,'NO_STOP');
  }
  /** The volume-zone stop for a new position (null: none fits). zones: [{priceLow, priceHigh}]. */
  zoneStop({direction,entry,zones}){
