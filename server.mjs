@@ -2,6 +2,7 @@ import http from 'node:http';
 import {exec,execFile} from 'node:child_process';
 import {gitUpdateAvailable,gitCheck,gitApply} from './git_update.mjs';
 import {liveReadiness,readinessText} from './live_readiness.mjs';
+import {articleDetail} from './news_article.mjs';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -1265,6 +1266,13 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/market-commentary'){
    try{await refreshMarketStats()}catch{}
    return response(res,200,buildMarketCommentary(rawMarketTickers,{now:Date.now(),receivedAt:marketStatsReceivedAt,eligibleSymbols:state.activeSymbols,dataSource:'BINANCE_FUTURES_PUBLIC_24H'}));
+  }
+  // One article's main text (fetched when opened, from the RSS sources' own sites) in Korean.
+  if(pathname==='/api/news/detail'&&req.method==='GET'){
+   const id=url.searchParams.get('id')||'',article=(state.news||[]).find(n=>n.id===id);
+   if(!article)return response(res,404,{ok:false,error:'NOT_FOUND'});
+   const translate=CONFIG.translationURL?translateArticle:CONFIG.newsTranslation===true?googleTranslate:undefined;
+   return response(res,200,await articleDetail(article,{translate}));
   }
   if(pathname==='/api/news')return response(res,200,{status:state.newsStatus,checked:state.newsChecked,sourceCount:state.newsSources.length,error:state.newsError,translation:state.newsTranslation??null,articles:state.news});
   if(pathname==='/api/journal'&&req.method==='GET')return response(res,200,{entries:persisted.journal.slice(0,200),summary:journalSummary(persisted.journal)});

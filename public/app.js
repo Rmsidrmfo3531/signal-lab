@@ -190,6 +190,23 @@ function volumeTargetHTML(row,{compact=false}={}){
  const targets=plan.targets.map((price,i)=>{const part=plan.parts?.[i],ratio=Number.isFinite(part?.fraction)?(part.fraction*100).toFixed(0)+'%':'비율 미확인';return `<div class="tp-line"><b>TP${i+1} ${fmt(price)}</b><span>${ratio} 청산${Number.isFinite(part?.quantity)?' · 수량 '+fmt(part.quantity):''}</span>${!compact&&part?.zone?`<small>매물대 ${fmt(part.zone.priceLow)} ~ ${fmt(part.zone.priceHigh)} 직전</small>`:part?.source==='R_MULTIPLE'?`<small>매물대 없음 · ${escapeHtml(part.rMultiple)}R 지점</small>`:''}</div>`}).join('');
  return `<div class="tp-list volume-targets">${targets}<small>예상 TP1 순손익비 ${rr} · 체결·비용 가정</small><details class="volume-evidence"><summary>매물대 계산 근거</summary><p>${escapeHtml(source)} · ${dateClock(evidence.windowStart)} ~ ${dateClock(evidence.windowEnd)} KST<br>커버리지 ${coverage} · ${Number.isFinite(evidence.candles)?'15분봉 '+escapeHtml(evidence.candles)+'개':'체결 '+escapeHtml(evidence.uniqueTrades??evidence.tradeCount??'미확인')+'건'} · 갱신 ${dateClock(evidence.generatedAt??evidence.receivedAt)} KST</p><p>POC ${fmt(evidence.poc?.price)} · Value Area ${fmt(evidence.valueArea?.low)} ~ ${fmt(evidence.valueArea?.high)}<br>HVN ${(evidence.hvn||[]).map(zone=>fmt(zone.price)).join(' / ')||'미확인'}</p><small>${evidence.dataSource==='BINANCE_KLINES_15M'?'15분봉 거래량을 고가~저가에 고르게 나눈 근사치입니다.':'1H 봉 거래량을 가격별 체결량으로 바꾸지 않습니다.'} 기존 거래의 TP/SL은 변경하지 않습니다.</small></details></div>`;
 }
+// Article body: fetched from the publisher when an item is opened, translated to Korean.
+const newsBodies=new Map();
+function newsBodyHTML(id){
+ const b=newsBodies.get(id);
+ if(!b)return '<p class="news-body-wait">본문을 불러오는 중입니다…</p>';
+ if(!b.ok)return `<p class="news-body-wait">본문을 가져오지 못했습니다 (${escapeHtml(b.error||'오류')}). 아래 원문 링크에서 확인해 주세요.</p>`;
+ const ko=b.paragraphsKo,en=b.paragraphs||[];
+ return (ko||en).map(p=>`<p>${escapeHtml(p)}</p>`).join('')+(ko?`<details class="news-original"><summary>영문 원문 보기</summary>${en.map(p=>`<p>${escapeHtml(p)}</p>`).join('')}</details>`:'<p class="news-body-wait">번역을 하지 못해 영문으로 표시합니다.</p>');
+}
+async function loadNewsBody(id){
+ if(!id||newsBodies.has(id))return;
+ newsBodies.set(id,null);
+ let b;try{const r=await fetch('/api/news/detail?id='+encodeURIComponent(id),{cache:'no-store'});b=await r.json()}catch{b={ok:false,error:'연결 실패'}}
+ newsBodies.set(id,b);while(newsBodies.size>60)newsBodies.delete(newsBodies.keys().next().value);
+ const host=document.querySelector(`[data-news-body="${CSS.escape(id)}"]`);if(host)host.innerHTML=newsBodyHTML(id);
+}
+if(typeof document!=='undefined')document.addEventListener('toggle',e=>{const d=e.target;if(d?.classList?.contains('news-entry')&&d.open)void loadNewsBody(d.dataset.newsId)},true);
 function renderAnalysis(){
 // Score factor values: short readable numbers, objects as "이름 값" pairs (never [object Object]).
 const FACTOR_KO={adx:'ADX',plusDI:'+DI',minusDI:'-DI',histogram:'히스토그램',previousHistogram:'직전',ratio:'거래량 배수',requiredRatio:'기준',atr:'ATR',priceFraction:'가격 대비',bodyFraction:'몸통 비율',closePosition:'종가 위치',pattern:'패턴',directionConfirmed:'방향 확인'};
@@ -529,7 +546,7 @@ function renderNews(){
   const detailLink=safeLink?`<a class="news-detail-link" href="${safeLink}" target="_blank" rel="noopener noreferrer">기사 원문 전체 보기 ↗</a>`:'';
   return `<details class="news-entry" data-news-id="${escapeHtml(n.id)}" ${app.expandedNewsId===n.id?'open':''}>
     <summary class="news-entry-head"><span class="news-main"><span class="news-title">${escapeHtml(title)}</span><span class="news-summary">${summaryText}</span><span class="news-meta"><span class="news-tag ${escapeHtml(n.tone)}">${toneLabel}</span><span>${escapeHtml(n.source)}</span><span class="news-translation-state">${escapeHtml(translationLabel)}</span><span>${dateClock(n.published)} KST</span>${n.impact==='high'?'<span>주요 키워드</span>':''}${n.symbols?.length?`<span>${escapeHtml(n.symbols.join(', '))}</span>`:''}</span></span><span class="news-open-hint">상세 보기 <span aria-hidden="true">⌄</span></span></summary>
-    <div class="news-detail"><div class="news-detail-heading">제공처 RSS 기사 설명 · 발췌</div><p>${sourceText}</p><details class="news-original"><summary>원문 제목·요약·제공 발췌</summary><strong>${escapeHtml(n.original?.title??n.originalTitle??n.title)}</strong><p>${escapeHtml(n.original?.summary??n.originalSummary??n.summary??'')}</p><p>${escapeHtml(n.original?.detail??n.originalDetail??n.detail??'')}</p></details>${n.translation?.errorCode||n.translation?.error?`<p class="news-translation-error">번역 상태: ${escapeHtml(n.translation.errorCode??n.translation.error)}</p>`:''}<div class="news-detail-foot"><span>원문·번역은 제공처 RSS 발췌 범위만 표시합니다. 번역 오류는 원문으로 표시하며 가격 전망이나 사건 원인을 만들지 않습니다.</span>${detailLink}</div></div>
+    <div class="news-detail"><div class="news-detail-heading">기사 본문 · 한국어 번역 (앞부분 발췌)</div><div class="news-body" data-news-body="${escapeHtml(n.id)}">${newsBodyHTML(n.id)}</div><details class="news-original"><summary>RSS 요약</summary><p>${sourceText}</p></details><details class="news-original"><summary>원문 제목·요약·제공 발췌</summary><strong>${escapeHtml(n.original?.title??n.originalTitle??n.title)}</strong><p>${escapeHtml(n.original?.summary??n.originalSummary??n.summary??'')}</p><p>${escapeHtml(n.original?.detail??n.originalDetail??n.detail??'')}</p></details>${n.translation?.errorCode||n.translation?.error?`<p class="news-translation-error">번역 상태: ${escapeHtml(n.translation.errorCode??n.translation.error)}</p>`:''}<div class="news-detail-foot"><span>원문·번역은 제공처 RSS 발췌 범위만 표시합니다. 번역 오류는 원문으로 표시하며 가격 전망이나 사건 원인을 만들지 않습니다.</span>${detailLink}</div></div>
    </details>`;
  }).join(''):'<div class="empty-small" style="padding:24px">필터에 해당하는 기사가 없거나 RSS 수신이 지연되고 있습니다.</div>';
  const m=app.newsMeta||{};

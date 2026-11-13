@@ -688,3 +688,5 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .readiness-checks li i{font-style:normal;width:12px;color:var(--dim)}
 .readiness-checks li.ok i{color:var(--up)}
 .readiness-checks li small{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
+.news-body p{margin:0 0 10px;line-height:1.75;font-size:13.5px;color:var(--text)}
+.news-body .news-body-wait{color:var(--dim);font-size:12px}
