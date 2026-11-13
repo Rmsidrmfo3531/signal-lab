@@ -179,8 +179,8 @@ test('copy review: the trader total follows the trader even when our buy is skip
 });
 
 test('copy BALANCE_RATIO: the trader quantity x our equity / 20,000 $, no 1 $ floor; each cut has its own order id',async()=>{
- // Default (user 2026-11-14): balance ratio, up to 100 % of the equity as margin.
- assert.equal(copyConfig({},'TESTNET').sizing,'BALANCE_RATIO');assert.equal(copyConfig({},'TESTNET').maxTotalMarginPct,100);assert.equal(copyConfig({},'TESTNET').marginUSD,1);
+ // Default (user 2026-11-14 04:30): 1 $ first margin, up to 100 % of the equity as margin.
+ assert.equal(copyConfig({},'TESTNET').sizing,'FIRST_1USD');assert.equal(copyConfig({},'TESTNET').maxTotalMarginPct,100);assert.equal(copyConfig({},'TESTNET').marginUSD,1);
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const v=venue();const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_MAX_TOTAL_MARGIN_PCT:'30'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // 880 x 400 / 20,000 = 17.6 -> 17 coins (0.87 $ of notional... venue minimum 2 $ -> raised to the minimum).
