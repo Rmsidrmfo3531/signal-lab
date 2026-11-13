@@ -25,7 +25,9 @@ export function liveConfig(env=process.env){
   dailyMaxLossPct:num('LIVE_DAILY_MAX_LOSS_PCT',60,1,100),
   // Size from at most this much of the account (0 = the whole balance). Lets a testnet with 100,000
   // virtual USDT trade like the real $400 account, or a live account use only part of its funds.
-  balanceCapUSD:num('LIVE_BALANCE_CAP_USD',0,0,10000000)};
+  balanceCapUSD:num('LIVE_BALANCE_CAP_USD',0,0,10000000),
+  // First-entry margin floor (user, 2026-11-13): at least this much margin per unit; 0 = off.
+  minUnitMarginUSD:num('LIVE_MIN_UNIT_MARGIN_USD',1,0,1000)};
 }
 
 /** Deterministic client order id from the signal key: the same signal can never be sent twice. */
@@ -70,7 +72,10 @@ export function liveSplitPlan({row,balanceUSD,leverage,sizeScale=1,config}){
  if(!c||!positive(balanceUSD)||!positive(entry)||!positive(leverage))return null;
  const g=venueGrid(c),tick=Number(c.tickSize),minBase=Number(c.minQuantityBase)||0;
  if(!positive(g.step)||!positive(tick))return null;
- const unitPct=config.unitPct*sizeScale;
+ // Unit margin = balance × unitPct × sizeScale, never below the margin floor (user, 2026-11-13).
+ // The per-trade worst-loss cap below and the open-risk cap in the executor still bound it.
+ const floorPct=positive(config.minUnitMarginUSD)?config.minUnitMarginUSD/balanceUSD*100:0;
+ const unitPct=Math.min(100,Math.max(config.unitPct*sizeScale,floorPct));
  for(const set of inp?.zoneSets||[]){
   const d=planZoneDca({direction:row.direction,entry,atr:inp.atr,zones:set.zones,balanceUSD,leverage,unitPct,tickSize:tick,quantityStep:g.step,
    minQuantity:minBase,minNotional:Number(c.minNotionalUSDT)||0,takerRate:inp.takerRate,settings:{maxLossPct:config.maxLossPct,maxAdds:config.maxAdds}});

@@ -145,6 +145,10 @@ export class LiveExecutor{
      split=liveSplitPlan({row,balanceUSD,leverage,sizeScale:.5**active,config:this.config});
      if(split){qty=split.qty;row={...row,stop:split.stop}}
      config={...this.config,dailyMaxRiskUSD:balanceUSD*this.config.dailyMaxLossPct/100};
+     // Open-risk cap: the worst losses of every open position plus this one stay within the daily
+     // loss limit of the balance — positions opened on earlier days count too (margin floor safety).
+     const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
+     if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
      split&&(split.balanceUSD=balanceUSD);
     }else if(!extra.length)extra.push('BALANCE_EMPTY');
    }

@@ -101,7 +101,7 @@ test('live quantity scales the paper plan to the live risk cap on the 20-lot gri
 });
 
 test('configuration defaults are OFF and conservative; LIVE needs the confirmation phrase',()=>{
- assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0});
+ assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:4,maxPerDirection:2,sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:7,dailyMaxLossPct:60,balanceCapUSD:0,minUnitMarginUSD:1});
  assert.equal(liveConfig({HOURLY_MAX_ADDS:'10'}).maxAdds,10);
  for(const bad of ['','abc'])assert.equal(liveConfig({HOURLY_MAX_ADDS:bad}).maxAdds,7,'garbage falls back to 7, not 10');
  assert.equal(liveConfig({LIVE_BALANCE_CAP_USD:'400'}).balanceCapUSD,400);
@@ -495,4 +495,33 @@ test('restart cut an entry short: the stop is found or placed, a missing positio
  assert.equal(withAdds.m.orders.filter(o=>String(o.clientOrderId||'').startsWith(withAdds.rec.clientOrderId+'a')).length,0);
  const fail=await scenario({stopPlacement:'fail'});
  assert.equal(fail.rec.closeReason,'EMERGENCY_NO_STOP');assert.ok(fail.types.includes('EMERGENCY_CLOSED'));assert.equal(fail.ex.store.killSwitch,true);
+});
+
+test('first-entry margin floor: at least 1 USD of margin per unit, worst-loss cap still applies',async()=>{
+ const {liveSplitPlan}=await import('../live_orders.mjs');
+ const c={tickSize:'0.0001',quantityStep:'1',quantityUnit:'BASE_ASSET',contractSizeBase:'1',minQuantityBase:'1'};
+ const r={direction:'LONG',entry:0.5,stop:0.45,venueContract:c,paperAddInputs:null};
+ const cfg=x=>({unitPct:.19,maxLossPct:30,maxAdds:7,minUnitMarginUSD:1,...x});
+ // 400 × 0.19 % = 0.76 USD margin → raised to 1 USD: 1 × 10 / 0.5 = 20 units.
+ assert.equal(liveSplitPlan({row:r,balanceUSD:400,leverage:10,config:cfg()}).qty.base,20);
+ assert.equal(liveSplitPlan({row:r,balanceUSD:400,leverage:10,config:cfg({minUnitMarginUSD:0})}).qty.base,15,'floor off: 0.76 USD');
+ // 2300 × 0.19 % = 4.37 USD margin is above the floor: unchanged.
+ assert.equal(liveSplitPlan({row:r,balanceUSD:2300,leverage:10,config:cfg()}).qty.base,87);
+ // A scaled-down position is raised to the floor too (the open-risk cap bounds the total).
+ assert.equal(liveSplitPlan({row:r,balanceUSD:400,leverage:10,sizeScale:.5,config:cfg()}).qty.base,20);
+ assert.equal(liveSplitPlan({row:r,balanceUSD:2300,leverage:10,sizeScale:.5,config:cfg()}).qty.base,43,'2300: half of 4.37 = 2.19 USD, above the floor');
+ assert.equal(liveConfig({LIVE_MIN_UNIT_MARGIN_USD:'2'}).minUnitMarginUSD,2);
+ assert.equal(liveConfig({LIVE_MIN_UNIT_MARGIN_USD:'0'}).minUnitMarginUSD,0);
+});
+
+test('open-risk cap: worst losses of all open positions plus the new one stay within the daily loss limit',async()=>{
+ const m=mockBingX(),cfg=config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60,maxOpen:4,maxPerDirection:4});
+ const ex=new LiveExecutor({config:cfg,clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ // An older open position (another day) with a planned worst loss of 599.95 on a 1000 balance (limit 600).
+ ex.store.records.push({signalKey:'old',symbol:'XRPUSDT',venue:'BINGX',direction:'SHORT',status:'OPEN',day:'2000-01-01',plannedRiskUSD:599.95,createdAt:NOW-86400000});
+ const r=await ex.onSignal(row('BINGX',{entry:100,leverage:10,stop:90,targets:[101.5,102,103]}),{signalKey:'new'});
+ assert.equal(r.sent,false);assert.ok(r.reasons.includes('OPEN_RISK_LIMIT'),JSON.stringify(r.reasons));
+ ex.store.records[0].plannedRiskUSD=10;
+ const ok=await ex.onSignal(row('BINGX',{entry:100,leverage:10,stop:90,targets:[101.5,102,103]}),{signalKey:'new2'});
+ assert.equal(ok.reasons?.includes('OPEN_RISK_LIMIT')??false,false);
 });
