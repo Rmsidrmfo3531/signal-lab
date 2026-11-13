@@ -38,19 +38,23 @@ export class BingXTradeClient{
   // Gap between signed calls: BINGX_MIN_INTERVAL_MS, else 250 ms (0 with an injected test transport).
   const envGap=process.env.BINGX_MIN_INTERVAL_MS,gapMs=envGap!==undefined&&envGap!==''&&Number(envGap)>=0?Number(envGap):fetcher===globalThis.fetch?250:0;
   const sleep=ms=>ms>0?new Promise(r=>setTimeout(r,ms)):Promise.resolve();
-  const slot=()=>{const p=chain.then(async()=>{await sleep(Math.max(cooldownUntil-Date.now(),last+gapMs-Date.now()));last=Date.now()});chain=p.catch(()=>{});return p};
+  // An order (POST) waits at most 3 s of a 429 pause, so a stop or an emergency close is not held
+  // back for the whole pause; if the venue still refuses, the caller sees HTTP_429 and handles it.
+  const slot=(maxPause=Infinity)=>{const p=chain.then(async()=>{await sleep(Math.max(Math.min(cooldownUntil-Date.now(),maxPause),last+gapMs-Date.now()));last=Date.now()});chain=p.catch(()=>{});return p};
   this.request=async(method,path,params={},retried=false)=>{
-   await slot();
+   await slot(method==='GET'?Infinity:3000);
    const signed={...params,recvWindow,timestamp:now()};
    const url=`${host}${path}?${bingxQuery(signed,bingxSign(signed,secret))}`;
    let response;
    try{response=await fetcher(url,{method,redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'X-BX-APIKEY':apiKey,Accept:'application/json'}})}
    catch(error){throw new VenueHttpError('NETWORK_UNREACHABLE',clean(error?.message))}
-   const body=await readLimitedJSON(response,2_000_000,{bigIds:true});
-   if(response.status===429){
+   if(response.status===429){ // checked before the body: a 429 page is often not JSON
     const after=Number(response.headers?.get?.('retry-after'));cooldownUntil=Date.now()+(after>0&&after<120?after*1000:10000);
     if(method==='GET'&&!retried)return this.request(method,path,params,true);
+    let msg='';try{msg=(await readLimitedJSON(response,200_000))?.msg}catch{}
+    throw new VenueHttpError('HTTP_429',clean(msg));
    }
+   const body=await readLimitedJSON(response,2_000_000,{bigIds:true});
    if(!response.ok)throw new VenueHttpError('HTTP_'+response.status,clean(body?.msg));
    if(body?.code!==0)throw new VenueHttpError('VENUE_ERROR_'+String(body?.code??'UNKNOWN').slice(0,12),clean(body?.msg));
    return body.data;

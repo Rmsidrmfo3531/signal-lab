@@ -437,6 +437,7 @@ export class LiveExecutor{
  idle(){return !this.reconciling&&!this.inFlight.size&&!this.busy.size&&!this.closing.size&&!this.store.records.some(r=>r.status==='SUBMITTING')}
  async #reconcileOpen(){
   this.posCache=null; // one fresh all-symbols read per check
+  let limited=false;
   for(const record of this.store.records.filter(r=>r.status==='OPEN')){
    try{
     const pos=await this.#position(record,{cached:true}),{size,entryPrice}=pos;
@@ -489,11 +490,17 @@ export class LiveExecutor{
     if(record.breakevenMoved&&record.adds?.some(a=>a.orderId&&!a.filled&&!a.cancelled))await this.#cancelAdds(record,'TP1_FILLED');
    }catch(error){
     // A rate-limit answer is a pause, not a problem with this trade: logged, not recorded on it.
-    if(error.code==='HTTP_429'){this.log(`[LIVE ${record.venue} ${record.symbol}] rate limited, next check later`);this.posCache=null}
+    // The rest of this round is skipped (every call would wait out the same pause). If the venue
+    // keeps refusing for 5 minutes, it is recorded once so a stalled check is visible.
+    if(error.code==='HTTP_429'){this.posCache=null;this.rateLimitedSince??=this.now();
+     this.log(`[LIVE ${record.venue} ${record.symbol}] rate limited, next check later`);
+     if(!this.rateLimitNoted&&this.now()-this.rateLimitedSince>=5*60_000){this.rateLimitNoted=true;this.#event(record,'RECONCILE_ERROR',{reason:'HTTP_429 for 5+ min'})}
+     limited=true;break}
     else this.#event(record,'RECONCILE_ERROR',{reason:error.code||error.message})}
   }
+  if(!limited){this.rateLimitedSince=null;this.rateLimitNoted=false}
   // Realized result of closed trades (read only): the venue's own settlement, else an estimate.
-  for(const record of this.store.records.filter(r=>r.status==='CLOSED'&&!r.test&&!r.realized&&(r.settleAttempts||0)<SETTLE_TRIES&&r.closedAt>0&&this.now()-r.closedAt>=SETTLE_DELAY_MS&&this.now()-r.closedAt<SETTLE_WINDOW_MS)){
+  if(!limited)for(const record of this.store.records.filter(r=>r.status==='CLOSED'&&!r.test&&!r.realized&&(r.settleAttempts||0)<SETTLE_TRIES&&r.closedAt>0&&this.now()-r.closedAt>=SETTLE_DELAY_MS&&this.now()-r.closedAt<SETTLE_WINDOW_MS)){
    try{await this.#settle(record)}catch(error){this.#event(record,'SETTLE_ERROR',{reason:error.code||error.message})}
   }
   this.#save();
