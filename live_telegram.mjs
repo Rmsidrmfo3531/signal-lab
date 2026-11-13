@@ -1,3 +1,4 @@
+import {tradeHorizon} from './trade_horizon.mjs';
 // Telegram notices for live (testnet) trades: entry with protection, add fills, first target and
 // break-even, the settled close with its result, and order problems. Text only: symbol, side,
 // prices and results — never keys, order ids or account numbers.
@@ -12,8 +13,8 @@ const PROBLEM={ENTRY_OUTCOME_UNKNOWN:'진입 결과를 확인하지 못했습니
 export function liveEventText(r,type,detail={}){
  if(!r)return null;
  if(type==='KILL_SWITCH')return `⛔ 긴급 정지 · ${MODE[r.mode]||r.mode||''}\n새 주문을 멈췄습니다 (${detail.reason||'수동'}). 실매매 화면에서 확인 후 해제하세요.`;
- const head=`${r.symbol} ${SIDE[r.direction]||r.direction||''} ${r.leverage?r.leverage+'배':''} · ${MODE[r.mode]||r.mode||''}`.replace(/\s+/g,' ').trim();
- const pattern=r.signal?.pattern?`\n패턴: ${r.signal.pattern}${r.signal.score!=null?` (${r.signal.score}점)`:''}`:'';
+ const head=`${r.symbol} ${SIDE[r.direction]||r.direction||''}${tradeHorizon(r.signal?.pattern)?' ['+tradeHorizon(r.signal?.pattern).label+']':''} ${r.leverage?r.leverage+'배':''} · ${MODE[r.mode]||r.mode||''}`.replace(/\s+/g,' ').trim();
+ const hz=tradeHorizon(r.signal?.pattern),pattern=r.signal?.pattern?`\n패턴: ${r.signal.pattern}${r.signal.score!=null?` (${r.signal.score}점)`:''}${hz?` · ${hz.label} (${hz.hint})`:''}`:'';
  // Test orders (signalKey TEST:…, marked test after the fill): problems only.
  if(r.test===true||String(r.signalKey||'').startsWith('TEST:'))return PROBLEM[type]?`⚠️ 시험 주문 문제 · ${head}\n${PROBLEM[type]}${detail.reason?` (${detail.reason})`:''}`:null;
  if(type==='PROTECTED'){

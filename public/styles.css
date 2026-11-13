@@ -547,6 +547,7 @@
 .live-grid{grid-template-columns:minmax(0,1fr)}
 .live-position header>span,.live-closed header>span{font-size:11px}
 .live-state{padding:2px 8px;border-radius:999px;background:#1d2a3a;color:#c9d8e8}
+.horizon-tag{padding:1px 7px;border-radius:999px;font-size:.78em;font-weight:700;letter-spacing:.02em}.horizon-tag.h-short{background:#3a3220;color:#eebd71}.horizon-tag.h-long{background:#1f2f4a;color:#9cc4ff}
 .live-state.s-OPEN{background:#13392f;color:#7fe3c4}.live-state.s-UNKNOWN{background:#4a1f22;color:#ffb4ab}.live-state.s-SUBMITTING{background:#3a3220;color:#eebd71}
 .live-values{grid-template-columns:repeat(4,minmax(0,1fr))}
 .paper-trade-values span small{font-size:10px;color:#7f97ad;line-height:1.4}

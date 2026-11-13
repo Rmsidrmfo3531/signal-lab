@@ -7,7 +7,7 @@ const r={symbol:'GRASSUSDT',direction:'SHORT',leverage:13,mode:'TESTNET',firstEn
  entryOrderId:'1736012449498123737',clientOrderId:'slabc',createdAt:1000,closedAt:1000+5*3600000,realized:{source:'EXCHANGE',netUSD:-1.234}};
 
 test('live notices: entry, add, first target, settled close and problems — no order ids',()=>{
- const entry=liveEventText(r,'PROTECTED');assert.match(entry,/진입 · GRASSUSDT 숏 13배 · 테스트넷/);assert.match(entry,/손절 0\.6041/);assert.match(entry,/88점/);
+ const entry=liveEventText(r,'PROTECTED');assert.match(entry,/진입 · GRASSUSDT 숏 \[장기\] 13배 · 테스트넷/);assert.match(entry,/손절 0\.6041/);assert.match(entry,/88점/);
  assert.match(liveEventText(r,'ADD_FILLED'),/추매 1차 체결/);
  assert.match(liveEventText(r,'STOP_TO_BREAKEVEN'),/1차 목표 도달/);
  const close=liveEventText(r,'SETTLED');assert.match(close,/손실 마감/);assert.match(close,/−\$1\.23/);assert.match(close,/보유 5\.0시간/);

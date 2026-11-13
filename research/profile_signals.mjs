@@ -10,6 +10,7 @@ import {planVolumeTargets} from '../volume_targets.mjs';
 import {scoreGatePassed,DEFAULT_TRADE_PATTERNS} from '../signal_policy.mjs';
 import {closedUntil,profileAt,onTick,HOUR,BACKTEST_COSTS} from '../backtest.mjs';
 import {leverageForScore} from '../paper.mjs';
+import {fourHourTrend} from '../scalp_reversal.mjs';
 
 const [cache='backtest-cache',outFile='profile-signals.json',only]=process.argv.slice(2);
 const load=f=>JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(cache,f))));
@@ -43,7 +44,9 @@ for(const symbol of symbols){
   const targets=tp?.ok?tp.targets:[1,2,3].map(r=>onTick(entry+dir*r*Math.abs(entry-stop),filters.tickSize,dir===1?'UP':'DOWN'));
   f.kept++;
   out.push({symbol,at:Number(next[0]),signalAt:closeAt,direction:a.direction,pattern:a.pattern,score:a.score,entry,stop,atr:a.atr,zones,targets,targetSource:tp?.ok?'1H_PROFILE':'R_MULTIPLE',
-   leverage:leverageForScore(a.score,1e9)??10,filters});
+   leverage:leverageForScore(a.score,1e9)??10,filters,
+   // BTC 4H trend at the signal (the server allows LONG only while it is 'up': btcLongBlocked).
+   btcTrend:fourHourTrend(btc,now)});
  }
  console.error(symbol,JSON.stringify(f),((Date.now()-t0)/1000).toFixed(0)+'s');
 }

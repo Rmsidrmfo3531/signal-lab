@@ -1,3 +1,4 @@
+import {tradeHorizon} from './trade_horizon.mjs';
 // Read-only view of the live / testnet executor for the 실매매 screen: open positions as cards,
 // closed trades with their realized result, a summary and the recent skip reasons in Korean.
 // Pure functions: no network, no keys, no order changes. Numbers the venue did not give are
@@ -63,6 +64,7 @@ export function livePositionView(record,{price=null,now=Date.now()}={}){
  const adds=Array.isArray(record.adds)?record.adds:[];
  const pending=adds.map((a,i)=>({n:i+1,price:pos(a.price),qty:baseQty(record,num(a.qty)),units:num(a.units)})).filter((_,i)=>adds[i].orderId&&!adds[i].filled&&!adds[i].cancelled);
  return {signalKey:record.signalKey,symbol:record.symbol,asset:asset(record.symbol),venue:record.venue,venueSymbol:record.venueSymbol,mode:record.mode,direction:record.direction,
+  pattern:record.signal?.pattern??null,horizon:tradeHorizon(record.signal?.pattern),
   leverage,status:record.status,statusKo:LIVE_STATUS_KO[record.status]||record.status,createdAt:record.createdAt??null,test:record.test===true,routedFrom:record.routedFrom??null,
   plannedEntry:pos(record.plannedEntry),firstEntryPrice:pos(record.firstEntryPrice),averageEntryPrice:avg,currentPrice:current,currentPriceSource:currentSource,
   quantity:{venue:size,base:round(base,10),unit:record.quantity?.unit||'BASE_ASSET',source:p&&p.size>0?'EXCHANGE':'ORDER'},unrealized,margin,realizedOpen,
@@ -77,7 +79,8 @@ export function liveClosedView(record,now=Date.now()){
  const r=!record.realized&&record.closedAt>0&&now-record.closedAt>2*3600000?{source:'UNKNOWN'}:record.realized,adds=Array.isArray(record.adds)?record.adds:[];
  const realized=!r?{source:'PENDING',netUSD:null}:r.source==='UNKNOWN'?{source:'UNKNOWN',netUSD:null}
   :{source:r.source,netUSD:num(r.netUSD),pnlUSD:num(r.pnlUSD),feeUSD:num(r.feeUSD),fundingUSD:num(r.fundingUSD),takerRate:num(r.takerRate)};
- return {signalKey:record.signalKey,deletable:record.deletable===true,symbol:record.symbol,asset:asset(record.symbol),venue:record.venue,mode:record.mode,direction:record.direction,leverage:pos(record.leverage),
+ return {signalKey:record.signalKey,deletable:record.deletable===true,symbol:record.symbol,asset:asset(record.symbol),venue:record.venue,mode:record.mode,direction:record.direction,
+  pattern:record.signal?.pattern??null,horizon:tradeHorizon(record.signal?.pattern),leverage:pos(record.leverage),
   createdAt:record.createdAt??null,closedAt:record.closedAt??null,closeReason:record.closeReason??null,closeReasonKo:LIVE_CLOSE_KO[record.closeReason]||record.closeReason||'종료',
   firstEntryPrice:pos(record.firstEntryPrice),averageEntryPrice:pos(record.position?.entryPrice)??pos(record.firstEntryPrice),
   adds:{filled:adds.filter(a=>a.filled).length,max:adds.length},stop:pos(record.stop),targets:Array.isArray(record.targets)?record.targets.map(pos):[],
