@@ -58,7 +58,11 @@ export class LiveExecutor{
   for(const r of this.store.records){
    const cut=r.status==='UNKNOWN'&&(r.events||[]).some(e=>e.type==='RESTART_WHILE_SUBMITTING')&&!r.recovery;
    const unprotected=r.status==='OPEN'&&!r.stopOrderId&&!(r.events||[]).some(e=>e.type==='PROTECTED'||e.type==='PROTECTION_RECOVERED')&&!r.test;
-   if(cut||unprotected){if(r.venue==='BINGX')r.recovery='PENDING';else this.store.killSwitch=true}
+   if(!(cut||unprotected))continue;
+   if(unprotected)r.events=[...(r.events||[]),{type:'UNPROTECTED_AFTER_RESTART',at:now()}].slice(-MAX_EVENTS);
+   if(r.venue==='BINGX'){r.recovery='PENDING';continue}
+   // Other venues: no automatic recovery; trading stops once, with a notice.
+   r.recovery='MANUAL';this.store.killSwitch=true;try{this.onEvent?.(r,'RECOVERY_MANUAL',{})}catch{}
   }
  }
  #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records,deletedKeys:this.store.deletedKeys,archived:this.store.archived})}this.onChange(this.status())}
@@ -380,7 +384,9 @@ export class LiveExecutor{
   try{
    for(const record of this.store.records.filter(r=>r.recovery==='PENDING'&&!this.busy.has(r.symbol))){
     this.busy.add(record.symbol);
-    try{await this.#recover(record)}catch(error){this.#event(record,'RECOVERY_ERROR',{reason:error.code||error.message})}
+    try{await this.#recover(record)}catch(error){
+     // Retried at every check; recorded (and notified) only the first time.
+     record.recoveryErrors=(record.recoveryErrors||0)+1;if(record.recoveryErrors===1)this.#event(record,'RECOVERY_ERROR',{reason:error.code||error.message})}
     finally{this.busy.delete(record.symbol);this.#save()}
    }
    await this.#reconcileOpen();
@@ -389,12 +395,26 @@ export class LiveExecutor{
  /** After a restart cut an entry short: find or place the stop for whatever the venue holds. */
  async #recover(record){
   const client=this.clients.BINGX,pos=await this.#position(record);
+  const open=await client.openOrders(record.venueSymbol),list=open?.orders??(Array.isArray(open)?open:[]);
+  // Add orders of a cut-off entry were never tracked (no order ids): take them off the book.
+  for(const o of list){
+   const cid=String(o.clientOrderId??o.clientOrderID??'');
+   if(cid.startsWith(record.clientOrderId+'a')){await client.cancelOrder(record.venueSymbol,bingxOrderId(o));this.#event(record,'ADDS_CANCELLED',{reason:'RECOVERY'})}
+  }
+  for(const a of record.adds||[])if(!a.filled)a.cancelled=true;
   if(!(pos.size>0)){
-   if(record.status==='UNKNOWN'){record.status='CLOSED';record.closedAt=this.now();record.closeReason='NO_POSITION_AFTER_RESTART'}
+   if(record.status==='UNKNOWN'){
+    // Filled and already stopped out, or never filled: the entry order tells which.
+    const found=await client.getOrder(record.venueSymbol,{clientOrderId:record.clientOrderId}).catch(()=>null),o=orderOf(found);
+    const filled=Number(pick(o,'executedQty'))>0||String(pick(o,'status')).toUpperCase()==='FILLED';
+    if(filled){record.status='CLOSED';record.closedAt=this.now();record.closeReason='NO_POSITION_AFTER_RESTART'}
+    else{record.status='FAILED';record.closeReason='ENTRY_NOT_FILLED_AFTER_RESTART'}
+   }
    record.recovery='DONE';this.#event(record,'RECOVERY_NO_POSITION');return;
   }
-  const plan=this.#plan(record),open=await client.openOrders(record.venueSymbol);
-  const list=open?.orders??(Array.isArray(open)?open:[]),stop=list.find(o=>String(o.type).startsWith('STOP'));
+  // One-way mode: a position on the other side is not this trade's; leave it and stop trading.
+  if(pos.side&&pos.side!==record.direction){record.recovery='FAILED';this.#event(record,'RECOVERY_ERROR',{reason:'POSITION_SIDE_'+pos.side});this.kill('RECOVERY_SIDE_MISMATCH');return}
+  const plan=this.#plan(record),stop=list.find(o=>String(o.type).startsWith('STOP'));
   record.position={...(record.position||{}),size:pos.size,entryPrice:posNum(pos.entryPrice),at:this.now()};
   if(!record.firstEntryPrice&&posNum(pos.entryPrice))record.firstEntryPrice=posNum(pos.entryPrice);
   if(stop){record.stopOrderId=bingxOrderId(stop);record.status='OPEN';record.recovery='DONE';this.#event(record,'PROTECTION_RECOVERED',{orderId:record.stopOrderId,reason:'STOP_FOUND'});return}
@@ -580,7 +600,8 @@ export class LiveExecutor{
    const list=await client.positions(record.venueSymbol),rows=Array.isArray(list)?list:[];
    const row=rows.find(p=>p.symbol===record.venueSymbol);
    return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
-    marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit)};
+    marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit),
+    side:row?(['LONG','SHORT'].includes(row.positionSide)?row.positionSide:Number(row.positionAmt)>0?'LONG':Number(row.positionAmt)<0?'SHORT':null):null};
   }
   const p=await client.position(record.venueSymbol);
   return {size:Math.abs(Number(p?.size)||0),entryPrice:Number(p?.entry_price)||0,markPrice:posNum(p?.mark_price),unrealizedPnLUSD:p?num(p.unrealised_pnl):null,

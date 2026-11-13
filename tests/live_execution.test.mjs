@@ -40,12 +40,12 @@ function mockBingX({margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,ent
    if(q.type==='MARKET'&&!q.reduceOnly){
     if(entry==='timeout')throw TypeError('fetch failed');
     if(entry==='reject')return json({code:101204,msg:'Insufficient margin'});
-    const o={orderID:String(++id),type:'MARKET',clientOrderId:q.clientOrderId};orders.push(o);
+    const o={orderID:String(++id),type:'MARKET',clientOrderId:q.clientOrderId,status:'FILLED'};orders.push(o);
     if(stopAttached)orders.push({orderID:String(++id),type:'STOP_MARKET'});
     return json({code:0,data:{order:o}});
    }
    if(q.type==='STOP_MARKET'&&stopPlacement==='fail')return json({code:109400,msg:'stop rejected'});
-   const o={orderID:String(++id),type:q.type};orders.push(o);return json({code:0,data:{order:o}});
+   const o={orderID:String(++id),type:q.type,clientOrderId:q.clientOrderId};orders.push(o);return json({code:0,data:{order:o}});
   }
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='GET'){
    const o=orders.find(x=>x.clientOrderId===q.clientOrderId);return o?json({code:0,data:{order:o}}):json({code:80016,msg:'order not exist'});
@@ -464,20 +464,24 @@ test('while an update is applied, nothing new is ordered and arming is refused',
 
 test('restart cut an entry short: the stop is found or placed, a missing position is closed out, a failed stop closes and stops trading',async()=>{
  const fs=await import('node:fs'),os=await import('node:os'),path=await import('node:path');
- const scenario=async({amt='0.20',keepStop=false,stopPlacement='ok',statusAtCut='SUBMITTING'}={})=>{
+ const scenario=async({amt='0.20',keepStop=false,stopPlacement='ok',statusAtCut='SUBMITTING',unfilled=false,withAdds=false}={})=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'live-rec-'));
   const m=mockBingX({positionAmt:()=>amt,stopPlacement});
-  const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});ex.arm();
-  await ex.onSignal(row('BINGX'),{signalKey:'cut'});
+  const cfg=config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60});
+  const ex=new LiveExecutor({config:cfg,clients:{BINGX:m.client},directory:dir,now:()=>NOW});ex.arm();
+  const zones=[97,95,93].map(p=>({priceLow:p-.1,priceHigh:p+.1}));
+  await ex.onSignal(row('BINGX',{entry:100,leverage:10,stop:90,targets:[101.5,102,103],paperAddInputs:{zoneSets:[{label:'시험',zones}],atr:.4,takerRate:.0005}}),{signalKey:'cut'});
   // What a crash between the fill and the protection leaves behind.
   const file=path.join(dir,'live-orders.json'),saved=JSON.parse(fs.readFileSync(file,'utf8')),r=saved.records[0];
   r.status=statusAtCut;r.stopOrderId=null;r.targetOrderIds=[];r.events=r.events.filter(e=>!['PROTECTED','STOP_CONFIRMED','STOP_PLACED'].includes(e.type));
   fs.writeFileSync(file,JSON.stringify(saved));
-  if(!keepStop)m.orders.length=0;
-  const ex2=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
+  const addsBefore=m.orders.filter(o=>String(o.clientOrderId||'').startsWith(r.clientOrderId+'a')).length;
+  if(!keepStop)for(let i=m.orders.length-1;i>=0;i--)if(m.orders[i].type!=='MARKET'&&m.orders[i].type!=='LIMIT')m.orders.splice(i,1);
+  if(unfilled)for(let i=m.orders.length-1;i>=0;i--)if(m.orders[i].type==='MARKET')m.orders.splice(i,1);
+  const ex2=new LiveExecutor({config:cfg,clients:{BINGX:m.client},directory:dir,now:()=>NOW});
   assert.equal(ex2.store.records[0].recovery,'PENDING');
   await ex2.reconcile();
-  return {rec:ex2.store.records[0],ex:ex2,m,types:ex2.store.records[0].events.map(e=>e.type)};
+  return {addsBefore,rec:ex2.store.records[0],ex:ex2,m,types:ex2.store.records[0].events.map(e=>e.type)};
  };
  const placed=await scenario();
  assert.equal(placed.rec.status,'OPEN');assert.equal(placed.rec.recovery,'DONE');assert.ok(placed.rec.stopOrderId);
@@ -485,6 +489,10 @@ test('restart cut an entry short: the stop is found or placed, a missing positio
  const found=await scenario({keepStop:true});assert.equal(found.rec.events.find(e=>e.type==='PROTECTION_RECOVERED').reason,'STOP_FOUND');
  const open=await scenario({statusAtCut:'OPEN'});assert.equal(open.rec.recovery,'DONE');assert.ok(open.rec.stopOrderId,'an OPEN record saved without its stop is protected too');
  const none=await scenario({amt:'0'});assert.equal(none.rec.status,'CLOSED');assert.equal(none.rec.closeReason,'NO_POSITION_AFTER_RESTART');
+ const nofill=await scenario({amt:'0',unfilled:true});assert.equal(nofill.rec.status,'FAILED','never filled: not a closed trade');
+ // Resting add orders of the cut-off entry are taken off the book.
+ const withAdds=await scenario();assert.ok(withAdds.addsBefore>0,'the scenario has resting add orders');
+ assert.equal(withAdds.m.orders.filter(o=>String(o.clientOrderId||'').startsWith(withAdds.rec.clientOrderId+'a')).length,0);
  const fail=await scenario({stopPlacement:'fail'});
  assert.equal(fail.rec.closeReason,'EMERGENCY_NO_STOP');assert.ok(fail.types.includes('EMERGENCY_CLOSED'));assert.equal(fail.ex.store.killSwitch,true);
 });

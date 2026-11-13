@@ -19,7 +19,7 @@ export const LIVE_EVENT_KO=Object.freeze({
  STOP_TO_BREAKEVEN:'손절을 본절로 이동',BREAKEVEN_SKIPPED_STOP_ALREADY_BETTER:'손절이 이미 본절보다 유리',CLOSED:'포지션 종료',SETTLED:'거래소 정산 확인',
  MANUAL_STOP:'손절 직접 수정',MANUAL_TARGET:'목표 직접 수정',TARGET_FAILED:'목표 주문 실패',STOP_FAILED:'손절 주문 실패',EMERGENCY_CLOSED:'긴급 청산',
  RECONCILE_ERROR:'거래소 확인 오류',ENTRY_REJECTED:'진입 거절',REJECTED:'주문 거절',ENTRY_OUTCOME_UNKNOWN:'진입 결과 불명',RESTART_WHILE_SUBMITTING:'주문 중 서버 재시작',
- TEST_CLOSED:'시험 주문 청산',SETTLE_READ_FAILED:'정산 조회 실패',ERROR:'오류',ORDER_ALREADY_GONE:'거래소가 이미 정리한 주문',PROTECTION_RECOVERED:'재시작 후 손절 보호 복구',RECOVERY_NO_POSITION:'재시작 후 확인: 포지션 없음',RECOVERY_ERROR:'재시작 후 보호 복구 오류',RESTART_WHILE_SUBMITTING:'주문 중 서버 재시작',CANCELLED_BY_EXACT_ID:'주문 취소 (정확한 번호로)',
+ TEST_CLOSED:'시험 주문 청산',SETTLE_READ_FAILED:'정산 조회 실패',ERROR:'오류',ORDER_ALREADY_GONE:'거래소가 이미 정리한 주문',PROTECTION_RECOVERED:'재시작 후 손절 보호 복구',RECOVERY_NO_POSITION:'재시작 후 확인: 포지션 없음',RECOVERY_ERROR:'재시작 후 보호 복구 오류',UNPROTECTED_AFTER_RESTART:'재시작 시 손절 미확인 포지션',RESTART_WHILE_SUBMITTING:'주문 중 서버 재시작',CANCELLED_BY_EXACT_ID:'주문 취소 (정확한 번호로)',
  CANCEL_FAILED:'주문 취소 실패',TEST_CLOSE_DEFERRED:'시험 청산 대기',TEST_CLOSE_INCOMPLETE:'시험 청산 미완료',LATE_ADD_CLOSED:'청산 뒤 체결된 추매 정리',LATE_ADD_CLOSE_FAILED:'청산 뒤 추매 정리 실패'});
 /** A venue / internal reason code in short Korean (VENUE_ERROR_109400 -> 거래소 오류 109400). */
 export function liveCodeKo(code){
