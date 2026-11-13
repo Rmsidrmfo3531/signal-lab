@@ -92,7 +92,9 @@ export class CopyExecutor{
   closed:this.store.closed.slice(-50).reverse(),events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
 
  /** One channel message ({id, date (ms), text}); processed one at a time, each id once. */
- handle(message){const p=this.queue.then(()=>this.#handle(message));this.queue=p.catch(()=>{});return p}
+ handle(message){this.pendingCount=(this.pendingCount||0)+1;const p=this.queue.then(()=>this.#handle(message)).finally(()=>{this.pendingCount--});this.queue=p.catch(()=>{});return p}
+ /** No message being processed (the update restart waits for this). */
+ idle(){return !(this.pendingCount>0)}
  async #handle({id,date,text}){
   const key=String(id??createHash('sha1').update(String(text)).digest('hex'));
   if(this.store.seen.includes(key))return {ok:true,duplicate:true};
@@ -256,7 +258,7 @@ export class CopyExecutor{
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
   this.store.positions[key]=p;
   const fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'});
-  p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});
+  p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
   await this.#protect(p);
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('OPENED',{symbol:m.symbol,direction:m.direction,leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
@@ -302,7 +304,7 @@ export class CopyExecutor{
   if(eq&&used+buy*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(buy*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
   if(free!==null&&buy*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(buy*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
   const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:'add'+(p.adds+1)});p.adds++;
-  p.steps.push({kind:'ADD',at:this.now(),qty:buy,avg:fill.avg,theirQty,marginUSD});
+  p.steps.push({kind:'ADD',at:this.now(),qty:buy,avg:fill.avg,theirQty,marginUSD});this.#save();
   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('ADDED',{symbol:p.symbol,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
   return {ok:true};

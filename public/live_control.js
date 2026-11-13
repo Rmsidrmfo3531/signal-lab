@@ -184,7 +184,7 @@ function render(o){
  if($('livePositionCount'))$('livePositionCount').textContent=`${o.positions?.length||0}개`;
  if($('liveSummary'))$('liveSummary').innerHTML=summaryHTML(o.summary);
  if($('liveCopy')&&!$('liveCopy').dataset.bound){$('liveCopy').dataset.bound='1';$('liveCopy').addEventListener('click',async e=>{
-  if(e.target.closest('[data-copy-resume]')){try{await fetch('/api/copy/resume',{method:'POST'})}catch{}return}
+  if(e.target.closest('[data-copy-resume]')){try{await fetch('/api/copy/resume',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_RESUME'})})}catch{}return}
   if(e.target.closest('[data-copy-disarm]')){try{await fetch('/api/copy/disarm',{method:'POST'})}catch{}return}
   if(e.target.closest('[data-copy-arm]')&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?')){try{await fetch('/api/copy/arm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'COPY_ARM'})})}catch{}}})}
  if($('liveCopySection')){$('liveCopySection').hidden=!o.copy;if(o.copy&&$('liveCopy'))$('liveCopy').innerHTML=copyHTML(o.copy)}

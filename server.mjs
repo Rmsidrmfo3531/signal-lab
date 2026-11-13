@@ -260,7 +260,10 @@ const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage
 let copyTickers={at:0,rows:[]};
 // Messages arrive from the local listener (deploy/linux/copy_listener.py) with COPY_LISTENER_TOKEN.
 const COPY=copyConfig(process.env,LIVE.mode);
-function COPY_ON_SAME_ACCOUNT(){return COPY.mode==='TESTNET'}
+// Same account when both run in the same mode (testnet + testnet, or later live + live).
+function COPY_ON_SAME_ACCOUNT(){return COPY.mode===(LIVE.mode==='LIVE'?'LIVE':'TESTNET')}
+// Update restarts wait for the copy queue too (a market fill is saved before the next step).
+function allIdle(){return live.idle()&&(copyTrader?.idle?.()??true)}
 // Real-money copy (COPY_MODE=LIVE + COPY_LIVE_CONFIRM): its own BingX live client and ledger file.
 const copyClient=COPY.mode==='LIVE'&&process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET
  ?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'LIVE',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)})
@@ -284,9 +287,15 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode===
  // Also a symbol the live executor is entering right now (busy), not only recorded positions.
  isBusy:symbol=>COPY_ON_SAME_ACCOUNT()&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol)),
  // The same balance cap as the signal strategy (a 100,000 virtual USDT testnet trades like the real account).
- balance:async()=>{const f=COPY.mode==='LIVE'?bingxFunds(await copyClient.balance()):await live.accountFunds('BINGX');const cap=LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
+ // The testnet balance cap does not apply to a real-money copy (its own real equity).
+ balance:async()=>{if(COPY.mode==='LIVE')return bingxFunds(await copyClient.balance());const f=await live.accountFunds('BINGX');const cap=LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
   const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
+// A copy ledger of the other mode with open positions is no longer managed: say so once at start.
+try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy-store-live.json');
+ if(fs.existsSync(other)){const o=JSON.parse(fs.readFileSync(other,'utf8'));const n=Object.values(o.positions||{}).filter(x=>x.status==='OPEN');
+  if(n.length){const text=`⚠️ 카피 모드가 ${COPY.mode==='LIVE'?'실계좌':'테스트넷'}로 바뀌었습니다. ${COPY.mode==='LIVE'?'테스트넷':'실계좌'} 카피 포지션 ${n.length}개(${n.map(x=>x.symbol).join(', ')})는 더 이상 따라가지 않습니다. 거래소에서 직접 정리해 주세요.`;
+   console.warn('[COPY]',text);setTimeout(()=>{try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text}).catch(()=>{})}catch{}},5000)}}}catch{}
 if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
 function copyNotice(e){
  const text=copyEventText(e);if(!text)return;
@@ -1298,7 +1307,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
   if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,copyTrader.status());
-  if(pathname==='/api/copy/resume'&&req.method==='POST')return response(res,200,copyTrader.resume());
+  if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
   if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,copyTrader.arm())}
   if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
   // From the local channel listener only: a shared token (COPY_LISTENER_TOKEN in .env), compared in constant time.
@@ -1369,7 +1378,7 @@ const server=http.createServer(async(req,res)=>{
    const body=await bodyJson(req).catch(()=>({}));if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
    // Never restart in the middle of an order: stop new orders first, then wait until the executor
    // is idle (no order, cancel or position check running) before the restart.
-   if(!live.idle())return response(res,409,{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'});
+   if(!allIdle())return response(res,409,{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'});
    const wasArmed=live.armed;live.updating=true;live.disarm();
    const step=(pct,label)=>{updateJob={...updateJob,active:true,pct:Math.max(updateJob.pct||0,Math.round(pct*10)/10),label,at:Date.now()}};
    updateJob={active:true,pct:0,label:'업데이트 시작',startedAt:Date.now()};step(2,'GitHub에서 새 버전 확인');
@@ -1385,9 +1394,9 @@ const server=http.createServer(async(req,res)=>{
     if(wasArmed&&LIVE.mode==='TESTNET')try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,at:Date.now(),from:result.from,to:result.to}))}catch{}
     response(res,200,{...result,rearm:wasArmed&&LIVE.mode==='TESTNET'});
     console.log('[UPDATE]',result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
-    (async()=>{for(let i=0;i<1200&&!live.idle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
+    (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
      // Paused only once idle; if never idle in 10 minutes the restart waits for the next tap.
-     if(live.idle()){step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
+     if(allIdle()){step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
     return;
    }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,at:Date.now()};live.updating=false;return response(res,502,{error:e.message})}
   }
@@ -1567,6 +1576,6 @@ let shuttingDown=false;
 const gracefulShutdown=async()=>{
  if(shuttingDown)return;shuttingDown=true;
  // No new venue work, then wait (max 15 s) for an order, cancel or position check in progress.
- try{live.updating=true;live.paused=true;live.disarm();for(let i=0;i<30&&!live.idle();i++)await new Promise(r=>setTimeout(r,500))}catch{}
+ try{live.updating=true;live.paused=true;live.disarm();for(let i=0;i<30&&!allIdle();i++)await new Promise(r=>setTimeout(r,500))}catch{}
  try{save()}catch(e){console.error('[SHUTDOWN STORE]',e.message)}server.close(()=>process.exit(0));setTimeout(()=>process.exit(0),2000)};
 process.on('SIGINT',gracefulShutdown);process.on('SIGTERM',gracefulShutdown);
