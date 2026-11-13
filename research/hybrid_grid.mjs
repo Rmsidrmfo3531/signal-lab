@@ -5,7 +5,8 @@ import fs from 'node:fs';import path from 'node:path';import zlib from 'node:zli
 import {planProfile} from '../dca_plan.mjs';
 import {runPortfolio,portfolioMetrics} from '../portfolio_sim.mjs';
 const [cache,sigFile,outFile]=process.argv.slice(2),HOUR=3600000,SEEDS=Number(process.env.SEEDS||20);
-const {signals}=JSON.parse(fs.readFileSync(sigFile,'utf8'));const candles={};
+// The server allows LONG only while BTC's 4H trend is up (btcLongBlocked): applied when the signal file has btcTrend.
+const signals=JSON.parse(fs.readFileSync(sigFile,'utf8')).signals.filter(s=>!(s.btcTrend!==undefined&&s.direction==='LONG'&&s.btcTrend!=='up'));const candles={};
 for(const s of [...new Set(signals.map(x=>x.symbol))])candles[s]=JSON.parse(zlib.gunzipSync(fs.readFileSync(path.join(cache,s+'_1h.json.gz')))).map(r=>({t:+r[0],o:+r[1],h:+r[2],l:+r[3],c:+r[4]}));
 const W={train:[Date.UTC(2025,11,1),Date.UTC(2026,6,1)],validation:[Date.UTC(2026,6,1),Date.UTC(2026,10,13)],stressAug2026:[Date.UTC(2026,7,1),Date.UTC(2026,8,1)],full:[Date.UTC(2025,11,1),Date.UTC(2026,10,13)]};
 const rng=seed=>()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296};

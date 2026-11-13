@@ -7,6 +7,7 @@ const MODE={OFF:{badge:'OFF',text:'주문 없음',title:'실매매 (꺼짐)',cls
  LIVE:{badge:'LIVE',text:'실제 돈',title:'실매매 (실거래)',cls:'live'}};
 export const modeInfo=mode=>MODE[mode]||{badge:String(mode||'?'),text:'확인 필요',title:'실매매',cls:'off'};
 const LIVE_STATUS={SUBMITTING:'주문 접수 중',OPEN:'보유 중',CLOSED:'종료',FAILED:'주문 실패',UNKNOWN:'확인 필요'};
+const horizonTag=x=>x?.horizon?`<span class="horizon-tag h-${x.horizon.code==='SHORT_TERM'?'short':'long'}" title="${esc((x.pattern?x.pattern+' · ':'')+x.horizon.hint)}">${esc(x.horizon.label)}</span>`:'';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fin=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
 const qtyFmt=v=>fin(v)?Number(v).toLocaleString('en-US',{maximumFractionDigits:8}):'—';
@@ -56,7 +57,7 @@ export function positionCardHTML(p){
  const pnl=u?`<b class="${pnlClass(u.usd)}">${usd(u.usd)}${fin(u.pct)?` (${Number(u.pct)>=0?'+':''}${Number(u.pct).toFixed(2)}%)`:''}</b><small>${u.source==='EXCHANGE'?'거래소 계산':'추정 (평균가·현재가)'}${fin(u.pct)?' · 증거금 대비':''}</small>`:'<b>—</b><small>시세 대기</small>';
  const ev=p.lastEvent?`${esc(p.lastEvent.label)}${p.lastEvent.reason?' · '+esc(p.lastEvent.reasonKo||p.lastEvent.reason):''} · ${time(p.lastEvent.at)}`:'—';
  return `<article class="paper-trade live-position${p.status==='UNKNOWN'?' live-warn':''}">
- <header><b>${esc(p.symbol)}</b>${side(p.direction)}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · ${esc(LABEL[p.venue]||p.venue)}</span><span class="live-state s-${esc(p.status)}">${esc(p.statusKo||LIVE_STATUS[p.status]||p.status)}</span></header>
+ <header><b>${esc(p.symbol)}</b>${side(p.direction)}${horizonTag(p)}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · ${esc(LABEL[p.venue]||p.venue)}</span><span class="live-state s-${esc(p.status)}">${esc(p.statusKo||LIVE_STATUS[p.status]||p.status)}</span></header>
  <div class="paper-trade-values live-values">
   <span>첫 진입가<b>${pf(p.firstEntryPrice)}</b></span>
   <span>평균 진입가<b>${pf(p.averageEntryPrice)}</b></span>
@@ -86,7 +87,7 @@ function realizedHTML(r){
 export function closedCardHTML(c){
  const pf=priceFmt(c);
  return `<article class="paper-trade live-closed">
- <header><b>${esc(c.symbol)}</b>${side(c.direction)}<span>${fin(c.leverage)?esc(c.leverage)+'배':''} · ${esc(LABEL[c.venue]||c.venue)}</span>${c.test?'<span class="live-state">시험 주문 (합계 제외)</span>':''}<span>${esc(c.closeReasonKo)}</span></header>
+ <header><b>${esc(c.symbol)}</b>${side(c.direction)}${horizonTag(c)}<span>${fin(c.leverage)?esc(c.leverage)+'배':''} · ${esc(LABEL[c.venue]||c.venue)}</span>${c.test?'<span class="live-state">시험 주문 (합계 제외)</span>':''}<span>${esc(c.closeReasonKo)}</span></header>
  <div class="paper-trade-values">
   <span>진입 → 종료<b>${time(c.createdAt)} → ${time(c.closedAt)}</b></span>
   <span>평균 진입가<b>${pf(c.averageEntryPrice)}</b></span>
