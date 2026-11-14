@@ -261,14 +261,47 @@ test('copy: the screen gets PnL from the last price and a fresh balance',async()
  assert.ok(Math.abs(q.unrealized-p.avg*0.1*q.qty)<1e-9,'short PnL: '+q.unrealized);assert.equal(s.funds.equity,412);
 });
 
-test('copy: a change for a position we do not hold says why (skipped entry / never received)',async()=>{
- const chg=(sym,a,b)=>`📊 포지션 변경\n🪙 ${sym}  🟢 Long\n수량 ${a} → ${b}\n현재가 0.05 USDT`;
+test('copy: a missed position is entered late on the trader\'s add (with the reason); never after our own close, never on a cut',async()=>{
+ const chg=(sym,dir,a,b)=>`📊 포지션 변경\n🪙 ${sym}  ${dir==='LONG'?'🟢 Long':'🔴 Short'}\n수량 ${a} → ${b}\n현재가 0.05 USDT`;
+ // The entry was skipped (no free margin); the add later finds no free margin either: the reason is kept.
  const v=venue(),ex=make(v,{free:1});
  assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).reason,'MARGIN_SHORT');
- await ex.handle({id:2,date:1e12+60000,text:chg('TNSRUSDT',880,1760).replace('🟢 Long','🔴 Short')});
- const e=ex.status().events.find(x=>x.reason==='NOT_COPIED');assert.equal(e.cause,'MARGIN_SHORT');assert.equal(e.from,880);
- await ex.handle({id:3,date:1e12+60000,text:chg('BTWUSDT',200,400)});
- const e2=ex.status().events.filter(x=>x.reason==='NOT_COPIED')[0];assert.equal(e2.cause,'NO_ENTRY_RECEIVED');
+ await ex.handle({id:2,date:1e12+60000,text:chg('TNSRUSDT','SHORT',880,1760)});
+ const late=ex.status().events.find(x=>x.type==='LATE_ENTRY');assert.equal(late.cause,'MARGIN_SHORT');assert.equal(v.size,0);
+ // Never received: the add opens a new position now (the minimum order), tracked from the trader's 1760.
+ const v2=venue(),ex2=make(v2);
+ const r=await ex2.handle({id:3,date:1e12+60000,text:chg('TNSRUSDT','SHORT',880,1760)});
+ assert.equal(r.ok,true);assert.ok(v2.size>0);const p=ex2.status().positions[0];assert.equal(p.theirFirstQty,1760);
+ assert.equal(ex2.status().events.find(x=>x.type==='OPENED').late,true);
+ // A cut of a missed position does not enter.
+ const v3=venue(),ex3=make(v3);
+ assert.equal((await ex3.handle({id:4,date:1e12,text:chg('TNSRUSDT','SHORT',1760,880)})).reason,'NOT_COPIED');assert.equal(v3.size,0);
+ assert.equal(ex3.status().events.find(x=>x.reason==='NOT_COPIED').cause,'NO_ENTRY_RECEIVED');
+ // Off switch.
+ assert.equal(copyConfig({COPY_LATE_ENTRY:'off'},'TESTNET').lateEntry,false);assert.equal(copyConfig({},'TESTNET').lateEntry,true);
+});
+
+test('copy: no late entry after our own close; old messages that arrive late are ignored',async()=>{
+ const chg=(a,b)=>`📊 포지션 변경\n🪙 TNSRUSDT  🔴 Short\n수량 ${a} → ${b}\n현재가 0.05 USDT`;
+ // Opened, then closed by hand on the venue: the next add finds it gone, the one after must not reopen it.
+ const v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);
+ await ex.handle({id:2,date:1e12+60000,text:chg(880,1760)});
+ const r=await ex.handle({id:3,date:1e12+120000,text:chg(1760,3520)});
+ assert.equal(r.reason,'NOT_COPIED');assert.equal(v.size,0);
+ assert.equal(ex.status().events.find(x=>x.reason==='NOT_COPIED').cause,'OUR_COPY_CLOSED');
+ // An entry card while the trader still holds it (an add in card form) does not reopen it either.
+ assert.equal((await ex.handle({id:4,date:1e12+150000,text:OPEN.replace('0.05296','0.05100')})).reason,'OUR_COPY_CLOSED');assert.equal(v.size,0);
+ // After the trader closes, a new entry is followed again.
+ const nowT=ex.now;ex.now=()=>nowT()+1000;
+ await ex.handle({id:7,date:1e12+170000,text:'✅ 포지션 청산\n🪙 TNSRUSDT  🔴 Short\n진입가 0.05296 USDT\n최종손익 🟢 +1.72 USDT'});
+ assert.equal((await ex.handle({id:8,date:1e12+180000,text:OPEN.replace('0.05296','0.05100')})).ok,true);
+ // Gone on the venue before the trader's close card: the trader's next entry is followed.
+ const v4=venue(),ex4=make(v4);let t4=1e12;ex4.now=()=>t4;await ex4.handle({id:20,date:1e12,text:OPEN});v4.setSize(0);
+ t4+=1000;await ex4.handle({id:21,date:1e12+60000,text:'✅ 포지션 청산\n🪙 TNSRUSDT  🔴 Short\n진입가 0.05296 USDT\n최종손익 🟢 +1.72 USDT'});
+ t4+=1000;assert.equal((await ex4.handle({id:22,date:1e12+120000,text:OPEN.replace('0.05296','0.05100')})).ok,true);
+ // An entry card older than a message already handled for the coin is history.
+ const v2=venue(),ex2=make(v2);await ex2.handle({id:5,date:1e12+60000,text:chg(880,1760)});const after=v2.size;
+ assert.equal((await ex2.handle({id:6,date:1e12,text:OPEN})).reason,'STALE_MESSAGE');assert.equal(v2.size,after);
 });
 
 test('copy FIRST_1USD (selectable): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
@@ -357,7 +390,8 @@ test('copy MIN_ORDER: the minimum is met at the venue price, a 101400 minimum is
  ex=mk(v,async()=>0.051);await ex.handle({id:1,date:1e12,text:OPEN});
  assert.equal(ex.status().positions.length,0);
  await ex.handle({id:2,date:1e12+60000,text:CHANGE(880,1760)});
- const e=ex.status().events.find(x=>x.reason==='NOT_COPIED');assert.equal(e.cause,'VENUE_ERROR_101400');assert.match(e.causeDetail,/149/);
+ // With late entry on, the add tries again (LATE_ENTRY) and keeps the cause.
+ const e=ex.status().events.find(x=>x.reason==='NOT_COPIED'||x.type==='LATE_ENTRY');assert.equal(e.cause,'VENUE_ERROR_101400');assert.match(e.causeDetail,/149/);
  // A minimum above the 5 $ margin limit is not retried.
  v=venue();n=0;v.client.placeOrder=async p=>{if(p.type==='MARKET'&&n++===0)throw Object.assign(Error('The minimum order amount is 9000 TNSR.'),{code:'VENUE_ERROR_101400'});return {}};
  ex=mk(v,async()=>0.051);await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(n,1);assert.equal(ex.status().positions.length,0);
@@ -375,7 +409,8 @@ test('copy: a "- → q" entry refused twice still explains the next change card;
  let v=venue();v.client.placeOrder=async p=>{if(p.type==='MARKET')throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return {}};
  let ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.053,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  await ex.handle({id:1,date:1e12,text:chg('-',880)});await ex.handle({id:2,date:1e12+60000,text:chg(880,1760)});
- const e=ex.status().events.find(x=>x.reason==='NOT_COPIED');assert.equal(e.cause,'VENUE_ERROR_101400');
+ // With late entry on, the add tries again (LATE_ENTRY) and keeps the cause.
+ const e=ex.status().events.find(x=>x.reason==='NOT_COPIED'||x.type==='LATE_ENTRY');assert.equal(e.cause,'VENUE_ERROR_101400');
  // Cap 1 % of 100 = 1 $: the first 42 coins fit, the 149-coin retry (1.5 $) does not.
  v=venue();let n=0;const place=v.client.placeOrder;v.client.placeOrder=async p=>{if(p.type==='MARKET'&&!p.reduceOnly&&n++===0)throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return place(p)};
  ex=new CopyExecutor({config:copyConfig({COPY_MAX_TOTAL_MARGIN_PCT:'1'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.051,balance:async()=>({equity:100,available:90}),now:()=>1e12});

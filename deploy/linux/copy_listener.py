@@ -47,17 +47,18 @@ async def on_message(event):
     payload = {'id': msg.id, 'date': int(msg.date.timestamp() * 1000), 'text': msg.message or ''}
     if not payload['text']:
         return
-    try:
-        res = await asyncio.get_running_loop().run_in_executor(None, post, payload)
-        print(f"[COPY] {msg.id} -> {res}", flush=True)
-    except Exception as e:  # the server may be restarting: try once more shortly after
-        print(f"[COPY] {msg.id} 전달 실패: {e}", flush=True)
-        await asyncio.sleep(5)
+    # The server may be restarting (an update takes up to about a minute): retry for about 3 minutes.
+    # The server ignores a message id it has already handled, so a retry never trades twice.
+    for wait in (0, 3, 5, 10, 15, 20, 30, 30, 30, 30):
+        if wait:
+            await asyncio.sleep(wait)
         try:
             res = await asyncio.get_running_loop().run_in_executor(None, post, payload)
-            print(f"[COPY] {msg.id} -> {res} (재시도)", flush=True)
-        except Exception as e2:
-            print(f"[COPY] {msg.id} 재시도 실패: {e2}", flush=True)
+            print(f"[COPY] {msg.id} -> {res}" + (f" (재시도, {wait}초 대기 후)" if wait else ''), flush=True)
+            return
+        except Exception as e:
+            print(f"[COPY] {msg.id} 전달 실패: {e}", flush=True)
+    print(f"[COPY] {msg.id} 최종 전달 실패 (약 3분 재시도)", flush=True)
 
 async def main():
     await client.start()  # first run (copy.sh): asks for the phone number and the login code
