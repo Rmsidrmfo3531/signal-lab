@@ -220,6 +220,14 @@ test('copy entries need 90 % of the free margin; a venue minimum above 5 $ of ma
  assert.equal((await ex2.handle({id:1,date:1e12,text:card})).reason,'MIN_ORDER_TOO_LARGE');assert.equal(v2.size,0);
 });
 
+test('copy: an account in hedge mode is refused before any setting or order (BingX 109400)',async()=>{
+ const v=venue();v.client.positionMode=async()=>({dualSidePosition:'true'});
+ const ex=make(v);const r=await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(r.reason,'BINGX_HEDGE_MODE');assert.equal(v.size,0);assert.equal(v.calls.length,0);
+ v.client.positionMode=async()=>({dualSidePosition:'false'});
+ const v2=venue();v2.client.positionMode=async()=>({dualSidePosition:false});const ex2=make(v2);await ex2.handle({id:1,date:1e12,text:OPEN});assert.ok(v2.size>0);
+});
+
 test('copy FIRST_1USD (selectable): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
