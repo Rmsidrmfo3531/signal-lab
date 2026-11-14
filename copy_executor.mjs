@@ -109,11 +109,15 @@ export class CopyExecutor{
   const at=num(date)??this.now();
   if(m.kind==='MONITOR_START'){this.store.monitorStartAt=at;this.#event('MONITOR_START');this.#save();return {ok:true}}
   if(!this.config.enabled){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_OFF'});this.#save();return {ok:false,reason:'COPY_OFF'}}
+  this.step=null;
   try{
    const r=m.kind==='OPEN'?await this.#open(m,at):m.kind==='CHANGE'?await this.#change(m,at):await this.#close(m,'TRADER_CLOSE');
    this.#save();return r;
   }catch(error){
-   this.#event('ERROR',{symbol:m.symbol,kind:m.kind,reason:error.code||error.message});
+   // The exchange's own message and the step that failed (user 2026-11-14: "VENUE_ERROR_109400" alone
+   // could not tell a hedge-mode account from a bad leverage or quantity).
+   const detail=[this.step&&`단계 ${this.step}`,error.code&&error.message&&error.message!==error.code&&`BingX: ${error.message}`].filter(Boolean).join(' · ').slice(0,200);
+   this.#event('ERROR',{symbol:m.symbol,kind:m.kind,reason:error.code||error.message,...(detail?{detail}:{})});
    // A close or a cut that failed (e.g. rate limit) is tried again by the routine check; a late entry or add is not.
    const job=error.retryAs??m;if(job.kind==='CLOSE'||job.kind==='CHANGE'&&job.to<job.from)this.store.pending.push({m:job,at,tries:0});
    this.#save();return {ok:false,reason:error.code||error.message}}
@@ -124,6 +128,7 @@ export class CopyExecutor{
  async #position(p){const list=await this.client.positions(p.venueSymbol),row=(Array.isArray(list)?list:[]).find(x=>x.symbol===p.venueSymbol);
   return {size:row?Math.abs(Number(row.positionAmt)||0):0,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null}}
  async #market(p,side,quantity,{reduceOnly=false,tag}){
+  this.step=tag==='open'?'진입 주문':'시장가 주문';
   const params={symbol:p.venueSymbol,side,positionSide:'BOTH',type:'MARKET',quantity:String(quantity),clientOrderId:('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)};
   if(reduceOnly)params.reduceOnly='true';
   const res=orderOf(await this.client.placeOrder(params));return {orderId:res?.orderId??null,avg:pos(res?.avgPrice)};
@@ -232,12 +237,14 @@ export class CopyExecutor{
    if(!(venuePrice>0)){if(c.alias){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}}
    else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
   let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.config.maxLeverage));
-  try{const info=await this.client.leverage(venueSymbol),maxL=Number(info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
+  this.step='레버리지 조회';try{const info=await this.client.leverage(venueSymbol),maxL=Number(info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
   // Orders use positionSide BOTH (one-way mode). An account in hedge mode answers 109400 (user 2026-11-14,
   // AKEUSDT on the real account): say so before any setting or order is sent.
   {let mode=null;try{mode=await this.client.positionMode?.()}catch{}
    if(mode?.dualSidePosition===true||mode?.dualSidePosition==='true'){this.#event('SKIPPED',{symbol:m.symbol,reason:'BINGX_HEDGE_MODE'});return {ok:false,reason:'BINGX_HEDGE_MODE'}}}
+  this.step='증거금 모드 설정';
   try{await this.client.setMarginType(venueSymbol,'CROSSED')}catch{}
+  this.step='레버리지 설정';
   await this.client.setLeverage(venueSymbol,'BOTH',leverage);
   // unitMultiplier: venue contract of 1000 coins (1000PEPE) -> quantities / 1000, prices x 1000.
   const mult=Number(c.unitMultiplier)||1,price=(pos(m.price)??pos(m.entry))*mult;

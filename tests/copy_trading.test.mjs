@@ -228,6 +228,14 @@ test('copy: an account in hedge mode is refused before any setting or order (Bin
  const v2=venue();v2.client.positionMode=async()=>({dualSidePosition:false});const ex2=make(v2);await ex2.handle({id:1,date:1e12,text:OPEN});assert.ok(v2.size>0);
 });
 
+test('copy: a venue error shows the exchange message and the failed step',async()=>{
+ const {VenueHttpError}=await import('../bingx_market.mjs');
+ const v=venue();v.client.setLeverage=async()=>{throw new VenueHttpError('VENUE_ERROR_109400','PositionSide must be LONG or SHORT in hedge mode')};
+ const ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});
+ const e=ex.status().events.find(x=>x.type==='ERROR');assert.equal(e.reason,'VENUE_ERROR_109400');
+ assert.match(e.detail,/단계 레버리지 설정/);assert.match(e.detail,/BingX: PositionSide must be/);
+});
+
 test('copy FIRST_1USD (selectable): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
