@@ -26,7 +26,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'MIN_ORDER',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
+export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'MIN_ORDER',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -63,7 +63,9 @@ export function copyConfig(env=process.env,liveMode='OFF'){
  // possible): the first buy is the venue's smallest valid order; later buys follow the trader's
  // quantities in proportion to that first buy (small ones carried until they make a valid order).
  const sz=String(env.COPY_SIZING||'').toUpperCase(),sizing=['BALANCE_RATIO','FIRST_1USD'].includes(sz)?sz:'MIN_ORDER';
- return {enabled,mode,sizing,traderBalanceUSD:n('COPY_TRADER_BALANCE_USD',COPY_DEFAULTS.traderBalanceUSD,100,1e9),marginUSD:n('COPY_MARGIN_USD',COPY_DEFAULTS.marginUSD,.1,1000),maxLossPct:n('COPY_MAX_LOSS_PCT',COPY_DEFAULTS.maxLossPct,1,90),
+ return {enabled,mode,sizing,traderBalanceUSD:n('COPY_TRADER_BALANCE_USD',COPY_DEFAULTS.traderBalanceUSD,100,1e9),marginUSD:n('COPY_MARGIN_USD',COPY_DEFAULTS.marginUSD,.1,1000),
+  // MIN_ORDER's first buy is at least this much margin (user 2026-11-14: BTC/ETH minimums were too small); 0 = the bare minimum.
+  firstMarginUSD:n('COPY_FIRST_MARGIN_USD',COPY_DEFAULTS.firstMarginUSD,0,1000),maxLossPct:n('COPY_MAX_LOSS_PCT',COPY_DEFAULTS.maxLossPct,1,90),
   snapshotMs:n('COPY_SNAPSHOT_MS',COPY_DEFAULTS.snapshotMs,0,3600000),maxLeverage:n('COPY_MAX_LEVERAGE',COPY_DEFAULTS.maxLeverage,1,125),
   // All copy positions together: margin at most this share of the equity (adds beyond it skipped), and
   // when their open loss reaches COPY_LEDGER_LOSS_PCT of the equity everything is closed and copying stops.
@@ -98,7 +100,7 @@ export class CopyExecutor{
  #event(type,detail={}){const e={type,at:this.now(),mode:this.config.mode,...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
- status(){return {funds:this.funds??null,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+ status(){return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:this.store.closed.slice(-50).reverse(),events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
 
  /** status() with fresh numbers for the screen (user 2026-11-14: the real-account page did not update):
@@ -297,7 +299,7 @@ export class CopyExecutor{
    scale=eq/this.config.traderBalanceUSD;
   }
   const minOnly=this.config.sizing==='MIN_ORDER';
-  let qty=scale!=null?this.#qty(c,m.quantity*scale/mult):minOnly?0:this.#qty(c,this.config.marginUSD*leverage/price);
+  let qty=scale!=null?this.#qty(c,m.quantity*scale/mult):minOnly?this.#qty(c,this.config.firstMarginUSD*leverage/price):this.#qty(c,this.config.marginUSD*leverage/price);
   const minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
   // Below the venue minimum: the smallest valid order instead (flagged: larger than the ratio asks).
   let minOrder=false;

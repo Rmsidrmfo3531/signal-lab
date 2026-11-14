@@ -304,6 +304,18 @@ test('copy: no late entry after our own close; old messages that arrive late are
  assert.equal((await ex2.handle({id:6,date:1e12,text:OPEN})).reason,'STALE_MESSAGE');assert.equal(v2.size,after);
 });
 
+test('copy MIN_ORDER: the first buy is at least 0.3 $ of margin (BTC at 80x), the venue minimum when that is less',async()=>{
+ assert.equal(copyConfig({},'TESTNET').firstMarginUSD,0.3);
+ const btc={...contract,minQuantityBase:'0.0001',quantityStep:'0.0001',minNotionalUSDT:'2',tickSize:'0.1'};
+ const card=`📌 포지션 진입\nBTCUSDT 🟢 Long ×80\n진입가 67727.2 USDT\n현재가 67727.2 USDT\n수량 0.5`;
+ const v=venue();v.client.leverage=async()=>({maxLongLeverage:125});
+ const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>btc,markOf:async()=>67727.2,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ await ex.handle({id:1,date:1e12,text:card});
+ // 0.3 $ x 80 / 67727 = 0.000354 -> 0.0003 BTC (about 0.25 $ of margin; the bare minimum 0.0001 was 0.08 $).
+ assert.equal(v.calls.find(c=>c.type==='MARKET').quantity,'0.0003');
+ assert.equal(copyConfig({COPY_FIRST_MARGIN_USD:'0'},'TESTNET').firstMarginUSD,0);
+});
+
 test('copy FIRST_1USD (selectable): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
