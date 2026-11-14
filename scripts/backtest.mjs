@@ -20,7 +20,7 @@ export function parseArgs(argv){
  for(let i=0;i<argv.length;i++){
   const key=argv[i],value=argv[i+1];
   if(key==='--days'){out.days=Math.max(7,Math.min(365,Number(value)||60));i++}
-  else if(key==='--symbols'){out.symbols=String(value||'').toUpperCase().split(',').map(s=>s.trim()).filter(s=>/^[A-Z0-9]{2,20}USDT$/.test(s)).slice(0,40);i++}
+  else if(key==='--symbols'){out.symbols=String(value||'').toUpperCase().split(',').map(s=>s.trim()).filter(s=>/^[A-Z0-9]{2,20}USDT$/.test(s)).slice(0,80);i++}
   else if(key==='--leverage'){out.leverage=Math.max(10,Math.min(20,Number(value)||10));i++}
   else if(key==='--unit-pct'){out.unitPct=Math.max(.01,Math.min(10,Number(value)||DCA_DEFAULTS.unitPct));i++}
   else if(key==='--max-loss-pct'){out.maxLossPct=Math.max(1,Math.min(95,Number(value)||30));i++}
@@ -35,6 +35,13 @@ export function parseArgs(argv){
   else if(key==='--all-patterns'){out.allPatterns=true}
   else if(key==='--candidates'){out.candidates=true}
   else if(key==='--offline'){out.offline=true}
+  // --source bingx: BingX candles and contract rules (small coins Binance does not list, user 2026-11-14).
+  // BingX keeps only about 30 days of 5m and 3 months of 15m candles (checked 2026-11-14): use --days 30~40.
+  else if(key==='--source'){out.source=String(value||'').toLowerCase()==='bingx'?'bingx':'binance';i++}
+  // --small N (BingX only): N coins by 24h volume after the largest --skip-top (default 30); see smallUniverse.
+  else if(key==='--small'){out.small=Math.max(1,Math.min(80,Math.round(Number(value))||60));i++}
+  else if(key==='--skip-top'){out.skipTop=Math.max(0,Math.min(200,Math.round(Number(value))||0));i++}
+  else if(key==='--scalp-only'){out.scalpOnly=true}
   else if(key==='--btc-long-filter'){if(!['up','notdown','off'].includes(value))throw Error('--btc-long-filter는 up, notdown, off 중 하나입니다');out.btcLongFilter=value==='off'?null:value;i++} // default 'up' (as the server); 'off' disables
   else if(key==='--min-box-atr'){out.minBoxWidthAtr=Math.max(0,Number(value)||0);i++}
   else if(key==='--hourly-max-hold-days'){out.hourlyMaxHoldMs=Math.max(0,Number(value)||0)*86400000||null;i++}
@@ -53,7 +60,22 @@ async function getJSON(url,tries=4){
   catch(e){if(a>=tries)throw e;await sleep(1500*a)}
  }
 }
-let OFFLINE=false;
+let OFFLINE=false,SOURCE='binance';
+const BINGX='https://open-api.bingx.com',bingxSymbol=s=>s.replace(/USDT$/,'-USDT');
+/** BingX contract rules in the Binance exchangeInfo shape used below. */
+export function bingxInfo(contracts){
+ return {symbols:(Array.isArray(contracts)?contracts:[]).filter(c=>/-USDT$/.test(c.symbol)&&Number(c.status)===1).map(c=>{
+  const pp=Number(c.pricePrecision),qp=Number(c.quantityPrecision),tick=Number((10**-pp).toFixed(pp)),step=Number((10**-qp).toFixed(qp));
+  return {symbol:c.symbol.replace('-USDT','USDT'),filters:[{filterType:'PRICE_FILTER',tickSize:tick},{filterType:'LOT_SIZE',stepSize:step,minQty:Number(c.tradeMinQuantity)||step},{filterType:'MIN_NOTIONAL',notional:Number(c.tradeMinUSDT)||2}]}})};
+}
+/** Small, liquid BingX coins: USDT perpetuals (no stock/forex 'NC' contracts) by 24h quote volume,
+ * skipping the largest `skipTop`, then the next `n` with at least $1M of volume. */
+export function smallUniverse(tickers,info,{n=60,skipTop=30,minVolume=1e6}={}){
+ const listed=new Set(info.symbols.map(s=>s.symbol));
+ const rows=(Array.isArray(tickers)?tickers:[]).map(t=>({symbol:String(t.symbol).replace('-USDT','USDT'),vol:Number(t.quoteVolume)||0}))
+  .filter(t=>listed.has(t.symbol)&&!/^NC/.test(t.symbol)).sort((a,b)=>b.vol-a.vol);
+ return rows.slice(skipTop).filter(t=>t.vol>=minVolume).slice(0,n).map(t=>t.symbol);
+}
 async function klines(symbol,interval,start,end,cacheDir){
  const file=path.join(cacheDir,`${symbol}_${interval}.json`),step=INTERVAL_MS[interval];
  let rows=[];try{rows=JSON.parse(fs.readFileSync(file,'utf8'))}catch{}
@@ -62,6 +84,13 @@ async function klines(symbol,interval,start,end,cacheDir){
  if(!rows.length||Number(rows[0][0])>start)rows=[];
  let from=rows.length?Number(rows.at(-1)[0])+step:start;
  while(from<end){
+  if(SOURCE==='bingx'){
+   // BingX v3 klines: objects, newest first, at most 1440 per call. Converted to Binance rows.
+   const to=Math.min(end,from+1440*step),res=await getJSON(`${BINGX}/openApi/swap/v3/quote/klines?symbol=${bingxSymbol(symbol)}&interval=${interval}&startTime=${from}&endTime=${to}&limit=1440`);
+   const batch=(Array.isArray(res?.data)?res.data:[]).map(k=>[Number(k.time),k.open,k.high,k.low,k.close,k.volume,Number(k.time)+step-1]).filter(r=>r[0]>=from&&r[0]<to).sort((a,b)=>a[0]-b[0]);
+   rows.push(...batch);from=batch.length?Math.max(to,batch.at(-1)[0]+step):to;
+   await sleep(120);continue;
+  }
   const batch=await getJSON(`${BASE}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&startTime=${from}&limit=1500`);
   if(!Array.isArray(batch)||!batch.length)break;
   rows.push(...batch.filter(r=>Number(r[0])>=from));from=Number(batch.at(-1)[0])+step;
@@ -169,9 +198,13 @@ function toCSV(trades){
 export async function main(argv=process.argv.slice(2)){
  const args=parseArgs(argv);let endAt=Date.now(),startAt=endAt-args.days*86400000;
  console.log(`백테스트 시작: ${args.days}일, ${args.symbols.join(', ')}`);
- OFFLINE=args.offline===true;
+ OFFLINE=args.offline===true;SOURCE=args.source??'binance';
+ if(SOURCE==='bingx')args.cache=args.cache+'-bingx'; // never mixed with the Binance candles
  const infoFile=path.join(args.cache,'exchangeInfo.json');let info=null;
  if(OFFLINE){try{info=JSON.parse(fs.readFileSync(infoFile,'utf8'))}catch{}}
+ else if(SOURCE==='bingx'){info=bingxInfo((await getJSON(`${BINGX}/openApi/swap/v2/quote/contracts`))?.data);
+  if(args.small){args.symbols=smallUniverse((await getJSON(`${BINGX}/openApi/swap/v2/quote/ticker`))?.data,info,{n:args.small,skipTop:args.skipTop??30});console.log(`작은 코인 ${args.symbols.length}개: ${args.symbols.join(', ')}`)}
+  try{fs.mkdirSync(args.cache,{recursive:true});fs.writeFileSync(infoFile,JSON.stringify({symbols:info.symbols.filter(s=>args.symbols.includes(s.symbol)||s.symbol==='BTCUSDT')}))}catch{}}
  else{info=await getJSON(`${BASE}/fapi/v1/exchangeInfo`);
   try{fs.mkdirSync(args.cache,{recursive:true});fs.writeFileSync(infoFile,JSON.stringify({symbols:info.symbols.filter(s=>args.symbols.includes(s.symbol)).map(s=>({symbol:s.symbol,filters:s.filters}))}))}catch{}}
  const warm4h=320*14400000,warm1h=210*HOUR;
@@ -188,11 +221,12 @@ export async function main(argv=process.argv.slice(2)){
   if(!filters){console.log(`${symbol}: 거래소 목록에 없음, 건너뜀`);continue}
   process.stdout.write(`${symbol}: 캔들 받는 중… `);
   const h4=symbol==='BTCUSDT'?btcH4:await klines(symbol,'4h',startAt-warm4h,endAt,args.cache);
-  const h1=await klines(symbol,'1h',startAt-warm1h,endAt,args.cache);
+  const h1=args.scalpOnly?[]:await klines(symbol,'1h',startAt-warm1h,endAt,args.cache);
   const m15=await klines(symbol,'15m',startAt-4*86400000,endAt,args.cache);
   const m5=await klines(symbol,'5m',startAt-6*HOUR,endAt,args.cache);
   process.stdout.write(`1H ${h1.length} · 5m ${m5.length} → 계산 중… `);
-  const hourly=backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:args.patterns?.length?{patterns:args.patterns}:{}),
+  // --scalp-only: the reversal scalps only (no 1H strategy, no 1h candles).
+  const hourly=args.scalpOnly?{trades:[],funnel:{bars:0,patterns:0,validated:0,scoreOk:0,planned:0,chaseSkipped:0,planReasons:{}}}:backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:args.patterns?.length?{patterns:args.patterns}:{}),
    split:{balanceUSD:args.balance,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.hourlyMaxAdds,btcLongFilter:args.btcLongFilter??null,minBoxWidthAtr:args.minBoxWidthAtr??0,maxHoldMs:args.hourlyMaxHoldMs??null,zoneDays:args.zoneDays,marketCap:APPROX_MARKET_CAP[symbol]??1e9}});
   if(hourly.funnel.split){hourlyFunnel.split??={planned:0,fallback:0,sources:{}};hourlyFunnel.split.planned+=hourly.funnel.split.planned;hourlyFunnel.split.fallback+=hourly.funnel.split.fallback;
    for(const [k,v] of Object.entries(hourly.funnel.split.sources))hourlyFunnel.split.sources[k]=(hourlyFunnel.split.sources[k]||0)+v}
