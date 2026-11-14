@@ -134,10 +134,13 @@ const SERIOUS_KO={ENTRY_OUTCOME_UNKNOWN:'진입 결과 불명',STATUS_UNKNOWN:'�
 /** Copy-trading ledger (copy_executor.mjs): open copies, recent closes, recent skips/problems. */
 const COPY_WHY={BINGX_HEDGE_MODE:'BingX 계좌가 양방향(헤지) 모드 — 단방향 모드로 바꿔야 함',VENUE_POSITION_EXISTS:'거래소에 같은 코인 포지션이 이미 있음(수동 매매 등) — 합쳐지지 않게 건너뜀',MARGIN_SHORT:'여유 증거금 부족',SYMBOL_BUSY:'같은 종목 보유 중',SYMBOL_HELD_BY_SIGNAL_STRATEGY:'신호 전략이 같은 종목 보유 중',OPPOSITE_COPY_OPEN:'반대 방향 보유 중',
  MONITOR_RESTART_SNAPSHOT:'채널 재시작 직후 기존 포지션 재알림',LIVE_DISARMED:'실매매 비활성',KILL_SWITCH:'긴급 정지 중',NOT_TESTNET:'테스트넷 아님',NO_BINGX_CONTRACT:'BingX에 없는 종목',
- NOT_COPIED:'따라 들어가지 않은 포지션',QUANTITY_INVALID:'수량 계산 불가',NO_BALANCE:'잔고 조회 실패',HTTP_429:'요청 과다(잠시 후 재시도)',COPY_MARGIN_CAP:'카피 전체 증거금 한도',MIN_ORDER_TOO_LARGE:'거래소 최소 주문이 증거금 5달러 초과',PRICE_MISMATCH:'거래소 가격 불일치',PRICE_UNVERIFIED:'거래소 가격 확인 실패',QUANTITY_UNIT_UNCLEAR:'알림 수량 단위 불명',COPY_LOSS_LIMIT:'카피 손실 한도로 정지',LOSS_CAP_REACHED:'손실 한도 도달',NO_STOP:'보호 손절 실패로 청산'};
+ NOT_COPIED:'따라 들어가지 않은 포지션',QUANTITY_INVALID:'수량 계산 불가',NO_BALANCE:'잔고 조회 실패',HTTP_429:'요청 과다(잠시 후 재시도)',COPY_MARGIN_CAP:'카피 전체 증거금 한도',MIN_ORDER_TOO_LARGE:'거래소 최소 주문이 증거금 5달러 초과',PRICE_MISMATCH:'거래소 가격 불일치',PRICE_UNVERIFIED:'거래소 가격 확인 실패',VENUE_ERROR_101400:'거래소 주문 조건 미달(최소 주문 수량·금액 등)',QUANTITY_UNIT_UNCLEAR:'알림 수량 단위 불명',COPY_LOSS_LIMIT:'카피 손실 한도로 정지',LOSS_CAP_REACHED:'손실 한도 도달',NO_STOP:'보호 손절 실패로 청산'};
 // The cause behind "따라 들어가지 않은 포지션" (user 2026-11-14): the skipped entry, our earlier close, or no entry card.
-function notCopiedWhy(e,when){
+function notCopiedWhy(e,when,all=[]){
  if(e.reason!=='NOT_COPIED')return '';
+ // Records from before the server kept a cause: the last skip / failed entry of the same symbol before it.
+ if(!e.cause){const i=all.indexOf(e),prior=all.slice(i+1).find(x=>x.symbol===e.symbol&&(x.type==='OPENED'||(x.type==='SKIPPED'&&x.reason!=='NOT_COPIED')||(x.type==='ERROR'&&(x.entry||x.kind==='OPEN'||/진입/.test(x.detail||'')))));
+  if(prior&&prior.type!=='OPENED')e={...e,cause:prior.reason||prior.type,causeAt:prior.at,causeDetail:prior.detail??null}}
  const card=e.from!=null&&e.to!=null?`트레이더 수량 ${esc(e.from)} → ${esc(e.to)} · `:'';
  const why=e.cause==='NO_ENTRY_RECEIVED'?'카피에 진입 알림이 도착한 적 없음 (카피 시작·서버 재시작 전에 열렸거나 수신 실패)'
   :e.cause==='OUR_COPY_CLOSED'?`우리 카피는 ${when(e.causeAt)}에 먼저 종료됨 (${esc(COPY_WHY[e.causeDetail]||e.causeDetail||'')})`
@@ -180,7 +183,7 @@ export function copyHTML(c){
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>${closed.length>10?'최근 10건':''}</small></h5><ul class="copy-list only-mob">${closed.slice(0,10).map(done).join('')}</ul>${closedTable}`:'')+
-  (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span>${esc(e.symbol||'')} · ${esc(COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when)}</li>`).join('')}</ul>`:'')+'</div>';
+  (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span>${esc(e.symbol||'')} · ${esc(COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when,c.events||[])}</li>`).join('')}</ul>`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
 
