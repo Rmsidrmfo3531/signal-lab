@@ -68,7 +68,12 @@ test('copy: no entry right after a monitor restart, while disarmed, or on a symb
 
 test('copy: the protective stop closing it is booked; an error is reported, not thrown; LIVE never copies',async()=>{
  const v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);await ex.reconcile();
- assert.equal(ex.status().closed[0].closeReason,'STOP_OR_EXTERNAL');
+ // One empty answer does not close the ledger; the second in a row does.
+ assert.equal(ex.status().closed.length,0);assert.equal(ex.status().positions.length,1);
+ await ex.reconcile();assert.equal(ex.status().closed[0].closeReason,'STOP_OR_EXTERNAL');
+ // A position already on the venue (manual) is not added to.
+ const v3=venue();v3.setSize(5000);const ex3=make(v3);const r3=await ex3.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(r3.reason,'VENUE_POSITION_EXISTS');assert.equal(v3.size,5000);
  const bad=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),client:venue().client,contractOf:async()=>null,balance:async()=>null,now:()=>1});
  const r=await bad.handle({id:9,date:1,text:OPEN});assert.equal(r.reason,'NO_BINGX_CONTRACT');assert.equal(bad.status().events[0].type,'ERROR');
  assert.equal(copyConfig({},'LIVE').enabled,false);assert.equal(copyConfig({COPY_TRADING:'off'},'TESTNET').enabled,false);

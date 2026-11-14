@@ -245,6 +245,11 @@ export class CopyExecutor{
   // AKEUSDT on the real account): say so before any setting or order is sent.
   {let mode=null;try{mode=await this.client.positionMode?.()}catch{}
    if(mode?.dualSidePosition===true||mode?.dualSidePosition==='true'){this.#event('SKIPPED',{symbol:m.symbol,reason:'BINGX_HEDGE_MODE'});return {ok:false,reason:'BINGX_HEDGE_MODE'}}}
+  // Never add to a position already on the venue (a manual trade, or one the ledger lost): one-way mode
+  // would merge them and the trader's close would then close it all (user 2026-11-14, BTC 0.005).
+  this.step='거래소 포지션 확인';
+  {const list=await this.client.positions(venueSymbol),row=(Array.isArray(list)?list:[]).find(x=>x.symbol===venueSymbol),size=row?Math.abs(Number(row.positionAmt)||0):0;
+   if(size>0){this.#event('SKIPPED',{symbol:m.symbol,reason:'VENUE_POSITION_EXISTS',detail:`거래소에 이미 ${size} 보유`});return {ok:false,reason:'VENUE_POSITION_EXISTS'}}}
   this.step='증거금 모드 설정';
   try{await this.client.setMarginType(venueSymbol,'CROSSED')}catch{}
   this.step='레버리지 설정';
@@ -369,7 +374,11 @@ export class CopyExecutor{
   let unrealized=0;
   for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN')){
    try{const now=await this.#position(p);
-    if(!(now.size>0)){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}this.#closed(p,'STOP_OR_EXTERNAL',now);continue}
+    // One empty answer is not enough to close the ledger (a venue list can come back empty for a moment;
+    // the position would stay on the venue and the next card would buy again): two checks in a row.
+    if(!(now.size>0)){p.zeroSeen=(p.zeroSeen||0)+1;if(p.zeroSeen<2){this.#save();continue}
+     if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}this.#closed(p,'STOP_OR_EXTERNAL',now);continue}
+    p.zeroSeen=0;
     p.qty=now.size;p.avg=now.avg??p.avg;p.unrealized=now.unrealized;p.mark=now.mark;unrealized+=Number(now.unrealized)||0;
     if(this.config.stops&&(!p.stopOrderId||p.stopStale)||!this.config.stops&&p.stopOrderId)await this.#protect(p);
     if(this.config.stops&&p.stopZone&&await this.#zoneBroken(p).catch(()=>false)){await this.#emergency(p,'ZONE_BREAK_VOLUME');continue}
