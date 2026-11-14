@@ -26,7 +26,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'FIRST_1USD',traderBalanceUSD:20000,maxAdds:10,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
+export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'MIN_ORDER',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -59,12 +59,15 @@ export function copyConfig(env=process.env,liveMode='OFF'){
  // trader's quantities. BALANCE_RATIO (trader quantity x our equity / 20,000 $) is selectable. The copy may
  // use up to 100 % of the equity as margin, read from the exchange before every order; each order still
  // needs 90 % of the free margin to cover it.
- const sizing=String(env.COPY_SIZING||'').toUpperCase()==='BALANCE_RATIO'?'BALANCE_RATIO':'FIRST_1USD';
+ // MIN_ORDER (default, user 2026-11-14 12:31 "증거금을 최소한 매매가 진행될 수 있도록", adds as many as
+ // possible): the first buy is the venue's smallest valid order; later buys follow the trader's
+ // quantities in proportion to that first buy (small ones carried until they make a valid order).
+ const sz=String(env.COPY_SIZING||'').toUpperCase(),sizing=['BALANCE_RATIO','FIRST_1USD'].includes(sz)?sz:'MIN_ORDER';
  return {enabled,mode,sizing,traderBalanceUSD:n('COPY_TRADER_BALANCE_USD',COPY_DEFAULTS.traderBalanceUSD,100,1e9),marginUSD:n('COPY_MARGIN_USD',COPY_DEFAULTS.marginUSD,.1,1000),maxLossPct:n('COPY_MAX_LOSS_PCT',COPY_DEFAULTS.maxLossPct,1,90),
   snapshotMs:n('COPY_SNAPSHOT_MS',COPY_DEFAULTS.snapshotMs,0,3600000),maxLeverage:n('COPY_MAX_LEVERAGE',COPY_DEFAULTS.maxLeverage,1,125),
   // All copy positions together: margin at most this share of the equity (adds beyond it skipped), and
   // when their open loss reaches COPY_LEDGER_LOSS_PCT of the equity everything is closed and copying stops.
-  // Up to COPY_MAX_ADDS adds are followed (user 2026-11-13: 10); the position is closed when the price
+  // Up to COPY_MAX_ADDS adds are followed (user 2026-11-13: 10; 2026-11-14: as many as possible, 100); the position is closed when the price
   // closes beyond the stop zone on a 15m candle whose volume is COPY_BREAK_VOLUME_MULT x its 20-candle average.
   // COPY_STOPS=on brings back the exchange backstop and the volume-zone exit. Off by default (user
   // 2026-11-13, testnet: "손절라인을 없애보자"): the copy follows the trader's own exits; only the ledger
@@ -255,11 +258,13 @@ export class CopyExecutor{
    const eq=pos((await this.balance().catch(()=>null))?.equity);if(!eq)throw Object.assign(Error('NO_BALANCE'),{code:'NO_BALANCE'});
    scale=eq/this.config.traderBalanceUSD;
   }
-  let qty=scale!=null?this.#qty(c,m.quantity*scale/mult):this.#qty(c,this.config.marginUSD*leverage/price);
+  const minOnly=this.config.sizing==='MIN_ORDER';
+  let qty=scale!=null?this.#qty(c,m.quantity*scale/mult):minOnly?0:this.#qty(c,this.config.marginUSD*leverage/price);
   const minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
   // Below the venue minimum: the smallest valid order instead (flagged: larger than the ratio asks).
   let minOrder=false;
-  if(qty<minQ||qty*price<minN){qty=this.#qty(c,Math.max(minQ,minN/price*1.02),'UP');minOrder=true}
+  if(qty<minQ||qty*price<minN){qty=this.#qty(c,Math.max(minQ,minN/price*1.02),'UP');minOrder=!minOnly}
+  if(minOnly&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   // The card's quantity must be coins: with a 마진 line, quantity x price must match margin x leverage
   // (within 30 %), else it may be a contract count and is not traded.
   if(scale!=null&&m.marginUSD>0&&m.leverage>0){const implied=m.quantity*(price/mult)/(m.marginUSD*m.leverage);
@@ -272,7 +277,7 @@ export class CopyExecutor{
   if(minOrder&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
   const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
-   scale,mult,venueAlias:c.alias??null,minOrder,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
+   scale,mult,sizing:this.config.sizing,firstQty:qty,venueAlias:c.alias??null,minOrder,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
   // At most 3 s for the zones (the message queue must not wait on a slow profile); then the cap stop.
   try{const zones=await Promise.race([this.zonesOf(m.symbol,{tickSize:c.tickSize}),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
@@ -311,12 +316,14 @@ export class CopyExecutor{
   if(!(p.qty>0)){this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
   const g=this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(g.reason==='COPY_MAX_ADDS'?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
-  const marginUSD=p.scale==null&&p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
-  const add=p.scale!=null?this.#qty(c,theirQty*p.scale/(p.mult||1)):marginUSD!=null?this.#qty(c,marginUSD*p.leverage/price):this.#qty(c,p.qty*((ratio??((p.theirTotal+theirQty)/p.theirTotal))-1));
+  // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
+  const byFirst=p.scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
+  const marginUSD=p.scale==null&&byFirst==null&&p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
+  const add=p.scale!=null?this.#qty(c,theirQty*p.scale/(p.mult||1)):byFirst!=null?this.#qty(c,byFirst):marginUSD!=null?this.#qty(c,marginUSD*p.leverage/price):this.#qty(c,p.qty*((ratio??((p.theirTotal+theirQty)/p.theirTotal))-1));
   // Adds below the venue minimum are carried until they add up to a valid order (no drift from the trader).
   let buy=add;
   // Both sizings: adds below the venue minimum are carried until they add up to a valid order.
-  if(p.scale!=null||marginUSD!=null){const raw=(p.scale!=null?theirQty*p.scale/(p.mult||1):marginUSD*p.leverage/price)+(p.addCarry||0),minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
+  if(p.scale!=null||byFirst!=null||marginUSD!=null){const raw=(p.scale!=null?theirQty*p.scale/(p.mult||1):byFirst!=null?byFirst:marginUSD*p.leverage/price)+(p.addCarry||0),minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
    buy=this.#qty(c,raw);if(!(buy>0)||buy<minQ||buy*price<minN){p.addCarry=raw;this.#event('ADD_CARRIED',{symbol:p.symbol,carry:+raw.toPrecision(6)});return {ok:true,carried:true}}
    p.addCarry=Math.max(0,raw-buy)}
   else if(!(add>0))return {ok:true,tooSmall:true};
