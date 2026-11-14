@@ -130,7 +130,7 @@ export class CopyExecutor{
    // The exchange's own message and the step that failed (user 2026-11-14: "VENUE_ERROR_109400" alone
    // could not tell a hedge-mode account from a bad leverage or quantity).
    const detail=[this.step&&`단계 ${this.step}`,error.code&&error.message&&error.message!==error.code&&`BingX: ${error.message}`].filter(Boolean).join(' · ').slice(0,200);
-   this.#event('ERROR',{symbol:m.symbol,kind:m.kind,reason:error.code||error.message,...(detail?{detail}:{})});
+   this.#event('ERROR',{symbol:m.symbol,kind:m.kind,reason:error.code||error.message,...(this.step==='진입 주문'?{entry:true}:{}),...(detail?{detail}:{})});
    // A close or a cut that failed (e.g. rate limit) is tried again by the routine check; a late entry or add is not.
    const job=error.retryAs??m;if(job.kind==='CLOSE'||job.kind==='CHANGE'&&job.to<job.from)this.store.pending.push({m:job,at,tries:0});
    this.#save();return {ok:false,reason:error.code||error.message}}
@@ -141,7 +141,7 @@ export class CopyExecutor{
  async #position(p){const list=await this.client.positions(p.venueSymbol),row=(Array.isArray(list)?list:[]).find(x=>x.symbol===p.venueSymbol);
   return {size:row?Math.abs(Number(row.positionAmt)||0):0,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null}}
  async #market(p,side,quantity,{reduceOnly=false,tag}){
-  this.step=tag==='open'?'진입 주문':'시장가 주문';
+  this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
   const params={symbol:p.venueSymbol,side,positionSide:'BOTH',type:'MARKET',quantity:String(quantity),clientOrderId:('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)};
   if(reduceOnly)params.reduceOnly='true';
   const res=orderOf(await this.client.placeOrder(params));return {orderId:res?.orderId??null,avg:pos(res?.avgPrice)};
@@ -245,7 +245,8 @@ export class CopyExecutor{
   // 10 % of the venue's last price (a stock perpetual or a 1000-coin contract that is something else, or a
   // contract that is not 1 share / 1000 coins, is refused). A contract found under another name is not
   // traded without that check.
-  {const venuePrice=await Promise.race([this.markOf(venueSymbol),new Promise(r=>setTimeout(()=>r(null),3000).unref?.())]).catch(()=>null);
+  let venuePrice=null;
+  {venuePrice=await Promise.race([this.markOf(venueSymbol),new Promise(r=>setTimeout(()=>r(null),3000).unref?.())]).catch(()=>null);
    const cardPrice=(pos(m.price)??pos(m.entry))*(Number(c.unitMultiplier)||1);
    if(!(venuePrice>0)){if(c.alias){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}}
    else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
@@ -278,7 +279,11 @@ export class CopyExecutor{
   const minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
   // Below the venue minimum: the smallest valid order instead (flagged: larger than the ratio asks).
   let minOrder=false;
-  if(qty<minQ||qty*price<minN){qty=this.#qty(c,Math.max(minQ,minN/price*1.02),'UP');minOrder=!minOnly}
+  // The minimum is measured at the lower of the card and venue prices, with 5 % room: BingX checks it at
+  // its own price, and a card price above it left the order under the minimum (user 2026-11-14, AKEUSDT
+  // real account: "minimum order amount is 149 AKE" / "minimum order value is 2 USDT", five entries).
+  const minPrice=venuePrice>0?Math.min(price,venuePrice):price;
+  if(qty<minQ||qty*minPrice<minN){qty=this.#qty(c,Math.max(minQ,minN/minPrice*1.05),'UP');minOrder=!minOnly}
   if(minOnly&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   // The card's quantity must be coins: with a 마진 line, quantity x price must match margin x leverage
   // (within 30 %), else it may be a contract count and is not traded.
@@ -297,12 +302,37 @@ export class CopyExecutor{
   try{const zones=await Promise.race([this.zonesOf(m.symbol,{tickSize:c.tickSize}),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
   this.store.positions[key]=p;
-  const fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'});
+  let fill;
+  try{fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'})}
+  catch(error){
+   // 101400 is a refusal (nothing filled). When it names the venue minimum, one more try at that minimum
+   // if it still fits the same margin limits; otherwise the ledger entry is dropped, so no empty position
+   // is left to be closed later as "external".
+   const need=error.code==='VENUE_ERROR_101400'?this.#venueMinimum(c,error.message,minPrice):null;
+   // The same limits as the first order (5 $ minimum-order margin, the copy margin cap, 90 % of the free
+   // margin), measured at the higher of the card and venue prices.
+   const bal=need>qty?await this.balance().catch(()=>null):null,eq=pos(bal?.equity),free=num(bal?.available);
+   const margin=need?need*Math.max(price,venuePrice>0?venuePrice:0)/leverage:Infinity;
+   const used=Object.values(this.store.positions).filter(x=>x.status==='OPEN'&&x!==p).reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
+   if(need>qty&&margin<=this.config.minOrderMaxMarginUSD&&!(eq&&used+margin>eq*this.config.maxTotalMarginPct/100)&&(free===null||margin<=free*.9)){
+    this.#event('ENTRY_RETRY_MIN',{symbol:m.symbol,from:qty,to:need});qty=need;p.firstQty=need;p.minOrder=true;
+    try{fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open-min'})}
+    catch(e2){if(e2.code==='VENUE_ERROR_101400')delete this.store.positions[key];throw e2}}
+   else{if(error.code==='VENUE_ERROR_101400')delete this.store.positions[key];throw error}}
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
   await this.#protect(p);
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('OPENED',{symbol:m.symbol,direction:m.direction,leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
   return {ok:true};
+ }
+ /** The quantity a BingX 101400 message asks for ("minimum order amount is 149 AKE" / "minimum order
+  * value is 2 USDT"), rounded up to the lot step; null when the message names neither. */
+ #venueMinimum(c,message,price){
+  // "amount is 5 USDT" is a value too. A value is turned into coins with 10 % room (the first order already had 5 %).
+  const t=String(message||''),m=/minimum order (amount|value) is ([\d.]+)\s*([A-Za-z0-9]*)/i.exec(t);
+  const isValue=m&&(m[1].toLowerCase()==='value'||/^USDT?$/i.test(m[3]));
+  const raw=!m?NaN:isValue?(price>0?Number(m[2])/price*1.1:NaN):Number(m[2]);
+  if(!(raw>0))return null;const q=this.#qty(c,raw,'UP');return q>0?q:null;
  }
  /** Why a change card finds no copy position (user 2026-11-14, AKEUSDT): the entry was skipped (its
   * reason), our copy was closed earlier (how), or no entry card for it reached us since the copy started. */
@@ -310,7 +340,8 @@ export class CopyExecutor{
   const ev=this.store.events,lastClose=p&&p.status!=='OPEN'?p.closedAt||0:0;
   for(let i=ev.length-1;i>=0;i--){const e=ev[i];if(e.symbol!==m.symbol)continue;
    if(e.type==='OPENED')break;
-   if((e.type==='SKIPPED'&&e.reason!=='NOT_COPIED')||(e.type==='ERROR'&&e.kind==='OPEN'))return {cause:e.reason||e.type,causeAt:e.at,causeDetail:e.detail??null}}
+   // An entry from a '- → q' change card is logged with kind CHANGE; its step says 진입 주문.
+   if((e.type==='SKIPPED'&&e.reason!=='NOT_COPIED')||(e.type==='ERROR'&&(e.entry||e.kind==='OPEN'||/진입/.test(e.detail||''))))return {cause:e.reason||e.type,causeAt:e.at,causeDetail:e.detail??null}}
   if(lastClose)return {cause:'OUR_COPY_CLOSED',causeAt:lastClose,causeDetail:p.closeReason??null};
   return {cause:'NO_ENTRY_RECEIVED'};
  }

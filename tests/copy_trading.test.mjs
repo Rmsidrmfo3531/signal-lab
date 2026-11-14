@@ -341,3 +341,43 @@ test('real-money copy only with COPY_MODE=LIVE and the confirm phrase; its own s
  ex.arm();await ex.handle({id:2,date:1e12+1,text:OPEN.replace('TNSRUSDT','TNSRUSDT')});
  assert.match(copyEventText({type:'OPENED',mode:'LIVE',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:1}),/카피·실계좌 .* \(실계좌\)/);
 });
+
+test('copy MIN_ORDER: the minimum is met at the venue price, a 101400 minimum is retried once, a refused entry leaves no ledger row',async()=>{
+ const mk=(v,markOf)=>new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ // Card 0.051, venue 0.0485: 2 USDT x 1.05 / 0.0485 = 43.3 -> 44 coins (the card price alone gave 42).
+ let v=venue(),ex=mk(v,async()=>0.0485);await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(v.calls.find(c=>c.type==='MARKET').quantity,'44');
+ // BingX refuses with its own minimum: one retry at that minimum, a new client id.
+ v=venue();let n=0;const place=v.client.placeOrder;v.client.placeOrder=async p=>{if(p.type==='MARKET'&&!p.reduceOnly&&n++===0)throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return place(p)};
+ ex=mk(v,async()=>0.051);await ex.handle({id:1,date:1e12,text:OPEN});
+ const m=v.calls.filter(c=>c.type==='MARKET');assert.equal(m.length,1);assert.equal(m[0].quantity,'149');assert.equal(ex.status().positions[0].firstQty,149);
+ assert.ok(ex.status().events.some(e=>e.type==='ENTRY_RETRY_MIN'));
+ // Refused twice: no empty ledger row, and a later change card says why.
+ v=venue();v.client.placeOrder=async p=>{if(p.type==='MARKET')throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return {}};
+ ex=mk(v,async()=>0.051);await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(ex.status().positions.length,0);
+ await ex.handle({id:2,date:1e12+60000,text:CHANGE(880,1760)});
+ const e=ex.status().events.find(x=>x.reason==='NOT_COPIED');assert.equal(e.cause,'VENUE_ERROR_101400');assert.match(e.causeDetail,/149/);
+ // A minimum above the 5 $ margin limit is not retried.
+ v=venue();n=0;v.client.placeOrder=async p=>{if(p.type==='MARKET'&&n++===0)throw Object.assign(Error('The minimum order amount is 9000 TNSR.'),{code:'VENUE_ERROR_101400'});return {}};
+ ex=mk(v,async()=>0.051);await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(n,1);assert.equal(ex.status().positions.length,0);
+});
+
+test('copy screen: an older "not copied" row without a stored cause shows the earlier failed entry',async()=>{
+ const {copyHTML}=await import('../public/live_control.js');
+ const events=[{type:'SKIPPED',symbol:'AKEUSDT',reason:'NOT_COPIED',at:3},{type:'ERROR',symbol:'AKEUSDT',kind:'CHANGE',reason:'VENUE_ERROR_101400',detail:'단계 진입 주문 · BingX: The minimum order amount is 182 AKE.',at:2}];
+ const html=copyHTML({mode:'LIVE',enabled:true,armed:false,positions:[],closed:[],events});
+ assert.match(html,/처음 진입을 .*건너뜀: 거래소 주문 조건 미달/);
+});
+
+test('copy: a "- → q" entry refused twice still explains the next change card; the retry respects the copy margin cap',async()=>{
+ const chg=(a,b)=>CHANGE(a,b);
+ let v=venue();v.client.placeOrder=async p=>{if(p.type==='MARKET')throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return {}};
+ let ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.053,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ await ex.handle({id:1,date:1e12,text:chg('-',880)});await ex.handle({id:2,date:1e12+60000,text:chg(880,1760)});
+ const e=ex.status().events.find(x=>x.reason==='NOT_COPIED');assert.equal(e.cause,'VENUE_ERROR_101400');
+ // Cap 1 % of 100 = 1 $: the first 42 coins fit, the 149-coin retry (1.5 $) does not.
+ v=venue();let n=0;const place=v.client.placeOrder;v.client.placeOrder=async p=>{if(p.type==='MARKET'&&!p.reduceOnly&&n++===0)throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return place(p)};
+ ex=new CopyExecutor({config:copyConfig({COPY_MAX_TOTAL_MARGIN_PCT:'1'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.051,balance:async()=>({equity:100,available:90}),now:()=>1e12});
+ await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(n,1);assert.equal(v.size,0);assert.equal(ex.status().positions.length,0);
+});
