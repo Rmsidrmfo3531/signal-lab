@@ -21,29 +21,35 @@ for(const stopAtr of [.25,1])for(const move of ['기본','x2'])for(const climaxV
  variants.push({name:`손절 ATR ${stopAtr} · 움직임 ${move} · 거래량 ${climaxVolume}배 · 익절 ${r}`,stopAtr,moveMult:move==='x2'?2:1,climaxVolume,retracements:RETR[r]});
 const BASE_MOVE={'1m':1.2,'5m':2.5,'15m':4.3}[interval];
 
-const data={};let first=Infinity,last=0;
+// One symbol in memory at a time (a year of 5m candles for 30 symbols at once ran the server out of
+// memory, 2026-11-14): the period is read from each file's first and last row, then every variant runs
+// symbol by symbol and only the trades are kept.
+let first=Infinity,last=0;const usable=[];
 for(const symbol of symbols){
- const bars=read(`${symbol}_${interval}.json`),m5=interval==='5m'?bars:read(`${symbol}_5m.json`),h4=read(`${symbol}_4h.json`)??(symbol==='BTCUSDT'?null:null),filters=filtersOf(symbol);
- if(!bars?.length||!m5?.length||!filters)continue;
- data[symbol]={bars,m5,h4,filters};first=Math.min(first,Number(bars[0][0]));last=Math.max(last,Number(bars.at(-1)[6]));
+ const bars=read(`${symbol}_${interval}.json`);if(!bars?.length||!filtersOf(symbol))continue;
+ first=Math.min(first,Number(bars[0][0]));last=Math.max(last,Number(bars.at(-1)[6]));usable.push(symbol);
 }
 const mid=first+(last-first)/2;
-console.log(`# ${interval} 되돌림 그리드: 종목 ${Object.keys(data).length}개, ${new Date(first).toISOString().slice(0,10)} ~ ${new Date(last).toISOString().slice(0,10)}, 앞 절반에서 고르고 뒤 절반에서 확인`);
+console.log(`# ${interval} 되돌림 그리드: 종목 ${usable.length}개, ${new Date(first).toISOString().slice(0,10)} ~ ${new Date(last).toISOString().slice(0,10)}, 앞 절반에서 고르고 뒤 절반에서 확인`);
 const f=x=>x==null||!Number.isFinite(x)?'-':Math.abs(x)>=100?x.toFixed(0):x.toFixed(2);
 const line=s=>s.trades?`${String(s.trades).padStart(4)}건 승률 ${f(s.winRatePct)}% PF ${f(s.profitFactor)} 평균 ${f(s.avgR)}R 순손익 ${f(s.netUSD)}$`:'0건';
-const results=[];
-for(const v of variants){
- const settings={stopAtr:v.stopAtr,minMovePct:BASE_MOVE*v.moveMult,climaxVolume:v.climaxVolume,retracements:v.retracements};
- const train=[],valid=[];
- for(const [symbol,d] of Object.entries(data)){
-  const run=(startAt,endAt)=>backtestScalp({symbol,m5:d.m5,m15:null,h4:d.h4,trendFilter:Array.isArray(d.h4),filters:d.filters,startAt,endAt,settings,interval,bars:d.bars,books:['FIXED']}).trades;
-  train.push(...run(first,mid));valid.push(...run(mid,last));
- }
+const trades=variants.map(()=>({train:[],valid:[]}));
+for(const symbol of usable){
+ const bars=read(`${symbol}_${interval}.json`),m5=interval==='5m'?bars:read(`${symbol}_5m.json`),h4=read(`${symbol}_4h.json`),filters=filtersOf(symbol);
+ if(!m5?.length)continue;
+ variants.forEach((v,i)=>{
+  const settings={stopAtr:v.stopAtr,minMovePct:BASE_MOVE*v.moveMult,climaxVolume:v.climaxVolume,retracements:v.retracements};
+  const run=(startAt,endAt)=>backtestScalp({symbol,m5,m15:null,h4,trendFilter:Array.isArray(h4),filters,startAt,endAt,settings,interval,bars,books:['FIXED']}).trades
+   .map(t=>({netUSD:t.netUSD,R:t.R,exitAt:t.exitAt,exitReason:t.exitReason,tp:t.tp,holdMs:t.holdMs,direction:t.direction}));
+  trades[i].train.push(...run(first,mid));trades[i].valid.push(...run(mid,last));
+ });
+ console.error(`${symbol} 완료`);
+}
+const results=variants.map((v,i)=>{const {train,valid}=trades[i];
  const r={...v,train:summarize(train),valid:summarize(valid),
   trainLong:summarize(train.filter(t=>t.direction==='LONG')),trainShort:summarize(train.filter(t=>t.direction==='SHORT')),
   validLong:summarize(valid.filter(t=>t.direction==='LONG')),validShort:summarize(valid.filter(t=>t.direction==='SHORT'))};
- results.push(r);console.log(`${v.name}\n  앞 ${line(r.train)}\n  뒤 ${line(r.valid)}`);
-}
+ console.log(`${v.name}\n  앞 ${line(r.train)}\n  뒤 ${line(r.valid)}`);return r});
 // Picked on the first half only: the best average R with at least 60 trades.
 const ok=results.filter(r=>r.train.trades>=60);
 const pick=ok.sort((a,b)=>(b.train.avgR??-9)-(a.train.avgR??-9))[0];
