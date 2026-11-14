@@ -233,6 +233,10 @@ export class CopyExecutor{
    else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
   let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.config.maxLeverage));
   try{const info=await this.client.leverage(venueSymbol),maxL=Number(info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
+  // Orders use positionSide BOTH (one-way mode). An account in hedge mode answers 109400 (user 2026-11-14,
+  // AKEUSDT on the real account): say so before any setting or order is sent.
+  {let mode=null;try{mode=await this.client.positionMode?.()}catch{}
+   if(mode?.dualSidePosition===true||mode?.dualSidePosition==='true'){this.#event('SKIPPED',{symbol:m.symbol,reason:'BINGX_HEDGE_MODE'});return {ok:false,reason:'BINGX_HEDGE_MODE'}}}
   try{await this.client.setMarginType(venueSymbol,'CROSSED')}catch{}
   await this.client.setLeverage(venueSymbol,'BOTH',leverage);
   // unitMultiplier: venue contract of 1000 coins (1000PEPE) -> quantities / 1000, prices x 1000.
