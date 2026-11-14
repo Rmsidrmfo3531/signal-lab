@@ -390,7 +390,8 @@ test('copy MIN_ORDER: the minimum is met at the venue price, a 101400 minimum is
  ex=mk(v,async()=>0.051);await ex.handle({id:1,date:1e12,text:OPEN});
  assert.equal(ex.status().positions.length,0);
  await ex.handle({id:2,date:1e12+60000,text:CHANGE(880,1760)});
- const e=ex.status().events.find(x=>x.reason==='NOT_COPIED');assert.equal(e.cause,'VENUE_ERROR_101400');assert.match(e.causeDetail,/149/);
+ // With late entry on, the add tries again (LATE_ENTRY) and keeps the cause.
+ const e=ex.status().events.find(x=>x.reason==='NOT_COPIED'||x.type==='LATE_ENTRY');assert.equal(e.cause,'VENUE_ERROR_101400');assert.match(e.causeDetail,/149/);
  // A minimum above the 5 $ margin limit is not retried.
  v=venue();n=0;v.client.placeOrder=async p=>{if(p.type==='MARKET'&&n++===0)throw Object.assign(Error('The minimum order amount is 9000 TNSR.'),{code:'VENUE_ERROR_101400'});return {}};
  ex=mk(v,async()=>0.051);await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(n,1);assert.equal(ex.status().positions.length,0);
@@ -408,7 +409,8 @@ test('copy: a "- → q" entry refused twice still explains the next change card;
  let v=venue();v.client.placeOrder=async p=>{if(p.type==='MARKET')throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return {}};
  let ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.053,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  await ex.handle({id:1,date:1e12,text:chg('-',880)});await ex.handle({id:2,date:1e12+60000,text:chg(880,1760)});
- const e=ex.status().events.find(x=>x.reason==='NOT_COPIED');assert.equal(e.cause,'VENUE_ERROR_101400');
+ // With late entry on, the add tries again (LATE_ENTRY) and keeps the cause.
+ const e=ex.status().events.find(x=>x.reason==='NOT_COPIED'||x.type==='LATE_ENTRY');assert.equal(e.cause,'VENUE_ERROR_101400');
  // Cap 1 % of 100 = 1 $: the first 42 coins fit, the 149-coin retry (1.5 $) does not.
  v=venue();let n=0;const place=v.client.placeOrder;v.client.placeOrder=async p=>{if(p.type==='MARKET'&&!p.reduceOnly&&n++===0)throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return place(p)};
  ex=new CopyExecutor({config:copyConfig({COPY_MAX_TOTAL_MARGIN_PCT:'1'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.051,balance:async()=>({equity:100,available:90}),now:()=>1e12});
