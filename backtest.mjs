@@ -168,7 +168,7 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
 // interval: the signal timeframe ('1m' | '5m' | '15m'); bars are its candles (default m5).
 // Trades are replayed on m5 candles, or on the 1m bars themselves for the 1m timeframe.
 export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h4),filters,startAt,endAt=Infinity,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={},minNetRR=SCALP_DEFAULTS.minNetRR,
- interval='5m',bars=m5,maxHoldMs=SCALP_TIMEFRAMES[interval].maxHoldMs}){
+ interval='5m',bars=m5,maxHoldMs=SCALP_TIMEFRAMES[interval].maxHoldMs,books=['FIXED','DCA']}){
  const m5c=(interval==='1m'?bars:m5).map(toCandle),funnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},trades=[];
  const busy={FIXED:-1,DCA:-1};let balance=balanceUSD;
  // 4H trend after each closed 4H candle (EMA100/EMA200 as in the 1H strategy), for the optional filter.
@@ -190,11 +190,11 @@ export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h
   const quality=buildScalpPlan({signal:det,estimate,costs,minNetRR});
   if(!quality.ok||!positive(quantity)){funnel.qualityRejected++;continue}
   const base={strategy:'SCALP',interval,symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct};
-  if(k>busy.FIXED){
+  if(books.includes('FIXED')&&k>busy.FIXED){
    const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:det.stop,targets:quality.targets,quantity,maxHoldMs,costs});
    if(t){busy.FIXED=t.endIdx;trades.push({...base,book:'FIXED',stop:det.stop,targets:quality.targets,...t})}
   }
-  if(k>busy.DCA){
+  if(books.includes('DCA')&&k>busy.DCA){
    const profile=profileAt(m15,now,symbol,filters.tickSize);
    // Deeper adds: zones from a longer 15m window (dca.zoneDays > 3) join the 3-day zones.
    const zoneDays=dcaZoneDaysFor(interval,dca.zoneDays??DCA_DEFAULTS.zoneDays);
