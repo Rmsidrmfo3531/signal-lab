@@ -304,11 +304,21 @@ export class CopyExecutor{
   this.#event('OPENED',{symbol:m.symbol,direction:m.direction,leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
   return {ok:true};
  }
+ /** Why a change card finds no copy position (user 2026-11-14, AKEUSDT): the entry was skipped (its
+  * reason), our copy was closed earlier (how), or no entry card for it reached us since the copy started. */
+ #whyNotCopied(m,p){
+  const ev=this.store.events,lastClose=p&&p.status!=='OPEN'?p.closedAt||0:0;
+  for(let i=ev.length-1;i>=0;i--){const e=ev[i];if(e.symbol!==m.symbol)continue;
+   if(e.type==='OPENED')break;
+   if((e.type==='SKIPPED'&&e.reason!=='NOT_COPIED')||(e.type==='ERROR'&&e.kind==='OPEN'))return {cause:e.reason||e.type,causeAt:e.at,causeDetail:e.detail??null}}
+  if(lastClose)return {cause:'OUR_COPY_CLOSED',causeAt:lastClose,causeDetail:p.closeReason??null};
+  return {cause:'NO_ENTRY_RECEIVED'};
+ }
  async #change(m,at){
   const key=this.#key(m),p=this.store.positions[key];
   if(m.to===0)return this.#close(m,'TRADER_CLOSE');
   if(m.from===0&&(!p||p.status!=='OPEN'))return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to},at);
-  if(!p||p.status!=='OPEN'){this.#event('SKIPPED',{symbol:m.symbol,reason:'NOT_COPIED'});return {ok:false,reason:'NOT_COPIED'}}
+  if(!p||p.status!=='OPEN'){this.#event('SKIPPED',{symbol:m.symbol,reason:'NOT_COPIED',from:m.from,to:m.to,...this.#whyNotCopied(m,p)});return {ok:false,reason:'NOT_COPIED'}}
   const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#position(p);p.qty=now.size;
   if(!(p.qty>0)){p.status='CLOSED';this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
   if(ratio>1){

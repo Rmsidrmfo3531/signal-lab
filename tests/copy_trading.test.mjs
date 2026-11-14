@@ -261,6 +261,16 @@ test('copy: the screen gets PnL from the last price and a fresh balance',async()
  assert.ok(Math.abs(q.unrealized-p.avg*0.1*q.qty)<1e-9,'short PnL: '+q.unrealized);assert.equal(s.funds.equity,412);
 });
 
+test('copy: a change for a position we do not hold says why (skipped entry / never received)',async()=>{
+ const chg=(sym,a,b)=>`📊 포지션 변경\n🪙 ${sym}  🟢 Long\n수량 ${a} → ${b}\n현재가 0.05 USDT`;
+ const v=venue(),ex=make(v,{free:1});
+ assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).reason,'MARGIN_SHORT');
+ await ex.handle({id:2,date:1e12+60000,text:chg('TNSRUSDT',880,1760).replace('🟢 Long','🔴 Short')});
+ const e=ex.status().events.find(x=>x.reason==='NOT_COPIED');assert.equal(e.cause,'MARGIN_SHORT');assert.equal(e.from,880);
+ await ex.handle({id:3,date:1e12+60000,text:chg('BTWUSDT',200,400)});
+ const e2=ex.status().events.filter(x=>x.reason==='NOT_COPIED')[0];assert.equal(e2.cause,'NO_ENTRY_RECEIVED');
+});
+
 test('copy FIRST_1USD (selectable): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
