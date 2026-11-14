@@ -78,7 +78,9 @@ export function copyConfig(env=process.env,liveMode='OFF'){
   stopMinPct:n('COPY_STOP_MIN_PCT',COPY_DEFAULTS.stopMinPct,.5,80),stopMaxPct:n('COPY_STOP_MAX_PCT',COPY_DEFAULTS.stopMaxPct,1,95),stopBufferPct:n('COPY_STOP_BUFFER_PCT',COPY_DEFAULTS.stopBufferPct,0,5),
   maxTotalMarginPct:n('COPY_MAX_TOTAL_MARGIN_PCT',COPY_DEFAULTS.maxTotalMarginPct,1,100),ledgerLossPct:n('COPY_LEDGER_LOSS_PCT',COPY_DEFAULTS.ledgerLossPct,1,90),
   // The venue-minimum bump may raise the first margin to at most this much (user 2026-11-14: start at 1 $).
-  minOrderMaxMarginUSD:n('COPY_MIN_ORDER_MAX_MARGIN_USD',COPY_DEFAULTS.minOrderMaxMarginUSD,.1,1000)};
+  minOrderMaxMarginUSD:n('COPY_MIN_ORDER_MAX_MARGIN_USD',COPY_DEFAULTS.minOrderMaxMarginUSD,.1,1000),
+  // Enter late when the trader adds to a position we missed (user 2026-11-14); COPY_LATE_ENTRY=off disables.
+  lateEntry:!/^(off|0|false|no)$/i.test(String(env.COPY_LATE_ENTRY||'on'))};
 }
 
 export class CopyExecutor{
@@ -86,7 +88,7 @@ export class CopyExecutor{
   Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
-  this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
+  this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
   this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;
  }
  arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
@@ -121,10 +123,22 @@ export class CopyExecutor{
   if(!m){this.#save();return {ok:true,ignored:true}}
   const at=num(date)??this.now();
   if(m.kind==='MONITOR_START'){this.store.monitorStartAt=at;this.#event('MONITOR_START');this.#save();return {ok:true}}
+  // Messages are retried for minutes when the server restarts, so they can arrive out of order: one older
+  // than the last handled for the same coin and side is history (an old entry must not reopen a position the
+  // trader has closed, an old close must not close a newer one).
+  {const k=this.#key(m),last=this.store.lastMsgAt[k]||0;
+   if(at<last){this.#event('SKIPPED',{symbol:m.symbol,reason:'STALE_MESSAGE',detail:`${Math.round((last-at)/1000)}초 앞선 메시지가 먼저 처리됨`});this.#save();return {ok:false,reason:'STALE_MESSAGE'}}
+   this.store.lastMsgAt[k]=at;
+   // The trader's closes (server time, like our closedAt): after our own close we follow again only once
+   // the trader has closed that position too (an entry card can also be the trader adding to it).
+   // ('- → x' means the trader had closed it before, even if we missed that card.)
+   if(m.kind==='CLOSE'||(m.kind==='CHANGE'&&(m.to===0||m.from===0)))this.store.lastTraderCloseAt[k]=this.now()}
   if(!this.config.enabled){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_OFF'});this.#save();return {ok:false,reason:'COPY_OFF'}}
   this.step=null;
   try{
    const r=m.kind==='OPEN'?await this.#open(m,at):m.kind==='CHANGE'?await this.#change(m,at):await this.#close(m,'TRADER_CLOSE');
+   // Our ledger may close this position just now (found gone on the venue): the trader's close comes after it.
+   if(m.kind==='CLOSE'||(m.kind==='CHANGE'&&m.to===0))this.store.lastTraderCloseAt[this.#key(m)]=this.now();
    this.#save();return r;
   }catch(error){
    // The exchange's own message and the step that failed (user 2026-11-14: "VENUE_ERROR_109400" alone
@@ -132,7 +146,7 @@ export class CopyExecutor{
    const detail=[this.step&&`단계 ${this.step}`,error.code&&error.message&&error.message!==error.code&&`BingX: ${error.message}`].filter(Boolean).join(' · ').slice(0,200);
    this.#event('ERROR',{symbol:m.symbol,kind:m.kind,reason:error.code||error.message,...(this.step==='진입 주문'?{entry:true}:{}),...(detail?{detail}:{})});
    // A close or a cut that failed (e.g. rate limit) is tried again by the routine check; a late entry or add is not.
-   const job=error.retryAs??m;if(job.kind==='CLOSE'||job.kind==='CHANGE'&&job.to<job.from)this.store.pending.push({m:job,at,tries:0});
+   const job=error.retryAs??m;if(job.kind==='CLOSE'||job.kind==='CHANGE'&&job.to<job.from)this.store.pending.push({m:job,at,tries:0,pid:this.store.positions[this.#key(job)]?.id??null});
    this.#save();return {ok:false,reason:error.code||error.message}}
  }
  #key(m){return `${m.symbol}|${m.direction}`}
@@ -216,8 +230,16 @@ export class CopyExecutor{
   try{const now=await this.#position(p);if(now.size>0)await this.#market(p,p.direction==='LONG'?'SELL':'BUY',now.size,{reduceOnly:true,tag:'emergency'+this.now()});this.#closed(p,reason,now)}
   catch(error){this.#event('ERROR',{symbol:p.symbol,kind:'EMERGENCY_CLOSE',reason:error.code||error.message})}
  }
+ /** Our own last close of this coin and side (a manual close, the loss limit, a stop; not one that followed
+  * the trader) with no trader close since: entering again would undo it (review 2026-11-14). */
+ #ownClose(m){
+  const key=this.#key(m),own=[...this.store.closed].reverse().find(x=>`${x.symbol}|${x.direction}`===key);
+  if(!own||['TRADER_CLOSE','TRADER_CUT_ALL'].includes(own.closeReason))return null;
+  return (this.store.lastTraderCloseAt[key]||0)>=(own.closedAt||0)?null:own;
+ }
  async #open(m,at){
   const key=this.#key(m),prev=this.store.positions[key];
+  if(prev?.status!=='OPEN'){const own=this.#ownClose(m);if(own){this.#event('SKIPPED',{symbol:m.symbol,reason:'OUR_COPY_CLOSED',detail:`우리가 ${new Date(own.closedAt).toISOString().slice(11,16)}Z에 먼저 정리(${own.closeReason}) · 트레이더 청산 뒤에 다시 따라감`});return {ok:false,reason:'OUR_COPY_CLOSED'}}}
   if(prev?.status==='OPEN'){
    // The same card again (both alert formats, or a repeat) is not a new buy: same entry price within 3 min.
    if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs)return {ok:true,snapshot:true};
@@ -322,7 +344,7 @@ export class CopyExecutor{
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
   await this.#protect(p);
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
+  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
   return {ok:true};
  }
  /** The quantity a BingX 101400 message asks for ("minimum order amount is 149 AKE" / "minimum order
@@ -337,7 +359,11 @@ export class CopyExecutor{
  /** Why a change card finds no copy position (user 2026-11-14, AKEUSDT): the entry was skipped (its
   * reason), our copy was closed earlier (how), or no entry card for it reached us since the copy started. */
  #whyNotCopied(m,p){
-  const ev=this.store.events,lastClose=p&&p.status!=='OPEN'?p.closedAt||0:0;
+  // Our own close of this coin and side (not one that followed the trader's close), with no trader entry
+  // since: a late entry would undo it (a manual close, the loss limit, a stop). Checked before the events,
+  // which are trimmed and can hold other skips in between.
+  const own=this.#ownClose(m);if(own)return {cause:'OUR_COPY_CLOSED',causeAt:own.closedAt,causeDetail:own.closeReason??null};
+  const ev=this.store.events,lastClose=p&&p.status!=='OPEN'&&p.closeReason!=='TRADER_CLOSE'?p.closedAt||0:0;
   for(let i=ev.length-1;i>=0;i--){const e=ev[i];if(e.symbol!==m.symbol)continue;
    if(e.type==='OPENED')break;
    // An entry from a '- → q' change card is logged with kind CHANGE; its step says 진입 주문.
@@ -349,7 +375,16 @@ export class CopyExecutor{
   const key=this.#key(m),p=this.store.positions[key];
   if(m.to===0)return this.#close(m,'TRADER_CLOSE');
   if(m.from===0&&(!p||p.status!=='OPEN'))return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to},at);
-  if(!p||p.status!=='OPEN'){this.#event('SKIPPED',{symbol:m.symbol,reason:'NOT_COPIED',from:m.from,to:m.to,...this.#whyNotCopied(m,p)});return {ok:false,reason:'NOT_COPIED'}}
+  if(!p||p.status!=='OPEN'){
+   const why=this.#whyNotCopied(m,p);
+   // Late entry (user 2026-11-14): the trader adds to a position we never got into -> enter now as a new
+   // position (the trader's current total is its "first" quantity). Not after our own close of it (a loss
+   // limit or a stop must not be undone), and not on a reduction.
+   if(this.config.lateEntry&&m.to>m.from&&why.cause!=='OUR_COPY_CLOSED'){
+    this.#event('LATE_ENTRY',{symbol:m.symbol,from:m.from,to:m.to,...why});
+    return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to,late:true},at);
+   }
+   this.#event('SKIPPED',{symbol:m.symbol,reason:'NOT_COPIED',from:m.from,to:m.to,...why});return {ok:false,reason:'NOT_COPIED'}}
   const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#position(p);p.qty=now.size;
   if(!(p.qty>0)){p.status='CLOSED';this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
   if(ratio>1){
@@ -418,6 +453,8 @@ export class CopyExecutor{
   * and the whole-ledger loss limit. */
  async reconcile(){
   for(const job of this.store.pending.splice(0)){
+   // A retry belongs to the position it was made for: never applied to a newer one with the same key.
+   if(job.pid&&this.store.positions[this.#key(job.m)]?.id!==job.pid)continue;
    job.tries++;
    try{const r=job.m.kind==='CLOSE'?await this.#close(job.m,'TRADER_CLOSE'):await this.#change(job.m,job.at);if(r?.ok===false&&!['NOT_COPIED','POSITION_GONE'].includes(r.reason)&&job.tries<5)this.store.pending.push(job)}
    catch(error){if(job.tries<5)this.store.pending.push(job);else this.#event('ERROR',{symbol:job.m.symbol,kind:'RETRY_GAVE_UP',reason:error.code||error.message})}
