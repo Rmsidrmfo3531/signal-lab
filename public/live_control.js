@@ -159,10 +159,19 @@ export function copyHTML(c){
  const row=p=>`<li><b>${esc(p.symbol)}</b>${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
  const done=x=>`<li><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}<b class="${cls(x.netUSD)} end">${money(x.netUSD)}</b></li>`;
  const notes=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET'].includes(e.type)).slice(0,5);
- return modeLine+kill+stats+rules+
-  `<h5 class="copy-sub">보유 중</h5>`+(open.length?`<ul class="copy-list">${open.map(row).join('')}</ul>`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
-  (closed.length?`<h5 class="copy-sub">최근 종료 <small>${closed.length>10?'최근 10건':''}</small></h5><ul class="copy-list">${closed.slice(0,10).map(done).join('')}</ul>`:'')+
-  (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span>${esc(e.symbol||'')} · ${esc(COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}</li>`).join('')}</ul>`:'');
+ // Desktop (user 2026-11-14: the web view felt like a phone): the same data as tables with more columns;
+ // phones keep the compact lists. CSS shows one or the other (.only-desk / .only-mob).
+ const margin=p=>p.qty>0&&p.avg>0&&p.leverage>0?p.qty*p.avg/p.leverage:null,roe=p=>{const m=margin(p);return m&&p.unrealized!=null?p.unrealized/m*100:null};
+ const pctText=v=>v==null?'—':`${v>=0?'+':'−'}${Math.abs(v).toFixed(1)}%`;
+ const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">추매</th><th>보유</th><th class="num">미실현</th><th class="num">수익률</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b></td><td>${side(p.direction)}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.qty)}</td><td class="num">${esc(p.avg??'—')}</td><td class="num">${esc(p.mark?+Number(p.mark).toPrecision(6):'—')}</td><td class="num">${usd(margin(p))}</td><td class="num">${esc(p.adds||0)}회</td><td class="muted">${held(p.openedAt,Date.now())}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(roe(p))}">${pctText(roe(p))}</td></tr>`).join('')}</tbody></table>`;
+ const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>종목</th><th>방향</th><th class="num">추매</th><th>보유 시간</th><th class="num">트레이더 손익</th><th class="num">내 손익</th></tr></thead><tbody>${closed.slice(0,20).map(x=>`<tr><td class="muted">${when(x.closedAt)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="num">${esc(x.adds||0)}회</td><td class="muted">${held(x.openedAt,x.closedAt)}</td><td class="num">${x.theirPnlUSD!=null?money(x.theirPnlUSD):'—'}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b></td></tr>`).join('')}</tbody></table>`;
+ const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,...fresh);
+ const stamp=updated>0?`<p class="copy-stamp">손익·잔고 ${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 10초마다 갱신</p>`:'';
+ const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
+ const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
+  (closed.length?`<h5 class="copy-sub">최근 종료 <small>${closed.length>10?'최근 10건':''}</small></h5><ul class="copy-list only-mob">${closed.slice(0,10).map(done).join('')}</ul>${closedTable}`:'')+
+  (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span>${esc(e.symbol||'')} · ${esc(COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}</li>`).join('')}</ul>`:'')+'</div>';
+ return `<div class="copy-layout">${side_}${main}</div>`;
 }
 
 export function readinessHTML(r,positions){

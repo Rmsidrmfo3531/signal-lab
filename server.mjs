@@ -1308,7 +1308,7 @@ const server=http.createServer(async(req,res)=>{
    return res.end(paperCSV(paper.store.closed));
   }
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
-  if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,copyTrader.status());
+  if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,await copyTrader.liveStatus());
   if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
   if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,copyTrader.arm())}
   if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
@@ -1323,7 +1323,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
-  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?copyTrader.status():null,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyTrader.liveStatus():null,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading})});
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);

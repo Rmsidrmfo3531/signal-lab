@@ -253,6 +253,14 @@ test('copy MIN_ORDER (default): first buy = venue minimum, adds in proportion to
  await ex.handle({id:3,date:1e12+700000,text:card(1500,'0.05200')});assert.ok(Math.abs(v.size-3*first)<=1,'proportional to our first: '+v.size);
 });
 
+test('copy: the screen gets PnL from the last price and a fresh balance',async()=>{
+ const v=venue();let mark=0.05,eq=400,reads=0;const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>mark,balance:async()=>{reads++;return {equity:eq,available:300}},now:()=>1e12});
+ await ex.handle({id:1,date:1e12,text:OPEN});const p=ex.status().positions[0];
+ mark=p.avg*0.9;eq=412;const s=await ex.liveStatus(),q=s.positions[0];
+ // A short gains 10 % of avg x qty when the price falls 10 %.
+ assert.ok(Math.abs(q.unrealized-p.avg*0.1*q.qty)<1e-9,'short PnL: '+q.unrealized);assert.equal(s.funds.equity,412);
+});
+
 test('copy FIRST_1USD (selectable): adds in proportion to the trader, tiny adds carried to the venue minimum',async()=>{
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});

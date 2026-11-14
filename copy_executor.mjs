@@ -99,6 +99,16 @@ export class CopyExecutor{
  status(){return {funds:this.funds??null,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:this.store.closed.slice(-50).reverse(),events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
 
+ /** status() with fresh numbers for the screen (user 2026-11-14: the real-account page did not update):
+  * open positions' PnL from the venue's last price (cached tickers, ~20 s), the balance re-read when
+  * older than 15 s. The reconcile (60 s) still owns the quantities and the loss limit. */
+ async liveStatus(){
+  const open=Object.values(this.store.positions).filter(p=>p.status==='OPEN'&&p.qty>0&&p.avg>0);
+  await Promise.all(open.map(async p=>{try{const m=Number(await Promise.race([this.markOf(p.venueSymbol),new Promise(r=>setTimeout(()=>r(null),3000).unref?.())]));
+   if(m>0){p.mark=m;p.unrealized=(p.direction==='LONG'?1:-1)*(m-p.avg)*p.qty;p.markAt=this.now()}}catch{}}));
+  if(!this.funds||!(this.now()-(this.funds.at||0)<15000)){try{const b=await this.balance();if(b)this.funds={equity:num(b.equity),available:num(b.available),at:this.now()}}catch{}}
+  return this.status();
+ }
  /** One channel message ({id, date (ms), text}); processed one at a time, each id once. */
  handle(message){this.pendingCount=(this.pendingCount||0)+1;const p=this.queue.then(()=>this.#handle(message)).finally(()=>{this.pendingCount--});this.queue=p.catch(()=>{});return p}
  /** No message being processed (the update restart waits for this). */
