@@ -212,7 +212,11 @@ export class ScalpExecutor{
     // BingX answers 100410 when the shared public request rate is exceeded (2026-11-16: 10 of 80 coins per
     // scan): wait a little and read that coin once more instead of skipping it.
     const read=()=>this.candles(u.symbol,'5m',61);
-    let rows;try{rows=await read().catch(async e=>{if(e?.code!=='VENUE_ERROR_100410')throw e;st.rateLimited=(st.rateLimited||0)+1;await new Promise(r=>setTimeout(r,1500));return read()})}
+    // Up to two more tries (1.5 s, then 3 s), and once the limit was hit the rest of the scan goes slower
+    // (2026-11-16: 3 of 80 coins still failed after one retry).
+    const retry=async e=>{for(const w of [1500,3000]){if(e?.code!=='VENUE_ERROR_100410')throw e;st.rateLimited=(st.rateLimited||0)+1;await new Promise(r=>setTimeout(r,w));try{return await read()}catch(next){e=next}}throw e};
+    if(st.rateLimited)await new Promise(r=>setTimeout(r,300));
+    let rows;try{rows=await read().catch(retry)}
     // Other read failures are counted and shown (2026-11-16: a missing 5m interval failed every read silently).
     catch(e){if(e?.code==='HTTP_429'){st.error='HTTP_429';this.cooldownUntil=this.now()+60000;break}st.failed=(st.failed||0)+1;st.lastFailure=e?.code||e?.message||'READ_FAILED';continue}
     st.checked++;
