@@ -64,7 +64,9 @@ export function scalpExecConfig(env=process.env){
  // LIVE included, is refused and leaves the scalps OFF.
  const raw=String(env.SCALP_EXEC_MODE??'').trim().toUpperCase(),known=raw===''||SCALP_EXEC_MODES.includes(raw);
  return {mode:known?(raw||'TESTNET'):'OFF',refused:known?null:raw==='LIVE'?'LIVE_REFUSED':'MODE_INVALID',interval:'5m',sides:scalpSides(env.SCALP_EXEC_SIDES),
-  settings:{...SCALP_EXEC_SETTINGS,retracements:[...SCALP_EXEC_SETTINGS.retracements]},minNetRR:SCALP_DEFAULTS.minNetRR,maxHoldMs:SCALP_TIMEFRAMES['5m'].maxHoldMs,
+  settings:{...SCALP_EXEC_SETTINGS,retracements:[...SCALP_EXEC_SETTINGS.retracements]},// TP1 net RR floor: 0.7 on the testnet (user 2026-11-17 "해결 방법 찾아봐 테스트넷인데": ICP/ARIA skipped at RR 0.78-0.83);
+  // the backtest default is SCALP_DEFAULTS.minNetRR (1). Each trade keeps plan.netRR, so the 0.7-1 band is judged apart.
+  minNetRR:n('SCALP_MIN_NET_RR',.7,.3,3),maxHoldMs:SCALP_TIMEFRAMES['5m'].maxHoldMs,
   // 4H trend: 'record' (default since 2026-11-16, user: the followed trader shorted BLESSUSDT in a 4H uptrend that
   // the filter skipped) = measured and logged with every signal and trade, never blocks; 'on' blocks against-trend
   // signals as in the backtest; 'off' skips the measurement.
@@ -76,9 +78,10 @@ export function scalpExecConfig(env=process.env){
   // Entry price check against the planned entry (the signal candle's close): within 0.4 % and 1 ATR (the
   // pre-move ATR the stop buffer uses), either way; the TP1 net RR is checked again at the price found.
   maxDriftPct:n('SCALP_MAX_DRIFT_PCT',.4,.05,2),
-  // Allowed drift grows with the move (user 2026-11-17, BLESSUSDT skipped at 0.57-0.74 % after a 17-21 % pump):
-  // max(maxDriftPct, move% x driftMovePct/100); the TP1 net RR check after it still guards the plan.
-  driftMovePct:n('SCALP_DRIFT_MOVE_PCT',5,0,20),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
+  // Drift away from the stop (price already moving toward the target): allowed up to driftMovePct % of the move;
+  // the TP1 net RR check then decides (user 2026-11-17: 5 % of the move, then 50 % "테스트넷인데" after
+  // LIGHTER 1.6 % / HUMA 0.96 % skips). Toward the stop: maxDriftPct / 1 ATR as before.
+  driftMovePct:n('SCALP_DRIFT_MOVE_PCT',50,0,100),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
   universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),
   // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
   watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanDelayMs:3000,
