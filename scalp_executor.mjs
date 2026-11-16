@@ -210,7 +210,8 @@ export class ScalpExecutor{
    for(const u of this.universe){
     if(this.#blocked())break;
     let rows;try{rows=await this.candles(u.symbol,'5m',61)}
-    catch(e){if(e?.code==='HTTP_429'){st.error='HTTP_429';this.cooldownUntil=this.now()+60000;break}continue}
+    // Other read failures are counted and shown (2026-11-16: a missing 5m interval failed every read silently).
+    catch(e){if(e?.code==='HTTP_429'){st.error='HTTP_429';this.cooldownUntil=this.now()+60000;break}st.failed=(st.failed||0)+1;st.lastFailure=e?.code||e?.message||'READ_FAILED';continue}
     st.checked++;
     const t=this.now(),closed=(Array.isArray(rows)?rows:[]).filter(r=>Number(r?.[6])<t).slice(-60);
     // Only the candle that has just closed (a late or missing candle is not traded later).
@@ -220,6 +221,7 @@ export class ScalpExecutor{
     if(!this.config.sides.includes(det.direction)){this.#skip(u.symbol,'SIDE_OFF',det.direction);continue}
     const r=await this.#consider(u,det);if(r?.entered)st.entered++;
    }
+   if(!st.error&&st.failed&&!st.checked)st.error=`CANDLES_FAILED_${st.failed}:${st.lastFailure}`;
   }catch(e){st.error=e?.code||e?.message||'SCAN_FAILED'}
   finally{this.scanning=false;this.lastScan=st;this.#save()}
   return st;

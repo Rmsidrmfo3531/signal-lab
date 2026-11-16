@@ -26,3 +26,9 @@ test('a coin suspended on the exchange is not tradable after the re-read',async(
  const {c:c2}=client([[row('AAA',0)]]);
  assert.equal((await c2.contractsFor('AAAUSDT')).get('AAAUSDT')?.tradable,false);
 });
+
+test('BingX 5m candles are read (the reversal scalps use them)',async()=>{
+ const {bingxKlineRows}=await import('../venue_charts.mjs');
+ const rows=bingxKlineRows([{time:1e12+300000,open:'1',high:'2',low:'0.5',close:'1.5',volume:'10'},{time:1e12,open:'1',high:'1',low:'1',close:'1',volume:'1'}],'5m');
+ assert.equal(rows.length,2);assert.equal(rows[0][0],1e12);assert.equal(rows[1][6],1e12+600000-1);
+});
