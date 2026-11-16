@@ -72,7 +72,7 @@ export function scalpExecConfig(env=process.env){
   // Entry price check against the planned entry (the signal candle's close): within 0.4 % and 1 ATR (the
   // pre-move ATR the stop buffer uses), either way; the TP1 net RR is checked again at the price found.
   maxDriftPct:n('SCALP_MAX_DRIFT_PCT',.4,.05,2),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
-  universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',200,100,2000),scanDelayMs:3000,
+  universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanDelayMs:3000,
   balanceCapUSD:n('SCALP_BALANCE_CAP_USD',0,0,1e7)};
 }
 
@@ -209,7 +209,10 @@ export class ScalpExecutor{
    await this.#refreshUniverse(now);
    for(const u of this.universe){
     if(this.#blocked())break;
-    let rows;try{rows=await this.candles(u.symbol,'5m',61)}
+    // BingX answers 100410 when the shared public request rate is exceeded (2026-11-16: 10 of 80 coins per
+    // scan): wait a little and read that coin once more instead of skipping it.
+    const read=()=>this.candles(u.symbol,'5m',61);
+    let rows;try{rows=await read().catch(async e=>{if(e?.code!=='VENUE_ERROR_100410')throw e;st.rateLimited=(st.rateLimited||0)+1;await new Promise(r=>setTimeout(r,1500));return read()})}
     // Other read failures are counted and shown (2026-11-16: a missing 5m interval failed every read silently).
     catch(e){if(e?.code==='HTTP_429'){st.error='HTTP_429';this.cooldownUntil=this.now()+60000;break}st.failed=(st.failed||0)+1;st.lastFailure=e?.code||e?.message||'READ_FAILED';continue}
     st.checked++;
