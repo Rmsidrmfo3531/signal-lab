@@ -29,7 +29,9 @@ test('server contains a single Telegram delivery path guarded by live final resu
  // daily testnet readiness report (live_readiness.mjs: results only, no signals) and live trade
  // notices (live_telegram.mjs: entry/add/target/close/problems of orders already placed) — nothing else.
  // + the testnet reversal-scalp notices (scalp_telegram.mjs: entry/close/problems, guarded by the live-notice setting).
- assert.deepEqual([...server.matchAll(/(?<!function )telegramPost\(/g)].length,7);
+ // 8: + the automatic-update notice (2026-11-16).
+ assert.deepEqual([...server.matchAll(/(?<!function )telegramPost\(/g)].length,8);
+ assert.match(server,/function updateNotice\(text\)\{try\{if\(CONFIG\.tgToken&&CONFIG\.tgChat\)telegramPost\(/);
  assert.match(server,/const text=scalpEventText\(e\);if\(!text\)return;[\s\S]{0,400}?telegramLive===false[\s\S]{0,200}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
  // A one-time warning when the copy mode changed with open copies on the other ledger.
  assert.match(server,/카피 모드가 \$\{COPY\.mode==='LIVE'\?'실계좌':'테스트넷'\}로 바뀌었습니다/);

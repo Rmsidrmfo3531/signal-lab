@@ -656,6 +656,14 @@ function setUpdate({title,label,pct,note,done=false,error=false}){
  m.querySelector('.update-close').hidden=!(done||error);
 }
 // After the reload: the completion popup (centre, slightly above the middle).
+// Automatic update (2026-11-16): when the server comes back as a new process (new bootId) the page reloads by
+// itself, and says so in a small notice that goes away.
+{let boot=null,told=false;
+ try{if(sessionStorage.getItem('autoReloaded')){sessionStorage.removeItem('autoReloaded');setTimeout(()=>toast('🔄 새 버전이 적용되어 화면을 새로고침했습니다'),300)}}catch{}
+ setInterval(async()=>{try{const u=await (await fetch('/api/update',{cache:'no-store'})).json();
+  if(boot&&u.bootId&&u.bootId!==boot){try{sessionStorage.setItem('autoReloaded','1')}catch{}location.reload();return}boot=u.bootId||boot;
+  if(!told&&!document.getElementById('updateModal')){const j=await (await fetch('/api/update/git/progress',{cache:'no-store'})).json();if(j?.active&&j.source==='auto'){told=true;toast('🔄 자동 업데이트 중입니다. 끝나면 화면이 저절로 새로고침됩니다.')}}
+ }catch{}},20000);}
 // A small notice that goes away by itself (user 2026-11-16: no close button to press).
 try{const d=JSON.parse(sessionStorage.getItem('updateDone')||'null');if(d){sessionStorage.removeItem('updateDone');
  const on=[d.rearmCopy&&'카피',d.rearm&&'신호 전략',d.rearmScalp&&'되돌림 단타'].filter(Boolean);

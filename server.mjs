@@ -529,9 +529,54 @@ function telegramPost(payload){
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
 }
 
+
+const SERVER_BOOT_ID=String(Date.now());
 let updateCheckPromise=null;
 const GIT_UPDATE=gitUpdateAvailable(__dirname);
 let updateJob={active:false,pct:0,label:''};
+// One update run, from the dashboard button or the automatic check (user 2026-11-16: "업데이트가 감지되면
+// 자동 업데이트"). Never restarts in the middle of an order: new orders stop first, the restart waits until
+// every executor is idle (no order, cancel or position check running), at most 10 minutes.
+async function runGitUpdate(source='button'){
+ if(updateJob.active)return {status:409,body:{error:'UPDATE_IN_PROGRESS',message:'업데이트가 이미 진행 중입니다.'}};
+ if(!allIdle())return {status:409,body:{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'}};
+ const wasArmed=live.armed;live.updating=true;live.disarm();
+ const step=(pct,label)=>{updateJob={...updateJob,active:true,pct:Math.max(updateJob.pct||0,Math.round(pct*10)/10),label,at:Date.now()}};
+ updateJob={active:true,pct:0,label:source==='auto'?'자동 업데이트 시작':'업데이트 시작',source,startedAt:Date.now()};step(2,'GitHub에서 새 버전 확인');
+ try{
+  const nodeCheck=file=>new Promise((ok,fail)=>execFile(process.execPath,['--check',file],{timeout:30000},e=>e?fail(Error(path.basename(file)+': '+(String(e.message).split('\n')[1]||'문법 오류'))):ok()));
+  // Every file parses, every import resolves, and server.mjs links with all its named imports
+  // (link_check.mjs loads the modules without running them).
+  const linkCheck=root=>new Promise((ok,fail)=>execFile(process.execPath,['--no-warnings','--experimental-vm-modules',path.join(root,'link_check.mjs'),path.join(root,'server.mjs')],{timeout:60000},(e,out,err)=>e?fail(Error(String(err||e.message).trim().split('\n').pop())):ok()));
+  const result=await gitApply(__dirname,{onStep:s=>s==='fetched'?step(12,'새 버전 받는 중'):step(25,'새 버전 적용 · 파일 검사 시작'),
+   checkSyntax:async root=>{await checkTree(root,{nodeCheck,onFile:(i,n)=>step(25+55*i/n,`파일 검사 ${i}/${n}`)});step(82,'모듈 연결 검사');await linkCheck(root);step(86,'검사 통과')}});
+  if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,at:Date.now()};live.updating=false;if(wasArmed)live.arm();if(source==='auto'&&result.state!=='current')updateNotice(`⚠️ 자동 업데이트 중단: ${result.message||result.state}`);return {status:result.ok?200:409,body:result}}
+  // User 2026-11-16 "업데이트 후 항상 전부 켜기": after an update everything is switched on, whatever it
+  // was before (the guards at start-up still apply: kill switch, loss limit, mode, 15 min). Written just
+  // before the restart, so a crash or manual restart before that finds no marker (review 2026-11-16).
+  const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET',copyArmed:COPY.enabled===true,scalpArmed:!!scalpExec};
+   if(st.signalArmed||st.copyArmed||st.scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to,source}))}catch{}};
+  console.log('[UPDATE]',source,result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
+  if(source==='auto')updateNotice(`🔄 자동 업데이트 적용 ${result.from} → ${result.to}\n${(result.changes||[]).slice(0,8).map(c=>'· '+c.subject).join('\n')}\n잠시 뒤 서버가 재시작되고 카피·신호 전략·단타가 자동으로 다시 켜집니다.`);
+  (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
+   // Paused only once idle; if never idle in 10 minutes the restart waits for the next try.
+   if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;updateJob={...updateJob,active:false};pendingRestart={writeMarker,from:result.from,to:result.to};if(wasArmed)live.arm();try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
+  return {status:200,body:{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:COPY.enabled===true,rearmScalp:!!scalpExec}};
+ }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,at:Date.now()};live.updating=false;if(wasArmed)live.arm();if(source==='auto')updateNotice(`⚠️ 자동 업데이트 실패: ${e.message}`);return {status:502,body:{error:e.message}}}
+}
+function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text,disable_web_page_preview:true}).catch(()=>{})}catch{}}
+// Automatic update (AUTO_UPDATE=off disables): GitHub is checked every 10 minutes; a new version is
+// applied with the same checks as the button. A failed version is not retried until a newer one appears.
+const AUTO_UPDATE=!/^(off|0|false|no)$/i.test(String(process.env.AUTO_UPDATE||'on'));
+let autoUpdateFailedAt=null,pendingRestart=null;
+if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
+ try{if(updateJob.active||!allIdle())return;
+  // A restart postponed earlier (never idle for 10 minutes): the new code is on disk; restart now when idle.
+  if(pendingRestart){const was=live.armed;live.updating=true;live.disarm();live.paused=true;if(allIdle()){console.log('[UPDATE] postponed restart',pendingRestart.from,'→',pendingRestart.to);pendingRestart.writeMarker();process.kill(process.pid,'SIGTERM');return}live.paused=false;live.updating=false;if(was)live.arm();return}
+  const c=await gitCheck(__dirname);if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
+  const r=await runGitUpdate('auto');if(r.status>=400&&r.body?.error!=='ORDER_IN_PROGRESS')autoUpdateFailedAt=c.latest}catch(e){console.warn('[UPDATE] auto check:',e.message)}
+},10*60000).unref?.();
+
 // Real-money readiness, measured on testnet trades under the current rules (live_readiness.mjs).
 // A short Telegram report every morning (09:00 KST) and once when every criterion is met.
 const readinessFile=path.join(storage.dir,'readiness.json');
@@ -1429,37 +1474,9 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/update/git'&&req.method==='POST'){
    if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});
    const body=await bodyJson(req).catch(()=>({}));if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
-   // Never restart in the middle of an order: stop new orders first, then wait until the executor
-   // is idle (no order, cancel or position check running) before the restart.
-   if(!allIdle())return response(res,409,{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'});
-   const wasArmed=live.armed;live.updating=true;live.disarm();
-   const step=(pct,label)=>{updateJob={...updateJob,active:true,pct:Math.max(updateJob.pct||0,Math.round(pct*10)/10),label,at:Date.now()}};
-   updateJob={active:true,pct:0,label:'업데이트 시작',startedAt:Date.now()};step(2,'GitHub에서 새 버전 확인');
-   try{
-    const nodeCheck=file=>new Promise((ok,fail)=>execFile(process.execPath,['--check',file],{timeout:30000},e=>e?fail(Error(path.basename(file)+': '+(String(e.message).split('\n')[1]||'문법 오류'))):ok()));
-    // Every file parses, every import resolves, and server.mjs links with all its named imports
-    // (link_check.mjs loads the modules without running them).
-    const linkCheck=root=>new Promise((ok,fail)=>execFile(process.execPath,['--no-warnings','--experimental-vm-modules',path.join(root,'link_check.mjs'),path.join(root,'server.mjs')],{timeout:60000},(e,out,err)=>e?fail(Error(String(err||e.message).trim().split('\n').pop())):ok()));
-    const result=await gitApply(__dirname,{onStep:s=>s==='fetched'?step(12,'새 버전 받는 중'):step(25,'새 버전 적용 · 파일 검사 시작'),
-     checkSyntax:async root=>{await checkTree(root,{nodeCheck,onFile:(i,n)=>step(25+55*i/n,`파일 검사 ${i}/${n}`)});step(82,'모듈 연결 검사');await linkCheck(root);step(86,'검사 통과')}});
-    if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,at:Date.now()};live.updating=false;if(wasArmed&&result.state==='current')live.arm();response(res,result.ok?200:409,result);return}
-    // Remember what was on, so it is switched back on after the restart: the signal strategy (TESTNET only),
-    // the copy (its own mode, real account included since 2026-11-16) and the reversal scalps (TESTNET).
-    // Written just before the restart (below), from the switches as they are then: one turned off while
-    // waiting stays off, and a crash or manual restart before that finds no marker (review 2026-11-16).
-    // User 2026-11-16 "업데이트 후 항상 전부 켜기": after a one-tap update everything is switched on,
-    // whatever it was before (the guards at start-up still apply: kill switch, loss limit, mode, 15 min).
-    const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET',copyArmed:COPY.enabled===true,scalpArmed:!!scalpExec};
-     if(st.signalArmed||st.copyArmed||st.scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to}))}catch{}};
-    response(res,200,{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:COPY.enabled===true,rearmScalp:!!scalpExec});
-    console.log('[UPDATE]',result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
-    (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
-     // Paused only once idle; if never idle in 10 minutes the restart waits for the next tap.
-     if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
-    return;
-   }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,at:Date.now()};live.updating=false;return response(res,502,{error:e.message})}
+   const r=await runGitUpdate('button');return response(res,r.status,r.body);
   }
-  if(pathname==='/api/update')return response(res,200,{...state.update,git:GIT_UPDATE,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
+  if(pathname==='/api/update')return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,bootId:SERVER_BOOT_ID,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
   if(pathname==='/api/market-commentary'){
    try{await refreshMarketStats()}catch{}
