@@ -179,7 +179,7 @@ export function copyHTML(c){
  const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">추매</th><th>보유</th><th class="num">미실현</th><th class="num">수익률</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b></td><td>${side(p.direction)}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.qty)}</td><td class="num">${esc(p.avg??'—')}</td><td class="num">${esc(p.mark?+Number(p.mark).toPrecision(6):'—')}</td><td class="num">${usd(margin(p))}</td><td class="num">${esc(p.adds||0)}회</td><td class="muted">${held(p.openedAt,Date.now())}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(roe(p))}">${pctText(roe(p))}</td></tr>`).join('')}</tbody></table>`;
  const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>종목</th><th>방향</th><th class="num">추매</th><th>보유 시간</th><th class="num">트레이더 손익</th><th class="num">내 손익</th></tr></thead><tbody>${closed.slice(0,20).map(x=>`<tr><td class="muted">${when(x.closedAt)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="num">${esc(x.adds||0)}회</td><td class="muted">${held(x.openedAt,x.closedAt)}</td><td class="num">${x.theirPnlUSD!=null?money(x.theirPnlUSD):'—'}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b></td></tr>`).join('')}</tbody></table>`;
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,...fresh);
- const stamp=updated>0?`<p class="copy-stamp">손익·잔고 ${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 10초마다 갱신</p>`:'';
+ const stamp=updated>0?`<p class="copy-stamp">손익·잔고 ${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>${closed.length>10?'최근 10건':''}</small></h5><ul class="copy-list only-mob">${closed.slice(0,10).map(done).join('')}</ul>${closedTable}`:'')+
@@ -298,5 +298,9 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
  // The 실계좌 page (#real) shows the same data (user 2026-11-16: its positions did not refresh, only #live counted).
  const visible=()=>['live','real'].some(id=>$(id)&&!$(id).hidden);
  const tick=()=>{if(visible())load().catch(fail)};
- setInterval(tick,10000);setTimeout(()=>load().catch(fail),400);window.addEventListener('hashchange',()=>setTimeout(tick,60));
+ setInterval(tick,10000);setTimeout(()=>load().catch(fail),400);
+ // 실계좌 page: the copy panel alone every 3 s (prices cached 3 s on the server, balance 15 s), while visible.
+ let fastBusy=false;
+ setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy)return;fastBusy=true;
+  try{const r=await fetch('/api/copy',{cache:'no-store'});if(r.ok){const c=await r.json();if(c?.mode==='LIVE'&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}catch{}finally{fastBusy=false}},3000);window.addEventListener('hashchange',()=>setTimeout(tick,60));
 }
