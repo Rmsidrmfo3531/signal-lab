@@ -308,7 +308,7 @@ export class CopyExecutor{
   // real account: "minimum order amount is 149 AKE" / "minimum order value is 2 USDT", five entries).
   const minPrice=venuePrice>0?Math.min(price,venuePrice):price;
   if(qty<minQ||qty*minPrice<minN){qty=this.#qty(c,Math.max(minQ,minN/minPrice*1.05),'UP');minOrder=!minOnly}
-  if(minOnly&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
+  if(minOnly&&qty*price/leverage>Math.max(this.config.minOrderMaxMarginUSD,this.config.firstMarginUSD*1.05)){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   // The card's quantity must be coins: with a 마진 line, quantity x price must match margin x leverage
   // (within 30 %), else it may be a contract count and is not traded.
   if(scale!=null&&m.marginUSD>0&&m.leverage>0){const implied=m.quantity*(price/mult)/(m.marginUSD*m.leverage);
