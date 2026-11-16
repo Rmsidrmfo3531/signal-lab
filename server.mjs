@@ -550,7 +550,7 @@ async function runGitUpdate(source='button'){
   const linkCheck=root=>new Promise((ok,fail)=>execFile(process.execPath,['--no-warnings','--experimental-vm-modules',path.join(root,'link_check.mjs'),path.join(root,'server.mjs')],{timeout:60000},(e,out,err)=>e?fail(Error(String(err||e.message).trim().split('\n').pop())):ok()));
   const result=await gitApply(__dirname,{onStep:s=>s==='fetched'?step(12,'새 버전 받는 중'):step(25,'새 버전 적용 · 파일 검사 시작'),
    checkSyntax:async root=>{await checkTree(root,{nodeCheck,onFile:(i,n)=>step(25+55*i/n,`파일 검사 ${i}/${n}`)});step(82,'모듈 연결 검사');await linkCheck(root);step(86,'검사 통과')}});
-  if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,at:Date.now()};live.updating=false;if(wasArmed&&result.state==='current')live.arm();return {status:result.ok?200:409,body:result}}
+  if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,at:Date.now()};live.updating=false;if(wasArmed)live.arm();if(source==='auto'&&result.state!=='current')updateNotice(`⚠️ 자동 업데이트 중단: ${result.message||result.state}`);return {status:result.ok?200:409,body:result}}
   // User 2026-11-16 "업데이트 후 항상 전부 켜기": after an update everything is switched on, whatever it
   // was before (the guards at start-up still apply: kill switch, loss limit, mode, 15 min). Written just
   // before the restart, so a crash or manual restart before that finds no marker (review 2026-11-16).
@@ -560,17 +560,20 @@ async function runGitUpdate(source='button'){
   if(source==='auto')updateNotice(`🔄 자동 업데이트 적용 ${result.from} → ${result.to}\n${(result.changes||[]).slice(0,8).map(c=>'· '+c.subject).join('\n')}\n잠시 뒤 서버가 재시작되고 카피·신호 전략·단타가 자동으로 다시 켜집니다.`);
   (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
    // Paused only once idle; if never idle in 10 minutes the restart waits for the next try.
-   if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;updateJob={...updateJob,active:false};try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
+   if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;updateJob={...updateJob,active:false};pendingRestart={writeMarker,from:result.from,to:result.to};if(wasArmed)live.arm();try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
   return {status:200,body:{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:COPY.enabled===true,rearmScalp:!!scalpExec}};
- }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,at:Date.now()};live.updating=false;if(source==='auto')updateNotice(`⚠️ 자동 업데이트 실패: ${e.message}`);return {status:502,body:{error:e.message}}}
+ }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,at:Date.now()};live.updating=false;if(wasArmed)live.arm();if(source==='auto')updateNotice(`⚠️ 자동 업데이트 실패: ${e.message}`);return {status:502,body:{error:e.message}}}
 }
 function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text,disable_web_page_preview:true}).catch(()=>{})}catch{}}
 // Automatic update (AUTO_UPDATE=off disables): GitHub is checked every 10 minutes; a new version is
 // applied with the same checks as the button. A failed version is not retried until a newer one appears.
 const AUTO_UPDATE=!/^(off|0|false|no)$/i.test(String(process.env.AUTO_UPDATE||'on'));
-let autoUpdateFailedAt=null;
+let autoUpdateFailedAt=null,pendingRestart=null;
 if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
- try{if(updateJob.active||!allIdle())return;const c=await gitCheck(__dirname);if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
+ try{if(updateJob.active||!allIdle())return;
+  // A restart postponed earlier (never idle for 10 minutes): the new code is on disk; restart now when idle.
+  if(pendingRestart){const was=live.armed;live.updating=true;live.disarm();live.paused=true;if(allIdle()){console.log('[UPDATE] postponed restart',pendingRestart.from,'→',pendingRestart.to);pendingRestart.writeMarker();process.kill(process.pid,'SIGTERM');return}live.paused=false;live.updating=false;if(was)live.arm();return}
+  const c=await gitCheck(__dirname);if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
   const r=await runGitUpdate('auto');if(r.status>=400&&r.body?.error!=='ORDER_IN_PROGRESS')autoUpdateFailedAt=c.latest}catch(e){console.warn('[UPDATE] auto check:',e.message)}
 },10*60000).unref?.();
 
