@@ -133,7 +133,12 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
 export const scalpClientId=(symbol,barAt,direction='LONG')=>'sc'+createHash('sha256').update(`${SCALP_EXEC_STRATEGY}|${symbol}|${barAt}${direction==='SHORT'?'|SHORT':''}`).digest('hex').slice(0,22);
 
 function positionOf(list,vs,direction){
- const row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===vs),signed=row?signedAmount(row):0,mine=dirOf(direction)*signed;
+ const row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===vs),signed=row?signedAmount(row):0;
+ // A one-way row with positionSide BOTH and a positive amount does not say its side: it is taken as ours
+ // (one position per coin, and an entry is refused when one already exists). Reading a short as 0 would
+ // close the ledger and cancel its stop while the venue still holds it (review note 2026-11-16).
+ const side=String(row?.positionSide||'').toUpperCase(),unsignedBoth=signed>0&&(side===''||side==='BOTH');
+ const mine=unsignedBoth?signed:dirOf(direction)*signed;
  return {size:mine>0?mine:0,any:Math.abs(signed),signed,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null};
 }
 
