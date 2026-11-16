@@ -214,7 +214,7 @@ export class ScalpExecutor{
   // cannot enter the same coin in between (review 2026-11-16).
   this.reserved.add(u.symbol);
   try{
-   const c=(await this.contracts().catch(()=>null))?.get?.(u.symbol);if(!c?.tradable)return skip('CONTRACT_UNAVAILABLE');
+   const c=(await this.contracts(u.symbol).catch(()=>null))?.get?.(u.symbol);if(!c?.tradable)return skip('CONTRACT_UNAVAILABLE');
    const price=pos(await withTimeout(this.priceOf(u.symbol,u.venueSymbol),3000));
    const funds=await this.#funds();if(!funds)return skip('NO_BALANCE');
    let lev=this.config.leverage;

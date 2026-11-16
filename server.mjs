@@ -276,7 +276,8 @@ const bingxFunds=data=>{const list=Array.isArray(data)?data:[data?.balance??data
  return {equity,available:Number.isFinite(free)?Math.max(0,free):equity}};
 copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
- contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.loadContracts(),symbol),
+ // A coin missing or suspended in the cached list re-reads the list (new listings / delistings, 2026-11-16).
+ contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.contractsFor(symbol),symbol),
  // Last price on BingX (tickers cached 20 s) for the copy price check.
  // 3 s cache (user 2026-11-16: the real-account page should feel live); one request at a time.
  markOf:async venueSymbol=>{if(!copyTickers.at||Date.now()-copyTickers.at>3000){copyTickers.pending??=venueQuotes.clients.BINGX.tickers().then(rows=>{copyTickers={at:Date.now(),rows}},()=>{copyTickers.pending=null});await copyTickers.pending}
@@ -310,7 +311,7 @@ let scalpTickers={at:0,rows:[]};
 const scalpTickerRows=async(maxAgeMs=20000)=>{if(!scalpTickers.at||Date.now()-scalpTickers.at>maxAgeMs)scalpTickers={at:Date.now(),rows:await scalpMarket.tickers()};return scalpTickers.rows};
 const scalpLast=async(venueSymbol,maxAgeMs)=>Number((await scalpTickerRows(maxAgeMs)).find(x=>x.symbol===venueSymbol)?.lastPrice)||null;
 scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
- contracts:()=>venueQuotes.clients.BINGX.loadContracts(),tickers:()=>scalpTickerRows(60000),
+ contracts:symbol=>venueQuotes.clients.BINGX.contractsFor(symbol),tickers:()=>scalpTickerRows(60000),
  candles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
  // 4H trend: Binance for Binance-listed symbols (as the backtest and the paper scalps), else BingX.
  trendCandles:symbol=>state.activeSet.has(symbol)?klines(symbol,'4h',301):scalpMarket.klines(symbol,'4h',301),
@@ -390,7 +391,7 @@ async function refreshVenueBook(venue,symbol,{maxAgeMs=0}={}){
  const task=(async()=>{
   const client=venueQuotes.clients[venue];
   try{
-   const contracts=await client.loadContracts();if(!contracts.has(symbol))return null;
+   const contracts=await (client.contractsFor?client.contractsFor(symbol):client.loadContracts());if(!contracts.has(symbol))return null;
    const book=await client.book(symbol);venueBooks.set(key,book);return book;
   }catch(error){state.venueError=`${venue} ${symbol}: ${error.code||error.message}`;return null}
  })();
