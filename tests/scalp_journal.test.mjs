@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {ScalpExecutor,scalpExecConfig} from '../scalp_executor.mjs';
-import {appendJsonl,readJsonl,tailJsonl,summarizeJournal,scalpReportFiles,exportLine,trackExcursion,journalLine} from '../scalp_journal.mjs';
+import {appendJsonl,readJsonl,tailJsonl,summarizeJournal,signalsPath,scalpReportFiles,exportLine,trackExcursion,journalLine} from '../scalp_journal.mjs';
 import {buildReport,pushReport} from '../reports_push.mjs';
 import {scalpHTML} from '../public/live_control.js';
 
@@ -76,7 +76,7 @@ test('journal line: detection evidence, plan, fill slippage, delay, MFE/MAE from
  assert.equal(line.pnl.r,+(3.5/line.pnl.riskUSDActual).toFixed(4));
  assert.ok(line.btc&&Number.isFinite(line.btc.change5mPct),'BTC change when cheaply available');
  // Detected signals: one line, entered.
- const sig=readJsonl(path.join(dir,'scalp-signals.jsonl'));assert.equal(sig.length,1);assert.equal(sig[0].entered,true);assert.equal(sig[0].plan.price,PX);
+ const sig=readJsonl(fs.readdirSync(dir).filter(f=>f.startsWith('scalp-signals-')).map(f=>path.join(dir,f))[0]);assert.equal(sig.length,1);assert.equal(sig[0].entered,true);assert.equal(sig[0].plan.price,PX);
  // API helper and the stats over the journal.
  assert.equal(ex.journal(5).length,1);assert.equal(ex.stats().trades,1);assert.equal(ex.stats().netUSD,3.5);
  // Restart: the stats come back from the journal file; no second line.
@@ -86,7 +86,7 @@ test('journal line: detection evidence, plan, fill slippage, delay, MFE/MAE from
 
 test('skipped signals are logged with their reason; the signals file rotates at its cap',async()=>{
  const dir=tmp(),v=venue(),clock={t:T0},ex=make(v,dir,clock);ex.contracts=contracts;ex.priceOf=async()=>PX*1.01;ex.arm();await ex.scan();
- const [s]=readJsonl(path.join(dir,'scalp-signals.jsonl'));assert.equal(s.entered,false);assert.equal(s.reason,'PRICE_DRIFT');assert.ok(s.evidence.movePct>=5);assert.equal(s.universe.rank,2);
+ const [s]=readJsonl(fs.readdirSync(dir).filter(f=>f.startsWith('scalp-signals-')).map(f=>path.join(dir,f))[0]);assert.equal(s.entered,false);assert.equal(s.reason,'PRICE_DRIFT');assert.ok(s.evidence.movePct>=5);assert.equal(s.universe.rank,2);
  const f=path.join(dir,'x.jsonl');for(let i=0;i<5;i++)appendJsonl(f,{i,pad:'x'.repeat(100)},{maxBytes:300});
  assert.ok(fs.existsSync(path.join(dir,'x.1.jsonl')));assert.ok(fs.statSync(f).size<=300);
  assert.deepEqual(tailJsonl(f,1).map(x=>x.i),[4]);
@@ -114,7 +114,7 @@ test('export: summary by side / exit reason / move / hour / rank, trades.jsonl w
   checkedPrice:100,plannedEntry:100,entry:100,evidence:{movePct:move},universe:{rank},closeReason:reason,netUSD:net,estimate:{netUSD:net},mfeR:1,maeR:-.5});
  const at=Date.parse('2026-11-16T01:10:00Z');// 10:10 KST
  [mk(1,'LONG',2,'ALL_TARGETS',5.5,3,at),mk(2,'LONG',-2,'STOP',9,40,at),mk(3,'SHORT',1,'TIME_STOP',13,70,at+3600000)].forEach(l=>appendJsonl(jf,l));
- appendJsonl(sf,{at:now-1000,symbol:'B',venueSymbol:'B-USDT',entered:false,reason:'PRICE_DRIFT'});appendJsonl(sf,{at:now-3*86400000,symbol:'C',entered:false});
+ appendJsonl(signalsPath(sf,now-1000),{at:now-1000,symbol:'B',venueSymbol:'B-USDT',entered:false,reason:'PRICE_DRIFT'});appendJsonl(signalsPath(sf,now-3*86400000),{at:now-3*86400000,symbol:'C',entered:false});
  const {files,summary}=scalpReportFiles({journalFile:jf,signalsFile:sf,now});
  assert.equal(summary.all.trades,3);assert.equal(summary.bySide.LONG.trades,2);assert.equal(summary.bySide.SHORT.netUSD,1);assert.equal(summary.byExitReason.STOP.wins,0);
  assert.deepEqual(Object.keys(summary.byMoveBucket).sort(),['12%+','5-6%','8-12%']);assert.deepEqual(Object.keys(summary.byHourKst).sort(),['10','11']);

@@ -22,7 +22,7 @@ import {createHash} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {scalpReasonKo} from './scalp_telegram.mjs';
-import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
+import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
@@ -161,9 +161,12 @@ export class ScalpExecutor{
   // Trade journal (scalp_journal.mjs, user 2026-11-16 22:18): every finished trade, never truncated; the stats
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,SCALP_JOURNAL_FILE):null;this.signalsFile=directory?path.join(directory,SCALP_SIGNALS_FILE):null;
-  this.journalRows=(this.journalFile?readJsonl(this.journalFile):[]).map(x=>({direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null}));
+  const written=this.journalFile?readJsonl(this.journalFile):[];
+  this.journalRows=written.map(x=>({direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null}));
+  // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
+  this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
-  this.#flushJournal();
+  try{this.#flushJournal();this.#save()}catch(e){this.log?.('[SCALP] journal start',e.message)}
  }
  #save(){if(!this.file)return;const s=this.store;s.closed=s.closed.slice(-MAX_CLOSED);s.events=s.events.slice(-MAX_EVENTS);s.skips=s.skips.slice(-MAX_SKIPS);s.sent=s.sent.slice(-MAX_KEYS);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,strategy:SCALP_EXEC_STRATEGY,...s})}
@@ -343,7 +346,7 @@ export class ScalpExecutor{
  #logSignal(ctx,r){
   const line={v:1,at:ctx.at,symbol:ctx.symbol,venueSymbol:ctx.venueSymbol,direction:ctx.direction,barAt:ctx.barAt,entered:r?.entered===true,reason:r?.entered?null:ctx.reason||r?.reason||null,
    detail:ctx.detail,evidence:ctx.evidence,candle:ctx.candle,atr:ctx.atr,trend4h:ctx.trend4h??null,plan:ctx.plan??null,universe:ctx.universe,scan:ctx.scan};
-  if(this.signalsFile)appendJsonl(this.signalsFile,line,{maxBytes:SIGNALS_MAX_BYTES});else this.signalsMem=[...(this.signalsMem||[]),line].slice(-500);
+  if(this.signalsFile)appendJsonl(signalsPath(this.signalsFile,ctx.at||this.now()),line,{maxBytes:SIGNALS_MAX_BYTES});else this.signalsMem=[...(this.signalsMem||[]),line].slice(-500);
  }
  /** Closed trades whose result is final (settled by the venue, or no more settle tries) go to the journal. */
  #flushJournal(){
@@ -351,17 +354,20 @@ export class ScalpExecutor{
   for(const x of this.store.closed){
    if(x.journaled)continue;
    if(!(x.realized||!income||(x.settleTries||0)>=SETTLE_TRIES||now-(x.closedAt||0)>=2*3600000))continue;
+   // Already in the file (written before a restart that came before the ledger was saved): not again.
+   if(x.id&&this.journalIds?.has(x.id)){x.journaled=true;continue}
    x.journalAt=now;if(!x.journalV)x.journalBackfill=true;
-   const line=journalLine(x);
+   let line;try{line=journalLine(x)}catch(e){this.log?.('[SCALP] journal line',x.symbol,e.message);continue}
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
-   x.journaled=true;x.rMultiple=line.pnl.r;
+   x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
    this.journalRows.push({direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason});
   }
  }
  /** The newest `limit` journal lines (oldest first). */
  journal(limit=200){const n=Math.max(1,Math.min(2000,Math.floor(Number(limit))||200));return this.journalFile?tailJsonl(this.journalFile,n):this.journalMem.slice(-n)}
- signals(limit=200){return this.signalsFile?tailJsonl(this.signalsFile,limit):(this.signalsMem||[]).slice(-limit)}
+ signals(limit=200){if(!this.signalsFile)return (this.signalsMem||[]).slice(-limit);const now=this.now(),today=tailJsonl(signalsPath(this.signalsFile,now),limit);
+  return today.length>=limit?today:[...tailJsonl(signalsPath(this.signalsFile,now-86400000),limit-today.length),...today]}
  /** The venue position of this symbol: `size` is the quantity on our side (a position on the other side
   * counts as 0 for us and is never closed by us), `any` any position at all. */
  async #position(vs,direction){return positionOf(await this.client.positions(vs),vs,direction)}

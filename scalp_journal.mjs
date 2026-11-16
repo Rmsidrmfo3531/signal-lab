@@ -9,6 +9,9 @@ export const SCALP_JOURNAL_FILE='scalp-journal.jsonl',SCALP_SIGNALS_FILE='scalp-
 export const SIGNALS_MAX_BYTES=20*1024*1024;
 const r4=x=>Number.isFinite(x)?Math.round(x*1e4)/1e4:null,r2=x=>Number.isFinite(x)?Math.round(x*100)/100:null;
 const kst=t=>new Date(t+9*3600000);
+/** Signals are written one file per KST day (scalp-signals-YYYY-MM-DD.jsonl), so a report reads only the
+ * last two days instead of every signal ever logged (review 2026-11-16). */
+export const signalsPath=(base,t)=>base.replace(/\.jsonl$/,'')+'-'+kst(t).toISOString().slice(0,10)+'.jsonl';
 
 /** Append one JSON line. maxBytes: the file is moved to <name>.1.jsonl (replacing the older one) first
  * when it has reached the cap. Returns false when nothing could be written (never throws). */
@@ -112,8 +115,8 @@ export function scalpReportFiles({journalFile,signalsFile,now=Date.now()}){
  const trades=journalFile?readJsonl(journalFile):[];
  const files={'scalp/trades.jsonl':trades.map(x=>JSON.stringify(exportLine(x))).join('\n')+(trades.length?'\n':'')};
  if(signalsFile){
-  const all=[...readJsonl(signalsFile.replace(/\.jsonl$/,'')+'.1.jsonl'),...readJsonl(signalsFile)].map(({venueSymbol,...x})=>x);
-  for(const t of [now-86400000,now]){const day=kst(t).toISOString().slice(0,10),list=signalsOfDay(all,day);
+  for(const t of [now-86400000,now]){const f=signalsPath(signalsFile,t),day=kst(t).toISOString().slice(0,10);
+   const list=signalsOfDay([...readJsonl(f.replace(/\.jsonl$/,'')+'.1.jsonl'),...readJsonl(f)].map(({venueSymbol,...x})=>x),day);
    if(list.length)files[`scalp/signals-${day}.jsonl`]=list.map(x=>JSON.stringify(x)).join('\n')+'\n'}
  }
  return {files,summary:summarizeJournal(trades,{now})};
