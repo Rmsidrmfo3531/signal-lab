@@ -210,9 +210,11 @@ export class ScalpExecutor{
   if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD');
   let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
   if(busy)return skip('SYMBOL_HELD_BY_OTHER_STRATEGY');
-  const c=(await this.contracts().catch(()=>null))?.get?.(u.symbol);if(!c?.tradable)return skip('CONTRACT_UNAVAILABLE');
+  // Reserved right after the check, before any await: the signal strategy sees it through heldSymbols and
+  // cannot enter the same coin in between (review 2026-11-16).
   this.reserved.add(u.symbol);
   try{
+   const c=(await this.contracts().catch(()=>null))?.get?.(u.symbol);if(!c?.tradable)return skip('CONTRACT_UNAVAILABLE');
    const price=pos(await withTimeout(this.priceOf(u.symbol,u.venueSymbol),3000));
    const funds=await this.#funds();if(!funds)return skip('NO_BALANCE');
    let lev=this.config.leverage;
@@ -297,18 +299,20 @@ export class ScalpExecutor{
  /** Stop to the entry price after TP1 (backtest: from the next candle on). The new stop goes in
   * first; BingX refusing a second stop (110406) -> swap; nothing placed -> closed at market. */
  async #breakeven(p,mark){
+  // Each attempt has its own order ids (a retry 15 s later must not reuse a refused/duplicate id).
+  const n=p.beTries=(p.beTries||0)+1;
   const be=Number(grid(p.avg,p.tickSize,'UP'))||p.avg;
   if(!(be>p.stop)){p.breakevenMoved=true;return}
   // Price already back at the entry (the backtest's next candle would stop out at its open): close now.
-  if(mark&&mark<=be){const r=await this.#market(p,'b');p.exitReason='BREAKEVEN_STOP';p.breakevenMoved=true;if(!(r.size>0))await this.#finish(p);return}
-  const params=this.#stopParams(p,be,'b'),old=p.stopOrderId;
+  if(mark&&mark<=be){const r=await this.#market(p,'b'+n);p.exitReason='BREAKEVEN_STOP';p.breakevenMoved=true;if(!(r.size>0))await this.#finish(p);return}
+  const params=this.#stopParams(p,be,'b'+n),old=p.stopOrderId;
   let placed=null;
   try{placed=orderId(await this.client.placeOrder(params))}
   catch(e){
    if(!/110406/.test(String(e?.code||e?.message))||!old)throw e;
    await this.client.cancelOrder(p.venueSymbol,old);p.stopOrderId=null;
-   try{placed=orderId(await this.client.placeOrder({...params,clientOrderId:(p.id+'b2').slice(0,40)}))}
-   catch(e2){try{p.stopOrderId=orderId(await this.client.placeOrder(this.#stopParams(p,p.stop,'r')));p.stopIds.push(p.stopOrderId)}catch{await this.#emergency(p,'NO_STOP');return}throw e2}
+   try{placed=orderId(await this.client.placeOrder({...params,clientOrderId:(p.id+'b2'+n).slice(0,40)}))}
+   catch(e2){try{p.stopOrderId=orderId(await this.client.placeOrder(this.#stopParams(p,p.stop,'r'+n)));p.stopIds.push(p.stopOrderId)}catch{await this.#emergency(p,'NO_STOP');return}throw e2}
   }
   p.stopOrderId=placed;p.stopIds.push(placed);p.stop=be;p.breakevenMoved=true;
   if(old&&old!==placed){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
