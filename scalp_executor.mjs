@@ -115,7 +115,10 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  const fail=(reason,extra={})=>({ok:false,reasons:[reason],...extra});
  if(!pos(price))return fail('PRICE_UNAVAILABLE');
  const drift=Math.abs(price-det.entry),driftPct=drift/det.entry*100;
- const allowed=Math.max(config.maxDriftPct,(Number(det.evidence?.movePct)||0)*(config.driftMovePct||0)/100);
+ // Only a drift away from the stop gets the move-scaled allowance; toward the stop the base 0.4 % / 1 ATR stays
+ // (review 2026-11-17: a drift toward the stop shrinks the stop distance, which the RR check cannot see).
+ const away=dirOf(det.direction)*(price-det.entry)>0;
+ const allowed=away?Math.max(config.maxDriftPct,(Number(det.evidence?.movePct)||0)*(config.driftMovePct||0)/100):config.maxDriftPct;
  // The ATR cap stays for ordinary moves; a drift within the move-scaled allowance is not held to it.
  if(driftPct>allowed||(allowed===config.maxDriftPct&&drift>det.atr*config.maxDriftAtr))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),allowedPct:+allowed.toFixed(3)});
  const tick=c?.tickSize,step=c?.quantityStep;if(!pos(Number(tick))||!pos(Number(step)))return fail('CONTRACT_GRID_INVALID');
@@ -214,6 +217,9 @@ export class ScalpExecutor{
  /** Called every few seconds: the scan right after each 5m close, and the routine check. */
  async tick(now=this.now()){
   const bucket=Math.floor(now/I5);
+  // The bulk ticker read for the scan order starts right at the close, during the scan delay, not awaited here.
+  if(this.armed&&this.lastScanBucket!==bucket&&this.prefetch?.bucket!==bucket&&(this.tickersFresh||this.tickers))
+   this.prefetch={bucket,rows:withTimeout((this.tickersFresh||this.tickers)(),8000)};
   if(this.armed&&!this.scanning&&this.lastScanBucket!==bucket&&now-bucket*I5>=this.config.scanDelayMs)await this.scan(now);
   const every=this.store.open.length?15000:60000;
   if(!this.reconciling&&this.client&&now-this.lastReconcileAt>=every&&(this.store.open.length||this.armed||this.store.closed.some(x=>!x.journaled)))await this.reconcile();
@@ -230,14 +236,18 @@ export class ScalpExecutor{
  /** The universe ordered by the price range of the last 8 scans' ticker snapshots (largest first); the volume
   * order when no ticker is available. */
  async #byRecentMove(bucket){
-  let rows=null;try{rows=await withTimeout((this.tickersFresh||this.tickers)(),5000)}catch{}
+  try{
+  const pre=this.prefetch?.bucket===bucket?this.prefetch.rows:null;
+  let rows=null;try{rows=await withTimeout(pre||(this.tickersFresh||this.tickers)(),pre?3000:5000)}catch{}
   if(!Array.isArray(rows))return [...this.universe];
-  const px=new Map(rows.map(r=>[String(r.symbol),Number(r.lastPrice)]));this.pxHist||=new Map();
+  const px=new Map(rows.filter(Boolean).map(r=>[String(r?.symbol),Number(r?.lastPrice)]));this.pxHist||=new Map();
+  const live=new Set(this.universe.map(u=>u.symbol));for(const k of this.pxHist.keys())if(!live.has(k))this.pxHist.delete(k);
   const score=new Map();
   for(const u of this.universe){const p=px.get(u.venueSymbol);if(!(p>0))continue;
    const h=(this.pxHist.get(u.symbol)||[]).filter(x=>x.bucket>bucket-8&&x.bucket!==bucket);h.push({bucket,p});this.pxHist.set(u.symbol,h);
    const ps=h.map(x=>x.p),lo=Math.min(...ps);score.set(u.symbol,(Math.max(...ps)-lo)/lo)}
   return [...this.universe].sort((a,b)=>(score.get(b.symbol)??-1)-(score.get(a.symbol)??-1));
+  }catch{return [...this.universe]} // any bad ticker data: the volume order
  }
  async scan(now=this.now()){
   if(this.scanning)return this.lastScan;this.scanning=true;
@@ -317,7 +327,7 @@ export class ScalpExecutor{
    try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)lev=Math.max(1,Math.min(lev,Math.floor(max)))}catch{}
    const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,usedMargin:this.#usedMargin(),leverage:lev,config:this.config});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
-   if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
+   if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
    // No count cap on testnet (user 2026-11-16), so the daily loss limit caps the risk up front: today's realized loss
    // + loss to the open stops + this trade must stay within it (review 2026-11-16, as OPEN_RISK_LIMIT for the signals).
    {const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
@@ -552,7 +562,7 @@ export class ScalpExecutor{
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
-    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
+    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),

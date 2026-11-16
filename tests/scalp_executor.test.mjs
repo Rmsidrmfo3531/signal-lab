@@ -305,6 +305,7 @@ test('drift allowance grows with the move (user 2026-11-17): 5 % of the move, ne
  const far=planScalpOrder({det:big,price:det.entry*1.012,contract:SOL,equity:10000,leverage:10,config:cfg});assert.equal(far.reasons[0],'PRICE_DRIFT');assert.equal(far.allowedPct,1);
  assert.equal(planScalpOrder({det,price:det.entry*1.006,contract:SOL,equity:10000,leverage:10,config:{...cfg,driftMovePct:0}}).reasons[0],'PRICE_DRIFT');
  assert.equal(scalpExecConfig({SCALP_DRIFT_MOVE_PCT:'0'}).driftMovePct,0);
+ const toward=planScalpOrder({det:big,price:det.entry*.993,contract:SOL,equity:10000,leverage:10,config:cfg});assert.equal(toward.reasons[0],'PRICE_DRIFT','toward the stop: base 0.4 % only');assert.equal(toward.allowedPct,.4);
 });
 
 test('scan order: coins that moved most over the last scans are read first; volume order without tickers',async()=>{
@@ -316,6 +317,7 @@ test('scan order: coins that moved most over the last scans are read first; volu
   candles:async s=>{read.push(s);return []},balance:async()=>({equity:1e4,available:9e3}),now:()=>clock.t});
  ex.arm();await ex.scan();assert.deepEqual(read,syms,'no history yet: volume order');
  read.length=0;px={'AAA-USDT':1,'BBB-USDT':1.01,'CCC-USDT':1.08};clock.t+=I;await ex.scan();
- assert.deepEqual(read,['CCCUSDT','BBBUSDT','AAAUSDT']);assert.equal(ex.lastScan?.firstSymbols?.[0]??'CCCUSDT','CCCUSDT');
- read.length=0;ex.tickersFresh=async()=>{throw Error('down')};clock.t+=I;await ex.scan();assert.deepEqual(read,syms,'ticker failure: volume order');
+ assert.deepEqual(read,['CCCUSDT','BBBUSDT','AAAUSDT']);assert.deepEqual(ex.lastScan.firstSymbols.slice(0,3),['CCCUSDT','BBBUSDT','AAAUSDT']);
+ read.length=0;ex.tickersFresh=async()=>[null,{symbol:'CCC-USDT'}];ex.prefetch=null;clock.t+=I;await ex.scan();assert.equal(read.length,3,'bad rows do not stop the scan');
+ read.length=0;ex.tickersFresh=async()=>{throw Error('down')};ex.prefetch=null;clock.t+=I;await ex.scan();assert.deepEqual(read,syms,'ticker failure: volume order');
 });

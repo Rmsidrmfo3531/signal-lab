@@ -309,7 +309,12 @@ const scalpMarket=new BingXMarketData({minIntervalMs:SCALP_EXEC.klineGapMs});
 const scalpClient=SCALP_EXEC.mode!=='TESTNET'?null:LIVE.mode==='TESTNET'&&live.clients.BINGX?live.clients.BINGX
  :process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'TESTNET',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)}):null;
 let scalpTickers={at:0,rows:[]};
-const scalpTickerRows=async(maxAgeMs=20000)=>{if(!scalpTickers.at||Date.now()-scalpTickers.at>maxAgeMs)scalpTickers={at:Date.now(),rows:await scalpMarket.tickers()};return scalpTickers.rows};
+// One bulk ticker read at a time: callers arriving while it runs share it (review 2026-11-17: the scan-order read
+// and the 5m reads use the same paced queue, so a duplicate read delayed the scan).
+let scalpTickersInFlight=null;
+const scalpTickerRows=async(maxAgeMs=20000)=>{if(scalpTickers.at&&Date.now()-scalpTickers.at<=maxAgeMs)return scalpTickers.rows;
+ if(!scalpTickersInFlight)scalpTickersInFlight=scalpMarket.tickers().then(rows=>{scalpTickers={at:Date.now(),rows};return rows}).finally(()=>{scalpTickersInFlight=null});
+ return scalpTickersInFlight};
 const scalpLast=async(venueSymbol,maxAgeMs)=>Number((await scalpTickerRows(maxAgeMs)).find(x=>x.symbol===venueSymbol)?.lastPrice)||null;
 scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  contracts:symbol=>venueQuotes.clients.BINGX.contractsFor(symbol),tickers:()=>scalpTickerRows(60000),tickersFresh:()=>scalpTickerRows(5000),
