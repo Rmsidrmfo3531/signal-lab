@@ -1,9 +1,12 @@
-// 되돌림 단타 (5m "급락 후 반등" LONG) on the BingX TESTNET only (user 2026-11-14 22:29, start 2026-11-16).
+// 되돌림 단타 (5m "급락 후 반등" LONG and, user 2026-11-16 16:58, "급등 후 되돌림" SHORT) on the BingX TESTNET only
+// (user 2026-11-14 22:29, start 2026-11-16).
 // Its own ledger (scalp-store.json), strategy tag SCALP_REVERSAL, never mixed into the signal strategy.
 //
 //  - Detection = scalp_reversal.mjs on the 60 last CLOSED 5m candles (BingX public klines), settings
-//    SCALP_EXEC_SETTINGS (move 5 %, 38.2/50/61.8 % targets, stop 0.25 ATR, climax 3x), LONG only,
-//    4H trend filter (no rebound LONG in a 4H downtrend) and TP1 net-of-costs >= 1R, as backtestScalp.
+//    SCALP_EXEC_SETTINGS (move 5 %, 38.2/50/61.8 % targets, stop 0.25 ATR, climax 3x), both sides with the same
+//    settings (SCALP_EXEC_SIDES=LONG,SHORT turns one off), 4H trend filter (no rebound LONG in a 4H downtrend,
+//    no fade SHORT in a 4H uptrend) and TP1 net-of-costs >= 1R, as backtestScalp. Every price, side and PnL
+//    below goes through dir (+1 LONG / -1 SHORT); stops are rounded away from the entry, targets toward it.
 //  - Entry right after the close (= the backtest's next-candle open): market, with the stop attached,
 //    only when the BingX price is still within maxDriftPct / maxDriftAtr of the planned entry.
 //  - Exits as simulateTrade: reduce-only take-profits 40/35/25 % at the targets (parts below the venue
@@ -36,13 +39,30 @@ const kstDay=t=>new Date(t+9*3600000).toISOString().slice(0,10);
 const grid=(v,step,mode)=>{try{return roundDecimalToStep(v,step,mode)}catch{return null}};
 const withTimeout=(p,ms,fallback=null)=>Promise.race([Promise.resolve(p).catch(()=>fallback),new Promise(r=>setTimeout(()=>r(fallback),ms).unref?.())]);
 const err=(code,status=409)=>Object.assign(Error(code),{code,httpStatus:status});
+const dirOf=d=>d==='SHORT'?-1:1;
+// Tick rounding by side: a stop away from the entry (LONG down / SHORT up), a target or a break-even stop
+// on the safe side (target toward the entry, break-even at or beyond the entry in the profit direction).
+const awayMode=d=>d==='SHORT'?'UP':'DOWN',towardMode=d=>d==='SHORT'?'UP':'DOWN',beMode=d=>d==='SHORT'?'DOWN':'UP';
+const openSide=d=>d==='SHORT'?'SELL':'BUY',closeSide=d=>d==='SHORT'?'BUY':'SELL';
+/** One-way position amount, signed (+ long / - short): BingX reports a short as a negative positionAmt;
+ * a positionSide LONG / SHORT, when given, decides the sign. */
+export function signedAmount(row){
+ const amt=Number(row?.positionAmt)||0,side=String(row?.positionSide||'').toUpperCase();
+ return side==='LONG'?Math.abs(amt):side==='SHORT'?-Math.abs(amt):amt;
+}
+export const SCALP_SIDES=Object.freeze(['LONG','SHORT']);
+/** SCALP_EXEC_SIDES: LONG,SHORT (default both). Unknown words are ignored; nothing valid = no side. */
+export function scalpSides(value){
+ if(value===undefined||value===null||String(value).trim()==='')return [...SCALP_SIDES];
+ return SCALP_SIDES.filter(x=>String(value).toUpperCase().split(/[\s,]+/).includes(x));
+}
 
 export function scalpExecConfig(env=process.env){
  const n=(k,d,lo,hi)=>{const v=Number(env[k]);return env[k]!==undefined&&env[k]!==''&&Number.isFinite(v)&&v>=lo&&v<=hi?v:d};
  // SCALP_EXEC_MODE: OFF | TESTNET (default; still disarmed until the dashboard button). Anything else,
  // LIVE included, is refused and leaves the scalps OFF.
  const raw=String(env.SCALP_EXEC_MODE??'').trim().toUpperCase(),known=raw===''||SCALP_EXEC_MODES.includes(raw);
- return {mode:known?(raw||'TESTNET'):'OFF',refused:known?null:raw==='LIVE'?'LIVE_REFUSED':'MODE_INVALID',interval:'5m',direction:'LONG',
+ return {mode:known?(raw||'TESTNET'):'OFF',refused:known?null:raw==='LIVE'?'LIVE_REFUSED':'MODE_INVALID',interval:'5m',sides:scalpSides(env.SCALP_EXEC_SIDES),
   settings:{...SCALP_EXEC_SETTINGS,retracements:[...SCALP_EXEC_SETTINGS.retracements]},minNetRR:SCALP_DEFAULTS.minNetRR,maxHoldMs:SCALP_TIMEFRAMES['5m'].maxHoldMs,
   trendFilter:String(env.SCALP_EXEC_TREND_FILTER||'').toLowerCase()!=='off',
   riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',5,1,10),leverage:n('SCALP_LEVERAGE',10,1,20),
@@ -80,23 +100,25 @@ export function scalpSplits(total,step,minPart=0){
  return null;
 }
 
-/** The order plan for a detected LONG: price check, stop/targets on the tick grid, risk sizing, splits,
- * TP1 net RR (buildScalpPlan, as backtestScalp). Pure. */
+/** The order plan for a detected LONG or SHORT: price check, stop/targets on the tick grid, risk sizing,
+ * splits, TP1 net RR (buildScalpPlan, as backtestScalp). Pure. */
 export function planScalpOrder({det,price,contract:c,equity,available=null,usedMargin=0,leverage,config,costs=SCALP_EXEC_COSTS}){
  const fail=(reason,extra={})=>({ok:false,reasons:[reason],...extra});
  if(!pos(price))return fail('PRICE_UNAVAILABLE');
  const drift=Math.abs(price-det.entry),driftPct=drift/det.entry*100;
  if(driftPct>config.maxDriftPct||drift>det.atr*config.maxDriftAtr)return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3)});
  const tick=c?.tickSize,step=c?.quantityStep;if(!pos(Number(tick))||!pos(Number(step)))return fail('CONTRACT_GRID_INVALID');
- const down=Number(grid(price,tick,'DOWN')),up=Number(grid(price,tick,'UP')),entry=price-down<=up-price?down:up,stop=Number(grid(det.stop,tick,'DOWN'));
- if(!(entry>stop))return fail('ENTRY_AT_OR_BELOW_STOP');
+ const dir=dirOf(det.direction);
+ // As backtestScalp: entry on the nearest tick, the stop rounded away from it (LONG down, SHORT up).
+ const down=Number(grid(price,tick,'DOWN')),up=Number(grid(price,tick,'UP')),entry=price-down<=up-price?down:up,stop=Number(grid(det.stop,tick,awayMode(det.direction)));
+ if(!(dir*(entry-stop)>0))return fail('ENTRY_AT_OR_BEYOND_STOP');
  const cost={...costs,takerRate:Math.max(costs.takerRate,pos(c.takerFeeRate)??0)};
  // Targets and the TP1 net RR do not depend on the quantity: checked on a 20-lot sample.
  const q=buildScalpPlan({signal:{...det,stop},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR:config.minNetRR});
  if(!q.ok)return fail(q.reasons[0],{netRR:q.estimatedNetRR??null});
  if(!pos(equity))return fail('NO_BALANCE');
  const riskUSD=equity*config.riskPct/100,lev=pos(leverage)??1;
- let qty=riskUSD/(entry-stop),capped=false;
+ let qty=riskUSD/(dir*(entry-stop)),capped=false;
  const cap=Math.min(equity*config.maxMarginPct/100,equity*config.maxTotalMarginPct/100-usedMargin,available!=null?available*.9:Infinity);
  if(!(cap>0))return fail('MARGIN_CAP');
  if(qty*entry/lev>cap){qty=cap*lev/entry;capped=true}
@@ -104,10 +126,16 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  const minPart=Number(grid(Math.max(Number(c.minQuantityBase)||0,(Number(c.minNotionalUSDT)||0)/entry*1.02,Number(step)),step,'UP'))||Number(step);
  const split=scalpSplits(qty,step,minPart);if(!split)return fail(capped?'MARGIN_CAP':'QUANTITY_BELOW_MINIMUM');
  return {ok:true,entry,stop,targets:q.targets,qty,parts:split.parts,targetCount:split.targets,merged:split.merged,minPart,leverage:lev,
-  riskUSD:qty*(entry-stop),marginUSD:qty*entry/lev,capped,netRR:q.estimatedNetRR,driftPct:+driftPct.toFixed(3),takerRate:cost.takerRate};
+  riskUSD:qty*dir*(entry-stop),marginUSD:qty*entry/lev,capped,netRR:q.estimatedNetRR,driftPct:+driftPct.toFixed(3),takerRate:cost.takerRate};
 }
-/** Deterministic client order ids: one signal candle of one symbol can be sent once. */
-export const scalpClientId=(symbol,barAt)=>'sc'+createHash('sha256').update(`${SCALP_EXEC_STRATEGY}|${symbol}|${barAt}`).digest('hex').slice(0,22);
+/** Deterministic client order ids: one signal candle of one symbol and side can be sent once (LONG keeps
+ * the id it had before shorts were added, so a ledger written then still blocks a resend). */
+export const scalpClientId=(symbol,barAt,direction='LONG')=>'sc'+createHash('sha256').update(`${SCALP_EXEC_STRATEGY}|${symbol}|${barAt}${direction==='SHORT'?'|SHORT':''}`).digest('hex').slice(0,22);
+
+function positionOf(list,vs,direction){
+ const row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===vs),signed=row?signedAmount(row):0,mine=dirOf(direction)*signed;
+ return {size:mine>0?mine:0,any:Math.abs(signed),signed,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null};
+}
 
 export class ScalpExecutor{
  constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],candles=async()=>[],trendCandles=null,priceOf=async()=>null,markOf=async()=>null,
@@ -184,7 +212,7 @@ export class ScalpExecutor{
     if(!closed.length||Number(closed.at(-1)[0])!==(bucket-1)*I5)continue;
     const det=detectScalpReversal(closed,{symbol:u.symbol,now:t,interval:'5m',settings:this.config.settings});
     if(!det.ok)continue;st.signals++;
-    if(det.direction!=='LONG'){this.#skip(u.symbol,'SHORT_NOT_TRADED');continue}
+    if(!this.config.sides.includes(det.direction)){this.#skip(u.symbol,'SIDE_OFF',det.direction);continue}
     const r=await this.#consider(u,det);if(r?.entered)st.entered++;
    }
   }catch(e){st.error=e?.code||e?.message||'SCAN_FAILED'}
@@ -203,9 +231,9 @@ export class ScalpExecutor{
   this.funds={equity,available:Math.max(0,Math.min(num(b.available)??equity,equity-used)),at:this.now()};return this.funds;
  }
  async #consider(u,det){
-  const key=scalpClientId(u.symbol,det.barAt),skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
+  const key=scalpClientId(u.symbol,det.barAt,det.direction),skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   if(this.store.sent.includes(key))return {entered:false,reason:'ALREADY_SENT'};
-  if(this.config.trendFilter){const trend=await this.#trend(u.symbol);if(!trendAllows('LONG',trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND',trend)}
+  if(this.config.trendFilter){const trend=await this.#trend(u.symbol);if(!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND',trend)}
   if(this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS');
   if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD');
   let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
@@ -218,7 +246,7 @@ export class ScalpExecutor{
    const price=pos(await withTimeout(this.priceOf(u.symbol,u.venueSymbol),3000));
    const funds=await this.#funds();if(!funds)return skip('NO_BALANCE');
    let lev=this.config.leverage;
-   try{const info=await this.client.leverage(u.venueSymbol),max=Number(info?.maxLongLeverage??info?.maxLeverage);if(max>0)lev=Math.max(1,Math.min(lev,Math.floor(max)))}catch{}
+   try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)lev=Math.max(1,Math.min(lev,Math.floor(max)))}catch{}
    const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,usedMargin:this.#usedMargin(),leverage:lev,config:this.config});
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
    return await this.#enter(u,det,c,plan,key);
@@ -226,25 +254,25 @@ export class ScalpExecutor{
   finally{this.reserved.delete(u.symbol)}
  }
  async #enter(u,det,c,plan,id){
-  const cl=this.client,vs=u.venueSymbol,skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
+  const cl=this.client,vs=u.venueSymbol,d=det.direction,skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   const mode=await cl.positionMode();
   if(mode?.dualSidePosition===true||mode?.dualSidePosition==='true')return skip('BINGX_HEDGE_MODE');
-  {const now=await this.#position(vs);if(now.size>0)return skip('VENUE_POSITION_EXISTS',`${now.size}`)}
+  {const now=await this.#position(vs,d);if(now.any>0)return skip('VENUE_POSITION_EXISTS',`${now.signed}`)}
   try{
    const m=await cl.marginType(vs).catch(()=>null);
    if(m?.marginType!=='CROSSED'){await cl.setMarginType(vs,'CROSSED');const again=await cl.marginType(vs);if(again?.marginType!=='CROSSED')throw err('CROSS_NOT_CONFIRMED')}
    const set=await cl.setLeverage(vs,'BOTH',plan.leverage);
    if(set?.leverage!==undefined&&Number(set.leverage)!==plan.leverage)throw err('LEVERAGE_NOT_CONFIRMED');
   }catch(e){return skip('MARGIN_SETUP_FAILED',e?.code||e?.message)}
-  const tick=c.tickSize,px=v=>grid(v,tick,'DOWN')??String(v);
-  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:'LONG',interval:'5m',
+  const tick=c.tickSize,px=v=>grid(v,tick,awayMode(d))??String(v);
+  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,interval:'5m',
    pattern:det.pattern,barAt:det.barAt,plannedEntry:det.entry,checkedPrice:plan.entry,driftPct:plan.driftPct,entry:plan.entry,stop:plan.stop,initialStop:plan.stop,targets:plan.targets,
    qty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,marginUSD:plan.marginUSD,netRR:plan.netRR,
    tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
    avg:null,size:0,filled:0,stopOrderId:null,stopIds:[],tpOrderIds:[null,null,null],tpTries:[0,0,0],breakevenMoved:false,exitIds:[],steps:[]};
   this.store.open.push(p);this.store.sent.push(id);this.#save();
   let fill;
-  try{fill=await cl.placeOrder({symbol:vs,side:'BUY',positionSide:'BOTH',type:'MARKET',quantity:String(plan.qty),clientOrderId:id,
+  try{fill=await cl.placeOrder({symbol:vs,side:openSide(d),positionSide:'BOTH',type:'MARKET',quantity:String(plan.qty),clientOrderId:id,
    stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:Number(px(plan.stop)),workingType:'MARK_PRICE'})})}
   catch(e){
    // Never sent blindly again: the client id is looked up first; an unknown outcome blocks new entries.
@@ -255,19 +283,18 @@ export class ScalpExecutor{
    fill=found;
   }
   p.entryOrderId=orderId(fill);p.status='OPEN';p.openedAt=this.now();
-  const now=await this.#position(vs).catch(()=>({size:0}));
+  const now=await this.#position(vs,d).catch(()=>({size:0}));
   p.filled=p.size=now.size>0?now.size:plan.qty;p.avg=now.avg??pos(orderOf(fill)?.avgPrice)??plan.entry;
   if(Math.abs(p.filled-plan.qty)>Number(c.quantityStep)/2){const s=scalpSplits(p.filled,c.quantityStep,0);if(s)p.parts=s.parts}
   p.steps.push({kind:'OPEN',at:this.now(),qty:p.filled,avg:p.avg});this.#save();
   if(!await this.#protect(p))return {entered:false,reason:p.closeReason||'NO_STOP'};
   await this.#placeTargets(p);
-  this.#event('OPENED',{symbol:p.symbol,id:p.id,entry:p.avg,stop:p.stop,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged});
+  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,entry:p.avg,stop:p.stop,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged});
   this.#save();return {entered:true};
  }
- async #position(vs){
-  const list=await this.client.positions(vs),row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===vs);
-  return {size:row?Math.abs(Number(row.positionAmt)||0):0,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null};
- }
+ /** The venue position of this symbol: `size` is the quantity on our side (a position on the other side
+  * counts as 0 for us and is never closed by us), `any` any position at all. */
+ async #position(vs,direction){return positionOf(await this.client.positions(vs),vs,direction)}
  async #openOrders(vs){const o=await this.client.openOrders(vs);return o?.orders??(Array.isArray(o)?o:[])}
  /** The attached stop is confirmed; else a whole-position stop is placed; else the position is closed. */
  async #protect(p){
@@ -278,18 +305,18 @@ export class ScalpExecutor{
   try{const s=await this.client.placeOrder(this.#stopParams(p,p.stop,'s'));p.stopOrderId=orderId(s);p.stopIds.push(p.stopOrderId);this.#event('STOP_PLACED',{symbol:p.symbol});return true}
   catch(e){this.#event('STOP_FAILED',{symbol:p.symbol,reason:e?.code||e?.message});await this.#emergency(p,'NO_STOP');this.disarm('NO_PROTECTIVE_STOP');return false}
  }
- #stopParams(p,price,tag){return {symbol:p.venueSymbol,side:'SELL',positionSide:'BOTH',type:'STOP_MARKET',quantity:String(p.size),stopPrice:grid(price,p.tickSize,'DOWN')??String(price),closePosition:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+tag).slice(0,40)}}
+ #stopParams(p,price,tag,mode=awayMode(p.direction)){return {symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:'BOTH',type:'STOP_MARKET',quantity:String(p.size),stopPrice:grid(price,p.tickSize,mode)??String(price),closePosition:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+tag).slice(0,40)}}
  async #placeTargets(p){
   for(const [i,q] of p.parts.entries()){
    if(!(q>0)||p.tpOrderIds[i]||p.tpDone?.[i]||p.tpTries[i]>=3)continue;p.tpTries[i]++;
-   try{const o=await this.client.placeOrder({symbol:p.venueSymbol,side:'SELL',positionSide:'BOTH',type:'TAKE_PROFIT_MARKET',quantity:String(q),stopPrice:grid(p.targets[i],p.tickSize,'DOWN')??String(p.targets[i]),
+   try{const o=await this.client.placeOrder({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:'BOTH',type:'TAKE_PROFIT_MARKET',quantity:String(q),stopPrice:grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]),
     reduceOnly:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+'t'+(i+1)+(p.tpTries[i]>1?p.tpTries[i]:'')).slice(0,40)});p.tpOrderIds[i]=orderId(o)}
    catch(e){this.#event('TARGET_FAILED',{symbol:p.symbol,reason:`${i+1}: ${e?.code||e?.message}`})}
   }
  }
  async #market(p,tag){
-  const now=await this.#position(p.venueSymbol);if(!(now.size>0))return now;
-  const o=await this.client.placeOrder({symbol:p.venueSymbol,side:'SELL',positionSide:'BOTH',type:'MARKET',quantity:String(now.size),reduceOnly:'true',clientOrderId:(p.id+tag).slice(0,40)});
+  const now=await this.#position(p.venueSymbol,p.direction);if(!(now.size>0))return now;
+  const o=await this.client.placeOrder({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:'BOTH',type:'MARKET',quantity:String(now.size),reduceOnly:'true',clientOrderId:(p.id+tag).slice(0,40)});
   const id=orderId(o);if(id)p.exitIds.push(id);return {...now,size:0,exitAvg:pos(orderOf(o)?.avgPrice)};
  }
  async #emergency(p,reason){
@@ -301,11 +328,11 @@ export class ScalpExecutor{
  async #breakeven(p,mark){
   // Each attempt has its own order ids (a retry 15 s later must not reuse a refused/duplicate id).
   const n=p.beTries=(p.beTries||0)+1;
-  const be=Number(grid(p.avg,p.tickSize,'UP'))||p.avg;
-  if(!(be>p.stop)){p.breakevenMoved=true;return}
+  const dir=dirOf(p.direction),be=Number(grid(p.avg,p.tickSize,beMode(p.direction)))||p.avg;
+  if(!(dir*(be-p.stop)>0)){p.breakevenMoved=true;return}
   // Price already back at the entry (the backtest's next candle would stop out at its open): close now.
-  if(mark&&mark<=be){const r=await this.#market(p,'b'+n);p.exitReason='BREAKEVEN_STOP';p.breakevenMoved=true;if(!(r.size>0))await this.#finish(p);return}
-  const params=this.#stopParams(p,be,'b'+n),old=p.stopOrderId;
+  if(mark&&dir*(mark-be)<=0){const r=await this.#market(p,'b'+n);p.exitReason='BREAKEVEN_STOP';p.breakevenMoved=true;if(!(r.size>0))await this.#finish(p);return}
+  const params=this.#stopParams(p,be,'b'+n,beMode(p.direction)),old=p.stopOrderId;
   let placed=null;
   try{placed=orderId(await this.client.placeOrder(params))}
   catch(e){
@@ -316,7 +343,7 @@ export class ScalpExecutor{
   }
   p.stopOrderId=placed;p.stopIds.push(placed);p.stop=be;p.breakevenMoved=true;
   if(old&&old!==placed){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
-  this.#event('STOP_TO_BREAKEVEN',{symbol:p.symbol,price:be});
+  this.#event('STOP_TO_BREAKEVEN',{symbol:p.symbol,direction:p.direction,price:be});
  }
  /** Routine check: fills, TP1 -> breakeven, time exit, closes, results, the daily loss limit. */
  async reconcile(){
@@ -329,7 +356,7 @@ export class ScalpExecutor{
     // An entry still being placed (its stop / targets not yet sent) is left to the entry path.
     if(p.status==='SUBMITTING'||this.reserved.has(p.symbol))continue;
     try{
-     const row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===p.venueSymbol),size=row?Math.abs(Number(row.positionAmt)||0):0,mark=pos(row?.markPrice);
+     const row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===p.venueSymbol),{size}=positionOf(list,p.venueSymbol,p.direction),mark=pos(row?.markPrice);
      if(p.status==='UNKNOWN'){
       if(size>0){p.status='OPEN';p.filled=p.size=size;p.avg=pos(row.avgPrice)??p.entry;p.openedAt??=this.now();this.#event('ENTRY_RECOVERED',{symbol:p.symbol,qty:size});
        const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts;if(await this.#protect(p))await this.#placeTargets(p)}
@@ -339,7 +366,7 @@ export class ScalpExecutor{
      if(!(size>0)){if((p.zeroSeen=(p.zeroSeen||0)+1)>=2)await this.#finish(p);continue}
      p.zeroSeen=0;
      if(size<p.size-1e-12)p.steps.push({kind:'REDUCE',at:this.now(),qty:+(p.size-size).toFixed(12),mark});
-     p.size=size;p.avg=pos(row.avgPrice)??p.avg;p.mark=mark??p.mark;p.unrealized=num(row.unrealizedProfit);unrealized+=p.unrealized||0;
+     p.size=size;p.avg=pos(row.avgPrice)??p.avg;p.mark=mark??p.mark;p.unrealized=num(row.unrealizedProfit)??(mark&&p.avg?dirOf(p.direction)*(mark-p.avg)*size:null);unrealized+=p.unrealized||0;
      const done=p.filled-size,need=[p.parts[0],p.parts[0]+p.parts[1],p.parts[0]+p.parts[1]+p.parts[2]];
      p.tpDone=need.map((n,i)=>p.parts[i]>0&&done>=n-1e-9);
      if(this.now()>=p.deadline){p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'x'+p.exitTries);p.exitReason='TIME_STOP';if(!(r.size>0))await this.#finish(p);continue}
@@ -366,13 +393,14 @@ export class ScalpExecutor{
   const stopFilled=fills.some(f=>p.stopIds.includes(f.id)),tpFilled=p.tpOrderIds.filter((id,i)=>id&&p.parts[i]>0&&fills.some(f=>f.id===id)).length,placed=p.parts.filter(q=>q>0).length;
   const reason=forced||p.exitReason||(stopFilled?(p.breakevenMoved?'BREAKEVEN_STOP':'STOP'):tpFilled>=placed?'ALL_TARGETS':'EXTERNAL');
   // Estimate: the fills read back, any rest at the last price seen (or the stop); taker fee both ways.
-  let out=fills.reduce((t,f)=>t+f.qty,0),gross=fills.reduce((t,f)=>t+(f.price-p.avg)*f.qty,0),exitNotional=fills.reduce((t,f)=>t+f.price*f.qty,0);
-  const rest=Math.max(0,p.filled-out);if(rest>1e-12){const px=pos(await withTimeout(this.priceOf(p.symbol,vs),3000))??p.mark??p.stop;gross+=(px-p.avg)*rest;exitNotional+=px*rest;out+=rest}
+  const dir=dirOf(p.direction);
+  let out=fills.reduce((t,f)=>t+f.qty,0),gross=fills.reduce((t,f)=>t+dir*(f.price-p.avg)*f.qty,0),exitNotional=fills.reduce((t,f)=>t+f.price*f.qty,0);
+  const rest=Math.max(0,p.filled-out);if(rest>1e-12){const px=pos(await withTimeout(this.priceOf(p.symbol,vs),3000))??p.mark??p.stop;gross+=dir*(px-p.avg)*rest;exitNotional+=px*rest;out+=rest}
   const fee=(p.avg*p.filled+exitNotional)*(p.takerRate||SCALP_EXEC_COSTS.takerRate),r=x=>Math.round(x*1e4)/1e4;
   p.status='CLOSED';p.closedAt=this.now();p.closeReason=reason;p.tpHits=tpFilled;
   const row={...p,estimate:{source:'ESTIMATE',pnlUSD:r(gross),feeUSD:r(-fee),netUSD:r(gross-fee)},netUSD:r(gross-fee),netSource:'ESTIMATE',holdMs:p.closedAt-(p.openedAt||p.createdAt)};
   this.store.closed.push(row);this.store.open=this.store.open.filter(x=>x!==p);
-  this.#event('CLOSED',{symbol:p.symbol,reason,netUSD:row.netUSD,tp:tpFilled,holdMs:row.holdMs,entry:p.avg});
+  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,holdMs:row.holdMs,entry:p.avg});
  }
  /** BingX fund flow (realized PnL + fees + funding) of this trade's symbol and lifetime, read after the close. */
  async #settle(x){
@@ -385,8 +413,10 @@ export class ScalpExecutor{
   x.realized={source:'EXCHANGE',pnlUSD:r(sum('REALIZED_PNL')),feeUSD:r(sum('TRADING_FEE')),fundingUSD:r(sum('FUNDING_FEE'))};x.realized.netUSD=r(x.realized.pnlUSD+x.realized.feeUSD+x.realized.fundingUSD);
   x.netUSD=x.realized.netUSD;x.netSource='EXCHANGE';
  }
- stats(){
-  const list=this.store.closed,n=list.length,wins=list.filter(x=>x.netUSD>0),gross=wins.reduce((t,x)=>t+x.netUSD,0),loss=-list.filter(x=>x.netUSD<0).reduce((t,x)=>t+x.netUSD,0);
+ /** Win rate / PF / net over all closed scalps, and per side (bySide.LONG / bySide.SHORT). */
+ stats(){const all=this.#stats(this.store.closed);all.bySide=Object.fromEntries(SCALP_SIDES.map(d=>[d,this.#stats(this.store.closed.filter(x=>(x.direction||'LONG')===d))]));return all}
+ #stats(list){
+  const n=list.length,wins=list.filter(x=>x.netUSD>0),gross=wins.reduce((t,x)=>t+x.netUSD,0),loss=-list.filter(x=>x.netUSD<0).reduce((t,x)=>t+x.netUSD,0);
   const today=kstDay(this.now()),reasons={};for(const x of list)reasons[x.closeReason]=(reasons[x.closeReason]||0)+1;
   return {trades:n,wins:wins.length,winRatePct:n?+(wins.length/n*100).toFixed(1):null,profitFactor:loss>0?+(gross/loss).toFixed(2):null,netUSD:+list.reduce((t,x)=>t+(Number(x.netUSD)||0),0).toFixed(2),
    todayNetUSD:+list.filter(x=>kstDay(x.closedAt)===today).reduce((t,x)=>t+(Number(x.netUSD)||0),0).toFixed(2),closeReasons:reasons};
@@ -394,7 +424,7 @@ export class ScalpExecutor{
  status(){
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
-   settings:{interval:c.interval,direction:c.direction,...c.settings,trendFilter:c.trendFilter,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
+   settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendFilter,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
    universe:{count:this.universe.length,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-50).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
@@ -403,7 +433,7 @@ export class ScalpExecutor{
  }
  /** status() with fresh marks for open positions (public BingX price, cached) and a recent balance. */
  async liveStatus(){
-  await Promise.all(this.store.open.filter(p=>p.size>0&&p.avg>0).map(async p=>{const m=pos(await withTimeout(this.markOf(p.venueSymbol),3000));if(m){p.mark=m;p.unrealized=(m-p.avg)*p.size;p.markAt=this.now()}}));
+  await Promise.all(this.store.open.filter(p=>p.size>0&&p.avg>0).map(async p=>{const m=pos(await withTimeout(this.markOf(p.venueSymbol),3000));if(m){p.mark=m;p.unrealized=dirOf(p.direction)*(m-p.avg)*p.size;p.markAt=this.now()}}));
   if(this.client&&!(this.now()-(this.funds?.at||0)<15000))await this.#funds().catch(()=>null);
   return this.status();
  }

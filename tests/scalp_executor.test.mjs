@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
-import {ScalpExecutor,scalpExecConfig,scalpSplits,planScalpOrder,scalpUniverse,scalpClientId,SCALP_EXEC_COSTS,SCALP_EXEC_SETTINGS} from '../scalp_executor.mjs';
+import {ScalpExecutor,scalpExecConfig,scalpSplits,planScalpOrder,scalpUniverse,scalpClientId,scalpSides,signedAmount,SCALP_EXEC_COSTS,SCALP_EXEC_SETTINGS} from '../scalp_executor.mjs';
 import {scalpEventText,scalpReasonKo} from '../scalp_telegram.mjs';
 import {detectScalpReversal,SCALP_TIMEFRAMES} from '../scalp_reversal.mjs';
 import {BACKTEST_COSTS} from '../backtest.mjs';
@@ -18,37 +18,42 @@ function crash({move=6,volume=10,lastOpen=(BUCKET-1)*I}={}){
 }
 const up4h=now=>Array.from({length:301},(_,i)=>{const t=now-(301-i)*4*3600000-1000,c=50+i*.1;return [t,String(c),String(c+.2),String(c-.2),String(c),'1000',t+4*3600000-1,'1']});
 const down4h=now=>up4h(now).map((r,i)=>{const c=200-i*.1;return [r[0],String(c),String(c+.2),String(c-.2),String(c),'1000',r[6],'1']});
-const ENTRY=Number(crash().at(-1)[4]),PX=+(ENTRY+.02).toFixed(2);
+// The mirror image around 100: a fast ~6.6 % rise and a shooting star (SHORT).
+const rise=o=>crash(o).map(r=>[r[0],String(200-r[1]),String(200-r[3]),String(200-r[2]),String(200-r[4]),r[5],r[6],r[7]]);
+const ENTRY=Number(crash().at(-1)[4]),PX=+(ENTRY+.02).toFixed(2),ENTRY_S=Number(rise().at(-1)[4]),PX_S=+(ENTRY_S-.02).toFixed(2);
 const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
 
-function venue({hedge=false,failStop=false,maxLev=20}={}){
- const calls=[],orders=new Map();let size=0,avg=0,mark=0,id=1;
+// One-way BingX fake: amt is the signed position (+ long, - short), as positionAmt.
+function venue({hedge=false,failStop=false,maxLev=20,fillAt=PX}={}){
+ const calls=[],orders=new Map();let amt=0,avg=0,mark=0,id=1;
+ const reduce=q=>{amt=amt>0?+Math.max(0,amt-q).toFixed(8):+Math.min(0,amt+q).toFixed(8)};
  const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
  const client={mode:'TESTNET',
   positionMode:async()=>({dualSidePosition:hedge}),marginType:async()=>({marginType:'CROSSED'}),setMarginType:async()=>({}),
-  leverage:async()=>({maxLongLeverage:maxLev}),setLeverage:async(s,side,l)=>{calls.push({op:'lev',l});return {leverage:l}},
-  positions:async()=>size>0?[{symbol:'SOL-USDT',positionAmt:String(size),avgPrice:String(avg),markPrice:String(mark||avg),unrealizedProfit:String((mark-avg)*size)}]:[],
+  leverage:async()=>({maxLongLeverage:maxLev,maxShortLeverage:maxLev}),setLeverage:async(s,side,l)=>{calls.push({op:'lev',l});return {leverage:l}},
+  positions:async()=>amt!==0?[{symbol:'SOL-USDT',positionSide:'BOTH',positionAmt:String(amt),avgPrice:String(avg),markPrice:String(mark||avg),unrealizedProfit:String(((mark||avg)-avg)*amt)}]:[],
   openOrders:async()=>({orders:[...orders.values()].filter(o=>o.status==='NEW')}),
   getOrder:async(s,{orderId,clientOrderId})=>({order:[...orders.values()].find(o=>orderId?o.orderId===orderId:o.clientOrderId===clientOrderId)??null}),
   cancelOrder:async(s,oid)=>{calls.push({op:'cancel',oid});const o=orders.get(oid);if(o&&o.status==='NEW')o.status='CANCELED';return {}},
   placeOrder:async p=>{calls.push({op:'order',...p});
    if(failStop&&p.type==='STOP_MARKET')throw Object.assign(Error('no'),{code:'VENUE_ERROR_1'});
    if(p.type==='MARKET'){const q=Number(p.quantity);
-    if(p.reduceOnly){size=+Math.max(0,size-q).toFixed(8);return {order:add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark||avg)})}}
-    avg=mark||PX;size=+(size+q).toFixed(8);const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(avg)});
-    if(p.stopLoss){const sl=JSON.parse(p.stopLoss);add({symbol:p.symbol,type:'STOP_MARKET',stopPrice:String(sl.stopPrice),side:'SELL'})}
+    if(p.reduceOnly){reduce(q);return {order:add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark||avg)})}}
+    avg=mark||fillAt;amt=+(amt+(p.side==='SELL'?-q:q)).toFixed(8);const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(avg)});
+    if(p.stopLoss){const sl=JSON.parse(p.stopLoss);add({symbol:p.symbol,type:'STOP_MARKET',stopPrice:String(sl.stopPrice),side:p.side==='SELL'?'BUY':'SELL'})}
     return {order:o}}
    return {order:add(p)}}};
- return {client,calls,orders,get size(){return size},set size(v){size=v},set mark(v){mark=v},get avg(){return avg},
-  fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(size);o.avgPrice=String(price??o.stopPrice);size=+Math.max(0,size-Number(o.executedQty)).toFixed(8)}};
+ return {client,calls,orders,get size(){return Math.abs(amt)},set size(v){amt=v},get amt(){return amt},set mark(v){mark=v},get avg(){return avg},
+  fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(Math.abs(amt));o.avgPrice=String(price??o.stopPrice);reduce(Number(o.executedQty))}};
 }
-function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={}}={}){
+function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash}={}){
  return new ScalpExecutor({config:{...scalpExecConfig({}),...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
-  candles:async(s,iv)=>iv==='5m'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
+  candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
   balance:async()=>funds,gate,isBusy,directory:dir,now:()=>clock.t});
 }
 const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
+const short=(opt={})=>{const v=venue({fillAt:PX_S,...opt.venue}),clock=opt.clock||{t:T0};return {v,clock,ex:make(v,{clock,price:PX_S,trend:down4h,rows:rise,...opt})}};
 
 test('config: TESTNET or OFF only — LIVE is refused; settings as the user set them; costs = backtest costs',()=>{
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
@@ -194,4 +199,86 @@ test('testnet page section: on/off pill, switch, desktop tables and phone lists,
  assert.match(h,/<table class="copy-table only-desk">/);assert.match(h,/<ul class="copy-list only-mob">/);assert.match(h,/SOLUSDT/);
  assert.match(h,/진입가에서 가격이 이미 벗어남 1회/);
  const off=new ScalpExecutor({config:scalpExecConfig({SCALP_EXEC_MODE:'LIVE'})});assert.match(scalpHTML(off.status()),/실계좌 모드는 거부됨/);
+});
+
+// ---- SHORT side (user 2026-11-16 16:58 "숏도 넣어줘"): the mirror image of every LONG step ----
+test('sides: SCALP_EXEC_SIDES (default both), one-way position sign',()=>{
+ assert.deepEqual(scalpExecConfig({}).sides,['LONG','SHORT']);assert.deepEqual(scalpSides('long'),['LONG']);assert.deepEqual(scalpSides('SHORT'),['SHORT']);
+ assert.deepEqual(scalpSides('LONG,SHORT'),['LONG','SHORT']);assert.deepEqual(scalpSides('none'),[],'nothing valid: no side traded');
+ assert.equal(signedAmount({positionAmt:'-2'}),-2);assert.equal(signedAmount({positionAmt:'2',positionSide:'SHORT'}),-2);assert.equal(signedAmount({positionAmt:'2',positionSide:'BOTH'}),2);
+ assert.notEqual(scalpClientId('SOLUSDT',1,'SHORT'),scalpClientId('SOLUSDT',1,'LONG'));assert.equal(scalpClientId('SOLUSDT',1),scalpClientId('SOLUSDT',1,'LONG'),'LONG ids unchanged');
+});
+
+test('SHORT detection -> plan: stop above the high (rounded up), 38.2/50/61.8 % targets below the entry, same risk',()=>{
+ const cfg=scalpExecConfig({}),det=detectScalpReversal(rise(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ assert.equal(det.ok,true,JSON.stringify(det.reasons));assert.equal(det.direction,'SHORT');
+ const {extreme,origin}=det.evidence,move=extreme-origin;
+ assert.ok([.382,.5,.618].every((f,i)=>Math.abs(det.targets[i]-(extreme-f*move))<1e-9));
+ const plan=planScalpOrder({det,price:PX_S,contract:{...SOL,tickSize:'0.1'},equity:10000,leverage:10,config:cfg});
+ assert.equal(plan.ok,true,JSON.stringify(plan));assert.ok(plan.stop>extreme&&plan.stop>=det.stop&&plan.entry<plan.stop);
+ assert.ok(Math.abs(plan.stop*10-Math.round(plan.stop*10))<1e-9,'stop on the tick grid');
+ assert.ok(plan.targets.every((t,i)=>t<plan.entry&&(i===0||t<plan.targets[i-1])&&t>=det.targets[i]-1e-9),'targets rounded up, toward the entry');
+ assert.ok(Math.abs(plan.riskUSD-50)<.6);assert.ok(plan.netRR>=1);
+ assert.deepEqual(planScalpOrder({det,price:PX_S*0.99,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['PRICE_DRIFT']);
+ assert.deepEqual(planScalpOrder({det:{...det,stop:det.entry-.05},price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['ENTRY_AT_OR_BEYOND_STOP'],'a short stop below the entry');
+});
+
+test('SHORT entry: SELL market with a stop above, stop confirmed, BUY reduce-only targets, its own client id',async()=>{
+ const {v,ex}=short();ex.arm();const st=await ex.scan();assert.equal(st.entered,1,JSON.stringify(ex.store.skips));
+ const entry=placed(v,'MARKET')[0];assert.equal(entry.side,'SELL');assert.equal(entry.positionSide,'BOTH');
+ assert.equal(entry.clientOrderId,scalpClientId('SOLUSDT',BUCKET*I,'SHORT'));
+ const p=ex.store.open[0];assert.equal(p.direction,'SHORT');assert.ok(JSON.parse(entry.stopLoss).stopPrice===p.stop&&p.stop>PX_S);
+ assert.equal(v.amt,-Number(entry.quantity),'one-way short = negative positionAmt');assert.equal(p.size,Number(entry.quantity));
+ assert.ok(p.stopOrderId);assert.equal(placed(v,'STOP_MARKET').length,0);
+ const tps=placed(v,'TAKE_PROFIT_MARKET');assert.equal(tps.length,3);assert.ok(tps.every(o=>o.side==='BUY'&&o.reduceOnly==='true'));
+ assert.deepEqual(tps.map(o=>Number(o.stopPrice)),p.targets);assert.ok(p.targets.every(t=>t<p.avg));
+ assert.match(scalpEventText(ex.store.events.find(e=>e.type==='OPENED')),/SOLUSDT 숏 10배 진입[\s\S]*급등/);
+ // Mark below the entry = profit for a short, on the screen too.
+ await ex.reconcile();v.mark=p.avg-1;await ex.reconcile();assert.ok(ex.store.open[0].unrealized>0);
+});
+
+test('SHORT: TP1 -> break-even BUY stop at the entry (rounded down), then the stop -> booked with a positive result',async()=>{
+ const {v,clock,ex}=short();ex.arm();await ex.scan();
+ const p=ex.store.open[0],oldStop=p.stopOrderId;
+ v.mark=p.targets[0]-.01;v.fill(v.orders.get(p.tpOrderIds[0]),p.targets[0]);clock.t+=60000;await ex.reconcile();
+ assert.equal(p.breakevenMoved,true);assert.ok(p.stop<=p.avg&&p.stop>p.avg-.011);
+ const be=placed(v,'STOP_MARKET').at(-1);assert.equal(be.side,'BUY');assert.equal(be.closePosition,'true');assert.equal(Number(be.stopPrice),p.stop);
+ assert.ok(v.calls.some(c=>c.op==='cancel'&&c.oid===oldStop));
+ v.fill(v.orders.get(p.stopOrderId),p.stop);clock.t+=60000;await ex.reconcile();clock.t+=20000;await ex.reconcile();
+ const x=ex.store.closed[0];assert.equal(x.closeReason,'BREAKEVEN_STOP');assert.equal(x.direction,'SHORT');assert.ok(x.netUSD>0,'TP1 below the entry is a short profit');
+ assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/SOLUSDT 숏 청산 · 1차 목표 뒤 본전 손절/);
+});
+
+test('SHORT: price already back above the entry at TP1 -> closed at market (BUY reduce-only)',async()=>{
+ const {v,clock,ex}=short();ex.arm();await ex.scan();const p=ex.store.open[0];
+ v.fill(v.orders.get(p.tpOrderIds[0]),p.targets[0]);v.mark=p.avg+.05;clock.t+=60000;await ex.reconcile();
+ const close=placed(v,'MARKET').at(-1);assert.equal(close.side,'BUY');assert.equal(close.reduceOnly,'true');
+ assert.equal(v.amt,0);assert.equal(ex.store.closed[0].closeReason,'BREAKEVEN_STOP');
+});
+
+test('SHORT: stop-out is a loss, time exit is a BUY reduce-only close; PnL sign follows the side',async()=>{
+ {const {v,clock,ex}=short();ex.arm();await ex.scan();const p=ex.store.open[0];
+  v.mark=p.stop;v.fill(v.orders.get(p.stopOrderId),p.stop);clock.t+=60000;await ex.reconcile();clock.t+=20000;await ex.reconcile();
+  const x=ex.store.closed[0];assert.equal(x.closeReason,'STOP');assert.ok(x.netUSD<0&&x.netUSD>-60,`about -0.5 % of the equity: ${x.netUSD}`)}
+ {const {v,clock,ex}=short();ex.arm();await ex.scan();
+  clock.t=BUCKET*I+2*3600000;v.mark=ENTRY_S-.3;await ex.reconcile();
+  const close=placed(v,'MARKET').at(-1);assert.equal(close.side,'BUY');assert.equal(close.reduceOnly,'true');
+  const x=ex.store.closed[0];assert.equal(x.closeReason,'TIME_STOP');assert.ok(x.netUSD>0,'price fell: short profit')}
+});
+
+test('side switch and trend: a side turned off or against the 4H trend is skipped; an opposite venue position blocks the entry',async()=>{
+ {const {v,ex}=short({config:{sides:['LONG']}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'SIDE_OFF');assert.equal(v.calls.length,0)}
+ {const v=venue(),ex=make(v,{config:{sides:['SHORT']}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'SIDE_OFF');assert.equal(v.calls.length,0)}
+ {const {v,ex}=short({trend:up4h});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'AGAINST_4H_TREND');assert.equal(placed(v,'MARKET').length,0)}
+ {const v=venue();v.size=-1;const ex=make(v);ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'VENUE_POSITION_EXISTS');assert.equal(placed(v,'MARKET').length,0)}
+ assert.notEqual(scalpReasonKo('SIDE_OFF'),'SIDE_OFF');
+});
+
+test('SHORT daily loss (price up) disarms; stats and the page split 롱 / 숏',async()=>{
+ const {v,clock,ex}=short({funds:{equity:1000,available:900}});ex.arm();await ex.scan();
+ v.mark=v.avg+35/ex.store.open[0].size;clock.t+=30000;await ex.reconcile();assert.equal(ex.armed,false);assert.equal(ex.store.dailyStop.day,'2026-11-16');
+ ex.store.closed.push({symbol:'AUSDT',direction:'LONG',netUSD:3,closedAt:clock.t},{symbol:'BUSDT',direction:'SHORT',netUSD:-1,closedAt:clock.t},{symbol:'CUSDT',direction:'SHORT',netUSD:2,closedAt:clock.t});
+ const st=ex.stats();assert.equal(st.trades,3);assert.equal(st.bySide.LONG.trades,1);assert.equal(st.bySide.SHORT.trades,2);
+ assert.equal(st.bySide.SHORT.winRatePct,50);assert.equal(st.bySide.SHORT.profitFactor,2);assert.equal(st.bySide.SHORT.netUSD,1);
+ const h=scalpHTML(ex.status());assert.match(h,/<th>방향<\/th>/);assert.match(h,/paper-short">숏/);assert.match(h,/숏 손익/);assert.match(h,/거래 방향 롱·숏/);
 });
