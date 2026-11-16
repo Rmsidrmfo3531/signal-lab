@@ -21,13 +21,40 @@ export function tradeSummary(r){
   events:(r.events||[]).map(e=>({type:e.type,at:e.at,reason:e.reason??null}))};
 }
 
+// Events worth a look in the daily check (copy / scalp ledgers).
+const SERIOUS_EVENTS=new Set(['ERROR','STOP_NOT_SET','COPY_LOSS_LIMIT','DAILY_LOSS_LIMIT','EMERGENCY_CLOSE_FAILED','STOP_FAILED','ENTRY_OUTCOME_UNKNOWN','TARGET_FAILED','RECONCILE_ERROR']);
+const num=v=>Number.isFinite(Number(v))&&v!==null&&v!==''?Math.round(Number(v)*1e4)/1e4:null;
+// A reason is kept as a short code or a short text cut at 80 characters (venue messages, never ids).
+const shortReason=v=>v==null?null:String(v).replace(/\d{9,}/g,'#').slice(0,80);
+
+/** Copy (testnet / real account) or scalp ledger: closed and open positions, totals and serious events.
+ * Whitelisted fields only (no order ids, no position ids). Null when the ledger file does not exist. */
+export function ledgerSummary(store,{now=Date.now(),equityUSD=null}={}){
+ if(!store)return null;
+ const closed=(store.closed||[]).filter(x=>x&&x.test!==true).slice().sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
+ const open=Array.isArray(store.open)?store.open:Object.values(store.positions||{});
+ let cum=0,peak=0,maxDD=0,wins=0,known=0;
+ for(const x of closed){const n=Number(x.netUSD);if(!Number.isFinite(n))continue;known++;if(n>0)wins++;cum+=n;peak=Math.max(peak,cum);maxDD=Math.max(maxDD,peak-cum)}
+ const week=now-7*86400000,events=(store.events||[]).filter(e=>e&&(e.at||0)>=week);
+ const counts={};for(const e of events)counts[e.type]=(counts[e.type]||0)+1;
+ return {equityUSD:num(equityUSD),closedCount:closed.length,settled:known,wins,winRatePct:known?Math.round(wins/known*1000)/10:null,netUSD:num(cum),maxDrawdownUSD:num(maxDD),killed:store.killed===true,
+  trades:closed.slice(-100).map(x=>({symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
+   avg:num(x.avg),adds:typeof x.adds==='number'?x.adds:Array.isArray(x.adds)?x.adds.filter(a=>a?.filled).length:null,reduces:x.reduces??null,tpHits:x.tpHits??null,
+   netUSD:num(x.netUSD),netSource:x.netSource??null,theirPnlUSD:num(x.theirPnlUSD)})),
+  open:open.filter(p=>p&&p.status!=='CLOSED').map(p=>({symbol:p.symbol,direction:p.direction,leverage:p.leverage??null,openedAt:p.openedAt??p.createdAt??null,avg:num(p.avg),adds:typeof p.adds==='number'?p.adds:null,stop:num(p.stop)})),
+  eventCounts7d:counts,
+  serious:events.filter(e=>SERIOUS_EVENTS.has(e.type)).slice(-30).map(e=>({type:e.type,at:e.at,symbol:e.symbol??null,reason:shortReason(e.reason??e.code)}))};
+}
+
 /** The report object (also used by tests to prove nothing secret is included). */
 // scalp: the 되돌림 단타 journal summary (scalp_journal.mjs summarizeJournal), when given.
-export function buildReport({readiness,insights,journal=[],records=[],scalp=null,now=Date.now()}){
+export function buildReport({readiness,insights,journal=[],records=[],scalp=null,ledgers={},now=Date.now()}){
  const report={generatedAt:new Date(now).toISOString(),readiness,insights,...(scalp?{scalp}:{}),
   journal:journal.filter(x=>x.source==='LIVE_AUTO').map(({id,...x})=>x),
   trades:records.filter(r=>r.status==='CLOSED'&&r.test!==true).map(tradeSummary),
-  open:records.filter(r=>r.status==='OPEN'&&r.test!==true).map(r=>({symbol:r.symbol,direction:r.direction,createdAt:r.createdAt,pattern:r.signal?.pattern??null}))};
+  open:records.filter(r=>r.status==='OPEN'&&r.test!==true).map(r=>({symbol:r.symbol,direction:r.direction,createdAt:r.createdAt,pattern:r.signal?.pattern??null})),
+  // copyLive = real-money copy (copy-store-live.json), copyTestnet, scalp (testnet only).
+  ledgers:Object.fromEntries(Object.entries(ledgers).map(([k,v])=>[k,v?ledgerSummary(v.store,{now,equityUSD:v.equityUSD}):null]))};
  const text=JSON.stringify(report);
  for(const key of text.matchAll(/"([^"]+)":/g))if(SECRET.test(key[1]))throw Error('REPORT_SECRET_FIELD '+key[1]);
  return report;

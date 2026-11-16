@@ -611,21 +611,28 @@ function syncLiveJournal(){
  save();send('journal',{summary:journalSummary(persisted.journal)});console.log('[JOURNAL] 실매매 거래',added,'건 자동 기록');reportsDirty=true;
 }
 setInterval(syncLiveJournal,5*60000).unref?.();setTimeout(syncLiveJournal,30000).unref?.();
-// Results upload (reports_push.mjs): once a day after 09:00 KST and after new journal entries.
+// Results upload (reports_push.mjs): once a day after 03:00 KST (the daily check runs at about 04:00 KST)
+// and after new journal entries. Copy (real account and testnet) and scalp ledgers are read from their files.
 const REPORTS_DIR=process.env.SIGNAL_LAB_REPORTS_DIR||path.join(path.dirname(storage.dir),'reports');
 const REPORTS_KEY=path.join(path.dirname(storage.dir),'.ssh','reports_ed25519');
 let reportsDay=null,reportsDirty=false,reportsBusy=false;
+function reportLedgers(){
+ const read=f=>{try{const file=path.join(storage.dir,f);return fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):null}catch{return null}};
+ const equity=mode=>COPY.mode===mode?copyTrader?.funds?.equity??null:null;
+ const pack=(f,mode)=>{const store=read(f);return store?{store,equityUSD:mode?equity(mode):null}:null};
+ return {copyLive:pack('copy-store-live.json','LIVE'),copyTestnet:pack('copy-store.json','TESTNET'),scalp:pack('scalp-store.json',null)};
+}
 async function uploadReport(force=false){
  if(reportsBusy||!fs.existsSync(path.join(REPORTS_DIR,'.git')))return;
  const day=new Date(Date.now()+9*3600000).toISOString().slice(0,10),hour=new Date(Date.now()+9*3600000).getUTCHours();
- if(!force&&!reportsDirty&&!(hour>=9&&reportsDay!==day))return;
+ if(!force&&!reportsDirty&&!(hour>=3&&reportsDay!==day))return;
  reportsBusy=true;
  try{
   let scalpExport=null;try{scalpExport=scalpExec?scalpReportFiles({journalFile:scalpExec.journalFile,signalsFile:scalpExec.signalsFile}):null}catch(e){console.warn('[REPORTS] scalp',e.message)}
   const report=buildReport({readiness:readiness(),insights:patternInsights(persisted.journal.filter(x=>x.source==='LIVE_AUTO'&&x.review).map(x=>x.review)),
    journal:persisted.journal,records:[...live.store.records,...(live.store.archived||[])],
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
-   scalp:scalpExport?.summary??null});
+   scalp:scalpExport?.summary??null,ledgers:reportLedgers()});
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});
   reportsDay=day;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
  }catch(e){console.error('[REPORTS]',e.message)}finally{reportsBusy=false}
