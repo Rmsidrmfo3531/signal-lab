@@ -355,11 +355,11 @@ function copyNotice(e){
  try{
   const m=JSON.parse(fs.readFileSync(marker,'utf8'));fs.rmSync(marker,{force:true});
   const fresh=Date.now()-Number(m?.at)<15*60000&&!live.store.killSwitch;
-  if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'){live.arm();console.log('[LIVE] 업데이트 전 활성화 상태 복원 (테스트넷)')}
+  if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'){live.arm();console.log('[LIVE] 업데이트 후 자동 활성화 (테스트넷)')}
   // Copy, real account included (user 2026-11-16 "실계좌도 알아서 켜주고"): only after the one-tap update,
   // only if it was on when the update started, same mode, copy enabled, its loss limit not hit.
-  if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){copyTrader.arm();console.log(`[COPY] 업데이트 전 활성화 상태 복원 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`)}
-  if(fresh&&m.scalpArmed===true){try{scalpExec.arm();console.log('[SCALP] 업데이트 전 활성화 상태 복원 (테스트넷)')}catch(e){console.warn('[SCALP] 복원 안 함:',e.message)}}
+  if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){copyTrader.arm();console.log(`[COPY] 업데이트 후 자동 활성화 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`)}
+  if(fresh&&m.scalpArmed===true){try{scalpExec.arm();console.log('[SCALP] 업데이트 후 자동 활성화 (테스트넷)')}catch(e){console.warn('[SCALP] 복원 안 함:',e.message)}}
  }catch{}
 }
 // The venue's public mid price for a live record (screen and exit estimates only; never an order input).
@@ -1445,12 +1445,13 @@ const server=http.createServer(async(req,res)=>{
     if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,at:Date.now()};live.updating=false;if(wasArmed&&result.state==='current')live.arm();response(res,result.ok?200:409,result);return}
     // Remember what was on, so it is switched back on after the restart: the signal strategy (TESTNET only),
     // the copy (its own mode, real account included since 2026-11-16) and the reversal scalps (TESTNET).
-    const signalArmed=wasArmed&&LIVE.mode==='TESTNET',copyArmed=copyTrader.armed===true,scalpArmed=scalpExec?.armed===true;
     // Written just before the restart (below), from the switches as they are then: one turned off while
     // waiting stays off, and a crash or manual restart before that finds no marker (review 2026-11-16).
-    const writeMarker=()=>{const st={signalArmed,copyArmed:copyTrader.armed===true,scalpArmed:scalpExec?.armed===true};
+    // User 2026-11-16 "업데이트 후 항상 전부 켜기": after a one-tap update everything is switched on,
+    // whatever it was before (the guards at start-up still apply: kill switch, loss limit, mode, 15 min).
+    const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET',copyArmed:COPY.enabled===true,scalpArmed:!!scalpExec};
      if(st.signalArmed||st.copyArmed||st.scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to}))}catch{}};
-    response(res,200,{...result,rearm:signalArmed,rearmCopy:copyArmed,rearmScalp:scalpArmed});
+    response(res,200,{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:COPY.enabled===true,rearmScalp:!!scalpExec});
     console.log('[UPDATE]',result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
     (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
      // Paused only once idle; if never idle in 10 minutes the restart waits for the next tap.
