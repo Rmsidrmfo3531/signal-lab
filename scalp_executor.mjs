@@ -75,7 +75,10 @@ export function scalpExecConfig(env=process.env){
   dailyLossPct:n('SCALP_DAILY_LOSS_PCT',3,.5,10),
   // Entry price check against the planned entry (the signal candle's close): within 0.4 % and 1 ATR (the
   // pre-move ATR the stop buffer uses), either way; the TP1 net RR is checked again at the price found.
-  maxDriftPct:n('SCALP_MAX_DRIFT_PCT',.4,.05,2),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
+  maxDriftPct:n('SCALP_MAX_DRIFT_PCT',.4,.05,2),
+  // Allowed drift grows with the move (user 2026-11-17, BLESSUSDT skipped at 0.57-0.74 % after a 17-21 % pump):
+  // max(maxDriftPct, move% x driftMovePct/100); the TP1 net RR check after it still guards the plan.
+  driftMovePct:n('SCALP_DRIFT_MOVE_PCT',5,0,20),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
   universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),
   // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
   watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanDelayMs:3000,
@@ -112,7 +115,12 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  const fail=(reason,extra={})=>({ok:false,reasons:[reason],...extra});
  if(!pos(price))return fail('PRICE_UNAVAILABLE');
  const drift=Math.abs(price-det.entry),driftPct=drift/det.entry*100;
- if(driftPct>config.maxDriftPct||drift>det.atr*config.maxDriftAtr)return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3)});
+ // Only a drift away from the stop gets the move-scaled allowance; toward the stop the base 0.4 % / 1 ATR stays
+ // (review 2026-11-17: a drift toward the stop shrinks the stop distance, which the RR check cannot see).
+ const away=dirOf(det.direction)*(price-det.entry)>0;
+ const allowed=away?Math.max(config.maxDriftPct,(Number(det.evidence?.movePct)||0)*(config.driftMovePct||0)/100):config.maxDriftPct;
+ // The ATR cap stays for ordinary moves; a drift within the move-scaled allowance is not held to it.
+ if(driftPct>allowed||(allowed===config.maxDriftPct&&drift>det.atr*config.maxDriftAtr))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),allowedPct:+allowed.toFixed(3)});
  const tick=c?.tickSize,step=c?.quantityStep;if(!pos(Number(tick))||!pos(Number(step)))return fail('CONTRACT_GRID_INVALID');
  const dir=dirOf(det.direction);
  // As backtestScalp: entry on the nearest tick, the stop rounded away from it (LONG down, SHORT up).
@@ -149,11 +157,11 @@ function positionOf(list,vs,direction){
 }
 
 export class ScalpExecutor{
- constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],candles=async()=>[],trendCandles=null,priceOf=async()=>null,markOf=async()=>null,
+ constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,priceOf=async()=>null,markOf=async()=>null,
   balance=async()=>null,isBusy=()=>false,gate=()=>({ok:true}),directory=null,fileName='scalp-store.json',now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
   if(!SCALP_EXEC_MODES.includes(config?.mode))throw err('SCALP_TESTNET_ONLY',500);
   if(client&&client.mode!=='TESTNET')throw err('SCALP_TESTNET_ONLY',500);
-  Object.assign(this,{config,client,contracts,tickers,candles,priceOf,markOf,balance,isBusy,gate,now,log,onEvent});
+  Object.assign(this,{config,client,contracts,tickers,tickersFresh,candles,priceOf,markOf,balance,isBusy,gate,now,log,onEvent});
   this.trendCandles=trendCandles??(symbol=>this.candles(symbol,'4h',301));
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
@@ -209,6 +217,9 @@ export class ScalpExecutor{
  /** Called every few seconds: the scan right after each 5m close, and the routine check. */
  async tick(now=this.now()){
   const bucket=Math.floor(now/I5);
+  // The bulk ticker read for the scan order starts right at the close, during the scan delay, not awaited here.
+  if(this.armed&&this.lastScanBucket!==bucket&&this.prefetch?.bucket!==bucket&&(this.tickersFresh||this.tickers))
+   this.prefetch={bucket,rows:withTimeout((this.tickersFresh||this.tickers)(),8000)};
   if(this.armed&&!this.scanning&&this.lastScanBucket!==bucket&&now-bucket*I5>=this.config.scanDelayMs)await this.scan(now);
   const every=this.store.open.length?15000:60000;
   if(!this.reconciling&&this.client&&now-this.lastReconcileAt>=every&&(this.store.open.length||this.armed||this.store.closed.some(x=>!x.journaled)))await this.reconcile();
@@ -222,13 +233,32 @@ export class ScalpExecutor{
   const merged=[...watch,...list.filter(u=>!watch.some(w=>w.symbol===u.symbol))];
   if(merged.length){this.universe=merged;this.universeAt=now}
  }
+ /** The universe ordered by the price range of the last 8 scans' ticker snapshots (largest first); the volume
+  * order when no ticker is available. */
+ async #byRecentMove(bucket){
+  try{
+  const pre=this.prefetch?.bucket===bucket?this.prefetch.rows:null;
+  let rows=null;try{rows=await withTimeout(pre||(this.tickersFresh||this.tickers)(),pre?3000:5000)}catch{}
+  if(!Array.isArray(rows))return [...this.universe];
+  const px=new Map(rows.filter(Boolean).map(r=>[String(r?.symbol),Number(r?.lastPrice)]));this.pxHist||=new Map();
+  const live=new Set(this.universe.map(u=>u.symbol));for(const k of this.pxHist.keys())if(!live.has(k))this.pxHist.delete(k);
+  const score=new Map();
+  for(const u of this.universe){const p=px.get(u.venueSymbol);if(!(p>0))continue;
+   const h=(this.pxHist.get(u.symbol)||[]).filter(x=>x.bucket>bucket-8&&x.bucket!==bucket);h.push({bucket,p});this.pxHist.set(u.symbol,h);
+   const ps=h.map(x=>x.p),lo=Math.min(...ps);score.set(u.symbol,(Math.max(...ps)-lo)/lo)}
+  return [...this.universe].sort((a,b)=>(score.get(b.symbol)??-1)-(score.get(a.symbol)??-1));
+  }catch{return [...this.universe]} // any bad ticker data: the volume order
+ }
  async scan(now=this.now()){
   if(this.scanning)return this.lastScan;this.scanning=true;
   const bucket=Math.floor(now/I5),st={at:now,bucket,checked:0,signals:0,entered:0,error:null};this.lastScanBucket=bucket;
   try{
    const why=this.#blocked();if(why){st.error=why;return st}
    await this.#refreshUniverse(now);
-   for(const [ix,u] of this.universe.entries()){
+   // Coins that moved most over the last ~35 minutes are read first (user 2026-11-17: by the 60th coin the
+   // signal was ~50 s old and big movers drifted past the price check). One bulk ticker read per scan.
+   const order=await this.#byRecentMove(bucket);st.firstSymbols=order.slice(0,5).map(u=>u.symbol);
+   for(const [seq,u] of order.entries()){const ix=this.universe.indexOf(u);
     if(this.#blocked())break;
     // BingX answers 100410 when the shared public request rate is exceeded (2026-11-16: 10 of 80 coins per
     // scan): wait a little and read that coin once more instead of skipping it.
@@ -248,7 +278,7 @@ export class ScalpExecutor{
     if(!det.ok)continue;st.signals++;
     // Journal context of this detection (no effect on the decision).
     const ctx={at:t,symbol:u.symbol,venueSymbol:u.venueSymbol,direction:det.direction,barAt:det.barAt,evidence:det.evidence,atr:det.atr,candle:candleShape(closed.at(-1),det.direction),
-     universe:{rank:ix+1,size:this.universe.length,quoteVolume:u.quoteVolume},scan:{startedAt:st.at,bucket,position:ix+1,of:this.universe.length,elapsedMs:t-st.at},reason:null,detail:null};
+     universe:{rank:ix+1,size:this.universe.length,quoteVolume:u.quoteVolume},scan:{startedAt:st.at,bucket,position:seq+1,of:this.universe.length,elapsedMs:t-st.at},reason:null,detail:null};
     this.cur=ctx;let r;
     try{
      if(!this.config.sides.includes(det.direction)){this.#skip(u.symbol,'SIDE_OFF',det.direction);r={entered:false,reason:'SIDE_OFF'}}
@@ -297,7 +327,7 @@ export class ScalpExecutor{
    try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)lev=Math.max(1,Math.min(lev,Math.floor(max)))}catch{}
    const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,usedMargin:this.#usedMargin(),leverage:lev,config:this.config});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
-   if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
+   if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
    // No count cap on testnet (user 2026-11-16), so the daily loss limit caps the risk up front: today's realized loss
    // + loss to the open stops + this trade must stay within it (review 2026-11-16, as OPEN_RISK_LIMIT for the signals).
    {const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
@@ -532,7 +562,7 @@ export class ScalpExecutor{
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
-    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
+    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),
