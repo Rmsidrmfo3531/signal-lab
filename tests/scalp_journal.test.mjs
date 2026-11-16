@@ -85,7 +85,7 @@ test('journal line: detection evidence, plan, fill slippage, delay, MFE/MAE from
 });
 
 test('skipped signals are logged with their reason; the signals file rotates at its cap',async()=>{
- const dir=tmp(),v=venue(),clock={t:T0},ex=make(v,dir,clock);ex.contracts=contracts;ex.priceOf=async()=>PX*1.01;ex.arm();await ex.scan();
+ const dir=tmp(),v=venue(),clock={t:T0},ex=make(v,dir,clock);ex.contracts=contracts;ex.priceOf=async()=>PX*.99;ex.arm();await ex.scan();
  const [s]=readJsonl(fs.readdirSync(dir).filter(f=>f.startsWith('scalp-signals-')).map(f=>path.join(dir,f))[0]);assert.equal(s.entered,false);assert.equal(s.reason,'PRICE_DRIFT');assert.ok(s.evidence.movePct>=5);assert.equal(s.universe.rank,2);
  const f=path.join(dir,'x.jsonl');for(let i=0;i<5;i++)appendJsonl(f,{i,pad:'x'.repeat(100)},{maxBytes:300});
  assert.ok(fs.existsSync(path.join(dir,'x.1.jsonl')));assert.ok(fs.statSync(f).size<=300);

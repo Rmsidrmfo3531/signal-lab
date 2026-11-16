@@ -89,7 +89,7 @@ test('detection on synthetic closed 5m candles -> plan: 38.2/50/61.8 % targets, 
  assert.equal(plan.ok,true,JSON.stringify(plan));assert.ok(plan.stop<extreme&&plan.entry>plan.stop&&plan.targets[0]>plan.entry);
  assert.ok(Math.abs(plan.riskUSD-50)<.2,'0.5 % of 10,000 at the stop');assert.ok(plan.netRR>=1);
  assert.ok(Math.abs(plan.parts.reduce((a,b)=>a+b,0)-plan.qty)<1e-9);assert.equal(plan.parts[0],Number((Math.floor(plan.qty*100*.4)/100).toFixed(2)));
- assert.deepEqual(planScalpOrder({det,price:det.entry*1.006,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['PRICE_DRIFT'],'0.6 % above the plan: skipped');
+ assert.deepEqual(planScalpOrder({det,price:det.entry*.994,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['PRICE_DRIFT'],'0.6 % toward the stop: skipped');
  assert.deepEqual(planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:{...cfg,minNetRR:50}}).reasons,['TP1_NET_RR_BELOW_MINIMUM']);
  // Margin cap: 1 % of equity per position cuts the quantity (and the risk).
  const capped=planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:{...cfg,maxMarginPct:1}});
@@ -130,7 +130,7 @@ test('below-minimum target splits are merged before the orders go out',async()=>
 });
 
 test('skips: price drift, hedge mode, symbol held elsewhere, against the 4H trend, kill switch, venue position',async()=>{
- const cases=[[{price:PX*1.01},'PRICE_DRIFT'],[{hedge:true},'BINGX_HEDGE_MODE'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{trend:down4h,config:{trendMode:'on'}},'AGAINST_4H_TREND']];
+ const cases=[[{price:PX*.99},'PRICE_DRIFT'],[{hedge:true},'BINGX_HEDGE_MODE'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{trend:down4h,config:{trendMode:'on'}},'AGAINST_4H_TREND']];
  for(const [opt,reason] of cases){
   const v=venue({hedge:opt.hedge}),ex=make(v,opt);ex.arm();await ex.scan();
   assert.equal(ex.store.open.length,0,reason);assert.equal(placed(v,'MARKET').length,0,reason);assert.equal(ex.store.skips.at(-1)?.reason,reason);assert.ok(scalpReasonKo(reason)!==reason);
@@ -220,7 +220,7 @@ test('SHORT detection -> plan: stop above the high (rounded up), 38.2/50/61.8 % 
  assert.ok(Math.abs(plan.stop*10-Math.round(plan.stop*10))<1e-9,'stop on the tick grid');
  assert.ok(plan.targets.every((t,i)=>t<plan.entry&&(i===0||t<plan.targets[i-1])&&t>=det.targets[i]-1e-9),'targets rounded up, toward the entry');
  assert.ok(Math.abs(plan.riskUSD-50)<.6);assert.ok(plan.netRR>=1);
- assert.deepEqual(planScalpOrder({det,price:PX_S*0.99,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['PRICE_DRIFT']);
+ assert.deepEqual(planScalpOrder({det,price:PX_S*1.01,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['PRICE_DRIFT']);
  assert.deepEqual(planScalpOrder({det:{...det,stop:det.entry-.05},price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['ENTRY_AT_OR_BEYOND_STOP'],'a short stop below the entry');
 });
 
@@ -298,13 +298,15 @@ test('no count cap on testnet, but today\'s loss + open stop risk + the new trad
  ex2.arm();await ex2.scan();assert.equal(placed(v2,'MARKET').length,1,'a stop at breakeven adds no risk');
 });
 
-test('drift allowance grows with the move (user 2026-11-17): 5 % of the move, never under 0.4 %',()=>{
- const cfg=scalpExecConfig({}),det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+test('drift allowance grows with the move (user 2026-11-17): 50 % of the move away from the stop, never under 0.4 %',()=>{
+ const cfg={...scalpExecConfig({}),driftMovePct:5},det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
  const big={...det,atr:det.atr/100,evidence:{...det.evidence,movePct:20}}; // a 20 % move: up to 1 %, the ATR cap no longer binds
  assert.notDeepEqual(planScalpOrder({det:big,price:det.entry*1.007,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons?.[0],'PRICE_DRIFT');
  const far=planScalpOrder({det:big,price:det.entry*1.012,contract:SOL,equity:10000,leverage:10,config:cfg});assert.equal(far.reasons[0],'PRICE_DRIFT');assert.equal(far.allowedPct,1);
  assert.equal(planScalpOrder({det,price:det.entry*1.006,contract:SOL,equity:10000,leverage:10,config:{...cfg,driftMovePct:0}}).reasons[0],'PRICE_DRIFT');
- assert.equal(scalpExecConfig({SCALP_DRIFT_MOVE_PCT:'0'}).driftMovePct,0);
+ assert.equal(scalpExecConfig({SCALP_DRIFT_MOVE_PCT:'0'}).driftMovePct,0);assert.equal(scalpExecConfig({}).driftMovePct,50);assert.equal(scalpExecConfig({}).minNetRR,.7);
+ // Default 50 %: a 2 % drift after a 20 % move is left to the RR check, not skipped as PRICE_DRIFT.
+ assert.notEqual(planScalpOrder({det:big,price:det.entry*1.02,contract:SOL,equity:10000,leverage:10,config:scalpExecConfig({})}).reasons?.[0],'PRICE_DRIFT');
  const toward=planScalpOrder({det:big,price:det.entry*.993,contract:SOL,equity:10000,leverage:10,config:cfg});assert.equal(toward.reasons[0],'PRICE_DRIFT','toward the stop: base 0.4 % only');assert.equal(toward.allowedPct,.4);
 });
 
