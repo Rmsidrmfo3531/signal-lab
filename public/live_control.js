@@ -295,7 +295,8 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
   }catch(err){msg.textContent='요청 실패: '+err.message}
   finally{button.disabled=false}
  });
- const visible=()=>!$('live')?.hidden;
+ // The 실계좌 page (#real) shows the same data (user 2026-11-16: its positions did not refresh, only #live counted).
+ const visible=()=>['live','real'].some(id=>$(id)&&!$(id).hidden);
  const tick=()=>{if(visible())load().catch(fail)};
  setInterval(tick,10000);setTimeout(()=>load().catch(fail),400);window.addEventListener('hashchange',()=>setTimeout(tick,60));
 }
