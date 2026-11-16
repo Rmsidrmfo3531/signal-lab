@@ -1446,12 +1446,15 @@ const server=http.createServer(async(req,res)=>{
     // Remember what was on, so it is switched back on after the restart: the signal strategy (TESTNET only),
     // the copy (its own mode, real account included since 2026-11-16) and the reversal scalps (TESTNET).
     const signalArmed=wasArmed&&LIVE.mode==='TESTNET',copyArmed=copyTrader.armed===true,scalpArmed=scalpExec?.armed===true;
-    if(signalArmed||copyArmed||scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,signalArmed,copyArmed,copyMode:COPY.mode,scalpArmed,at:Date.now(),from:result.from,to:result.to}))}catch{}
+    // Written just before the restart (below), from the switches as they are then: one turned off while
+    // waiting stays off, and a crash or manual restart before that finds no marker (review 2026-11-16).
+    const writeMarker=()=>{const st={signalArmed,copyArmed:copyTrader.armed===true,scalpArmed:scalpExec?.armed===true};
+     if(st.signalArmed||st.copyArmed||st.scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to}))}catch{}};
     response(res,200,{...result,rearm:signalArmed,rearmCopy:copyArmed,rearmScalp:scalpArmed});
     console.log('[UPDATE]',result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
     (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
      // Paused only once idle; if never idle in 10 minutes the restart waits for the next tap.
-     if(allIdle()){step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
+     if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
     return;
    }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,at:Date.now()};live.updating=false;return response(res,502,{error:e.message})}
   }
