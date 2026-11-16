@@ -12,7 +12,7 @@
 //  - Exits as simulateTrade: reduce-only take-profits 40/35/25 % at the targets (parts below the venue
 //    minimum merged into the earlier target), stop to the entry price after TP1, market close at
 //    entry + maxHoldMs (2 h).
-//  - Size: equity x riskPct (0.5 %) at the stop, margin capped; at most maxOpen (5) positions, one per symbol,
+//  - Size: equity x riskPct (0.5 %) at the stop, margin capped; no position-count cap by default on testnet (user 2026-11-16; SCALP_MAX_OPEN>0 sets one), one per symbol,
 //    none on a symbol the signal strategy or copy holds on the same account.
 //  - LIVE is refused: the mode is OFF or TESTNET, and the client must be a TESTNET client. Starts disarmed.
 //  - Shared kill switch: no new entries. Daily loss limit (3 % of equity, realized today + open) disarms.
@@ -69,7 +69,7 @@ export function scalpExecConfig(env=process.env){
   // the filter skipped) = measured and logged with every signal and trade, never blocks; 'on' blocks against-trend
   // signals as in the backtest; 'off' skips the measurement.
   trendMode:(m=>['on','true','1','yes'].includes(m)?'on':['off','false','0','no'].includes(m)?'off':'record')(String(env.SCALP_EXEC_TREND_FILTER||'').trim().toLowerCase()),
-  riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',5,1,10),leverage:n('SCALP_LEVERAGE',10,1,20),
+  riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',0,0,200),leverage:n('SCALP_LEVERAGE',10,1,20),
   // Margin per position and for all scalps together, as a share of the equity; quantity is cut to fit.
   maxMarginPct:n('SCALP_MAX_MARGIN_PCT',10,1,50),maxTotalMarginPct:n('SCALP_MAX_TOTAL_MARGIN_PCT',30,1,80),
   dailyLossPct:n('SCALP_DAILY_LOSS_PCT',3,.5,10),
@@ -280,7 +280,7 @@ export class ScalpExecutor{
   if(this.store.sent.includes(key))return {entered:false,reason:'ALREADY_SENT'};
   if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null||trend==='range'?null:trendAllows(det.direction,trend)}
    if(this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND',trend)}
-  if(this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS');
+  if(this.config.maxOpen>0&&this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS');
   if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD');
   let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
   if(busy)return skip('SYMBOL_HELD_BY_OTHER_STRATEGY');

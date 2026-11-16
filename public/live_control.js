@@ -204,7 +204,7 @@ export function scalpHTML(s){
  const btn=s.armed?'<button type="button" class="outline-btn small" data-scalp-disarm>끄기</button>':canArm?'<button type="button" class="outline-btn small" data-scalp-arm>켜기</button>':'';
  const modeLine=`<div class="copy-mode ${on?'on':''}"><span class="copy-chip">테스트넷</span>${state}<span>${detail}</span>${btn}<span class="copy-msg" data-scalp-msg></span></div>`;
  const unreal=open.reduce((a,p)=>a+(Number(p.unrealized)||0),0),stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
- const stats=`<div class="copy-stats">${stat('잔고',usdv(f?.equity))}${stat('보유',open.length+'/'+(S.maxOpen??5)+'개')}${stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}${stat('오늘 손익',money(st.todayNetUSD),`class="${cls(st.todayNetUSD)}"`)}
+ const stats=`<div class="copy-stats">${stat('잔고',usdv(f?.equity))}${stat('보유',open.length+(S.maxOpen>0?'/'+S.maxOpen:'')+'개')}${stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}${stat('오늘 손익',money(st.todayNetUSD),`class="${cls(st.todayNetUSD)}"`)}
   ${stat('종료',(st.trades||0)+'건')}${stat('승률',st.winRatePct!=null?st.winRatePct+'%':'—')}${stat('PF',st.profitFactor!=null?st.profitFactor:st.trades?'∞':'—')}${stat('누적 손익',money(st.trades?st.netUSD:null),`class="${cls(st.netUSD)}"`)}</div>`;
  // Per side (user 2026-11-16: shorts added): trades, win rate, PF, net for 롱 and 숏 apart.
  const sides=S.sides||['LONG','SHORT'],SK={LONG:'롱',SHORT:'숏'};

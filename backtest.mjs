@@ -172,7 +172,8 @@ export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h
  const m5c=(interval==='1m'?bars:m5).map(toCandle),funnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},trades=[];
  const busy={FIXED:-1,DCA:-1};let balance=balanceUSD;
  // 4H trend after each closed 4H candle (EMA100/EMA200 as in the 1H strategy), for the optional filter.
- const trendAt=(()=>{if(!trendFilter||!Array.isArray(h4))return ()=>null;const closes=h4.map(r=>Number(r[4]));
+ const trendAt=(()=>{if(!Array.isArray(h4))return ()=>null; // measured whenever h4 is given (trade tag); blocks only with trendFilter
+const closes=h4.map(r=>Number(r[4]));
   const e100=seededEMA(closes,100),e200=seededEMA(closes,200);
   const trend=h4.map((r,i)=>e100[i]==null||e200[i]==null?null:e100[i]>e200[i]&&closes[i]>e200[i]?'up':e100[i]<e200[i]&&closes[i]<e200[i]?'down':'range');
   return now=>{const i=closedUntil(h4,now)-1;return i>=0?trend[i]:null}})();
@@ -181,7 +182,8 @@ export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h
   const closeAt=Number(bars[i][6]);if(closeAt<startAt||closeAt>=endAt)continue;funnel.bars++;
   const now=closeAt+1000,det=detectScalpReversal(bars.slice(i-59,i+1),{symbol,now,settings,interval});
   if(!det.ok)continue;funnel.signals++;
-  if(trendFilter&&!trendAllows(det.direction,trendAt(now))){funnel.trendBlocked++;continue}
+  const trend4h=trendAt(now),withTrend=trend4h==null||trend4h==='range'?null:trendAllows(det.direction,trend4h);
+  if(trendFilter&&!trendAllows(det.direction,trend4h)){funnel.trendBlocked++;continue}
   const k=lowerBound(m5c,closeAt+1),next=m5c[k];if(!next)continue;const dir=det.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
   det.stop=onTick(det.stop,filters.tickSize,dir===1?'DOWN':'UP');
   if(dir*(entry-det.stop)<=0||dir*(det.targets[0]-entry)<=0){funnel.entrySkipped++;continue}
@@ -189,7 +191,7 @@ export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h
   const estimate={eligible:true,tickSize:filters.tickSize,quantityStep:filters.stepSize,entryBasis:entry,quantity,minNotional:filters.minNotional,minQuantity:filters.minQty};
   const quality=buildScalpPlan({signal:det,estimate,costs,minNetRR});
   if(!quality.ok||!positive(quantity)){funnel.qualityRejected++;continue}
-  const base={strategy:'SCALP',interval,symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct};
+  const base={strategy:'SCALP',interval,symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct,trend4h,withTrend};
   if(books.includes('FIXED')&&k>busy.FIXED){
    const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:det.stop,targets:quality.targets,quantity,maxHoldMs,costs});
    if(t){busy.FIXED=t.endIdx;trades.push({...base,book:'FIXED',stop:det.stop,targets:quality.targets,...t})}

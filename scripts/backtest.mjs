@@ -9,6 +9,7 @@ import {pathToFileURL} from 'node:url';
 import {backtestHourly,backtestScalp,backtestCandidates,summarize,scoreBucket,HOUR} from '../backtest.mjs';
 import {DETECTORS} from '../pattern_detectors.mjs';
 import {SCALP_DEFAULTS} from '../scalp_reversal.mjs';
+import {SCALP_EXEC_SETTINGS} from '../scalp_executor.mjs';
 import {DCA_DEFAULTS,clampMaxAdds,clampZoneDays,HOURLY_MAX_ADDS_DEFAULT} from '../dca_plan.mjs';
 
 const BASE='https://fapi.binance.com';
@@ -42,6 +43,8 @@ export function parseArgs(argv){
   else if(key==='--small'){out.small=Math.max(1,Math.min(80,Math.round(Number(value))||60));i++}
   else if(key==='--skip-top'){out.skipTop=Math.max(0,Math.min(200,Math.round(Number(value))||0));i++}
   else if(key==='--scalp-only'){out.scalpOnly=true}
+  // --exec: the testnet scalp executor's settings (move x2 = 5%, TP 38.2/50/61.8%, stop ATR x0.25, volume x3).
+  else if(key==='--exec'){out.execSettings=true}
   else if(key==='--btc-long-filter'){if(!['up','notdown','off'].includes(value))throw Error('--btc-long-filter는 up, notdown, off 중 하나입니다');out.btcLongFilter=value==='off'?null:value;i++} // default 'up' (as the server); 'off' disables
   else if(key==='--min-box-atr'){out.minBoxWidthAtr=Math.max(0,Number(value)||0);i++}
   else if(key==='--hourly-max-hold-days'){out.hourlyMaxHoldMs=Math.max(0,Number(value)||0)*86400000||null;i++}
@@ -162,6 +165,10 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  lines.push(row('전체',summarize(fixed)));
  for(const d of ['LONG','SHORT'])lines.push(row(d==='LONG'?'  급락 후 반등 롱':'  급등 후 되돌림 숏',summarize(fixed.filter(t=>t.direction===d))));
  for(const [label,list] of halves(fixed))lines.push(row(label+' (기간 절반씩)',summarize(list)));
+ // 4H trend at the signal (user 2026-11-16, BLESSUSDT short in a 4H uptrend): with / against / range, by direction.
+ const tk=t=>t.trend4h==='range'?'range':t.withTrend==null?'unknown':t.withTrend?'with':'against',TK={with:'4H 추세 순',against:'4H 역추세',range:'4H 횡보',unknown:'4H 추세 없음'};
+ for(const k of ['with','against','range','unknown']){const l=fixed.filter(t=>tk(t)===k);if(!l.length)continue;lines.push(row('  '+TK[k],summarize(l)));
+  for(const d of ['LONG','SHORT']){const m=l.filter(t=>t.direction===d);if(m.length)lines.push(row('    '+(d==='LONG'?'롱':'숏'),summarize(m)))}}
  lines.push(`신호 흐름: 5분봉 ${scalpFunnel.bars}개 → 감지 ${scalpFunnel.signals} → 손익비 미달 제외 ${scalpFunnel.qualityRejected} · 진입 시 무효 ${scalpFunnel.entrySkipped}`);
  lines.push('','[3-1] 단타 시간봉별 비교 (1분봉은 최근 '+args.scalp1mDays+'일만)','-'.repeat(60));
  const byTf=iv=>all.filter(t=>(t.strategy==='SCALP'||t.strategy==='SCALP_TF')&&(t.interval??'5m')===iv);
@@ -191,7 +198,7 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  return lines.join('\n');
 }
 function toCSV(trades){
- const cols=['strategy','book','symbol','direction','pattern','score','signalAt','entryAt','exitAt','entryFill','averageEntry','stop','exitReason','tp','addsFilled','netUSD','R','feesUSD','holdMs','pnlPctOfBalance'];
+ const cols=['strategy','book','symbol','direction','pattern','score','signalAt','entryAt','exitAt','entryFill','averageEntry','stop','exitReason','tp','addsFilled','netUSD','R','feesUSD','holdMs','pnlPctOfBalance','movePct','trend4h','withTrend'];
  return '﻿'+cols.join(',')+'\n'+trades.map(t=>cols.map(k=>{let v=t[k]??'';if(/At$/.test(k)&&v)v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\n');
 }
 
@@ -231,7 +238,7 @@ export async function main(argv=process.argv.slice(2)){
   if(hourly.funnel.split){hourlyFunnel.split??={planned:0,fallback:0,sources:{}};hourlyFunnel.split.planned+=hourly.funnel.split.planned;hourlyFunnel.split.fallback+=hourly.funnel.split.fallback;
    for(const [k,v] of Object.entries(hourly.funnel.split.sources))hourlyFunnel.split.sources[k]=(hourlyFunnel.split.sources[k]||0)+v}
   const dcaArgs={leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays};
-  const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:dcaArgs});
+  const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,settings:args.execSettings?SCALP_EXEC_SETTINGS:{},filters,startAt,balanceUSD:args.balance,dca:dcaArgs});
   // Other scalp timeframes: 15m over the whole period, 1m over the last --scalp-1m-days days (1m data is large).
   const scalp15=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:dcaArgs,interval:'15m',bars:m15}).trades;
   let scalp1=[];
