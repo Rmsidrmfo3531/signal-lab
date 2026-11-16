@@ -7,6 +7,9 @@ import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
+import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
+import {scalpEventText} from './scalp_telegram.mjs';
+import {BingXMarketData} from './bingx_market.mjs';
 import {liveEventText} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
@@ -251,10 +254,11 @@ function liveClients(){
  if(process.env.GATEIO_API_KEY&&process.env.GATEIO_API_SECRET)clients.GATEIO=new GateTradeClient({apiKey:process.env.GATEIO_API_KEY,secret:process.env.GATEIO_API_SECRET,mode,now:venueNow('GATEIO')});
  return clients;
 }
-let copyTrader=null;
+let copyTrader=null,scalpExec=null;
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),
  // Copy positions on the same testnet account are kept apart; a real-money copy uses another account.
- externalHeld:()=>COPY_ON_SAME_ACCOUNT()?copyTrader?.heldSymbols()??new Set():new Set(),
+ // Testnet reversal scalps (scalp_executor.mjs) share the testnet account too.
+ externalHeld:()=>new Set([...(COPY_ON_SAME_ACCOUNT()?copyTrader?.heldSymbols()??[]:[]),...(LIVE.mode==='TESTNET'?scalpExec?.heldSymbols()??[]:[])]),
  priceOf:record=>livePublicPrice(record),onEvent:(record,type,detail)=>liveTelegramNotice(record,type,detail)});
 // Copy trading of the followed Telegram channel (copy_executor.mjs): TESTNET only, its own ledger.
 let copyTickers={at:0,rows:[]};
@@ -263,7 +267,7 @@ const COPY=copyConfig(process.env,LIVE.mode);
 // Same account when both run in the same mode (testnet + testnet, or later live + live).
 function COPY_ON_SAME_ACCOUNT(){return COPY.mode===(LIVE.mode==='LIVE'?'LIVE':'TESTNET')}
 // Update restarts wait for the copy queue too (a market fill is saved before the next step).
-function allIdle(){return live.idle()&&(copyTrader?.idle?.()??true)}
+function allIdle(){return live.idle()&&(copyTrader?.idle?.()??true)&&(scalpExec?.idle?.()??true)}
 // Real-money copy (COPY_MODE=LIVE + COPY_LIVE_CONFIRM): its own BingX live client and ledger file.
 const copyClient=COPY.mode==='LIVE'&&process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET
  ?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'LIVE',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)})
@@ -272,7 +276,8 @@ const bingxFunds=data=>{const list=Array.isArray(data)?data:[data?.balance??data
  return {equity,available:Number.isFinite(free)?Math.max(0,free):equity}};
 copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
- contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.loadContracts(),symbol),
+ // A coin missing or suspended in the cached list re-reads the list (new listings / delistings, 2026-11-16).
+ contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.contractsFor(symbol),symbol),
  // Last price on BingX (tickers cached 20 s) for the copy price check.
  // 3 s cache (user 2026-11-16: the real-account page should feel live); one request at a time.
  markOf:async venueSymbol=>{if(!copyTickers.at||Date.now()-copyTickers.at>3000){copyTickers.pending??=venueQuotes.clients.BINGX.tickers().then(rows=>{copyTickers={at:Date.now(),rows}},()=>{copyTickers.pending=null});await copyTickers.pending}
@@ -286,12 +291,48 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode===
  // Testnet copy follows the signal strategy's switch; real-money copy has its own (off after every restart).
  gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:COPY.mode==='LIVE'?(copyTrader.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'}):LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
  // Also a symbol the live executor is entering right now (busy), not only recorded positions.
- isBusy:symbol=>COPY_ON_SAME_ACCOUNT()&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol)),
+ isBusy:symbol=>COPY_ON_SAME_ACCOUNT()&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol))||COPY.mode==='TESTNET'&&Boolean(scalpExec?.heldSymbols().has(symbol)),
  // The same balance cap as the signal strategy (a 100,000 virtual USDT testnet trades like the real account).
  // The testnet balance cap does not apply to a real-money copy (its own real equity).
  balance:async()=>{if(COPY.mode==='LIVE')return bingxFunds(await copyClient.balance());const f=await live.accountFunds('BINGX');const cap=LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
   const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
+// 되돌림 단타 (5m dip-rebound LONG) on the BingX TESTNET only (scalp_executor.mjs, user 2026-11-14 22:29):
+// its own ledger (scalp-store.json), SCALP_EXEC_MODE=OFF|TESTNET (LIVE refused), disarmed after every start.
+const SCALP_EXEC=scalpExecConfig(process.env);
+if(SCALP_EXEC.refused)console.warn('[SCALP] SCALP_EXEC_MODE refused:',SCALP_EXEC.refused,'— scalps stay OFF (testnet only)');
+// Its own public BingX queue for the 5m candles (~80 symbols per 5 min, SCALP_KLINE_GAP_MS apart).
+const scalpMarket=new BingXMarketData({minIntervalMs:SCALP_EXEC.klineGapMs});
+// The testnet signed client: the signal strategy's when it runs on the testnet (one request queue), else a
+// TESTNET-only client of its own. Never a LIVE client (the executor refuses one).
+const scalpClient=SCALP_EXEC.mode!=='TESTNET'?null:LIVE.mode==='TESTNET'&&live.clients.BINGX?live.clients.BINGX
+ :process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'TESTNET',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)}):null;
+let scalpTickers={at:0,rows:[]};
+const scalpTickerRows=async(maxAgeMs=20000)=>{if(!scalpTickers.at||Date.now()-scalpTickers.at>maxAgeMs)scalpTickers={at:Date.now(),rows:await scalpMarket.tickers()};return scalpTickers.rows};
+const scalpLast=async(venueSymbol,maxAgeMs)=>Number((await scalpTickerRows(maxAgeMs)).find(x=>x.symbol===venueSymbol)?.lastPrice)||null;
+scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
+ contracts:symbol=>venueQuotes.clients.BINGX.contractsFor(symbol),tickers:()=>scalpTickerRows(60000),
+ candles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
+ // 4H trend: Binance for Binance-listed symbols (as the backtest and the paper scalps), else BingX.
+ trendCandles:symbol=>state.activeSet.has(symbol)?klines(symbol,'4h',301):scalpMarket.klines(symbol,'4h',301),
+ // Entry price check: the BingX book mid, else a fresh BingX last price.
+ priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
+ markOf:venueSymbol=>scalpLast(venueSymbol,20000),
+ // Same balance cap as the signal strategy unless SCALP_BALANCE_CAP_USD is set (applied in the executor).
+ balance:async()=>{const f=bingxFunds(await scalpClient.balance());const cap=SCALP_EXEC.balanceCapUSD>0?Infinity:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
+  const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
+ // The signal strategy (testnet) and the testnet copy share this account: their symbols are skipped.
+ isBusy:(symbol,venueSymbol)=>LIVE.mode==='TESTNET'&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&(r.symbol===symbol||r.venueSymbol===venueSymbol)))
+  ||COPY.mode==='TESTNET'&&(copyTrader.heldSymbols().has(symbol)||Object.values(copyTrader.store.positions).some(p=>p.status==='OPEN'&&p.venueSymbol===venueSymbol)),
+ gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:live.updating||live.paused?{ok:false,reason:'UPDATING'}:{ok:true},
+ directory:storage.dir,log:(...a)=>console.log(...a),onEvent:scalpNotice});
+if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
+function scalpNotice(e){
+ const text=scalpEventText(e);if(!text)return;
+ try{send('live-notice',{type:'SCALP_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
+ if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
+ telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[SCALP TELEGRAM] HTTP',r.status)}).catch(e2=>console.error('[SCALP TELEGRAM]',e2.message));
+}
 // A copy ledger of the other mode with open positions is no longer managed: say so once at start.
 try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy-store-live.json');
  if(fs.existsSync(other)){const o=JSON.parse(fs.readFileSync(other,'utf8'));const n=Object.values(o.positions||{}).filter(x=>x.status==='OPEN');
@@ -350,7 +391,7 @@ async function refreshVenueBook(venue,symbol,{maxAgeMs=0}={}){
  const task=(async()=>{
   const client=venueQuotes.clients[venue];
   try{
-   const contracts=await client.loadContracts();if(!contracts.has(symbol))return null;
+   const contracts=await (client.contractsFor?client.contractsFor(symbol):client.loadContracts());if(!contracts.has(symbol))return null;
    const book=await client.book(symbol);venueBooks.set(key,book);return book;
   }catch(error){state.venueError=`${venue} ${symbol}: ${error.code||error.message}`;return null}
  })();
@@ -1308,7 +1349,11 @@ const server=http.createServer(async(req,res)=>{
    res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename=signal-lab-auto-paper-trades.csv','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(paperCSV(paper.store.closed));
   }
-  if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,scalpState);
+  // Paper scalp scanner state, plus the testnet reversal-scalp executor (scalp_executor.mjs) under `testnet`.
+  if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,{...scalpState,testnet:await scalpExec.liveStatus()});
+  if(pathname==='/api/scalp/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='SCALP_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
+   try{return response(res,200,scalpExec.arm())}catch(e){return response(res,e.httpStatus||409,{error:e.code||e.message})}}
+  if(pathname==='/api/scalp/disarm'&&req.method==='POST')return response(res,200,scalpExec.disarm());
   if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,await copyTrader.liveStatus());
   if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
   if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,copyTrader.arm())}
@@ -1324,7 +1369,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
-  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyTrader.liveStatus():null,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyTrader.liveStatus():null,scalp:SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?await scalpExec.liveStatus():null,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading})});
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);

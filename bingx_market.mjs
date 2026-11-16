@@ -34,7 +34,7 @@ export function spacedQueue(minIntervalMs,{now=Date.now,sleep=ms=>new Promise(r=
 }
 
 export class BingXMarketData{
- constructor({fetcher=globalThis.fetch,now=Date.now,timeoutMs=8000,minIntervalMs=BINGX_MIN_INTERVAL_MS,contractsTtlMs=600000,sleep}={}){
+ constructor({fetcher=globalThis.fetch,now=Date.now,timeoutMs=8000,minIntervalMs=BINGX_MIN_INTERVAL_MS,contractsTtlMs=300000,sleep}={}){
   if(typeof fetcher!=='function')throw Error('FETCH_UNAVAILABLE');
   Object.assign(this,{fetcher,now,timeoutMs,contractsTtlMs});
   this.queue=spacedQueue(minIntervalMs,{now,sleep});this.contracts=null;this.contractsAt=0;this.lastError=null;
@@ -69,7 +69,15 @@ export class BingXMarketData{
   const map=new Map(),raws=new Map();for(const raw of data){const c=normalizeBingXContract(raw);if(c){map.set(c.symbol,c);raws.set(c.symbol,raw)}}
   if(!map.size)throw new VenueHttpError('CONTRACTS_EMPTY');
   this.contracts=map;this.rawContracts=raws;this.contractsAt=this.now();
-  await this.syncClock().catch(()=>{}); // re-measured with every contract refresh (10 min)
+  await this.syncClock().catch(()=>{}); // re-measured with every contract refresh (5 min)
+  return map;
+ }
+ /** The contract list, re-read at once when `symbol` is missing or not tradable in the cached copy
+  * (a listing or a suspension since the last read; user 2026-11-16), at most once a minute. */
+ async contractsFor(symbol){
+  const map=await this.loadContracts();
+  if(symbol&&map.get(symbol)?.tradable!==true&&!(this.now()-(this.forcedContractsAt||0)<60000)){
+   this.forcedContractsAt=this.now();try{return await this.loadContracts({force:true})}catch{return map}}
   return map;
  }
  async tickers(){const data=await this.#get(PATHS.tickers);if(!Array.isArray(data))throw new VenueHttpError('TICKERS_SCHEMA');return data}
