@@ -59,7 +59,8 @@ test('config: TESTNET or OFF only — LIVE is refused; settings as the user set 
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
  assert.equal(c.settings.minMovePct,5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,SCALP_TIMEFRAMES['5m'].minMovePct*2);
  assert.deepEqual(c.settings.retracements,[.382,.5,.618]);assert.equal(c.settings.stopAtr,.25);assert.equal(c.settings.climaxVolume,3);
- assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendFilter,true);
+ assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');
+ assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:' On '}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'true'}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'off'}).trendMode,'off');
  for(const k of ['takerRate','slippageBps','fundingRate'])assert.equal(SCALP_EXEC_COSTS[k],BACKTEST_COSTS[k]);
  const live=scalpExecConfig({SCALP_EXEC_MODE:'LIVE'});assert.equal(live.mode,'OFF');assert.equal(live.refused,'LIVE_REFUSED');
  assert.equal(scalpExecConfig({SCALP_EXEC_MODE:'off'}).mode,'OFF');assert.equal(scalpExecConfig({SCALP_RISK_PCT:'50'}).riskPct,.5,'out-of-range values keep the default');
@@ -129,7 +130,7 @@ test('below-minimum target splits are merged before the orders go out',async()=>
 });
 
 test('skips: price drift, hedge mode, symbol held elsewhere, against the 4H trend, kill switch, venue position',async()=>{
- const cases=[[{price:PX*1.01},'PRICE_DRIFT'],[{hedge:true},'BINGX_HEDGE_MODE'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{trend:down4h},'AGAINST_4H_TREND']];
+ const cases=[[{price:PX*1.01},'PRICE_DRIFT'],[{hedge:true},'BINGX_HEDGE_MODE'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{trend:down4h,config:{trendMode:'on'}},'AGAINST_4H_TREND']];
  for(const [opt,reason] of cases){
   const v=venue({hedge:opt.hedge}),ex=make(v,opt);ex.arm();await ex.scan();
   assert.equal(ex.store.open.length,0,reason);assert.equal(placed(v,'MARKET').length,0,reason);assert.equal(ex.store.skips.at(-1)?.reason,reason);assert.ok(scalpReasonKo(reason)!==reason);
@@ -192,7 +193,7 @@ test('restart: the ledger comes back, scalps start disarmed, an unfinished entry
 });
 
 test('testnet page section: on/off pill, switch, desktop tables and phone lists, skip reasons in Korean',async()=>{
- const v=venue(),ex=make(v);let h=scalpHTML(ex.status());
+ const v=venue(),ex=make(v);let h=scalpHTML(ex.status());assert.match(h,/4시간 추세 기록만/);
  assert.match(h,/○ 꺼짐/);assert.match(h,/data-scalp-arm/);assert.doesNotMatch(h,/data-scalp-disarm/);
  ex.arm();await ex.scan();ex.store.skips.push({at:T0,symbol:'XUSDT',reason:'PRICE_DRIFT'});ex.store.skipCounts.PRICE_DRIFT=1;
  h=scalpHTML(ex.status());assert.match(h,/● 켜짐/);assert.match(h,/data-scalp-disarm/);
@@ -269,7 +270,8 @@ test('SHORT: stop-out is a loss, time exit is a BUY reduce-only close; PnL sign 
 test('side switch and trend: a side turned off or against the 4H trend is skipped; an opposite venue position blocks the entry',async()=>{
  {const {v,ex}=short({config:{sides:['LONG']}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'SIDE_OFF');assert.equal(v.calls.length,0)}
  {const v=venue(),ex=make(v,{config:{sides:['SHORT']}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'SIDE_OFF');assert.equal(v.calls.length,0)}
- {const {v,ex}=short({trend:up4h});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'AGAINST_4H_TREND');assert.equal(placed(v,'MARKET').length,0)}
+ {const {v,ex}=short({trend:up4h,config:{trendMode:'on'}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'AGAINST_4H_TREND');assert.equal(placed(v,'MARKET').length,0)}
+ {const {v,ex}=short({trend:up4h});ex.arm();await ex.scan();assert.equal(placed(v,'MARKET').length,1,'record mode enters against the 4H trend');assert.equal(ex.store.open[0].withTrend,false);assert.ok(ex.store.open[0].trend4h)}
  {const v=venue();v.size=-1;const ex=make(v);ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'VENUE_POSITION_EXISTS');assert.equal(placed(v,'MARKET').length,0)}
  assert.notEqual(scalpReasonKo('SIDE_OFF'),'SIDE_OFF');
 });
