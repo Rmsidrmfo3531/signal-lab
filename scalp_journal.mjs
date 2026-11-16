@@ -102,7 +102,7 @@ export function summarizeJournal(lines,{now=Date.now()}={}){
  const rank=x=>{const k=Number(x.universe?.rank);const b=RANK_BUCKETS.find(([a,c])=>k>=a&&k<=c);return b?bucketLabel(b,'위'):null};
  const hour=x=>{const t=x.entry?.at??x.barAt;return t?String(kst(t).getUTCHours()).padStart(2,'0'):null};
  return {generatedAt:new Date(now).toISOString(),all:groupStats(list),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
-  byMoveBucket:by(list,move),byHourKst:by(list,hour),byUniverseRank:by(list,rank),byTrend4h:by(list,x=>x.trend4h??'unknown'),byWithTrend:by(list,x=>x.withTrend==null?'unknown':x.withTrend?'with':'against'),
+  byMoveBucket:by(list,move),byHourKst:by(list,hour),byUniverseRank:by(list,rank),byTrend4h:by(list,x=>x.trend4h??'unknown'),byWithTrend:by(list,x=>x.trend4h==='range'?'range':x.withTrend==null?'unknown':x.withTrend?'with':'against'),
   last:list.slice(-5).map(x=>({symbol:x.symbol,direction:x.direction,exitAt:x.exit?.at,reason:x.exit?.reason,r:x.pnl?.r,netUSD:x.pnl?.netUSD}))};
 }
 /** A journal line for the reports repository: no client order id (a trade key instead). */

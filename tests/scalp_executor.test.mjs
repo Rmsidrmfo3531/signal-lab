@@ -59,8 +59,8 @@ test('config: TESTNET or OFF only — LIVE is refused; settings as the user set 
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
  assert.equal(c.settings.minMovePct,5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,SCALP_TIMEFRAMES['5m'].minMovePct*2);
  assert.deepEqual(c.settings.retracements,[.382,.5,.618]);assert.equal(c.settings.stopAtr,.25);assert.equal(c.settings.climaxVolume,3);
- assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');assert.equal(c.trendFilter,false);
- assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'on'}).trendFilter,true);assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'off'}).trendMode,'off');
+ assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');
+ assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:' On '}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'true'}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'off'}).trendMode,'off');
  for(const k of ['takerRate','slippageBps','fundingRate'])assert.equal(SCALP_EXEC_COSTS[k],BACKTEST_COSTS[k]);
  const live=scalpExecConfig({SCALP_EXEC_MODE:'LIVE'});assert.equal(live.mode,'OFF');assert.equal(live.refused,'LIVE_REFUSED');
  assert.equal(scalpExecConfig({SCALP_EXEC_MODE:'off'}).mode,'OFF');assert.equal(scalpExecConfig({SCALP_RISK_PCT:'50'}).riskPct,.5,'out-of-range values keep the default');
@@ -193,7 +193,7 @@ test('restart: the ledger comes back, scalps start disarmed, an unfinished entry
 });
 
 test('testnet page section: on/off pill, switch, desktop tables and phone lists, skip reasons in Korean',async()=>{
- const v=venue(),ex=make(v);let h=scalpHTML(ex.status());
+ const v=venue(),ex=make(v);let h=scalpHTML(ex.status());assert.match(h,/4시간 추세 기록만/);
  assert.match(h,/○ 꺼짐/);assert.match(h,/data-scalp-arm/);assert.doesNotMatch(h,/data-scalp-disarm/);
  ex.arm();await ex.scan();ex.store.skips.push({at:T0,symbol:'XUSDT',reason:'PRICE_DRIFT'});ex.store.skipCounts.PRICE_DRIFT=1;
  h=scalpHTML(ex.status());assert.match(h,/● 켜짐/);assert.match(h,/data-scalp-disarm/);

@@ -68,8 +68,7 @@ export function scalpExecConfig(env=process.env){
   // 4H trend: 'record' (default since 2026-11-16, user: the followed trader shorted BLESSUSDT in a 4H uptrend that
   // the filter skipped) = measured and logged with every signal and trade, never blocks; 'on' blocks against-trend
   // signals as in the backtest; 'off' skips the measurement.
-  trendMode:(m=>['on','off','record'].includes(m)?m:'record')(String(env.SCALP_EXEC_TREND_FILTER||'').toLowerCase()),
-  get trendFilter(){return this.trendMode==='on'},
+  trendMode:(m=>['on','true','1','yes'].includes(m)?'on':['off','false','0','no'].includes(m)?'off':'record')(String(env.SCALP_EXEC_TREND_FILTER||'').trim().toLowerCase()),
   riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',5,1,10),leverage:n('SCALP_LEVERAGE',10,1,20),
   // Margin per position and for all scalps together, as a share of the equity; quantity is cut to fit.
   maxMarginPct:n('SCALP_MAX_MARGIN_PCT',10,1,50),maxTotalMarginPct:n('SCALP_MAX_TOTAL_MARGIN_PCT',30,1,80),
@@ -279,7 +278,7 @@ export class ScalpExecutor{
  async #consider(u,det){
   const key=scalpClientId(u.symbol,det.barAt,det.direction),skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   if(this.store.sent.includes(key))return {entered:false,reason:'ALREADY_SENT'};
-  if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null?null:trendAllows(det.direction,trend)}
+  if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null||trend==='range'?null:trendAllows(det.direction,trend)}
    if(this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND',trend)}
   if(this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS');
   if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD');
@@ -524,7 +523,7 @@ export class ScalpExecutor{
  status(){
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
-   settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendFilter,trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
+   settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
