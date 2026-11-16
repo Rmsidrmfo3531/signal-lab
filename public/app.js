@@ -678,8 +678,12 @@ async function runGitUpdate(b){
  setUpdate({title:'업데이트 중',label,pct:0,note:'창을 닫지 말고 잠시 기다려 주세요. 보통 30초~1분 걸립니다.'});
  // Smooth 0.1 % steps toward the latest known progress.
  const anim=setInterval(()=>{if(shown<target){shown=Math.min(target,shown+Math.max(0.1,(target-shown)*0.08));setUpdate({pct:shown,label})}},100);
- const post=fetch('/api/update/git',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'UPDATE'})})
-  .then(async r=>{const x=await r.json().catch(()=>({}));if(!r.ok||!x.ok)throw Error(x.message||x.error||'HTTP '+r.status);applied=x}).catch(e=>{finished=true;clearInterval(anim);setUpdate({title:'업데이트 실패',label:e.message,pct:shown,note:'서버는 이전 버전으로 계속 동작합니다. 실매매 화면에서 활성화 상태를 확인해 주세요.',error:true})});
+ // "주문 처리 중" (an order or position check running) is not a failure: tried again every 5 s for 2 minutes.
+ const send=async()=>{for(let i=0;;i++){const r=await fetch('/api/update/git',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'UPDATE'})});
+   const x=await r.json().catch(()=>({}));if(r.ok&&x.ok)return x;
+   if((x.error==='ORDER_IN_PROGRESS'||x.error==='UPDATE_IN_PROGRESS')&&i<24){label='진행 중인 주문 작업이 끝나기를 기다리는 중';await new Promise(w=>setTimeout(w,5000));continue}
+   throw Error(x.message||x.error||'HTTP '+r.status)}};
+ const post=send().then(x=>{applied=x}).catch(e=>{finished=true;clearInterval(anim);setUpdate({title:'업데이트 실패',label:e.message,pct:shown,note:'서버는 이전 버전으로 계속 동작합니다. 실매매 화면에서 활성화 상태를 확인해 주세요.',error:true})});
  // Up to 5 minutes for the restart; the page reloads by itself either way (user 2026-11-16).
  for(let i=0;i<1200&&!finished;i++){
   await new Promise(r=>setTimeout(r,250));
