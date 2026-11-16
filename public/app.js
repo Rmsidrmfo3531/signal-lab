@@ -665,7 +665,7 @@ async function runGitUpdate(b){
  if(check.state==='current'){toast(`이미 최신 버전입니다 (${check.current})`);return}
  if(check.state!=='available'){setUpdate({title:'업데이트를 확인하지 못했습니다',label:'',pct:0,note:check.message||'',error:true});return}
  const list=check.changes.map(c=>'· '+c.subject).join('\n');
- if(!confirm(`새 버전 ${check.changes.length}건을 적용하고 서버를 재시작합니다.\n\n${list}\n\n켜져 있던 카피(실계좌 포함)·신호 전략·되돌림 단타는 재시작 후 자동으로 다시 켜집니다.`))return;
+ if(!confirm(`새 버전 ${check.changes.length}건을 적용하고 서버를 재시작합니다.\n\n${list}\n\n재시작 후 카피(실계좌 포함)·신호 전략(테스트넷)·되돌림 단타가 모두 자동으로 켜집니다.`))return;
  let shown=0,target=1,label='업데이트 시작',down=false,applied=null,finished=false,restartAt=0;
  setUpdate({title:'업데이트 중',label,pct:0,note:'창을 닫지 말고 잠시 기다려 주세요. 보통 30초~1분 걸립니다.'});
  // Smooth 0.1 % steps toward the latest known progress.
