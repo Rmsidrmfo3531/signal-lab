@@ -10,3 +10,4 @@ scan_universe.csv
 __pycache__/
 *.pyc
 trader-entries/
+follow-scan/
