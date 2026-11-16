@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {buildReport,pushReport,tradeSummary} from '../reports_push.mjs';
+import {buildReport,pushReport,tradeSummary,ledgerSummary} from '../reports_push.mjs';
 
 const rec={signalKey:'CRYPTO:AUSDT:SHORT:P1:1',clientOrderId:'slabc',entryOrderId:'1736012449498123737',stopOrderId:'9',targetOrderIds:['8'],
  venueSymbol:'A-USDT',symbol:'AUSDT',mode:'TESTNET',direction:'SHORT',status:'CLOSED',createdAt:1,closedAt:2,stop:1.1,targets:[0.9],
@@ -27,4 +27,20 @@ test('push writes latest and the day file, commits and pushes to the reports rep
  const files=execFileSync('git',['--git-dir',bare,'ls-tree','-r','--name-only','HEAD'],{encoding:'utf8'});
  assert.match(files,/latest\.json/);assert.match(files,/days\/2026-11-13\.json/);
  assert.equal((await pushReport(work,buildReport({readiness:{ready:false},records:[rec],now}),{now})).reason,'NO_CHANGE');
+});
+
+test('copy and scalp ledgers: totals, drawdown, serious events, and no order or position ids',()=>{
+ const now=Date.parse('2026-11-16T19:00:00Z');
+ const copy={positions:{'A|LONG':{id:'A|LONG|1',symbol:'AUSDT',venueSymbol:'A-USDT',direction:'LONG',status:'OPEN',qty:1,avg:2,adds:3,leverage:10,stopOrderId:'1999000111222333444'}},
+  closed:[{id:'B|SHORT|1',symbol:'BUSDT',direction:'SHORT',closedAt:now-3000,netUSD:-2,netSource:'ESTIMATE_BEFORE_FEES',adds:1,stopOrderId:'1888000111222333444'},
+   {id:'C|LONG|1',symbol:'CUSDT',direction:'LONG',closedAt:now-4000,netUSD:3,adds:0},{symbol:'DUSDT',direction:'LONG',closedAt:now-1000,netUSD:-1.5}],
+  events:[{type:'ERROR',at:now-1000,symbol:'AUSDT',reason:'order 1736012449498123737 failed'},{type:'SKIPPED',at:now-1000},{type:'ERROR',at:now-9*86400000}],killed:false};
+ const s=ledgerSummary(copy,{now,equityUSD:123.456});
+ assert.equal(s.closedCount,3);assert.equal(s.wins,1);assert.equal(s.netUSD,-0.5);assert.equal(s.maxDrawdownUSD,3.5);assert.equal(s.equityUSD,123.456);
+ assert.equal(s.open.length,1);assert.equal(s.serious.length,1);assert.equal(s.eventCounts7d.SKIPPED,1);
+ assert.equal(ledgerSummary(null),null);
+ const text=JSON.stringify(buildReport({readiness:{ready:false},records:[],ledgers:{copyLive:{store:copy,equityUSD:5},scalp:null},now}));
+ for(const bad of ['1736012449498123737','1999000111222333444','1888000111222333444','stopOrderId','venueSymbol','"id"','A|LONG|1'])assert.equal(text.includes(bad),false,bad);
+ const scalp=ledgerSummary({open:[{symbol:'EUSDT',direction:'SHORT',status:'OPEN',avg:1,stop:1.1}],closed:[{symbol:'FUSDT',direction:'LONG',closedAt:now,netUSD:0.4,tpHits:2,adds:[]}],events:[]},{now});
+ assert.equal(scalp.winRatePct,100);assert.equal(scalp.open[0].stop,1.1);assert.equal(scalp.trades[0].tpHits,2);
 });
