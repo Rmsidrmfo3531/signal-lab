@@ -187,7 +187,9 @@ export class ScalpExecutor{
  disarm(reason='MANUAL'){const was=this.armed;this.armed=false;if(was)this.#event('DISARMED',{reason});this.#save();return this.status()}
  /** Symbols (and venue symbols) this ledger holds or is entering: other strategies on the account skip them. */
  heldSymbols(){const s=new Set(this.reserved);for(const p of this.store.open){s.add(p.symbol);s.add(p.venueSymbol)}return s}
- idle(){return !this.scanning&&!this.reconciling&&!this.reserved.size}
+ // Reading candles (the scan) does not block a restart: only orders being placed (reserved) or a position
+ // check (2026-11-16: a 30-60 s scan every 5 minutes made updates fail with 'ORDER_IN_PROGRESS').
+ idle(){return !this.reconciling&&!this.reserved.size}
 
  /** Called every few seconds: the scan right after each 5m close, and the routine check. */
  async tick(now=this.now()){
