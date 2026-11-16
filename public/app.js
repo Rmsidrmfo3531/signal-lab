@@ -656,22 +656,24 @@ function setUpdate({title,label,pct,note,done=false,error=false}){
  m.querySelector('.update-close').hidden=!(done||error);
 }
 // After the reload: the completion popup (centre, slightly above the middle).
+// A small notice that goes away by itself (user 2026-11-16: no close button to press).
 try{const d=JSON.parse(sessionStorage.getItem('updateDone')||'null');if(d){sessionStorage.removeItem('updateDone');
- setTimeout(()=>{setUpdate({title:'✅ 업데이트 완료',label:`${d.from} → ${d.to}`,pct:100,note:d.rearm?'실매매는 활성화 상태로 이어집니다.':'실매매 화면에서 활성화 상태를 확인해 주세요.',done:true});
-  setTimeout(()=>document.getElementById('updateModal')?.classList.contains('done')&&document.getElementById('updateModal')?.remove(),10000)},300)}}catch{}
+ const on=[d.rearmCopy&&'카피',d.rearm&&'신호 전략',d.rearmScalp&&'되돌림 단타'].filter(Boolean);
+ setTimeout(()=>toast(`✅ 업데이트 완료 (${d.from} → ${d.to})`+(on.length?` · ${on.join('·')} 다시 켜짐`:'')),300)}}catch{}
 async function runGitUpdate(b){
  const check=await json('/api/update/git');
- if(check.state==='current'){setUpdate({title:'이미 최신 버전입니다',label:check.current,pct:100,note:'적용할 새 버전이 없습니다.',done:true});return}
+ if(check.state==='current'){toast(`이미 최신 버전입니다 (${check.current})`);return}
  if(check.state!=='available'){setUpdate({title:'업데이트를 확인하지 못했습니다',label:'',pct:0,note:check.message||'',error:true});return}
  const list=check.changes.map(c=>'· '+c.subject).join('\n');
- if(!confirm(`새 버전 ${check.changes.length}건을 적용하고 서버를 재시작합니다.\n\n${list}\n\n활성화 상태였다면 재시작 후 자동으로 다시 활성화됩니다 (테스트넷).`))return;
+ if(!confirm(`새 버전 ${check.changes.length}건을 적용하고 서버를 재시작합니다.\n\n${list}\n\n켜져 있던 카피(실계좌 포함)·신호 전략·되돌림 단타는 재시작 후 자동으로 다시 켜집니다.`))return;
  let shown=0,target=1,label='업데이트 시작',down=false,applied=null,finished=false,restartAt=0;
  setUpdate({title:'업데이트 중',label,pct:0,note:'창을 닫지 말고 잠시 기다려 주세요. 보통 30초~1분 걸립니다.'});
  // Smooth 0.1 % steps toward the latest known progress.
  const anim=setInterval(()=>{if(shown<target){shown=Math.min(target,shown+Math.max(0.1,(target-shown)*0.08));setUpdate({pct:shown,label})}},100);
  const post=fetch('/api/update/git',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'UPDATE'})})
   .then(async r=>{const x=await r.json().catch(()=>({}));if(!r.ok||!x.ok)throw Error(x.message||x.error||'HTTP '+r.status);applied=x}).catch(e=>{finished=true;clearInterval(anim);setUpdate({title:'업데이트 실패',label:e.message,pct:shown,note:'서버는 이전 버전으로 계속 동작합니다. 실매매 화면에서 활성화 상태를 확인해 주세요.',error:true})});
- for(let i=0;i<600&&!finished;i++){
+ // Up to 5 minutes for the restart; the page reloads by itself either way (user 2026-11-16).
+ for(let i=0;i<1200&&!finished;i++){
   await new Promise(r=>setTimeout(r,250));
   try{
    const r=await fetch('/api/update/git/progress',{cache:'no-store'});
@@ -679,7 +681,7 @@ async function runGitUpdate(b){
    const p=await r.json();
    if(down){ // back after the restart
     finished=true;target=100;label='완료';await new Promise(r=>setTimeout(r,600));clearInterval(anim);setUpdate({pct:100,label:'완료'});
-    try{sessionStorage.setItem('updateDone',JSON.stringify({from:applied?.from||check.current,to:applied?.to||check.latest,rearm:applied?.rearm===true}))}catch{}
+    try{sessionStorage.setItem('updateDone',JSON.stringify({from:applied?.from||check.current,to:applied?.to||check.latest,rearm:applied?.rearm===true,rearmCopy:applied?.rearmCopy===true,rearmScalp:applied?.rearmScalp===true}))}catch{}
     location.reload();return;
    }
    if(p.active){target=Math.max(target,p.pct);label=p.label||label}
@@ -690,7 +692,8 @@ async function runGitUpdate(b){
    const t=(Date.now()-restartAt)/1000;target=Math.max(target,92+7.9*(1-Math.exp(-t/20)));
   }
  }
- await post;
+ await post.catch(()=>{});
+ if(!finished&&applied){clearInterval(anim);location.reload()}
 }
 $('updateButton').addEventListener('click',async()=>{const b=$('updateButton');b.disabled=true;
  if(gitUpdate){try{await runGitUpdate(b)}catch(e){setUpdate({title:'업데이트 실패',label:e.message,pct:0,note:'',error:true})}finally{b.disabled=false}return}

@@ -354,7 +354,12 @@ function copyNotice(e){
  const marker=path.join(storage.dir,'rearm-after-update.json');
  try{
   const m=JSON.parse(fs.readFileSync(marker,'utf8'));fs.rmSync(marker,{force:true});
-  if(m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'&&Date.now()-Number(m.at)<15*60000&&!live.store.killSwitch){live.arm();console.log('[LIVE] 업데이트 전 활성화 상태 복원 (테스트넷)')}
+  const fresh=Date.now()-Number(m?.at)<15*60000&&!live.store.killSwitch;
+  if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'){live.arm();console.log('[LIVE] 업데이트 전 활성화 상태 복원 (테스트넷)')}
+  // Copy, real account included (user 2026-11-16 "실계좌도 알아서 켜주고"): only after the one-tap update,
+  // only if it was on when the update started, same mode, copy enabled, its loss limit not hit.
+  if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){copyTrader.arm();console.log(`[COPY] 업데이트 전 활성화 상태 복원 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`)}
+  if(fresh&&m.scalpArmed===true){try{scalpExec.arm();console.log('[SCALP] 업데이트 전 활성화 상태 복원 (테스트넷)')}catch(e){console.warn('[SCALP] 복원 안 함:',e.message)}}
  }catch{}
 }
 // The venue's public mid price for a live record (screen and exit estimates only; never an order input).
@@ -1438,9 +1443,11 @@ const server=http.createServer(async(req,res)=>{
     const result=await gitApply(__dirname,{onStep:s=>s==='fetched'?step(12,'새 버전 받는 중'):step(25,'새 버전 적용 · 파일 검사 시작'),
      checkSyntax:async root=>{await checkTree(root,{nodeCheck,onFile:(i,n)=>step(25+55*i/n,`파일 검사 ${i}/${n}`)});step(82,'모듈 연결 검사');await linkCheck(root);step(86,'검사 통과')}});
     if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,at:Date.now()};live.updating=false;if(wasArmed&&result.state==='current')live.arm();response(res,result.ok?200:409,result);return}
-    // Remember that trading was on, so it is switched back on after the restart (TESTNET only).
-    if(wasArmed&&LIVE.mode==='TESTNET')try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,at:Date.now(),from:result.from,to:result.to}))}catch{}
-    response(res,200,{...result,rearm:wasArmed&&LIVE.mode==='TESTNET'});
+    // Remember what was on, so it is switched back on after the restart: the signal strategy (TESTNET only),
+    // the copy (its own mode, real account included since 2026-11-16) and the reversal scalps (TESTNET).
+    const signalArmed=wasArmed&&LIVE.mode==='TESTNET',copyArmed=copyTrader.armed===true,scalpArmed=scalpExec?.armed===true;
+    if(signalArmed||copyArmed||scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,signalArmed,copyArmed,copyMode:COPY.mode,scalpArmed,at:Date.now(),from:result.from,to:result.to}))}catch{}
+    response(res,200,{...result,rearm:signalArmed,rearmCopy:copyArmed,rearmScalp:scalpArmed});
     console.log('[UPDATE]',result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
     (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
      // Paused only once idle; if never idle in 10 minutes the restart waits for the next tap.
