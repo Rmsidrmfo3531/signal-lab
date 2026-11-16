@@ -12,7 +12,7 @@
 //  - Exits as simulateTrade: reduce-only take-profits 40/35/25 % at the targets (parts below the venue
 //    minimum merged into the earlier target), stop to the entry price after TP1, market close at
 //    entry + maxHoldMs (2 h).
-//  - Size: equity x riskPct (0.5 %) at the stop, margin capped; at most maxOpen (5) positions, one per symbol,
+//  - Size: equity x riskPct (0.5 %) at the stop, margin capped; no position-count cap by default on testnet (user 2026-11-16; SCALP_MAX_OPEN>0 sets one), one per symbol,
 //    none on a symbol the signal strategy or copy holds on the same account.
 //  - LIVE is refused: the mode is OFF or TESTNET, and the client must be a TESTNET client. Starts disarmed.
 //  - Shared kill switch: no new entries. Daily loss limit (3 % of equity, realized today + open) disarms.
@@ -69,7 +69,7 @@ export function scalpExecConfig(env=process.env){
   // the filter skipped) = measured and logged with every signal and trade, never blocks; 'on' blocks against-trend
   // signals as in the backtest; 'off' skips the measurement.
   trendMode:(m=>['on','true','1','yes'].includes(m)?'on':['off','false','0','no'].includes(m)?'off':'record')(String(env.SCALP_EXEC_TREND_FILTER||'').trim().toLowerCase()),
-  riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',5,1,10),leverage:n('SCALP_LEVERAGE',10,1,20),
+  riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',0,0,200),leverage:n('SCALP_LEVERAGE',10,1,20),
   // Margin per position and for all scalps together, as a share of the equity; quantity is cut to fit.
   maxMarginPct:n('SCALP_MAX_MARGIN_PCT',10,1,50),maxTotalMarginPct:n('SCALP_MAX_TOTAL_MARGIN_PCT',30,1,80),
   dailyLossPct:n('SCALP_DAILY_LOSS_PCT',3,.5,10),
@@ -269,6 +269,8 @@ export class ScalpExecutor{
   let trend=null;try{trend=fourHourTrend(await this.trendCandles(symbol),this.now())}catch{}
   if(trend!==null)this.trendCache.set(symbol,{b,trend});return trend;
  }
+ /** Loss to the stops of the open positions (0 once a stop sits at breakeven or better). */
+ #openRisk(){return this.store.open.reduce((t,p)=>{const d=p.direction==='SHORT'?-1:1,e=Number(p.avg||p.entry),st=Number(p.stop),q=Number(p.size||p.qty||0);return t+(e>0&&st>0&&q>0?Math.max(0,d*(e-st))*q:0)},0)}
  #usedMargin(){return this.store.open.reduce((t,p)=>t+(p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1),0)}
  async #funds(){
   const b=await this.balance().catch(()=>null),eq=pos(b?.equity);if(!eq)return null;
@@ -280,7 +282,7 @@ export class ScalpExecutor{
   if(this.store.sent.includes(key))return {entered:false,reason:'ALREADY_SENT'};
   if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null||trend==='range'?null:trendAllows(det.direction,trend)}
    if(this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND',trend)}
-  if(this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS');
+  if(this.config.maxOpen>0&&this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS');
   if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD');
   let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
   if(busy)return skip('SYMBOL_HELD_BY_OTHER_STRATEGY');
@@ -296,6 +298,12 @@ export class ScalpExecutor{
    const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,usedMargin:this.#usedMargin(),leverage:lev,config:this.config});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
+   // No count cap on testnet (user 2026-11-16), so the daily loss limit caps the risk up front: today's realized loss
+   // + loss to the open stops + this trade must stay within it (review 2026-11-16, as OPEN_RISK_LIMIT for the signals).
+   {const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
+    const risk=Math.max(0,-realized)+this.#openRisk()+(Number(plan.riskUSD)||0),limit=funds.equity*this.config.dailyLossPct/100;
+    if(this.cur?.plan)this.cur.plan.openRiskUSD=+risk.toFixed(2);
+    if(risk>limit)return skip('OPEN_RISK_LIMIT',`$${risk.toFixed(2)} > $${limit.toFixed(2)}`)}
    return await this.#enter(u,det,c,plan,key);
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
   finally{this.reserved.delete(u.symbol)}

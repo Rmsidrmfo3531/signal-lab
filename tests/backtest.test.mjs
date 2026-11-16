@@ -86,6 +86,12 @@ test('scalp replay: a crash + hammer opens a fixed-risk trade and a zone scale-i
  const fixed=r.trades.find(t=>t.book==='FIXED');assert.ok(fixed,'fixed-risk scalp trade');assert.ok(fixed.tp>=1,'the rebound reaches TP1');
  const dca=r.trades.find(t=>t.book==='DCA');assert.ok(dca||Object.keys(r.funnel.dcaRejected).length,'scale-in trade or a recorded reason');
  if(dca){assert.ok(Number.isFinite(dca.pnlPctOfBalance));assert.equal(r.finalBalance,1000+dca.netUSD)}
+ // 4H trend tag (user 2026-11-16): measured with h4 even without the filter; the filter alone blocks.
+ const H4=14400000,h4=k=>{const out=[];let q=100;for(let i=0;i<330;i++){const o=q;q*=k;const t=start-330*H4+i*H4;out.push([t,String(o),String(Math.max(o,q)*1.001),String(Math.min(o,q)*.999),String(q),'1',t+H4-1])}return out};
+ const base={symbol:'SOLUSDT',m5:rows,m15,filters:{tickSize:.0001,stepSize:.01,minQty:.01,minNotional:1},startAt:start+864*M5,books:['FIXED']};
+ const down=backtestScalp({...base,h4:h4(.997),trendFilter:false}).trades[0];assert.equal(down.trend4h,'down');assert.equal(down.withTrend,false,'rebound LONG in a 4H downtrend = against');
+ const up=backtestScalp({...base,h4:h4(1.003),trendFilter:false}).trades[0];assert.equal(up.trend4h,'up');assert.equal(up.withTrend,true);
+ const on=backtestScalp({...base,h4:h4(.997),trendFilter:true});assert.equal(on.trades.length,0);assert.ok(on.funnel.trendBlocked>=1);
 });
 
 test('scalp trend filter: with 4H candles a rebound LONG in a 4H downtrend is skipped',()=>{
