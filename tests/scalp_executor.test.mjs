@@ -282,3 +282,8 @@ test('SHORT daily loss (price up) disarms; stats and the page split 롱 / 숏',a
  assert.equal(st.bySide.SHORT.winRatePct,50);assert.equal(st.bySide.SHORT.profitFactor,2);assert.equal(st.bySide.SHORT.netUSD,1);
  const h=scalpHTML(ex.status());assert.match(h,/<th>방향<\/th>/);assert.match(h,/paper-short">숏/);assert.match(h,/숏 손익/);assert.match(h,/거래 방향 롱·숏/);
 });
+
+test('scalp watchlist: AKE and EVAA always scanned, more from SCALP_WATCHLIST (user 2026-11-16)',()=>{
+ assert.deepEqual(scalpExecConfig({}).watchlist,['AKEUSDT','EVAAUSDT']);
+ assert.deepEqual(scalpExecConfig({SCALP_WATCHLIST:'jctusdt, EVAAUSDT,bad'}).watchlist,['AKEUSDT','EVAAUSDT','JCTUSDT']);
+});

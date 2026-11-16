@@ -73,7 +73,9 @@ export function scalpExecConfig(env=process.env){
   // Entry price check against the planned entry (the signal candle's close): within 0.4 % and 1 ATR (the
   // pre-move ATR the stop buffer uses), either way; the TP1 net RR is checked again at the price found.
   maxDriftPct:n('SCALP_MAX_DRIFT_PCT',.4,.05,2),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
-  universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanDelayMs:3000,
+  universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),
+  // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
+  watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanDelayMs:3000,
   balanceCapUSD:n('SCALP_BALANCE_CAP_USD',0,0,1e7)};
 }
 
@@ -211,7 +213,11 @@ export class ScalpExecutor{
  async #refreshUniverse(now){
   if(this.universe.length&&now-this.universeAt<this.config.universeRefreshMs)return;
   const [tickers,contracts]=await Promise.all([this.tickers(),this.contracts()]);
-  const list=scalpUniverse(tickers,contracts,this.config.universeSize);if(list.length){this.universe=list;this.universeAt=now}
+  const list=scalpUniverse(tickers,contracts,this.config.universeSize);
+  // The watchlist first (tradable ones only), then the volume ranking without duplicates.
+  const all=scalpUniverse(tickers,contracts,100000),watch=(this.config.watchlist||[]).map(sym=>all.find(u=>u.symbol===sym)).filter(Boolean).map(u=>({...u,watch:true}));
+  const merged=[...watch,...list.filter(u=>!watch.some(w=>w.symbol===u.symbol))];
+  if(merged.length){this.universe=merged;this.universeAt=now}
  }
  async scan(now=this.now()){
   if(this.scanning)return this.lastScan;this.scanning=true;
@@ -515,7 +521,7 @@ export class ScalpExecutor{
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendFilter,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
-   universe:{count:this.universe.length,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
+   universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),
    skips:this.store.skips.slice(-20).reverse().map(x=>({...x,label:scalpReasonKo(x.reason)})),events:this.store.events.slice(-30).reverse()};
