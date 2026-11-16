@@ -59,7 +59,8 @@ test('config: TESTNET or OFF only — LIVE is refused; settings as the user set 
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
  assert.equal(c.settings.minMovePct,5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,SCALP_TIMEFRAMES['5m'].minMovePct*2);
  assert.deepEqual(c.settings.retracements,[.382,.5,.618]);assert.equal(c.settings.stopAtr,.25);assert.equal(c.settings.climaxVolume,3);
- assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendFilter,true);
+ assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,0);assert.equal(scalpExecConfig({SCALP_MAX_OPEN:'5'}).maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');
+ assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:' On '}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'true'}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'off'}).trendMode,'off');
  for(const k of ['takerRate','slippageBps','fundingRate'])assert.equal(SCALP_EXEC_COSTS[k],BACKTEST_COSTS[k]);
  const live=scalpExecConfig({SCALP_EXEC_MODE:'LIVE'});assert.equal(live.mode,'OFF');assert.equal(live.refused,'LIVE_REFUSED');
  assert.equal(scalpExecConfig({SCALP_EXEC_MODE:'off'}).mode,'OFF');assert.equal(scalpExecConfig({SCALP_RISK_PCT:'50'}).riskPct,.5,'out-of-range values keep the default');
@@ -129,7 +130,7 @@ test('below-minimum target splits are merged before the orders go out',async()=>
 });
 
 test('skips: price drift, hedge mode, symbol held elsewhere, against the 4H trend, kill switch, venue position',async()=>{
- const cases=[[{price:PX*1.01},'PRICE_DRIFT'],[{hedge:true},'BINGX_HEDGE_MODE'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{trend:down4h},'AGAINST_4H_TREND']];
+ const cases=[[{price:PX*1.01},'PRICE_DRIFT'],[{hedge:true},'BINGX_HEDGE_MODE'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{trend:down4h,config:{trendMode:'on'}},'AGAINST_4H_TREND']];
  for(const [opt,reason] of cases){
   const v=venue({hedge:opt.hedge}),ex=make(v,opt);ex.arm();await ex.scan();
   assert.equal(ex.store.open.length,0,reason);assert.equal(placed(v,'MARKET').length,0,reason);assert.equal(ex.store.skips.at(-1)?.reason,reason);assert.ok(scalpReasonKo(reason)!==reason);
@@ -192,7 +193,7 @@ test('restart: the ledger comes back, scalps start disarmed, an unfinished entry
 });
 
 test('testnet page section: on/off pill, switch, desktop tables and phone lists, skip reasons in Korean',async()=>{
- const v=venue(),ex=make(v);let h=scalpHTML(ex.status());
+ const v=venue(),ex=make(v);let h=scalpHTML(ex.status());assert.match(h,/4시간 추세 기록만/);
  assert.match(h,/○ 꺼짐/);assert.match(h,/data-scalp-arm/);assert.doesNotMatch(h,/data-scalp-disarm/);
  ex.arm();await ex.scan();ex.store.skips.push({at:T0,symbol:'XUSDT',reason:'PRICE_DRIFT'});ex.store.skipCounts.PRICE_DRIFT=1;
  h=scalpHTML(ex.status());assert.match(h,/● 켜짐/);assert.match(h,/data-scalp-disarm/);
@@ -269,7 +270,8 @@ test('SHORT: stop-out is a loss, time exit is a BUY reduce-only close; PnL sign 
 test('side switch and trend: a side turned off or against the 4H trend is skipped; an opposite venue position blocks the entry',async()=>{
  {const {v,ex}=short({config:{sides:['LONG']}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'SIDE_OFF');assert.equal(v.calls.length,0)}
  {const v=venue(),ex=make(v,{config:{sides:['SHORT']}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'SIDE_OFF');assert.equal(v.calls.length,0)}
- {const {v,ex}=short({trend:up4h});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'AGAINST_4H_TREND');assert.equal(placed(v,'MARKET').length,0)}
+ {const {v,ex}=short({trend:up4h,config:{trendMode:'on'}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'AGAINST_4H_TREND');assert.equal(placed(v,'MARKET').length,0)}
+ {const {v,ex}=short({trend:up4h});ex.arm();await ex.scan();assert.equal(placed(v,'MARKET').length,1,'record mode enters against the 4H trend');assert.equal(ex.store.open[0].withTrend,false);assert.ok(ex.store.open[0].trend4h)}
  {const v=venue();v.size=-1;const ex=make(v);ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'VENUE_POSITION_EXISTS');assert.equal(placed(v,'MARKET').length,0)}
  assert.notEqual(scalpReasonKo('SIDE_OFF'),'SIDE_OFF');
 });
@@ -281,4 +283,17 @@ test('SHORT daily loss (price up) disarms; stats and the page split 롱 / 숏',a
  const st=ex.stats();assert.equal(st.trades,3);assert.equal(st.bySide.LONG.trades,1);assert.equal(st.bySide.SHORT.trades,2);
  assert.equal(st.bySide.SHORT.winRatePct,50);assert.equal(st.bySide.SHORT.profitFactor,2);assert.equal(st.bySide.SHORT.netUSD,1);
  const h=scalpHTML(ex.status());assert.match(h,/<th>방향<\/th>/);assert.match(h,/paper-short">숏/);assert.match(h,/숏 손익/);assert.match(h,/거래 방향 롱·숏/);
+});
+
+test('scalp watchlist: AKE and EVAA always scanned, more from SCALP_WATCHLIST (user 2026-11-16)',()=>{
+ assert.deepEqual(scalpExecConfig({}).watchlist,['AKEUSDT','EVAAUSDT']);
+ assert.deepEqual(scalpExecConfig({SCALP_WATCHLIST:'jctusdt, EVAAUSDT,bad'}).watchlist,['AKEUSDT','EVAAUSDT','JCTUSDT']);
+});
+
+test('no count cap on testnet, but today\'s loss + open stop risk + the new trade stays within the daily loss limit',async()=>{
+ const v=venue(),ex=make(v);assert.equal(ex.config.maxOpen,0);
+ ex.store.open.push({symbol:'XUSDT',venueSymbol:'X-USDT',direction:'LONG',entry:100,avg:100,stop:90,qty:29,size:29,leverage:10,status:'OPEN'});
+ ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1)?.reason,'OPEN_RISK_LIMIT');assert.equal(placed(v,'MARKET').length,0);assert.notEqual(scalpReasonKo('OPEN_RISK_LIMIT'),'OPEN_RISK_LIMIT');
+ const v2=venue(),ex2=make(v2);ex2.store.open.push({symbol:'XUSDT',venueSymbol:'X-USDT',direction:'LONG',entry:100,avg:100,stop:100,qty:29,size:29,leverage:10,status:'OPEN'});
+ ex2.arm();await ex2.scan();assert.equal(placed(v2,'MARKET').length,1,'a stop at breakeven adds no risk');
 });

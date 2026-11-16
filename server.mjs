@@ -9,6 +9,7 @@ import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
+import {scalpReportFiles} from './scalp_journal.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
 import {liveEventText} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
@@ -328,6 +329,7 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:scalpNotice});
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
 function scalpNotice(e){
+ if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
  const text=scalpEventText(e);if(!text)return;
  try{send('live-notice',{type:'SCALP_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
@@ -565,9 +567,11 @@ async function runGitUpdate(source='button'){
  }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,at:Date.now()};live.updating=false;if(wasArmed)live.arm();if(source==='auto')updateNotice(`⚠️ 자동 업데이트 실패: ${e.message}`);return {status:502,body:{error:e.message}}}
 }
 function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text,disable_web_page_preview:true}).catch(()=>{})}catch{}}
-// Automatic update (AUTO_UPDATE=off disables): GitHub is checked every 10 minutes; a new version is
+// Automatic update (AUTO_UPDATE=off disables): GitHub is checked every AUTO_UPDATE_EVERY_MS; a new version is
 // applied with the same checks as the button. A failed version is not retried until a newer one appears.
 const AUTO_UPDATE=!/^(off|0|false|no)$/i.test(String(process.env.AUTO_UPDATE||'on'));
+// Checked every 2 minutes (user 2026-11-16: 10 felt slow); AUTO_UPDATE_EVERY_MIN 1~60.
+const AUTO_UPDATE_EVERY_MS=Math.max(1,Math.min(60,Number(process.env.AUTO_UPDATE_EVERY_MIN)||2))*60000;
 let autoUpdateFailedAt=null,pendingRestart=null;
 if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
  try{if(updateJob.active||!allIdle())return;
@@ -575,7 +579,7 @@ if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
   if(pendingRestart){const was=live.armed;live.updating=true;live.disarm();live.paused=true;if(allIdle()){console.log('[UPDATE] postponed restart',pendingRestart.from,'→',pendingRestart.to);pendingRestart.writeMarker();process.kill(process.pid,'SIGTERM');return}live.paused=false;live.updating=false;if(was)live.arm();return}
   const c=await gitCheck(__dirname);if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
   const r=await runGitUpdate('auto');if(r.status>=400&&r.body?.error!=='ORDER_IN_PROGRESS')autoUpdateFailedAt=c.latest}catch(e){console.warn('[UPDATE] auto check:',e.message)}
-},10*60000).unref?.();
+},AUTO_UPDATE_EVERY_MS).unref?.();
 
 // Real-money readiness, measured on testnet trades under the current rules (live_readiness.mjs).
 // A short Telegram report every morning (09:00 KST) and once when every criterion is met.
@@ -624,9 +628,12 @@ async function uploadReport(force=false){
  if(!force&&!reportsDirty&&!(hour>=3&&reportsDay!==day))return;
  reportsBusy=true;
  try{
+  let scalpExport=null;try{scalpExport=scalpExec?scalpReportFiles({journalFile:scalpExec.journalFile,signalsFile:scalpExec.signalsFile}):null}catch(e){console.warn('[REPORTS] scalp',e.message)}
   const report=buildReport({readiness:readiness(),insights:patternInsights(persisted.journal.filter(x=>x.source==='LIVE_AUTO'&&x.review).map(x=>x.review)),
-   journal:persisted.journal,records:[...live.store.records,...(live.store.archived||[])],ledgers:reportLedgers()});
-  const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null});
+   journal:persisted.journal,records:[...live.store.records,...(live.store.archived||[])],
+   // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
+   scalp:scalpExport?.summary??null,ledgers:reportLedgers()});
+  const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});
   reportsDay=day;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
  }catch(e){console.error('[REPORTS]',e.message)}finally{reportsBusy=false}
 }
@@ -1408,6 +1415,9 @@ const server=http.createServer(async(req,res)=>{
   }
   // Paper scalp scanner state, plus the testnet reversal-scalp executor (scalp_executor.mjs) under `testnet`.
   if(pathname==='/api/scalp'&&req.method==='GET')return response(res,200,{...scalpState,testnet:await scalpExec.liveStatus()});
+  // Trade journal (newest lines, oldest first): ?limit=N (default 200, max 2000); ?kind=signals for detected signals.
+  if(pathname==='/api/scalp/journal'&&req.method==='GET'){const n=Math.max(1,Math.min(2000,Math.floor(Number(url.searchParams.get('limit')))||200));
+   const kind=url.searchParams.get('kind')==='signals'?'signals':'trades',lines=kind==='signals'?scalpExec.signals(n):scalpExec.journal(n);return response(res,200,{kind,limit:n,count:lines.length,lines})}
   if(pathname==='/api/scalp/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='SCALP_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
    try{return response(res,200,scalpExec.arm())}catch(e){return response(res,e.httpStatus||409,{error:e.code||e.message})}}
   if(pathname==='/api/scalp/disarm'&&req.method==='POST')return response(res,200,scalpExec.disarm());
