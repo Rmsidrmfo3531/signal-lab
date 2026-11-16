@@ -289,3 +289,11 @@ test('scalp watchlist: AKE and EVAA always scanned, more from SCALP_WATCHLIST (u
  assert.deepEqual(scalpExecConfig({}).watchlist,['AKEUSDT','EVAAUSDT']);
  assert.deepEqual(scalpExecConfig({SCALP_WATCHLIST:'jctusdt, EVAAUSDT,bad'}).watchlist,['AKEUSDT','EVAAUSDT','JCTUSDT']);
 });
+
+test('no count cap on testnet, but today\'s loss + open stop risk + the new trade stays within the daily loss limit',async()=>{
+ const v=venue(),ex=make(v);assert.equal(ex.config.maxOpen,0);
+ ex.store.open.push({symbol:'XUSDT',venueSymbol:'X-USDT',direction:'LONG',entry:100,avg:100,stop:90,qty:29,size:29,leverage:10,status:'OPEN'});
+ ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1)?.reason,'OPEN_RISK_LIMIT');assert.equal(placed(v,'MARKET').length,0);assert.notEqual(scalpReasonKo('OPEN_RISK_LIMIT'),'OPEN_RISK_LIMIT');
+ const v2=venue(),ex2=make(v2);ex2.store.open.push({symbol:'XUSDT',venueSymbol:'X-USDT',direction:'LONG',entry:100,avg:100,stop:100,qty:29,size:29,leverage:10,status:'OPEN'});
+ ex2.arm();await ex2.scan();assert.equal(placed(v2,'MARKET').length,1,'a stop at breakeven adds no risk');
+});

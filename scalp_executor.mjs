@@ -269,6 +269,8 @@ export class ScalpExecutor{
   let trend=null;try{trend=fourHourTrend(await this.trendCandles(symbol),this.now())}catch{}
   if(trend!==null)this.trendCache.set(symbol,{b,trend});return trend;
  }
+ /** Loss to the stops of the open positions (0 once a stop sits at breakeven or better). */
+ #openRisk(){return this.store.open.reduce((t,p)=>{const d=p.direction==='SHORT'?-1:1,e=Number(p.avg||p.entry),st=Number(p.stop),q=Number(p.size||p.qty||0);return t+(e>0&&st>0&&q>0?Math.max(0,d*(e-st))*q:0)},0)}
  #usedMargin(){return this.store.open.reduce((t,p)=>t+(p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1),0)}
  async #funds(){
   const b=await this.balance().catch(()=>null),eq=pos(b?.equity);if(!eq)return null;
@@ -296,6 +298,12 @@ export class ScalpExecutor{
    const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,usedMargin:this.#usedMargin(),leverage:lev,config:this.config});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
+   // No count cap on testnet (user 2026-11-16), so the daily loss limit caps the risk up front: today's realized loss
+   // + loss to the open stops + this trade must stay within it (review 2026-11-16, as OPEN_RISK_LIMIT for the signals).
+   {const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
+    const risk=Math.max(0,-realized)+this.#openRisk()+(Number(plan.riskUSD)||0),limit=funds.equity*this.config.dailyLossPct/100;
+    if(this.cur?.plan)this.cur.plan.openRiskUSD=+risk.toFixed(2);
+    if(risk>limit)return skip('OPEN_RISK_LIMIT',`$${risk.toFixed(2)} > $${limit.toFixed(2)}`)}
    return await this.#enter(u,det,c,plan,key);
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
   finally{this.reserved.delete(u.symbol)}

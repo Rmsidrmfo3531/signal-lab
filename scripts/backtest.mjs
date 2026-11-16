@@ -31,8 +31,8 @@ export function parseArgs(argv){
   else if(key==='--scalp-1m-days'){out.scalp1mDays=Math.max(0,Math.min(90,Math.round(Number(value))||0));i++}
   else if(key==='--balance'){out.balance=Math.max(10,Number(value)||1000);i++}
   else if(key==='--obstacle'){out.obstacle=Math.max(.1,Math.min(1,Number(value)||1));i++}
-  else if(key==='--trend-filter'){out.trendFilter=true}
-  else if(key==='--no-trend-filter'){out.trendFilter=false}
+  else if(key==='--trend-filter'){out.trendFilter=true;out.trendFlag=true}
+  else if(key==='--no-trend-filter'){out.trendFilter=false;out.trendFlag=true}
   else if(key==='--all-patterns'){out.allPatterns=true}
   else if(key==='--candidates'){out.candidates=true}
   else if(key==='--offline'){out.offline=true}
@@ -44,7 +44,7 @@ export function parseArgs(argv){
   else if(key==='--skip-top'){out.skipTop=Math.max(0,Math.min(200,Math.round(Number(value))||0));i++}
   else if(key==='--scalp-only'){out.scalpOnly=true}
   // --exec: the testnet scalp executor's settings (move x2 = 5%, TP 38.2/50/61.8%, stop ATR x0.25, volume x3).
-  else if(key==='--exec'){out.execSettings=true}
+  else if(key==='--exec'){out.execSettings=true;if(!out.trendFlag)out.trendFilter=false} // the executor records the 4H trend, never filters
   else if(key==='--btc-long-filter'){if(!['up','notdown','off'].includes(value))throw Error('--btc-long-filter는 up, notdown, off 중 하나입니다');out.btcLongFilter=value==='off'?null:value;i++} // default 'up' (as the server); 'off' disables
   else if(key==='--min-box-atr'){out.minBoxWidthAtr=Math.max(0,Number(value)||0);i++}
   else if(key==='--hourly-max-hold-days'){out.hourlyMaxHoldMs=Math.max(0,Number(value)||0)*86400000||null;i++}
@@ -131,7 +131,7 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  const lines=[],date=t=>new Date(t).toISOString().slice(0,16).replace('T',' ')+' UTC';
  lines.push('Signal Lab 백테스트 결과','='.repeat(60),`기간: ${date(startAt)} ~ ${date(endAt)} (${args.days}일)`,`종목: ${args.symbols.join(', ')}`,
   `비용 가정: 시장가 수수료 0.06% + 슬리피지 0.02% (진입·청산 매번), 1H·단타 고정 위험 $6/거래`,`TP1 전 매물대 차단 기준: POC의 ${Math.round(args.obstacle*100)}% 이상 · 1H 패턴: ${args.allPatterns?'전체':'박스권 상단 돌파·상승 추세선 이탈 숏·5/20 데드크로스 숏(--all-patterns로 전체)'} · 단타 4H 추세 필터 ${args.trendFilter?'켬':'끔'}`,
-  `체결 가정: 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결`,'');
+  ...(args.execSettings?[`단타 설정: 테스트넷 실행기와 같음 (급변 5%·되돌림 38.2/50/61.8%·손절 ATR×0.25·거래량 3배, 4H 추세 ${args.trendFilter?'필터 켬':'기록만'})`]:[]),`체결 가정: 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결`,'');
  lines.push('[1] 1시간봉 전략 (현재 기준: 100점 중 90점 이상)','-'.repeat(60));
  const live=all.filter(t=>t.strategy==='HOURLY'&&t.book==='LIVE');
  lines.push(row('전체',summarize(live)));
