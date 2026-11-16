@@ -19,6 +19,12 @@ test('paper off by default: a final signal opens a TESTNET live position, no pap
   const status=await app.get('/api/status');assert.equal(status.paperTrading,false);assert.equal(status.live.mode,'TESTNET');
   assert.equal((await app.get('/api/scalp')).enabled,false,'paper-only scalps do not run with paper trading off');
   const before=await app.get('/api/live/overview');assert.equal(before.mode,'TESTNET');assert.equal(before.armed,false);assert.deepEqual(before.positions,[]);
+  // Testnet reversal scalps: their own status and switch, disarmed at start, arm needs the confirm phrase.
+  const sc=(await app.get('/api/scalp')).testnet;assert.equal(sc.mode,'TESTNET');assert.equal(sc.armed,false);assert.equal(sc.credentials,true);assert.equal(sc.strategy,'SCALP_REVERSAL');
+  assert.equal(before.scalp.armed,false);assert.deepEqual(before.scalp.positions,[]);
+  assert.equal((await post('/api/scalp/arm',{})).status,400);
+  const armed=await post('/api/scalp/arm',{confirm:'SCALP_ARM'});assert.equal(armed.status,200,JSON.stringify(armed.body));assert.equal(armed.body.armed,true);
+  assert.equal((await post('/api/scalp/disarm',{})).body.armed,false);
   assert.equal((await post('/api/live/arm',{confirm:'ARM'})).status,200);
   await app.get('/api/analyze?symbol=BTCUSDT');
   const overview=await until(()=>app.get('/api/live/overview'),o=>o.positions.length===1&&o.positions[0].status==='OPEN'&&Number.isFinite(o.positions[0].currentPrice),
