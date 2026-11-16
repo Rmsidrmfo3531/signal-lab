@@ -312,7 +312,7 @@ let scalpTickers={at:0,rows:[]};
 const scalpTickerRows=async(maxAgeMs=20000)=>{if(!scalpTickers.at||Date.now()-scalpTickers.at>maxAgeMs)scalpTickers={at:Date.now(),rows:await scalpMarket.tickers()};return scalpTickers.rows};
 const scalpLast=async(venueSymbol,maxAgeMs)=>Number((await scalpTickerRows(maxAgeMs)).find(x=>x.symbol===venueSymbol)?.lastPrice)||null;
 scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
- contracts:symbol=>venueQuotes.clients.BINGX.contractsFor(symbol),tickers:()=>scalpTickerRows(60000),
+ contracts:symbol=>venueQuotes.clients.BINGX.contractsFor(symbol),tickers:()=>scalpTickerRows(60000),tickersFresh:()=>scalpTickerRows(5000),
  candles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
  // 4H trend: Binance for Binance-listed symbols (as the backtest and the paper scalps), else BingX.
  trendCandles:symbol=>state.activeSet.has(symbol)?klines(symbol,'4h',301):scalpMarket.klines(symbol,'4h',301),

@@ -297,3 +297,25 @@ test('no count cap on testnet, but today\'s loss + open stop risk + the new trad
  const v2=venue(),ex2=make(v2);ex2.store.open.push({symbol:'XUSDT',venueSymbol:'X-USDT',direction:'LONG',entry:100,avg:100,stop:100,qty:29,size:29,leverage:10,status:'OPEN'});
  ex2.arm();await ex2.scan();assert.equal(placed(v2,'MARKET').length,1,'a stop at breakeven adds no risk');
 });
+
+test('drift allowance grows with the move (user 2026-11-17): 5 % of the move, never under 0.4 %',()=>{
+ const cfg=scalpExecConfig({}),det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ const big={...det,atr:det.atr/100,evidence:{...det.evidence,movePct:20}}; // a 20 % move: up to 1 %, the ATR cap no longer binds
+ assert.notDeepEqual(planScalpOrder({det:big,price:det.entry*1.007,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons?.[0],'PRICE_DRIFT');
+ const far=planScalpOrder({det:big,price:det.entry*1.012,contract:SOL,equity:10000,leverage:10,config:cfg});assert.equal(far.reasons[0],'PRICE_DRIFT');assert.equal(far.allowedPct,1);
+ assert.equal(planScalpOrder({det,price:det.entry*1.006,contract:SOL,equity:10000,leverage:10,config:{...cfg,driftMovePct:0}}).reasons[0],'PRICE_DRIFT');
+ assert.equal(scalpExecConfig({SCALP_DRIFT_MOVE_PCT:'0'}).driftMovePct,0);
+});
+
+test('scan order: coins that moved most over the last scans are read first; volume order without tickers',async()=>{
+ const syms=['AAAUSDT','BBBUSDT','CCCUSDT'],contracts=new Map(syms.map(s=>[s,{...SOL,symbol:s,venueSymbol:s.replace('USDT','-USDT')}]));
+ let px={'AAA-USDT':1,'BBB-USDT':1,'CCC-USDT':1};const clock={t:T0},read=[];
+ const ex=new ScalpExecutor({config:scalpExecConfig({}),client:venue().client,contracts:async()=>contracts,
+  tickers:async()=>syms.map((s,i)=>({symbol:s.replace('USDT','-USDT'),quoteVolume:String(3e7-i*1e6),lastPrice:'1'})),
+  tickersFresh:async()=>Object.entries(px).map(([symbol,p])=>({symbol,lastPrice:String(p)})),
+  candles:async s=>{read.push(s);return []},balance:async()=>({equity:1e4,available:9e3}),now:()=>clock.t});
+ ex.arm();await ex.scan();assert.deepEqual(read,syms,'no history yet: volume order');
+ read.length=0;px={'AAA-USDT':1,'BBB-USDT':1.01,'CCC-USDT':1.08};clock.t+=I;await ex.scan();
+ assert.deepEqual(read,['CCCUSDT','BBBUSDT','AAAUSDT']);assert.equal(ex.lastScan?.firstSymbols?.[0]??'CCCUSDT','CCCUSDT');
+ read.length=0;ex.tickersFresh=async()=>{throw Error('down')};clock.t+=I;await ex.scan();assert.deepEqual(read,syms,'ticker failure: volume order');
+});
