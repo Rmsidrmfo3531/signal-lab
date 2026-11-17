@@ -616,9 +616,16 @@ test('copy (2026-11-17 review): a fill that cannot be ruled out is never sent ag
  await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
  assert.equal(v.size,192);assert.equal(tries.length,1);assert.equal(ex.status().positions[0].adds,1);
  let e=ex.status().events.find(x=>x.type==='ADD_RETRY');assert.equal(e.outcome,'ALREADY_FILLED');assert.equal(e.via,'ORDER');
- // No order lookup on the client: nothing resent; the routine check takes the real size.
+ // No order lookup on the client: nothing resent; the routine check cannot confirm the entry either, so the venue
+ // position is left alone and reported (review 2026-11-17: adopt only a fill shown by the order lookup).
  v=bx({lookup:'none'});ex=mk(v);tries=flaky(v,{filledFirst:true});await ex.handle({id:1,date:1e12,text:OPEN});
- assert.equal(tries.length,1);assert.equal(v.size,98);await ex.reconcile();assert.equal(ex.status().positions[0].qty,98);
+ assert.equal(tries.length,1);assert.equal(v.size,98);await ex.reconcile();assert.equal(ex.status().positions.length,0);assert.equal(v.size,98);
+ assert.equal(ex.status().events.find(x=>x.type==='UNCONFIRMED_ADOPT').reason,'ENTRY_LOOKUP_FAILED');
+ // The lookup was down while sending and works by the routine check: shown filled -> taken over.
+ v=bx({lookup:'network'});ex=mk(v);tries=flaky(v,{filledFirst:true});await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(ex.status().positions[0].steps.length,0);
+ v.client.getOrder=async(s,{clientOrderId})=>({order:{clientOrderId,status:'FILLED',executedQty:'98'}});
+ await ex.reconcile();assert.equal(ex.status().positions[0].steps[0].kind,'ADOPTED');assert.equal(ex.status().positions[0].qty,98);
  // R7: a partial fill with the lookup failing: not resent.
  v=bx({lookup:'network'});ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});tries=flaky(v,{filledFirst:true});v.fillFrac=.4;
  await ex.handle({id:2,date:1e12+1,text:CHANGE(880,1760)});assert.equal(tries.length,1);assert.ok(v.size<=98+94,'no over-fill: '+v.size);
@@ -715,4 +722,60 @@ test('BingX client: liquidation / ADL orders and the order history are read-only
  await c.forceOrders({symbol:'BTC-USDT',autoCloseType:'ADL',startTime:1,endTime:2});await c.allOrders({symbol:'BTC-USDT',startTime:1,endTime:2});
  assert.deepEqual(seen.map(([m,u])=>[m,u.pathname]),[['GET','/openApi/swap/v2/trade/forceOrders'],['GET','/openApi/swap/v2/trade/allOrders']]);
  assert.equal(seen[0][1].searchParams.get('autoCloseType'),'ADL');assert.equal(seen[1][1].searchParams.get('limit'),'500');
+});
+
+// Second review of 4ebc7aa (N1-N4, adopt).
+function bx2(opts={}){const v=bx(opts);v.force.length=0;
+ v.liquidateAsMarket=()=>{const o={orderId:'L'+v.hist.length,clientOrderId:'',side:'BUY',positionSide:'BOTH',type:'MARKET',status:'FILLED',executedQty:String(v.size),time:1e12};v.hist.push(o);v.force.push({...o,autoCloseType:'LIQUIDATION'});v.setSize(0)};
+ return v}
+
+test('copy review N1: a history answer of an unknown shape is not "no liquidation": unconfirmed, blocked',async()=>{
+ for(const shape of [{list:[]},{data:[]},null,'x',{orders:'x'}]){
+  const v=bx2();const real=v.client.forceOrders;v.client.forceOrders=async q=>{await real(q);return shape};
+  const ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.liquidateAsMarket();await gone(ex);
+  const row=ex.status().closed[0];assert.equal(row.closeEvidence.kind,'UNCONFIRMED',JSON.stringify(shape));assert.equal(row.closeEvidence.why,'UNEXPECTED_HISTORY_SHAPE');
+  assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');assert.equal(v.size,0);
+ }
+ // The same with allOrders; {orders:null} (none) is a valid empty answer.
+ let v=bx2();v.client.allOrders=async()=>({rows:[]});let ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.manualClose();await gone(ex);
+ assert.equal(ex.status().closed[0].closeEvidence.why,'UNEXPECTED_HISTORY_SHAPE');
+ v=bx2();v.client.forceOrders=async()=>({orders:null});ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.manualClose();await gone(ex);
+ assert.equal(ex.status().closed[0].closeEvidence.kind,'MANUAL_CLOSE');
+ // The expected shape still finds the liquidation.
+ v=bx2();ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.liquidateAsMarket();await gone(ex);assert.equal(ex.status().closed[0].closeReason,'LIQUIDATION');
+});
+
+test('copy review N2, N4: no add into a position being closed; a refused emergency close is noticed once per 10 minutes',async()=>{
+ const v=bx(),logs=[];let t=1e12;const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,
+  balance:async()=>({equity:400,available:300}),now:()=>t,log:m=>logs.push(m)});ex.sleep=async()=>{};
+ await ex.handle({id:1,date:1e12,text:OPEN});
+ flaky(v,{fail:99,code:'VENUE_ERROR_101205',match:p=>p.type==='MARKET'&&p.reduceOnly==='true'});
+ v.unreal='-210';await ex.reconcile();assert.equal(ex.store.positions['TNSRUSDT|SHORT'].closing.reason,'COPY_LOSS_LIMIT');
+ ex.resume();v.unreal='-0.1';
+ const r=await ex.handle({id:2,date:1e12+60000,text:CHANGE(880,1760)});assert.equal(r.reason,'CLOSING');assert.equal(v.size,98);
+ assert.equal(ex.status().events.find(e=>e.type==='ADD_SKIPPED').reason,'CLOSING');
+ // Five more checks within 10 minutes: one notice, each logged; after 10 minutes a second notice.
+ for(let i=0;i<5;i++){t+=60000;await ex.reconcile()}
+ const notices=()=>ex.status().events.filter(e=>e.type==='ERROR'&&e.kind==='EMERGENCY_CLOSE').length;
+ assert.equal(notices(),1);assert.equal(logs.filter(m=>/EMERGENCY_CLOSE .*repeat/.test(m)).length,5);
+ t+=600000;await ex.reconcile();assert.equal(notices(),2);
+});
+
+test('copy review N3, adopt: an entry whose answer was lost is looked up before it is dropped or taken over',async()=>{
+ // Filled but its answer lost (lookup down while sending), then liquidated before the check: booked LIQUIDATION, blocked.
+ let v=bx2({lookup:'network'}),ex=mk(v);flaky(v,{fail:1,filledFirst:true});await ex.handle({id:1,date:1e12,text:OPEN});
+ const getOrder=async(s,{clientOrderId})=>{const o=v.hist.find(x=>x.clientOrderId===clientOrderId);if(!o)throw Object.assign(Error('order not exist'),{code:'VENUE_ERROR_80016'});return {order:o}};
+ v.client.getOrder=getOrder;v.liquidateAsMarket();await gone(ex);
+ assert.equal(ex.status().closed.length,1);assert.equal(ex.status().closed[0].closeReason,'LIQUIDATION');
+ assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');assert.equal(v.size,0);
+ // Lookup still failing at the check: not dropped silently either (classified, unconfirmed -> blocks).
+ v=bx2({lookup:'network'});ex=mk(v);flaky(v,{fail:1,filledFirst:true});await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);await gone(ex);
+ assert.equal(ex.status().closed[0].closeEvidence.kind,'UNCONFIRMED');assert.ok(!ex.status().events.some(e=>e.type==='ENTRY_NOT_FILLED'));
+ // BingX says the entry order does not exist and nothing is on the venue: dropped (ENTRY_NOT_FILLED), no closed row.
+ v=bx2({lookup:'network'});ex=mk(v);flaky(v,{fail:1});await ex.handle({id:1,date:1e12,text:OPEN});v.client.getOrder=getOrder;await gone(ex);
+ assert.equal(ex.status().closed.length,0);assert.equal(ex.status().positions.length,0);assert.ok(ex.status().events.some(e=>e.type==='ENTRY_NOT_FILLED'));
+ // A venue position whose entry order does not exist (a manual position): not adopted, left alone, reported.
+ v=bx2({lookup:'network'});ex=mk(v);flaky(v,{fail:1});await ex.handle({id:1,date:1e12,text:OPEN});v.client.getOrder=getOrder;v.setSize(500);
+ await ex.reconcile();assert.equal(ex.status().positions.length,0);assert.equal(v.size,500);
+ const e=ex.status().events.find(x=>x.type==='UNCONFIRMED_ADOPT');assert.equal(e.reason,'ENTRY_ORDER_NOT_FOUND');assert.match(copyEventText(e),/직접 확인/);
 });

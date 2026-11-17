@@ -54,7 +54,13 @@ export function externalClose(p){return Boolean(p)&&!p.closing&&EXTERNAL_CLOSE_R
 /** The label key for a blocking close: EXTERNAL_UNCONFIRMED when it looked external but was not confirmed. */
 export function closeLabelKey(p){return EXTERNAL_CLOSE_REASONS.includes(p?.closeReason)&&p?.closeEvidence?.kind==='UNCONFIRMED'?'EXTERNAL_UNCONFIRMED':p?.closeReason??null}
 const CLOSE_KO={EXTERNAL_UNCONFIRMED:'바깥 청산 확인 불가',LIQUIDATION:'강제청산',ADL:'자동 감축(ADL)',COPY_LOSS_LIMIT:'카피 손실 한도',NO_STOP:'보호 손절 실패',LOSS_CAP_REACHED:'손실 한도 도달',ZONE_BREAK_VOLUME:'매물대 이탈',STOP_OR_EXTERNAL:'보호 손절 또는 외부 청산'};
-const rowsOf=d=>Array.isArray(d)?d:Array.isArray(d?.orders)?d.orders:Array.isArray(d?.data)?d.data:[];
+// forceOrders / allOrders answers: an array, or {orders: array | null}. Any other shape throws (review 2026-11-17:
+// an unknown shape must not read as "no liquidation"), so the close stays UNCONFIRMED and blocks.
+function rowsOf(d){
+ if(Array.isArray(d))return d;
+ if(d&&typeof d==='object'&&Object.hasOwn(d,'orders')&&(Array.isArray(d.orders)||d.orders===null))return d.orders||[];
+ throw Object.assign(Error('UNEXPECTED_HISTORY_SHAPE'),{code:'UNEXPECTED_HISTORY_SHAPE'});
+}
 // A request that got no answer from the venue (user 2026-11-17 "3번"): connection failure or timeout. A venue
 // error code (VENUE_ERROR_*, HTTP_*) is an answer and is never retried by #send.
 export function noVenueAnswer(e){return ['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET'].includes(e?.code)||['AbortError','TimeoutError'].includes(e?.name)}
@@ -214,6 +220,7 @@ export class CopyExecutor{
   * A venue error code is never retried here. event: ENTRY_RETRY / ADD_RETRY. p.inflight marks it meanwhile. */
  async #send(p,side,quantity,{tag},{event,before,step}){
   const cid=this.#clientId(p,tag),started=Date.now(),delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[];
+  if(event==='ENTRY_RETRY')p.entryCids=[...(p.entryCids||[]),cid]; // looked up again before the ledger drops or adopts it
   let error;p.inflight=true;
   try{
    try{return await this.#market(p,side,quantity,{tag})}catch(e){if(!noVenueAnswer(e))throw e;error=e}
@@ -237,6 +244,7 @@ export class CopyExecutor{
  /** Why an entry / add must not be sent again now (null: it may). */
  #resendBlock(p){
   if(this.store.positions[this.#key(p)]!==p||p.status!=='OPEN')return 'POSITION_NOT_OPEN';
+  if(p.closing)return 'CLOSING';
   if(this.store.killed)return 'COPY_LOSS_LIMIT';
   let g;try{g=this.gate()}catch{g={ok:false,reason:'GATE_ERROR'}}
   return g?.ok?null:g?.reason||'GATE_CLOSED';
@@ -347,9 +355,29 @@ export class CopyExecutor{
     let after=null;try{after=await this.#recheck(p,await this.#position(p))}catch(e){lastErr=e;continue}
     if(!(after.size>0)){this.#closed(p,p.closing.reason,now);return}
    }
-   this.#event('ERROR',{symbol:p.symbol,kind:'EMERGENCY_CLOSE',reason:lastErr?.code||lastErr?.message||'NOT_CLOSED',detail:'긴급 청산 확인 실패 — 다음 정기 확인에서 다시 청산'});
-  }catch(error){this.#event('ERROR',{symbol:p.symbol,kind:'EMERGENCY_CLOSE',reason:error.code||error.message})}
+   this.#emergencyError(p,{reason:lastErr?.code||lastErr?.message||'NOT_CLOSED',detail:'긴급 청산 확인 실패 — 다음 정기 확인에서 다시 청산'});
+  }catch(error){this.#emergencyError(p,{reason:error.code||error.message})}
   finally{p.inflight=false}
+ }
+ /** A failed emergency close: an ERROR event (screen, Telegram) at most once per position per 10 minutes; the
+  * repeats in between are logged only (review 2026-11-17: a close the venue keeps refusing is retried every check). */
+ #emergencyError(p,{reason,detail}){
+  const at=this.now();
+  if(p.emergencyNoticeAt!=null&&at-p.emergencyNoticeAt<600000){this.log(`[COPY] ERROR ${p.symbol} EMERGENCY_CLOSE ${reason} (repeat, notice held)`);return}
+  p.emergencyNoticeAt=at;this.#event('ERROR',{symbol:p.symbol,kind:'EMERGENCY_CLOSE',reason,...(detail?{detail}:{})});
+ }
+ /** Did one of this position's entry orders fill? {filled, qty} / {absent} (every one "does not exist") / {}
+  * (cannot tell: no lookup call, no recorded order, or a failed lookup). */
+ async #entryFill(p){
+  const cids=p.entryCids||[];if(!cids.length||typeof this.client.getOrder!=='function')return {};
+  let absent=0;
+  for(const clientOrderId of cids){
+   try{const o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId})),st=String(o?.status||'').toUpperCase(),exec=num(o?.executedQty)??0;
+    if(o&&(exec>0||st==='FILLED'||st==='PARTIALLY_FILLED'))return {filled:true,qty:exec>0?exec:null,avg:pos(o.avgPrice)};
+    if(o&&['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st))absent++;}
+   catch(e){if(orderAbsent(e))absent++}
+  }
+  return absent===cids.length?{absent:true}:{};
  }
  /** Our last close of this coin and side that did not follow the trader, with no trader close since. Unless it
   * was a confirmed manual close (externalClose), entering again would undo it (review 2026-11-14 / 2026-11-17). */
@@ -541,7 +569,8 @@ export class CopyExecutor{
  async #buyMore(p,m,theirQty,{price,ratio=null,c=null,now=null}={}){
   c??=await this.#contract(p.symbol);now??=await this.#recheck(p,await this.#position(p));p.qty=now.size;
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
-  const g=this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(g.reason==='COPY_MAX_ADDS'?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
+  const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
   const byFirst=p.scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
@@ -590,11 +619,14 @@ export class CopyExecutor{
   this.#event('CLOSED',{symbol:p.symbol,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds,...(p.closeEvidence?{evidence:p.closeEvidence.kind}:{})});
  }
  /** A position found gone on the venue without our close order: classified (#goneEvidence) and booked. An entry
-  * that never filled (no step) leaves no closed row. */
+  * whose answer was lost (no step) is looked up first: only when BingX says none of its orders exists is the row
+  * dropped without a closed record (ENTRY_NOT_FILLED); filled or not verifiable, it is classified and booked. */
  async #gone(p,reason,now){
   const key=this.#key(p);
-  if(!p.steps?.length&&!p.closing){if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
-   this.#event('ENTRY_NOT_FILLED',{symbol:p.symbol,reason,detail:'진입 주문 체결이 확인되지 않아 원장에서 지움'});return {ok:false,reason:'POSITION_GONE'}}
+  if(!p.steps?.length&&!p.closing){const f=await this.#entryFill(p);
+   if(f.absent){if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
+    this.#event('ENTRY_NOT_FILLED',{symbol:p.symbol,reason,detail:'진입 주문이 거래소에 없음(80016) — 원장에서 지움'});return {ok:false,reason:'POSITION_GONE'}}
+   p.steps=[{kind:f.filled?'OPEN':'ENTRY_UNVERIFIED',at:this.now(),qty:f.qty??null,avg:f.avg??null}]}
   if(!p.closing){p.closeEvidence=await this.#goneEvidence(p);if(['LIQUIDATION','ADL'].includes(p.closeEvidence.kind))reason=p.closeEvidence.kind}
   this.#closed(p,reason,now);return {ok:false,reason:'POSITION_GONE'};
  }
@@ -648,8 +680,12 @@ export class CopyExecutor{
     if(!(now.size>0)){p.zeroSeen=(p.zeroSeen||0)+1;if(p.zeroSeen<2){this.#save();continue}
      if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}await this.#gone(p,'STOP_OR_EXTERNAL',now);continue}
     p.zeroSeen=0;
-    // Taken over after an entry whose answer was lost (it did fill).
-    if(!p.steps?.length)p.steps=[{kind:'ADOPTED',at:this.now(),qty:now.size}];
+    // An entry whose answer was lost: taken over only when its order shows filled; "does not exist" or a failed
+    // lookup -> not ours to manage: dropped from the ledger, the venue position left alone (UNCONFIRMED_ADOPT).
+    if(!p.steps?.length){const f=await this.#entryFill(p);
+     if(!f.filled){const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
+      this.#event('UNCONFIRMED_ADOPT',{symbol:p.symbol,reason:f.absent?'ENTRY_ORDER_NOT_FOUND':'ENTRY_LOOKUP_FAILED',size:now.size,detail:`거래소에 ${now.size} 보유 — 우리 진입 체결이 확인되지 않아 원장에 넣지 않음(직접 확인 필요)`});continue}
+     p.steps=[{kind:'ADOPTED',at:this.now(),qty:now.size}]}
     // A close of ours that did not go through (no answer, a refusal): closed again.
     if(p.closing&&!['TRADER_CLOSE','TRADER_CUT_ALL'].includes(p.closing.reason)){await this.#emergency(p,p.closing.reason);continue}
     p.qty=now.size;p.avg=now.avg??p.avg;p.unrealized=now.unrealized;p.mark=now.mark;unrealized+=Number(now.unrealized)||0;
