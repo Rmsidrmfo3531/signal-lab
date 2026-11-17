@@ -22,7 +22,7 @@ test('signatures reproduce the official examples (BingX openssl example, Gate.io
 });
 
 // ---- Mock venues that verify every signature exactly as documented ---------------
-function mockBingX({available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,entry='ok',stopAttached=true,positionAmt=()=>'0.20',stopPlacement='ok'}={}){
+function mockBingX({available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,modeFail=false,entry='ok',stopAttached=true,positionAmt=()=>'0.20',stopPlacement='ok',rows=null}={}){
  const calls=[],orders=[];let id=1000;
  const fetcher=async(url,options)=>{
   const u=new URL(url),q=Object.fromEntries([...u.searchParams].filter(([k])=>k!=='signature'));
@@ -35,13 +35,13 @@ function mockBingX({available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=
   if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='POST'){if(marginFail)return json({code:80001,msg:'position exists'});margin=q.marginType;return json({code:0,data:{}})}
   if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='GET')return json({code:0,data:{longLeverage:5,shortLeverage:5,maxLongLeverage:maxLev,maxShortLeverage:maxLev}});
   if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='POST')return json({code:0,data:{symbol:q.symbol,leverage:Number(q.leverage)}});
-  if(u.pathname==='/openApi/swap/v1/positionSide/dual')return json({code:0,data:{dualSidePosition:hedge}});
+  if(u.pathname==='/openApi/swap/v1/positionSide/dual')return modeFail?json({code:100500,msg:'busy'}):json({code:0,data:{dualSidePosition:hedge}});
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='POST'){
    if(q.type==='MARKET'&&!q.reduceOnly){
     if(entry==='timeout')throw TypeError('fetch failed');
     if(entry==='reject')return json({code:101204,msg:'Insufficient margin'});
     const o={orderID:String(++id),type:'MARKET',clientOrderId:q.clientOrderId,status:'FILLED'};orders.push(o);
-    if(stopAttached)orders.push({orderID:String(++id),type:'STOP_MARKET'});
+    if(stopAttached&&q.stopLoss)orders.push({orderID:String(++id),type:'STOP_MARKET',...(q.positionSide!=='BOTH'?{positionSide:q.positionSide}:{})});
     return json({code:0,data:{order:o}});
    }
    if(q.type==='STOP_MARKET'&&stopPlacement==='fail')return json({code:109400,msg:'stop rejected'});
@@ -53,7 +53,7 @@ function mockBingX({available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE'&&globalThis.__bingxAutoCancel){const i=orders.findIndex(o=>o.orderID===q.orderId);if(i<0)return json({code:109400,msg:'order not exist'});orders.splice(i,1);return json({code:0,data:{order:{orderID:q.orderId}}})}
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE'){const i=orders.findIndex(o=>o.orderID===q.orderId);if(i>=0)orders.splice(i,1);return json({code:0,data:{order:{orderID:q.orderId}}})}
   if(u.pathname==='/openApi/swap/v2/trade/openOrders')return json({code:0,data:{orders:orders.filter(o=>o.type!=='MARKET')}});
-  if(u.pathname==='/openApi/swap/v2/user/positions')return json({code:0,data:[{symbol:'ETH-USDT',positionAmt:positionAmt(),avgPrice:'100.02',positionSide:'LONG'}]});
+  if(u.pathname==='/openApi/swap/v2/user/positions')return json({code:0,data:rows?rows():[{symbol:'ETH-USDT',positionAmt:positionAmt(),avgPrice:'100.02',positionSide:'LONG'}]});
   throw Error('unexpected '+u.pathname);
  };
  return {calls,orders,client:new BingXTradeClient({apiKey:'bingx-key',secret:BINGX_SECRET,mode:'TESTNET',fetcher,now:()=>NOW})};
@@ -160,9 +160,10 @@ test('BingX: entry carries the stop, three reduce-only targets follow, a repeate
  assert.ok(!fs.readFileSync(path.join(dir,'live-orders.json'),'utf8').includes(BINGX_SECRET),'no secret in the ledger');
 });
 
-test('BingX: hedge mode and rejected margin never leave a position; a timed-out entry is looked up, not resent',async()=>{
- const hedge=mockBingX({hedge:true}),a=new LiveExecutor({config:config(),clients:{BINGX:hedge.client},now:()=>NOW});a.arm();
- await a.onSignal(row(),{signalKey:'h'});assert.equal(a.store.records[0].status,'FAILED');assert.ok(!hedge.calls.some(c=>c.method==='POST'));
+test('BingX: an unreadable position mode and rejected margin never leave a position; a timed-out entry is looked up, not resent',async()=>{
+ const unread=mockBingX({modeFail:true}),a=new LiveExecutor({config:config(),clients:{BINGX:unread.client},now:()=>NOW});a.arm();
+ await a.onSignal(row(),{signalKey:'h'});assert.equal(a.store.records[0].status,'FAILED');assert.ok(!unread.calls.some(c=>c.method==='POST'));
+ assert.match(a.store.records[0].events.at(-1).reason,/^BINGX_POSITION_MODE_UNKNOWN/);assert.equal(a.store.killSwitch,false,'nothing was sent: no unknown state');
  const reject=mockBingX({entry:'reject'}),b=new LiveExecutor({config:config(),clients:{BINGX:reject.client},now:()=>NOW});b.arm();
  await b.onSignal(row(),{signalKey:'r'});assert.equal(b.store.records[0].status,'FAILED');assert.equal(b.store.killSwitch,false);
  const timeout=mockBingX({entry:'timeout'}),c=new LiveExecutor({config:config(),clients:{BINGX:timeout.client},now:()=>NOW});c.arm();
@@ -640,4 +641,93 @@ test('HYBRID: a plan whose take-profit parts round below the minimum order is no
  const small=liveSplitPlan({row:sig,balanceUSD:40,leverage:18,config:cfg});
  assert.ok(small===null||small.qty.parts.every(p=>p>0),'never a zero part: '+JSON.stringify(small?.qty));
  const big=liveSplitPlan({row:sig,balanceUSD:1000,leverage:18,config:cfg});assert.ok(big&&big.qty.parts.every(p=>p>0));
+});
+
+// ---- Hedge (dual-side) mode (user 2026-11-17 "hedge mode로 해보고 싶은데") ----
+test('bingxOrders: one-way output unchanged; hedge = positionSide LONG / SHORT on every order and no reduceOnly',()=>{
+ const args={symbol:'ETH-USDT',direction:'LONG',stop:98,targets:[105,108,112],qty:{total:0.2,parts:[0.08,0.07,0.05]},clientOrderId:'cid'};
+ const one=bingxOrders(args),pinned={entry:{symbol:'ETH-USDT',side:'BUY',positionSide:'BOTH',type:'MARKET',quantity:'0.2',clientOrderId:'cid',stopLoss:'{"type":"STOP_MARKET","stopPrice":98,"workingType":"MARK_PRICE"}'},
+  stop:{symbol:'ETH-USDT',side:'SELL',positionSide:'BOTH',type:'STOP_MARKET',quantity:'0.2',stopPrice:'98',reduceOnly:'true',workingType:'MARK_PRICE'},
+  target0:{symbol:'ETH-USDT',side:'SELL',positionSide:'BOTH',type:'TAKE_PROFIT_MARKET',quantity:'0.08',stopPrice:'105',reduceOnly:'true',workingType:'MARK_PRICE'},
+  emergencyClose:{symbol:'ETH-USDT',side:'SELL',positionSide:'BOTH',type:'MARKET',quantity:'0.2',reduceOnly:'true'},
+  breakeven:{symbol:'ETH-USDT',side:'SELL',positionSide:'BOTH',type:'STOP_MARKET',quantity:'0.1',stopPrice:'100',reduceOnly:'true',workingType:'MARK_PRICE'},
+  add:{symbol:'ETH-USDT',side:'BUY',positionSide:'BOTH',type:'LIMIT',price:'95',quantity:'0.2',timeInForce:'GTC',clientOrderId:'a'},
+  wholeStop:{symbol:'ETH-USDT',side:'SELL',positionSide:'BOTH',type:'STOP_MARKET',quantity:'0.6',stopPrice:'90',closePosition:'true',workingType:'MARK_PRICE'}};
+ const got=o=>({entry:o.entry,stop:o.stop(0.2),target0:o.targets[0],emergencyClose:o.emergencyClose(0.2),breakeven:o.breakeven(100,0.1),add:o.add(95,0.2,'a'),wholeStop:o.wholeStop(90,0.6)});
+ assert.equal(JSON.stringify(got(one)),JSON.stringify(pinned),'one-way params byte-identical (keys in the same order)');
+ assert.equal(JSON.stringify(got(bingxOrders({...args,hedge:false}))),JSON.stringify(pinned));
+ for(const [direction,open,close] of [['LONG','BUY','SELL'],['SHORT','SELL','BUY']]){
+  const h=got(bingxOrders({...args,direction,hedge:true})),all=Object.values(h);
+  assert.ok(all.every(p=>p.positionSide===direction),direction);assert.ok(all.every(p=>!('reduceOnly' in p)),'no reduceOnly in hedge mode');
+  assert.equal(h.entry.side,open);assert.equal(h.add.side,open);assert.ok([h.stop,h.target0,h.emergencyClose,h.breakeven,h.wholeStop].every(p=>p.side===close));
+  assert.equal(h.wholeStop.closePosition,'true');
+ }
+});
+
+test('BingX hedge account: the mode is kept on the record; entry, targets, breakeven and the position read use the LONG side',async()=>{
+ let long='0.20';const m=mockBingX({hedge:'true',rows:()=>[{symbol:'ETH-USDT',positionSide:'SHORT',positionAmt:'5',avgPrice:'120'},...(Number(long)>0?[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:long,avgPrice:'100.02'}]:[])]});
+ const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ assert.equal((await ex.onSignal(row(),{signalKey:'hg'})).status,'OPEN');
+ const r=ex.store.records[0];assert.equal(r.hedge,true);assert.ok(r.stopOrderId,'attached stop of the LONG side found');
+ const posts=m.calls.filter(c=>c.method==='POST'&&c.path==='/openApi/swap/v2/trade/order').map(c=>c.params);
+ assert.ok(posts.every(p=>p.positionSide==='LONG'&&!('reduceOnly' in p)),JSON.stringify(posts));
+ assert.equal(posts[0].side,'BUY');assert.deepEqual(posts.slice(1).map(p=>[p.type,p.side]),[['TAKE_PROFIT_MARKET','SELL'],['TAKE_PROFIT_MARKET','SELL'],['TAKE_PROFIT_MARKET','SELL']]);
+ assert.equal(m.calls.find(c=>c.method==='POST'&&c.path==='/openApi/swap/v2/trade/leverage').params.side,'LONG');
+ // The SHORT row (5 at 120) is another position: size and entry come from the LONG row.
+ await ex.reconcile();assert.equal(r.position.size,0.2);assert.equal(r.breakevenMoved,false);
+ long='0.12';const before=m.calls.length;await ex.reconcile();
+ const be=m.calls.slice(before).find(c=>c.method==='POST'&&c.params.type==='STOP_MARKET').params;
+ assert.deepEqual([be.side,be.positionSide,be.stopPrice,be.quantity],['SELL','LONG','100.02','0.12']);assert.ok(!('reduceOnly' in be));
+ long='0';await ex.reconcile();assert.equal(r.status,'CLOSED','flat on its own side although the SHORT row remains');
+});
+
+test('BingX hedge: a position on the other side of the coin -> settled from its own exits, never from the symbol fund flow',async()=>{
+ for(const later of [false,true]){
+  let long='0.20',short=later?'0':'5';const clock={t:NOW};
+  const m=mockBingX({hedge:true,rows:()=>[...(Number(short)>0?[{symbol:'ETH-USDT',positionSide:'SHORT',positionAmt:short,avgPrice:'120'}]:[]),...(Number(long)>0?[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:long,avgPrice:'100.02',markPrice:'99'}]:[])]});
+  const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>clock.t,priceOf:()=>99});ex.arm();
+  await ex.onSignal(row(),{signalKey:'o'+later});const r=ex.store.records[0];
+  assert.equal(Boolean(r.otherSideSeen),!later,'seen at the entry');
+  await ex.reconcile();if(later){short='3';await ex.reconcile()}
+  assert.equal(r.otherSideSeen,true);
+  long='0';await ex.reconcile();assert.equal(r.status,'CLOSED');
+  clock.t+=200000;await ex.reconcile();
+  assert.equal(r.realized.reason,'HEDGE_OTHER_SIDE');assert.equal(r.realized.source,'ESTIMATE');assert.ok(r.realized.netUSD<0,'our own loss at 99');
+  assert.ok(!m.calls.some(c=>c.path==='/openApi/swap/v2/user/income'),'fund flow not read');
+ }
+});
+
+test('BingX: a record cut off before the position mode was read is closed as not sent, without touching the venue',async()=>{
+ const dir=tmp(),base={venue:'BINGX',mode:'TESTNET',symbol:'ETHUSDT',venueSymbol:'ETH-USDT',direction:'LONG',status:'SUBMITTING',createdAt:NOW,events:[],targets:[105,108,112],targetOrderIds:[],quantity:{total:0.2,parts:[0.08,0.07,0.05]}};
+ fs.writeFileSync(path.join(dir,'live-orders.json'),JSON.stringify({version:1,killSwitch:false,records:[{...base,clientOrderId:'c1',signalKey:'s1',hedge:null}]}));
+ const m=mockBingX({hedge:true,rows:()=>[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:'3',avgPrice:'90'}]}),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
+ assert.equal(ex.store.records[0].recovery,'PENDING');await ex.reconcile();
+ const r=ex.store.records[0];assert.equal(r.status,'FAILED');assert.equal(r.closeReason,'ENTRY_NOT_SENT_AFTER_RESTART');assert.equal(r.recovery,'DONE');
+ assert.equal(m.calls.length,0,'the manual LONG 3 is never adopted');assert.equal(ex.store.killSwitch,false);
+ fs.rmSync(dir,{recursive:true,force:true});
+});
+
+test('BingX hedge: a non-zero row without LONG / SHORT keeps the record open with its orders (RECONCILE_ERROR)',async()=>{
+ let rows=[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:'0.20',avgPrice:'100.02'}];const m=mockBingX({hedge:true,rows:()=>rows});
+ const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();await ex.onSignal(row(),{signalKey:'u'});
+ rows=[{symbol:'ETH-USDT',positionSide:'BOTH',positionAmt:'0.20',avgPrice:'100.02'}];await ex.reconcile();await ex.reconcile();
+ const r=ex.store.records[0];assert.equal(r.status,'OPEN');assert.ok(!m.calls.some(c=>c.method==='DELETE'),'stop and targets stay');
+ assert.ok(r.events.some(e=>e.type==='RECONCILE_ERROR'&&/POSITION_SIDE_UNKNOWN/.test(e.reason)));
+});
+
+test('BingX hedge round trip: a manual stop on the other side is not counted as left over',async()=>{
+ let long='0.20';const m=mockBingX({hedge:true,rows:()=>Number(long)>0?[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:long,avgPrice:'100.02'}]:[]});
+ m.orders.push({orderID:'999',type:'STOP_MARKET',positionSide:'SHORT'});
+ const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ const res=await ex.testRoundTrip(row('BINGX'),{holdMs:0,sleep:async()=>{long='0'}});
+ assert.equal(res.ok,true,JSON.stringify(res.events));assert.equal(ex.store.killSwitch,false);
+ assert.ok(m.orders.some(o=>o.orderID==='999'),'the other side stop is left alone');
+});
+
+test('direction other than LONG / SHORT: preflight refuses, the order builder throws',()=>{
+ const qty=liveQuantity({quantity:0.6,estimatedStopLossUSD:6,maxRiskUSD:2,contract:row().venueContract});
+ const base={config:config(),armed:true,killSwitch:false,credentials:{BINGX:true},records:[],now:NOW,qty};
+ assert.ok(preflight({...base,row:row('BINGX',{direction:'long'})}).reasons.includes('DIRECTION_INVALID'));
+ assert.ok(!preflight({...base,row:row('BINGX',{direction:'SHORT'})}).reasons.includes('DIRECTION_INVALID'));
+ for(const hedge of [true,false])assert.throws(()=>bingxOrders({symbol:'ETH-USDT',direction:'BOTH',stop:98,targets:[1,2,3],qty:{total:1,parts:[1,0,0]},clientOrderId:'x',hedge}),/DIRECTION_INVALID/);
 });

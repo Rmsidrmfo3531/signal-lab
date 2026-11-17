@@ -25,6 +25,7 @@ import {createHash} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
+import {readPositionMode,leverageSideFor,positionSideFor,positionRow} from './bingx_position_mode.mjs';
 
 export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'MIN_ORDER',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
@@ -154,12 +155,14 @@ export class CopyExecutor{
  #key(m){return `${m.symbol}|${m.direction}`}
  async #contract(symbol){const c=await this.contractOf(symbol);if(!c||c.tradable===false)throw Object.assign(Error('NO_BINGX_CONTRACT'),{code:'NO_BINGX_CONTRACT'});return c}
  #qty(c,raw,mode='DOWN'){try{return Number(roundDecimalToStep(mode==='DOWN'?raw*(1+1e-9):raw,c.quantityStep,mode))}catch{return 0}} // 1e-9: 299.99999… is 300
- async #position(p){const list=await this.client.positions(p.venueSymbol),row=(Array.isArray(list)?list:[]).find(x=>x.symbol===p.venueSymbol);
+ // Hedge mode (p.hedge, user 2026-11-17): the row of this position's own side; one-way: the symbol's row.
+ async #position(p){const list=await this.client.positions(p.venueSymbol),row=positionRow(list,p.venueSymbol,{hedge:p.hedge===true,direction:p.direction});
   return {size:row?Math.abs(Number(row.positionAmt)||0):0,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null}}
  async #market(p,side,quantity,{reduceOnly=false,tag}){
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
-  const params={symbol:p.venueSymbol,side,positionSide:'BOTH',type:'MARKET',quantity:String(quantity),clientOrderId:('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)};
-  if(reduceOnly)params.reduceOnly='true';
+  const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)};
+  // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
+  if(reduceOnly&&p.hedge!==true)params.reduceOnly='true';
   const res=orderOf(await this.client.placeOrder(params));return {orderId:res?.orderId??null,avg:pos(res?.avgPrice)};
  }
  // Whole-position stop where the loss would reach maxLossPct of the balance; re-set after each change.
@@ -189,7 +192,7 @@ export class CopyExecutor{
    let stop;try{stop=Number(roundDecimalToStep(raw,p.tickSize,dir===1?'DOWN':'UP'))}catch{stop=raw}
    if(now.mark&&dir*(now.mark-stop)<=0){this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'LOSS_CAP_REACHED'});await this.#emergency(p,'LOSS_CAP_REACHED');return}
    // Same request shape as the signal strategy's whole-position stop (quantity + closePosition).
-   const params={symbol:p.venueSymbol,side:dir===1?'SELL':'BUY',positionSide:'BOTH',type:'STOP_MARKET',quantity:String(p.qty),stopPrice:String(stop),closePosition:'true',workingType:'MARK_PRICE'};
+   const params={symbol:p.venueSymbol,side:dir===1?'SELL':'BUY',positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'STOP_MARKET',quantity:String(p.qty),stopPrice:String(stop),closePosition:'true',workingType:'MARK_PRICE'};
    try{const res=orderOf(await this.client.placeOrder(params));const old=p.stopOrderId;
     p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopOrderId=res?.orderId??null;p.stopStale=false;
     if(old&&old!==p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
@@ -255,7 +258,10 @@ export class CopyExecutor{
   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs){this.#event('SKIPPED',{symbol:m.symbol,reason:'MONITOR_RESTART_SNAPSHOT'});return {ok:false,reason:'SNAPSHOT'}}
   const g=this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   if(this.isBusy(m.symbol)){this.#event('SKIPPED',{symbol:m.symbol,reason:'SYMBOL_HELD_BY_SIGNAL_STRATEGY'});return {ok:false,reason:'SYMBOL_BUSY'}}
-  if(Object.values(this.store.positions).some(p=>p.status==='OPEN'&&p.symbol===m.symbol)){this.#event('SKIPPED',{symbol:m.symbol,reason:'OPPOSITE_COPY_OPEN'});return {ok:false,reason:'SYMBOL_BUSY'}}
+  // Our copy of the other side of this coin: one-way mode would merge the two. A copy opened in hedge mode
+  // (user 2026-11-17) is a separate venue position, so the other side may be copied too (the account cannot
+  // leave hedge mode while it is open; the venue check below reads the mode again).
+  if(Object.values(this.store.positions).some(p=>p.status==='OPEN'&&p.symbol===m.symbol&&p.hedge!==true)){this.#event('SKIPPED',{symbol:m.symbol,reason:'OPPOSITE_COPY_OPEN'});return {ok:false,reason:'SYMBOL_BUSY'}}
   if(this.store.killed){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_LOSS_LIMIT'});return {ok:false,reason:'COPY_LOSS_LIMIT'}}
   // Reserved before the first venue call, so the signal strategy cannot enter the same symbol meanwhile.
   this.reserved.add(m.symbol);
@@ -276,19 +282,23 @@ export class CopyExecutor{
    else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
   let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.config.maxLeverage));
   this.step='레버리지 조회';try{const info=await this.client.leverage(venueSymbol),maxL=Number(info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
-  // Orders use positionSide BOTH (one-way mode). An account in hedge mode answers 109400 (user 2026-11-14,
-  // AKEUSDT on the real account): say so before any setting or order is sent.
-  {let mode=null;try{mode=await this.client.positionMode?.()}catch{}
-   if(mode?.dualSidePosition===true||mode?.dualSidePosition==='true'){this.#event('SKIPPED',{symbol:m.symbol,reason:'BINGX_HEDGE_MODE'});return {ok:false,reason:'BINGX_HEDGE_MODE'}}}
-  // Never add to a position already on the venue (a manual trade, or one the ledger lost): one-way mode
-  // would merge them and the trader's close would then close it all (user 2026-11-14, BTC 0.005).
+  // The account's position mode (one-way: positionSide BOTH; hedge: LONG / SHORT, user 2026-11-17), read
+  // before every entry and kept on the position. Not readable or not stated: skipped before any setting or
+  // order (never guessed: the wrong mode is refused by BingX with 109400, user 2026-11-14 AKEUSDT).
+  this.step='포지션 모드 확인';
+  const mode=await readPositionMode(this.client);
+  if(!mode.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:mode.reason,detail:mode.detail});return {ok:false,reason:mode.reason}}
+  const hedge=mode.hedge;
+  // Never add to a position already on the venue (a manual trade, or one the ledger lost): it would merge
+  // with ours and the trader's close would then close it all (user 2026-11-14, BTC 0.005). Hedge mode: the
+  // same side only (the other side is a separate position).
   this.step='거래소 포지션 확인';
-  {const list=await this.client.positions(venueSymbol),row=(Array.isArray(list)?list:[]).find(x=>x.symbol===venueSymbol),size=row?Math.abs(Number(row.positionAmt)||0):0;
+  {const list=await this.client.positions(venueSymbol),row=positionRow(list,venueSymbol,{hedge,direction:m.direction}),size=row?Math.abs(Number(row.positionAmt)||0):0;
    if(size>0){this.#event('SKIPPED',{symbol:m.symbol,reason:'VENUE_POSITION_EXISTS',detail:`거래소에 이미 ${size} 보유`});return {ok:false,reason:'VENUE_POSITION_EXISTS'}}}
   this.step='증거금 모드 설정';
   try{await this.client.setMarginType(venueSymbol,'CROSSED')}catch{}
   this.step='레버리지 설정';
-  await this.client.setLeverage(venueSymbol,'BOTH',leverage);
+  await this.client.setLeverage(venueSymbol,leverageSideFor({hedge,direction:m.direction}),leverage);
   // unitMultiplier: venue contract of 1000 coins (1000PEPE) -> quantities / 1000, prices x 1000.
   const mult=Number(c.unitMultiplier)||1,price=(pos(m.price)??pos(m.entry))*mult;
   // BALANCE_RATIO: scale = our equity / the trader's balance, fixed for the position (its later buys use it too).
@@ -320,7 +330,7 @@ export class CopyExecutor{
   // A venue minimum far above the planned size (an expensive stock perp, a low leverage) is not taken.
   if(minOrder&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
-  const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
+  const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,hedge,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
    scale,mult,sizing:this.config.sizing,firstQty:qty,venueAlias:c.alias??null,minOrder,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[]};
   // At most 3 s for the zones (the message queue must not wait on a slow profile); then the cap stop.
   try{const zones=await Promise.race([this.zonesOf(m.symbol,{tickSize:c.tickSize}),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);

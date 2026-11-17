@@ -23,6 +23,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {scalpReasonKo} from './scalp_telegram.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
+import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
@@ -149,14 +150,18 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  * the id it had before shorts were added, so a ledger written then still blocks a resend). */
 export const scalpClientId=(symbol,barAt,direction='LONG')=>'sc'+createHash('sha256').update(`${SCALP_EXEC_STRATEGY}|${symbol}|${barAt}${direction==='SHORT'?'|SHORT':''}`).digest('hex').slice(0,22);
 
-function positionOf(list,vs,direction){
+function positionOf(list,vs,direction,hedge=false){
+ // Hedge mode (user 2026-11-17): the row of our own side only, its amount unsigned; an opposite-side row is
+ // another position (size 0 and any 0 for us: it neither blocks an entry nor is closed by us).
+ if(hedge){const row=positionRow(list,vs,{hedge:true,direction}),size=row?Math.abs(Number(row.positionAmt)||0):0;
+  return {size,any:size,signed:dirOf(direction)*size,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null,row,other:otherSideAmount(list,vs,direction)}}
  const row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===vs),signed=row?signedAmount(row):0;
  // A one-way row with positionSide BOTH and a positive amount does not say its side: it is taken as ours
  // (one position per coin, and an entry is refused when one already exists). Reading a short as 0 would
  // close the ledger and cancel its stop while the venue still holds it (review note 2026-11-16).
  const side=String(row?.positionSide||'').toUpperCase(),unsignedBoth=signed>0&&(side===''||side==='BOTH');
  const mine=unsignedBoth?signed:dirOf(direction)*signed;
- return {size:mine>0?mine:0,any:Math.abs(signed),signed,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null};
+ return {size:mine>0?mine:0,any:Math.abs(signed),signed,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null,row};
 }
 
 export class ScalpExecutor{
@@ -343,17 +348,20 @@ export class ScalpExecutor{
  }
  async #enter(u,det,c,plan,id){
   const cl=this.client,vs=u.venueSymbol,d=det.direction,skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
-  const mode=await cl.positionMode();
-  if(mode?.dualSidePosition===true||mode?.dualSidePosition==='true')return skip('BINGX_HEDGE_MODE');
-  {const now=await this.#position(vs,d);if(now.any>0)return skip('VENUE_POSITION_EXISTS',`${now.signed}`)}
+  // The account's position mode (one-way or hedge, user 2026-11-17), read before every entry and kept on the
+  // position: its stop, targets, breakeven and closes use the mode it was opened under. Never guessed.
+  const mode=await readPositionMode(cl);if(!mode.ok)return skip(mode.reason,mode.detail);
+  const hedge=mode.hedge;
+  // otherSide: a position on the other side of this coin (hedge mode) shares the symbol's fund-flow rows.
+  let otherSide=false;{const now=await this.#position(vs,d,hedge);if(now.any>0)return skip('VENUE_POSITION_EXISTS',`${now.signed}`);otherSide=now.other>0}
   try{
    const m=await cl.marginType(vs).catch(()=>null);
    if(m?.marginType!=='CROSSED'){await cl.setMarginType(vs,'CROSSED');const again=await cl.marginType(vs);if(again?.marginType!=='CROSSED')throw err('CROSS_NOT_CONFIRMED')}
-   const set=await cl.setLeverage(vs,'BOTH',plan.leverage);
+   const set=await cl.setLeverage(vs,leverageSideFor({hedge,direction:d}),plan.leverage);
    if(set?.leverage!==undefined&&Number(set.leverage)!==plan.leverage)throw err('LEVERAGE_NOT_CONFIRMED');
   }catch(e){return skip('MARGIN_SETUP_FAILED',e?.code||e?.message)}
   const tick=c.tickSize,px=v=>grid(v,tick,awayMode(d))??String(v);
-  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,interval:'5m',
+  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
    pattern:det.pattern,barAt:det.barAt,plannedEntry:det.entry,checkedPrice:plan.entry,driftPct:plan.driftPct,entry:plan.entry,stop:plan.stop,initialStop:plan.stop,targets:plan.targets,
    qty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,marginUSD:plan.marginUSD,netRR:plan.netRR,
    tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
@@ -362,7 +370,7 @@ export class ScalpExecutor{
    atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,withTrend:this.cur?.withTrend??null,universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
   this.store.open.push(p);this.store.sent.push(id);this.#save();
   let fill;
-  try{fill=await cl.placeOrder({symbol:vs,side:openSide(d),positionSide:'BOTH',type:'MARKET',quantity:String(plan.qty),clientOrderId:id,
+  try{fill=await cl.placeOrder({symbol:vs,side:openSide(d),positionSide:positionSideFor({hedge,direction:d}),type:'MARKET',quantity:String(plan.qty),clientOrderId:id,
    stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:Number(px(plan.stop)),workingType:'MARK_PRICE'})})}
   catch(e){
    // Never sent blindly again: the client id is looked up first; an unknown outcome blocks new entries.
@@ -373,7 +381,7 @@ export class ScalpExecutor{
    fill=found;
   }
   p.entryOrderId=orderId(fill);p.status='OPEN';p.openedAt=this.now();
-  const now=await this.#position(vs,d).catch(()=>({size:0}));
+  const now=await this.#position(vs,d,hedge).catch(()=>({size:0}));
   p.filled=p.size=now.size>0?now.size:plan.qty;p.avg=now.avg??pos(orderOf(fill)?.avgPrice)??plan.entry;
   if(Math.abs(p.filled-plan.qty)>Number(c.quantityStep)/2){const s=scalpSplits(p.filled,c.quantityStep,0);if(s)p.parts=s.parts}
   p.steps.push({kind:'OPEN',at:this.now(),qty:p.filled,avg:p.avg});this.#save();
@@ -404,7 +412,7 @@ export class ScalpExecutor{
   const now=this.now(),income=typeof this.client?.income==='function';
   for(const x of this.store.closed){
    if(x.journaled)continue;
-   if(!(x.realized||!income||(x.settleTries||0)>=SETTLE_TRIES||now-(x.closedAt||0)>=2*3600000))continue;
+   if(!(x.realized||!income||x.otherSideSeen||(x.settleTries||0)>=SETTLE_TRIES||now-(x.closedAt||0)>=2*3600000))continue;
    // Already in the file (written before a restart that came before the ledger was saved): not again.
    if(x.id&&this.journalIds?.has(x.id)){x.journaled=true;continue}
    x.journalAt=now;if(!x.journalV)x.journalBackfill=true;
@@ -421,29 +429,29 @@ export class ScalpExecutor{
   return today.length>=limit?today:[...tailJsonl(signalsPath(this.signalsFile,now-86400000),limit-today.length),...today]}
  /** The venue position of this symbol: `size` is the quantity on our side (a position on the other side
   * counts as 0 for us and is never closed by us), `any` any position at all. */
- async #position(vs,direction){return positionOf(await this.client.positions(vs),vs,direction)}
+ async #position(vs,direction,hedge=false){return positionOf(await this.client.positions(vs),vs,direction,hedge)}
  async #openOrders(vs){const o=await this.client.openOrders(vs);return o?.orders??(Array.isArray(o)?o:[])}
  /** The attached stop is confirmed; else a whole-position stop is placed; else the position is closed. */
  async #protect(p){
   let list=null;try{list=await this.#openOrders(p.venueSymbol)}catch{try{list=await this.#openOrders(p.venueSymbol)}catch{}}
   // The stop attached to the entry (same price within a tick when the venue reports it).
-  const found=(list||[]).find(o=>String(o.type).startsWith('STOP')&&(!pos(o.stopPrice)||Math.abs(Number(o.stopPrice)-p.stop)<=Number(p.tickSize)*1.01));
+  const found=(list||[]).find(o=>String(o.type).startsWith('STOP')&&orderOnSide(o,{hedge:p.hedge===true,direction:p.direction})&&(!pos(o.stopPrice)||Math.abs(Number(o.stopPrice)-p.stop)<=Number(p.tickSize)*1.01));
   if(found){p.stopOrderId=orderId(found);p.stopIds.push(p.stopOrderId);return true}
   try{const s=await this.client.placeOrder(this.#stopParams(p,p.stop,'s'));p.stopOrderId=orderId(s);p.stopIds.push(p.stopOrderId);this.#event('STOP_PLACED',{symbol:p.symbol});return true}
   catch(e){this.#event('STOP_FAILED',{symbol:p.symbol,reason:e?.code||e?.message});await this.#emergency(p,'NO_STOP');this.disarm('NO_PROTECTIVE_STOP');return false}
  }
- #stopParams(p,price,tag,mode=awayMode(p.direction)){return {symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:'BOTH',type:'STOP_MARKET',quantity:String(p.size),stopPrice:grid(price,p.tickSize,mode)??String(price),closePosition:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+tag).slice(0,40)}}
+ #stopParams(p,price,tag,mode=awayMode(p.direction)){return {symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'STOP_MARKET',quantity:String(p.size),stopPrice:grid(price,p.tickSize,mode)??String(price),closePosition:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+tag).slice(0,40)}}
  async #placeTargets(p){
   for(const [i,q] of p.parts.entries()){
    if(!(q>0)||p.tpOrderIds[i]||p.tpDone?.[i]||p.tpTries[i]>=3)continue;p.tpTries[i]++;
-   try{const o=await this.client.placeOrder({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:'BOTH',type:'TAKE_PROFIT_MARKET',quantity:String(q),stopPrice:grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]),
-    reduceOnly:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+'t'+(i+1)+(p.tpTries[i]>1?p.tpTries[i]:'')).slice(0,40)});p.tpOrderIds[i]=orderId(o)}
+   try{const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'TAKE_PROFIT_MARKET',quantity:String(q),stopPrice:grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]),
+    reduceOnly:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+'t'+(i+1)+(p.tpTries[i]>1?p.tpTries[i]:'')).slice(0,40)},p.hedge===true));p.tpOrderIds[i]=orderId(o)}
    catch(e){this.#event('TARGET_FAILED',{symbol:p.symbol,reason:`${i+1}: ${e?.code||e?.message}`})}
   }
  }
  async #market(p,tag){
-  const now=await this.#position(p.venueSymbol,p.direction);if(!(now.size>0))return now;
-  const o=await this.client.placeOrder({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:'BOTH',type:'MARKET',quantity:String(now.size),reduceOnly:'true',clientOrderId:(p.id+tag).slice(0,40)});
+  const now=await this.#position(p.venueSymbol,p.direction,p.hedge===true);if(!(now.size>0))return now;
+  const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(now.size),reduceOnly:'true',clientOrderId:(p.id+tag).slice(0,40)},p.hedge===true));
   const id=orderId(o);if(id)p.exitIds.push(id);return {...now,size:0,exitAvg:pos(orderOf(o)?.avgPrice)};
  }
  async #emergency(p,reason){
@@ -483,7 +491,10 @@ export class ScalpExecutor{
     // An entry still being placed (its stop / targets not yet sent) is left to the entry path.
     if(p.status==='SUBMITTING'||this.reserved.has(p.symbol))continue;
     try{
-     const row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===p.venueSymbol),{size}=positionOf(list,p.venueSymbol,p.direction),mark=pos(row?.markPrice);
+     const {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true),mark=pos(row?.markPrice);
+     // Hedge mode: a position on the other side of this coin at any check -> this trade is not settled from the
+     // symbol's fund flow (its PnL and funding would be mixed in, review 2026-11-17); the fill estimate stays.
+     if(other>0&&!p.otherSideSeen){p.otherSideSeen=true;this.#event('OTHER_SIDE_SEEN',{symbol:p.symbol,direction:p.direction,reason:`${other}`})}
      if(p.status==='UNKNOWN'){
       if(size>0){p.status='OPEN';p.filled=p.size=size;p.avg=pos(row.avgPrice)??p.entry;p.openedAt??=this.now();this.#event('ENTRY_RECOVERED',{symbol:p.symbol,qty:size});
        const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts;if(await this.#protect(p))await this.#placeTargets(p)}
@@ -504,7 +515,7 @@ export class ScalpExecutor{
      if(p.status==='OPEN'&&p.tpOrderIds.some((id,i)=>!id&&p.parts[i]>0&&!p.tpDone[i]&&p.tpTries[i]<3))await this.#placeTargets(p);
     }catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;break}this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message})}
    }
-   for(const x of this.store.closed.filter(x=>!x.realized&&(x.settleTries||0)<SETTLE_TRIES&&this.now()-x.closedAt>=SETTLE_DELAY_MS&&this.now()-x.closedAt<2*3600000))await this.#settle(x).catch(()=>{});
+   for(const x of this.store.closed.filter(x=>!x.realized&&!x.otherSideSeen&&(x.settleTries||0)<SETTLE_TRIES&&this.now()-x.closedAt>=SETTLE_DELAY_MS&&this.now()-x.closedAt<2*3600000))await this.#settle(x).catch(()=>{});
    this.#flushJournal();
    // A check that runs only to finish the journal (disarmed, nothing open) changes nothing else.
    const journalOnly=!this.store.open.length&&!this.armed;
@@ -535,7 +546,7 @@ export class ScalpExecutor{
   const rest=Math.max(0,p.filled-out);if(rest>1e-12){const px=pos(await withTimeout(this.priceOf(p.symbol,vs),3000))??p.mark??p.stop;gross+=dir*(px-p.avg)*rest;exitNotional+=px*rest;out+=rest}
   const fee=(p.avg*p.filled+exitNotional)*(p.takerRate||SCALP_EXEC_COSTS.takerRate),r=x=>Math.round(x*1e4)/1e4;
   p.status='CLOSED';p.closedAt=this.now();p.closeReason=reason;p.tpHits=tpFilled;
-  const row={...p,estimate:{source:'ESTIMATE',pnlUSD:r(gross),feeUSD:r(-fee),netUSD:r(gross-fee)},netUSD:r(gross-fee),netSource:'ESTIMATE',holdMs:p.closedAt-(p.openedAt||p.createdAt)};
+  const row={...p,estimate:{source:'ESTIMATE',pnlUSD:r(gross),feeUSD:r(-fee),netUSD:r(gross-fee)},netUSD:r(gross-fee),netSource:p.otherSideSeen?'ESTIMATE_OTHER_SIDE':'ESTIMATE',holdMs:p.closedAt-(p.openedAt||p.createdAt)};
   // R multiple on the actual entry and the initial stop (replaced by the settled result when the journal line is written).
   {const risk=dir*(p.avg-p.initialStop)*p.filled;row.rMultiple=risk>0?r((gross-fee)/risk):null}
   this.store.closed.push(row);this.store.open=this.store.open.filter(x=>x!==p);
@@ -544,6 +555,8 @@ export class ScalpExecutor{
  /** BingX fund flow (realized PnL + fees + funding) of this trade's symbol and lifetime, read after the close. */
  async #settle(x){
   x.settleTries=(x.settleTries||0)+1;if(typeof this.client.income!=='function')return;
+  // A hedge trade that saw a position on the other side: the symbol's rows mix both, the fill estimate stays.
+  if(x.otherSideSeen)return;
   const from=(x.createdAt||x.closedAt)-30000,to=Math.min(this.now(),x.closedAt+120000);
   const data=await this.client.income({symbol:x.venueSymbol,startTime:from,endTime:to,limit:1000}),list=Array.isArray(data)?data:Array.isArray(data?.list)?data.list:[];
   const rows=list.filter(y=>y?.symbol===x.venueSymbol&&Number(y.time)>=from&&Number(y.time)<=to);

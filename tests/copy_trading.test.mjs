@@ -225,12 +225,63 @@ test('copy entries need 90 % of the free margin; a venue minimum above 5 $ of ma
  assert.equal((await ex2.handle({id:1,date:1e12,text:card})).reason,'MIN_ORDER_TOO_LARGE');assert.equal(v2.size,0);
 });
 
-test('copy: an account in hedge mode is refused before any setting or order (BingX 109400)',async()=>{
- const v=venue();v.client.positionMode=async()=>({dualSidePosition:'true'});
+test('copy: the position mode is read before any setting or order; unreadable -> skipped, one-way unchanged',async()=>{
+ const v=venue();v.client.positionMode=async()=>{throw Object.assign(Error('down'),{code:'NETWORK_UNREACHABLE'})};
  const ex=make(v);const r=await ex.handle({id:1,date:1e12,text:OPEN});
- assert.equal(r.reason,'BINGX_HEDGE_MODE');assert.equal(v.size,0);assert.equal(v.calls.length,0);
- v.client.positionMode=async()=>({dualSidePosition:'false'});
+ assert.equal(r.reason,'BINGX_POSITION_MODE_UNKNOWN');assert.equal(v.size,0);assert.equal(v.calls.length,0);
+ assert.equal(copyEventText(ex.status().events[0]).includes('BINGX_POSITION_MODE_UNKNOWN'),false,'shown in Korean');
  const v2=venue();v2.client.positionMode=async()=>({dualSidePosition:false});const ex2=make(v2);await ex2.handle({id:1,date:1e12,text:OPEN});assert.ok(v2.size>0);
+ const open=v2.calls.find(c=>c.op==='order'&&c.type==='MARKET');assert.equal(open.positionSide,'BOTH');assert.equal(ex2.status().positions[0].hedge,false);
+ const v3=venue();v3.client.positionMode=async()=>({});assert.equal((await make(v3).handle({id:1,date:1e12,text:OPEN})).reason,'BINGX_POSITION_MODE_UNKNOWN','a mode not stated is not guessed');
+});
+
+// Hedge (dual-side) account (user 2026-11-17): one row per side with a positive amount; BingX refuses
+// reduceOnly and positionSide BOTH there.
+function hedgeVenue(){
+ const calls=[],pos={LONG:{amt:0,avg:0},SHORT:{amt:0,avg:0}};let id=1;
+ const client={positionMode:async()=>({dualSidePosition:true}),
+  leverage:async()=>({maxLongLeverage:20}),setMarginType:async()=>({}),setLeverage:async(s,side,l)=>{calls.push({op:'lev',side,l});return {}},
+  positions:async()=>Object.entries(pos).filter(([,x])=>x.amt>0).map(([side,x])=>({symbol:'TNSR-USDT',positionSide:side,positionAmt:String(x.amt),avgPrice:String(x.avg),markPrice:'0.053',unrealizedProfit:'-0.1'})),
+  placeOrder:async p=>{calls.push({op:'order',...p});
+   if('reduceOnly' in p||!['LONG','SHORT'].includes(p.positionSide))throw Object.assign(Error('hedge mode params'),{code:'VENUE_ERROR_109400'});
+   if(p.type==='MARKET'){const q=Number(p.quantity),x=pos[p.positionSide],opening=(p.positionSide==='LONG')===(p.side==='BUY');
+    if(opening){x.avg=0.051;x.amt=+(x.amt+q).toFixed(6)}else x.amt=Math.max(0,+(x.amt-q).toFixed(6))}
+   return {order:{orderId:String(id++),avgPrice:'0.051'}}},
+  cancelOrder:async(s,o)=>{calls.push({op:'cancel',o});return {}}};
+ return {client,calls,pos};
+}
+const OPEN_LONG=OPEN.replace('🔴 Short','🟢 Long'),CLOSE_LONG=CLOSE.replace('🔴 Short','🟢 Long');
+
+test('copy hedge mode: orders carry positionSide LONG / SHORT and no reduceOnly; both sides of a coin can be copied',async()=>{
+ const v=hedgeVenue(),ex=make(v);
+ assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).ok,true,JSON.stringify(ex.status().events));
+ const short=ex.status().positions.find(p=>p.direction==='SHORT');assert.equal(short.hedge,true);
+ const open=v.calls.find(c=>c.op==='order'&&c.type==='MARKET');assert.deepEqual([open.side,open.positionSide],['SELL','SHORT']);assert.ok(!('reduceOnly' in open));
+ assert.deepEqual(v.calls.find(c=>c.op==='lev'),{op:'lev',side:'SHORT',l:5});
+ const stop=v.calls.find(c=>c.type==='STOP_MARKET');assert.deepEqual([stop.side,stop.positionSide,stop.closePosition],['BUY','SHORT','true']);
+ await ex.handle({id:2,date:1e12,text:CHANGE(880,440)});
+ const cut=v.calls.filter(c=>c.op==='order'&&c.type==='MARKET').at(-1);assert.deepEqual([cut.side,cut.positionSide],['BUY','SHORT']);assert.ok(!('reduceOnly' in cut));
+ assert.equal(v.pos.SHORT.amt,49);
+ // The other side of the same coin: a separate venue position in hedge mode.
+ assert.equal((await ex.handle({id:3,date:1e12,text:OPEN_LONG})).ok,true,JSON.stringify(ex.status().events.slice(0,3)));
+ const lo=v.calls.filter(c=>c.op==='order'&&c.type==='MARKET').at(-1);assert.deepEqual([lo.side,lo.positionSide],['BUY','LONG']);
+ assert.ok(v.pos.LONG.amt>0);assert.equal(ex.status().positions.length,2);
+ // Each position reads its own row; closing the long leaves the short.
+ await ex.reconcile();assert.equal(ex.status().positions.find(p=>p.direction==='SHORT').qty,49);assert.equal(ex.status().positions.find(p=>p.direction==='LONG').qty,v.pos.LONG.amt);
+ await ex.handle({id:4,date:1e12,text:CLOSE_LONG});
+ const cl=v.calls.filter(c=>c.op==='order'&&c.type==='MARKET').at(-1);assert.deepEqual([cl.side,cl.positionSide],['SELL','LONG']);assert.ok(!('reduceOnly' in cl));
+ assert.equal(v.pos.LONG.amt,0);assert.equal(v.pos.SHORT.amt,49);assert.equal(ex.status().positions.length,1);
+ assert.ok(!ex.status().events.some(e=>e.reason==='BINGX_HEDGE_MODE'||e.type==='ERROR'));
+});
+
+test('copy hedge mode: a same-side position already on the venue still blocks; an opposite one does not',async()=>{
+ const v=hedgeVenue();v.pos.SHORT={amt:500,avg:.05};
+ assert.equal((await make(v).handle({id:1,date:1e12,text:OPEN})).reason,'VENUE_POSITION_EXISTS');
+ const v2=hedgeVenue();v2.pos.LONG={amt:500,avg:.05};
+ assert.equal((await make(v2).handle({id:1,date:1e12,text:OPEN})).ok,true);assert.equal(v2.pos.LONG.amt,500,'the manual long is untouched');
+ // One-way ledger positions still keep the other side out (one-way would merge them).
+ const v3=venue(),ex3=make(v3);await ex3.handle({id:1,date:1e12,text:OPEN});await ex3.handle({id:2,date:1e12,text:OPEN_LONG});
+ assert.equal(ex3.status().events[0].reason,'OPPOSITE_COPY_OPEN');
 });
 
 test('copy: a venue error shows the exchange message and the failed step',async()=>{
