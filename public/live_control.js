@@ -152,6 +152,27 @@ function notCopiedWhy(e,when,all=[]){
  return why?`<br><small class="copy-why">${card}${why}</small>`:'';
 }
 
+// Every open position on the BingX real account (user 2026-11-17 "내가 수동으로 잡은 포지션도 실시간 현황으로"),
+// read-only: 카피 = an open copy-ledger position of the same symbol and direction, 수동 = anything else.
+export function venuePositionsHTML(c){
+ if(!c||c.mode!=='LIVE'||!('venuePositions' in c||c.venuePositionsError))return '';
+ const list=Array.isArray(c.venuePositions)?c.venuePositions:null,manual=(list||[]).filter(p=>p.origin!=='copy');
+ const money=v=>!fin(v)?'—':`${Number(v)>=0?'+':'−'}$${Math.abs(Number(v)).toFixed(2)}`,usdv=v=>!fin(v)?'—':`$${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+ const cls=v=>!fin(v)?'':Number(v)>0?'paper-profit':Number(v)<0?'paper-loss':'',px=v=>fin(v)&&Number(v)>0?esc(+Number(v).toPrecision(6)):'—';
+ const pct=v=>!fin(v)?'—':`${Number(v)>=0?'+':'−'}${Math.abs(Number(v)).toFixed(1)}%`,mm=p=>p.marginMode==='ISOLATED'?'격리':'교차';
+ const badge=p=>p.origin==='copy'?'<span class="vp-badge copy">카피</span>':'<span class="vp-badge manual">수동</span>';
+ const sum=a=>a.reduce((t,p)=>t+(Number(p.unrealized)||0),0);
+ const hhmm=t=>t?new Date(t).toLocaleTimeString('ko-KR',{hour12:false}):'';
+ const fail=c.venuePositionsError?`<span class="vp-fail" title="${esc(c.venuePositionsError)}">갱신 실패${list&&c.venuePositionsAt?` · ${hhmm(c.venuePositionsAt)} 목록`:''}</span>`:'';
+ const head=`<h5 class="copy-sub">거래소 전체 포지션 <small>${list?`${list.length}개 · 수동 ${manual.length}개`:'조회 전'}</small>${fail}</h5>`;
+ if(!list)return head+'<p class="empty-small">거래소 포지션을 아직 읽지 못했습니다.</p>';
+ if(!list.length)return head+'<p class="empty-small">거래소에 열린 포지션이 없습니다.</p>';
+ const totals=`<p class="copy-stamp vp-total">미실현 합계 <b class="${cls(sum(list))}">${money(sum(list))}</b> · 수동만 <b class="${cls(sum(manual))}">${manual.length?money(sum(manual)):'—'}</b>${c.venuePositionsAt?` · ${hhmm(c.venuePositionsAt)} 거래소 기준 · 조회 전용(주문 없음)`:''}</p>`;
+ const row=p=>`<li class="${p.origin==='copy'?'':'vp-manual'}"><b>${esc(p.symbol)}</b>${badge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b></li>`;
+ const table=`<table class="copy-table vp-table only-desk"><thead><tr><th>종목</th><th>구분</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">미실현</th><th class="num">수익률</th><th class="num">청산가</th></tr></thead><tbody>${list.map(p=>`<tr class="${p.origin==='copy'?'':'vp-manual'}"><td><b>${esc(p.symbol)}</b></td><td>${badge(p)}</td><td>${side(p.direction)}</td><td>${esc(p.leverage??'—')}배 <small class="muted">${mm(p)}</small></td><td class="num">${esc(qtyFmt(p.size))}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td><td class="num">${usdv(p.margin)}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(p.roePct)}">${pct(p.roePct)}</td><td class="num">${px(p.liquidation)}</td></tr>`).join('')}</tbody></table>`;
+ return head+totals+`<ul class="copy-list only-mob">${list.map(row).join('')}</ul>`+table;
+}
+
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
 let copyPage=0,failPage=0,lastCopy=null;
 export const COPY_PAGE_SIZE=10;
@@ -198,6 +219,7 @@ export function copyHTML(c){
  const stamp=updated>0?`<p class="copy-stamp">손익·잔고 ${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
+  venuePositionsHTML(c)+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(c.closedTotal??closed.length)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
   (notes.length?`<h5 class="copy-sub">진입 실패·건너뜀 <small>전체 ${notesAll.length}건</small></h5><ul class="copy-list muted only-mob">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span><b>${esc(e.symbol||'')}</b> ${e.direction?side(e.direction):''} · ${why(e)}</li>`).join('')}</ul><table class="copy-table only-desk"><thead><tr><th>시각</th><th>종목</th><th>방향</th><th>이유</th></tr></thead><tbody>${notes.map(e=>`<tr><td class="muted">${when(e.at)}</td><td><b>${esc(e.symbol||'—')}</b></td><td>${e.direction?side(e.direction):'—'}</td><td>${why(e)}</td></tr>`).join('')}</tbody></table>${failPager}`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
