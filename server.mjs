@@ -5,6 +5,7 @@ import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
+import {exchangePnl} from './exchange_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
@@ -627,19 +628,31 @@ function reportLedgers(){
  const pack=(f,mode)=>{const store=read(f);return store?{store,equityUSD:mode?equity(mode):null}:null};
  return {copyLive:pack('copy-store-live.json','LIVE'),copyTestnet:pack('copy-store.json','TESTNET'),scalp:pack('scalp-store.json',null)};
 }
+// Exact results from BingX itself (user 2026-11-17 "수익률이 얼마인지 정확하게"): income + balance of the real
+// account (copy) and the testnet account, since the dates below (KST); read-only.
+const EXCHANGE_PNL_SINCE={live:Date.parse(process.env.EXCHANGE_PNL_LIVE_SINCE||'2026-11-14T00:00:00+09:00'),testnet:Date.parse(process.env.EXCHANGE_PNL_TESTNET_SINCE||'2026-11-12T00:00:00+09:00')};
+let reportsHour=null;
+async function exchangeReport(){
+ const testnetClient=scalpClient||(LIVE.mode==='TESTNET'?live.clients.BINGX:null);
+ const out={};
+ if(COPY.mode==='LIVE'&&copyClient)out.live=await exchangePnl(copyClient,{since:EXCHANGE_PNL_SINCE.live});
+ if(testnetClient)out.testnet=await exchangePnl(testnetClient,{since:EXCHANGE_PNL_SINCE.testnet});
+ return Object.keys(out).length?out:null;
+}
 async function uploadReport(force=false){
  if(reportsBusy||!fs.existsSync(path.join(REPORTS_DIR,'.git')))return;
  const day=new Date(Date.now()+9*3600000).toISOString().slice(0,10),hour=new Date(Date.now()+9*3600000).getUTCHours();
- if(!force&&!reportsDirty&&!(hour>=3&&reportsDay!==day))return;
+ const hourKey=day+' '+hour; // hourly as well, so the exchange result stays fresh
+ if(!force&&!reportsDirty&&!(hour>=3&&reportsDay!==day)&&reportsHour===hourKey)return;
  reportsBusy=true;
  try{
   let scalpExport=null;try{scalpExport=scalpExec?scalpReportFiles({journalFile:scalpExec.journalFile,signalsFile:scalpExec.signalsFile}):null}catch(e){console.warn('[REPORTS] scalp',e.message)}
   const report=buildReport({readiness:readiness(),insights:patternInsights(persisted.journal.filter(x=>x.source==='LIVE_AUTO'&&x.review).map(x=>x.review)),
    journal:persisted.journal,records:[...live.store.records,...(live.store.archived||[])],
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
-   scalp:scalpExport?.summary??null,ledgers:reportLedgers()});
+   scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange:await exchangeReport().catch(e=>({error:e.message}))});
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});
-  reportsDay=day;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
+  reportsDay=day;reportsHour=hourKey;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
  }catch(e){console.error('[REPORTS]',e.message)}finally{reportsBusy=false}
 }
 setInterval(()=>{void uploadReport()},15*60000).unref?.();setTimeout(()=>{void uploadReport(true)},90000).unref?.();

@@ -48,8 +48,9 @@ export function ledgerSummary(store,{now=Date.now(),equityUSD=null}={}){
 
 /** The report object (also used by tests to prove nothing secret is included). */
 // scalp: the 되돌림 단타 journal summary (scalp_journal.mjs summarizeJournal), when given.
-export function buildReport({readiness,insights,journal=[],records=[],scalp=null,ledgers={},now=Date.now()}){
- const report={generatedAt:new Date(now).toISOString(),readiness,insights,...(scalp?{scalp}:{}),
+export function buildReport({readiness,insights,journal=[],records=[],scalp=null,ledgers={},exchange=null,now=Date.now()}){
+ // exchange = the BingX accounts' own income history and balance (exchange_pnl.mjs), the exact result.
+ const report={generatedAt:new Date(now).toISOString(),readiness,insights,...(scalp?{scalp}:{}),...(exchange?{exchange}:{}),
   journal:journal.filter(x=>x.source==='LIVE_AUTO').map(({id,...x})=>x),
   trades:records.filter(r=>r.status==='CLOSED'&&r.test!==true).map(tradeSummary),
   open:records.filter(r=>r.status==='OPEN'&&r.test!==true).map(r=>({symbol:r.symbol,direction:r.direction,createdAt:r.createdAt,pattern:r.signal?.pattern??null})),
