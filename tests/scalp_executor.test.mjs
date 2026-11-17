@@ -9,11 +9,11 @@ import {scalpDetailsHTML} from '../public/live_control.js';
 
 const I=300000,BUCKET=Math.floor(Date.parse('2026-11-16T03:00:00Z')/I),T0=BUCKET*I+5000;
 // 50 quiet 5m candles near 100, a fast ~6.6 % drop on heavy volume, then a hammer (the candle that just closed).
-function crash({move=6,volume=10,lastOpen=(BUCKET-1)*I}={}){
+function crash({move=6,volume=10,lastOpen=(BUCKET-1)*I,wick=.8}={}){
  const rows=[];let p=100;const push=(o,h,l,c,v)=>rows.push([0,o,h,l,c,v]);
  for(let i=0;i<50;i++){const o=p,c=p+(i%2?.05:-.05);push(o,Math.max(o,c)+.1,Math.min(o,c)-.1,c,100);p=c}
  for(let i=0;i<4;i++){const o=p,c=p-move/4;push(o,o+.05,c-.1,c,100*volume*(i===3?1:.5));p=c}
- push(p,p+.15,p-.8,p+.1,80*volume);
+ push(p,p+.15,p-wick,p+.1,80*volume);
  return rows.map((r,i)=>{const t=lastOpen-(rows.length-1-i)*I;return [t,...r.slice(1,6).map(String),t+I-1,String(r[5]*r[4])]});
 }
 const up4h=now=>Array.from({length:301},(_,i)=>{const t=now-(301-i)*4*3600000-1000,c=50+i*.1;return [t,String(c),String(c+.2),String(c-.2),String(c),'1000',t+4*3600000-1,'1']});
@@ -46,10 +46,10 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX}={
  return {client,calls,orders,get size(){return Math.abs(amt)},set size(v){amt=v},get amt(){return amt},set mark(v){mark=v},get avg(){return avg},
   fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(Math.abs(amt));o.avgPrice=String(price??o.stopPrice);reduce(Number(o.executedQty))}};
 }
-function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash,budget=null}={}){
+function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash,budget=null,zone=null}={}){
  return new ScalpExecutor({config:{...scalpExecConfig({}),...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
   candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
-  balance:async()=>funds,gate,isBusy,directory:dir,now:()=>clock.t,budget});
+  balance:async()=>funds,gate,isBusy,directory:dir,now:()=>clock.t,budget,...(zone?{zoneCandles:zone}:{})});
 }
 const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
@@ -469,4 +469,167 @@ test('shared testnet budget: the day stop (both strategies) blocks new entries o
  assert.equal(budget.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT','the signal strategy is stopped too');
  assert.ok(ex.store.open[0].stopOrderId,'the open position keeps its stop');
  clock.t+=24*3600000;assert.equal(ex.status().blocked,null,'next KST day: entries again');
+});
+
+// ---- 매물대 반전 (user 2026-11-17 23:12 "1번 진행", backtest candidate B) ----
+// A ~4.4 % drop (below the 5 % rule, above 2.5 %) to a low of 95.7; zones from 4H / 1D candles (backtest.mjs zoneBook).
+const H4=4*3600000,D1=86400000,DAY0=Date.parse('2026-11-16T00:00:00Z');
+const blocks=(list,endAt,ms)=>{const n=list.reduce((a,b)=>a+b[0],0),out=[];let t=endAt-n*ms;
+ for(const [count,lo,hi,v] of list)for(let i=0;i<count;i++,t+=ms){const mid=(lo+hi)/2;out.push([t,String(mid),String(hi),String(lo),String(mid),String(v),t+ms-1,'1'])}return out};
+const Z4_TOUCH=blocks([[150,109.5,110.5,1],[120,95.3,96.1,10]],DAY0,H4),Z4_FAR=blocks([[150,109.5,110.5,1],[120,120,121,10]],DAY0,H4);
+const Z1_FAR=blocks([[60,119,121,1],[60,130,131,5]],DAY0,D1);
+const small=()=>crash({move:4,wick:.3}),PX_Z=+(Number(small().at(-1)[4])+.02).toFixed(2);
+function zoneFeed(h4=Z4_TOUCH,d1=Z1_FAR){const calls=[];const fn=async(s,iv,limit)=>{calls.push({iv,limit});const r=iv==='4h'?h4:iv==='1d'?d1:null;
+ if(r instanceof Error)throw r;return typeof r==='function'?r():r};fn.calls=calls;return fn}
+const zoneMake=(v,opt={})=>make(v,{rows:small,price:PX_Z,...opt,zone:opt.zone??zoneFeed()});
+
+test('매물대 반전: a 2.5 %+ reversal whose low touched a 4H zone enters as ZONE_REVERSAL; the same signal off a zone is skipped',async()=>{
+ const v=venue({fillAt:PX_Z}),zone=zoneFeed(),ex=zoneMake(v,{zone});ex.arm();
+ const st=await ex.scan();assert.equal(st.entered,1,JSON.stringify({st,skips:ex.store.skips}));assert.equal(st.signals,0,'not a 5 % signal');
+ assert.equal(st.zoneSignals,1);assert.equal(st.zoneAtZone,1);assert.equal(st.zoneEntered,1);
+ const p=ex.store.open[0];assert.equal(p.kind,'ZONE_REVERSAL');assert.ok(p.evidence.movePct>=2.5&&p.evidence.movePct<5);
+ assert.equal(p.zone.tf,'4h');assert.equal(p.zone.atZone,true);assert.ok(p.zone.distPct>=0&&p.zone.distPct<=.3,'low within 0.3 % of the band');assert.equal(p.zone.rank,1);
+ assert.ok(p.zone.low>=95.3&&p.zone.high<=96.1&&p.zone.sharePct>0);assert.equal(p.zone.zone1d.atZone,false,'1D zones read too (far away)');
+ // Same rules as the 5 % scalp: stop attached, three reduce-only targets, 0.5 % risk, 38.2 % TP1, net RR >= 1.
+ assert.ok(JSON.parse(placed(v,'MARKET')[0].stopLoss).stopPrice<95.7);assert.equal(placed(v,'TAKE_PROFIT_MARKET').length,3);
+ assert.ok(Math.abs(p.riskUSD-50)<.2);assert.ok(p.netRR>=1);assert.equal(placed(v,'MARKET')[0].clientOrderId,scalpClientId('SOLUSDT',BUCKET*I));
+ assert.deepEqual(zone.calls,[{iv:'4h',limit:542},{iv:'1d',limit:182}],'ZONE_PROFILES counts + 2, read once each');
+ const opened=ex.store.events.find(e=>e.type==='OPENED');assert.equal(opened.kind,'ZONE_REVERSAL');
+ assert.match(scalpEventText(opened),/매물대 반전\(4H\/1D\) — 4H 매물대/);assert.doesNotMatch(scalpEventText({...opened,kind:'MOVE_REVERSAL'}),/매물대/);
+ const sig=ex.signals(5).at(-1);assert.equal(sig.kind,'ZONE_REVERSAL');assert.equal(sig.entered,true);assert.equal(sig.zone.tf,'4h');assert.equal(sig.zone.distPct,p.zone.distPct);
+ // Off a zone (4H zone at 120, 1D far): detected, logged, skipped, no order.
+ const w=venue({fillAt:PX_Z}),off=zoneMake(w,{zone:zoneFeed(Z4_FAR,Z1_FAR)});off.arm();const s2=await off.scan();
+ assert.equal(s2.entered,0);assert.equal(s2.zoneSignals,1);assert.equal(placed(w,'MARKET').length,0);
+ assert.equal(off.store.skips.at(-1).reason,'ZONE_NOT_TOUCHED');assert.equal(off.store.skips.at(-1).kind,'ZONE_REVERSAL');assert.ok(scalpReasonKo('ZONE_NOT_TOUCHED')!=='ZONE_NOT_TOUCHED');
+ const line=off.signals(5).at(-1);assert.equal(line.kind,'ZONE_REVERSAL');assert.equal(line.reason,'ZONE_NOT_TOUCHED');assert.equal(line.zone.atZone,false);assert.ok(line.zone.distPct>20);
+ // The 5 % rule alone: the 4.9 % drop is not a signal.
+ const x=venue({fillAt:PX_Z}),offCfg=zoneMake(x,{config:scalpExecConfig({SCALP_ZONE_SIGNALS:'off'}),zone:zoneFeed()});offCfg.arm();
+ const s3=await offCfg.scan();assert.equal(s3.entered,0);assert.equal(s3.zoneSignals,undefined);assert.equal(placed(x,'MARKET').length,0);
+ assert.equal(offCfg.status().settings.zoneSignals,false);assert.equal(ex.status().settings.zoneSignals,true);assert.equal(scalpExecConfig({}).zoneSignals,true);
+ assert.equal(scalpExecConfig({SCALP_ZONE_SIGNALS:' OFF '}).zoneSignals,false);assert.equal(scalpExecConfig({SCALP_ZONE_SIGNALS:'on'}).zoneSignals,true);
+ assert.equal(offCfg.signals(5).length,0,'nothing detected, nothing logged');
+});
+
+test('매물대 반전: a zone from candles that closed after the move window began does not count',async()=>{
+ // One heavy 4H candle at 95.3-96.1 that closed 20 minutes before the signal candle's close (inside the 35-minute window).
+ const late=blocks([[269,109.5,110.5,1],[1,95.3,96.1,1000]],BUCKET*I-20*60000+1,H4),early=blocks([[269,109.5,110.5,1],[1,95.3,96.1,1000]],BUCKET*I-40*60000+1,H4);
+ const v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:zoneFeed(late,Z1_FAR)});ex.arm();await ex.scan();
+ assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.store.skips.at(-1).reason,'ZONE_NOT_TOUCHED',JSON.stringify(ex.store.skips));
+ const w=venue({fillAt:PX_Z}),ok=zoneMake(w,{zone:zoneFeed(early,Z1_FAR)});ok.arm();await ok.scan();
+ assert.equal(placed(w,'MARKET').length,1,'closed before the window: the zone counts');assert.equal(ok.store.open[0].zone.tf,'4h');
+});
+
+test('매물대 반전: a 5 % signal is never a zone signal too; a candle sent once is not sent again',async()=>{
+ const v=venue(),zone=zoneFeed(),ex=make(v,{zone});ex.arm();
+ const st=await ex.scan();assert.equal(st.entered,1);assert.equal(st.signals,1);assert.equal(st.zoneSignals,undefined);
+ assert.equal(ex.store.open[0].kind,'MOVE_REVERSAL');assert.equal(ex.store.open[0].zone,undefined);assert.equal(zone.calls.length,0,'no zone reads for a 5 % signal');
+ assert.equal(ex.signals(5).at(-1).kind,'MOVE_REVERSAL');assert.match(scalpEventText(ex.store.events.find(e=>e.type==='OPENED')),/진입\n/);
+ const n=v.calls.length;ex.lastScanBucket=null;await ex.scan();assert.equal(v.calls.length,n);assert.equal(zone.calls.length,0);
+ // A zone signal already sent: the rescan reads nothing more and sends nothing.
+ const w=venue({fillAt:PX_Z}),z2=zoneFeed(),zx=zoneMake(w,{zone:z2});zx.arm();await zx.scan();assert.equal(placed(w,'MARKET').length,1);
+ const m=w.calls.length,reads=z2.calls.length,lines=zx.signals(10).length;zx.lastScanBucket=null;const again=await zx.scan();
+ assert.equal(w.calls.length,m);assert.equal(z2.calls.length,reads);assert.equal(zx.signals(10).length,lines,'not logged twice');assert.equal(again.entered,0);
+});
+
+test('매물대 반전: missing 4H / 1D candles are never a touch (ZONE_DATA_UNAVAILABLE); 100410 is retried; zones cached until the next close',async()=>{
+ const down=Object.assign(Error('net'),{code:'NETWORK_UNREACHABLE'});
+ for(const [h4,d1] of [[down,down],[[],[]],[Z4_FAR,down],[Z4_FAR.slice(-20),Z1_FAR]]){
+  const v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:zoneFeed(h4,d1)});ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.store.skips.at(-1).reason,'ZONE_DATA_UNAVAILABLE',JSON.stringify(ex.store.skips.at(-1)));
+  assert.equal(ex.signals(5).at(-1).reason,'ZONE_DATA_UNAVAILABLE');
+ }
+ // A touch on the timeframe that could be read still counts (as the backtest without daily candles).
+ {const v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:zoneFeed(Z4_TOUCH,down)});ex.arm();await ex.scan();assert.equal(placed(v,'MARKET').length,1);assert.equal(ex.store.open[0].zone.zone1d,null)}
+ // BingX 100410 (shared public rate): read again after 1.5 s, as the 5m candles.
+ {let n=0;const busy=Object.assign(Error('rate'),{code:'VENUE_ERROR_100410'}),z=zoneFeed(()=>{if(!n++)throw busy;return Z4_TOUCH},Z1_FAR);
+  const v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:z});ex.arm();const st=await ex.scan();assert.equal(st.rateLimited,1);assert.equal(placed(v,'MARKET').length,1,JSON.stringify(ex.store.skips))}
+ // Cache: the same 4H / 1D book until a newer candle of that timeframe closes.
+ const clock={t:T0},z=zoneFeed(),ex=zoneMake(venue(),{clock,zone:z});
+ const b4=await ex.zoneBookOf('SOLUSDT','4h','0.01'),b1=await ex.zoneBookOf('SOLUSDT','1d','0.01');assert.equal(z.calls.length,2);
+ assert.equal(await ex.zoneBookOf('SOLUSDT','4h','0.01'),b4);assert.equal(await ex.zoneBookOf('SOLUSDT','1d','0.01'),b1);assert.equal(z.calls.length,2);
+ clock.t=DAY0+H4+1000;await ex.zoneBookOf('SOLUSDT','4h','0.01');await ex.zoneBookOf('SOLUSDT','1d','0.01');
+ assert.deepEqual(z.calls.map(c=>c.iv),['4h','1d','4h'],'a new 4H close: 4H read again, 1D kept');
+ clock.t=DAY0+D1+1000;await ex.zoneBookOf('SOLUSDT','1d','0.01');assert.equal(z.calls.at(-1).iv,'1d');
+});
+
+test('매물대 반전: the 4H against-trend block and the shared testnet budget apply as to the 5 % scalp',async()=>{
+ {const v=venue({fillAt:PX_Z}),ex=zoneMake(v,{trend:down4h});ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.store.skips.at(-1).reason,'AGAINST_4H_TREND');assert.equal(ex.signals(5).at(-1).trend4h,'down')}
+ const {TestnetBudget}=await import('../testnet_budget.mjs');
+ const run=async open=>{const v=venue({fillAt:PX_Z}),clock={t:T0},budget=new TestnetBudget({dailyLossPct:15,marginCapPct:30,now:()=>clock.t});
+  const ex=zoneMake(v,{clock,budget});budget.register('signal',{realizedToday:()=>0,openRisk:()=>open,usedMargin:()=>0}).register('scalp',ex.budgetSource());ex.arm();await ex.scan();return {v,ex}};
+ {const {v,ex}=await run(1460);assert.equal(ex.store.skips.at(-1).reason,'OPEN_RISK_LIMIT');assert.equal(placed(v,'MARKET').length,0)}
+ {const {v,ex}=await run(1400);assert.equal(placed(v,'MARKET').length,1);assert.ok(Math.abs(ex.store.open[0].riskUSD-50)<.2)}
+ // One position per symbol: a held coin is not read for zones again.
+ {const v=venue({fillAt:PX_Z}),z=zoneFeed(),ex=zoneMake(v,{zone:z});ex.store.open.push({symbol:'SOLUSDT',venueSymbol:'SOL-USDT',status:'OPEN',direction:'LONG',size:0});ex.arm();await ex.scan();
+  assert.equal(ex.store.skips.at(-1).reason,'SYMBOL_ALREADY_HELD');assert.equal(z.calls.length,0);assert.equal(placed(v,'MARKET').length,0)}
+});
+
+test('매물대 반전: kind flows into the journal, its summary, stats and the report export',async()=>{
+ const {scalpReportFiles,journalLine}=await import('../scalp_journal.mjs');
+ const dir=tmp(),v=venue({fillAt:PX_Z}),clock={t:T0},ex=zoneMake(v,{clock,dir});ex.arm();await ex.scan();assert.equal(ex.store.open.length,1);
+ v.size=0;clock.t+=20000;await ex.reconcile();clock.t+=20000;await ex.reconcile();
+ assert.equal(ex.store.closed.length,1);assert.equal(ex.store.closed[0].kind,'ZONE_REVERSAL');
+ const j=ex.journal(5);assert.equal(j.length,1);assert.equal(j[0].kind,'ZONE_REVERSAL');assert.equal(j[0].zone.tf,'4h');
+ const st=ex.stats();assert.equal(st.byKind.ZONE_REVERSAL.trades,1);assert.equal(st.byKind.MOVE_REVERSAL.trades,0);
+ const {files,summary}=scalpReportFiles({journalFile:ex.journalFile,signalsFile:ex.signalsFile,now:clock.t});
+ const t=files['scalp/trades.jsonl'].trim().split('\n').map(JSON.parse);assert.equal(t[0].kind,'ZONE_REVERSAL');assert.equal(t[0].zone.tf,'4h');
+ assert.equal(summary.byKind.ZONE_REVERSAL.trades,1);assert.equal(summary.last[0].kind,'ZONE_REVERSAL');assert.ok(summary.byMoveBucket['2.5-5%']);
+ const sigFile=Object.keys(files).find(k=>k.startsWith('scalp/signals-'));assert.ok(files[sigFile].includes('"kind":"ZONE_REVERSAL"'));
+ // A restart reads the kind back from the journal; older lines without one are 5 % move trades.
+ const again=make(venue(),{dir,clock});assert.equal(again.stats().byKind.ZONE_REVERSAL.trades,1);
+ assert.equal(journalLine({strategy:'SCALP_REVERSAL',direction:'LONG',avg:1,initialStop:.9,filled:1}).kind,'MOVE_REVERSAL');
+});
+
+test('testnet screen: scalp badge 단타·급변 / 단타·매물대 on cards and the merged list; details split by kind',async()=>{
+ const {testnetClosedHTML,setTestnetPage,scalpPositionCardHTML,scalpBadge}=await import('../public/live_control.js');
+ assert.match(scalpBadge('ZONE_REVERSAL'),/단타·매물대/);assert.match(scalpBadge('MOVE_REVERSAL'),/단타·급변/);assert.match(scalpBadge(undefined),/단타·급변/);
+ setTestnetPage(0);const h=testnetClosedHTML({closed:[],scalp:{closed:[{id:'a',symbol:'AUSDT',direction:'LONG',kind:'ZONE_REVERSAL',closedAt:T0,netUSD:1},{id:'b',symbol:'BUSDT',direction:'SHORT',closedAt:T0-1,netUSD:-1}]}});
+ assert.match(h,/tn-scalp-zone">단타·매물대<\/span><\/td><td><b>AUSDT/);assert.match(h,/tn-scalp">단타·급변<\/span><\/td><td><b>BUSDT/);
+ const c=scalpPositionCardHTML({symbol:'SOLUSDT',direction:'LONG',status:'OPEN',kind:'ZONE_REVERSAL',zone:{tf:'4h',low:95.3,high:96.1,sharePct:12.5,rank:1,distPct:0},targets:[],parts:[]});
+ assert.match(c,/단타·매물대/);assert.match(c,/4H 매물대 95\.3~96\.1/);
+ const d=scalpDetailsHTML({mode:'TESTNET',credentials:true,armed:true,settings:{...scalpExecConfig({}).settings,sides:['LONG','SHORT'],zoneSignals:true,zoneMinMovePct:2.5,zoneTouchPct:.3},
+  stats:{byKind:{MOVE_REVERSAL:{trades:2,wins:1,winRatePct:50,profitFactor:1.2,netUSD:3},ZONE_REVERSAL:{trades:1,wins:1,winRatePct:100,profitFactor:null,netUSD:2}}},skips:[{at:T0,symbol:'X',reason:'ZONE_NOT_TOUCHED',kind:'ZONE_REVERSAL',direction:'LONG',label:scalpReasonKo('ZONE_NOT_TOUCHED')}],skipCounts:[{reason:'ZONE_NOT_TOUCHED',label:'x',count:1}]});
+ assert.match(d,/급변 5%<b >2건/);assert.match(d,/매물대 반전<b >1건/);assert.match(d,/2\.5% 이상 \+ 극값이 4H\/1D 매물대 ±0\.3% 안/);assert.match(d,/매물대 후보/);
+});
+
+test('매물대 반전 (review L2): a kill switch or disarm during the zone reads stops the order; HTTP 429 on the 4H read stops the scan without the 1D read',async()=>{
+ // Kill switch pressed while the 4H zone candles are read.
+ {let killed=false;const z=zoneFeed(()=>{killed=true;return Z4_TOUCH},Z1_FAR),v=venue({fillAt:PX_Z});
+  const ex=zoneMake(v,{zone:z,gate:()=>killed?{ok:false,reason:'KILL_SWITCH'}:{ok:true}});ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0,'no order after the kill switch');assert.equal(ex.store.skips.at(-1).reason,'KILL_SWITCH');assert.equal(ex.store.open.length,0)}
+ // Disarmed while the 1D candles are read.
+ {let ex;const z=zoneFeed(Z4_TOUCH,()=>{ex.disarm();return Z1_FAR}),v=venue({fillAt:PX_Z});ex=zoneMake(v,{zone:z});ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.store.skips.at(-1).reason,'NOT_ARMED')}
+ // HTTP 429 on the 4H read: cooldown, no 1D read, no order, the scan ends with HTTP_429.
+ {const e429=Object.assign(Error('429'),{code:'HTTP_429'}),z=zoneFeed(e429,Z4_TOUCH),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:z});ex.arm();const st=await ex.scan();
+  assert.deepEqual(z.calls.map(c=>c.iv),['4h']);assert.equal(placed(v,'MARKET').length,0);assert.equal(st.error,'HTTP_429');
+  assert.equal(ex.store.skips.at(-1).reason,'HTTP_429');assert.equal(ex.status().blocked,'RATE_LIMIT_COOLDOWN')}
+ // HTTP 429 on the 1D read after a touching 4H: still no order.
+ {const e429=Object.assign(Error('429'),{code:'HTTP_429'}),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:zoneFeed(Z4_TOUCH,e429)});ex.arm();const st=await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);assert.equal(st.error,'HTTP_429')}
+ // The 5 % path: blocked between the scan loop's check and the entry checks -> no order.
+ {let killed=false;const v=venue(),ex=make(v,{gate:()=>killed?{ok:false,reason:'KILL_SWITCH'}:{ok:true}});
+  const read=ex.candles;ex.candles=async(...a)=>{const r=await read(...a);if(a[1]==='5m')killed=true;return r};ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.store.skips.at(-1).reason,'KILL_SWITCH')}
+});
+
+test('매물대 반전 (review L3): trend block, other strategy, position cap and a held coin stop the candidate before any zone read, with the same reasons',async()=>{
+ const cases=[[{trend:down4h},'AGAINST_4H_TREND'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{config:{maxOpen:1},held:'ETHUSDT'},'MAX_OPEN_POSITIONS'],[{held:'SOLUSDT'},'SYMBOL_ALREADY_HELD']];
+ for(const [opt,reason] of cases){
+  const z=zoneFeed(),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{...opt,zone:z});
+  if(opt.held)ex.store.open.push({symbol:opt.held,venueSymbol:opt.held.replace('USDT','-USDT'),status:'OPEN',direction:'LONG',size:0});
+  ex.arm();await ex.scan();
+  assert.equal(z.calls.length,0,reason+': no zone read');assert.equal(ex.store.skips.at(-1).reason,reason);assert.equal(placed(v,'MARKET').length,0);
+  assert.equal(ex.store.skips.filter(s=>s.reason===reason).length,1,'one skip line');assert.equal(ex.signals(5).at(-1).reason,reason);
+ }
+ // Passing the checks: the zones are read and the entry checks run again on the way in (still one entry).
+ const z=zoneFeed(),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:z});ex.arm();await ex.scan();assert.equal(z.calls.length,2);assert.equal(placed(v,'MARKET').length,1);
+ assert.equal(ex.signals(5).at(-1).trend4h,'up');
+});
+
+test('report push: scalp ledger trades carry kind',async()=>{
+ const {ledgerSummary}=await import('../reports_push.mjs');
+ const s=ledgerSummary({closed:[{symbol:'A',direction:'LONG',kind:'ZONE_REVERSAL',closedAt:2,netUSD:1},{symbol:'B',direction:'SHORT',closedAt:3,netUSD:-1}],open:[]},{now:10});
+ assert.equal(s.trades[0].kind,'ZONE_REVERSAL');assert.equal('kind' in s.trades[1],false,'copy / older rows: no kind field');
 });

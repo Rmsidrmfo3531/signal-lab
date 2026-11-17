@@ -67,7 +67,8 @@ export function journalLine(x){
  const riskUnit=dir*(avg-Number(x.initialStop)),riskActual=riskUnit>0?riskUnit*Number(x.filled||x.qty):null;
  const realized=x.realized??null,net=realized?.netUSD??x.netUSD??null;
  const bps=(a,b)=>a>0&&b>0?r2(dir*(a-b)/b*1e4):null; // + = worse for us (paid more on a LONG, got less on a SHORT)
- return {v:1,strategy:x.strategy,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,
+ // kind: MOVE_REVERSAL (5 % move) or ZONE_REVERSAL (매물대 반전, 2.5 % at a 4H / 1D zone; zone = the touched zone).
+ return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,
   barAt:x.barAt,detectedAt:x.detectedAt??null,evidence:x.evidence??null,candle:x.candle??null,atr:x.atr??null,trend4h:x.trend4h??null,withTrend:x.withTrend??null,
   plan:{signalClose:signal||null,checkedPrice:plan||null,entry:x.entry,stop:x.initialStop,targets:x.targets,parts:x.parts,targetCount:x.targetCount??null,merged:x.merged===true,
    tp1NetR:r4(Number(x.netRR)),riskUSD:r4(Number(x.riskUSD)),marginUSD:r4(Number(x.marginUSD)),driftPct:x.driftPct??null},
@@ -84,7 +85,7 @@ export function journalLine(x){
 }
 
 // ---- Summary for the reports push (latest.json `scalp`) --------------------------------------
-const MOVE_BUCKETS=[[5,6],[6,8],[8,12],[12,Infinity]],RANK_BUCKETS=[[1,10],[11,30],[31,60],[61,Infinity]];
+const MOVE_BUCKETS=[[2.5,5],[5,6],[6,8],[8,12],[12,Infinity]],RANK_BUCKETS=[[1,10],[11,30],[31,60],[61,Infinity]];
 const bucketLabel=([a,b],unit)=>b===Infinity?`${a}${unit}+`:`${a}-${b}${unit}`;
 /** Win rate / PF / net / average R of a list of journal lines. */
 export function groupStats(list){
@@ -101,9 +102,9 @@ export function summarizeJournal(lines,{now=Date.now()}={}){
  const move=x=>{const m=Number(x.evidence?.movePct);const b=MOVE_BUCKETS.find(([a,c])=>m>=a&&m<c);return b?bucketLabel(b,'%'):null};
  const rank=x=>{const k=Number(x.universe?.rank);const b=RANK_BUCKETS.find(([a,c])=>k>=a&&k<=c);return b?bucketLabel(b,'위'):null};
  const hour=x=>{const t=x.entry?.at??x.barAt;return t?String(kst(t).getUTCHours()).padStart(2,'0'):null};
- return {generatedAt:new Date(now).toISOString(),all:groupStats(list),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
+ return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
   byMoveBucket:by(list,move),byHourKst:by(list,hour),byUniverseRank:by(list,rank),byTrend4h:by(list,x=>x.trend4h??'unknown'),byWithTrend:by(list,x=>x.trend4h==='range'?'range':x.withTrend==null?'unknown':x.withTrend?'with':'against'),
-  last:list.slice(-5).map(x=>({symbol:x.symbol,direction:x.direction,exitAt:x.exit?.at,reason:x.exit?.reason,r:x.pnl?.r,netUSD:x.pnl?.netUSD}))};
+  last:list.slice(-5).map(x=>({symbol:x.symbol,kind:x.kind||'MOVE_REVERSAL',direction:x.direction,exitAt:x.exit?.at,reason:x.exit?.reason,r:x.pnl?.r,netUSD:x.pnl?.netUSD}))};
 }
 /** A journal line for the reports repository: no client order id (a trade key instead). */
 export function exportLine(x){const {id,venueSymbol,...rest}=x;return {...rest,tradeKey:`${x.symbol}|${x.direction}|${x.barAt}`}}

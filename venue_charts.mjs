@@ -3,7 +3,7 @@
 // [openTime, open, high, low, close, baseVolume, closeTime, quoteVolume].
 // Stocks, ETFs, indexes and commodities are excluded: only coins are added.
 // 5m added 2026-11-16: the testnet reversal scalps read BingX 5m candles (without it every 5m read failed: 0 coins checked).
-export const VENUE_INTERVAL_MS=Object.freeze({'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000});
+export const VENUE_INTERVAL_MS=Object.freeze({'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000});
 // BingX lists stocks/commodities with an NC prefix; for Gate.io these are known non-coin tickers.
 export const NON_CRYPTO_BASES=new Set(['XAU','XAG','XPT','XPD','CL','BZ','NG','COPPER','COPP','UKOIL','USOIL','US30','US100','US500','US400','DXI','VXI','SPCX',
  'NVDA','INTC','AMD','AAPL','TSLA','AMZN','MSFT','META','GOOGL','GOOG','NFLX','ORCL','AVGO','PLTR','MSTR','COIN','HOOD','CRCL','NBIS','CRWV','AAOI','AXTI',

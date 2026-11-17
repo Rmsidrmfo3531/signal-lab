@@ -40,7 +40,7 @@ export function ledgerSummary(store,{now=Date.now(),equityUSD=null}={}){
  const week=now-7*86400000,events=(store.events||[]).filter(e=>e&&(e.at||0)>=week);
  const counts={};for(const e of events)counts[e.type]=(counts[e.type]||0)+1;
  return {equityUSD:num(equityUSD),closedCount:closed.length,settled:known,wins,winRatePct:known?Math.round(wins/known*1000)/10:null,netUSD:num(cum),maxDrawdownUSD:num(maxDD),killed:store.killed===true,
-  trades:closed.slice(-100).map(x=>({...(origin?{origin}:{}),symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
+  trades:closed.slice(-100).map(x=>({...(origin?{origin}:{}),...(x.kind?{kind:x.kind}:{}),symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
    avg:num(x.avg),adds:typeof x.adds==='number'?x.adds:Array.isArray(x.adds)?x.adds.filter(a=>a?.filled).length:null,reduces:x.reduces??null,tpHits:x.tpHits??null,
    netUSD:num(x.netUSD),netSource:x.netSource??null,theirPnlUSD:num(x.theirPnlUSD),
    ...(origin?{maxSize:num(x.maxSize),estimateUSD:num(x.estimateUSD),adoptedAtStart:x.adoptedAtStart===true,mergedIntoCopy:Boolean(x.mergedIntoCopy)}:{})})),
