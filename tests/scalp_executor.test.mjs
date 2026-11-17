@@ -220,7 +220,7 @@ test('SHORT detection -> plan: stop above the high (rounded up), 38.2/50/61.8 % 
  assert.ok(Math.abs(plan.stop*10-Math.round(plan.stop*10))<1e-9,'stop on the tick grid');
  assert.ok(plan.targets.every((t,i)=>t<plan.entry&&(i===0||t<plan.targets[i-1])&&t>=det.targets[i]-1e-9),'targets rounded up, toward the entry');
  assert.ok(Math.abs(plan.riskUSD-50)<.6);assert.ok(plan.netRR>=1);
- assert.deepEqual(planScalpOrder({det,price:PX_S*1.01,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['PRICE_DRIFT']);
+ assert.deepEqual(planScalpOrder({det,price:PX_S*1.01,contract:SOL,equity:10000,leverage:10,config:{...cfg,stopKeepPct:0}}).reasons,['PRICE_DRIFT']);
  assert.deepEqual(planScalpOrder({det:{...det,stop:det.entry-.05},price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['ENTRY_AT_OR_BEYOND_STOP'],'a short stop below the entry');
 });
 
@@ -307,7 +307,7 @@ test('drift allowance grows with the move (user 2026-11-17): 50 % of the move aw
  assert.equal(scalpExecConfig({SCALP_DRIFT_MOVE_PCT:'0'}).driftMovePct,0);assert.equal(scalpExecConfig({}).driftMovePct,50);assert.equal(scalpExecConfig({}).minNetRR,1);
  // Default 50 %: a 2 % drift after a 20 % move is left to the RR check, not skipped as PRICE_DRIFT.
  assert.notEqual(planScalpOrder({det:big,price:det.entry*1.02,contract:SOL,equity:10000,leverage:10,config:scalpExecConfig({})}).reasons?.[0],'PRICE_DRIFT');
- const toward=planScalpOrder({det:big,price:det.entry*.993,contract:SOL,equity:10000,leverage:10,config:cfg});assert.equal(toward.reasons[0],'PRICE_DRIFT','toward the stop: base 0.4 % only');assert.equal(toward.allowedPct,.4);
+ const toward=planScalpOrder({det:big,price:det.entry*.993,contract:SOL,equity:10000,leverage:10,config:{...cfg,stopKeepPct:0}});assert.equal(toward.reasons[0],'PRICE_DRIFT','toward the stop: base 0.4 % only');assert.equal(toward.allowedPct,.4);
 });
 
 test('scan order: coins that moved most over the last scans are read first; volume order without tickers',async()=>{
@@ -412,4 +412,16 @@ test('hedge mode: a non-zero row without LONG / SHORT is an error, not "flat" â€
  assert.equal(ex.store.open.length,1);assert.equal(ex.store.open[0].zeroSeen??0,0);assert.ok(!v.calls.some(c=>c.op==='cancel'));
  assert.ok(ex.store.events.some(e=>e.type==='RECONCILE_ERROR'&&e.reason==='POSITION_SIDE_UNKNOWN'));
  v.client.positions=real;clock.t+=20000;await ex.reconcile();assert.equal(ex.store.open.length,1);
+});
+
+test('better price (toward the stop) is taken while half the stop distance is left (user 2026-11-17)',()=>{
+ const cfg=scalpExecConfig({}),det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ assert.equal(cfg.stopKeepPct,50);
+ const planned=det.entry-det.stop,base=planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg});assert.ok(base.ok);
+ const better=planScalpOrder({det,price:det.entry-planned*.4,contract:SOL,equity:10000,leverage:10,config:cfg});
+ assert.ok(better.ok,'60 % of the stop distance left: enters at the better price');assert.ok(better.netRR>base.netRR,'better RR');assert.ok(Math.abs(better.riskUSD-base.riskUSD)<=base.riskUSD*.05||better.capped,'same $ risk');
+ const tight=planScalpOrder({det,price:det.entry-planned*.6,contract:SOL,equity:10000,leverage:10,config:cfg});
+ assert.equal(tight.reasons[0],'PRICE_DRIFT');assert.equal(tight.toward,'STOP');assert.ok(tight.stopLeftPct<50);
+ assert.equal(planScalpOrder({det,price:det.stop,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons[0],'PRICE_DRIFT','at the stop: never');
+ assert.equal(scalpExecConfig({SCALP_STOP_KEEP_PCT:'0'}).stopKeepPct,0);
 });

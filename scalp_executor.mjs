@@ -84,7 +84,9 @@ export function scalpExecConfig(env=process.env){
   // Drift away from the stop (price already moving toward the target): allowed up to driftMovePct % of the move;
   // the TP1 net RR check then decides (user 2026-11-17: 5 % of the move, then 50 % "테스트넷인데" after
   // LIGHTER 1.6 % / HUMA 0.96 % skips). Toward the stop: maxDriftPct / 1 ATR as before.
-  driftMovePct:n('SCALP_DRIFT_MOVE_PCT',50,0,100),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
+  driftMovePct:n('SCALP_DRIFT_MOVE_PCT',50,0,100),
+  // Better price (toward the stop): enter while >= this % of the planned stop distance is left (0 = old 0.4 %).
+  stopKeepPct:n('SCALP_STOP_KEEP_PCT',50,0,100),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
   universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),
   // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
   watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanDelayMs:3000,
@@ -124,9 +126,19 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  // Only a drift away from the stop gets the move-scaled allowance; toward the stop the base 0.4 % / 1 ATR stays
  // (review 2026-11-17: a drift toward the stop shrinks the stop distance, which the RR check cannot see).
  const away=dirOf(det.direction)*(price-det.entry)>0;
- const allowed=away?Math.max(config.maxDriftPct,(Number(det.evidence?.movePct)||0)*(config.driftMovePct||0)/100):config.maxDriftPct;
- // The ATR cap stays for ordinary moves; a drift within the move-scaled allowance is not held to it.
- if(driftPct>allowed||(allowed===config.maxDriftPct&&drift>det.atr*config.maxDriftAtr))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),allowedPct:+allowed.toFixed(3)});
+ // Toward the stop = a better price (user 2026-11-17 "오히려 좋은 평단에선 매매를 해야"): allowed while the stop
+ // distance left is at least stopKeepPct % of the planned one and 3 round-trip costs (risk sizing then buys more
+ // with the same $ risk; the review's 0.04 % stop case stays out). stopKeepPct 0 = the old 0.4 % / 1 ATR.
+ const planned=dirOf(det.direction)*(det.entry-det.stop),left=dirOf(det.direction)*(price-det.stop);
+ const rt=price*(2*costs.takerRate+2*costs.slippageBps/1e4);
+ if(!away&&config.stopKeepPct>0&&planned>0){
+  const need=Math.max(planned*config.stopKeepPct/100,3*rt);
+  if(!(left>=need))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),toward:'STOP',stopLeftPct:planned>0?+(left/planned*100).toFixed(1):null,allowedPct:planned>0?+((planned-need)/det.entry*100).toFixed(3):null});
+ }else{
+  const allowed=away?Math.max(config.maxDriftPct,(Number(det.evidence?.movePct)||0)*(config.driftMovePct||0)/100):config.maxDriftPct;
+  // The ATR cap stays for ordinary moves; a drift within the move-scaled allowance is not held to it.
+  if(driftPct>allowed||(allowed===config.maxDriftPct&&drift>det.atr*config.maxDriftAtr))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),allowedPct:+allowed.toFixed(3)});
+ }
  const tick=c?.tickSize,step=c?.quantityStep;if(!pos(Number(tick))||!pos(Number(step)))return fail('CONTRACT_GRID_INVALID');
  const dir=dirOf(det.direction);
  // As backtestScalp: entry on the nearest tick, the stop rounded away from it (LONG down, SHORT up).
@@ -580,7 +592,7 @@ export class ScalpExecutor{
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
-    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
+    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),
