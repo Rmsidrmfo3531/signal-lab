@@ -52,6 +52,7 @@ import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
 import {liveOverview,checkLiveLevels} from './live_overview.mjs';
+import {createVenuePositionsReader} from './venue_positions.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
 
@@ -274,6 +275,11 @@ function allIdle(){return live.idle()&&(copyTrader?.idle?.()??true)&&(scalpExec?
 const copyClient=COPY.mode==='LIVE'&&process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET
  ?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'LIVE',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)})
  :live.clients.BINGX;
+// Every open position on the real account (user 2026-11-17: manual positions too), read-only: GET positions at
+// most every 3 s (venue_positions.mjs), shown under the copy positions as 카피 / 수동. Real-money copy only.
+const venuePositionsReader=COPY.mode==='LIVE'&&copyClient?.mode==='LIVE'&&typeof copyClient.positions==='function'
+ ?createVenuePositionsReader({read:()=>copyClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
+async function copyLiveStatus(){const s=await copyTrader.liveStatus();return venuePositionsReader?{...s,...await venuePositionsReader.snapshot(s.positions)}:s}
 const bingxFunds=data=>{const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>x?.asset==='USDT')??list[0],equity=Number(u?.equity??u?.balance)||0,free=Number(u?.availableMargin);
  return {equity,available:Number.isFinite(free)?Math.max(0,free):equity}};
 copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',
@@ -1439,7 +1445,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/scalp/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='SCALP_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
    try{return response(res,200,scalpExec.arm())}catch(e){return response(res,e.httpStatus||409,{error:e.code||e.message})}}
   if(pathname==='/api/scalp/disarm'&&req.method==='POST')return response(res,200,scalpExec.disarm());
-  if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,await copyTrader.liveStatus());
+  if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,await copyLiveStatus());
   if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
   if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,copyTrader.arm())}
   if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
@@ -1454,7 +1460,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
-  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyTrader.liveStatus():null,scalp:SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?await scalpExec.liveStatus():null,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp:SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?await scalpExec.liveStatus():null,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading})});
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
