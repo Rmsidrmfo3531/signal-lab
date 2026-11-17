@@ -127,3 +127,73 @@ test('blog detectors: Bollinger two-candle rule fires after a band pierce on ext
  const r=backtestCandidates({symbol:'SOLUSDT',h1,h4,m15,m5,filters:{tickSize:.0001,stepSize:.01,minQty:.01,minNotional:5},startAt:start+58*86400000,fixedTargetPct:.005});
  for(const t of r.trades)if(t.exitReason==='ALL_TARGETS')assert.ok(Math.abs(t.targets[0]/t.entryFill-1)<.0062,'single target about 0.5 % away');
 });
+
+// 4H+ volume zones for the 5m scalp (user 2026-11-17): tags without look-ahead, candidate B in its own book.
+function crashScalp(){
+ const start=Date.parse('2026-08-01T00:00:00Z'),rows=[];let p=100;
+ const push=(o,h,l,cl,v)=>{const t=start+rows.length*M5;rows.push([t,o.toFixed(4),h.toFixed(4),l.toFixed(4),cl.toFixed(4),String(v),t+M5-1])};
+ for(let i=0;i<864;i++){const lvl=i%3===0?97.5:i%3===1?94.5:100;const o=lvl,cl=lvl+(i%2?.05:-.05);push(o,Math.max(o,cl)+.1,Math.min(o,cl)-.1,cl,100)}
+ p=100;for(let i=0;i<40;i++){const o=p,cl=p+(i%2?.05:-.05);push(o,Math.max(o,cl)+.1,Math.min(o,cl)-.1,cl,100);p=cl}
+ for(let i=0;i<4;i++){const o=p,cl=p-1;push(o,o+.05,cl-.1,cl,(i===3?1000:500));p=cl}
+ push(p,p+.15,p-.8,p+.1,800);p+=.1;
+ for(let i=0;i<30;i++){const o=p,cl=p+.12;push(o,cl+.05,o-.05,cl,150);p=cl}
+ const m15=[];for(let i=0;i+3<=rows.length;i+=3){const b=rows.slice(i,i+3);m15.push([b[0][0],b[0][1],String(Math.max(...b.map(x=>+x[2]))),String(Math.min(...b.map(x=>+x[3]))),b[2][4],String(b.reduce((a,x)=>a+ +x[5],0)),b[2][6]])}
+ return {start,rows,m15,signalAt:Number(rows[864+40+4][6])};
+}
+// 4H candles: `blocks` of [count, low, high, volume]; the last block ends at `endAt` (open time of the next candle).
+function h4Blocks(blocks,endAt){
+ const H4=14400000,n=blocks.reduce((a,b)=>a+b[0],0),out=[];let t=endAt-n*H4;
+ for(const [count,lo,hi,v] of blocks)for(let i=0;i<count;i++,t+=H4){const mid=(lo+hi)/2;out.push([t,String(mid),String(hi),String(lo),String(mid),String(v),t+H4-1])}
+ return out;
+}
+
+test('scalp zone tags: 4H zones from candles closed before the move; a zone formed later never counts',async()=>{
+ const {zoneBook,zoneTouch}=await import('../backtest.mjs');
+ const {start,rows,m15,signalAt}=crashScalp(),filters={tickSize:.0001,stepSize:.01,minQty:.01,minNotional:1};
+ const base={symbol:'SOLUSDT',m5:rows,m15,filters,startAt:start+864*M5,books:['FIXED'],trendFilter:false};
+ // Zone at 94.9-95.6 (the crash extreme is about 95.2) and one at 110, both closed before the signal.
+ const before=h4Blocks([[150,109.5,110.5,1],[120,94.9,95.6,10]],start);
+ const t=backtestScalp({...base,h4:before}).trades[0];
+ assert.ok(t,'trade');assert.equal(t.atZone4h,true);assert.equal(t.zoneDistPct4h,0,'extreme inside the zone band');
+ assert.equal(t.zoneRank4h,1);assert.ok(t.zoneShare4h>0&&t.zoneShare4h<=100);assert.equal(t.atZone1d,null,'no daily candles, no 1D tag');assert.equal(t.atZone,true);
+ // Same 95 zone, but its candles close after the signal: only the 110 zone is known at the signal.
+ const H4=14400000,later=h4Blocks([[170,109.5,110.5,1],[40,94.9,95.6,10]],start+60*H4); // the 95 candles open 80 h after `start`, the signal is at about 76 h
+ const u=backtestScalp({...base,h4:later}).trades[0];
+ assert.equal(u.atZone4h,false,'a zone formed after the signal must not count');assert.ok(u.zoneDistPct4h>10);
+ // zoneBook cut-off: the profile only sees candles closed before it.
+ const book=zoneBook(later,{symbol:'SOLUSDT',tickSize:.0001,interval:'4h'});
+ assert.equal(zoneTouch(book(signalAt),95.2).atZone,false);
+ assert.equal(zoneTouch(book(start+60*H4+1),95.2).atZone,true,'after those candles close the zone exists');
+ assert.equal(zoneTouch(book(start-1000*H4),95.2),null,'too few candles: no profile, no tag');
+ assert.equal(zoneTouch([{low:100,high:101,price:100.5,sharePct:5,rank:2}],99.75).atZone,true,'within 0.3 % below the band');
+ assert.equal(zoneTouch([{low:100,high:101,price:100.5,sharePct:5,rank:2}],99.5).atZone,false);
+});
+
+test('scalp candidate B: a 2.5 %+ reversal at a 4H zone trades in the ZONE book, never twice',()=>{
+ const {start,rows,m15}=crashScalp(),filters={tickSize:.0001,stepSize:.01,minQty:.01,minNotional:1};
+ const base={symbol:'SOLUSDT',m5:rows,m15,filters,startAt:start+864*M5,books:['FIXED'],trendFilter:false,settings:{minMovePct:5}};
+ const atZone=h4Blocks([[150,109.5,110.5,1],[120,94.9,95.6,10]],start),noZone=h4Blocks([[150,109.5,110.5,1],[120,120,121,10]],start);
+ // The move (about 4.9 %) is below the 5 % rule: no trade without candidate B.
+ assert.equal(backtestScalp({...base,h4:atZone}).trades.length,0);
+ const b=backtestScalp({...base,h4:atZone,zoneSignals:true});
+ const z=b.trades.find(t=>t.book==='ZONE');assert.ok(z,JSON.stringify(b.funnel));
+ assert.equal(z.zoneSignal,true);assert.equal(z.atZone4h,true);assert.ok(z.movePct>=2.5&&z.movePct<5);assert.ok(z.entryAt>z.signalAt);
+ assert.equal(b.trades.filter(t=>t.book==='FIXED').length,0);assert.ok(b.funnel.zone.atZone>=1);assert.equal(b.funnel.signals,0,'zone signals are counted apart');
+ // Not at a zone: detected but not traded.
+ const n=backtestScalp({...base,h4:noZone,zoneSignals:true});assert.equal(n.trades.length,0);assert.ok(n.funnel.zone.signals>=1);assert.equal(n.funnel.zone.atZone,0);
+ // A signal that already qualifies under the main rule is never a zone signal too.
+ const q=backtestScalp({...base,settings:{minMovePct:4},h4:atZone,zoneSignals:true});
+ assert.ok(q.trades.some(t=>t.book==='FIXED'));assert.equal(q.trades.filter(t=>t.book==='ZONE').length,0);assert.equal(q.funnel.zone.signals,0);
+ // With the 4H trend filter the zone signal is blocked like the main rule (here: falling 4H candles = downtrend, no rebound LONG).
+ const H4=14400000,down=[];let px=200;for(let i=0;i<330;i++){const o=px;px*=.997;const t=start-330*H4+i*H4;down.push([t,String(o),String(o*1.001),String(px*.999),String(px),'1',t+H4-1])}
+ const f=backtestScalp({...base,h4:down,zoneSignals:true,trendFilter:true});assert.equal(f.trades.length,0);assert.ok(f.funnel.zone.trendBlocked>=1||f.funnel.zone.signals===0||f.funnel.zone.atZone===0);
+ // Report rows.
+ const args=parseArgs(['--exec','--scalp-zone-signals']);assert.equal(args.scalpZoneSignals,true);
+ const fixed=backtestScalp({...base,settings:{minMovePct:4},h4:atZone}).trades;
+ const hf={bars:0,patterns:0,validated:0,scoreOk:0,planned:0,chaseSkipped:0,planReasons:{}};
+ const report=buildReport({args,startAt:start,endAt:start+4*86400000,results:[{symbol:'SOLUSDT',trades:[...fixed,...b.trades]}],
+  hourlyFunnel:hf,scalpFunnel:{bars:0,signals:0,qualityRejected:0,entrySkipped:0,dcaRejected:{},zone:b.funnel.zone},finalBalances:{}});
+ for(const part of ['4H 매물대 닿음','매물대 반전 (급변 2.5%+)','기존 5% + 매물대 반전','매물대 반전 흐름'])assert.ok(report.includes(part),part);
+ assert.ok(!buildReport({args:parseArgs(['--exec']),startAt:start,endAt:start+86400000,results:[{symbol:'SOLUSDT',trades:fixed}],
+  hourlyFunnel:hf,scalpFunnel:{bars:0,signals:0,qualityRejected:0,entrySkipped:0,dcaRejected:{}},finalBalances:{}}).includes('매물대 반전 (급변'),'no candidate B rows without the flag');
+});

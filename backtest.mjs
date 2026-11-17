@@ -163,14 +163,62 @@ export function backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,endAt=
  return {funnel,trades};
 }
 
+// Higher-timeframe volume zones (매물대) for the scalp study (user 2026-11-17): HVNs of the 4H / 1D
+// candle volume profile, the same builder and settings the 1H split book uses for its 4h zones.
+export const ZONE_TOUCH_PCT=.3;
+export const ZONE_PROFILES=Object.freeze({
+ '4h':Object.freeze({intervalMs:4*HOUR,candles:540,minCandles:96,targetBins:240,hvnMinFractionOfPoc:.05}),
+ '1d':Object.freeze({intervalMs:24*HOUR,candles:180,minCandles:30,targetBins:240,hvnMinFractionOfPoc:.05})});
+/** zones(cutoff): HVN zones from the candles closed before `cutoff` (no look-ahead), strongest first,
+ * with each zone's share of the profile volume and its rank. null when no profile can be built.
+ * Only the contiguous tail is used (an exchange gap would fail the profile); memoised per candle count. */
+export function zoneBook(rows,{symbol,tickSize,interval='4h'}={}){
+ const cfg=ZONE_PROFILES[interval],cache=new Map();
+ if(!cfg||!Array.isArray(rows)||!rows.length)return ()=>null;
+ return cutoff=>{
+  const end=closedUntil(rows,cutoff);if(cache.has(end))return cache.get(end);
+  let from=end-1;while(from>0&&end-from<cfg.candles&&Number(rows[from][0])-Number(rows[from-1][0])===cfg.intervalMs)from--;
+  let out=null;
+  if(end>0&&end-from>=cfg.minCandles){
+   const klines=rows.slice(from,end).map(r=>[Number(r[0]),r[1],r[2],r[3],r[4],r[5],Number(r[6])]),at=klines.at(-1)[6]+1000;
+   const r=buildKlineVolumeProfile({symbol,klines,receivedAt:at,tickSize:String(tickSize),dataSource:'SYNTHETIC_TEST'},
+    {now:at,intervalMs:cfg.intervalMs,interval,minCandles:cfg.minCandles,targetBins:cfg.targetBins,hvnMinFractionOfPoc:cfg.hvnMinFractionOfPoc});
+   if(r.ok){const total=r.profile.totalVolume;
+    out=[...r.profile.hvn].sort((a,b)=>b.peakVolume-a.peakVolume).map((z,i)=>({low:z.priceLow,high:z.priceHigh,price:z.price,sharePct:total>0?z.volume/total*100:null,rank:i+1}))}
+  }
+  cache.set(end,out);return out;
+ };
+}
+/** Nearest zone to a price: distance 0 inside the band; 'atZone' within touchPct % of the band. */
+export function zoneTouch(zones,price,touchPct=ZONE_TOUCH_PCT){
+ if(!Array.isArray(zones)||!positive(price))return null;
+ let best=null;
+ for(const z of zones){const d=price<z.low?(z.low-price)/price*100:price>z.high?(price-z.high)/price*100:0;if(!best||d<best.distPct)best={...z,distPct:d}}
+ if(!best)return {atZone:false,distPct:null,sharePct:null,rank:null,price:null};
+ return {atZone:best.distPct<=touchPct,distPct:best.distPct,sharePct:best.sharePct,rank:best.rank,price:best.price};
+}
+
 /** 5m reversal scalp replay, without and with the zone scale-in plan. */
+// d1: daily candles for 1D zones. Every signal is tagged with the nearest 4H / 1D zone to its extreme
+// (zones from candles closed before the move window began). zoneSignals: research candidate B - when the
+// move is below settings.minMovePct but at least zoneMinMovePct and the extreme touched a 4H/1D zone,
+// trade it in its own 'ZONE' book (never while a FIXED trade is open; never a signal the main rule takes).
 // trendFilter: no rebound LONG while the 4H trend is down, no fade SHORT while it is up (needs h4).
 // interval: the signal timeframe ('1m' | '5m' | '15m'); bars are its candles (default m5).
 // Trades are replayed on m5 candles, or on the 1m bars themselves for the 1m timeframe.
-export function backtestScalp({symbol,m5,m15,h4=null,trendFilter=Array.isArray(h4),filters,startAt,endAt=Infinity,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={},minNetRR=SCALP_DEFAULTS.minNetRR,
- interval='5m',bars=m5,maxHoldMs=SCALP_TIMEFRAMES[interval].maxHoldMs,books=['FIXED','DCA']}){
+export function backtestScalp({symbol,m5,m15,h4=null,d1=null,trendFilter=Array.isArray(h4),filters,startAt,endAt=Infinity,riskUSD=6,balanceUSD=1000,dca={},costs=BACKTEST_COSTS,settings={},minNetRR=SCALP_DEFAULTS.minNetRR,
+ interval='5m',bars=m5,maxHoldMs=SCALP_TIMEFRAMES[interval].maxHoldMs,books=['FIXED','DCA'],zoneTags=true,zoneSignals=false,zoneMinMovePct=SCALP_TIMEFRAMES[interval].minMovePct,zoneTouchPct=ZONE_TOUCH_PCT}){
  const m5c=(interval==='1m'?bars:m5).map(toCandle),funnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},trades=[];
- const busy={FIXED:-1,DCA:-1};let balance=balanceUSD;
+ const busy={FIXED:-1,DCA:-1,ZONE:-1};let balance=balanceUSD;
+ const zones4h=zoneTags?zoneBook(h4,{symbol,tickSize:filters.tickSize,interval:'4h'}):()=>null,zones1d=zoneTags?zoneBook(d1,{symbol,tickSize:filters.tickSize,interval:'1d'}):()=>null;
+ const moveSpanMs=((settings.moveWindow??SCALP_DEFAULTS.moveWindow)+1)*SCALP_TIMEFRAMES[interval].intervalMs;
+ const zoneTag=(det,now)=>{const cut=now-moveSpanMs,ex=det.evidence?.extreme,a=zoneTouch(zones4h(cut),ex,zoneTouchPct),b=zoneTouch(zones1d(cut),ex,zoneTouchPct);
+  return {atZone4h:a?a.atZone:null,zoneDistPct4h:a?.distPct??null,zoneShare4h:a?.sharePct??null,zoneRank4h:a?.rank??null,zonePrice4h:a?.price??null,
+   atZone1d:b?b.atZone:null,zoneDistPct1d:b?.distPct??null,zoneShare1d:b?.sharePct??null,zoneRank1d:b?.rank??null,zonePrice1d:b?.price??null,
+   atZone:a||b?Boolean(a?.atZone||b?.atZone):null,zoneDistPct:[a?.distPct,b?.distPct].filter(Number.isFinite).reduce((m,x)=>m==null?x:Math.min(m,x),null)}};
+ // Candidate B only adds signals when the main rule asks for a larger move than zoneMinMovePct.
+ const zoneOn=zoneSignals&&zoneTags&&(settings.minMovePct??SCALP_TIMEFRAMES[interval].minMovePct)>zoneMinMovePct;
+ if(zoneOn)funnel.zone={signals:0,atZone:0,trendBlocked:0,qualityRejected:0,entrySkipped:0,busySkipped:0};
  // 4H trend after each closed 4H candle (EMA100/EMA200 as in the 1H strategy), for the optional filter.
  const trendAt=(()=>{if(!Array.isArray(h4))return ()=>null; // measured whenever h4 is given (trade tag); blocks only with trendFilter
 const closes=h4.map(r=>Number(r[4]));
@@ -180,18 +228,30 @@ const closes=h4.map(r=>Number(r[4]));
  funnel.trendBlocked=0;
  for(let i=60;i<bars.length-1;i++){
   const closeAt=Number(bars[i][6]);if(closeAt<startAt||closeAt>=endAt)continue;funnel.bars++;
-  const now=closeAt+1000,det=detectScalpReversal(bars.slice(i-59,i+1),{symbol,now,settings,interval});
-  if(!det.ok)continue;funnel.signals++;
+  const now=closeAt+1000,window=bars.slice(i-59,i+1);let det=detectScalpReversal(window,{symbol,now,settings,interval}),tag=null,zoneSignal=false;
+  if(!det.ok&&zoneOn){const alt=detectScalpReversal(window,{symbol,now,settings:{...settings,minMovePct:zoneMinMovePct},interval});
+   if(alt.ok){funnel.zone.signals++;tag=zoneTag(alt,now);if(tag.atZone){det=alt;zoneSignal=true;funnel.zone.atZone++}}}
+  if(!det.ok)continue;
+  const fz=zoneSignal?funnel.zone:funnel;if(!zoneSignal)funnel.signals++;
   const trend4h=trendAt(now),withTrend=trend4h==null||trend4h==='range'?null:trendAllows(det.direction,trend4h);
-  if(trendFilter&&!trendAllows(det.direction,trend4h)){funnel.trendBlocked++;continue}
+  if(trendFilter&&!trendAllows(det.direction,trend4h)){fz.trendBlocked++;continue}
   const k=lowerBound(m5c,closeAt+1),next=m5c[k];if(!next)continue;const dir=det.direction==='LONG'?1:-1,entry=onTick(next.o,filters.tickSize,'NEAREST');
   det.stop=onTick(det.stop,filters.tickSize,dir===1?'DOWN':'UP');
-  if(dir*(entry-det.stop)<=0||dir*(det.targets[0]-entry)<=0){funnel.entrySkipped++;continue}
+  if(dir*(entry-det.stop)<=0||dir*(det.targets[0]-entry)<=0){fz.entrySkipped++;continue}
   const quantity=stepQuantity(riskUSD/Math.abs(entry-det.stop),filters.stepSize);
   const estimate={eligible:true,tickSize:filters.tickSize,quantityStep:filters.stepSize,entryBasis:entry,quantity,minNotional:filters.minNotional,minQuantity:filters.minQty};
   const quality=buildScalpPlan({signal:det,estimate,costs,minNetRR});
-  if(!quality.ok||!positive(quantity)){funnel.qualityRejected++;continue}
-  const base={strategy:'SCALP',interval,symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct,trend4h,withTrend,netRR:quality.estimatedNetRR};
+  if(!quality.ok||!positive(quantity)){fz.qualityRejected++;continue}
+  if(zoneTags&&!tag)tag=zoneTag(det,now);
+  const base={strategy:'SCALP',interval,symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct,trend4h,withTrend,netRR:quality.estimatedNetRR,
+   extreme:det.evidence.extreme,...(tag||{}),zoneSignal};
+  if(zoneSignal){
+   // Own book; the main 5 % rule keeps priority (one position per symbol on the executor).
+   if(k<=busy.FIXED||k<=busy.ZONE){funnel.zone.busySkipped++;continue}
+   const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:det.stop,targets:quality.targets,quantity,maxHoldMs,costs});
+   if(t){busy.ZONE=t.endIdx;trades.push({...base,book:'ZONE',stop:det.stop,targets:quality.targets,...t})}
+   continue;
+  }
   if(books.includes('FIXED')&&k>busy.FIXED){
    const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:det.stop,targets:quality.targets,quantity,maxHoldMs,costs});
    if(t){busy.FIXED=t.endIdx;trades.push({...base,book:'FIXED',stop:det.stop,targets:quality.targets,...t})}
