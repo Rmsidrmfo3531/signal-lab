@@ -592,3 +592,44 @@ test('testnet screen: scalp badge 단타·급변 / 단타·매물대 on cards an
   stats:{byKind:{MOVE_REVERSAL:{trades:2,wins:1,winRatePct:50,profitFactor:1.2,netUSD:3},ZONE_REVERSAL:{trades:1,wins:1,winRatePct:100,profitFactor:null,netUSD:2}}},skips:[{at:T0,symbol:'X',reason:'ZONE_NOT_TOUCHED',kind:'ZONE_REVERSAL',direction:'LONG',label:scalpReasonKo('ZONE_NOT_TOUCHED')}],skipCounts:[{reason:'ZONE_NOT_TOUCHED',label:'x',count:1}]});
  assert.match(d,/급변 5%<b >2건/);assert.match(d,/매물대 반전<b >1건/);assert.match(d,/2\.5% 이상 \+ 극값이 4H\/1D 매물대 ±0\.3% 안/);assert.match(d,/매물대 후보/);
 });
+
+test('매물대 반전 (review L2): a kill switch or disarm during the zone reads stops the order; HTTP 429 on the 4H read stops the scan without the 1D read',async()=>{
+ // Kill switch pressed while the 4H zone candles are read.
+ {let killed=false;const z=zoneFeed(()=>{killed=true;return Z4_TOUCH},Z1_FAR),v=venue({fillAt:PX_Z});
+  const ex=zoneMake(v,{zone:z,gate:()=>killed?{ok:false,reason:'KILL_SWITCH'}:{ok:true}});ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0,'no order after the kill switch');assert.equal(ex.store.skips.at(-1).reason,'KILL_SWITCH');assert.equal(ex.store.open.length,0)}
+ // Disarmed while the 1D candles are read.
+ {let ex;const z=zoneFeed(Z4_TOUCH,()=>{ex.disarm();return Z1_FAR}),v=venue({fillAt:PX_Z});ex=zoneMake(v,{zone:z});ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.store.skips.at(-1).reason,'NOT_ARMED')}
+ // HTTP 429 on the 4H read: cooldown, no 1D read, no order, the scan ends with HTTP_429.
+ {const e429=Object.assign(Error('429'),{code:'HTTP_429'}),z=zoneFeed(e429,Z4_TOUCH),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:z});ex.arm();const st=await ex.scan();
+  assert.deepEqual(z.calls.map(c=>c.iv),['4h']);assert.equal(placed(v,'MARKET').length,0);assert.equal(st.error,'HTTP_429');
+  assert.equal(ex.store.skips.at(-1).reason,'HTTP_429');assert.equal(ex.status().blocked,'RATE_LIMIT_COOLDOWN')}
+ // HTTP 429 on the 1D read after a touching 4H: still no order.
+ {const e429=Object.assign(Error('429'),{code:'HTTP_429'}),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:zoneFeed(Z4_TOUCH,e429)});ex.arm();const st=await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);assert.equal(st.error,'HTTP_429')}
+ // The 5 % path: blocked between the scan loop's check and the entry checks -> no order.
+ {let killed=false;const v=venue(),ex=make(v,{gate:()=>killed?{ok:false,reason:'KILL_SWITCH'}:{ok:true}});
+  const read=ex.candles;ex.candles=async(...a)=>{const r=await read(...a);if(a[1]==='5m')killed=true;return r};ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.store.skips.at(-1).reason,'KILL_SWITCH')}
+});
+
+test('매물대 반전 (review L3): trend block, other strategy, position cap and a held coin stop the candidate before any zone read, with the same reasons',async()=>{
+ const cases=[[{trend:down4h},'AGAINST_4H_TREND'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{config:{maxOpen:1},held:'ETHUSDT'},'MAX_OPEN_POSITIONS'],[{held:'SOLUSDT'},'SYMBOL_ALREADY_HELD']];
+ for(const [opt,reason] of cases){
+  const z=zoneFeed(),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{...opt,zone:z});
+  if(opt.held)ex.store.open.push({symbol:opt.held,venueSymbol:opt.held.replace('USDT','-USDT'),status:'OPEN',direction:'LONG',size:0});
+  ex.arm();await ex.scan();
+  assert.equal(z.calls.length,0,reason+': no zone read');assert.equal(ex.store.skips.at(-1).reason,reason);assert.equal(placed(v,'MARKET').length,0);
+  assert.equal(ex.store.skips.filter(s=>s.reason===reason).length,1,'one skip line');assert.equal(ex.signals(5).at(-1).reason,reason);
+ }
+ // Passing the checks: the zones are read and the entry checks run again on the way in (still one entry).
+ const z=zoneFeed(),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{zone:z});ex.arm();await ex.scan();assert.equal(z.calls.length,2);assert.equal(placed(v,'MARKET').length,1);
+ assert.equal(ex.signals(5).at(-1).trend4h,'up');
+});
+
+test('report push: scalp ledger trades carry kind',async()=>{
+ const {ledgerSummary}=await import('../reports_push.mjs');
+ const s=ledgerSummary({closed:[{symbol:'A',direction:'LONG',kind:'ZONE_REVERSAL',closedAt:2,netUSD:1},{symbol:'B',direction:'SHORT',closedAt:3,netUSD:-1}],open:[]},{now:10});
+ assert.equal(s.trades[0].kind,'ZONE_REVERSAL');assert.equal('kind' in s.trades[1],false,'copy / older rows: no kind field');
+});

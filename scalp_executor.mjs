@@ -373,7 +373,7 @@ export class ScalpExecutor{
   if(hit&&now<hit.nextCloseAt&&hit.tickSize===String(tickSize)){hit.usedAt=now;return hit.book}
   const cfg=ZONE_PROFILES[interval];let rows;
   try{rows=await this.#paced(()=>this.zoneCandles(symbol,interval,cfg.candles+2),st)}
-  catch(e){if(e?.code==='HTTP_429')this.cooldownUntil=this.now()+60000;st.zoneReadFailed=(st.zoneReadFailed||0)+1;return null}
+  catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;st.error='HTTP_429'}st.zoneReadFailed=(st.zoneReadFailed||0)+1;return null}
   if(!Array.isArray(rows))return null;st.zoneReads=(st.zoneReads||0)+1;
   const at=this.now(),valid=rows.filter(r=>Array.isArray(r)&&Number.isFinite(Number(r[0]))&&Number.isFinite(Number(r[6]))).sort((a,b)=>Number(a[0])-Number(b[0]));
   // The candle still open closes next; with none open, the one after the last closed candle.
@@ -385,11 +385,16 @@ export class ScalpExecutor{
   * (backtestScalp's zoneTag). Missing candles are never a touch: ZONE_DATA_UNAVAILABLE. */
  async #zoneCheck(u,det,st){
   const skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {ok:false,entered:false,reason}};
-  // Not read again for a coin already held or entering (one position per symbol; saves the requests).
-  if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD');
+  // The cheap checks of #consider first (same checks, same order, same results): no zone read for a candidate the
+  // 4H trend, the position cap, a held coin or another strategy would stop anyway (review L3).
+  const pre=await this.#precheck(u,det);if(pre)return {ok:false,...pre};
   const c=(await this.contracts(u.symbol).catch(()=>null))?.get?.(u.symbol);if(!c?.tradable||!pos(Number(c.tickSize)))return skip('CONTRACT_UNAVAILABLE');
   for(const [k,v] of this.zoneCache)if(this.now()-v.usedAt>6*3600000)this.zoneCache.delete(k);
-  const b4=await this.zoneBookOf(u.symbol,'4h',c.tickSize,st),b1=await this.zoneBookOf(u.symbol,'1d',c.tickSize,st);
+  // HTTP 429 on the 4H read: no 1D read, the scan stops (st.error, as a 5m read; review L2).
+  const b4=await this.zoneBookOf(u.symbol,'4h',c.tickSize,st);if(st.error==='HTTP_429')return skip('HTTP_429');
+  const b1=await this.zoneBookOf(u.symbol,'1d',c.tickSize,st);if(st.error==='HTTP_429')return skip('HTTP_429');
+  // A kill switch, disarm or cooldown that came during the reads stops here (review L2).
+  {const why=this.#blocked();if(why)return skip(why)}
   // As the backtest: `now` = the signal candle's close + 1 s (det.barAt is its close time + 1 ms).
   const touches=zoneTouches({zones4h:b4||(()=>null),zones1d:b1||(()=>null),det,now:det.barAt-1+1000,moveSpanMs:zoneSpanMs(this.config.settings,'5m'),touchPct:this.config.zoneTouchPct});
   const zone=zoneRecord(touches);if(this.cur)this.cur.zone=zone;
@@ -414,12 +419,9 @@ export class ScalpExecutor{
  async #consider(u,det){
   const key=scalpClientId(u.symbol,det.barAt,det.direction),skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   if(this.store.sent.includes(key))return {entered:false,reason:'ALREADY_SENT'};
-  if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null||trend==='range'?null:trendAllows(det.direction,trend)}
-   if(this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND',trend)}
-  if(this.config.maxOpen>0&&this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS');
-  if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD');
-  let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
-  if(busy)return skip('SYMBOL_HELD_BY_OTHER_STRATEGY');
+  // Blocked since the scan loop looked (kill switch, disarm, cooldown during the candle / zone reads): no order (review L2).
+  {const why=this.#blocked();if(why)return skip(why)}
+  const pre=await this.#precheck(u,det);if(pre)return pre;
   // Reserved right after the check, before any await: the signal strategy sees it through heldSymbols and
   // cannot enter the same coin in between (review 2026-11-16).
   this.reserved.add(u.symbol);
@@ -452,6 +454,18 @@ export class ScalpExecutor{
    return await this.#enter(u,det,c,plan,key);
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
   finally{this.reserved.delete(u.symbol);this.reservedRisk.delete(u.symbol)}
+ }
+ /** The cheap entry checks: 4H trend (cached per 4H candle), position cap, one per symbol, another strategy's coin.
+  * A skip result, or null. Used by #consider and, before any zone read, by #zoneCheck. */
+ async #precheck(u,det){
+  const skip=reason=>detail=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
+  if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null||trend==='range'?null:trendAllows(det.direction,trend)}
+   if(this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND')(trend)}
+  if(this.config.maxOpen>0&&this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS')();
+  if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD')();
+  let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
+  if(busy)return skip('SYMBOL_HELD_BY_OTHER_STRATEGY')();
+  return null;
  }
  /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only. */
  budgetSource(){
