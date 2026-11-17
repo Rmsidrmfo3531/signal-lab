@@ -12,7 +12,7 @@ test('exchange PnL: income totals, transfers kept out of the result, return on s
  const s=await exchangePnl(client,{since:T0,now:T0+10*D});
  assert.equal(calls.length,2,'10 days = two 7-day windows');
  assert.equal(s.realizedPnlUSD,2);assert.equal(s.feesUSD,-.2);assert.equal(s.fundingUSD,-.05);assert.equal(s.tradingNetUSD,1.75);assert.equal(s.transfersUSD,50);
- assert.equal(s.startCapitalUSD,150,'202.75 - 1 open - 1.75 result - 50 deposit');assert.equal(s.returnPct,1.17);assert.equal(s.returnWithOpenPct,1.83);
+ assert.equal(s.startCapitalUSD,150,'202.75 - 1 open - 1.75 result - 50 deposit');assert.equal(s.capitalBaseUSD,200);assert.equal(s.returnPct,.87);assert.equal(s.returnWithOpenPct,1.38);
  assert.equal(s.closes,2);assert.equal(s.bySymbol[0].symbol,'BTC-USDT');assert.equal(s.bySymbol[0].netUSD,-1.05);
  assert.deepEqual(Object.keys(s.byDay).length,2);
  assert.equal(balanceOf([{asset:'VST',equity:'100'}]).equity,100);

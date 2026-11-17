@@ -772,3 +772,4 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 @media(min-width:1100px){.copy-layout{padding:4px 18px 14px}.copy-side .copy-stats b{font-size:16px}.copy-side .copy-stats>span{padding:8px 12px}}
 
 .copy-why{display:inline-block;margin-top:3px;color:#c4d0dc;font-size:11.5px}
+.copy-pager{display:flex;align-items:center;justify-content:center;gap:12px;margin:10px 0 4px}.copy-pager button[disabled]{opacity:.4;cursor:default}

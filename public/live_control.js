@@ -151,13 +151,20 @@ function notCopiedWhy(e,when,all=[]){
  return why?`<br><small class="copy-why">${card}${why}</small>`:'';
 }
 
+// Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
+let copyPage=0,lastCopy=null;
+export const COPY_PAGE_SIZE=10;
+export function setCopyPage(p){copyPage=Math.max(0,p|0)}
 export function copyHTML(c){
+ lastCopy=c;
  if(!c)return '';
  const money=v=>v==null||!Number.isFinite(Number(v))?'—':`${v>=0?'+':'−'}$${Math.abs(v).toFixed(2)}`,usd=v=>v==null||!Number.isFinite(Number(v))?'—':`$${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
  const cls=v=>v>0?'paper-profit':v<0?'paper-loss':'';
  const when=t=>t?new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'';
  const held=(a,b)=>{const h=(b-a)/3600000;return !(h>=0)?'':h<1?Math.max(1,Math.round(h*60))+'분':h<48?(+h.toFixed(1))+'시간':(+(h/24).toFixed(1))+'일'};
  const open=c.positions||[],closed=c.closed||[],net=closed.reduce((a,x)=>a+(Number(x.netUSD)||0),0),wins=closed.filter(x=>x.netUSD>0).length;
+ const pages=Math.max(1,Math.ceil(closed.length/COPY_PAGE_SIZE)),page=Math.min(copyPage,pages-1),shown=closed.slice(page*COPY_PAGE_SIZE,page*COPY_PAGE_SIZE+COPY_PAGE_SIZE);
+ const pager=pages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-copy-page="-1"${page===0?' disabled':''}>‹ 이전</button><span class="muted">${page+1} / ${pages}쪽</span><button type="button" class="outline-btn small" data-copy-page="1"${page>=pages-1?' disabled':''}>다음 ›</button></div>`:'';
  const gross=closed.filter(x=>x.netUSD>0).reduce((a,x)=>a+x.netUSD,0),loss=-closed.filter(x=>x.netUSD<0).reduce((a,x)=>a+x.netUSD,0);
  const unreal=open.reduce((a,p)=>a+(Number(p.unrealized)||0),0),isLive=c.mode==='LIVE';
  // Mode line: which account, on/off, the switch.
@@ -180,12 +187,12 @@ export function copyHTML(c){
  const margin=p=>p.qty>0&&p.avg>0&&p.leverage>0?p.qty*p.avg/p.leverage:null,roe=p=>{const m=margin(p);return m&&p.unrealized!=null?p.unrealized/m*100:null};
  const pctText=v=>v==null?'—':`${v>=0?'+':'−'}${Math.abs(v).toFixed(1)}%`;
  const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">추매</th><th>보유</th><th class="num">미실현</th><th class="num">수익률</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b></td><td>${side(p.direction)}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.qty)}</td><td class="num">${esc(p.avg??'—')}</td><td class="num">${esc(p.mark?+Number(p.mark).toPrecision(6):'—')}</td><td class="num">${usd(margin(p))}</td><td class="num">${esc(p.adds||0)}회</td><td class="muted">${held(p.openedAt,Date.now())}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(roe(p))}">${pctText(roe(p))}</td></tr>`).join('')}</tbody></table>`;
- const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>종목</th><th>방향</th><th class="num">추매</th><th>보유 시간</th><th class="num">트레이더 손익</th><th class="num">내 손익</th></tr></thead><tbody>${closed.slice(0,20).map(x=>`<tr><td class="muted">${when(x.closedAt)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="num">${esc(x.adds||0)}회</td><td class="muted">${held(x.openedAt,x.closedAt)}</td><td class="num">${x.theirPnlUSD!=null?money(x.theirPnlUSD):'—'}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b></td></tr>`).join('')}</tbody></table>`;
+ const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>종목</th><th>방향</th><th class="num">추매</th><th>보유 시간</th><th class="num">트레이더 손익</th><th class="num">내 손익</th></tr></thead><tbody>${shown.map(x=>`<tr><td class="muted">${when(x.closedAt)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="num">${esc(x.adds||0)}회</td><td class="muted">${held(x.openedAt,x.closedAt)}</td><td class="num">${x.theirPnlUSD!=null?money(x.theirPnlUSD):'—'}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b></td></tr>`).join('')}</tbody></table>`;
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,...fresh);
  const stamp=updated>0?`<p class="copy-stamp">손익·잔고 ${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
-  (closed.length?`<h5 class="copy-sub">최근 종료 <small>${(()=>{const total=c.closedTotal??closed.length;return total>20?`최근 20건 표시 · 전체 ${total}건`:`${total}건`})()}</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${closedTable}`:'')+
+  (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(c.closedTotal??closed.length)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
   (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span>${esc(e.symbol||'')} · ${esc(e.type==='LATE_ENTRY'?'늦은 진입 시도 (진입 알림을 놓친 포지션의 추매)':COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when,c.events||[])}</li>`).join('')}</ul>`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
@@ -260,7 +267,9 @@ function bindCopyButtons(el){
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('click',e=>{
   const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
-  if(resume)return call(resume,'/api/copy/resume',{confirm:'COPY_RESUME'},'다시 시작하는 중…');
+  const pg=e.target.closest('[data-copy-page]');
+ if(pg){setCopyPage(copyPage+Number(pg.dataset.copyPage));const box=pg.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);pg.blur?.();return}
+ if(resume)return call(resume,'/api/copy/resume',{confirm:'COPY_RESUME'},'다시 시작하는 중…');
   if(disarm)return call(disarm,'/api/copy/disarm',null,'끄는 중…');
   if(arm&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?'))return call(arm,'/api/copy/arm',{confirm:'COPY_ARM'},'켜는 중…')})}
 
