@@ -89,7 +89,9 @@ export class LiveExecutor{
   // Records that turned on the kill switch stay: they are the reason trading stopped.
   if(['LATE_ADD_AFTER_FLAT','EMERGENCY_NO_STOP'].includes(record.closeReason))return 'SAFETY_RECORD';
   if(record.test===true||record.status==='FAILED')return null;
-  if(record.status==='CLOSED'&&record.day===new Date(this.now()+9*3600000).toISOString().slice(0,10))return 'TODAY_COUNTS_FOR_DAILY_RISK';
+  // Entered today or closed today (KST): it counts toward today's risk / the shared testnet daily loss (review M4).
+  const today=new Date(this.now()+9*3600000).toISOString().slice(0,10),closedDay=record.closedAt>0?new Date(record.closedAt+9*3600000).toISOString().slice(0,10):null;
+  if(record.status==='CLOSED'&&(record.day===today||closedDay===today))return 'TODAY_COUNTS_FOR_DAILY_RISK';
   return record.status==='CLOSED'?null:'NOT_FINISHED';
  }
  deleteRecord(signalKey){
@@ -99,20 +101,26 @@ export class LiveExecutor{
   // The signal is remembered so the same signal is never entered again after its record is gone.
   if(!record.test)this.store.deletedKeys=[...this.store.deletedKeys.filter(k=>k!==signalKey),signalKey].slice(-MAX_DELETED_KEYS);
   if(!record.test&&record.status==='CLOSED')this.store.archived=[...this.store.archived,{signalKey,symbol:record.symbol,mode:record.mode,status:'CLOSED',createdAt:record.createdAt,
-   closedAt:record.closedAt,realized:record.realized?{source:record.realized.source,netUSD:record.realized.netUSD}:null,
+   closedAt:record.closedAt,plannedRiskUSD:record.plannedRiskUSD??null,realized:record.realized?{source:record.realized.source,netUSD:record.realized.netUSD}:null,
    events:(record.events||[]).filter(e=>e.type!=='RECONCILE_ERROR').map(e=>({type:e.type,at:e.at}))}].slice(-MAX_RECORDS);
   this.#save();return {ok:true}
  }
  /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only.
-  *  realizedToday: closed (non-test) trades of this mode closed that KST day; a trade not yet settled counts as its
-  *  planned worst loss until the venue's result arrives (never as 0). openRisk: planned worst loss of every active
-  *  record (as the open-risk cap above). usedMargin: margin of the held size plus the resting adds. */
+  *  realizedToday: closed (non-test) trades of this mode closed that KST day, deleted (archived) ones included (review
+  *  M4). A trade not yet settled counts as the estimate from its fills, else as its planned worst loss (never as 0);
+  *  provisionalToday is then true, so no day stop is written from it (review M5). openRisk: planned worst loss of every
+  *  active record (as the open-risk cap above). usedMargin: margin of the held size plus the resting adds. */
  budgetSource(){
   const active=()=>this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.test!==true);
   const kst=t=>new Date(Number(t)+9*3600000).toISOString().slice(0,10);
+  const today=day=>[...this.store.records,...this.store.archived].filter(r=>r.status==='CLOSED'&&r.test!==true&&r.mode===this.config.mode&&r.closedAt>0&&kst(r.closedAt)===day);
+  const settled=r=>r.realized&&r.realized.netUSD!==null&&r.realized.netUSD!==undefined&&Number.isFinite(Number(r.realized.netUSD));
+  const value=r=>{if(settled(r))return {net:Number(r.realized.netUSD),placeholder:false};
+   const e=r.exits?this.#estimate(r):null;if(e?.source==='ESTIMATE'&&Number.isFinite(Number(e.netUSD)))return {net:Number(e.netUSD),placeholder:true};
+   return {net:-(Number(r.plannedRiskUSD)||0),placeholder:true}};
   return {
-   realizedToday:day=>this.store.records.filter(r=>r.status==='CLOSED'&&r.test!==true&&r.mode===this.config.mode&&r.closedAt>0&&kst(r.closedAt)===day)
-    .reduce((t,r)=>{const n=Number(r.realized?.netUSD);return t+(r.realized&&r.realized.netUSD!==null&&r.realized.netUSD!==undefined&&Number.isFinite(n)?n:-(Number(r.plannedRiskUSD)||0))},0),
+   realizedToday:day=>today(day).reduce((t,r)=>t+value(r).net,0),
+   provisionalToday:day=>today(day).some(r=>value(r).placeholder),
    openRisk:()=>active().reduce((t,r)=>t+(Number(r.plannedRiskUSD)||0),0),
    usedMargin:()=>active().reduce((t,r)=>{const lev=Number(r.leverage)||1,px=Number(r.position?.entryPrice)||Number(r.firstEntryPrice)||Number(r.plannedEntry)||0;
     const held=r.position?.size>0?Number(r.position.size):Number(r.quantity?.total)||0;
@@ -159,11 +167,11 @@ export class LiveExecutor{
   const clientOrderId=liveClientId(signalKey);
   if(this.store.records.some(r=>r.clientOrderId===clientOrderId))return {sent:false,reasons:['DUPLICATE_SIGNAL']};
   const leverage=Number(row?.leverage)>0?Math.round(Number(row.leverage)):leverageForScore(row?.score,row?.marketCap)??10;
-  let qty=null,split=null,config=this.config,extra=[];
+  let qty=null,split=null,config=this.config,extra=[],budgetEquity=null,budgetMargin=null;
   try{if(this.externalHeld?.()?.has?.(row.symbol))extra.push('SYMBOL_HELD_BY_COPY')}catch{}
+  // Read the balance only when an order could actually be sent.
+  const gateOpen=this.config.mode!=='OFF'&&this.armed&&!this.store.killSwitch&&this.config.venues.includes(venue)&&this.credentials()[venue]&&contract;
   if(this.config.sizing==='BALANCE'){
-   // Read the balance only when an order could actually be sent.
-   const gateOpen=this.config.mode!=='OFF'&&this.armed&&!this.store.killSwitch&&this.config.venues.includes(venue)&&this.credentials()[venue]&&contract;
    if(gateOpen){
     let bal=null;try{bal=await this.#funds(venue)}catch(error){extra.push('BALANCE_UNAVAILABLE')}
     // Every position the same size (user 2026-11-13: "일정하게"): sized from the account equity, not
@@ -184,19 +192,25 @@ export class LiveExecutor{
      config={...this.config,dailyMaxRiskUSD:balanceUSD*this.config.dailyMaxLossPct/100};
      // Open-risk cap: the worst losses of every open position plus this one stay within the daily
      // loss limit of the balance — positions opened on earlier days count too (margin floor safety).
-     if(this.budget){
-      // TESTNET shared budget: today's loss of both strategies + every open stop risk of both + this plan within
-      // TESTNET_DAILY_LOSS_PCT of the equity, the margin of both within the shared cap (testnet_budget.mjs).
-      if(split){const b=this.budget.check({equity:balanceUSD,newRiskUSD:split.riskUSD,newMarginUSD:planMargin(split,row,leverage)});
-       if(!b.ok)extra.push(b.reason);}
-     }else{
-      const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
-      if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
-     }
+     // Always this strategy's own % (a stricter profile is never loosened by the shared testnet budget, review M1).
+     const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
+     if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
+     budgetEquity=balanceUSD;if(split)budgetMargin=planMargin(split,row,leverage);
      split&&Object.assign(split,{balanceUSD,freeUSD}); // equity (sizing and readiness drawdown), free margin at the entry
     }else if(!extra.length)extra.push('BALANCE_EMPTY');
    }
   }else qty=contract?liveQuantity({quantity:row.targetPlan?.quantity,estimatedStopLossUSD:row.execution?.estimatedStopLossUSD,maxRiskUSD:this.config.maxRiskUSD,contract}):null;
+  // TESTNET shared budget on top, any sizing (review L6): today's loss of each strategy + every open stop risk of both
+  // + this trade within TESTNET_DAILY_LOSS_PCT of the equity, the margin of both within the shared cap. No await
+  // between this check and the record below, so the scalp sees this trade as soon as it passes.
+  if(this.budget&&gateOpen&&qty&&!extra.includes('BALANCE_UNAVAILABLE')){
+   if(budgetEquity===null){try{const f=await this.#funds(venue);budgetEquity=this.config.balanceCapUSD>0?Math.min(f.equity,this.config.balanceCapUSD):f.equity}catch{extra.push('BALANCE_UNAVAILABLE')}}
+   if(budgetEquity!==null){
+    const margin=budgetMargin??(Number(qty.base)||0)*(posNum(row.entry)||posNum(row.venueEntry)||0)/leverage;
+    const b=this.budget.check({equity:budgetEquity,newRiskUSD:Number(qty.riskUSD)||0,newMarginUSD:margin,who:'signal'});
+    if(!b.ok)extra.push(b.reason);
+   }
+  }
   const check=preflight({config,armed:this.armed,killSwitch:this.store.killSwitch,credentials:this.credentials(),row,records:this.store.records,now:this.now(),qty});
   if(extra.length){check.ok=false;check.reasons=[...extra,...check.reasons.filter(r=>r!=='QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK')]}
   if(!check.ok){

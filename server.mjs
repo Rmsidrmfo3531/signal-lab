@@ -264,8 +264,9 @@ let copyTrader=null,scalpExec=null;
 const SCALP_EXEC=scalpExecConfig(process.env);
 // One shared TESTNET risk budget for the signal strategy and the reversal scalp (testnet_budget.mjs, user 2026-11-17
 // "한도까지 하나로" / "하루 손실을 늘리면 되지"): TESTNET_DAILY_LOSS_PCT (default 15) of the equity for today's loss of both +
-// every open stop risk of both + the new trade; margin of both within the larger cap. The signal side only on TESTNET.
-const testnetBudget=new TestnetBudget({dailyLossPct:testnetDailyLossPct(process.env),marginCapPct:testnetMarginCapPct({scalpConfig:SCALP_EXEC,liveConfig:LIVE})});
+// every open stop risk of both + the new trade (each strategy's loss counted alone); margin of both within TESTNET_MARGIN_CAP_PCT
+// (30 %). The shared day stop is kept in testnet-budget.json. The signal side only on TESTNET.
+const testnetBudget=new TestnetBudget({dailyLossPct:testnetDailyLossPct(process.env),marginCapPct:testnetMarginCapPct(process.env),directory:storage.dir,log:(...a)=>console.warn(...a)});
 const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),budget:LIVE.mode==='TESTNET'?testnetBudget:null,
  // Copy positions on the same testnet account are kept apart; a real-money copy uses another account.
  // Testnet reversal scalps (scalp_executor.mjs) share the testnet account too.

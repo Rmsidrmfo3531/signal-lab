@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {TestnetBudget,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch,kstDay} from '../testnet_budget.mjs';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {LiveExecutor} from '../live_executor.mjs';
 import {ScalpExecutor,scalpExecConfig} from '../scalp_executor.mjs';
 import {liveConfig} from '../live_orders.mjs';
@@ -12,33 +13,38 @@ import {testnetCloses,testnetClosedHTML,testnetSummaryHTML,testnetBudgetHTML,set
 const NOW=Date.parse('2026-11-17T03:00:00Z'); // 12:00 KST
 const liveCfg=(extra={})=>({mode:'TESTNET',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:8,maxPerDirection:4,...extra});
 
-test('settings: TESTNET_DAILY_LOSS_PCT default 15 (1-50); the shared margin cap is the larger of the two caps',()=>{
+test('settings: TESTNET_DAILY_LOSS_PCT default 15 (1-50); TESTNET_MARGIN_CAP_PCT default and maximum 30',()=>{
  assert.equal(testnetDailyLossPct({}),15);assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'12'}),12);
  assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'0'}),15);assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'abc'}),15);
- assert.equal(testnetMarginCapPct({scalpConfig:scalpExecConfig({}),liveConfig:liveConfig({LIVE_TRADING_MODE:'TESTNET'})}),30);
- assert.equal(testnetMarginCapPct({scalpConfig:{maxTotalMarginPct:20},liveConfig:{marginUsePct:40}}),40);
+ assert.equal(testnetMarginCapPct({}),30);assert.equal(testnetMarginCapPct({TESTNET_MARGIN_CAP_PCT:'20'}),20);assert.equal(testnetMarginCapPct({TESTNET_MARGIN_CAP_PCT:'45'}),30,'never above 30');
+ assert.equal(new TestnetBudget({marginCapPct:60}).marginCapPct,30);
  assert.equal(kstDay(Date.parse('2026-11-16T14:59:59Z')),'2026-11-16');assert.equal(kstDay(Date.parse('2026-11-16T15:00:00Z')),'2026-11-17');
 });
 
-test('budget: today\'s loss of both + open risk of both + the new trade within the %, margin of both within the cap',()=>{
+test('budget: each strategy\'s loss (no offset) + open risk of both + the new trade within the %, margin of both within the cap',()=>{
+ const mk=g=>new TestnetBudget({dailyLossPct:15,marginCapPct:30,now:()=>NOW}).register('signal',g.signal).register('scalp',g.scalp);
  const g={signal:{realizedToday:()=>-40,openRisk:()=>30,usedMargin:()=>100},scalp:{realizedToday:()=>10,openRisk:()=>20,usedMargin:()=>50}};
- const b=new TestnetBudget({dailyLossPct:15,marginCapPct:30,now:()=>NOW}).register('signal',g.signal).register('scalp',g.scalp);
- const s=b.snapshot(1000);assert.equal(s.limitUSD,150);assert.equal(s.realizedNetUSD,-30);assert.equal(s.lossUSD,30);assert.equal(s.openRiskUSD,50);assert.equal(s.usedUSD,80);assert.equal(s.marginUSD,150);
- assert.equal(b.check({equity:1000,newRiskUSD:70}).ok,true,'80 + 70 = 150: at the limit');
- assert.equal(b.check({equity:1000,newRiskUSD:71}).reason,'OPEN_RISK_LIMIT');
+ const b=mk(g),s=b.snapshot(1000);assert.equal(s.limitUSD,150);assert.equal(s.realizedNetUSD,-30);assert.equal(s.lossUSD,40,'the scalp\'s +10 does not pay for the signal\'s -40');
+ assert.equal(s.openRiskUSD,50);assert.equal(s.usedUSD,90);assert.equal(s.marginUSD,150);
+ assert.equal(b.check({equity:1000,newRiskUSD:60}).ok,true,'90 + 60 = 150: at the limit');
+ assert.equal(b.check({equity:1000,newRiskUSD:61}).reason,'OPEN_RISK_LIMIT');
  assert.equal(b.check({equity:1000,newRiskUSD:1,newMarginUSD:151}).reason,'TESTNET_MARGIN_CAP');
  assert.equal(b.check({equity:1000,newRiskUSD:1,newMarginUSD:151,margin:false}).ok,true,'the scalp sizes its margin itself');
- // A win of one offsets a loss of the other (today's realized result of both, KST day).
- g.scalp.realizedToday=()=>-110;assert.equal(b.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT','-40 -110 = -150: stopped');
- assert.equal(b.stopped(1000),true);
- // The scalp's stored realized + unrealized day stop stops the signal strategy too.
- g.scalp.realizedToday=()=>0;g.scalp.stoppedToday=day=>day==='2026-11-17';assert.equal(b.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT');
- g.scalp.stoppedToday=()=>false;
+ {const g2={signal:{realizedToday:()=>-40},scalp:{realizedToday:()=>-110}},b2=mk(g2);assert.equal(b2.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT','40 + 110 = 150: stopped');assert.equal(b2.stopped(1000),true)}
+ // The scalp's shared realized + unrealized day stop stops the signal strategy too.
+ {const b3=mk({signal:{realizedToday:()=>0},scalp:{realizedToday:()=>0,stoppedToday:day=>day==='2026-11-17'}});assert.equal(b3.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT')}
  // A getter that fails blocks entries (never read as 0).
- g.signal.openRisk=()=>{throw Error('x')};assert.equal(b.check({equity:1000,newRiskUSD:1}).reason,'TESTNET_BUDGET_UNAVAILABLE');
+ {const b4=mk({signal:{openRisk:()=>{throw Error('x')}},scalp:{}});assert.equal(b4.check({equity:1000,newRiskUSD:1}).reason,'TESTNET_BUDGET_UNAVAILABLE')}
  assert.equal(new TestnetBudget({}).check({equity:0,newRiskUSD:1}).reason,'NO_BALANCE');
  const st=new TestnetBudget({dailyLossPct:15}).register('a',{realizedToday:()=>-12.345,openRisk:()=>7.891}).status(1000);
  assert.deepEqual([st.lossUSD,st.limitUSD,st.openRiskUSD,st.dailyLossPct],[12.35,150,7.89,15]);
+});
+
+test('one balance basis (review L7): the smaller of the two strategies\' equity figures',()=>{
+ const b=new TestnetBudget({dailyLossPct:15,now:()=>NOW}).register('signal',{openRisk:()=>140}).register('scalp',{});
+ assert.equal(b.check({equity:1000,who:'signal',newRiskUSD:5}).ok,true,'1,000: 145 <= 150');
+ assert.equal(b.check({equity:2000,who:'scalp',newRiskUSD:15}).reason,'OPEN_RISK_LIMIT','the scalp reads 2,000 but the basis is the signal\'s 1,000');
+ assert.equal(b.snapshot(5000).equityUSD,1000);
 });
 
 test('signal strategy source: KST day of the close, open risk and margin of active records (tests left out)',()=>{
@@ -80,7 +86,7 @@ test('LIVE paths untouched: the one switch refuses a LIVE signal executor and ch
 });
 
 // ---- One testnet screen ----
-const sigClosed=i=>({signalKey:'s'+i,symbol:'S'+i+'USDT',direction:'LONG',createdAt:NOW-(i+2)*3600000,closedAt:NOW-i*600000*2,closeReasonKo:'거래소에서 청산됨 (익절·손절)',realized:{source:i%3?'EXCHANGE':'ESTIMATE',netUSD:i%2?2:-1},deletable:i===4});
+const sigClosed=i=>({mode:'TESTNET',signalKey:'s'+i,symbol:'S'+i+'USDT',direction:'LONG',createdAt:NOW-(i+2)*3600000,closedAt:NOW-i*600000*2,closeReasonKo:'거래소에서 청산됨 (익절·손절)',realized:{source:i%3?'EXCHANGE':'ESTIMATE',netUSD:i%2?2:-1},deletable:i===4});
 const scClosed=i=>({id:'c'+i,symbol:'C'+i+'USDT',direction:i%2?'SHORT':'LONG',openedAt:NOW-(i*2+1)*600000-1800000,closedAt:NOW-(i*2+1)*600000,closeReasonKo:'손절',netUSD:i%2?-0.5:1.5,netSource:'ESTIMATE'});
 test('merged 종료된 거래: both strategies newest first, badges 신호 / 단타, 10 per page with the copy page\'s pager',()=>{
  const o={closed:Array.from({length:12},(_,i)=>sigClosed(i)),scalp:{closed:Array.from({length:11},(_,i)=>scClosed(i))}};
@@ -115,4 +121,188 @@ test('totals over both strategies and the 신호 / 단타 breakdown line; budget
  assert.doesNotMatch(positionCardHTML({symbol:'ETHUSDT',direction:'LONG',status:'OPEN',venue:'BINGX',targets:[]}),/tn-signal/,'LIVE cards unchanged');
  const sc=scalpPositionCardHTML({symbol:'SOLUSDT',direction:'SHORT',status:'OPEN',avg:100,mark:99,size:2,stop:101,targets:[99,98,97],parts:[1,1,0],riskUSD:2,unrealized:2,leverage:10,openedAt:NOW});
  assert.match(sc,/vp-badge tn-scalp">단타/);assert.match(sc,/paper-short">숏/);assert.match(sc,/\+\$2\.00/);
+});
+
+// ---- Review regressions (testnet-unify b636b19, M1-M5 / L1-L7), from the reviewer's repro tests ----
+import {BingXTradeClient} from '../live_clients.mjs';
+import {liveClosedView} from '../live_overview.mjs';
+import {scalpHTML} from '../public/live_control.js';
+const T10=Date.parse('2026-11-10T12:00:00Z');
+const rjson=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
+function mockBingX({positionAmt=()=>'0.20'}={}){
+ const orders=[];let id=1000;
+ const fetcher=async(url,options)=>{
+  const u=new URL(url),q=Object.fromEntries([...u.searchParams].filter(([k])=>k!=='signature'));
+  if(u.pathname==='/openApi/swap/v3/user/balance')return rjson({code:0,data:[{asset:'USDT',balance:'1000',equity:'1000',availableMargin:'1000'}]});
+  if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='GET')return rjson({code:0,data:{marginType:'CROSSED'}});
+  if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='GET')return rjson({code:0,data:{maxLongLeverage:50,maxShortLeverage:50}});
+  if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='POST')return rjson({code:0,data:{symbol:q.symbol,leverage:Number(q.leverage)}});
+  if(u.pathname==='/openApi/swap/v1/positionSide/dual')return rjson({code:0,data:{dualSidePosition:false}});
+  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='POST'){
+   const o={orderID:String(++id),type:q.type,clientOrderId:q.clientOrderId,status:q.type==='MARKET'?'FILLED':'NEW'};orders.push(o);
+   if(q.type==='MARKET'&&q.stopLoss)orders.push({orderID:String(++id),type:'STOP_MARKET'});
+   return rjson({code:0,data:{order:o}})}
+  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='GET'){const o=orders.find(x=>x.clientOrderId===q.clientOrderId);return o?rjson({code:0,data:{order:o}}):rjson({code:80016,msg:'order not exist'})}
+  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE')return rjson({code:0,data:{order:{orderID:q.orderId}}});
+  if(u.pathname==='/openApi/swap/v2/trade/openOrders')return rjson({code:0,data:{orders:orders.filter(o=>o.type!=='MARKET')}});
+  if(u.pathname==='/openApi/swap/v2/user/positions')return rjson({code:0,data:[{symbol:'ETH-USDT',positionAmt:positionAmt(),avgPrice:'100.02',positionSide:'LONG'}]});
+  throw Error('unexpected '+u.pathname);
+ };
+ return {orders,client:new BingXTradeClient({apiKey:'bingx-key',secret:'bingx-test-secret-value-0123456789',mode:'TESTNET',fetcher,now:()=>T10})};
+}
+const cfg10=(extra={})=>({mode:'TESTNET',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:1,...extra});
+const sigRow=(extra={})=>({symbol:'ETHUSDT',executionVenue:'BINGX',venueSymbol:'ETH-USDT',direction:'LONG',stop:98,targets:[105,108,112],
+ venueContract:{quantityUnit:'BASE_ASSET',contractSizeBase:'1',quantityStep:'0.01',minQuantityBase:'0.01',tickSize:'0.01'},
+ targetPlan:{quantity:0.6},execution:{estimatedStopLossUSD:6},decision:{ready:true},...extra});
+const zones10=[97,94,91,88,85,82].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+const hybridSig=sigRow({entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones:zones10}]}});
+
+test('M1: a stricter signal profile (CONSERVATIVE 3 %) is never loosened to the shared 15 %',async()=>{
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_RISK_PROFILE:'conservative'}).dailyMaxLossPct,3);
+ const cfg=cfg10({sizing:'BALANCE',unitPct:.19,maxLossPct:1,maxAdds:7,dailyMaxLossPct:3,maxOpen:4,maxPerDirection:2,strategyProfile:'HYBRID',hybridMaxAdds:3,riskProfile:'CONSERVATIVE'});
+ const old={signalKey:'old',clientOrderId:'old',symbol:'BTCUSDT',venue:'BINGX',mode:'TESTNET',direction:'SHORT',status:'OPEN',plannedRiskUSD:25,day:'2026-11-09',leverage:10,quantity:{total:0.001},stopOrderId:'x',events:[{type:'PROTECTED'}]};
+ for(const budget of [null,new TestnetBudget({dailyLossPct:15,now:()=>T10})]){
+  const m=mockBingX({positionAmt:()=>'0.01'}),ex=new LiveExecutor({config:cfg,clients:{BINGX:m.client},now:()=>T10,budget});ex.store.records.push({...old});
+  budget?.register('signal',ex.budgetSource()).register('scalp',{realizedToday:()=>0,openRisk:()=>0,usedMargin:()=>0});
+  ex.arm();const r=await ex.onSignal(hybridSig,{signalKey:'m1'+Boolean(budget)});
+  assert.equal(r.sent,false);assert.ok(r.reasons.includes('OPEN_RISK_LIMIT'),'25 + ~10 > 3 % of 1,000 '+(budget?'with':'without')+' the budget: '+JSON.stringify(r.reasons));
+ }
+});
+
+test('L6: the shared budget also applies with RISK_USD sizing',async()=>{
+ const budget=new TestnetBudget({dailyLossPct:15,now:()=>T10}),m=mockBingX({positionAmt:()=>'0.20'});
+ const ex=new LiveExecutor({config:cfg10({sizing:'RISK_USD',maxOpen:4,maxPerDirection:2}),clients:{BINGX:m.client},now:()=>T10,budget});
+ budget.register('signal',ex.budgetSource()).register('scalp',{realizedToday:()=>0,openRisk:()=>149,usedMargin:()=>0});ex.arm();
+ const r=await ex.onSignal(sigRow(),{signalKey:'l6'});assert.equal(r.sent,false);assert.ok(r.reasons.includes('OPEN_RISK_LIMIT'),JSON.stringify(r.reasons));
+});
+
+test('M4: a trade closed today cannot be deleted, and deleted (archived) trades still count today',()=>{
+ const ex=new LiveExecutor({config:liveCfg(),clients:{},now:()=>NOW});
+ ex.store.records.push({signalKey:'y',symbol:'AUSDT',mode:'TESTNET',status:'CLOSED',day:'2026-11-16',createdAt:NOW-20*3600000,closedAt:NOW-3600000,plannedRiskUSD:30,realized:{source:'EXCHANGE',netUSD:-30}});
+ assert.equal(ex.deleteBlock(ex.store.records[0]),'TODAY_COUNTS_FOR_DAILY_RISK','entered yesterday, closed today: kept');
+ assert.equal(ex.deleteRecord('y').ok,false);assert.equal(ex.budgetSource().realizedToday('2026-11-17'),-30);
+ ex.store.archived.push({signalKey:'z',symbol:'BUSDT',mode:'TESTNET',status:'CLOSED',closedAt:NOW-1800000,realized:{source:'EXCHANGE',netUSD:-12}},
+  {signalKey:'w',symbol:'CUSDT',mode:'LIVE',status:'CLOSED',closedAt:NOW-1800000,realized:{source:'EXCHANGE',netUSD:-99}});
+ assert.equal(ex.budgetSource().realizedToday('2026-11-17'),-42,'archived TESTNET record of today counted, LIVE one not');
+ ex.store.records[0].closedAt=NOW-30*3600000;assert.equal(ex.deleteBlock(ex.store.records[0]),null,'closed yesterday: deletable');
+});
+
+test('M2: no offset between strategies — a signal win never lets the scalp lose past the limit',()=>{
+ const b=new TestnetBudget({dailyLossPct:15,now:()=>NOW}).register('signal',{realizedToday:()=>900,openRisk:()=>0,usedMargin:()=>0}).register('scalp',{realizedToday:()=>-1500,openRisk:()=>0,usedMargin:()=>0});
+ assert.equal(b.check({equity:10000,newRiskUSD:50}).reason,'DAILY_LOSS_LIMIT','scalp -1,500 = 15 % of 10,000 whatever the signal won');
+ const c=new TestnetBudget({dailyLossPct:15,now:()=>NOW}).register('signal',{realizedToday:()=>900}).register('scalp',{realizedToday:()=>-1000});
+ assert.equal(c.snapshot(10000).lossUSD,1000);assert.equal(c.check({equity:10000,newRiskUSD:50}).ok,true);
+});
+
+test('M5: an unsettled signal close counts as the estimate from its fills (planned loss only without fills), marked provisional',()=>{
+ const ex=new LiveExecutor({config:liveCfg(),clients:{},now:()=>NOW});
+ ex.store.records.push({signalKey:'tp',symbol:'AUSDT',direction:'LONG',mode:'TESTNET',status:'CLOSED',closeReason:'POSITION_FLAT',day:'2026-11-17',createdAt:NOW-3600000,closedAt:NOW-10000,plannedRiskUSD:30,exits:[{qty:1,price:110,at:NOW-10000}],position:{entryPrice:100,size:0}});
+ const src=ex.budgetSource(),v=src.realizedToday('2026-11-17');assert.ok(v>9&&v<10,'+10 minus fees by its exits: '+v);assert.equal(src.provisionalToday('2026-11-17'),true);
+ delete ex.store.records[0].exits;assert.equal(src.realizedToday('2026-11-17'),-30,'no fills: the planned loss');
+ ex.store.records[0].realized={source:'EXCHANGE',netUSD:9.5};assert.equal(src.realizedToday('2026-11-17'),9.5);assert.equal(src.provisionalToday('2026-11-17'),false);
+});
+
+test('L3: the merged testnet list shows only TESTNET signal records, no test orders',()=>{
+ const liveRec=liveClosedView({signalKey:'real1',symbol:'REALUSDT',mode:'LIVE',status:'CLOSED',direction:'LONG',createdAt:NOW-7200000,closedAt:NOW-3600000,realized:{source:'EXCHANGE',netUSD:-55}},NOW);
+ const testRec=liveClosedView({signalKey:'t1',symbol:'TESTUSDT',mode:'TESTNET',status:'CLOSED',test:true,direction:'LONG',createdAt:NOW-7200000,closedAt:NOW-3600000},NOW);
+ const tn=liveClosedView({signalKey:'n1',symbol:'NETUSDT',mode:'TESTNET',status:'CLOSED',direction:'LONG',createdAt:NOW-7200000,closedAt:NOW-3600000,realized:{source:'EXCHANGE',netUSD:3}},NOW);
+ assert.deepEqual(testnetCloses({closed:[liveRec,testRec,tn],scalp:{closed:[]}}).map(x=>x.symbol),['NETUSDT']);
+ setTestnetPage(0);assert.doesNotMatch(testnetClosedHTML({closed:[liveRec],scalp:{closed:[]}}),/REALUSDT/);
+});
+
+test('L2: a scalp-only day stop saved before the shared budget (no shared:true) is ignored; a shared one counts',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tn-l2-'));
+ try{
+  fs.writeFileSync(path.join(dir,'scalp-store.json'),JSON.stringify({version:1,open:[],closed:[],events:[],dailyStop:{day:kstDay(NOW),at:NOW-1000,lossUSD:-31,equity:1000}}));
+  const b=new TestnetBudget({dailyLossPct:15,now:()=>NOW}),sc=new ScalpExecutor({config:scalpExecConfig({}),client:{mode:'TESTNET'},directory:dir,now:()=>NOW,budget:b});
+  b.register('signal',{realizedToday:()=>0,openRisk:()=>0,usedMargin:()=>0}).register('scalp',sc.budgetSource());
+  assert.equal(b.check({equity:1000,newRiskUSD:30}).ok,true,'old 3 % stop: not a shared stop');sc.arm();assert.equal(sc.status().blocked,null);
+  sc.store.dailyStop.shared=true;assert.equal(b.check({equity:1000,newRiskUSD:30}).reason,'DAILY_LOSS_LIMIT');assert.equal(sc.status().blocked,'DAILY_LOSS_LIMIT');
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
+test('L1: the shared stop is written to its own file when first reached and holds for the KST day (results recover, scalp off, restart)',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tn-l1-')),clock={t:NOW};
+ try{
+  let sig=-150;const mk=()=>new TestnetBudget({dailyLossPct:15,now:()=>clock.t,directory:dir}).register('signal',{realizedToday:()=>sig,openRisk:()=>0,usedMargin:()=>0});
+  const b=mk();assert.equal(b.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT');
+  const saved=JSON.parse(fs.readFileSync(path.join(dir,'testnet-budget.json'),'utf8'));assert.equal(saved.stop.day,'2026-11-17');assert.equal(saved.stop.lossUSD,150);
+  sig=+20;assert.equal(b.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT','a later recovery does not lift it');
+  assert.equal(mk().check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT','after a restart, no scalp registered');
+  clock.t+=24*3600000;assert.equal(mk().check({equity:1000,newRiskUSD:1}).ok,true,'next KST day');
+  // A placeholder figure blocks now but is never written.
+  const d2=fs.mkdtempSync(path.join(os.tmpdir(),'tn-l1b-'));
+  const p=new TestnetBudget({dailyLossPct:15,now:()=>NOW,directory:d2}).register('signal',{realizedToday:()=>-150,provisionalToday:()=>true});
+  assert.equal(p.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT');assert.equal(fs.existsSync(path.join(d2,'testnet-budget.json')),false);
+  fs.rmSync(d2,{recursive:true,force:true});
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
+test('M3: without the shared screen (signal strategy LIVE) the scalp keeps its own panel and buttons',()=>{
+ const sc=new ScalpExecutor({config:scalpExecConfig({}),client:{mode:'TESTNET'},now:()=>NOW});
+ const h=scalpHTML(sc.status());assert.match(h,/data-scalp-arm/);assert.match(h,/○ 꺼짐/);
+ sc.arm();assert.match(scalpHTML(sc.status()),/data-scalp-disarm/);
+ const html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');assert.match(html,/id="liveScalpPanel"/);assert.match(html,/id="liveScalpOwn"/);
+});
+
+// Scalp harness (as tests/scalp_executor.test.mjs).
+const I=300000,BUCKET=Math.floor(Date.parse('2026-11-16T03:00:00Z')/I),T0=BUCKET*I+5000;
+function crash(){
+ const rows=[];let p=100;const push=(o,h,l,c,v)=>rows.push([0,o,h,l,c,v]),move=6,volume=10,lastOpen=(BUCKET-1)*I;
+ for(let i=0;i<50;i++){const o=p,c=p+(i%2?.05:-.05);push(o,Math.max(o,c)+.1,Math.min(o,c)-.1,c,100);p=c}
+ for(let i=0;i<4;i++){const o=p,c=p-move/4;push(o,o+.05,c-.1,c,100*volume*(i===3?1:.5));p=c}
+ push(p,p+.15,p-.8,p+.1,80*volume);
+ return rows.map((r,i)=>{const t=lastOpen-(rows.length-1-i)*I;return [t,...r.slice(1,6).map(String),t+I-1,String(r[5]*r[4])]});
+}
+const up4h=now=>Array.from({length:301},(_,i)=>{const t=now-(301-i)*4*3600000-1000,c=50+i*.1;return [t,String(c),String(c+.2),String(c-.2),String(c),'1000',t+4*3600000-1,'1']});
+const PX=+(Number(crash().at(-1)[4])+.02).toFixed(2);
+const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
+function venue({onMarket=null}={}){
+ const orders=new Map();let amt=0,avg=0,mark=0,id=1;
+ const reduce=q=>{amt=amt>0?+Math.max(0,amt-q).toFixed(8):+Math.min(0,amt+q).toFixed(8)};
+ const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
+ const client={mode:'TESTNET',positionMode:async()=>({dualSidePosition:false}),marginType:async()=>({marginType:'CROSSED'}),setMarginType:async()=>({}),
+  leverage:async()=>({maxLongLeverage:20,maxShortLeverage:20}),setLeverage:async(s,side,l)=>({leverage:l}),
+  positions:async()=>amt!==0?[{symbol:'SOL-USDT',positionSide:'BOTH',positionAmt:String(amt),avgPrice:String(avg),markPrice:String(mark||avg),unrealizedProfit:String(((mark||avg)-avg)*amt)}]:[],
+  openOrders:async()=>({orders:[...orders.values()].filter(o=>o.status==='NEW')}),
+  getOrder:async(s,{orderId,clientOrderId})=>({order:[...orders.values()].find(o=>orderId?o.orderId===orderId:o.clientOrderId===clientOrderId)??null}),
+  cancelOrder:async(s,oid)=>{const o=orders.get(oid);if(o&&o.status==='NEW')o.status='CANCELED';return {}},
+  placeOrder:async p=>{
+   if(p.type==='MARKET'){const q=Number(p.quantity);
+    if(p.reduceOnly){reduce(q);return {order:add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark||avg)})}}
+    onMarket?.();avg=mark||PX;amt=+(amt+(p.side==='SELL'?-q:q)).toFixed(8);const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(avg)});
+    if(p.stopLoss){const sl=JSON.parse(p.stopLoss);add({symbol:p.symbol,type:'STOP_MARKET',stopPrice:String(sl.stopPrice),side:'SELL'})}
+    return {order:o}}
+   return {order:add(p)}}};
+ return {client,set mark(v){mark=v},get avg(){return avg}};
+}
+const scalpMake=(v,{clock,funds,budget})=>new ScalpExecutor({config:{...scalpExecConfig({})},client:v.client,contracts:async()=>new Map([['SOLUSDT',SOL]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'}],
+ candles:async(s,iv)=>iv==='5m'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:up4h(clock.t),priceOf:async()=>PX,markOf:async()=>101,
+ balance:async()=>funds,gate:()=>({ok:true}),isBusy:()=>false,directory:null,now:()=>clock.t,budget});
+
+test('M5: the scalp check never writes a day stop from a placeholder (unsettled signal close); it looks again later',async()=>{
+ const clock={t:T0},funds={equity:1000,available:900},budget=new TestnetBudget({dailyLossPct:15,now:()=>clock.t});
+ const live=new LiveExecutor({config:liveCfg(),clients:{},now:()=>clock.t}),day=kstDay(clock.t);
+ live.store.records.push(
+  {signalKey:'l1',symbol:'L1USDT',mode:'TESTNET',status:'CLOSED',day,closedAt:clock.t-3600000,plannedRiskUSD:30,realized:{source:'EXCHANGE',netUSD:-55}},
+  {signalKey:'l2',symbol:'L2USDT',mode:'TESTNET',status:'CLOSED',day,closedAt:clock.t-3000000,plannedRiskUSD:30,realized:{source:'EXCHANGE',netUSD:-55}},
+  {signalKey:'tp',symbol:'TPUSDT',mode:'TESTNET',status:'CLOSED',day,closedAt:clock.t-20000,plannedRiskUSD:30,position:{entryPrice:100,size:0}}); // no fills read: placeholder -30
+ const v=venue(),ex=scalpMake(v,{clock,funds,budget});budget.register('signal',live.budgetSource()).register('scalp',ex.budgetSource());
+ ex.arm();await ex.scan();assert.equal(ex.store.open.length,1);
+ // -110 - 30 (placeholder) - 10.5 (scalp open) = -150.5: reached only with the placeholder.
+ v.mark=v.avg-10.5/ex.store.open[0].size;clock.t+=30000;await ex.reconcile();
+ assert.equal(ex.store.dailyStop,null,'not written from a placeholder');assert.equal(budget.storedStop(),null);
+ live.store.records[2].realized={source:'EXCHANGE',netUSD:25};clock.t+=30000;await ex.reconcile();
+ assert.equal(budget.storedStop(),null,'settled: -85 - 10.5, far from the limit');assert.equal(budget.check({equity:1000,newRiskUSD:1}).ok,true);
+ // Final values that do reach it: written once, both stopped, the switch stays on.
+ live.store.records[2].realized={source:'EXCHANGE',netUSD:-40};clock.t+=30000;await ex.reconcile();
+ assert.equal(budget.storedStop()?.day,day);assert.equal(ex.store.dailyStop.shared,true);assert.equal(ex.armed,true);
+});
+
+test('L4: a scalp entry being placed counts its risk once (the reservation is dropped when it enters the ledger)',async()=>{
+ const clock={t:T0},funds={equity:10000,available:9000},budget=new TestnetBudget({dailyLossPct:15,now:()=>clock.t});let seen=null;
+ const v=venue({onMarket:()=>{seen=budget.snapshot(10000).by.scalp}}),ex=scalpMake(v,{clock,funds,budget});budget.register('scalp',ex.budgetSource());
+ ex.arm();await ex.scan();const risk=ex.store.open[0].riskUSD;
+ assert.ok(Math.abs(seen.openRiskUSD-risk)<1,`once during placeOrder: ${seen.openRiskUSD} vs ${risk}`);
+ assert.ok(Math.abs(budget.snapshot(10000).by.scalp.openRiskUSD-risk)<1e-6);
 });
