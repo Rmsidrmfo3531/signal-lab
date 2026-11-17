@@ -65,9 +65,9 @@ export function scalpExecConfig(env=process.env){
  // LIVE included, is refused and leaves the scalps OFF.
  const raw=String(env.SCALP_EXEC_MODE??'').trim().toUpperCase(),known=raw===''||SCALP_EXEC_MODES.includes(raw);
  return {mode:known?(raw||'TESTNET'):'OFF',refused:known?null:raw==='LIVE'?'LIVE_REFUSED':'MODE_INVALID',interval:'5m',sides:scalpSides(env.SCALP_EXEC_SIDES),
-  settings:{...SCALP_EXEC_SETTINGS,retracements:[...SCALP_EXEC_SETTINGS.retracements]},// TP1 net RR floor: 0.7 on the testnet (user 2026-11-17 "해결 방법 찾아봐 테스트넷인데": ICP/ARIA skipped at RR 0.78-0.83);
+  settings:{...SCALP_EXEC_SETTINGS,retracements:[...SCALP_EXEC_SETTINGS.retracements]},// TP1 net RR floor (was 0.7 on the testnet, user 2026-11-17 "해결 방법 찾아봐 테스트넷인데": ICP/ARIA skipped at RR 0.78-0.83);
   // the backtest default is SCALP_DEFAULTS.minNetRR (1). Each trade keeps plan.netRR, so the 0.7-1 band is judged apart.
-  minNetRR:n('SCALP_MIN_NET_RR',.7,.3,3),maxHoldMs:SCALP_TIMEFRAMES['5m'].maxHoldMs,
+  minNetRR:n('SCALP_MIN_NET_RR',1,.3,3), /* back to 1 (2026-11-17 12:18 backtest: RR<1 band 29 trades PF 0.84 -$16.7, RR>=1 54 trades PF 1.17 +$39.3) */maxHoldMs:SCALP_TIMEFRAMES['5m'].maxHoldMs,
   // 4H trend: 'on' (default since 2026-11-17, user "수익을 극대화하는 방향으로": 30-day BingX backtest, against-trend
   // 23 trades -$76 of the -$101 total, PF 0.32) blocks against-trend signals and still logs trend4h/withTrend;
   // 'record' (2026-11-16 to 11-17, user: the followed trader shorted BLESSUSDT in a 4H uptrend that
