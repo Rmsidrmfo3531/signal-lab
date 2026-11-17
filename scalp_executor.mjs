@@ -15,7 +15,8 @@
 //  - Size: equity x riskPct (0.5 %) at the stop, margin capped; no position-count cap by default on testnet (user 2026-11-16; SCALP_MAX_OPEN>0 sets one), one per symbol,
 //    none on a symbol the signal strategy or copy holds on the same account.
 //  - LIVE is refused: the mode is OFF or TESTNET, and the client must be a TESTNET client. Starts disarmed.
-//  - Shared kill switch: no new entries. Daily loss limit (3 % of equity, realized today + open) disarms.
+//  - Shared kill switch: no new entries. Daily loss limit (3 % of equity, realized today + open) disarms; with the shared
+//    TESTNET budget (testnet_budget.mjs) the limit is TESTNET_DAILY_LOSS_PCT over both strategies and only blocks entries.
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -32,7 +33,7 @@ export const SCALP_EXEC_MODES=Object.freeze(['OFF','TESTNET']);
 export const SCALP_EXEC_SETTINGS=Object.freeze({minMovePct:SCALP_TIMEFRAMES['5m'].minMovePct*2,retracements:Object.freeze([.382,.5,.618]),stopAtr:.25,climaxVolume:3});
 // The backtest's cost assumptions (backtest.mjs BACKTEST_COSTS), the venue's taker fee when higher.
 export const SCALP_EXEC_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:2,spreadBps:1,fundingRate:.0001,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'});
-const SCREEN_CLOSED=20,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.25],MAX_CLOSED=300,MAX_EVENTS=200,MAX_SKIPS=60,MAX_KEYS=500,SETTLE_DELAY_MS=150000,SETTLE_TRIES=4;
+const SCREEN_CLOSED=100,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.25],MAX_CLOSED=300,MAX_EVENTS=200,MAX_SKIPS=60,MAX_KEYS=500,SETTLE_DELAY_MS=150000,SETTLE_TRIES=4;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const orderOf=d=>d?.order??d;
@@ -184,7 +185,7 @@ function positionOf(list,vs,direction,hedge=false){
 
 export class ScalpExecutor{
  constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,priceOf=async()=>null,markOf=async()=>null,
-  balance=async()=>null,isBusy=()=>false,gate=()=>({ok:true}),directory=null,fileName='scalp-store.json',now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
+  balance=async()=>null,isBusy=()=>false,gate=()=>({ok:true}),directory=null,fileName='scalp-store.json',now=()=>Date.now(),log=()=>{},onEvent=()=>{},budget=null}){
   if(!SCALP_EXEC_MODES.includes(config?.mode))throw err('SCALP_TESTNET_ONLY',500);
   if(client&&client.mode!=='TESTNET')throw err('SCALP_TESTNET_ONLY',500);
   Object.assign(this,{config,client,contracts,tickers,tickersFresh,candles,priceOf,markOf,balance,isBusy,gate,now,log,onEvent});
@@ -195,6 +196,9 @@ export class ScalpExecutor{
    skipCounts:saved?.skipCounts||{},skips:Array.isArray(saved?.skips)?saved.skips:[],sent:Array.isArray(saved?.sent)?saved.sent:[],dailyStop:saved?.dailyStop||null};
   // An entry cut off by a restart: its outcome is read from the venue by the next check.
   for(const p of this.store.open)if(p.status==='SUBMITTING')p.status='UNKNOWN';
+  // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the daily loss, open risk and margin shared with the
+  // signal strategy on the testnet (TESTNET_DAILY_LOSS_PCT, default 15 %). Without it the scalp's own 3 % rules apply.
+  this.budget=budget;this.reservedRisk=new Map();
   this.armed=false;this.reserved=new Set();this.universe=[];this.universeAt=0;this.trendCache=new Map();this.lastScanBucket=null;this.lastScan=null;
   this.scanning=false;this.reconciling=false;this.lastReconcileAt=0;this.cooldownUntil=0;this.funds=null;
   // Trade journal (scalp_journal.mjs, user 2026-11-16 22:18): every finished trade, never truncated; the stats
@@ -212,7 +216,8 @@ export class ScalpExecutor{
  #event(type,detail={}){const e={type,at:this.now(),mode:'TESTNET',strategy:SCALP_EXEC_STRATEGY,...detail};this.store.events.push(e);this.log(`[SCALP] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
  #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
  #gate(){try{return this.gate()||{ok:true}}catch{return {ok:false,reason:'GATE_ERROR'}}}
- #todayStopped(){return this.store.dailyStop?.day===kstDay(this.now())}
+ // With the shared budget only a stop written under it counts (review L2: a scalp-only 3 % stop saved before is ignored).
+ #todayStopped(){const d=this.store.dailyStop;return d?.day===kstDay(this.now())&&(!this.budget||d.shared===true)}
  /** Why no new entry may be sent now (null = may). */
  #blocked(){
   if(this.config.mode!=='TESTNET')return this.config.refused||'SCALP_MODE_OFF';
@@ -221,6 +226,8 @@ export class ScalpExecutor{
   if(!this.armed)return 'NOT_ARMED';
   const g=this.#gate();if(!g.ok)return g.reason||'GATE_CLOSED';
   if(this.#todayStopped())return 'DAILY_LOSS_LIMIT';
+  // Shared budget: the signal strategy's and the scalp's realized loss today reached the shared limit.
+  if(this.budget?.stopped(this.funds?.equity))return 'DAILY_LOSS_LIMIT';
   if(this.store.open.some(p=>p.status==='UNKNOWN'))return 'UNRESOLVED_ORDER_STATE';
   if(this.cooldownUntil>this.now())return 'RATE_LIMIT_COOLDOWN';
   return null;
@@ -230,7 +237,8 @@ export class ScalpExecutor{
   if(!this.client)throw err('CREDENTIALS_MISSING');
   if(this.client.mode!=='TESTNET')throw err('SCALP_TESTNET_ONLY');
   const g=this.#gate();if(!g.ok)throw err(g.reason==='KILL_SWITCH'?'KILL_SWITCH_ON':g.reason||'GATE_CLOSED');
-  if(this.#todayStopped())throw err('DAILY_LOSS_LIMIT');
+  // Shared budget (one testnet switch): the switch may stay on through a day stop; entries wait for the next KST day.
+  if(this.#todayStopped()&&!this.budget)throw err('DAILY_LOSS_LIMIT');
   this.armed=true;this.#event('ARMED');this.#save();return this.status();
  }
  disarm(reason='MANUAL'){const was=this.armed;this.armed=false;if(was)this.#event('DISARMED',{reason});this.#save();return this.status()}
@@ -351,18 +359,36 @@ export class ScalpExecutor{
    const funds=await this.#funds();if(!funds)return skip('NO_BALANCE');
    let lev=this.config.leverage;
    try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)lev=Math.max(1,Math.min(lev,Math.floor(max)))}catch{}
-   const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,usedMargin:this.#usedMargin(),leverage:lev,config:this.config});
+   // Shared budget: the margin of both strategies within the shared cap (the larger of the two caps).
+   const shared=this.budget?this.budget.snapshot(funds.equity,{who:'scalp'}):null;
+   const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,usedMargin:shared?shared.marginUSD:this.#usedMargin(),leverage:lev,
+    config:shared?{...this.config,maxTotalMarginPct:this.budget.marginCapPct}:this.config});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
    // No count cap on testnet (user 2026-11-16), so the daily loss limit caps the risk up front: today's realized loss
    // + loss to the open stops + this trade must stay within it (review 2026-11-16, as OPEN_RISK_LIMIT for the signals).
-   {const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
+   if(this.budget){
+    // Shared TESTNET budget (testnet_budget.mjs): today's loss of both strategies + every open stop risk of both
+    // + this trade within TESTNET_DAILY_LOSS_PCT of the equity; per-trade risk stays 0.5 %.
+    const b=this.budget.check({equity:funds.equity,newRiskUSD:Number(plan.riskUSD)||0,margin:false,who:'scalp'});
+    if(this.cur?.plan&&b.snap?.ok)this.cur.plan.openRiskUSD=+(b.snap.usedUSD+(Number(plan.riskUSD)||0)).toFixed(2);
+    if(!b.ok)return skip(b.reason,b.detail);
+   }else{const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
     const risk=Math.max(0,-realized)+this.#openRisk()+(Number(plan.riskUSD)||0),limit=funds.equity*this.config.dailyLossPct/100;
     if(this.cur?.plan)this.cur.plan.openRiskUSD=+risk.toFixed(2);
     if(risk>limit)return skip('OPEN_RISK_LIMIT',`$${risk.toFixed(2)} > $${limit.toFixed(2)}`)}
+   // Held for the shared budget until the position is in the ledger (the signal strategy checks in between).
+   this.reservedRisk.set(u.symbol,{riskUSD:Number(plan.riskUSD)||0,marginUSD:Number(plan.marginUSD)||0});
    return await this.#enter(u,det,c,plan,key);
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
-  finally{this.reserved.delete(u.symbol)}
+  finally{this.reserved.delete(u.symbol);this.reservedRisk.delete(u.symbol)}
+ }
+ /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only. */
+ budgetSource(){
+  const reserved=k=>[...this.reservedRisk.values()].reduce((t,x)=>t+(x[k]||0),0);
+  return {realizedToday:day=>this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0),
+   openRisk:()=>this.#openRisk()+reserved('riskUSD'),usedMargin:()=>this.#usedMargin()+reserved('marginUSD'),
+   unrealized:()=>this.store.open.reduce((t,p)=>t+(Number(p.unrealized)||0),0),stoppedToday:day=>this.store.dailyStop?.day===day&&this.store.dailyStop.shared===true};
  }
  async #enter(u,det,c,plan,id){
   const cl=this.client,vs=u.venueSymbol,d=det.direction,skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
@@ -387,6 +413,8 @@ export class ScalpExecutor{
    // Journal context (analysis only).
    atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,withTrend:this.cur?.withTrend??null,universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
   this.store.open.push(p);this.store.sent.push(id);this.#save();
+  // In the ledger now (counted by #openRisk): the reservation is dropped so the risk is never counted twice (review L4).
+  this.reservedRisk.delete(u.symbol);
   let fill;
   try{fill=await cl.placeOrder({symbol:vs,side:openSide(d),positionSide:positionSideFor({hedge,direction:d}),type:'MARKET',quantity:String(plan.qty),clientOrderId:id,
    stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:Number(px(plan.stop)),workingType:'MARK_PRICE'})})}
@@ -539,10 +567,28 @@ export class ScalpExecutor{
    const journalOnly=!this.store.open.length&&!this.armed;
    const funds=journalOnly?null:await this.#funds();
    if(funds){
-    const today=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===today).reduce((t,x)=>t+(Number(x.netUSD)||0),0),total=realized+unrealized;
-    if(!this.#todayStopped()&&total<=-funds.equity*this.config.dailyLossPct/100){
-     this.store.dailyStop={day:today,at:this.now(),lossUSD:+total.toFixed(2),equity:funds.equity};
-     this.#event('DAILY_LOSS_LIMIT',{reason:`${total.toFixed(2)} ≤ -${this.config.dailyLossPct}% of ${funds.equity.toFixed(2)}`,lossUSD:+total.toFixed(2)});this.disarm('DAILY_LOSS_LIMIT');
+    const today=kstDay(this.now());
+    if(this.budget){
+     // Shared budget: each strategy's realized today + unrealized, as a loss on its own (no offset between strategies,
+     // review M2), against the shared %; written once to the budget's file. A figure holding a placeholder (a signal
+     // close not yet settled) is never written: the next check looks again (review M5). The switch stays on.
+     const snap=this.budget.snapshot(funds.equity,{who:'scalp'});
+     if(snap.ok&&snap.limitUSD!==null&&!snap.provisional&&!snap.storedStop&&snap.lossWithOpenUSD>=snap.limitUSD)
+      this.budget.markStopped({lossUSD:+snap.lossWithOpenUSD.toFixed(2),limitUSD:+snap.limitUSD.toFixed(2),reason:'REALIZED_AND_OPEN'});
+     const st=this.budget.storedStop();
+     if(st&&!this.#todayStopped()){
+      const loss=-Math.abs(Number(st.lossUSD)||0);
+      this.store.dailyStop={day:today,at:this.now(),lossUSD:+loss.toFixed(2),equity:snap.equityUSD,shared:true};
+      this.#event('DAILY_LOSS_LIMIT',{reason:`${loss.toFixed(2)} ≤ -${this.budget.dailyLossPct}% of ${(snap.equityUSD||0).toFixed(2)} (신호+단타)`,lossUSD:+loss.toFixed(2),shared:true});
+     }
+    }else{
+     // Alone: the scalp's own numbers and 3 %, disarmed as before.
+     const realized=this.store.closed.filter(x=>kstDay(x.closedAt)===today).reduce((t,x)=>t+(Number(x.netUSD)||0),0),total=realized+unrealized,pct=this.config.dailyLossPct;
+     if(!this.#todayStopped()&&total<=-funds.equity*pct/100){
+      this.store.dailyStop={day:today,at:this.now(),lossUSD:+total.toFixed(2),equity:funds.equity};
+      this.#event('DAILY_LOSS_LIMIT',{reason:`${total.toFixed(2)} ≤ -${pct}% of ${funds.equity.toFixed(2)}`,lossUSD:+total.toFixed(2)});
+      this.disarm('DAILY_LOSS_LIMIT');
+     }
     }
    }
   }finally{this.reconciling=false;this.#save()}
@@ -589,14 +635,14 @@ export class ScalpExecutor{
  #stats(list){
   const n=list.length,wins=list.filter(x=>x.netUSD>0),gross=wins.reduce((t,x)=>t+x.netUSD,0),loss=-list.filter(x=>x.netUSD<0).reduce((t,x)=>t+x.netUSD,0);
   const today=kstDay(this.now()),reasons={};for(const x of list)reasons[x.closeReason]=(reasons[x.closeReason]||0)+1;
-  return {trades:n,wins:wins.length,winRatePct:n?+(wins.length/n*100).toFixed(1):null,profitFactor:loss>0?+(gross/loss).toFixed(2):null,netUSD:+list.reduce((t,x)=>t+(Number(x.netUSD)||0),0).toFixed(2),
+  return {trades:n,wins:wins.length,grossProfitUSD:+gross.toFixed(2),grossLossUSD:+loss.toFixed(2),winRatePct:n?+(wins.length/n*100).toFixed(1):null,profitFactor:loss>0?+(gross/loss).toFixed(2):null,netUSD:+list.reduce((t,x)=>t+(Number(x.netUSD)||0),0).toFixed(2),
    todayNetUSD:+list.filter(x=>kstDay(x.closedAt)===today).reduce((t,x)=>t+(Number(x.netUSD)||0),0).toFixed(2),closeReasons:reasons};
  }
  status(){
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
-    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:c.maxTotalMarginPct,dailyLossPct:c.dailyLossPct,maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
+    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),

@@ -104,7 +104,11 @@ test('configuration defaults are OFF and conservative; LIVE needs the confirmati
  // OFF / TESTNET: growth risk profile (3 % a trade, 9 % open risk / day, 8 positions).
  assert.deepEqual(liveConfig({}),{mode:'OFF',liveConfirmed:false,signalLiveLocked:true,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:8,maxPerDirection:4,sizing:'BALANCE',unitPct:.19,maxLossPct:3,maxAdds:7,dailyMaxLossPct:9,balanceCapUSD:0,minUnitMarginUSD:0,marginUsePct:25,strategyProfile:'HYBRID',hybridMaxAdds:3,riskProfile:'GROWTH'});
  {const c=liveConfig({LIVE_RISK_PROFILE:'conservative'});assert.deepEqual([c.maxLossPct,c.dailyMaxLossPct,c.maxOpen],[1,3,4])}
- {const t=liveConfig({LIVE_TRADING_MODE:'TESTNET',DCA_MAX_LOSS_PCT:'30',LIVE_DAILY_MAX_LOSS_PCT:'60'});assert.deepEqual([t.riskProfile,t.maxLossPct,t.dailyMaxLossPct,t.maxOpen],['GROWTH',3,9,8],'profile is a ceiling on testnet')}
+ {const t=liveConfig({LIVE_TRADING_MODE:'TESTNET',DCA_MAX_LOSS_PCT:'30',LIVE_DAILY_MAX_LOSS_PCT:'60'});assert.deepEqual([t.riskProfile,t.maxLossPct,t.dailyMaxLossPct,t.maxOpen],['GROWTH',3,15,8],'profile is a ceiling on testnet; daily = the shared testnet 15 % (user 2026-11-17)')}
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',TESTNET_DAILY_LOSS_PCT:'20'}).dailyMaxLossPct,20,'TESTNET_DAILY_LOSS_PCT sets the shared testnet %');
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',TESTNET_DAILY_LOSS_PCT:'99'}).dailyMaxLossPct,15,'out of range: default 15');
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_DAILY_MAX_LOSS_PCT:'5'}).dailyMaxLossPct,5,'a stricter single value is still kept');
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'LIVE',TESTNET_DAILY_LOSS_PCT:'20',LIVE_RISK_PROFILE:'GROWTH'}).dailyMaxLossPct,9,'LIVE never takes the testnet %');
  // LIVE keeps the earlier values until the user approves the change.
  {const l=liveConfig({LIVE_TRADING_MODE:'LIVE'});assert.deepEqual([l.riskProfile,l.maxLossPct,l.dailyMaxLossPct,l.maxOpen],['CURRENT',30,60,0])}
  {const c=liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_RISK_PROFILE:'current'});assert.deepEqual([c.riskProfile,c.maxLossPct,c.maxOpen],['CURRENT',30,0])}
@@ -456,7 +460,8 @@ test('finished records can be deleted; positions, unchecked states and today\'s 
  await ex.onSignal(row('BINGX'),{signalKey:'d1'});const r=ex.store.records.find(x=>x.signalKey==='d1');
  assert.equal(ex.deleteRecord('d1').reason,'ACTIVE');
  r.status='CLOSED';r.closedAt=NOW;assert.equal(ex.deleteRecord('d1').reason,'TODAY_COUNTS_FOR_DAILY_RISK');
- r.day='2000-01-01';assert.equal(ex.status().records[0].deletable,true);
+ r.day='2000-01-01';assert.equal(ex.deleteRecord('d1').reason,'TODAY_COUNTS_FOR_DAILY_RISK','closed today (KST) also stays (review M4)');
+ r.closedAt=NOW-3*86400000;assert.equal(ex.status().records[0].deletable,true);
  assert.equal(ex.deleteRecord('d1').ok,true);assert.equal(ex.store.records.length,0);
  assert.equal(ex.store.archived.length,1,'the deleted trade still counts for readiness');assert.equal(ex.store.archived[0].signalKey,'d1');
  assert.equal(ex.hasSignal('d1'),true,'deleted signal is remembered');
@@ -730,4 +735,32 @@ test('direction other than LONG / SHORT: preflight refuses, the order builder th
  assert.ok(preflight({...base,row:row('BINGX',{direction:'long'})}).reasons.includes('DIRECTION_INVALID'));
  assert.ok(!preflight({...base,row:row('BINGX',{direction:'SHORT'})}).reasons.includes('DIRECTION_INVALID'));
  for(const hedge of [true,false])assert.throws(()=>bingxOrders({symbol:'ETH-USDT',direction:'BOTH',stop:98,targets:[1,2,3],qty:{total:1,parts:[1,0,0]},clientOrderId:'x',hedge}),/DIRECTION_INVALID/);
+});
+
+// ---- Shared TESTNET budget with the reversal scalp (user 2026-11-17 "한도까지 하나로", "하루 손실을 늘리면 되지") ----
+test('shared testnet budget: the scalp\'s open risk, today\'s loss and margin count for a signal entry; per-trade 3 % unchanged; LIVE never uses it',async()=>{
+ const {TestnetBudget}=await import('../testnet_budget.mjs');
+ const zones=[97,94,91,88,85,82].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ const sig=row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones}]}});
+ const cfg=config({sizing:'BALANCE',unitPct:.19,maxLossPct:3,maxAdds:7,dailyMaxLossPct:15,maxOpen:8,maxPerDirection:4,strategyProfile:'HYBRID',hybridMaxAdds:3});
+ const sc={open:0,realized:0,margin:0};
+ const run=async key=>{const m=mockBingX({positionAmt:()=>'0.01'}),budget=new TestnetBudget({dailyLossPct:15,marginCapPct:30,now:()=>NOW});
+  const ex=new LiveExecutor({config:cfg,clients:{BINGX:m.client},now:()=>NOW,budget});
+  budget.register('signal',ex.budgetSource()).register('scalp',{realizedToday:()=>sc.realized,openRisk:()=>sc.open,usedMargin:()=>sc.margin});
+  ex.arm();const res=await ex.onSignal(sig,{signalKey:key});return {ex,res,budget}};
+ // 1,000 equity: shared limit 150. The scalps hold 140 to their stops; the signal's ~30 would cross it.
+ sc.open=140;{const {res}=await run('b1');assert.equal(res.sent,false);assert.ok(res.reasons.includes('OPEN_RISK_LIMIT'),JSON.stringify(res.reasons))}
+ // The scalps lost 150 today: the signal strategy stops for the day too.
+ sc.open=0;sc.realized=-150;{const {res}=await run('b2');assert.equal(res.sent,false);assert.ok(res.reasons.includes('DAILY_LOSS_LIMIT'),JSON.stringify(res.reasons))}
+ // The scalps use the shared margin (30 % of 1,000).
+ sc.realized=0;sc.margin=299.99;{const {res}=await run('b3');assert.ok(res.reasons.includes('TESTNET_MARGIN_CAP'),JSON.stringify(res.reasons))}
+ // Room: entered with the same per-trade risk (3 % of 1,000 with every add filled).
+ sc.margin=0;sc.open=50;{const {ex,res,budget}=await run('b4');const r=ex.store.records[0];assert.equal(r?.status,'OPEN',JSON.stringify(res));
+  assert.ok(r.plannedRiskUSD<=30.01&&r.plannedRiskUSD>=20,'per-trade risk unchanged: '+r.plannedRiskUSD);
+  const s=budget.snapshot(1000);assert.ok(Math.abs(s.openRiskUSD-50-r.plannedRiskUSD)<1e-6);assert.ok(s.by.signal.marginUSD>0);
+  // A close not yet settled counts as its planned loss until the venue's result arrives; a settled one as its result.
+  r.status='CLOSED';r.closedAt=NOW;assert.ok(Math.abs(ex.budgetSource().realizedToday('2026-11-10')+r.plannedRiskUSD)<1e-9);
+  r.realized={source:'EXCHANGE',netUSD:4.5};assert.equal(ex.budgetSource().realizedToday('2026-11-10'),4.5);assert.equal(ex.budgetSource().realizedToday('2026-11-11'),0)}
+ // LIVE: the executor never takes a budget (its own OPEN_RISK_LIMIT rule stays).
+ {const budget=new TestnetBudget({});const ex=new LiveExecutor({config:config({mode:'LIVE',liveConfirmed:true}),clients:{},now:()=>NOW,budget});assert.equal(ex.budget,null)}
 });
