@@ -194,8 +194,22 @@ export function zoneTouch(zones,price,touchPct=ZONE_TOUCH_PCT){
  if(!Array.isArray(zones)||!positive(price))return null;
  let best=null;
  for(const z of zones){const d=price<z.low?(z.low-price)/price*100:price>z.high?(price-z.high)/price*100:0;if(!best||d<best.distPct)best={...z,distPct:d}}
- if(!best)return {atZone:false,distPct:null,sharePct:null,rank:null,price:null};
- return {atZone:best.distPct<=touchPct,distPct:best.distPct,sharePct:best.sharePct,rank:best.rank,price:best.price};
+ if(!best)return {atZone:false,distPct:null,sharePct:null,rank:null,price:null,low:null,high:null};
+ return {atZone:best.distPct<=touchPct,distPct:best.distPct,sharePct:best.sharePct,rank:best.rank,price:best.price,low:best.low,high:best.high};
+}
+/** Time from the start of the move window to `now` (the zones are cut there): (moveWindow + 1) candles. */
+export const zoneSpanMs=(settings={},interval='5m')=>((settings.moveWindow??SCALP_DEFAULTS.moveWindow)+1)*SCALP_TIMEFRAMES[interval].intervalMs;
+/** The nearest 4H and 1D zones to a signal's extreme, from candles closed before the move window began
+ * (zones4h / zones1d: zoneBook functions). Shared by backtestScalp and the testnet executor (scalp_executor.mjs). */
+export function zoneTouches({zones4h,zones1d,det,now,moveSpanMs,touchPct=ZONE_TOUCH_PCT}){
+ const cut=now-moveSpanMs,ex=det.evidence?.extreme;
+ return {'4h':zoneTouch(zones4h(cut),ex,touchPct),'1d':zoneTouch(zones1d(cut),ex,touchPct)};
+}
+/** Flat tag fields of zoneTouches (atZone: null when neither profile exists; missing data is never a touch). */
+export function zoneTagFields({'4h':a,'1d':b}){
+ return {atZone4h:a?a.atZone:null,zoneDistPct4h:a?.distPct??null,zoneShare4h:a?.sharePct??null,zoneRank4h:a?.rank??null,zonePrice4h:a?.price??null,
+  atZone1d:b?b.atZone:null,zoneDistPct1d:b?.distPct??null,zoneShare1d:b?.sharePct??null,zoneRank1d:b?.rank??null,zonePrice1d:b?.price??null,
+  atZone:a||b?Boolean(a?.atZone||b?.atZone):null,zoneDistPct:[a?.distPct,b?.distPct].filter(Number.isFinite).reduce((m,x)=>m==null?x:Math.min(m,x),null)};
 }
 
 /** 5m reversal scalp replay, without and with the zone scale-in plan. */
@@ -211,11 +225,8 @@ export function backtestScalp({symbol,m5,m15,h4=null,d1=null,trendFilter=Array.i
  const m5c=(interval==='1m'?bars:m5).map(toCandle),funnel={bars:0,signals:0,qualityRejected:0,dcaRejected:{},entrySkipped:0},trades=[];
  const busy={FIXED:-1,DCA:-1,ZONE:-1};let balance=balanceUSD;
  const zones4h=zoneTags?zoneBook(h4,{symbol,tickSize:filters.tickSize,interval:'4h'}):()=>null,zones1d=zoneTags?zoneBook(d1,{symbol,tickSize:filters.tickSize,interval:'1d'}):()=>null;
- const moveSpanMs=((settings.moveWindow??SCALP_DEFAULTS.moveWindow)+1)*SCALP_TIMEFRAMES[interval].intervalMs;
- const zoneTag=(det,now)=>{const cut=now-moveSpanMs,ex=det.evidence?.extreme,a=zoneTouch(zones4h(cut),ex,zoneTouchPct),b=zoneTouch(zones1d(cut),ex,zoneTouchPct);
-  return {atZone4h:a?a.atZone:null,zoneDistPct4h:a?.distPct??null,zoneShare4h:a?.sharePct??null,zoneRank4h:a?.rank??null,zonePrice4h:a?.price??null,
-   atZone1d:b?b.atZone:null,zoneDistPct1d:b?.distPct??null,zoneShare1d:b?.sharePct??null,zoneRank1d:b?.rank??null,zonePrice1d:b?.price??null,
-   atZone:a||b?Boolean(a?.atZone||b?.atZone):null,zoneDistPct:[a?.distPct,b?.distPct].filter(Number.isFinite).reduce((m,x)=>m==null?x:Math.min(m,x),null)}};
+ const moveSpanMs=zoneSpanMs(settings,interval);
+ const zoneTag=(det,now)=>zoneTagFields(zoneTouches({zones4h,zones1d,det,now,moveSpanMs,touchPct:zoneTouchPct}));
  // Candidate B only adds signals when the main rule asks for a larger move than zoneMinMovePct.
  const zoneOn=zoneSignals&&zoneTags&&(settings.minMovePct??SCALP_TIMEFRAMES[interval].minMovePct)>zoneMinMovePct;
  if(zoneOn)funnel.zone={signals:0,atZone:0,trendBlocked:0,qualityRejected:0,entrySkipped:0,busySkipped:0};

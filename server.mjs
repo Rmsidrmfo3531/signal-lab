@@ -348,6 +348,9 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  candles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
  // 4H trend: Binance for Binance-listed symbols (as the backtest and the paper scalps), else BingX.
  trendCandles:symbol=>state.activeSet.has(symbol)?klines(symbol,'4h',301):scalpMarket.klines(symbol,'4h',301),
+ // 매물대 반전 zones (4H 542 / 1D 182 candles): BingX public klines on the same paced queue (SCALP_KLINE_GAP_MS), read only
+ // for coins whose 2.5 % detection fired, cached per coin until the next 4H / 1D candle closes.
+ zoneCandles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
  // Entry price check: the BingX book mid, else a fresh BingX last price.
  priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
  markOf:venueSymbol=>scalpLast(venueSymbol,20000),

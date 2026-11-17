@@ -15,6 +15,10 @@
 //  - Size: equity x riskPct (0.5 %) at the stop, margin capped; no position-count cap by default on testnet (user 2026-11-16; SCALP_MAX_OPEN>0 sets one), one per symbol,
 //    none on a symbol the signal strategy or copy holds on the same account.
 //  - LIVE is refused: the mode is OFF or TESTNET, and the client must be a TESTNET client. Starts disarmed.
+//  - 매물대 반전 (user 2026-11-17 23:12 "1번 진행", backtest candidate B): when the 5 % rule finds nothing on a closed
+//    candle, the same detection at 2.5 % whose extreme lies in or within 0.3 % of a 4H / 1D volume zone (backtest.mjs
+//    zoneBook / zoneTouches / zoneTagFields, zones from candles closed before the move window) is traded with every other
+//    rule unchanged (kind ZONE_REVERSAL; the 5 % ones are MOVE_REVERSAL). SCALP_ZONE_SIGNALS=off turns it off.
 //  - Shared kill switch: no new entries. Daily loss limit (3 % of equity, realized today + open) disarms; with the shared
 //    TESTNET budget (testnet_budget.mjs) the limit is TESTNET_DAILY_LOSS_PCT over both strategies and only blocks entries.
 import fs from 'node:fs';
@@ -26,17 +30,32 @@ import {scalpReasonKo} from './scalp_telegram.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
+import {zoneBook,zoneTouches,zoneTagFields,zoneSpanMs,ZONE_PROFILES,ZONE_TOUCH_PCT} from './backtest.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
 export const SCALP_EXEC_MODES=Object.freeze(['OFF','TESTNET']);
 // User 2026-11-14 22:29: move = 2 x the 5m default (2.5 -> 5 %), targets 38.2 / 50 / 61.8 %, stop 0.25 ATR, climax 3x.
 export const SCALP_EXEC_SETTINGS=Object.freeze({minMovePct:SCALP_TIMEFRAMES['5m'].minMovePct*2,retracements:Object.freeze([.382,.5,.618]),stopAtr:.25,climaxVolume:3});
 // The backtest's cost assumptions (backtest.mjs BACKTEST_COSTS), the venue's taker fee when higher.
+// Signal kinds (journal, screen badge, report): the 5 % move rule, and candidate B at a 4H / 1D volume zone.
+export const SCALP_KINDS=Object.freeze({MOVE:'MOVE_REVERSAL',ZONE:'ZONE_REVERSAL'});
+// Candidate B as in backtestScalp: zoneMinMovePct = the 5m default (2.5 %), touch within ZONE_TOUCH_PCT (0.3 %).
+export const SCALP_ZONE_MIN_MOVE_PCT=SCALP_TIMEFRAMES['5m'].minMovePct;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 export const SCALP_EXEC_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:2,spreadBps:1,fundingRate:.0001,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'});
 const SCREEN_CLOSED=100,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.25],MAX_CLOSED=300,MAX_EVENTS=200,MAX_SKIPS=60,MAX_KEYS=500,SETTLE_DELAY_MS=150000,SETTLE_TRIES=4;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const orderOf=d=>d?.order??d;
+const r4=x=>Number.isFinite(x)?Math.round(x*1e4)/1e4:null;
+/** The touched zone of a ZONE_REVERSAL signal (the nearer one when both touch, 4H on a tie) and both lookups, for the records. */
+export function zoneRecord(touches){
+ const one=(tf,z)=>z?{tf,atZone:z.atZone,low:z.low??null,high:z.high??null,price:z.price??null,sharePct:r4(z.sharePct),rank:z.rank??null,distPct:r4(z.distPct)}:null;
+ const a=one('4h',touches?.['4h']),b=one('1d',touches?.['1d']);
+ // The touched one first, then the nearer one (4H on a tie); with none touched, the nearest zone seen.
+ const best=[a,b].filter(z=>z&&Number.isFinite(z.distPct)).sort((x,y)=>(y.atZone-x.atZone)||(x.distPct-y.distPct))[0]||null;
+ return {...(best||{tf:null,low:null,high:null,price:null,sharePct:null,rank:null,distPct:null}),atZone:zoneTagFields(touches||{}).atZone===true,zone4h:a,zone1d:b};
+}
 const orderId=d=>{const o=orderOf(d),id=o?.orderId??o?.orderID;return id===undefined||id===null?null:String(id)};
 const kstDay=t=>new Date(t+9*3600000).toISOString().slice(0,10);
 const grid=(v,step,mode)=>{try{return roundDecimalToStep(v,step,mode)}catch{return null}};
@@ -91,7 +110,9 @@ export function scalpExecConfig(env=process.env){
   universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),
   // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
   watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanDelayMs:3000,
-  balanceCapUSD:n('SCALP_BALANCE_CAP_USD',0,0,1e7)};
+  balanceCapUSD:n('SCALP_BALANCE_CAP_USD',0,0,1e7),
+  // 매물대 반전 (user 2026-11-17 23:12): on by default, SCALP_ZONE_SIGNALS=off turns it off.
+  zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT};
 }
 
 /** BingX USDT perpetuals by 24h quote volume (stock / fx 'NC*' contracts excluded), tradable via API. */
@@ -184,12 +205,15 @@ function positionOf(list,vs,direction,hedge=false){
 }
 
 export class ScalpExecutor{
- constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,priceOf=async()=>null,markOf=async()=>null,
+ constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,zoneCandles=null,priceOf=async()=>null,markOf=async()=>null,
   balance=async()=>null,isBusy=()=>false,gate=()=>({ok:true}),directory=null,fileName='scalp-store.json',now=()=>Date.now(),log=()=>{},onEvent=()=>{},budget=null}){
   if(!SCALP_EXEC_MODES.includes(config?.mode))throw err('SCALP_TESTNET_ONLY',500);
   if(client&&client.mode!=='TESTNET')throw err('SCALP_TESTNET_ONLY',500);
   Object.assign(this,{config,client,contracts,tickers,tickersFresh,candles,priceOf,markOf,balance,isBusy,gate,now,log,onEvent});
   this.trendCandles=trendCandles??(symbol=>this.candles(symbol,'4h',301));
+  // 4H / 1D candles for the volume zones (BingX public market data, the scan's paced queue); cached per symbol and
+  // timeframe until the next candle of that timeframe closes.
+  this.zoneCandles=zoneCandles??((symbol,interval,limit)=>this.candles(symbol,interval,limit));this.zoneCache=new Map();
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={open:Array.isArray(saved?.open)?saved.open:[],closed:Array.isArray(saved?.closed)?saved.closed:[],events:Array.isArray(saved?.events)?saved.events:[],
@@ -205,7 +229,7 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,SCALP_JOURNAL_FILE):null;this.signalsFile=directory?path.join(directory,SCALP_SIGNALS_FILE):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null}));
+  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
@@ -214,7 +238,7 @@ export class ScalpExecutor{
  #save(){if(!this.file)return;const s=this.store;s.closed=s.closed.slice(-MAX_CLOSED);s.events=s.events.slice(-MAX_EVENTS);s.skips=s.skips.slice(-MAX_SKIPS);s.sent=s.sent.slice(-MAX_KEYS);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,strategy:SCALP_EXEC_STRATEGY,...s})}
  #event(type,detail={}){const e={type,at:this.now(),mode:'TESTNET',strategy:SCALP_EXEC_STRATEGY,...detail};this.store.events.push(e);this.log(`[SCALP] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
- #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
+ #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null,kind:this.cur.kind||SCALP_KINDS.MOVE}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
  #gate(){try{return this.gate()||{ok:true}}catch{return {ok:false,reason:'GATE_ERROR'}}}
  // With the shared budget only a stop written under it counts (review L2: a scalp-only 3 % stop saved before is ignored).
  #todayStopped(){const d=this.store.dailyStop;return d?.day===kstDay(this.now())&&(!this.budget||d.shared===true)}
@@ -296,29 +320,36 @@ export class ScalpExecutor{
     if(this.#blocked())break;
     // BingX answers 100410 when the shared public request rate is exceeded (2026-11-16: 10 of 80 coins per
     // scan): wait a little and read that coin once more instead of skipping it.
-    const read=()=>this.candles(u.symbol,'5m',61);
-    // Up to two more tries (1.5 s, then 3 s), and once the limit was hit the rest of the scan goes slower
-    // (2026-11-16: 3 of 80 coins still failed after one retry).
-    const retry=async e=>{for(const w of [1500,3000]){if(e?.code!=='VENUE_ERROR_100410')throw e;st.rateLimited=(st.rateLimited||0)+1;await new Promise(r=>setTimeout(r,w));try{return await read()}catch(next){e=next}}throw e};
-    if(st.rateLimited)await new Promise(r=>setTimeout(r,300));
-    let rows;try{rows=await read().catch(retry)}
+    let rows;try{rows=await this.#paced(()=>this.candles(u.symbol,'5m',61),st)}
     // Other read failures are counted and shown (2026-11-16: a missing 5m interval failed every read silently).
     catch(e){if(e?.code==='HTTP_429'){st.error='HTTP_429';this.cooldownUntil=this.now()+60000;break}st.failed=(st.failed||0)+1;st.lastFailure=e?.code||e?.message||'READ_FAILED';continue}
     st.checked++;
     const t=this.now(),closed=(Array.isArray(rows)?rows:[]).filter(r=>Number(r?.[6])<t).slice(-60);
     // Only the candle that has just closed (a late or missing candle is not traded later).
     if(!closed.length||Number(closed.at(-1)[0])!==(bucket-1)*I5)continue;
-    const det=detectScalpReversal(closed,{symbol:u.symbol,now:t,interval:'5m',settings:this.config.settings});
-    if(!det.ok)continue;st.signals++;
+    let det=detectScalpReversal(closed,{symbol:u.symbol,now:t,interval:'5m',settings:this.config.settings}),kind=SCALP_KINDS.MOVE;
+    // 매물대 반전 (backtestScalp zoneSignals): only when the 5 % rule found nothing on this candle, the same detection at
+    // 2.5 %; it is traded only when its extreme touched a 4H / 1D zone (checked below, zones read only for these).
+    if(!det.ok&&this.config.zoneSignals&&(this.config.settings.minMovePct??SCALP_TIMEFRAMES['5m'].minMovePct)>this.config.zoneMinMovePct){
+     const alt=detectScalpReversal(closed,{symbol:u.symbol,now:t,interval:'5m',settings:{...this.config.settings,minMovePct:this.config.zoneMinMovePct}});
+     if(alt.ok){det=alt;kind=SCALP_KINDS.ZONE;st.zoneSignals=(st.zoneSignals||0)+1}
+    }
+    if(!det.ok)continue;if(kind===SCALP_KINDS.MOVE)st.signals++;
+    // A candle already sent (any kind: same client id) is not looked at again.
+    if(kind===SCALP_KINDS.ZONE&&this.store.sent.includes(scalpClientId(u.symbol,det.barAt,det.direction)))continue;
     // Journal context of this detection (no effect on the decision).
-    const ctx={at:t,symbol:u.symbol,venueSymbol:u.venueSymbol,direction:det.direction,barAt:det.barAt,evidence:det.evidence,atr:det.atr,candle:candleShape(closed.at(-1),det.direction),
+    const ctx={at:t,symbol:u.symbol,venueSymbol:u.venueSymbol,kind,direction:det.direction,barAt:det.barAt,evidence:det.evidence,atr:det.atr,candle:candleShape(closed.at(-1),det.direction),
      universe:{rank:ix+1,size:this.universe.length,quoteVolume:u.quoteVolume},scan:{startedAt:st.at,bucket,position:seq+1,of:this.universe.length,elapsedMs:t-st.at},reason:null,detail:null};
     this.cur=ctx;let r;
     try{
      if(!this.config.sides.includes(det.direction)){this.#skip(u.symbol,'SIDE_OFF',det.direction);r={entered:false,reason:'SIDE_OFF'}}
-     else r=await this.#consider(u,det);
+     else{
+      // 매물대 반전: the zone touch first; then every rule of the 5 % scalp (#consider) unchanged.
+      const z=kind===SCALP_KINDS.ZONE?await this.#zoneCheck(u,det,st):{ok:true};
+      r=z.ok?await this.#consider(u,det):z;
+     }
     }finally{this.cur=null}
-    if(r?.entered)st.entered++;
+    if(r?.entered){st.entered++;if(kind===SCALP_KINDS.ZONE)st.zoneEntered=(st.zoneEntered||0)+1}
     if(r?.reason!=='ALREADY_SENT')this.#logSignal(ctx,r);
    }
    // Scan duration on the positions this scan opened (journal only).
@@ -327,6 +358,45 @@ export class ScalpExecutor{
   }catch(e){st.error=e?.code||e?.message||'SCAN_FAILED'}
   finally{this.scanning=false;this.lastScan=st;this.#save()}
   return st;
+ }
+ /** A public read with the scan's 100410 handling: up to two more tries (1.5 s, then 3 s), and once the limit was
+  * hit the rest of the scan goes 300 ms slower (2026-11-16: 3 of 80 coins still failed after one retry). */
+ async #paced(read,st){
+  if(st.rateLimited)await sleep(300);
+  try{return await read()}
+  catch(e){for(const w of [1500,3000]){if(e?.code!=='VENUE_ERROR_100410')throw e;st.rateLimited=(st.rateLimited||0)+1;await sleep(w);try{return await read()}catch(next){e=next}}throw e}
+ }
+ /** The 4H / 1D zone book of a symbol (backtest.mjs zoneBook on BingX candles, ZONE_PROFILES counts), cached until the
+  * next candle of that timeframe closes. null when the candles could not be read (not cached: read again next time). */
+ async zoneBookOf(symbol,interval,tickSize,st={}){
+  const key=symbol+'|'+interval,now=this.now(),hit=this.zoneCache.get(key);
+  if(hit&&now<hit.nextCloseAt&&hit.tickSize===String(tickSize)){hit.usedAt=now;return hit.book}
+  const cfg=ZONE_PROFILES[interval];let rows;
+  try{rows=await this.#paced(()=>this.zoneCandles(symbol,interval,cfg.candles+2),st)}
+  catch(e){if(e?.code==='HTTP_429')this.cooldownUntil=this.now()+60000;st.zoneReadFailed=(st.zoneReadFailed||0)+1;return null}
+  if(!Array.isArray(rows))return null;st.zoneReads=(st.zoneReads||0)+1;
+  const at=this.now(),valid=rows.filter(r=>Array.isArray(r)&&Number.isFinite(Number(r[0]))&&Number.isFinite(Number(r[6]))).sort((a,b)=>Number(a[0])-Number(b[0]));
+  // The candle still open closes next; with none open, the one after the last closed candle.
+  const open=valid.find(r=>Number(r[6])>=at),nextCloseAt=open?Number(open[6])+1:valid.length?Number(valid.at(-1)[6])+1+cfg.intervalMs:at+cfg.intervalMs;
+  const book=zoneBook(valid,{symbol,tickSize,interval});
+  this.zoneCache.set(key,{book,nextCloseAt,tickSize:String(tickSize),usedAt:now});return book;
+ }
+ /** 매물대 반전 gate: the extreme in or within 0.3 % of a 4H / 1D zone from candles closed before the move window
+  * (backtestScalp's zoneTag). Missing candles are never a touch: ZONE_DATA_UNAVAILABLE. */
+ async #zoneCheck(u,det,st){
+  const skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {ok:false,entered:false,reason}};
+  // Not read again for a coin already held or entering (one position per symbol; saves the requests).
+  if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD');
+  const c=(await this.contracts(u.symbol).catch(()=>null))?.get?.(u.symbol);if(!c?.tradable||!pos(Number(c.tickSize)))return skip('CONTRACT_UNAVAILABLE');
+  for(const [k,v] of this.zoneCache)if(this.now()-v.usedAt>6*3600000)this.zoneCache.delete(k);
+  const b4=await this.zoneBookOf(u.symbol,'4h',c.tickSize,st),b1=await this.zoneBookOf(u.symbol,'1d',c.tickSize,st);
+  // As the backtest: `now` = the signal candle's close + 1 s (det.barAt is its close time + 1 ms).
+  const touches=zoneTouches({zones4h:b4||(()=>null),zones1d:b1||(()=>null),det,now:det.barAt-1+1000,moveSpanMs:zoneSpanMs(this.config.settings,'5m'),touchPct:this.config.zoneTouchPct});
+  const zone=zoneRecord(touches);if(this.cur)this.cur.zone=zone;
+  if(zone.atZone){st.zoneAtZone=(st.zoneAtZone||0)+1;return {ok:true}}
+  // No touch on what could be read; a profile missing on either timeframe = not checked, never 'no zone'.
+  if(!touches['4h']||!touches['1d'])return skip('ZONE_DATA_UNAVAILABLE',[!touches['4h']?'4H':null,!touches['1d']?'1D':null].filter(Boolean).join('·'));
+  return skip('ZONE_NOT_TOUCHED',zone.distPct!=null?`${Number(zone.distPct).toFixed(2)}%`:null);
  }
  async #trend(symbol){
   const b=Math.floor(this.now()/(4*3600000)),hit=this.trendCache.get(symbol);if(hit?.b===b)return hit.trend;
@@ -405,7 +475,8 @@ export class ScalpExecutor{
    if(set?.leverage!==undefined&&Number(set.leverage)!==plan.leverage)throw err('LEVERAGE_NOT_CONFIRMED');
   }catch(e){return skip('MARGIN_SETUP_FAILED',e?.code||e?.message)}
   const tick=c.tickSize,px=v=>grid(v,tick,awayMode(d))??String(v);
-  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
+  const kind=this.cur?.kind||SCALP_KINDS.MOVE;
+  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,kind,...(kind===SCALP_KINDS.ZONE&&this.cur?.zone?{zone:this.cur.zone}:{}),mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
    pattern:det.pattern,barAt:det.barAt,plannedEntry:det.entry,checkedPrice:plan.entry,driftPct:plan.driftPct,entry:plan.entry,stop:plan.stop,initialStop:plan.stop,targets:plan.targets,
    qty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,marginUSD:plan.marginUSD,netRR:plan.netRR,
    tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
@@ -436,7 +507,7 @@ export class ScalpExecutor{
   trackExcursion(p,p.avg,this.now());
   // BTC 5m / 1h change around the entry: read after the orders are in, never awaited (journal only).
   void withTimeout(this.#btc(),5000).then(b=>{if(b)p.btc=b});
-  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,entry:p.avg,stop:p.stop,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged});
+  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged});
   this.#save();return {entered:true};
  }
  /** BTC change over the last closed 5m candle and the last hour (12 candles), cached per 5m candle. */
@@ -449,7 +520,7 @@ export class ScalpExecutor{
  }
  /** One line per detected signal: entered, or why not (scalp-signals.jsonl, rotated at 20 MB). */
  #logSignal(ctx,r){
-  const line={v:1,at:ctx.at,symbol:ctx.symbol,venueSymbol:ctx.venueSymbol,direction:ctx.direction,barAt:ctx.barAt,entered:r?.entered===true,reason:r?.entered?null:ctx.reason||r?.reason||null,
+  const line={v:1,at:ctx.at,symbol:ctx.symbol,venueSymbol:ctx.venueSymbol,kind:ctx.kind||SCALP_KINDS.MOVE,...(ctx.zone?{zone:ctx.zone}:{}),direction:ctx.direction,barAt:ctx.barAt,entered:r?.entered===true,reason:r?.entered?null:ctx.reason||r?.reason||null,
    detail:ctx.detail,evidence:ctx.evidence,candle:ctx.candle,atr:ctx.atr,trend4h:ctx.trend4h??null,withTrend:ctx.withTrend??null,plan:ctx.plan??null,universe:ctx.universe,scan:ctx.scan};
   if(this.signalsFile)appendJsonl(signalsPath(this.signalsFile,ctx.at||this.now()),line,{maxBytes:SIGNALS_MAX_BYTES});else this.signalsMem=[...(this.signalsMem||[]),line].slice(-500);
  }
@@ -466,7 +537,7 @@ export class ScalpExecutor{
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
    x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
-   this.journalRows.push({direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason});
+   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason});
   }
  }
  /** The newest `limit` journal lines (oldest first). */
@@ -631,7 +702,8 @@ export class ScalpExecutor{
  }
  /** Win rate / PF / net over all closed scalps, and per side (bySide.LONG / bySide.SHORT). */
  // Over every trade: the journal plus the closed trades not yet written to it (the store keeps only the last 300).
- stats(){const list=[...this.journalRows,...this.store.closed.filter(x=>!x.journaled)];const all=this.#stats(list);all.bySide=Object.fromEntries(SCALP_SIDES.map(d=>[d,this.#stats(list.filter(x=>(x.direction||'LONG')===d))]));return all}
+ stats(){const list=[...this.journalRows,...this.store.closed.filter(x=>!x.journaled)];const all=this.#stats(list);all.bySide=Object.fromEntries(SCALP_SIDES.map(d=>[d,this.#stats(list.filter(x=>(x.direction||'LONG')===d))]));
+  all.byKind=Object.fromEntries(Object.values(SCALP_KINDS).map(k=>[k,this.#stats(list.filter(x=>(x.kind||SCALP_KINDS.MOVE)===k))]));return all}
  #stats(list){
   const n=list.length,wins=list.filter(x=>x.netUSD>0),gross=wins.reduce((t,x)=>t+x.netUSD,0),loss=-list.filter(x=>x.netUSD<0).reduce((t,x)=>t+x.netUSD,0);
   const today=kstDay(this.now()),reasons={};for(const x of list)reasons[x.closeReason]=(reasons[x.closeReason]||0)+1;
@@ -642,7 +714,8 @@ export class ScalpExecutor{
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
-    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null},
+    maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
+    zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),
