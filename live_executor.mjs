@@ -22,6 +22,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {leverageForScore} from './paper.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {venueStop,venueCosts} from './venue_execution.mjs';
+import {readPositionMode,leverageSideFor,positionRow,orderOnSide} from './bingx_position_mode.mjs';
 import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight} from './live_orders.mjs';
 
 const MAX_RECORDS=300,MAX_DELETED_KEYS=500,MAX_EVENTS=40;
@@ -201,9 +202,14 @@ export class LiveExecutor{
  }
 
  async #openBingX(record){
-  const client=this.clients.BINGX,plan=bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
-  const mode=await client.positionMode();
-  if(mode?.dualSidePosition===true||mode?.dualSidePosition==='true'){record.status='FAILED';this.#event(record,'REJECTED',{reason:'BINGX_HEDGE_MODE_UNSUPPORTED'});return}
+  const client=this.clients.BINGX;
+  // The account's position mode (one-way or hedge, user 2026-11-17), read before every entry and kept on the
+  // record: its stop, targets, adds, breakeven and closes use the mode it was opened under. Not stated or not
+  // readable: nothing is sent (never guessed).
+  const mode=await readPositionMode(client);
+  if(!mode.ok){record.status='FAILED';this.#event(record,'REJECTED',{reason:mode.reason+':'+mode.detail});return}
+  record.hedge=mode.hedge;this.#save(); // on disk before any order: a restart's recovery uses the same mode
+  const plan=this.#plan(record);
   try{
    const current=await client.marginType(record.venueSymbol);
    if(current?.marginType!=='CROSSED'){await client.setMarginType(record.venueSymbol,'CROSSED');
@@ -211,7 +217,7 @@ export class LiveExecutor{
    const info=await client.leverage(record.venueSymbol).catch(()=>null);
    const max=Number(record.direction==='LONG'?info?.maxLongLeverage:info?.maxShortLeverage);
    if(max>0&&record.leverage>max){this.#event(record,'LEVERAGE_CAPPED',{reason:`${record.leverage}x>${max}x`});record.leverage=Math.floor(max)}
-   const set=await client.setLeverage(record.venueSymbol,'BOTH',record.leverage);
+   const set=await client.setLeverage(record.venueSymbol,leverageSideFor({hedge:record.hedge===true,direction:record.direction}),record.leverage);
    if(set?.leverage!==undefined&&Number(set.leverage)!==record.leverage)throw Object.assign(Error('leverage not confirmed'),{code:'BINGX_LEVERAGE_NOT_CONFIRMED'});
    this.#event(record,'MARGIN_SET',{reason:`CROSS ${record.leverage}x`});
   }catch(error){record.status='FAILED';this.#event(record,'REJECTED',{reason:'MARGIN_SETUP_FAILED:'+(error.code||error.message)});return}
@@ -231,7 +237,7 @@ export class LiveExecutor{
   // Confirm the attached stop exists; otherwise place one; otherwise close at market.
   // A failed read is "not checked", not "no stop": it is read once more before a second stop is sent.
   const open=await client.openOrders(record.venueSymbol).catch(()=>null)??await client.openOrders(record.venueSymbol).catch(()=>null);
-  const stopOrder=(open?.orders??(Array.isArray(open)?open:[])).find(o=>String(o.type).startsWith('STOP'));
+  const side={hedge:record.hedge===true,direction:record.direction},stopOrder=(open?.orders??(Array.isArray(open)?open:[])).find(o=>String(o.type).startsWith('STOP')&&orderOnSide(o,side));
   if(stopOrder){record.stopOrderId=bingxOrderId(stopOrder);this.#event(record,'STOP_CONFIRMED',{orderId:record.stopOrderId})}
   else{
    try{const s=await client.placeOrder(plan.stop(record.quantity.total));record.stopOrderId=bingxOrderId(s);this.#event(record,'STOP_PLACED',{orderId:record.stopOrderId})}
@@ -318,7 +324,7 @@ export class LiveExecutor{
   this.#event(record,'ADDS_PLACED',{reason:`${record.adds.filter(a=>a.orderId).length}/${record.adds.length}`});
  }
  #plan(record){
-  return record.venue==='BINGX'?bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId})
+  return record.venue==='BINGX'?bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId,hedge:record.hedge===true})
    :gateOrders({contract:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
  }
  async #cancelAdds(record,why){
@@ -449,7 +455,7 @@ export class LiveExecutor{
   }
   // One-way mode: a position on the other side is not this trade's; leave it and stop trading.
   if(pos.side&&pos.side!==record.direction){record.recovery='FAILED';this.#event(record,'RECOVERY_ERROR',{reason:'POSITION_SIDE_'+pos.side});this.kill('RECOVERY_SIDE_MISMATCH');return}
-  const plan=this.#plan(record),stop=list.find(o=>String(o.type).startsWith('STOP'));
+  const plan=this.#plan(record),stop=list.find(o=>String(o.type).startsWith('STOP')&&orderOnSide(o,{hedge:record.hedge===true,direction:record.direction}));
   record.position={...(record.position||{}),size:pos.size,entryPrice:posNum(pos.entryPrice),at:this.now()};
   if(!record.firstEntryPrice&&posNum(pos.entryPrice))record.firstEntryPrice=posNum(pos.entryPrice);
   if(stop){record.stopOrderId=bingxOrderId(stop);record.status='OPEN';record.recovery='DONE';this.#event(record,'PROTECTION_RECOVERED',{orderId:record.stopOrderId,reason:'STOP_FOUND'});return}
@@ -511,7 +517,7 @@ export class LiveExecutor{
     if(!record.breakevenMoved&&lockedIn&&tp1Done){record.breakevenMoved=true;this.#event(record,'BREAKEVEN_SKIPPED_STOP_ALREADY_BETTER',{stop:record.stop})}
     if(!record.breakevenMoved&&tp1Done&&entryPrice>0){
      const client=this.clients[record.venue];let placed;
-     if(record.venue==='BINGX'){const plan=bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
+     if(record.venue==='BINGX'){const plan=bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId,hedge:record.hedge===true});
       placed=bingxOrderId(await client.placeOrder(plan.breakeven(entryPrice,size)))}
      else{const plan=gateOrders({contract:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
       placed=String((await client.placeTrigger(plan.breakeven(entryPrice))).id)}
@@ -606,7 +612,7 @@ export class LiveExecutor{
    const {size,entryPrice}=await this.#position(record);
    if(size===0)return {ok:false,live:true,reasons:['LIVE_POSITION_FLAT']};
    const qty=record.quantity,original=record.venue==='GATEIO'?(record.filledContracts??qty.total):qty.total;
-   const plan=record.venue==='BINGX'?bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop,targets,qty,clientOrderId:record.clientOrderId})
+   const plan=record.venue==='BINGX'?bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop,targets,qty,clientOrderId:record.clientOrderId,hedge:record.hedge===true})
     :gateOrders({contract:record.venueSymbol,direction:record.direction,stop,targets,qty,clientOrderId:record.clientOrderId});
    if(Number.isFinite(stop)&&stop!==record.stop){
     const reference=entryPrice>0?entryPrice:null,wider=dir*(record.stop-stop)>0;
@@ -653,8 +659,8 @@ export class LiveExecutor{
    let list;
    if(cached){if(!this.posCache)this.posCache={at:this.now(),list:await client.positions()};list=this.posCache.list}
    else list=await client.positions(record.venueSymbol);
-   const rows=Array.isArray(list)?list:[];
-   const row=rows.find(p=>p.symbol===record.venueSymbol);
+   // Hedge mode: the row of this record's own side (an opposite-side row is another position).
+   const row=positionRow(list,record.venueSymbol,{hedge:record.hedge===true,direction:record.direction});
    return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
     marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit),
     // Side only when the venue states it (positionSide LONG/SHORT); an unsigned amount is not guessed.

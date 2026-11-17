@@ -24,12 +24,12 @@ const ENTRY=Number(crash().at(-1)[4]),PX=+(ENTRY+.02).toFixed(2),ENTRY_S=Number(
 const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
 
 // One-way BingX fake: amt is the signed position (+ long, - short), as positionAmt.
-function venue({hedge=false,failStop=false,maxLev=20,fillAt=PX}={}){
+function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX}={}){
  const calls=[],orders=new Map();let amt=0,avg=0,mark=0,id=1;
  const reduce=q=>{amt=amt>0?+Math.max(0,amt-q).toFixed(8):+Math.min(0,amt+q).toFixed(8)};
  const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
  const client={mode:'TESTNET',
-  positionMode:async()=>({dualSidePosition:hedge}),marginType:async()=>({marginType:'CROSSED'}),setMarginType:async()=>({}),
+  positionMode:async()=>{if(modeFail)throw Object.assign(Error('down'),{code:'NETWORK_UNREACHABLE'});return {dualSidePosition:hedge}},marginType:async()=>({marginType:'CROSSED'}),setMarginType:async()=>({}),
   leverage:async()=>({maxLongLeverage:maxLev,maxShortLeverage:maxLev}),setLeverage:async(s,side,l)=>{calls.push({op:'lev',l});return {leverage:l}},
   positions:async()=>amt!==0?[{symbol:'SOL-USDT',positionSide:'BOTH',positionAmt:String(amt),avgPrice:String(avg),markPrice:String(mark||avg),unrealizedProfit:String(((mark||avg)-avg)*amt)}]:[],
   openOrders:async()=>({orders:[...orders.values()].filter(o=>o.status==='NEW')}),
@@ -129,10 +129,10 @@ test('below-minimum target splits are merged before the orders go out',async()=>
  assert.equal(ex.store.open[0].merged,true);
 });
 
-test('skips: price drift, hedge mode, symbol held elsewhere, against the 4H trend, kill switch, venue position',async()=>{
- const cases=[[{price:PX*.99},'PRICE_DRIFT'],[{hedge:true},'BINGX_HEDGE_MODE'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{trend:down4h,config:{trendMode:'on'}},'AGAINST_4H_TREND']];
+test('skips: price drift, position mode unreadable, symbol held elsewhere, against the 4H trend, kill switch, venue position',async()=>{
+ const cases=[[{price:PX*.99},'PRICE_DRIFT'],[{modeFail:true},'BINGX_POSITION_MODE_UNKNOWN'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{trend:down4h,config:{trendMode:'on'}},'AGAINST_4H_TREND']];
  for(const [opt,reason] of cases){
-  const v=venue({hedge:opt.hedge}),ex=make(v,opt);ex.arm();await ex.scan();
+  const v=venue({modeFail:opt.modeFail}),ex=make(v,opt);ex.arm();await ex.scan();
   assert.equal(ex.store.open.length,0,reason);assert.equal(placed(v,'MARKET').length,0,reason);assert.equal(ex.store.skips.at(-1)?.reason,reason);assert.ok(scalpReasonKo(reason)!==reason);
  }
  const v=venue();v.size=1;const ex=make(v);ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'VENUE_POSITION_EXISTS');assert.equal(placed(v,'MARKET').length,0);
@@ -322,4 +322,65 @@ test('scan order: coins that moved most over the last scans are read first; volu
  assert.deepEqual(read,['CCCUSDT','BBBUSDT','AAAUSDT']);assert.deepEqual(ex.lastScan.firstSymbols.slice(0,3),['CCCUSDT','BBBUSDT','AAAUSDT']);
  read.length=0;ex.tickersFresh=async()=>[null,{symbol:'CCC-USDT'}];ex.prefetch=null;clock.t+=I;await ex.scan();assert.equal(read.length,3,'bad rows do not stop the scan');
  read.length=0;ex.tickersFresh=async()=>{throw Error('down')};ex.prefetch=null;clock.t+=I;await ex.scan();assert.deepEqual(read,syms,'ticker failure: volume order');
+});
+
+// ---- Hedge (dual-side) mode (user 2026-11-17 "hedge mode로 해보고 싶은데"): BingX fake with one row per side ----
+// Positions are LONG / SHORT rows with positive amounts; an order is refused when it carries reduceOnly or
+// positionSide BOTH (as BingX does in hedge mode). manual: a position on the other side opened by hand.
+function hedgeVenue({fillAt=PX,manual=null}={}){
+ const calls=[],orders=new Map(),pos={LONG:{amt:0,avg:0},SHORT:{amt:0,avg:0}};let mark=0,id=1;
+ if(manual)pos[manual.side]={amt:manual.amt,avg:manual.avg??100};
+ const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
+ const opening=p=>(p.positionSide==='LONG')===(p.side==='BUY');
+ const client={mode:'TESTNET',
+  positionMode:async()=>({dualSidePosition:'true'}),marginType:async()=>({marginType:'CROSSED'}),setMarginType:async()=>({}),
+  leverage:async()=>({maxLongLeverage:20,maxShortLeverage:20}),setLeverage:async(s,side,l)=>{calls.push({op:'lev',side,l});return {leverage:l}},
+  positions:async()=>Object.entries(pos).filter(([,x])=>x.amt>0).map(([side,x])=>({symbol:'SOL-USDT',positionSide:side,positionAmt:String(x.amt),avgPrice:String(x.avg),markPrice:String(mark||x.avg),unrealizedProfit:'0'})),
+  openOrders:async()=>({orders:[...orders.values()].filter(o=>o.status==='NEW')}),
+  getOrder:async(s,{orderId,clientOrderId})=>({order:[...orders.values()].find(o=>orderId?o.orderId===orderId:o.clientOrderId===clientOrderId)??null}),
+  cancelOrder:async(s,oid)=>{calls.push({op:'cancel',oid});const o=orders.get(oid);if(o&&o.status==='NEW')o.status='CANCELED';return {}},
+  placeOrder:async p=>{calls.push({op:'order',...p});
+   if('reduceOnly' in p)throw Object.assign(Error('reduceOnly not allowed in hedge mode'),{code:'VENUE_ERROR_109400'});
+   if(!['LONG','SHORT'].includes(p.positionSide))throw Object.assign(Error('PositionSide must be LONG or SHORT in hedge mode'),{code:'VENUE_ERROR_109400'});
+   if(p.type==='MARKET'){const q=Number(p.quantity),x=pos[p.positionSide];
+    if(!opening(p)){x.amt=+Math.max(0,x.amt-q).toFixed(8);return {order:add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark||x.avg)})}}
+    x.avg=mark||fillAt;x.amt=+(x.amt+q).toFixed(8);const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(x.avg)});
+    if(p.stopLoss){const sl=JSON.parse(p.stopLoss);add({symbol:p.symbol,type:'STOP_MARKET',positionSide:p.positionSide,stopPrice:String(sl.stopPrice),side:p.side==='SELL'?'BUY':'SELL'})}
+    return {order:o}}
+   return {order:add(p)}}};
+ return {client,calls,orders,pos,set mark(v){mark=v},
+  fill(o,price){o.status='FILLED';const x=pos[o.positionSide];o.executedQty=o.quantity??String(x.amt);o.avgPrice=String(price??o.stopPrice);x.amt=+Math.max(0,x.amt-Number(o.executedQty)).toFixed(8)}};
+}
+
+test('hedge mode: LONG entry, stop, targets and closes carry positionSide LONG and no reduceOnly; an opposite manual SHORT does not block',async()=>{
+ const v=hedgeVenue({manual:{side:'SHORT',amt:3,avg:110}}),clock={t:T0},ex=make(v,{clock});ex.arm();
+ const st=await ex.scan();assert.equal(st.entered,1,JSON.stringify(ex.store.skips));
+ const p=ex.store.open[0];assert.equal(p.hedge,true,'the mode is kept on the position');
+ const entry=placed(v,'MARKET')[0];assert.deepEqual([entry.side,entry.positionSide],['BUY','LONG']);assert.ok(!('reduceOnly' in entry));
+ assert.deepEqual(v.calls.find(c=>c.op==='lev'),{op:'lev',side:'LONG',l:10},'leverage set for the LONG side');
+ assert.equal(p.size,Number(entry.quantity),'size read from the LONG row, not netted with the SHORT row');
+ const tps=placed(v,'TAKE_PROFIT_MARKET');assert.equal(tps.length,3);assert.ok(tps.every(o=>o.side==='SELL'&&o.positionSide==='LONG'&&!('reduceOnly' in o)));
+ // Both rows on the venue: the reconcile keeps the LONG position and never touches the SHORT one.
+ clock.t+=30000;await ex.reconcile();assert.equal(ex.store.open.length,1);assert.equal(ex.store.open[0].size,Number(entry.quantity));
+ // TP1 -> breakeven stop with closePosition on the LONG side.
+ v.mark=p.targets[0]+.01;v.fill(v.orders.get(p.tpOrderIds[0]),p.targets[0]);clock.t+=30000;await ex.reconcile();
+ const be=placed(v,'STOP_MARKET').at(-1);assert.equal(p.breakevenMoved,true);assert.deepEqual([be.side,be.positionSide,be.closePosition],['SELL','LONG','true']);assert.ok(!('reduceOnly' in be));
+ // Time exit: market close SELL + LONG without reduceOnly; the manual SHORT stays.
+ clock.t=BUCKET*I+2*3600000;v.mark=ENTRY+.3;await ex.reconcile();
+ const close=placed(v,'MARKET').at(-1);assert.deepEqual([close.side,close.positionSide],['SELL','LONG']);assert.ok(!('reduceOnly' in close));
+ assert.equal(ex.store.open.length,0);assert.equal(ex.store.closed[0].closeReason,'TIME_STOP');assert.equal(v.pos.SHORT.amt,3,'the other side is never closed by us');
+ assert.ok(!ex.store.skips.some(x=>x.reason==='BINGX_HEDGE_MODE'));
+});
+
+test('hedge mode: SHORT entry uses SELL + SHORT, targets BUY + SHORT; a same-side position on the venue still blocks',async()=>{
+ const v=hedgeVenue({fillAt:PX_S}),ex=make(v,{price:PX_S,trend:down4h,rows:rise});ex.arm();
+ assert.equal((await ex.scan()).entered,1,JSON.stringify(ex.store.skips));
+ const entry=placed(v,'MARKET')[0];assert.deepEqual([entry.side,entry.positionSide],['SELL','SHORT']);
+ assert.ok(placed(v,'TAKE_PROFIT_MARKET').every(o=>o.side==='BUY'&&o.positionSide==='SHORT'&&!('reduceOnly' in o)));
+ assert.equal(ex.store.open[0].size,v.pos.SHORT.amt);
+ const v2=hedgeVenue({manual:{side:'LONG',amt:2}}),ex2=make(v2);ex2.arm();await ex2.scan();
+ assert.equal(ex2.store.skips.at(-1).reason,'VENUE_POSITION_EXISTS');assert.equal(placed(v2,'MARKET').length,0);
+ // A position opened before this change (no hedge field) keeps the one-way orders.
+ const v3=venue(),ex3=make(v3);ex3.arm();await ex3.scan();assert.equal(ex3.store.open[0].hedge,false);assert.equal(placed(v3,'MARKET')[0].positionSide,'BOTH');
+ assert.ok(placed(v3,'TAKE_PROFIT_MARKET').every(o=>o.reduceOnly==='true'));
 });

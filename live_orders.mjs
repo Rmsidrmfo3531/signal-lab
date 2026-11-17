@@ -4,6 +4,7 @@
 import {createHash} from 'node:crypto';
 import {roundDecimalToStep,multiplyDecimal} from './decimal_grid.mjs';
 import {evenPositions} from './paper.mjs';
+import {positionSideFor,forMode} from './bingx_position_mode.mjs';
 import {planZoneDca,planProfile,clampMaxAdds,DCA_DEFAULTS,HOURLY_MAX_ADDS_DEFAULT} from './dca_plan.mjs';
 
 export const LIVE_MODES=Object.freeze(['OFF','TESTNET','LIVE']);
@@ -158,20 +159,23 @@ function hybridSplitPlan({row,c,g,tick,minBase,entry,inp,balanceUSD,leverage,siz
  return d.ok?build(d,null):null;
 }
 
-/** BingX one-way mode requests. The entry carries an attached STOP_MARKET so the
- * position is protected from the moment it exists. */
-export function bingxOrders({symbol,direction,stop,targets,qty,clientOrderId}){
- const open=direction==='LONG'?'BUY':'SELL',close=direction==='LONG'?'SELL':'BUY';
+/** BingX requests. The entry carries an attached STOP_MARKET so the position is protected from the moment it
+ * exists. hedge (the account's mode when the position was opened, bingx_position_mode.mjs): false (default)
+ * = one-way, positionSide BOTH with reduce-only exits, unchanged; true = positionSide LONG / SHORT of the
+ * position on every order and no reduceOnly (BingX refuses it in hedge mode). */
+export function bingxOrders({symbol,direction,stop,targets,qty,clientOrderId,hedge=false}){
+ const open=direction==='LONG'?'BUY':'SELL',close=direction==='LONG'?'SELL':'BUY',positionSide=positionSideFor({hedge,direction});
+ const m=params=>forMode(params,hedge);
  return {
-  entry:{symbol,side:open,positionSide:'BOTH',type:'MARKET',quantity:String(qty.total),clientOrderId,
+  entry:{symbol,side:open,positionSide,type:'MARKET',quantity:String(qty.total),clientOrderId,
    stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:Number(stop),workingType:'MARK_PRICE'})},
-  stop:quantity=>({symbol,side:close,positionSide:'BOTH',type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(stop),reduceOnly:'true',workingType:'MARK_PRICE'}),
-  targets:targets.map((price,i)=>({symbol,side:close,positionSide:'BOTH',type:'TAKE_PROFIT_MARKET',quantity:String(qty.parts[i]),stopPrice:String(price),reduceOnly:'true',workingType:'MARK_PRICE'})),
-  emergencyClose:quantity=>({symbol,side:close,positionSide:'BOTH',type:'MARKET',quantity:String(quantity),reduceOnly:'true'}),
-  breakeven:(price,quantity)=>({symbol,side:close,positionSide:'BOTH',type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(price),reduceOnly:'true',workingType:'MARK_PRICE'}),
+  stop:quantity=>m({symbol,side:close,positionSide,type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(stop),reduceOnly:'true',workingType:'MARK_PRICE'}),
+  targets:targets.map((price,i)=>m({symbol,side:close,positionSide,type:'TAKE_PROFIT_MARKET',quantity:String(qty.parts[i]),stopPrice:String(price),reduceOnly:'true',workingType:'MARK_PRICE'})),
+  emergencyClose:quantity=>m({symbol,side:close,positionSide,type:'MARKET',quantity:String(quantity),reduceOnly:'true'}),
+  breakeven:(price,quantity)=>m({symbol,side:close,positionSide,type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(price),reduceOnly:'true',workingType:'MARK_PRICE'}),
   // Split buys: resting limit adds, and a stop that closes the whole position whatever its size.
-  add:(price,quantity,id)=>({symbol,side:open,positionSide:'BOTH',type:'LIMIT',price:String(price),quantity:String(quantity),timeInForce:'GTC',clientOrderId:id}),
-  wholeStop:(price,quantity)=>({symbol,side:close,positionSide:'BOTH',type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(price),closePosition:'true',workingType:'MARK_PRICE'})
+  add:(price,quantity,id)=>({symbol,side:open,positionSide,type:'LIMIT',price:String(price),quantity:String(quantity),timeInForce:'GTC',clientOrderId:id}),
+  wholeStop:(price,quantity)=>({symbol,side:close,positionSide,type:'STOP_MARKET',quantity:String(quantity),stopPrice:String(price),closePosition:'true',workingType:'MARK_PRICE'})
  };
 }
 
