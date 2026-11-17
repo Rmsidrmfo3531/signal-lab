@@ -178,6 +178,21 @@ let copyPage=0,failPage=0,lastCopy=null;
 export const COPY_PAGE_SIZE=10;
 export function setCopyPage(p){copyPage=Math.max(0,p|0)}
 export function setCopyFailPage(p){failPage=Math.max(0,p|0)}
+// Copy and manual closes together (user 2026-11-17 "수동 매매도 누적 수익·기록은 똑같이, 수동인지만 표시"): manual trades
+// on the real account (manual_ledger.mjs) are listed and counted like copy trades, marked 수동. Page totals only:
+// the copy loss limit, margin limits and copy decisions are computed on the server from the copy ledger alone.
+export function mergedCloses(c){
+ const copy=(c?.closed||[]).map(x=>x.origin==='manual'?x:{...x,origin:'copy'}),manual=(c?.manual?.closed||[]).map(x=>({...x,origin:'manual'}));
+ return [...copy,...manual].sort((a,b)=>(Number(b.closedAt)||0)-(Number(a.closedAt)||0));
+}
+/** Totals of the closes the page counts: every copy close (as before) and every settled manual close (a manual close
+ * still PENDING has no result yet). {all, copy, manual}: n, wins, net, gross, loss; plus pending manual closes. */
+export function copyStats(c){
+ const one=list=>{const net=list.reduce((a,x)=>a+(Number(x.netUSD)||0),0),wins=list.filter(x=>x.netUSD>0).length;
+  return {n:list.length,wins,net,gross:list.filter(x=>x.netUSD>0).reduce((a,x)=>a+x.netUSD,0),loss:-list.filter(x=>x.netUSD<0).reduce((a,x)=>a+x.netUSD,0)}};
+ const all=mergedCloses(c),copy=all.filter(x=>x.origin!=='manual'),manualAll=all.filter(x=>x.origin==='manual'),manual=manualAll.filter(x=>x.netUSD!=null&&fin(x.netUSD));
+ return {all:one([...copy,...manual]),copy:one(copy),manual:one(manual),pending:manualAll.filter(x=>x.netSource==='PENDING').length};
+}
 export function copyHTML(c){
  lastCopy=c;
  if(!c)return '';
@@ -185,10 +200,11 @@ export function copyHTML(c){
  const cls=v=>v>0?'paper-profit':v<0?'paper-loss':'';
  const when=t=>t?new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'';
  const held=(a,b)=>{const h=(b-a)/3600000;return !(h>=0)?'':h<1?Math.max(1,Math.round(h*60))+'분':h<48?(+h.toFixed(1))+'시간':(+(h/24).toFixed(1))+'일'};
- const open=c.positions||[],closed=c.closed||[],net=closed.reduce((a,x)=>a+(Number(x.netUSD)||0),0),wins=closed.filter(x=>x.netUSD>0).length;
+ const open=c.positions||[],closed=mergedCloses(c),st=copyStats(c),net=st.all.net,wins=st.all.wins,counted=st.all.n;
+ const closedTotal=(c.closedTotal??(c.closed||[]).length)+(c.manual?(c.manual.closedTotal??(c.manual.closed||[]).length):0);
  const pages=Math.max(1,Math.ceil(closed.length/COPY_PAGE_SIZE)),page=Math.min(copyPage,pages-1),shown=closed.slice(page*COPY_PAGE_SIZE,page*COPY_PAGE_SIZE+COPY_PAGE_SIZE);
  const pager=pages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-copy-page="-1"${page===0?' disabled':''}>‹ 이전</button><span class="muted">${page+1} / ${pages}쪽</span><button type="button" class="outline-btn small" data-copy-page="1"${page>=pages-1?' disabled':''}>다음 ›</button></div>`:'';
- const gross=closed.filter(x=>x.netUSD>0).reduce((a,x)=>a+x.netUSD,0),loss=-closed.filter(x=>x.netUSD<0).reduce((a,x)=>a+x.netUSD,0);
+ const gross=st.all.gross,loss=st.all.loss;
  const unreal=open.reduce((a,p)=>a+(Number(p.unrealized)||0),0),isLive=c.mode==='LIVE';
  // Mode line: which account, on/off, the switch.
  // Mode line: which account, a clear ON/OFF state, and the switch.
@@ -200,10 +216,16 @@ export function copyHTML(c){
  const kill=c.killed?`<p class="live-warn-text">카피 손실 한도(잔고 ${esc(c.ledgerLossPct)}%)에 닿아 모두 청산하고 멈췄습니다. <button type="button" class="outline-btn small" data-copy-resume>카피 다시 시작</button></p>`:'';
  const f=c.funds,stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
  const stats=`<div class="copy-stats">${stat(isLive?'실계좌 잔고':'잔고',usd(f?.equity))}${stat('사용 가능',usd(f?.available))}${stat('보유',open.length+'개')}${stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}
-  ${stat('종료',closed.length+'건')}${stat('승률',closed.length?Math.round(wins/closed.length*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):closed.length?'∞':'—')}${stat('누적 손익',money(closed.length?net:null),`class="${cls(net)}"`)}</div>`;
+  ${stat('종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat('누적 손익',money(counted?net:null),`class="${cls(net)}"`)}</div>`+
+  (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.net)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.net)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}</p>`:'');
  const rules=`<p class="copy-rules">수량 ${c.sizing==='BALANCE_RATIO'?`트레이더 × 내 잔고 ÷ $${Number(c.traderBalanceUSD).toLocaleString()}`:c.sizing==='MIN_ORDER'?`첫 증거금 $${esc(c.firstMarginUSD??0)} (거래소 최소 주문보다 작으면 최소 주문), 추매는 트레이더 비율`:`첫 증거금 $${esc(c.marginUSD)}`} · 추매 최대 ${esc(c.maxAdds??10)}회 · 손절 ${c.stops?`포지션당 잔고 ${esc(c.maxLossPct)}%`:'없음(트레이더 청산만)'} · 한도 증거금 ${esc(c.maxTotalMarginPct)}%·손실 ${esc(c.ledgerLossPct)}% · 손익은 수수료 전 추정${f?.at?` · 잔고 ${when(f.at)} 확인`:''}</p>`;
  const row=p=>`<li><b>${esc(p.symbol)}</b>${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
- const done=x=>`<li><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}<b class="${cls(x.netUSD)} end">${money(x.netUSD)}</b></li>`;
+ // Manual closes: the yellow 수동 badge; the result is BingX's own (income) unless marked 추정 / 정산 중.
+ const isMan=x=>x.origin==='manual',manBadge=x=>isMan(x)?'<span class="vp-badge manual">수동</span>':'';
+ const SRC={MIXED_WITH_COPY:'추정 · 같은 코인 카피와 겹쳐 거래소 내역을 나눌 수 없음',MIXED_WITH_MANUAL:'추정 · 같은 코인 수동 포지션과 겹침',ESTIMATE:'추정 · 거래소 내역 없음'};
+ const result=x=>isMan(x)&&x.netSource==='PENDING'?`<span class="muted" title="거래소 손익 내역을 기다리는 중${fin(x.estimateUSD)?` · 추정 ${money(Number(x.estimateUSD))}`:''}">정산 중</span>`
+  :`${money(x.netUSD)}${isMan(x)&&SRC[x.netSource]?` <small class="muted" title="${esc(SRC[x.netSource])}">추정</small>`:''}`;
+ const done=x=>`<li class="${isMan(x)?'vp-manual':''}"><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${manBadge(x)}${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}<b class="${cls(x.netUSD)} end">${result(x)}</b></li>`;
  // Entry failures and skips under the closes (user 2026-11-17 "코인 종목 / 롱,숏 / 진입 실패 이유"), 10 per page.
  const notesAll=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY'].includes(e.type));
  const fPages=Math.max(1,Math.ceil(notesAll.length/COPY_PAGE_SIZE)),fPage=Math.min(failPage,fPages-1),notes=notesAll.slice(fPage*COPY_PAGE_SIZE,fPage*COPY_PAGE_SIZE+COPY_PAGE_SIZE);
@@ -214,13 +236,13 @@ export function copyHTML(c){
  const margin=p=>p.qty>0&&p.avg>0&&p.leverage>0?p.qty*p.avg/p.leverage:null,roe=p=>{const m=margin(p);return m&&p.unrealized!=null?p.unrealized/m*100:null};
  const pctText=v=>v==null?'—':`${v>=0?'+':'−'}${Math.abs(v).toFixed(1)}%`;
  const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">추매</th><th>보유</th><th class="num">미실현</th><th class="num">수익률</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b></td><td>${side(p.direction)}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.qty)}</td><td class="num">${esc(p.avg??'—')}</td><td class="num">${esc(p.mark?+Number(p.mark).toPrecision(6):'—')}</td><td class="num">${usd(margin(p))}</td><td class="num">${esc(p.adds||0)}회</td><td class="muted">${held(p.openedAt,Date.now())}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(roe(p))}">${pctText(roe(p))}</td></tr>`).join('')}</tbody></table>`;
- const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>종목</th><th>방향</th><th class="num">추매</th><th>보유 시간</th><th class="num">트레이더 손익</th><th class="num">내 손익</th></tr></thead><tbody>${shown.map(x=>`<tr><td class="muted">${when(x.closedAt)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="num">${esc(x.adds||0)}회</td><td class="muted">${held(x.openedAt,x.closedAt)}</td><td class="num">${x.theirPnlUSD!=null?money(x.theirPnlUSD):'—'}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b></td></tr>`).join('')}</tbody></table>`;
+ const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>종목</th><th>방향</th><th class="num">추매</th><th>보유 시간</th><th class="num">트레이더 손익</th><th class="num">내 손익</th></tr></thead><tbody>${shown.map(x=>`<tr class="${isMan(x)?'vp-manual':''}"><td class="muted">${when(x.closedAt)}</td><td><b>${esc(x.symbol)}</b> ${manBadge(x)}</td><td>${side(x.direction)}</td><td class="num">${esc(x.adds||0)}회</td><td class="muted">${held(x.openedAt,x.closedAt)}</td><td class="num">${x.theirPnlUSD!=null?money(x.theirPnlUSD):'—'}</td><td class="num"><b class="${cls(x.netUSD)}">${result(x)}</b></td></tr>`).join('')}</tbody></table>`;
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,...fresh);
  const stamp=updated>0?`<p class="copy-stamp">손익·잔고 ${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
   venuePositionsHTML(c)+
-  (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(c.closedTotal??closed.length)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
+  (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건${c.manual?` · 수동 ${esc(c.manual.closedTotal??0)}건`:''}</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
   (notes.length?`<h5 class="copy-sub">진입 실패·건너뜀 <small>전체 ${notesAll.length}건</small></h5><ul class="copy-list muted only-mob">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span><b>${esc(e.symbol||'')}</b> ${e.direction?side(e.direction):''} · ${why(e)}</li>`).join('')}</ul><table class="copy-table only-desk"><thead><tr><th>시각</th><th>종목</th><th>방향</th><th>이유</th></tr></thead><tbody>${notes.map(e=>`<tr><td class="muted">${when(e.at)}</td><td><b>${esc(e.symbol||'—')}</b></td><td>${e.direction?side(e.direction):'—'}</td><td>${why(e)}</td></tr>`).join('')}</tbody></table>${failPager}`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }

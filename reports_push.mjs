@@ -31,6 +31,8 @@ const shortReason=v=>v==null?null:String(v).replace(/\d{9,}/g,'#').slice(0,80);
  * Whitelisted fields only (no order ids, no position ids). Null when the ledger file does not exist. */
 export function ledgerSummary(store,{now=Date.now(),equityUSD=null}={}){
  if(!store)return null;
+ // manualLive (manual_ledger.mjs): manual trades on the real account, each trade marked origin 'manual'.
+ const origin=store.origin==='manual'?'manual':null;
  const closed=(store.closed||[]).filter(x=>x&&x.test!==true).slice().sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
  const open=Array.isArray(store.open)?store.open:Object.values(store.positions||{});
  let cum=0,peak=0,maxDD=0,wins=0,known=0;
@@ -38,10 +40,11 @@ export function ledgerSummary(store,{now=Date.now(),equityUSD=null}={}){
  const week=now-7*86400000,events=(store.events||[]).filter(e=>e&&(e.at||0)>=week);
  const counts={};for(const e of events)counts[e.type]=(counts[e.type]||0)+1;
  return {equityUSD:num(equityUSD),closedCount:closed.length,settled:known,wins,winRatePct:known?Math.round(wins/known*1000)/10:null,netUSD:num(cum),maxDrawdownUSD:num(maxDD),killed:store.killed===true,
-  trades:closed.slice(-100).map(x=>({symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
+  trades:closed.slice(-100).map(x=>({...(origin?{origin}:{}),symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
    avg:num(x.avg),adds:typeof x.adds==='number'?x.adds:Array.isArray(x.adds)?x.adds.filter(a=>a?.filled).length:null,reduces:x.reduces??null,tpHits:x.tpHits??null,
-   netUSD:num(x.netUSD),netSource:x.netSource??null,theirPnlUSD:num(x.theirPnlUSD)})),
-  open:open.filter(p=>p&&p.status!=='CLOSED').map(p=>({symbol:p.symbol,direction:p.direction,leverage:p.leverage??null,openedAt:p.openedAt??p.createdAt??null,avg:num(p.avg),adds:typeof p.adds==='number'?p.adds:null,stop:num(p.stop)})),
+   netUSD:num(x.netUSD),netSource:x.netSource??null,theirPnlUSD:num(x.theirPnlUSD),
+   ...(origin?{maxSize:num(x.maxSize),estimateUSD:num(x.estimateUSD),adoptedAtStart:x.adoptedAtStart===true,mergedIntoCopy:Boolean(x.mergedIntoCopy)}:{})})),
+  open:open.filter(p=>p&&p.status!=='CLOSED').map(p=>({...(origin?{origin}:{}),symbol:p.symbol,direction:p.direction,leverage:p.leverage??null,openedAt:p.openedAt??p.createdAt??null,avg:num(p.avg),adds:typeof p.adds==='number'?p.adds:null,stop:num(p.stop)})),
   eventCounts7d:counts,
   // Skips and errors of the last 7 days with their reason (user 2026-11-17: "오류로 못 들어간 건지 분석해서 못 들어간 건지").
   issues:events.filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY','ENTRY_RETRY_MIN','ENTRY_RETRY','ADD_RETRY','CLOSE_RETRY','RETRY_ABANDONED','ENTRY_NOT_FILLED','UNCONFIRMED_ADOPT'].includes(e.type)).slice(-150).map(e=>({type:e.type,at:e.at,symbol:e.symbol??null,direction:e.direction??null,kind:e.kind??null,
@@ -57,7 +60,8 @@ export function buildReport({readiness,insights,journal=[],records=[],scalp=null
   journal:journal.filter(x=>x.source==='LIVE_AUTO').map(({id,...x})=>x),
   trades:records.filter(r=>r.status==='CLOSED'&&r.test!==true).map(tradeSummary),
   open:records.filter(r=>r.status==='OPEN'&&r.test!==true).map(r=>({symbol:r.symbol,direction:r.direction,createdAt:r.createdAt,pattern:r.signal?.pattern??null})),
-  // copyLive = real-money copy (copy-store-live.json), copyTestnet, scalp (testnet only).
+  // copyLive = real-money copy (copy-store-live.json), manualLive = manual trades on that account
+  // (manual-trades-live.json), copyTestnet, scalp (testnet only).
   ledgers:Object.fromEntries(Object.entries(ledgers).map(([k,v])=>[k,v?ledgerSummary(v.store,{now,equityUSD:v.equityUSD}):null]))};
  const text=JSON.stringify(report);
  for(const key of text.matchAll(/"([^"]+)":/g))if(SECRET.test(key[1]))throw Error('REPORT_SECRET_FIELD '+key[1]);
