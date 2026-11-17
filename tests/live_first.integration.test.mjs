@@ -25,7 +25,12 @@ test('paper off by default: a final signal opens a TESTNET live position, no pap
   assert.equal((await post('/api/scalp/arm',{})).status,400);
   const armed=await post('/api/scalp/arm',{confirm:'SCALP_ARM'});assert.equal(armed.status,200,JSON.stringify(armed.body));assert.equal(armed.body.armed,true);
   assert.equal((await post('/api/scalp/disarm',{})).body.armed,false);
-  assert.equal((await post('/api/live/arm',{confirm:'ARM'})).status,200);
+  // One testnet switch (user 2026-11-17): 활성화 turns on the signal strategy and the scalp; the shared 15 % budget is shown.
+  assert.equal(before.testnet.armed,false);assert.equal(before.testnet.budget.dailyLossPct,15);assert.equal(before.testnet.stats.all.trades,0);
+  const one=await post('/api/live/arm',{confirm:'ARM'});assert.equal(one.status,200,JSON.stringify(one.body));
+  assert.equal(one.body.testnet.armed,true);assert.equal(one.body.testnet.scalp.armed,true);assert.equal(one.body.testnet.signal.armed,true);
+  const both=await app.get('/api/live/overview');assert.equal(both.testnet.armed,true);assert.equal(both.scalp.armed,true);assert.equal(both.armed,true);
+  assert.equal(both.scalp.settings.dailyLossPct,15);assert.equal(both.scalp.settings.sharedBudget,true);
   await app.get('/api/analyze?symbol=BTCUSDT');
   const overview=await until(()=>app.get('/api/live/overview'),o=>o.positions.length===1&&o.positions[0].status==='OPEN'&&Number.isFinite(o.positions[0].currentPrice),
    {timeout:20000,label:'live entry with paper off '+app.logs().slice(-1500)});

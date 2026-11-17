@@ -5,7 +5,7 @@ import {ScalpExecutor,scalpExecConfig,scalpSplits,planScalpOrder,scalpUniverse,s
 import {scalpEventText,scalpReasonKo} from '../scalp_telegram.mjs';
 import {detectScalpReversal,SCALP_TIMEFRAMES} from '../scalp_reversal.mjs';
 import {BACKTEST_COSTS} from '../backtest.mjs';
-import {scalpHTML} from '../public/live_control.js';
+import {scalpDetailsHTML} from '../public/live_control.js';
 
 const I=300000,BUCKET=Math.floor(Date.parse('2026-11-16T03:00:00Z')/I),T0=BUCKET*I+5000;
 // 50 quiet 5m candles near 100, a fast ~6.6 % drop on heavy volume, then a hammer (the candle that just closed).
@@ -46,10 +46,10 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX}={
  return {client,calls,orders,get size(){return Math.abs(amt)},set size(v){amt=v},get amt(){return amt},set mark(v){mark=v},get avg(){return avg},
   fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(Math.abs(amt));o.avgPrice=String(price??o.stopPrice);reduce(Number(o.executedQty))}};
 }
-function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash}={}){
+function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash,budget=null}={}){
  return new ScalpExecutor({config:{...scalpExecConfig({}),...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
   candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
-  balance:async()=>funds,gate,isBusy,directory:dir,now:()=>clock.t});
+  balance:async()=>funds,gate,isBusy,directory:dir,now:()=>clock.t,budget});
 }
 const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
@@ -192,14 +192,13 @@ test('restart: the ledger comes back, scalps start disarmed, an unfinished entry
  fs.rmSync(dir,{recursive:true,force:true});
 });
 
-test('testnet page section: on/off pill, switch, desktop tables and phone lists, skip reasons in Korean',async()=>{
- const v=venue(),ex=make(v);let h=scalpHTML(ex.status());assert.match(h,/4시간 추세 반대 제외/);
- assert.match(h,/○ 꺼짐/);assert.match(h,/data-scalp-arm/);assert.doesNotMatch(h,/data-scalp-disarm/);
+test('testnet page: the scalp details (collapsed "단타 신호·건너뜀") — rules, state, skip reasons in Korean, no own switch',async()=>{
+ const v=venue(),ex=make(v);let h=scalpDetailsHTML(ex.status());assert.match(h,/4시간 추세 반대 제외/);
+ assert.match(h,/상태 꺼짐/);assert.doesNotMatch(h,/data-scalp-arm|data-scalp-disarm/,'one testnet switch: the scalp has no button of its own');
  ex.arm();await ex.scan();ex.store.skips.push({at:T0,symbol:'XUSDT',reason:'PRICE_DRIFT'});ex.store.skipCounts.PRICE_DRIFT=1;
- h=scalpHTML(ex.status());assert.match(h,/● 켜짐/);assert.match(h,/data-scalp-disarm/);
- assert.match(h,/<table class="copy-table only-desk">/);assert.match(h,/<ul class="copy-list only-mob">/);assert.match(h,/SOLUSDT/);
- assert.match(h,/진입가에서 가격이 이미 벗어남 1회/);
- const off=new ScalpExecutor({config:scalpExecConfig({SCALP_EXEC_MODE:'LIVE'})});assert.match(scalpHTML(off.status()),/실계좌 모드는 거부됨/);
+ h=scalpDetailsHTML(ex.status());assert.match(h,/상태 켜짐/);assert.match(h,/XUSDT/);
+ assert.match(h,/진입가에서 가격이 이미 벗어남 1회/);assert.match(h,/api\/scalp\/journal/);
+ const off=new ScalpExecutor({config:scalpExecConfig({SCALP_EXEC_MODE:'LIVE'})});assert.match(scalpDetailsHTML(off.status()),/실계좌 모드는 거부됨/);
 });
 
 // ---- SHORT side (user 2026-11-16 16:58 "숏도 넣어줘"): the mirror image of every LONG step ----
@@ -282,7 +281,7 @@ test('SHORT daily loss (price up) disarms; stats and the page split 롱 / 숏',a
  ex.store.closed.push({symbol:'AUSDT',direction:'LONG',netUSD:3,closedAt:clock.t},{symbol:'BUSDT',direction:'SHORT',netUSD:-1,closedAt:clock.t},{symbol:'CUSDT',direction:'SHORT',netUSD:2,closedAt:clock.t});
  const st=ex.stats();assert.equal(st.trades,3);assert.equal(st.bySide.LONG.trades,1);assert.equal(st.bySide.SHORT.trades,2);
  assert.equal(st.bySide.SHORT.winRatePct,50);assert.equal(st.bySide.SHORT.profitFactor,2);assert.equal(st.bySide.SHORT.netUSD,1);
- const h=scalpHTML(ex.status());assert.match(h,/<th>방향<\/th>/);assert.match(h,/paper-short">숏/);assert.match(h,/숏 손익/);assert.match(h,/거래 방향 롱·숏/);
+ const h=scalpDetailsHTML(ex.status());assert.match(h,/숏 손익/);assert.match(h,/거래 방향 롱·숏/);
 });
 
 test('scalp watchlist: AKE and EVAA always scanned, more from SCALP_WATCHLIST (user 2026-11-16)',()=>{
@@ -434,4 +433,40 @@ test('better price (toward the stop) is taken while half the stop distance is le
  const ds=detectScalpReversal(rise(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings}),ps=ds.stop-ds.entry;
  const sb=planScalpOrder({det:ds,price:ds.entry+ps*.3,contract:SOL,equity:10000,leverage:10,config:cfg});
  assert.ok(sb.ok||sb.reasons[0]!=='PRICE_DRIFT'||sb.beyondExtreme,'SHORT: a better (higher) price with 70 % left is not a plain drift skip');
+});
+
+// ---- Shared TESTNET budget with the signal strategy (user 2026-11-17 "한도까지 하나로", "하루 손실을 늘리면 되지") ----
+test('shared testnet budget: the signal strategy\'s open risk, loss and margin count for a scalp entry; per-trade risk stays 0.5 %',async()=>{
+ const {TestnetBudget}=await import('../testnet_budget.mjs');
+ const sig={open:0,realized:0,margin:0};
+ const run=async()=>{const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:15,marginCapPct:30,now:()=>clock.t});
+  const ex=make(v,{clock,budget});budget.register('signal',{realizedToday:()=>sig.realized,openRisk:()=>sig.open,usedMargin:()=>sig.margin}).register('scalp',ex.budgetSource());
+  ex.arm();const st=await ex.scan();return {v,ex,st,budget}};
+ // 10,000 equity: limit 1,500. The signal strategy holds 1,460 to its stops; the scalp's 50 would cross it.
+ sig.open=1460;{const {v,ex}=await run();assert.equal(ex.store.skips.at(-1)?.reason,'OPEN_RISK_LIMIT');assert.match(ex.store.skips.at(-1).detail,/신호\+단타/);assert.equal(placed(v,'MARKET').length,0)}
+ // The signal strategy lost 1,500 today: no scalp entry either.
+ sig.open=0;sig.realized=-1500;{const {v,ex,st}=await run();assert.ok(st.error==='DAILY_LOSS_LIMIT'||ex.store.skips.at(-1)?.reason==='DAILY_LOSS_LIMIT',JSON.stringify({st,s:ex.store.skips}));assert.equal(placed(v,'MARKET').length,0)}
+ // The signal strategy uses the whole shared margin (30 % of 10,000).
+ sig.realized=0;sig.margin=3000;{const {v,ex}=await run();assert.equal(ex.store.skips.at(-1)?.reason,'MARGIN_CAP');assert.equal(placed(v,'MARKET').length,0)}
+ // Room left (1,400 + 50 <= 1,500): entered at the same per-trade risk; its risk is in the shared numbers.
+ sig.margin=0;sig.open=1400;{const {v,ex,budget}=await run();assert.equal(placed(v,'MARKET').length,1,JSON.stringify(ex.store.skips));
+  assert.ok(Math.abs(ex.store.open[0].riskUSD-50)<.2,'0.5 % of 10,000 as without the budget');
+  const s=budget.snapshot(10000);assert.ok(Math.abs(s.openRiskUSD-1400-ex.store.open[0].riskUSD)<.5,JSON.stringify(s));assert.ok(s.by.scalp.marginUSD>0);
+  assert.equal(ex.status().settings.dailyLossPct,15);assert.equal(ex.status().settings.sharedBudget,true)}
+});
+
+test('shared testnet budget: the day stop (both strategies) blocks new entries of both without turning the switch off; next KST day resumes',async()=>{
+ const {TestnetBudget}=await import('../testnet_budget.mjs');
+ const v=venue(),clock={t:T0},funds={equity:1000,available:900},budget=new TestnetBudget({dailyLossPct:15,marginCapPct:30,now:()=>clock.t});
+ const sig={realized:-140};const ex=make(v,{clock,funds,budget});
+ budget.register('signal',{realizedToday:day=>day==='2026-11-16'?sig.realized:0,openRisk:()=>0,usedMargin:()=>0}).register('scalp',ex.budgetSource());
+ ex.arm();await ex.scan();assert.equal(ex.store.open.length,1,JSON.stringify(ex.store.skips));
+ // Signal -140 realized + scalp about -10 unrealized <= -150 (15 % of 1,000).
+ v.mark=v.avg-10.5/ex.store.open[0].size;clock.t+=30000;await ex.reconcile();
+ assert.equal(ex.store.dailyStop?.day,'2026-11-16');assert.equal(ex.armed,true,'one switch: stays on');assert.equal(ex.status().blocked,'DAILY_LOSS_LIMIT');
+ assert.equal(ex.store.events.find(e=>e.type==='DAILY_LOSS_LIMIT').shared,true);
+ assert.match(scalpEventText(ex.store.events.find(e=>e.type==='DAILY_LOSS_LIMIT')),/신호 전략·단타 모두/);
+ assert.equal(budget.check({equity:1000,newRiskUSD:1}).reason,'DAILY_LOSS_LIMIT','the signal strategy is stopped too');
+ assert.ok(ex.store.open[0].stopOrderId,'the open position keeps its stop');
+ clock.t+=24*3600000;assert.equal(ex.status().blocked,null,'next KST day: entries again');
 });

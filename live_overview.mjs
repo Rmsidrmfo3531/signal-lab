@@ -6,7 +6,7 @@ import {tradeHorizon,holdTier} from './trade_horizon.mjs';
 
 export const LIVE_ACTIVE_STATUSES=Object.freeze(['SUBMITTING','OPEN','UNKNOWN']);
 export const LIVE_STATUS_KO=Object.freeze({SUBMITTING:'주문 접수 중',OPEN:'보유 중',UNKNOWN:'확인 필요 (거래소에서 직접 확인)',CLOSED:'종료',FAILED:'주문 실패'});
-export const LIVE_REASON_KO=Object.freeze({OPEN_RISK_LIMIT:'열린 포지션 최대 손실 합계 한도',
+export const LIVE_REASON_KO=Object.freeze({OPEN_RISK_LIMIT:'열린 포지션 최대 손실 합계 한도',DAILY_LOSS_LIMIT:'테스트넷 하루 손실 한도 도달 (신호+단타)',TESTNET_MARGIN_CAP:'테스트넷 공동 증거금 한도 (신호+단타)',TESTNET_BUDGET_UNAVAILABLE:'공동 위험 한도 계산 실패',NO_BALANCE:'잔고 조회 실패',MARGIN_SHORT:'여유 증거금 부족',SYMBOL_HELD_BY_COPY:'카피·단타가 같은 종목 보유 중',
  LIVE_MODE_OFF:'실매매 꺼짐',LIVE_CONFIRM_MISSING:'실거래 확인 문구 없음 · 신호 전략은 실계좌 제외(테스트넷 전용)',NOT_ARMED:'활성화 안 됨',KILL_SWITCH_ON:'긴급 정지 중',
  VENUE_NOT_ENABLED_FOR_LIVE:'실매매 거래소가 아님',VENUE_ONLY_TESTNET_ONLY:'바이낸스 미상장 코인 (테스트넷 전용)',CREDENTIALS_MISSING:'API 키 없음',
  SIGNAL_NOT_READY:'신호 조건 미충족',PLAN_INCOMPLETE:'손절·목표 계획 불완전',UNRESOLVED_ORDER_STATE:'확인이 필요한 주문이 있음',
@@ -99,6 +99,18 @@ export function liveSummary(records=[],mode=null,now=Date.now()){
   netUSD:known.length?round(known.reduce((s,r)=>s+Number(r.realized.netUSD),0),2):null,
   estimated:known.filter(r=>r.realized.source==='ESTIMATE').length,pending:closed.filter(r=>!r.realized).length,unknown:closed.filter(r=>r.realized?.source==='UNKNOWN').length,
   tests:records.filter(r=>r.test===true).length};
+}
+
+/** Totals of the one testnet screen (user 2026-11-17 "합쳐서"): the signal strategy's closed trades of `mode` with a
+ * known result and every scalp trade (ScalpExecutor.stats(), journal included). {all, signal, scalp}: trades, wins,
+ * winRatePct, profitFactor (null without a loss), netUSD. mode null = no signal trades (signal strategy not on the testnet). */
+export function testnetStats({records=[],mode='TESTNET',scalpStats=null}={}){
+ const sig=mode?records.filter(r=>r.status==='CLOSED'&&r.test!==true&&r.mode===mode&&r.realized&&r.realized.source!=='UNKNOWN'&&num(r.realized.netUSD)!==null).map(r=>Number(r.realized.netUSD)):[];
+ const signal={trades:sig.length,wins:sig.filter(x=>x>0).length,grossProfitUSD:sig.filter(x=>x>0).reduce((a,b)=>a+b,0),grossLossUSD:-sig.filter(x=>x<0).reduce((a,b)=>a+b,0),netUSD:sig.reduce((a,b)=>a+b,0)};
+ const s=scalpStats||{},scalp={trades:Number(s.trades)||0,wins:Number(s.wins)||0,grossProfitUSD:Number(s.grossProfitUSD)||0,grossLossUSD:Number(s.grossLossUSD)||0,netUSD:Number(s.netUSD)||0};
+ const done=x=>({trades:x.trades,wins:x.wins,winRatePct:x.trades?round(x.wins/x.trades*100,1):null,profitFactor:x.grossLossUSD>0?round(x.grossProfitUSD/x.grossLossUSD,2):null,netUSD:round(x.netUSD,2)});
+ const all={trades:signal.trades+scalp.trades,wins:signal.wins+scalp.wins,grossProfitUSD:signal.grossProfitUSD+scalp.grossProfitUSD,grossLossUSD:signal.grossLossUSD+scalp.grossLossUSD,netUSD:signal.netUSD+scalp.netUSD};
+ return {all:done(all),signal:done(signal),scalp:done(scalp)};
 }
 
 /** The whole 실매매 screen. status: LiveExecutor.status(); records: its full records. */

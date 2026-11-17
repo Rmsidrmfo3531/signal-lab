@@ -6,6 +6,7 @@ import {roundDecimalToStep,multiplyDecimal} from './decimal_grid.mjs';
 import {evenPositions} from './paper.mjs';
 import {positionSideFor,forMode} from './bingx_position_mode.mjs';
 import {planZoneDca,planProfile,clampMaxAdds,DCA_DEFAULTS,HOURLY_MAX_ADDS_DEFAULT} from './dca_plan.mjs';
+import {testnetDailyLossPct} from './testnet_budget.mjs';
 
 export const LIVE_MODES=Object.freeze(['OFF','TESTNET','LIVE']);
 export const LIVE_CONFIRM_PHRASE='REAL_MONEY';
@@ -43,7 +44,10 @@ export function liveConfig(env=process.env){
  if(!(RISK_PROFILES[riskProfile]&&base.sizing==='BALANCE'))return {...base,riskProfile};
  // An explicit LIVE_MAX_OPEN_POSITIONS=N (N > 0) still sets the count; otherwise the profile's 4.
  // The profile is a ceiling: a stricter single value (e.g. LIVE_DAILY_MAX_LOSS_PCT=2) is kept.
- const P=RISK_PROFILES[riskProfile],count=base.maxOpen>0?{maxOpen:Math.min(base.maxOpen,P.maxOpen),maxPerDirection:Math.min(base.maxPerDirection,P.maxPerDirection)}:{maxOpen:P.maxOpen,maxPerDirection:P.maxPerDirection};
+ // TESTNET + GROWTH (user 2026-11-17 18:11 "하루 손실을 늘리면 되지 너무 적잖아"): the daily / open-risk % is the shared
+ // testnet budget with the reversal scalp, TESTNET_DAILY_LOSS_PCT (default 15, testnet_budget.mjs) instead of 9.
+ // OFF and LIVE keep their values; a stricter LIVE_DAILY_MAX_LOSS_PCT is still kept.
+ const P=base.mode==='TESTNET'&&riskProfile==='GROWTH'?{...RISK_PROFILES.GROWTH,dailyMaxLossPct:testnetDailyLossPct(env)}:RISK_PROFILES[riskProfile],count=base.maxOpen>0?{maxOpen:Math.min(base.maxOpen,P.maxOpen),maxPerDirection:Math.min(base.maxPerDirection,P.maxPerDirection)}:{maxOpen:P.maxOpen,maxPerDirection:P.maxPerDirection};
  return {...base,maxLossPct:Math.min(base.maxLossPct,P.maxLossPct),dailyMaxLossPct:Math.min(base.dailyMaxLossPct,P.dailyMaxLossPct),...count,riskProfile};
 }
 function liveConfigBase(env){

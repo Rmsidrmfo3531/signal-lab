@@ -51,7 +51,8 @@ import {planZoneDca,DCA_DEFAULTS,DCA_DEEP_PROFILE,clampMaxAdds,clampZoneDays,dca
 import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
-import {liveOverview,checkLiveLevels} from './live_overview.mjs';
+import {liveOverview,checkLiveLevels,testnetStats} from './live_overview.mjs';
+import {TestnetBudget,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch} from './testnet_budget.mjs';
 import {createVenuePositionsReader} from './venue_positions.mjs';
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
@@ -259,7 +260,13 @@ function liveClients(){
  return clients;
 }
 let copyTrader=null,scalpExec=null;
-const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),
+// 되돌림 단타 settings (read here: the shared testnet budget below needs them before both executors exist).
+const SCALP_EXEC=scalpExecConfig(process.env);
+// One shared TESTNET risk budget for the signal strategy and the reversal scalp (testnet_budget.mjs, user 2026-11-17
+// "한도까지 하나로" / "하루 손실을 늘리면 되지"): TESTNET_DAILY_LOSS_PCT (default 15) of the equity for today's loss of both +
+// every open stop risk of both + the new trade; margin of both within the larger cap. The signal side only on TESTNET.
+const testnetBudget=new TestnetBudget({dailyLossPct:testnetDailyLossPct(process.env),marginCapPct:testnetMarginCapPct({scalpConfig:SCALP_EXEC,liveConfig:LIVE})});
+const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),budget:LIVE.mode==='TESTNET'?testnetBudget:null,
  // Copy positions on the same testnet account are kept apart; a real-money copy uses another account.
  // Testnet reversal scalps (scalp_executor.mjs) share the testnet account too.
  externalHeld:()=>new Set([...(COPY_ON_SAME_ACCOUNT()?copyTrader?.heldSymbols()??[]:[]),...(LIVE.mode==='TESTNET'?scalpExec?.heldSymbols()??[]:[])]),
@@ -320,7 +327,6 @@ if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositi
  catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
 // 되돌림 단타 (5m dip-rebound LONG) on the BingX TESTNET only (scalp_executor.mjs, user 2026-11-14 22:29):
 // its own ledger (scalp-store.json), SCALP_EXEC_MODE=OFF|TESTNET (LIVE refused), disarmed after every start.
-const SCALP_EXEC=scalpExecConfig(process.env);
 if(SCALP_EXEC.refused)console.warn('[SCALP] SCALP_EXEC_MODE refused:',SCALP_EXEC.refused,'— scalps stay OFF (testnet only)');
 // Its own public BingX queue for the 5m candles (~80 symbols per 5 min, SCALP_KLINE_GAP_MS apart).
 const scalpMarket=new BingXMarketData({minIntervalMs:SCALP_EXEC.klineGapMs});
@@ -351,7 +357,11 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  isBusy:(symbol,venueSymbol)=>LIVE.mode==='TESTNET'&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&(r.symbol===symbol||r.venueSymbol===venueSymbol)))
   ||COPY.mode==='TESTNET'&&(copyTrader.heldSymbols().has(symbol)||Object.values(copyTrader.store.positions).some(p=>p.status==='OPEN'&&p.venueSymbol===venueSymbol)),
  gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:live.updating||live.paused?{ok:false,reason:'UPDATING'}:{ok:true},
- directory:storage.dir,log:(...a)=>console.log(...a),onEvent:scalpNotice});
+ directory:storage.dir,log:(...a)=>console.log(...a),onEvent:scalpNotice,
+ // The shared testnet budget (never with a LIVE signal strategy: then the scalp keeps its own 3 % rules).
+ budget:LIVE.mode==='LIVE'?null:testnetBudget});
+if(LIVE.mode==='TESTNET')testnetBudget.register('signal',live.budgetSource());
+if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',scalpExec.budgetSource());
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
 function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
@@ -1473,19 +1483,27 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
-  if(pathname==='/api/live/overview'&&req.method==='GET')return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp:SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?await scalpExec.liveStatus():null,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
-   priceOf:liveRecordPrice,balance:await liveBalanceSnapshot(),paperTrading:CONFIG.paperTrading})});
+  if(pathname==='/api/live/overview'&&req.method==='GET'){
+   const scalp=SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?await scalpExec.liveStatus():null,balance=await liveBalanceSnapshot();
+   // One testnet screen (user 2026-11-17): one switch, the shared budget, totals over both strategies. Not for LIVE.
+   const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(balance?.usd)>0?Math.min(Number(balance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
+    return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
+   return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+   priceOf:liveRecordPrice,balance,paperTrading:CONFIG.paperTrading})})}
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
-    const status=live.arm();
+    // TESTNET / OFF: one switch for the signal strategy and the reversal scalp (user 2026-11-17). LIVE: unchanged.
+    let status;
+    if(LIVE.mode==='LIVE')status=live.arm();
+    else{try{const testnet=armTestnet({live,scalp:scalpExec});status={...live.status(),testnet}}catch(e){return response(res,e.httpStatus||409,{error:e.code||e.message,...(e.detail?{detail:e.detail}:{})})}}
     // Look at the current hour's approvals right away instead of waiting for the next tick or bar.
     setTimeout(()=>{for(const symbol of state.analyses.keys()){try{cryptoEntryAllowed(symbol)}catch{}}},50);
     return response(res,200,status)}
-   if(pathname==='/api/live/disarm')return response(res,200,live.disarm());
+   if(pathname==='/api/live/disarm')return response(res,200,LIVE.mode==='LIVE'?live.disarm():(t=>({...live.status(),testnet:t}))(disarmTestnet({live,scalp:scalpExec})));
    // Finished records only (positions, unchecked states and today's closed trades stay).
    if(pathname==='/api/live/delete'){const r=live.deleteRecord(String(body.key||''));return response(res,r.ok?200:409,r)}
-   if(pathname==='/api/live/kill')return response(res,200,live.kill('MANUAL'));
+   if(pathname==='/api/live/kill'){const st=live.kill('MANUAL');if(LIVE.mode!=='LIVE')scalpExec.disarm('KILL_SWITCH');return response(res,200,st)}
    if(pathname==='/api/live/test-order'){
     // TESTNET only: a small DOGE long through the real order path, closed after a few seconds
     // (DOGE: fine lot steps, so a small unit still splits into three targets and adds).

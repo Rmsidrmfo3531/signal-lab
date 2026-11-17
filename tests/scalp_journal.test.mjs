@@ -7,7 +7,7 @@ import {execFileSync} from 'node:child_process';
 import {ScalpExecutor,scalpExecConfig} from '../scalp_executor.mjs';
 import {appendJsonl,readJsonl,tailJsonl,summarizeJournal,signalsPath,scalpReportFiles,exportLine,trackExcursion,journalLine} from '../scalp_journal.mjs';
 import {buildReport,pushReport} from '../reports_push.mjs';
-import {scalpHTML} from '../public/live_control.js';
+import {testnetClosedHTML,setTestnetPage} from '../public/live_control.js';
 
 const I=300000,BUCKET=Math.floor(Date.parse('2026-11-16T03:00:00Z')/I),T0=BUCKET*I+5000;
 function crash(){
@@ -93,18 +93,18 @@ test('skipped signals are logged with their reason; the signals file rotates at 
  fs.rmSync(dir,{recursive:true,force:true});
 });
 
-test('screen: only the 20 newest closed trades, with side, times, reason, R and MFE/MAE; stats over every trade',()=>{
+test('screen: the newest closed trades (up to 100) in the one testnet list, 10 per page; stats over every trade',()=>{
  const dir=tmp(),v=venue(),clock={t:T0+86400000},ex=make(v,dir,clock);
  for(let i=0;i<30;i++){const x={id:'k'+i,symbol:'S'+i+'USDT',direction:i%2?'SHORT':'LONG',avg:100,initialStop:i%2?101:99,filled:1,qty:1,openedAt:T0+i*60000,closedAt:T0+i*60000+600000,
   closeReason:'STOP',netUSD:i<25?-1:2,estimate:{netUSD:-1},rMultiple:-1,mfeR:.4,maeR:-1,journalV:1};ex.store.closed.push(x)}
  ex.store.closed.splice(0,5);  // the store keeps fewer than every trade...
  for(let i=0;i<5;i++)ex.store.closed.unshift({id:'old'+i,symbol:'O',direction:'LONG',closedAt:T0,netUSD:-1,journaled:true});
  ex.journalRows.push(...Array.from({length:12},()=>({direction:'LONG',netUSD:1,closedAt:T0,closeReason:'ALL_TARGETS'})));
- const s=ex.status();assert.equal(s.closed.length,20);assert.equal(s.closed[0].symbol,'S29USDT');
+ const s=ex.status();assert.equal(s.closed.length,30);assert.equal(s.closed[0].symbol,'S29USDT');assert.equal(s.closed[0].rMultiple,-1);
  assert.equal(s.stats.trades,12+25,'...the stats count the journal and the trades not yet in it');
- const h=scalpHTML(s);const table=h.slice(h.indexOf('<th>종목</th><th>방향</th><th>진입</th>'));
- assert.equal((table.match(/<tr><td><b>S\d+USDT/g)||[]).length,20);assert.match(h,/최근 20건/);assert.match(table,/−1\.00R/);assert.match(table,/\+0\.40R \/ −1\.00R/);
- const mob=h.slice(h.indexOf('최근 종료'));assert.equal((mob.slice(0,mob.indexOf('<table')).match(/<li>/g)||[]).length,20);
+ setTestnetPage(0);const h=testnetClosedHTML({closed:[],scalp:s});
+ assert.equal((h.match(/<tr class="tn-scalp">/g)||[]).length,10);assert.equal((h.match(/<li class="tn-scalp">/g)||[]).length,10);assert.match(h,/1 \/ 3쪽/);
+ assert.ok(h.indexOf('S29USDT')>0&&h.indexOf('S29USDT')<h.indexOf('S28USDT'),'newest first');
  fs.rmSync(dir,{recursive:true,force:true});
 });
 

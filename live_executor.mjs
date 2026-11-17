@@ -42,9 +42,12 @@ const baseUnits=(record,qty)=>record.venueContract?.quantityUnit==='CONTRACT'?qt
 const SETTLE_TRIES=4,SETTLE_WINDOW_MS=2*3600000,SETTLE_DELAY_MS=150000;
 
 export class LiveExecutor{
- constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null,onEvent=null,externalHeld=null}={}){
+ constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null,onEvent=null,externalHeld=null,budget=null}={}){
   // externalHeld(): symbols another ledger (copy trading) holds on the same account: not traded here.
   this.externalHeld=externalHeld;
+  // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the shared TESTNET daily loss / open risk / margin
+  // budget with the reversal scalp. Only ever given on TESTNET (never LIVE); without it the rules below are unchanged.
+  this.budget=config?.mode==='TESTNET'?budget:null;
   // priceOf(record): the venue's public mid price, used only to estimate an exit when the venue gives none.
   Object.assign(this,{config,clients,now,log,onChange,priceOf,onEvent});
   this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();this.reconciling=false;
@@ -99,6 +102,23 @@ export class LiveExecutor{
    closedAt:record.closedAt,realized:record.realized?{source:record.realized.source,netUSD:record.realized.netUSD}:null,
    events:(record.events||[]).filter(e=>e.type!=='RECONCILE_ERROR').map(e=>({type:e.type,at:e.at}))}].slice(-MAX_RECORDS);
   this.#save();return {ok:true}
+ }
+ /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only.
+  *  realizedToday: closed (non-test) trades of this mode closed that KST day; a trade not yet settled counts as its
+  *  planned worst loss until the venue's result arrives (never as 0). openRisk: planned worst loss of every active
+  *  record (as the open-risk cap above). usedMargin: margin of the held size plus the resting adds. */
+ budgetSource(){
+  const active=()=>this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.test!==true);
+  const kst=t=>new Date(Number(t)+9*3600000).toISOString().slice(0,10);
+  return {
+   realizedToday:day=>this.store.records.filter(r=>r.status==='CLOSED'&&r.test!==true&&r.mode===this.config.mode&&r.closedAt>0&&kst(r.closedAt)===day)
+    .reduce((t,r)=>{const n=Number(r.realized?.netUSD);return t+(r.realized&&r.realized.netUSD!==null&&r.realized.netUSD!==undefined&&Number.isFinite(n)?n:-(Number(r.plannedRiskUSD)||0))},0),
+   openRisk:()=>active().reduce((t,r)=>t+(Number(r.plannedRiskUSD)||0),0),
+   usedMargin:()=>active().reduce((t,r)=>{const lev=Number(r.leverage)||1,px=Number(r.position?.entryPrice)||Number(r.firstEntryPrice)||Number(r.plannedEntry)||0;
+    const held=r.position?.size>0?Number(r.position.size):Number(r.quantity?.total)||0;
+    const adds=(r.adds||[]).filter(a=>!a.filled&&!a.cancelled&&!a.skipped).reduce((s,a)=>s+baseUnits(r,Number(a.qty)||0)*(Number(a.price)||0),0);
+    return t+(baseUnits(r,held)*px+adds)/lev},0),
+   unrealized:()=>active().reduce((t,r)=>t+(Number(r.position?.unrealizedPnLUSD)||0),0)};
  }
  credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
  status(){
@@ -164,8 +184,15 @@ export class LiveExecutor{
      config={...this.config,dailyMaxRiskUSD:balanceUSD*this.config.dailyMaxLossPct/100};
      // Open-risk cap: the worst losses of every open position plus this one stay within the daily
      // loss limit of the balance — positions opened on earlier days count too (margin floor safety).
-     const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
-     if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
+     if(this.budget){
+      // TESTNET shared budget: today's loss of both strategies + every open stop risk of both + this plan within
+      // TESTNET_DAILY_LOSS_PCT of the equity, the margin of both within the shared cap (testnet_budget.mjs).
+      if(split){const b=this.budget.check({equity:balanceUSD,newRiskUSD:split.riskUSD,newMarginUSD:planMargin(split,row,leverage)});
+       if(!b.ok)extra.push(b.reason);}
+     }else{
+      const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
+      if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
+     }
      split&&Object.assign(split,{balanceUSD,freeUSD}); // equity (sizing and readiness drawdown), free margin at the entry
     }else if(!extra.length)extra.push('BALANCE_EMPTY');
    }

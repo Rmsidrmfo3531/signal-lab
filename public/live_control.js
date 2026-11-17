@@ -32,7 +32,8 @@ export function liveRows(s){
   ['거래소',(s.venues||[]).map(v=>LABEL[v]||v).join(' · ')||'—'],['잔고',balance],
   ['API 키',['BINGX','GATEIO'].map(v=>`${LABEL[v]} ${s.credentialsConfigured?.[v]?'설정됨':'없음'}`).join(' · ')],
   ...(L.strategyProfile?[['전략',L.strategyProfile==='HYBRID'?`HYBRID · 위험 한도로 수량 역산 · 추매 1·1·2·4(최대 ${L.hybridMaxAdds}회) 매물대`:'CURRENT (기존 규칙)']]:[]),
-  ...(L.riskProfile?[['위험 프로필',L.riskProfile==='GROWTH'?'수익형(거래당 3% · 열린 위험·하루 9% · 동시 8개)':L.riskProfile==='CONSERVATIVE'?'보수(거래당 1% · 하루 3% · 동시 4개)':'기존(승인 전 실거래 값)']]:[]),
+  ...(L.riskProfile?[['위험 프로필',L.riskProfile==='GROWTH'?`수익형(거래당 ${L.maxLossPct??3}% · 열린 위험·하루 ${L.dailyMaxLossPct??9}%${s.testnet?' 단타와 공동':''} · 동시 ${L.maxOpen||8}개)`:L.riskProfile==='CONSERVATIVE'?'보수(거래당 1% · 하루 3% · 동시 4개)':'기존(승인 전 실거래 값)']]:[]),
+  ...(s.testnet?.budget?[['테스트넷 공동 한도',`신호+단타 하루 손실·열린 위험 ${s.testnet.budget.dailyLossPct}% · 증거금 ${s.testnet.budget.marginCapPct}% · 거래당 위험은 신호 ${L.maxLossPct??3}% · 단타 ${s.scalp?.settings?.riskPct??0.5}%`]]:[]),
   ...(L.sizing==='BALANCE'?[['수량',L.strategyProfile==='HYBRID'?`추매까지 모두 체결 후 손절 시 손실 = 잔고의 ${L.maxLossPct}%가 되도록 첫 수량 역산 · 포지션마다 같은 크기(잔고의 ${L.marginUsePct??25}% 이내)`:`잔고${L.balanceCapUSD?`(최대 $${L.balanceCapUSD})`:''} × ${L.unitPct}% × 배율 · 포지션마다 같은 크기(잔고의 ${L.marginUsePct??25}% 이내), 매물대 분할 추매`],['손실 한도',`1회 잔고 ${L.maxLossPct}% · 하루 ${L.dailyMaxLossPct}%`]]
    :[['손실 한도',`1회 $${L.maxRiskUSD} · 하루 $${L.dailyMaxRiskUSD}`]]),
   ['동시 포지션',L.maxOpen>0?`${L.maxOpen}개${L.maxPerDirection?` (롱·숏 각 ${L.maxPerDirection}개)`:''}`:'개수 제한 없음 (손실 합계 한도로 관리)']];
@@ -54,7 +55,7 @@ function levelsEditor(p){
 }
 
 /** One open live position as a multi-line card. */
-export function positionCardHTML(p){
+export function positionCardHTML(p,{badge=''}={}){
  const pf=priceFmt(p),u=p.unrealized,q=p.quantity||{};
  const qty=`${qtyFmt(q.base)} ${esc(p.asset)}${q.unit==='CONTRACT'&&fin(q.venue)?` (${qtyFmt(q.venue)}계약)`:''}`;
  const pending=p.adds?.pending||[];
@@ -63,7 +64,7 @@ export function positionCardHTML(p){
  const pnl=u?`<b class="${pnlClass(u.usd)}">${usd(u.usd)}${fin(u.pct)?` (${Number(u.pct)>=0?'+':''}${Number(u.pct).toFixed(2)}%)`:''}</b><small>${u.source==='EXCHANGE'?'거래소 계산':'추정 (평균가·현재가)'}${fin(u.pct)?' · 증거금 대비':''}</small>`:'<b>—</b><small>시세 대기</small>';
  const ev=p.lastEvent?`${esc(p.lastEvent.label)}${p.lastEvent.reason?' · '+esc(p.lastEvent.reasonKo||p.lastEvent.reason):''} · ${time(p.lastEvent.at)}`:'—';
  return `<article class="paper-trade live-position${p.status==='UNKNOWN'?' live-warn':''}">
- <header><b>${esc(p.symbol)}</b>${side(p.direction)}${horizonTag(p)}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · ${esc(LABEL[p.venue]||p.venue)}</span><span class="live-state s-${esc(p.status)}">${esc(p.statusKo||LIVE_STATUS[p.status]||p.status)}</span></header>
+ <header><b>${esc(p.symbol)}</b>${badge}${side(p.direction)}${horizonTag(p)}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · ${esc(LABEL[p.venue]||p.venue)}</span><span class="live-state s-${esc(p.status)}">${esc(p.statusKo||LIVE_STATUS[p.status]||p.status)}</span></header>
  <div class="paper-trade-values live-values">
   <span>첫 진입가<b>${pf(p.firstEntryPrice)}</b></span>
   <span>평균 진입가<b>${pf(p.averageEntryPrice)}</b></span>
@@ -247,51 +248,92 @@ export function copyHTML(c){
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
 
-/** Testnet reversal scalps (scalp_executor.mjs): on/off, the switch, stats, open / closed tables, skip reasons. */
-export function scalpHTML(s){
- if(!s)return '';
- const money=v=>v==null||!Number.isFinite(Number(v))?'—':`${v>=0?'+':'−'}$${Math.abs(v).toFixed(2)}`,usdv=v=>v==null||!Number.isFinite(Number(v))?'—':`$${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
- const cls=v=>v>0?'paper-profit':v<0?'paper-loss':'',px=v=>fin(v)?esc(+Number(v).toPrecision(6)):'—';
- const when=t=>t?new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'';
- const held=(a,b)=>{const m=(b-a)/60000;return !(m>=0)?'':m<90?Math.max(1,Math.round(m))+'분':(+(m/60).toFixed(1))+'시간'};
- const open=s.positions||[],closed=s.closed||[],st=s.stats||{},S=s.settings||{},f=s.funds;
- const on=Boolean(s.armed&&!s.blocked),canArm=s.mode==='TESTNET'&&s.credentials&&!s.armed;
- const state=s.dailyStop&&s.blocked==='DAILY_LOSS_LIMIT'?'<b class="copy-state kill">■ 오늘 정지 (하루 손실 한도)</b>':s.armed?'<b class="copy-state on">● 켜짐</b>':'<b class="copy-state off">○ 꺼짐</b>';
- const detail=s.mode!=='TESTNET'?(s.refused==='LIVE_REFUSED'?'실계좌 모드는 거부됨 — 테스트넷 전용':'SCALP_EXEC_MODE=OFF'):!s.credentials?'BingX API 키 없음':s.armed?(s.blocked?esc(s.blockedKo||s.blocked):'5분봉 마감마다 검사 · 테스트넷 주문'):'켜기를 눌러야 주문합니다 · 서버 재시작 후 항상 꺼짐';
- const btn=s.armed?'<button type="button" class="outline-btn small" data-scalp-disarm>끄기</button>':canArm?'<button type="button" class="outline-btn small" data-scalp-arm>켜기</button>':'';
- const modeLine=`<div class="copy-mode ${on?'on':''}"><span class="copy-chip">테스트넷</span>${state}<span>${detail}</span>${btn}<span class="copy-msg" data-scalp-msg></span></div>`;
- const unreal=open.reduce((a,p)=>a+(Number(p.unrealized)||0),0),stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
- const stats=`<div class="copy-stats">${stat('잔고',usdv(f?.equity))}${stat('보유',open.length+(S.maxOpen>0?'/'+S.maxOpen:'')+'개')}${stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}${stat('오늘 손익',money(st.todayNetUSD),`class="${cls(st.todayNetUSD)}"`)}
-  ${stat('종료',(st.trades||0)+'건')}${stat('승률',st.winRatePct!=null?st.winRatePct+'%':'—')}${stat('PF',st.profitFactor!=null?st.profitFactor:st.trades?'∞':'—')}${stat('누적 손익',money(st.trades?st.netUSD:null),`class="${cls(st.netUSD)}"`)}</div>`;
- // Per side (user 2026-11-16: shorts added): trades, win rate, PF, net for 롱 and 숏 apart.
- const sides=S.sides||['LONG','SHORT'],SK={LONG:'롱',SHORT:'숏'};
- const bySide=`<div class="copy-stats">${['LONG','SHORT'].map(d=>{const b=st.bySide?.[d]||{};return stat(`${SK[d]}${sides.includes(d)?'':' (꺼짐)'}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${SK[d]} 손익`,money(b.trades?b.netUSD:null),`class="${cls(b.netUSD)}"`)}).join('')}</div>`;
- const rules=`<p class="copy-rules">거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${esc(S.minMovePct)}% 이상 · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입 · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · 손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유 · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · 거래당 위험 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%에서 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 손절 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${when(s.lastScan.at)} (${esc(s.lastScan.checked)}종목)`:''}</p>`;
- const row=p=>`<li><b>${esc(p.symbol)}</b>${side(p.direction||'LONG')}<span>${esc(p.leverage)}배</span><span>진입 ${px(p.avg)} · 손절 ${px(p.stop)}${p.breakevenMoved?' (본전)':''}</span><span class="muted">${held(p.openedAt||p.createdAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
- // Closed trades (the newest 20; the stats above cover every trade): side, entry / exit time, hold, reason, R, PnL, MFE / MAE.
- const rTxt=v=>fin(v)?`${Number(v)>=0?'+':'−'}${Math.abs(Number(v)).toFixed(2)}R`:'—',ex=x=>fin(x.mfeR)||fin(x.maeR)?`${rTxt(x.mfeR)} / ${rTxt(x.maeR)}`:'—';
- const done=x=>`<li><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${side(x.direction||'LONG')}<span>${esc(x.closeReasonKo||x.closeReason)}</span><span class="muted">${held(x.openedAt||x.createdAt,x.closedAt)}</span><span class="${cls(x.rMultiple)}">${rTxt(x.rMultiple)}</span><small class="muted">최대 ${ex(x)}</small><b class="${cls(x.netUSD)} end">${money(x.netUSD)}${x.netSource==='EXCHANGE'?'':' <small>추정</small>'}</b></li>`;
- const tgt=p=>(p.targets||[]).map((t,i)=>p.parts?.[i]>0?`<span class="${p.tpDone?.[i]?'paper-profit':''}">${px(t)}</span>`:null).filter(Boolean).join(' / ');
- const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">진입</th><th class="num">현재가</th><th class="num">손절</th><th>목표</th><th>보유</th><th class="num">위험</th><th class="num">미실현</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b>${p.status!=='OPEN'?` <small class="paper-loss">${esc(p.status)}</small>`:''}</td><td>${side(p.direction||'LONG')}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.size||p.qty)}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td><td class="num">${px(p.stop)}${p.breakevenMoved?' <small>본전</small>':''}</td><td>${tgt(p)}</td><td class="muted">${held(p.openedAt||p.createdAt,Date.now())}</td><td class="num">${usdv(p.riskUSD)}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td></tr>`).join('')}</tbody></table>`;
- const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>진입</th><th>종료</th><th>보유</th><th>사유</th><th class="num">목표 도달</th><th class="num">R</th><th class="num">최대 이익/손실(R)</th><th class="num">손익</th></tr></thead><tbody>${closed.slice(0,20).map(x=>`<tr><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction||'LONG')}</td><td class="muted">${when(x.openedAt||x.createdAt)}</td><td class="muted">${when(x.closedAt)}</td><td class="muted">${held(x.openedAt||x.createdAt,x.closedAt)}</td><td>${esc(x.closeReasonKo||x.closeReason)}</td><td class="num">${esc(x.tpHits??0)}개</td><td class="num ${cls(x.rMultiple)}">${rTxt(x.rMultiple)}</td><td class="num">${ex(x)}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b>${x.netSource==='EXCHANGE'?'':' <small>추정</small>'}</td></tr>`).join('')}</tbody></table>`;
- const counts=(s.skipCounts||[]).slice(0,8),skips=(s.skips||[]).slice(0,10);
- const skipBox=counts.length?`<h5 class="copy-sub">진입 안 한 이유</h5><p class="copy-rules">${counts.map(c=>`${esc(c.label)} ${esc(c.count)}회`).join(' · ')}</p><ul class="copy-list muted">${skips.map(x=>`<li><span class="muted">${when(x.at)}</span>${esc(x.symbol||'')}${x.direction?` <b class="${x.direction==='LONG'?'pos':'neg'}">${x.direction==='LONG'?'롱(급락 후 반등)':'숏(급등 후 되돌림)'}</b>`:''}${x.movePct!=null?` <small>${esc(Number(x.movePct).toFixed(1))}% 움직임</small>`:''} · ${esc(x.label||x.reason)}${skipDetail(x)}</li>`).join('')}</ul>`:'';
- const side_=`<div class="copy-side">${modeLine}${stats}${bySide}${rules}</div>`;
- const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">보유 중인 단타가 없습니다.${s.armed?' 5분봉 마감마다 급락 후 반등·급등 후 되돌림을 찾습니다.':''}</p>`)+
-  (closed.length?`<h5 class="copy-sub">최근 종료 <small>최근 ${Math.min(20,closed.length)}건 · 전체 기록은 단타 기록 파일</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${closedTable}`:'')+skipBox+'</div>';
- return `<div class="copy-layout">${side_}${main}</div>`;
+// ---- One testnet screen (user 2026-11-17 "단타랑 원래 쓰던 테스트넷이랑 합쳐서 진행하자 따로 보는 게 더 복잡"): the signal
+// strategy and the reversal scalp share one switch, one budget line, one 보유 중 list and one 종료된 거래 list (badges 신호 / 단타).
+const tnMoney=v=>v==null||!fin(v)?'—':`${Number(v)>=0?'+':'−'}$${Math.abs(Number(v)).toFixed(2)}`,tnUsd=v=>v==null||!fin(v)?'—':`$${Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+const tnCls=v=>!fin(v)?'':Number(v)>0?'paper-profit':Number(v)<0?'paper-loss':'';
+const tnWhen=t=>t?new Date(t).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'';
+const tnHeld=(a,b)=>{const m=(b-a)/60000;return !(m>=0)?'':m<90?Math.max(1,Math.round(m))+'분':m<48*60?(+(m/60).toFixed(1))+'시간':(+(m/1440).toFixed(1))+'일'};
+export const TN_BADGE={signal:'<span class="vp-badge tn-signal">신호</span>',scalp:'<span class="vp-badge tn-scalp">단타</span>'};
+
+/** Status line: on / off and today's shared budget: "오늘 손실 −$x / 한도 $y (15%) · 열린 위험 $z". */
+export function testnetBudgetHTML(t){
+ if(!t)return '';
+ const b=t.budget||{},state=t.killSwitch?'<b class="copy-state kill">■ 긴급 정지 중</b>':b.stopped?'<b class="copy-state kill">■ 오늘 정지 (하루 손실 한도)</b>':t.armed?'<b class="copy-state on">● 활성화</b>':t.partial?'<b class="copy-state on">◐ 일부 활성화</b>':'<b class="copy-state off">○ 비활성</b>';
+ const who=[t.signal?`신호 ${t.signal.armed?'●':'○'}`:null,t.scalp?`단타 ${t.scalp.armed?'●':'○'}`:null].filter(Boolean).join(' · ');
+ const loss=Number(b.lossUSD)>0?`−$${Number(b.lossUSD).toFixed(2)}`:'$0.00';
+ return `<span class="copy-chip">테스트넷</span>${state}<span class="tn-who">${esc(who)}</span><span class="tn-budget-nums">오늘 손실 <b class="${Number(b.lossUSD)>0?'paper-loss':''}">${loss}</b> / 한도 <b>${fin(b.limitUSD)?tnUsd(b.limitUSD):'잔고 확인 중'}</b> (${esc(b.dailyLossPct??'—')}%) · 열린 위험 <b>${tnUsd(b.openRiskUSD)}</b>${fin(b.marginUSD)?` · 증거금 ${tnUsd(b.marginUSD)}${fin(b.marginCapUSD)?` / ${tnUsd(b.marginCapUSD)} (${esc(b.marginCapPct)}%)`:''}`:''}</span>${t.scalpError?`<small class="muted">단타 켜지 않음: ${esc(t.scalpError)}</small>`:''}`;
 }
-function bindScalpButtons(el){
- if(!el||el.dataset.bound)return;el.dataset.bound='1';
- el.addEventListener('click',async e=>{
-  const arm=e.target.closest('[data-scalp-arm]'),disarm=e.target.closest('[data-scalp-disarm]'),btn=arm||disarm;if(!btn)return;
-  if(arm&&!window.confirm('되돌림 단타(테스트넷)를 켭니다. 5분봉이 마감될 때마다 급락 후 반등 롱·급등 후 되돌림 숏을 BingX 테스트넷에 주문합니다. 켤까요?'))return;
-  const msg=el.querySelector('[data-scalp-msg]');btn.disabled=true;btn.textContent=arm?'켜는 중…':'끄는 중…';
-  const KO={KILL_SWITCH_ON:'긴급 정지 중',DAILY_LOSS_LIMIT:'오늘 하루 손실 한도에 닿음',CREDENTIALS_MISSING:'BingX API 키 없음',SCALP_MODE_OFF:'꺼짐 설정',LIVE_REFUSED:'테스트넷 전용',UPDATING:'업데이트 중'};
-  try{const r=await fetch(arm?'/api/scalp/arm':'/api/scalp/disarm',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(arm?{confirm:'SCALP_ARM'}:{})}),d=await r.json().catch(()=>({}));
-   if(!r.ok)throw Error(KO[d.error]||d.error||'HTTP '+r.status);if(msg)msg.textContent=d.armed?'✓ 켜졌습니다':'✓ 꺼졌습니다'}
-  catch(err){if(msg){msg.textContent='실패: '+err.message;msg.classList.add('err')}}
-  document.getElementById('liveRefresh')?.click()})}
+
+/** One open scalp position as a card next to the signal cards (badge 단타). */
+export function scalpPositionCardHTML(p){
+ const px=v=>fin(v)?esc(+Number(v).toPrecision(6)):'—';
+ const tgt=(p.targets||[]).map((t,i)=>p.parts?.[i]>0?`<i class="tn-tp${p.tpDone?.[i]?' paper-profit':''}">${px(t)}</i>`:null).filter(Boolean).join(' · ')||'—'; // <i>: the card styles every <span> as a cell
+ return `<article class="paper-trade live-position tn-scalp-card${p.status&&p.status!=='OPEN'?' live-warn':''}">
+ <header><b>${esc(p.symbol)}</b>${TN_BADGE.scalp}${side(p.direction||'LONG')}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · BingX</span><span class="live-state s-${esc(p.status||'OPEN')}">${esc(p.status==='OPEN'||!p.status?'보유 중':p.status)}</span></header>
+ <div class="paper-trade-values live-values">
+  <span>진입가<b>${px(p.avg??p.entry)}</b></span>
+  <span>현재가<b>${px(p.mark)}</b></span>
+  <span>수량<b>${esc(qtyFmt(p.size||p.qty))}</b></span>
+  <span>미실현 손익<b class="${tnCls(p.unrealized)}">${tnMoney(p.unrealized)}</b><small>추정 (평균가·현재가)</small></span>
+  <span>손절가<b>${px(p.stop)}</b>${p.breakevenMoved?'<small>1차 목표 뒤 본전</small>':''}</span>
+  <span class="tp-cell">목표<b>${tgt}</b></span>
+  <span>위험<b>${tnUsd(p.riskUSD)}</b></span>
+  <span>보유<b>${tnHeld(p.openedAt||p.createdAt,Date.now())}째</b><small>최대 2시간</small></span>
+ </div>
+</article>`;
+}
+
+/** Signal closes (liveClosedView rows) and scalp closes in one list, newest first. */
+export function testnetCloses(o){
+ const sig=(o?.closed||[]).map(c=>({kind:'signal',key:c.signalKey,symbol:c.symbol,direction:c.direction,openedAt:c.createdAt,closedAt:c.closedAt,reason:c.closeReasonKo||c.closeReason,
+  netUSD:c.realized?.netUSD??null,source:c.realized?.source||'PENDING',test:c.test===true,deletable:c.deletable===true}));
+ const sc=(o?.scalp?.closed||[]).map(x=>({kind:'scalp',key:x.id,symbol:x.symbol,direction:x.direction||'LONG',openedAt:x.openedAt||x.createdAt,closedAt:x.closedAt,reason:x.closeReasonKo||x.closeReason,
+  netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',r:x.rMultiple??null}));
+ return [...sig,...sc].sort((a,b)=>(Number(b.closedAt)||0)-(Number(a.closedAt)||0));
+}
+let tnPage=0,lastTestnet=null;
+export const TESTNET_PAGE_SIZE=10;
+export function setTestnetPage(p){tnPage=Math.max(0,p|0)}
+const tnResult=x=>x.source==='PENDING'?'<span class="muted">정산 중</span>':x.source==='UNKNOWN'||!fin(x.netUSD)?'<span class="muted">확인 불가</span>':`${tnMoney(x.netUSD)}${x.source==='ESTIMATE'?' <small class="muted">추정</small>':''}`;
+/** The merged 종료된 거래 list, 10 per page (the copy page's pager), desktop table / phone list. */
+export function testnetClosedHTML(o){
+ lastTestnet=o;
+ const all=testnetCloses(o);
+ if(!all.length)return '<p class="empty-small">아직 종료된 테스트넷 거래가 없습니다.</p>';
+ const pages=Math.max(1,Math.ceil(all.length/TESTNET_PAGE_SIZE)),page=Math.min(tnPage,pages-1),shown=all.slice(page*TESTNET_PAGE_SIZE,page*TESTNET_PAGE_SIZE+TESTNET_PAGE_SIZE);
+ const pager=pages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-tn-page="-1"${page===0?' disabled':''}>‹ 이전</button><span class="muted">${page+1} / ${pages}쪽</span><button type="button" class="outline-btn small" data-tn-page="1"${page>=pages-1?' disabled':''}>다음 ›</button></div>`:'';
+ const del=x=>x.kind==='signal'&&x.deletable?` <button type="button" class="ghost small" data-live-delete="${esc(x.key)}">삭제</button>`:'';
+ const tag=x=>`${TN_BADGE[x.kind]}${x.test?' <small class="muted">시험(합계 제외)</small>':''}`;
+ const li=x=>`<li class="tn-${x.kind}"><span class="muted">${tnWhen(x.closedAt)}</span><b>${esc(x.symbol)}</b>${tag(x)}${side(x.direction)}<span>${esc(x.reason||'')}</span><span class="muted">${tnHeld(x.openedAt,x.closedAt)}</span><b class="${tnCls(x.netUSD)} end">${tnResult(x)}</b>${del(x)}</li>`;
+ const table=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>구분</th><th>종목</th><th>방향</th><th>보유</th><th>사유</th><th class="num">손익 (수수료 반영)</th></tr></thead><tbody>${shown.map(x=>`<tr class="tn-${x.kind}"><td class="muted">${tnWhen(x.closedAt)}</td><td>${tag(x)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="muted">${tnHeld(x.openedAt,x.closedAt)}</td><td class="tn-reason">${esc(x.reason||'')}</td><td class="num"><b class="${tnCls(x.netUSD)}">${tnResult(x)}</b>${del(x)}</td></tr>`).join('')}</tbody></table>`;
+ return `<p class="copy-stamp">최근 기록 ${all.length}건 · 신호 ${all.filter(x=>x.kind==='signal').length}건 · 단타 ${all.filter(x=>x.kind==='scalp').length}건 · 최신순</p><ul class="copy-list only-mob">${shown.map(li).join('')}</ul>${table}${pager}`;
+}
+/** Totals over both strategies (server testnetStats) and the 신호 / 단타 breakdown line. */
+export function testnetSummaryHTML(st){
+ const a=st?.all||{},s=st?.signal||{},c=st?.scalp||{};
+ return `<div><span>거래</span><strong>${esc(a.trades??0)}건</strong><small>${esc(a.wins??0)}승 ${esc((a.trades??0)-(a.wins??0))}패</small></div>
+ <div><span>승률</span><strong>${fin(a.winRatePct)?Number(a.winRatePct).toFixed(1)+'%':'—'}</strong></div>
+ <div><span>PF</span><strong>${fin(a.profitFactor)?Number(a.profitFactor).toFixed(2):a.trades?'∞':'—'}</strong></div>
+ <div><span>누적 손익 (수수료 반영)</span><strong class="${tnCls(a.netUSD)}">${a.trades?tnMoney(a.netUSD):'—'}</strong></div>
+ <p class="copy-split tn-split">신호 <b class="${tnCls(s.netUSD)}">${tnMoney(s.netUSD??0)}</b> (${esc(s.trades??0)}건) · 단타 <b class="${tnCls(c.netUSD)}">${tnMoney(c.netUSD??0)}</b> (${esc(c.trades??0)}건)</p>`;
+}
+
+/** The scalp's own details, collapsed under "단타 신호·건너뜀": rules, 롱 / 숏 totals, last scan, skip reasons, journal. */
+export function scalpDetailsHTML(s){
+ if(!s)return '';
+ const st=s.stats||{},S=s.settings||{},SK={LONG:'롱',SHORT:'숏'},sides=S.sides||['LONG','SHORT'],stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
+ const mode=s.mode!=='TESTNET'?(s.refused==='LIVE_REFUSED'?'실계좌 모드는 거부됨 — 테스트넷 전용':'SCALP_EXEC_MODE=OFF'):!s.credentials?'BingX API 키 없음':s.armed?(s.blocked?`켜짐 · 지금 진입 안 함: ${esc(s.blockedKo||s.blocked)}`:'켜짐 · 5분봉 마감마다 검사'):'꺼짐';
+ const bySide=`<div class="copy-stats">${['LONG','SHORT'].map(d=>{const b=st.bySide?.[d]||{};return stat(`${SK[d]}${sides.includes(d)?'':' (꺼짐)'}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${SK[d]} 손익`,tnMoney(b.trades?b.netUSD:null),`class="${tnCls(b.netUSD)}"`)}).join('')}</div>`;
+ const rules=`<p class="copy-rules">상태 ${mode} · 거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${esc(S.minMovePct)}% 이상 · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입 · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · 손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유 · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · 거래당 위험 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%${S.sharedBudget?'(신호 전략과 공동)':''}에서 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 손절 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${tnWhen(s.lastScan.at)} (${esc(s.lastScan.checked)}종목)`:''}</p>`;
+ const counts=(s.skipCounts||[]).slice(0,8),skips=(s.skips||[]).slice(0,10);
+ const skipBox=counts.length?`<h5 class="copy-sub">진입 안 한 이유</h5><p class="copy-rules">${counts.map(c=>`${esc(c.label)} ${esc(c.count)}회`).join(' · ')}</p><ul class="copy-list muted">${skips.map(x=>`<li><span class="muted">${tnWhen(x.at)}</span>${esc(x.symbol||'')}${x.direction?` <b class="${x.direction==='LONG'?'pos':'neg'}">${x.direction==='LONG'?'롱(급락 후 반등)':'숏(급등 후 되돌림)'}</b>`:''}${x.movePct!=null?` <small>${esc(Number(x.movePct).toFixed(1))}% 움직임</small>`:''} · ${esc(x.label||x.reason)}${skipDetail(x)}</li>`).join('')}</ul>`:'<p class="empty-small">건너뛴 신호가 없습니다.</p>';
+ const journal=`<p class="copy-rules">전체 기록: <a href="/api/scalp/journal?limit=200" target="_blank" rel="noopener">단타 거래 기록</a> · <a href="/api/scalp/journal?kind=signals&amp;limit=200" target="_blank" rel="noopener">감지된 신호</a> (JSON)</p>`;
+ return bySide+rules+skipBox+journal;
+}
+function bindTestnetPager(el){
+ if(!el||el.dataset.tnBound)return;el.dataset.tnBound='1';
+ el.addEventListener('click',e=>{const pg=e.target.closest('[data-tn-page]');if(!pg)return;setTestnetPage(tnPage+Number(pg.dataset.tnPage));if(lastTestnet)el.innerHTML=testnetClosedHTML(lastTestnet)})}
 
 export function readinessHTML(r,positions){
  if(!r)return '';
@@ -330,25 +372,30 @@ function render(o){
  if($('liveReadiness')){$('liveReadiness').hidden=!o.readiness;$('liveReadiness').innerHTML=readinessHTML(o.readiness,(o.positions||[]).map(p=>({symbol:p.symbol,direction:p.direction,unrealizedUSD:p.unrealized?.usd??null})))}
  for(const [id,text] of [['liveHeading',m.title],['navLiveLabel',o.mode==='LIVE'?'실매매':'테스트넷']])if($(id))$(id).textContent=text;
  if($('navLiveMode'))$('navLiveMode').textContent=m.badge;
- if($('liveModeBadge'))$('liveModeBadge').innerHTML=modeBadgeHTML(o);
+ // One testnet switch (signal + scalp, user 2026-11-17): the page shows the combined state; LIVE keeps the signal's own.
+ const tn=o.testnet||null,on=tn?tn.armed===true:Boolean(o.armed&&o.mode!=='OFF'),some=tn?Boolean(tn.armed||tn.partial):on,canArm=tn?Boolean(tn.signal||tn.scalp):o.mode!=='OFF';
+ if($('liveModeBadge'))$('liveModeBadge').innerHTML=modeBadgeHTML(tn?{...o,mode:o.mode==='OFF'&&tn.scalp?'TESTNET':o.mode,armed:on}:o);
+ if($('testnetBudget')){$('testnetBudget').hidden=!tn;if(tn)$('testnetBudget').innerHTML=testnetBudgetHTML(tn)}
  const status=$('liveStatus');
  if(status){status.replaceChildren(...liveRows(o).map(([k,v])=>{const row=document.createElement('div'),dt=document.createElement('span'),dd=document.createElement('b');
   row.className='kv-row';dt.textContent=k;dd.textContent=v;row.append(dt,dd);return row}));status.classList.toggle('warn',Boolean(o.killSwitch||o.mode==='LIVE'))}
  if($('liveTest'))$('liveTest').hidden=o.mode!=='TESTNET';
  // The button for the current state is shown as selected and cannot be pressed again.
- const armedNow=Boolean(o.armed&&o.mode!=='OFF');
- if($('liveArm')){$('liveArm').disabled=armedNow||o.mode==='OFF';$('liveArm').textContent=armedNow?'● 활성화됨':'활성화';$('liveArm').classList.toggle('is-current',armedNow)}
- if($('liveDisarm')){$('liveDisarm').disabled=!armedNow;$('liveDisarm').textContent=armedNow?'비활성화':'○ 비활성';$('liveDisarm').classList.toggle('is-current',!armedNow)}
+ if($('liveArm')){$('liveArm').disabled=on||!canArm;$('liveArm').textContent=on?'● 활성화됨':'활성화';$('liveArm').classList.toggle('is-current',on)}
+ if($('liveDisarm')){$('liveDisarm').disabled=!some;$('liveDisarm').textContent=some?'비활성화':'○ 비활성';$('liveDisarm').classList.toggle('is-current',!some)}
  if($('livePaperNote'))$('livePaperNote').hidden=!o.paperTrading;
  const box=$('livePositions');
  if(box){
   // Keep an open stop/TP editor (and what was typed) across the periodic refresh.
   const drafts=new Map();box.querySelectorAll('[data-live-levels-key]').forEach(d=>{if(d.open){const v={};d.querySelectorAll('input').forEach(i=>{v[i.name]=i.value});drafts.set(d.dataset.liveLevelsKey,v)}});
-  box.innerHTML=o.positions?.length?o.positions.map(positionCardHTML).join(''):`<p class="empty-small">${o.mode==='OFF'?'실매매가 꺼져 있습니다.':o.armed?'보유 중인 포지션이 없습니다. 최종 신호를 기다리는 중입니다.':'보유 중인 포지션이 없습니다. “활성화”를 눌러야 신호에 주문이 나갑니다.'}</p>`;
+  // Testnet: the signal strategy's cards (badge 신호, stop/TP editor) and the scalp's (badge 단타) in one list.
+  const scalpOpen=tn?(o.scalp?.positions||[]):[],cards=[...(o.positions||[]).map(p=>positionCardHTML(p,tn?{badge:TN_BADGE.signal}:{})),...scalpOpen.map(scalpPositionCardHTML)];
+  box.innerHTML=cards.length?cards.join(''):`<p class="empty-small">${o.mode==='OFF'&&!tn?.scalp?'실매매가 꺼져 있습니다.':on||some?'보유 중인 포지션이 없습니다. 신호·단타 진입을 기다리는 중입니다.':'보유 중인 포지션이 없습니다. “활성화”를 눌러야 주문이 나갑니다.'}</p>`;
   box.querySelectorAll('[data-live-levels-key]').forEach(d=>{const v=drafts.get(d.dataset.liveLevelsKey);if(!v)return;d.open=true;d.querySelectorAll('input').forEach(i=>{if(!i.disabled&&v[i.name]!==undefined)i.value=v[i.name]})});
  }
- if($('livePositionCount'))$('livePositionCount').textContent=`${o.positions?.length||0}개`;
- if($('liveSummary'))$('liveSummary').innerHTML=summaryHTML(o.summary);
+ const nSig=o.positions?.length||0,nSc=tn?(o.scalp?.positions||[]).length:0;
+ if($('livePositionCount'))$('livePositionCount').textContent=tn?`${nSig+nSc}개 · 신호 ${nSig} · 단타 ${nSc}`:`${nSig}개`;
+ if($('liveSummary'))$('liveSummary').innerHTML=tn?testnetSummaryHTML(tn.stats):summaryHTML(o.summary);
  // Real-money copy has its own page (실계좌); the testnet page keeps only testnet copies.
  const copy=o.copy,real=copy?.mode==='LIVE';
  for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));
@@ -357,9 +404,12 @@ function render(o){
  const realBadge=!real?'설정 안 됨':!copy.enabled?'꺼짐':copy.killed?'손실 한도 정지':copy.armed?'● 활성화됨':'○ 비활성';
  if($('navRealMode'))$('navRealMode').textContent=!real?'—':copy.armed&&!copy.killed?'ON':'OFF';
  if($('realModeBadge'))$('realModeBadge').innerHTML=`<span class="live-flag ${real&&copy.killed?'kill':real&&copy.armed?'armed':''}">실계좌 카피 · ${esc(realBadge)}</span>`;
- bindScalpButtons($('liveScalp'));
- if($('liveScalpSection')){$('liveScalpSection').hidden=!o.scalp;if(o.scalp&&$('liveScalp'))$('liveScalp').innerHTML=scalpHTML(o.scalp)}
- if($('liveClosed'))$('liveClosed').innerHTML=o.closed?.length?o.closed.map(closedCardHTML).join(''):'<p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p>';
+ // The scalp's own details (rules, skips, journal), collapsed: its switch is the one testnet switch above.
+ if($('liveScalpSection')){$('liveScalpSection').hidden=!o.scalp;if(o.scalp&&$('liveScalp'))$('liveScalp').innerHTML=scalpDetailsHTML(o.scalp)}
+ const closedBox=$('liveClosed');
+ if(closedBox){closedBox.classList.toggle('tn-closed',Boolean(tn));
+  if(tn){bindTestnetPager(closedBox);closedBox.innerHTML=testnetClosedHTML(o)}
+  else closedBox.innerHTML=o.closed?.length?o.closed.map(closedCardHTML).join(''):'<p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p>'}
  if($('liveSkipped'))$('liveSkipped').innerHTML=skippedHTML(o.skipped);
  if($('liveRecords'))$('liveRecords').innerHTML=recordsRows(o.records);
  if($('liveUpdated'))$('liveUpdated').textContent=`${clock(o.at)} 갱신`;
@@ -373,7 +423,7 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
  const post=async(path,body)=>{const r=await fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}),d=await r.json();if(!r.ok)throw Error(d.error||(d.reasons||[]).join(', ')||'HTTP '+r.status);await load();return d};
  $('liveRefresh')?.addEventListener('click',()=>load().catch(fail));
  $('liveArm')?.addEventListener('click',()=>{
-  const text=mode==='LIVE'?'실거래(실제 돈)를 활성화합니다. 다음 최종 신호부터 거래소에 실제 돈으로 주문이 나갑니다. 계속할까요?':'테스트넷(모의 자금) 주문을 활성화합니다. 다음 최종 신호부터 테스트넷 거래소에 주문이 나갑니다. 계속할까요?';
+  const text=mode==='LIVE'?'실거래(실제 돈)를 활성화합니다. 다음 최종 신호부터 거래소에 실제 돈으로 주문이 나갑니다. 계속할까요?':'테스트넷(모의 자금)의 신호 전략과 되돌림 단타를 함께 활성화합니다. 다음 최종 신호·5분봉 단타 신호부터 BingX 테스트넷에 주문이 나갑니다(하루 손실 한도는 둘이 공동). 계속할까요?';
   if(confirm(text))post('/api/live/arm',{confirm:'ARM'}).catch(fail)});
  $('liveDisarm')?.addEventListener('click',()=>post('/api/live/disarm').catch(fail));
  $('liveKill')?.addEventListener('click',()=>post('/api/live/kill').catch(fail));
