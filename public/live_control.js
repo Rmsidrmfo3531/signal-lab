@@ -185,7 +185,7 @@ export function copyHTML(c){
  const stamp=updated>0?`<p class="copy-stamp">손익·잔고 ${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
-  (closed.length?`<h5 class="copy-sub">최근 종료 <small>${closed.length>10?'최근 10건':''}</small></h5><ul class="copy-list only-mob">${closed.slice(0,10).map(done).join('')}</ul>${closedTable}`:'')+
+  (closed.length?`<h5 class="copy-sub">최근 종료 <small>${(()=>{const total=c.closedTotal??closed.length;return total>20?`최근 20건 표시 · 전체 ${total}건`:`${total}건`})()}</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${closedTable}`:'')+
   (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span>${esc(e.symbol||'')} · ${esc(e.type==='LATE_ENTRY'?'늦은 진입 시도 (진입 알림을 놓친 포지션의 추매)':COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when,c.events||[])}</li>`).join('')}</ul>`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
