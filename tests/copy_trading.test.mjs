@@ -497,109 +497,222 @@ test('copy page: entry failures below the closes with coin, long/short and reaso
  m.setCopyFailPage(1);assert.ok(m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev}).includes('>C13<'));m.setCopyFailPage(0);
 });
 
-// User decision 2026-11-17 ("2,3번 둘다 적용시켜줘").
+// User decision 2026-11-17 ("2,3번 둘다 적용시켜줘") and the review of 080e0da (fail closed, no retry races).
 const chgS=(a,b)=>`📊 포지션 변경\n🪙 TNSRUSDT  🔴 Short\n수량 ${a} → ${b}\n현재가 0.05 USDT`;
-const noStops=v=>make(v,{config:{stops:false}});
+const CLOSE_S='✅ 포지션 청산\n━━━━━━━━━━━━━━━━\n🪙 TNSRUSDT  🔴 Short\n━━━━━━━━━━━━━━━━\n진입가　0.05296 USDT\n최종손익　🟢 +1.72 USDT';
+// Fake BingX (one-way TNSR short) with an order store. lookup: 'none' (no getOrder) | 'store' (80016 when unknown) |
+// 'network' | 'absent' (always 80016). History: forceOrders / allOrders (our orders are in it too); history: 'fail' throws.
+function bx({lookup='store',history='ok'}={}){
+ const calls=[],orders=new Map(),hist=[],force=[];let size=0,id=1,unreal='-0.12',fillFrac=null,emptyReads=0;
+ const client={
+  leverage:async()=>({maxLongLeverage:20}),setMarginType:async()=>({}),setLeverage:async()=>({}),cancelOrder:async()=>({}),
+  positions:async()=>{if(emptyReads>0){emptyReads--;return []}return size>0?[{symbol:'TNSR-USDT',positionAmt:String(-size),avgPrice:'0.051',markPrice:'0.053',unrealizedProfit:unreal}]:[]},
+  placeOrder:async p=>{calls.push({...p});
+   if(p.type==='MARKET'){let q=Number(p.quantity);if(fillFrac!=null){q=Math.floor(q*fillFrac);fillFrac=null}
+    if(p.reduceOnly)size=Math.max(0,+(size-q).toFixed(6));else size=+(size+q).toFixed(6);
+    const o={orderId:String(id++),clientOrderId:p.clientOrderId,side:p.side,positionSide:p.positionSide,type:'MARKET',status:q<Number(p.quantity)?'PARTIALLY_FILLED':'FILLED',executedQty:String(q),avgPrice:'0.051',time:1e12};
+    orders.set(p.clientOrderId,o);hist.push(o);return {order:o}}
+   return {order:{orderId:String(id++)}}},
+  forceOrders:async({autoCloseType})=>{if(history==='fail')throw Object.assign(Error('x'),{code:'NETWORK_UNREACHABLE'});return {orders:force.filter(o=>o.autoCloseType===autoCloseType)}},
+  allOrders:async()=>{if(history==='fail')throw Object.assign(Error('x'),{code:'NETWORK_UNREACHABLE'});return {orders:hist}}};
+ if(lookup!=='none')client.getOrder=async(s,{clientOrderId})=>{
+  if(lookup==='network')throw Object.assign(Error('fetch failed'),{code:'NETWORK_UNREACHABLE'});
+  const o=lookup==='absent'?null:orders.get(clientOrderId);if(!o)throw Object.assign(Error('order not exist'),{code:'VENUE_ERROR_80016'});return {order:o}};
+ return {client,calls,hist,force,
+  manualClose(){hist.push({orderId:String(id++),clientOrderId:'',side:'BUY',positionSide:'BOTH',type:'MARKET',status:'FILLED',executedQty:String(size),time:1e12});size=0},
+  liquidate(){force.push({orderId:String(id++),autoCloseType:'LIQUIDATION',time:1e12});size=0},
+  setSize:v=>{size=v},get size(){return size},set unreal(v){unreal=v},set fillFrac(v){fillFrac=v},set emptyReads(v){emptyReads=v}};
+}
+const mk=(v,{gate,stops=false}={})=>{const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:stops?'on':'off'},'TESTNET'),client:v.client,contractOf:async()=>contract,
+ balance:async()=>({equity:400,available:300}),gate:gate??(()=>({ok:true})),now:()=>1e12});ex.sleep=async()=>{};return ex};
+// Network failure on matching market orders; filledFirst: the request reached the venue before the answer was lost.
+function flaky(v,{fail=1,filledFirst=false,match=p=>p.type==='MARKET'&&!p.reduceOnly,code='NETWORK_UNREACHABLE'}={}){
+ const place=v.client.placeOrder,attempts=[];let left=fail;
+ v.client.placeOrder=async p=>{if(match(p)){attempts.push(p.clientOrderId);if(left>0){left--;if(filledFirst)await place(p);throw Object.assign(Error('fetch failed'),{code})}}return place(p)};
+ return attempts;
+}
+const gone=async(ex)=>{await ex.reconcile();await ex.reconcile()};
 
-test('copy (2026-11-17): after an EXTERNAL close (no stop of ours) the next trader add enters late and the next entry card enters',async()=>{
+test('copy (2026-11-17): after a CONFIRMED manual close the next trader add enters late and the next entry card enters',async()=>{
  const {externalClose}=await import('../copy_executor.mjs');
- // Gone from the venue (closed by hand), found by the routine check: STOP_OR_EXTERNAL without a stop of ours.
- const v=venue(),ex=noStops(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);await ex.reconcile();await ex.reconcile();
- const row=ex.status().closed[0];assert.equal(row.closeReason,'STOP_OR_EXTERNAL');assert.equal(externalClose(row),true);
+ const v=bx(),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.manualClose();await gone(ex);
+ const row=ex.status().closed[0];assert.equal(row.closeReason,'STOP_OR_EXTERNAL');assert.equal(row.closeEvidence.kind,'MANUAL_CLOSE');assert.equal(externalClose(row),true);
  const r=await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)});
  assert.equal(r.ok,true,JSON.stringify(ex.status().events.slice(0,3)));assert.ok(v.size>0);
- const late=ex.status().events.find(x=>x.type==='LATE_ENTRY');assert.equal(late.cause,'COPY_CLOSED_EXTERNALLY');assert.equal(late.causeDetail,'STOP_OR_EXTERNAL');
+ const late=ex.status().events.find(x=>x.type==='LATE_ENTRY');assert.equal(late.cause,'COPY_CLOSED_EXTERNALLY');
  const opened=ex.status().events.find(x=>x.type==='OPENED');assert.equal(opened.late,true);assert.equal(opened.refollow,true);
  assert.match(copyEventText(opened),/다시 진입/);
  const {copyHTML}=await import('../public/live_control.js');
  assert.match(copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:[late]}),/바깥 청산됨 .*트레이더 추매에 다시 따라 들어감/);
- // Found gone when a card came (POSITION_GONE), then a new entry card: entered.
- const v2=venue(),ex2=noStops(v2);await ex2.handle({id:1,date:1e12,text:OPEN});v2.setSize(0);
+ // Found gone when a card came (read twice), confirmed manual: a new entry card enters.
+ const v2=bx(),ex2=mk(v2);await ex2.handle({id:1,date:1e12,text:OPEN});v2.manualClose();
  assert.equal((await ex2.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'POSITION_GONE');
  assert.equal((await ex2.handle({id:3,date:1e12+120000,text:OPEN.replace('0.05296','0.05100')})).ok,true);assert.ok(v2.size>0);
- assert.equal(ex2.status().events.find(x=>x.type==='OPENED').refollow,true);
- // A cut after the external close is still not followed (no late entry on a reduction).
- const v3=venue(),ex3=noStops(v3);await ex3.handle({id:1,date:1e12,text:OPEN});v3.setSize(0);await ex3.reconcile();await ex3.reconcile();
+ // A cut after it is not followed; an existing venue position still blocks the re-entry.
+ const v3=bx(),ex3=mk(v3);await ex3.handle({id:1,date:1e12,text:OPEN});v3.manualClose();await gone(ex3);
  assert.equal((await ex3.handle({id:2,date:1e12+60000,text:chgS(1760,880)})).reason,'NOT_COPIED');assert.equal(v3.size,0);
- // An existing venue position of the same coin still blocks the re-entry.
- const v4=venue(),ex4=noStops(v4);await ex4.handle({id:1,date:1e12,text:OPEN});v4.setSize(0);await ex4.reconcile();await ex4.reconcile();v4.setSize(500);
- assert.equal((await ex4.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'VENUE_POSITION_EXISTS');assert.equal(v4.size,500);
+ v3.setSize(500);assert.equal((await ex3.handle({id:3,date:1e12+60000,text:chgS(880,1760)})).reason,'VENUE_POSITION_EXISTS');assert.equal(v3.size,500);
 });
 
-test('copy (2026-11-17): a loss-limit, emergency or our-stop close still blocks the next add and entry card',async()=>{
+test('copy (2026-11-17 review): liquidation, ADL, unconfirmed, a failed history query, ours or our stop keep blocking',async()=>{
  const {externalClose}=await import('../copy_executor.mjs');
- for(const r of ['COPY_LOSS_LIMIT','LOSS_CAP_REACHED','NO_STOP','ZONE_BREAK_VOLUME','TRADER_CLOSE','SOMETHING_NEW'])assert.equal(externalClose({closeReason:r}),false,r);
- assert.equal(externalClose({closeReason:'POSITION_GONE',stopOrderId:null,stop:null}),true);
- assert.equal(externalClose({closeReason:'STOP_OR_EXTERNAL',stopOrderId:'7',stop:.07}),false,'our exchange stop may have filled');
- // Ledger loss limit (stops off): closed, resumed, then the trader adds: not re-entered.
- let v=venue(),ex=noStops(v);await ex.handle({id:1,date:1e12,text:OPEN});v.unreal='-210';await ex.reconcile();
- assert.equal(ex.status().closed[0].closeReason,'COPY_LOSS_LIMIT');ex.resume();
- assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');
- assert.equal(ex.status().events.find(x=>x.reason==='NOT_COPIED').cause,'OUR_COPY_CLOSED');
- assert.equal((await ex.handle({id:3,date:1e12+120000,text:OPEN.replace('0.05296','0.05100')})).reason,'OUR_COPY_CLOSED');assert.equal(v.size,0);
- // Emergency close (no stop could be placed).
- v=venue();ex=make(v);v.failStop='VENUE_ERROR_101204';await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(ex.status().closed[0].closeReason,'NO_STOP');
- assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');assert.equal(v.size,0);
- // Gone from the venue while our exchange stop was on it: kept blocking.
- v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);await ex.reconcile();await ex.reconcile();
- assert.ok(ex.status().closed[0].stopOrderId);
- assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');
- assert.equal((await ex.handle({id:3,date:1e12+120000,text:OPEN.replace('0.05296','0.05100')})).reason,'OUR_COPY_CLOSED');assert.equal(v.size,0);
+ for(const r of ['COPY_LOSS_LIMIT','LOSS_CAP_REACHED','NO_STOP','ZONE_BREAK_VOLUME','TRADER_CLOSE','LIQUIDATION','ADL','SOMETHING_NEW'])assert.equal(externalClose({closeReason:r,closeEvidence:{kind:'MANUAL_CLOSE'}}),false,r);
+ assert.equal(externalClose({closeReason:'POSITION_GONE'}),false,'no evidence: blocks');
+ assert.equal(externalClose({closeReason:'POSITION_GONE',closeEvidence:{kind:'MANUAL_CLOSE'},closing:{reason:'COPY_LOSS_LIMIT'}}),false,'our close under way');
+ assert.equal(externalClose({closeReason:'STOP_OR_EXTERNAL',stopOrderId:'7',stop:.07,closeEvidence:{kind:'MANUAL_CLOSE'}}),false,'our exchange stop may have filled');
+ const blocked=async(ex,v)=>{assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');
+  assert.equal(ex.status().events.find(x=>x.reason==='NOT_COPIED').cause,'OUR_COPY_CLOSED');
+  assert.equal((await ex.handle({id:3,date:1e12+120000,text:OPEN.replace('0.05296','0.05100')})).reason,'OUR_COPY_CLOSED');assert.equal(v.size,0)};
+ // R6: vanished with nothing in the history (liquidation-like): unconfirmed, blocked, labelled so.
+ let v=bx(),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);await gone(ex);
+ assert.equal(ex.status().closed[0].closeEvidence.kind,'UNCONFIRMED');await blocked(ex,v);
+ const {copyHTML}=await import('../public/live_control.js');
+ assert.match(copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ex.status().events}),/확인 불가로 다시 따라가지 않음/);
+ // Only our own ('cp…') orders in the history: unconfirmed.
+ v=bx();ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.client.placeOrder({symbol:'TNSR-USDT',side:'BUY',positionSide:'BOTH',type:'MARKET',quantity:'98',reduceOnly:'true',clientOrderId:'cpdeadbeef'});await gone(ex);
+ assert.equal(ex.status().closed[0].closeEvidence.kind,'UNCONFIRMED');
+ // A BingX force order: LIQUIDATION, blocked, "강제청산".
+ v=bx();ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.liquidate();await gone(ex);
+ const liq=ex.status().closed[0];assert.equal(liq.closeReason,'LIQUIDATION');await blocked(ex,v);
+ assert.match(copyEventText(ex.status().events.find(e=>e.type==='CLOSED')),/강제청산/);
+ // A manual close the history query cannot confirm (query failed): blocked.
+ v=bx({history:'fail'});ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.manualClose();await gone(ex);
+ assert.equal(ex.status().closed[0].closeEvidence.kind,'UNCONFIRMED');await blocked(ex,v);
+ // Ledger loss limit, then resume: blocked.
+ v=bx();ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.unreal='-210';await ex.reconcile();
+ assert.equal(ex.status().closed[0].closeReason,'COPY_LOSS_LIMIT');ex.resume();await blocked(ex,v);
+ // Emergency close (no stop could be placed), and a manual-looking close while our exchange stop was on.
+ const v4=venue(),ex4=make(v4);v4.failStop='VENUE_ERROR_101204';await ex4.handle({id:1,date:1e12,text:OPEN});assert.equal(ex4.status().closed[0].closeReason,'NO_STOP');
+ assert.equal((await ex4.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');assert.equal(v4.size,0);
+ v=bx();ex=mk(v,{stops:true});await ex.handle({id:1,date:1e12,text:OPEN});v.manualClose();await gone(ex);
+ assert.equal(ex.status().closed[0].closeEvidence.kind,'HAD_STOP');await blocked(ex,v);
 });
-
-// A transport that fails the chosen market orders without a venue answer; `filledFirst`: the request reached
-// the venue (filled) but the answer was lost.
-function flaky(v,{fail=1,filledFirst=false,match=p=>p.type==='MARKET'&&!p.reduceOnly,code='NETWORK_UNREACHABLE'}={}){
- const place=v.client.placeOrder,attempts=[];let left=fail;
- v.client.placeOrder=async p=>{if(match(p)){attempts.push(p.clientOrderId);
-   if(left>0){left--;if(filledFirst)await place(p);throw Object.assign(Error('fetch failed'),{code})}}
-  return place(p)};
- return attempts;
-}
-const quick=ex=>{const waits=[];ex.sleep=async ms=>{waits.push(ms)};return waits};
 
 test('copy (2026-11-17): an entry or add lost to a network failure is sent again with the same clientOrderId, once filled',async()=>{
- let v=venue(),ex=noStops(v),waits=quick(ex),tries=flaky(v);
+ const v=bx(),ex=mk(v),waits=[];ex.sleep=async ms=>{waits.push(ms)};let tries=flaky(v);
  assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).ok,true);
  assert.equal(v.size,98,'one fill');assert.equal(tries.length,2);assert.equal(tries[0],tries[1],'same clientOrderId');assert.deepEqual(waits,[2000]);
  const e=ex.status().events.find(x=>x.type==='ENTRY_RETRY');assert.equal(e.attempt,2);assert.equal(e.outcome,'RESENT');assert.equal(e.reason,'NETWORK_UNREACHABLE');
  // An add: fails twice, the third try (after ~2 s and ~5 s) goes through.
  tries=flaky(v,{fail:2});await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
  assert.equal(v.size,192);assert.equal(tries.length,3);assert.equal(new Set(tries).size,1);assert.deepEqual(waits,[2000,2000,5000]);
- assert.deepEqual(ex.status().events.filter(x=>x.type==='ADD_RETRY').map(x=>x.attempt).sort(),[2,3]);assert.equal(ex.status().positions[0].adds,1);
- // Three failures: given up after two retries, reported as before.
+ assert.equal(ex.status().positions[0].adds,1);
+ // Three failures: given up after two retries; the next add has a new clientOrderId.
  tries=flaky(v,{fail:3});const r=await ex.handle({id:3,date:1e12,text:CHANGE(1760,3520)});
  assert.equal(r.reason,'NETWORK_UNREACHABLE');assert.equal(tries.length,3);assert.equal(v.size,192);
+ const next=flaky(v,{fail:0});await ex.handle({id:4,date:1e12,text:CHANGE(3520,5280)});assert.notEqual(next[0],tries[0]);
+ // Past the ~30 s budget: not resent.
+ const v2=bx(),ex2=mk(v2);ex2.retryBudgetMs=1000;const t2=flaky(v2);
+ assert.equal((await ex2.handle({id:1,date:1e12,text:OPEN})).reason,'NETWORK_UNREACHABLE');assert.equal(t2.length,1);
+ assert.equal(ex2.status().events.find(x=>x.type==='ENTRY_RETRY').outcome,'BUDGET');
  // Hedge mode too.
- const h=hedgeVenue(),exh=noStops(h);quick(exh);const th=flaky(h);
+ const h=hedgeVenue(),exh=mk(h);h.client.getOrder=async()=>{throw Object.assign(Error('order not exist'),{code:'VENUE_ERROR_80016'})};const th=flaky(h);
  assert.equal((await exh.handle({id:1,date:1e12,text:OPEN})).ok,true);assert.equal(h.pos.SHORT.amt,98);assert.equal(th.length,2);
 });
 
-test('copy (2026-11-17): a request that did fill before the network failed is not sent again',async()=>{
- // Judged by the venue position (the client has no order lookup here).
- let v=venue(),ex=noStops(v);quick(ex);let tries=flaky(v,{filledFirst:true});
- assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).ok,true);
- assert.equal(v.size,98);assert.equal(tries.length,1,'no second order');assert.equal(ex.status().positions[0].qty,98);
- let e=ex.status().events.find(x=>x.type==='ENTRY_RETRY');assert.equal(e.outcome,'ALREADY_FILLED');assert.equal(e.via,'POSITION');
- // An add, judged by the order lookup by clientOrderId.
- const looked=[];v.client.getOrder=async(sym,q)=>{looked.push(q.clientOrderId);return {order:{orderId:'9',status:'FILLED',executedQty:'94',avgPrice:'0.053'}}};
- tries=flaky(v,{filledFirst:true});await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
- assert.equal(v.size,192);assert.equal(tries.length,1);assert.equal(looked[0],tries[0]);assert.equal(ex.status().positions[0].adds,1);
- e=ex.status().events.find(x=>x.type==='ADD_RETRY');assert.equal(e.via,'ORDER');
- // The position cannot be read: nothing is sent blind.
- v=venue();ex=noStops(v);quick(ex);await ex.handle({id:1,date:1e12,text:OPEN});tries=flaky(v,{fail:1});
- const positions=v.client.positions;let n=0;v.client.positions=async s=>{if(++n>1)throw Object.assign(Error('down'),{code:'NETWORK_UNREACHABLE'});return positions(s)};
- await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});assert.equal(tries.length,1);assert.equal(v.size,98);
- assert.ok(ex.status().events.filter(x=>x.type==='ADD_RETRY').every(x=>x.outcome==='UNVERIFIED'));
+test('copy (2026-11-17 review): a fill that cannot be ruled out is never sent again (under-fill rather than double fill)',async()=>{
+ // Filled before the answer was lost, found by clientOrderId.
+ let v=bx(),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});let tries=flaky(v,{filledFirst:true});
+ await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
+ assert.equal(v.size,192);assert.equal(tries.length,1);assert.equal(ex.status().positions[0].adds,1);
+ let e=ex.status().events.find(x=>x.type==='ADD_RETRY');assert.equal(e.outcome,'ALREADY_FILLED');assert.equal(e.via,'ORDER');
+ // No order lookup on the client: nothing resent; the routine check takes the real size.
+ v=bx({lookup:'none'});ex=mk(v);tries=flaky(v,{filledFirst:true});await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(tries.length,1);assert.equal(v.size,98);await ex.reconcile();assert.equal(ex.status().positions[0].qty,98);
+ // R7: a partial fill with the lookup failing: not resent.
+ v=bx({lookup:'network'});ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});tries=flaky(v,{filledFirst:true});v.fillFrac=.4;
+ await ex.handle({id:2,date:1e12+1,text:CHANGE(880,1760)});assert.equal(tries.length,1);assert.ok(v.size<=98+94,'no over-fill: '+v.size);
+ // "Does not exist" but the venue size moved: not resent.
+ v=bx({lookup:'absent'});ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});tries=flaky(v,{filledFirst:true});
+ await ex.handle({id:2,date:1e12+1,text:CHANGE(880,1760)});assert.equal(tries.length,1);assert.equal(v.size,192);
+ assert.ok(ex.status().events.filter(x=>x.type==='ADD_RETRY').every(x=>x.outcome==='UNVERIFIED'&&x.why==='SIZE_MOVED'));
+ // R9: an add that ended unverified does not lend its clientOrderId to the next add.
+ v=bx();ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});
+ const t1=flaky(v,{filledFirst:true});const getOrder=v.client.getOrder,positions=v.client.positions;let down=false;
+ v.client.getOrder=async(...a)=>{if(down)throw Object.assign(Error('x'),{code:'NETWORK_UNREACHABLE'});return getOrder(...a)};
+ v.client.positions=async s=>{if(down)throw Object.assign(Error('x'),{code:'NETWORK_UNREACHABLE'});return positions(s)};
+ ex.sleep=async()=>{down=true};await ex.handle({id:2,date:1e12+1,text:CHANGE(880,1760)});down=false;ex.sleep=async()=>{};
+ const t2=flaky(v,{fail:1});await ex.handle({id:3,date:1e12+2,text:CHANGE(1760,2640)});
+ e=ex.status().events.find(x=>x.type==='ADD_RETRY');assert.equal(e.outcome,'RESENT');assert.notEqual(t2[0],t1[0]);assert.equal(ex.status().positions[0].qty,v.size);
 });
 
-test('copy (2026-11-17): a venue error code is not retried; a lost emergency close is retried reduce-only',async()=>{
- const v=venue(),ex=noStops(v),waits=quick(ex);await ex.handle({id:1,date:1e12,text:OPEN});
+test('copy (2026-11-17): a venue error code is not retried; a lost emergency close is re-read and closed reduce-only',async()=>{
+ const v=bx(),ex=mk(v),waits=[];ex.sleep=async ms=>{waits.push(ms)};await ex.handle({id:1,date:1e12,text:OPEN});
  let tries=flaky(v,{code:'VENUE_ERROR_101400'});const r=await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
  assert.equal(r.reason,'VENUE_ERROR_101400');assert.equal(tries.length,1);assert.deepEqual(waits,[]);assert.equal(v.size,98);
  tries=flaky(v,{code:'HTTP_500'});await ex.handle({id:3,date:1e12,text:CHANGE(1760,3520)});assert.equal(tries.length,1);assert.deepEqual(waits,[]);
- // The loss-limit close has no other retry path: one network failure, then closed.
  tries=flaky(v,{match:p=>p.type==='MARKET'&&p.reduceOnly==='true'});v.unreal='-210';await ex.reconcile();
- assert.equal(v.size,0);assert.equal(tries.length,2);assert.equal(tries[0],tries[1]);assert.equal(ex.status().closed[0].closeReason,'COPY_LOSS_LIMIT');
- assert.equal(ex.status().events.find(x=>x.type==='CLOSE_RETRY').outcome,'RESENT');
+ assert.equal(v.size,0);assert.equal(tries.length,2);assert.equal(ex.status().closed[0].closeReason,'COPY_LOSS_LIMIT');
+ assert.ok(v.calls.filter(c=>c.type==='MARKET'&&c.reduceOnly==='true').every(c=>c.quantity==='98'));
+ assert.equal(ex.status().events.find(x=>x.type==='CLOSE_RETRY').outcome,'RECHECK');
+});
+
+test('copy review R1-R3, R5: the routine check never runs inside a retry wait; a state change in the wait stops the resend',async()=>{
+ // R1: the loss limit fires during the add's wait -> it runs after the add; nothing left open anywhere.
+ for(const lookup of ['none','store']){
+  const v=bx({lookup}),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});flaky(v,{fail:1});
+  let q=null;ex.sleep=async()=>{if(q)return;v.unreal='-210';q=ex.reconcile()};
+  await ex.handle({id:2,date:1e12+60000,text:CHANGE(880,1760)});await q;
+  assert.equal(ex.status().killed,true);assert.equal(ex.status().positions.length,0,lookup);assert.equal(v.size,0,lookup+': no position outside the ledger');
+ }
+ // ... and when copying stops in the wait (killed), the add is not resent.
+ {const v=bx(),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});const t=flaky(v,{fail:1});ex.sleep=async()=>{ex.store.killed=true};
+  await ex.handle({id:2,date:1e12+60000,text:CHANGE(880,1760)});assert.equal(t.length,1);assert.equal(v.size,98);
+  assert.equal(ex.status().events.find(e=>e.type==='RETRY_ABANDONED').reason,'COPY_LOSS_LIMIT')}
+ // R2: kill switch in the wait: the entry is not resent and leaves no ledger row.
+ {let killed=false;const v=bx(),ex=mk(v,{gate:()=>killed?{ok:false,reason:'KILL_SWITCH'}:{ok:true}});flaky(v,{fail:1});ex.sleep=async()=>{killed=true};
+  const r=await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(r.ok,false);assert.equal(v.size,0);assert.equal(ex.status().positions.length,0)}
+ // R3: a pending cut cannot run in the add's wait; the filled add is not sent twice.
+ {const v=bx({lookup:'network'}),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});await ex.handle({id:2,date:1e12+1,text:CHANGE(880,1760)});
+  const place=v.client.placeOrder;let n=0;v.client.placeOrder=async p=>{if(p.reduceOnly&&n++===0)throw Object.assign(Error('rate'),{code:'HTTP_429'});return place(p)};
+  await ex.handle({id:3,date:1e12+2,text:CHANGE(1760,880)});assert.equal(ex.store.pending.length,1);
+  const t=flaky(v,{fail:1,filledFirst:true});let q=null;ex.sleep=async()=>{q??=ex.reconcile()};
+  await ex.handle({id:4,date:1e12+3,text:CHANGE(880,1760)});await q;assert.equal(t.length,1);assert.equal(ex.status().positions[0].qty,v.size)}
+ // R5: an entry retried over two routine checks stays in the ledger; the trader's close closes it.
+ {const v=bx(),ex=mk(v);flaky(v,{fail:2});const qs=[];ex.sleep=async()=>{qs.push(ex.reconcile())};
+  await ex.handle({id:1,date:1e12,text:OPEN});await Promise.all(qs);
+  assert.equal(ex.status().positions.length,1);assert.equal(v.size,98);
+  await ex.handle({id:2,date:1e12+60000,text:CLOSE_S});assert.equal(v.size,0);assert.equal(ex.status().closed[0].closeReason,'TRADER_CLOSE')}
+ // An inflight position is not counted as gone; a check is not queued twice and keeps idle() false.
+ {const v=bx(),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});const p=ex.store.positions['TNSRUSDT|SHORT'];p.inflight=true;v.setSize(0);
+  const a=ex.reconcile(),b=ex.reconcile();assert.equal(a,b);assert.equal(ex.idle(),false);await a;assert.equal(ex.idle(),true);await ex.reconcile();
+  assert.equal(ex.status().positions.length,1);assert.ok(!p.zeroSeen)}
+});
+
+test('copy review R4, R8, R10, R11: our close intent is saved, one empty read is not "gone", one closed row, killed on disk at once',async()=>{
+ // R4: a loss-limit close that could not be verified is booked as ours, and blocks after resume.
+ {const v=bx({lookup:'network'}),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});
+  flaky(v,{fail:1,filledFirst:true,match:p=>p.type==='MARKET'&&p.reduceOnly==='true'});
+  const positions=v.client.positions;let down=false;v.client.positions=async s=>{if(down)throw Object.assign(Error('x'),{code:'NETWORK_UNREACHABLE'});return positions(s)};
+  ex.sleep=async()=>{down=true};v.unreal='-210';await ex.reconcile();down=false;ex.sleep=async()=>{};
+  assert.equal(ex.status().positions[0]?.closing?.reason,'COPY_LOSS_LIMIT');
+  await gone(ex);assert.equal(ex.status().closed[0].closeReason,'COPY_LOSS_LIMIT');ex.resume();
+  assert.equal((await ex.handle({id:2,date:1e12+60000,text:CHANGE(880,1760)})).reason,'NOT_COPIED');assert.equal(v.size,0)}
+ // A loss-limit close the venue refused is closed again by the next routine check.
+ {const v=bx(),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});flaky(v,{code:'HTTP_429',match:p=>p.type==='MARKET'&&p.reduceOnly==='true'});
+  v.unreal='-210';await ex.reconcile();assert.equal(v.size,98);await ex.reconcile();assert.equal(v.size,0);assert.equal(ex.status().closed[0].closeReason,'COPY_LOSS_LIMIT')}
+ // R8: one empty read on an add card: read again, the add goes on.
+ {const v=bx(),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});v.emptyReads=1;
+  const r=await ex.handle({id:2,date:1e12+1,text:CHANGE(880,1760)});assert.equal(r.ok,true);assert.equal(v.size,192);
+  assert.equal(ex.status().closed.length,0);assert.equal(ex.status().positions[0].qty,192)}
+ // R10: the trader's close card during the emergency retry: one closed row.
+ {const v=bx(),ex=mk(v);await ex.handle({id:1,date:1e12,text:OPEN});
+  flaky(v,{fail:1,filledFirst:true,match:p=>p.type==='MARKET'&&p.reduceOnly==='true'});
+  let q=null;ex.sleep=async()=>{q??=ex.handle({id:2,date:1e12+60000,text:CLOSE_S})};
+  v.unreal='-210';await ex.reconcile();await q;assert.equal(ex.status().closed.length,1);assert.equal(v.size,0)}
+ // R11: killed is on disk before the emergency close is sent.
+ {const dir=fs.mkdtempSync(path.join(os.tmpdir(),'copy-r11-'));const v=bx();
+  const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),directory:dir,now:()=>1e12});
+  await ex.handle({id:1,date:1e12,text:OPEN});flaky(v,{fail:1,match:p=>p.type==='MARKET'&&p.reduceOnly==='true'});
+  let onDisk=null;ex.sleep=async()=>{onDisk??=JSON.parse(fs.readFileSync(path.join(dir,'copy-store.json'),'utf8'))};
+  v.unreal='-210';await ex.reconcile();assert.equal(onDisk.killed,true);assert.equal(Object.values(onDisk.positions)[0].closing.reason,'COPY_LOSS_LIMIT');
+  fs.rmSync(dir,{recursive:true,force:true})}
+});
+
+test('BingX client: liquidation / ADL orders and the order history are read-only GET calls',async()=>{
+ const {BingXTradeClient}=await import('../live_clients.mjs');const seen=[];
+ const c=new BingXTradeClient({apiKey:'k',secret:'s',mode:'TESTNET',fetcher:async(url,o)=>{seen.push([o.method,new URL(url)]);return new Response(JSON.stringify({code:0,data:{orders:[]}}),{status:200})}});
+ await c.forceOrders({symbol:'BTC-USDT',autoCloseType:'ADL',startTime:1,endTime:2});await c.allOrders({symbol:'BTC-USDT',startTime:1,endTime:2});
+ assert.deepEqual(seen.map(([m,u])=>[m,u.pathname]),[['GET','/openApi/swap/v2/trade/forceOrders'],['GET','/openApi/swap/v2/trade/allOrders']]);
+ assert.equal(seen[0][1].searchParams.get('autoCloseType'),'ADL');assert.equal(seen[1][1].searchParams.get('limit'),'500');
 });
