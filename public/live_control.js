@@ -137,7 +137,7 @@ function skipDetail(x){if(!x.detail)return '';const d=String(x.detail);return ` 
 /** Copy-trading ledger (copy_executor.mjs): open copies, recent closes, recent skips/problems. */
 const COPY_WHY={BINGX_HEDGE_MODE:'BingX 양방향(헤지) 모드라 건너뜀 — 이전 버전 기록(지금은 헤지 모드도 지원)',BINGX_POSITION_MODE_UNKNOWN:'BingX 포지션 모드(단방향/헤지) 확인 실패',VENUE_POSITION_EXISTS:'거래소에 같은 코인 포지션이 이미 있음(수동 매매 등) — 합쳐지지 않게 건너뜀',MARGIN_SHORT:'여유 증거금 부족',SYMBOL_BUSY:'같은 종목 보유 중',SYMBOL_HELD_BY_SIGNAL_STRATEGY:'신호 전략이 같은 종목 보유 중',OPPOSITE_COPY_OPEN:'반대 방향 보유 중',
  MONITOR_RESTART_SNAPSHOT:'채널 재시작 직후 기존 포지션 재알림',LIVE_DISARMED:'실매매 비활성',KILL_SWITCH:'긴급 정지 중',NOT_TESTNET:'테스트넷 아님',NO_BINGX_CONTRACT:'BingX에 없는 종목',
- NOT_COPIED:'따라 들어가지 않은 포지션',OUR_COPY_CLOSED:'우리가 먼저 정리한 포지션 (트레이더 청산 전까지 다시 안 들어감)',STALE_MESSAGE:'순서가 늦게 도착한 옛 메시지',QUANTITY_INVALID:'수량 계산 불가',NO_BALANCE:'잔고 조회 실패',HTTP_429:'요청 과다(잠시 후 재시도)',COPY_MARGIN_CAP:'카피 전체 증거금 한도',MIN_ORDER_TOO_LARGE:'거래소 최소 주문이 증거금 5달러 초과',PRICE_MISMATCH:'거래소 가격 불일치',PRICE_UNVERIFIED:'거래소 가격 확인 실패',VENUE_ERROR_101400:'거래소 주문 조건 미달(최소 주문 수량·금액 등)',QUANTITY_UNIT_UNCLEAR:'알림 수량 단위 불명',COPY_LOSS_LIMIT:'카피 손실 한도로 정지',LOSS_CAP_REACHED:'손실 한도 도달',NO_STOP:'보호 손절 실패로 청산'};
+ NOT_COPIED:'따라 들어가지 않은 포지션',OUR_COPY_CLOSED:'우리가 먼저 정리한 포지션 (손실 한도·보호 손절 등, 트레이더 청산 전까지 다시 안 들어감)',COPY_CLOSED_EXTERNALLY:'거래소에서 바깥 청산(수동 청산 등)된 포지션 — 트레이더 추매·진입은 다시 따라감',STOP_OR_EXTERNAL:'거래소에서 사라짐(외부 청산 또는 보호 손절)',POSITION_GONE:'거래소에 포지션 없음',STALE_MESSAGE:'순서가 늦게 도착한 옛 메시지',QUANTITY_INVALID:'수량 계산 불가',NO_BALANCE:'잔고 조회 실패',HTTP_429:'요청 과다(잠시 후 재시도)',COPY_MARGIN_CAP:'카피 전체 증거금 한도',MIN_ORDER_TOO_LARGE:'거래소 최소 주문이 증거금 5달러 초과',PRICE_MISMATCH:'거래소 가격 불일치',PRICE_UNVERIFIED:'거래소 가격 확인 실패',VENUE_ERROR_101400:'거래소 주문 조건 미달(최소 주문 수량·금액 등)',QUANTITY_UNIT_UNCLEAR:'알림 수량 단위 불명',COPY_LOSS_LIMIT:'카피 손실 한도로 정지',LOSS_CAP_REACHED:'손실 한도 도달',NO_STOP:'보호 손절 실패로 청산'};
 // The cause behind "따라 들어가지 않은 포지션" (user 2026-11-14): the skipped entry, our earlier close, or no entry card.
 function notCopiedWhy(e,when,all=[]){
  if(e.reason!=='NOT_COPIED'&&e.type!=='LATE_ENTRY')return '';
@@ -147,6 +147,7 @@ function notCopiedWhy(e,when,all=[]){
  const card=e.from!=null&&e.to!=null?`트레이더 수량 ${esc(e.from)} → ${esc(e.to)} · `:'';
  const why=e.cause==='NO_ENTRY_RECEIVED'?'카피에 진입 알림이 도착한 적 없음 (카피 시작·서버 재시작 전에 열렸거나 수신 실패)'
   :e.cause==='OUR_COPY_CLOSED'?`우리 카피는 ${when(e.causeAt)}에 먼저 종료됨 (${esc(COPY_WHY[e.causeDetail]||e.causeDetail||'')})`
+  :e.cause==='COPY_CLOSED_EXTERNALLY'?`우리 카피는 ${when(e.causeAt)}에 거래소에서 바깥 청산됨 (${esc(COPY_WHY[e.causeDetail]||e.causeDetail||'')}) — 우리 손절·한도 청산이 아니라 ${e.type==='LATE_ENTRY'?'트레이더 추매에 다시 따라 들어감':'축소는 따라가지 않음'}`
   :e.cause?`처음 진입을 ${when(e.causeAt)}에 건너뜀: ${esc(COPY_WHY[e.cause]||e.cause)}${e.causeDetail?` (${esc(e.causeDetail)})`:''}`:'';
  return why?`<br><small class="copy-why">${card}${why}</small>`:'';
 }

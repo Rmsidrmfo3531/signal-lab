@@ -44,7 +44,7 @@ export function ledgerSummary(store,{now=Date.now(),equityUSD=null}={}){
   open:open.filter(p=>p&&p.status!=='CLOSED').map(p=>({symbol:p.symbol,direction:p.direction,leverage:p.leverage??null,openedAt:p.openedAt??p.createdAt??null,avg:num(p.avg),adds:typeof p.adds==='number'?p.adds:null,stop:num(p.stop)})),
   eventCounts7d:counts,
   // Skips and errors of the last 7 days with their reason (user 2026-11-17: "오류로 못 들어간 건지 분석해서 못 들어간 건지").
-  issues:events.filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY','ENTRY_RETRY_MIN'].includes(e.type)).slice(-150).map(e=>({type:e.type,at:e.at,symbol:e.symbol??null,direction:e.direction??null,kind:e.kind??null,
+  issues:events.filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY','ENTRY_RETRY_MIN','ENTRY_RETRY','ADD_RETRY','CLOSE_RETRY'].includes(e.type)).slice(-150).map(e=>({type:e.type,at:e.at,symbol:e.symbol??null,direction:e.direction??null,kind:e.kind??null,
    reason:shortReason(e.reason??e.code),cause:e.cause??null,detail:typeof e.detail==='string'?e.detail.slice(0,160):null,from:num(e.from),to:num(e.to),need:num(e.need)})),
   serious:events.filter(e=>SERIOUS_EVENTS.has(e.type)).slice(-30).map(e=>({type:e.type,at:e.at,symbol:e.symbol??null,reason:shortReason(e.reason??e.code)}))};
 }

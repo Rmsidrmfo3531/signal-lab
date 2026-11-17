@@ -34,6 +34,23 @@ const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const orderOf=d=>d?.order??d;
 const venueSymbolOf=s=>s.replace(/USDT$/,'-USDT');
 
+// Closes that were not ours (user decision 2026-11-17 "2,3번 둘다 적용시켜줘"): after one of these the trader's next
+// add (late entry) or entry card is followed again as usual. Every closeReason this file produces:
+//  TRADER_CLOSE, TRADER_CUT_ALL   followed the trader (never block anyway)
+//  COPY_LOSS_LIMIT                ledger loss cap (#emergency from reconcile)            ours: blocks
+//  LOSS_CAP_REACHED, NO_STOP      emergency closes from #protect                          ours: blocks
+//  ZONE_BREAK_VOLUME              our volume-zone exit (#emergency from reconcile)        ours: blocks
+//  STOP_OR_EXTERNAL               reconcile found it gone twice in a row                  ambiguous
+//  POSITION_GONE                  gone from the venue when a card / close came            ambiguous
+// The ambiguous two may be our own exchange stop filling: external only when the position carried no exchange
+// stop of ours (no stopOrderId and no stop price — always so with COPY_STOPS off, the default). Any other or
+// unknown reason counts as ours and keeps blocking until the trader closes too.
+export const EXTERNAL_CLOSE_REASONS=Object.freeze(['STOP_OR_EXTERNAL','POSITION_GONE']);
+export function externalClose(p){return Boolean(p)&&EXTERNAL_CLOSE_REASONS.includes(p.closeReason)&&!p.stopOrderId&&!(Number(p.stop)>0)}
+// A request that got no answer from the venue (user 2026-11-17 "3번"): connection failure or timeout. A venue
+// error code (VENUE_ERROR_*, HTTP_*) is an answer and is never retried by #send.
+export function noVenueAnswer(e){return ['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET'].includes(e?.code)||['AbortError','TimeoutError'].includes(e?.name)}
+
 /** BingX contract for a channel symbol: the same name, a 1000-coin contract (1000PEPEUSDT), or a stock
  * perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT). contracts: Map(symbol -> normalized contract). */
 export function resolveCopyContract(contracts,symbol){
@@ -87,8 +104,8 @@ export function copyConfig(env=process.env,liveMode='OFF'){
 }
 
 export class CopyExecutor{
- constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
-  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent});
+ constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},retryDelaysMs=[2000,5000],sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
+  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent,retryDelaysMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
@@ -161,10 +178,46 @@ export class CopyExecutor{
   return {size:row?Math.abs(Number(row.positionAmt)||0):0,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null}}
  async #market(p,side,quantity,{reduceOnly=false,tag}){
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
-  const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)};
+  const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:this.#clientId(p,tag)};
   // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
   if(reduceOnly&&p.hedge!==true)params.reduceOnly='true';
   const res=orderOf(await this.client.placeOrder(params));return {orderId:res?.orderId??null,avg:pos(res?.avgPrice)};
+ }
+ #clientId(p,tag){return ('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)}
+ /** #market with a bounded retry when the request got no venue answer (user 2026-11-17: three BTC adds lost to
+  * "BingX: fetch failed"): up to retryDelaysMs.length (2) more tries after ~2 s and ~5 s, with the SAME
+  * clientOrderId. Before each one the order is looked up: filled (by its clientOrderId, or the venue position
+  * moved from `before` by at least half the quantity) -> taken as filled, nothing sent; not verifiable -> not
+  * sent. A venue error code is never retried here. event: ENTRY_RETRY / ADD_RETRY / CLOSE_RETRY. */
+ async #send(p,side,quantity,opts,{event,before}){
+  let error;
+  try{return await this.#market(p,side,quantity,opts)}catch(e){if(!noVenueAnswer(e))throw e;error=e}
+  const delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[];
+  for(let i=0;i<delays.length;i++){
+   await this.sleep(delays[i]);
+   const attempt=i+2,seen=await this.#orderOutcome(p,this.#clientId(p,opts.tag),{before,quantity,reduce:opts.reduceOnly===true});
+   const ev=(outcome,extra={})=>this.#event(event,{symbol:p.symbol,attempt,reason:error.code||error.name,outcome,...extra,clientOrderId:this.#clientId(p,opts.tag),
+    detail:`${attempt}차 시도 · ${{ALREADY_FILLED:'앞 주문이 이미 체결됨(다시 보내지 않음)',UNVERIFIED:'체결 여부 확인 불가(보내지 않음)',RESENT:'같은 주문 번호로 다시 보냄'}[outcome]}`});
+   if(seen.filled){ev('ALREADY_FILLED',{via:seen.via});return {orderId:seen.orderId??null,avg:seen.avg??null}}
+   if(!seen.absent){ev('UNVERIFIED');continue}
+   ev('RESENT');
+   try{return await this.#market(p,side,quantity,opts)}catch(e){if(!noVenueAnswer(e))throw e;error=e}
+  }
+  throw error;
+ }
+ /** Did the order with this clientOrderId go through? {filled} / {absent} (the venue position has not moved) /
+  * {} (cannot tell). The order lookup only ever proves a fill; absence is judged by the position. */
+ async #orderOutcome(p,clientOrderId,{before,quantity,reduce}){
+  if(typeof this.client.getOrder==='function'){
+   try{const o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId})),st=String(o?.status||'').toUpperCase();
+    if(o&&((num(o.executedQty)??0)>0||st==='FILLED'||st==='PARTIALLY_FILLED'))return {filled:true,via:'ORDER',orderId:o.orderId??null,avg:pos(o.avgPrice)};
+    // Known to the venue but neither filled nor finished (NEW / PENDING): never sent again.
+    if(o&&st&&!['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st))return {};
+   }catch{} // not found (a venue error) or no answer: the position decides
+  }
+  try{const now=await this.#position(p),moved=reduce?(Number(before)||0)-now.size:now.size-(Number(before)||0);
+   return moved>=quantity*.5-1e-12?{filled:true,via:'POSITION'}:{absent:true}}
+  catch{return {}}
  }
  // Whole-position stop where the loss would reach maxLossPct of the balance; re-set after each change.
  // The new stop goes in first and the old one is cancelled after it, so the position is never left
@@ -233,19 +286,24 @@ export class CopyExecutor{
   const z=against[0].z;return {stop:far(z)*(1-dir*buf),zone:{priceLow:Number(z.priceLow),priceHigh:Number(z.priceHigh)},distPct:+(against[0].dist*100).toFixed(2)};
  }
  async #emergency(p,reason){
-  try{const now=await this.#position(p);if(now.size>0)await this.#market(p,p.direction==='LONG'?'SELL':'BUY',now.size,{reduceOnly:true,tag:'emergency'+this.now()});this.#closed(p,reason,now)}
+  // The emergency close (loss limit, no stop, zone exit) has no other retry path: the same bounded retry, reduce-only.
+  try{const now=await this.#position(p);if(now.size>0)await this.#send(p,p.direction==='LONG'?'SELL':'BUY',now.size,{reduceOnly:true,tag:'emergency'+this.now()},{event:'CLOSE_RETRY',before:now.size});this.#closed(p,reason,now)}
   catch(error){this.#event('ERROR',{symbol:p.symbol,kind:'EMERGENCY_CLOSE',reason:error.code||error.message})}
  }
- /** Our own last close of this coin and side (a manual close, the loss limit, a stop; not one that followed
-  * the trader) with no trader close since: entering again would undo it (review 2026-11-14). */
- #ownClose(m){
+ /** Our last close of this coin and side that did not follow the trader, with no trader close since. */
+ #lastOwnClose(m){
   const key=this.#key(m),own=[...this.store.closed].reverse().find(x=>`${x.symbol}|${x.direction}`===key);
   if(!own||['TRADER_CLOSE','TRADER_CUT_ALL'].includes(own.closeReason))return null;
   return (this.store.lastTraderCloseAt[key]||0)>=(own.closedAt||0)?null:own;
  }
+ /** That close when it was ours (the loss limit, an emergency close, our stop or zone exit): entering again
+  * would undo it (review 2026-11-14). An external close (externalClose) does not block (user 2026-11-17). */
+ #ownClose(m){const own=this.#lastOwnClose(m);return own&&!externalClose(own)?own:null}
  async #open(m,at){
   const key=this.#key(m),prev=this.store.positions[key];
-  if(prev?.status!=='OPEN'){const own=this.#ownClose(m);if(own){this.#event('SKIPPED',{symbol:m.symbol,reason:'OUR_COPY_CLOSED',detail:`우리가 ${new Date(own.closedAt).toISOString().slice(11,16)}Z에 먼저 정리(${own.closeReason}) · 트레이더 청산 뒤에 다시 따라감`});return {ok:false,reason:'OUR_COPY_CLOSED'}}}
+  if(prev?.status!=='OPEN'){const own=this.#lastOwnClose(m);if(own&&!externalClose(own)){this.#event('SKIPPED',{symbol:m.symbol,reason:'OUR_COPY_CLOSED',detail:`우리가 ${new Date(own.closedAt).toISOString().slice(11,16)}Z에 먼저 정리(${own.closeReason}) · 트레이더 청산 뒤에 다시 따라감`});return {ok:false,reason:'OUR_COPY_CLOSED'}}
+   // Closed from outside (user 2026-11-17): followed again, marked on the entry.
+   if(own)m={...m,refollow:true,refollowAfter:own.closeReason}}
   if(prev?.status==='OPEN'){
    // The same card again (both alert formats, or a repeat) is not a new buy: same entry price within 3 min.
    if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs)return {ok:true,snapshot:true};
@@ -338,7 +396,8 @@ export class CopyExecutor{
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
   this.store.positions[key]=p;
   let fill;
-  try{fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'})}
+  // The venue position was checked empty above: before = 0 for the retry check.
+  try{fill=await this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'},{event:'ENTRY_RETRY',before:0})}
   catch(error){
    // 101400 is a refusal (nothing filled). When it names the venue minimum, one more try at that minimum
    // if it still fits the same margin limits; otherwise the ledger entry is dropped, so no empty position
@@ -351,13 +410,13 @@ export class CopyExecutor{
    const used=Object.values(this.store.positions).filter(x=>x.status==='OPEN'&&x!==p).reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
    if(need>qty&&margin<=this.config.minOrderMaxMarginUSD&&!(eq&&used+margin>eq*this.config.maxTotalMarginPct/100)&&(free===null||margin<=free*.9)){
     this.#event('ENTRY_RETRY_MIN',{symbol:m.symbol,from:qty,to:need});qty=need;p.firstQty=need;p.minOrder=true;
-    try{fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open-min'})}
+    try{fill=await this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open-min'},{event:'ENTRY_RETRY',before:0})}
     catch(e2){if(e2.code==='VENUE_ERROR_101400')delete this.store.positions[key];throw e2}}
    else{if(error.code==='VENUE_ERROR_101400')delete this.store.positions[key];throw error}}
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
   await this.#protect(p);
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
+  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
   return {ok:true};
  }
  /** The quantity a BingX 101400 message asks for ("minimum order amount is 149 AKE" / "minimum order
@@ -375,13 +434,15 @@ export class CopyExecutor{
   // Our own close of this coin and side (not one that followed the trader's close), with no trader entry
   // since: a late entry would undo it (a manual close, the loss limit, a stop). Checked before the events,
   // which are trimmed and can hold other skips in between.
-  const own=this.#ownClose(m);if(own)return {cause:'OUR_COPY_CLOSED',causeAt:own.closedAt,causeDetail:own.closeReason??null};
+  const own=this.#lastOwnClose(m);if(own&&!externalClose(own))return {cause:'OUR_COPY_CLOSED',causeAt:own.closedAt,causeDetail:own.closeReason??null};
   const ev=this.store.events,lastClose=p&&p.status!=='OPEN'&&p.closeReason!=='TRADER_CLOSE'?p.closedAt||0:0;
   for(let i=ev.length-1;i>=0;i--){const e=ev[i];if(e.symbol!==m.symbol)continue;
-   if(e.type==='OPENED')break;
+   if(e.type==='OPENED'||own&&e.at<(own.closedAt||0))break;
    // An entry from a '- → q' change card is logged with kind CHANGE; its step says 진입 주문.
    if((e.type==='SKIPPED'&&e.reason!=='NOT_COPIED')||(e.type==='ERROR'&&(e.entry||e.kind==='OPEN'||/진입/.test(e.detail||''))))return {cause:e.reason||e.type,causeAt:e.at,causeDetail:e.detail??null}}
-  if(lastClose)return {cause:'OUR_COPY_CLOSED',causeAt:lastClose,causeDetail:p.closeReason??null};
+  // Closed from outside (a manual close on the venue, user 2026-11-17): an add is followed again (late entry).
+  if(own)return {cause:'COPY_CLOSED_EXTERNALLY',causeAt:own.closedAt,causeDetail:own.closeReason??null};
+  if(lastClose)return {cause:externalClose(p)?'COPY_CLOSED_EXTERNALLY':'OUR_COPY_CLOSED',causeAt:lastClose,causeDetail:p.closeReason??null};
   return {cause:'NO_ENTRY_RECEIVED'};
  }
  async #change(m,at){
@@ -392,7 +453,8 @@ export class CopyExecutor{
    const why=this.#whyNotCopied(m,p);
    // Late entry (user 2026-11-14): the trader adds to a position we never got into -> enter now as a new
    // position (the trader's current total is its "first" quantity). Not after our own close of it (a loss
-   // limit or a stop must not be undone), and not on a reduction.
+   // limit or a stop must not be undone), and not on a reduction. After an external close (user 2026-11-17)
+   // it is entered again (#open marks it refollow).
    if(this.config.lateEntry&&m.to>m.from&&why.cause!=='OUR_COPY_CLOSED'){
     this.#event('LATE_ENTRY',{symbol:m.symbol,from:m.from,to:m.to,...why});
     return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to,late:true},at);
@@ -435,7 +497,7 @@ export class CopyExecutor{
   const eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
   if(eq&&used+buy*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(buy*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
   if(free!==null&&buy*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(buy*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
-  const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:'add'+(p.adds+1)});p.adds++;
+  const fill=await this.#send(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:'add'+(p.adds+1)},{event:'ADD_RETRY',before:p.qty});p.adds++;
   p.steps.push({kind:'ADD',at:this.now(),qty:buy,avg:fill.avg,theirQty,marginUSD});this.#save();
   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('ADDED',{symbol:p.symbol,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});

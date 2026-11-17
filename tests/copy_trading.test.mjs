@@ -334,7 +334,8 @@ test('copy: a missed position is entered late on the trader\'s add (with the rea
 
 test('copy: no late entry after our own close; old messages that arrive late are ignored',async()=>{
  const chg=(a,b)=>`📊 포지션 변경\n🪙 TNSRUSDT  🔴 Short\n수량 ${a} → ${b}\n현재가 0.05 USDT`;
- // Opened, then closed by hand on the venue: the next add finds it gone, the one after must not reopen it.
+ // Opened with our exchange stop (COPY_STOPS on), then gone from the venue: it may have been our stop, so the
+ // next add finds it gone and the one after must not reopen it (user 2026-11-17: ambiguous closes with a stop of ours keep blocking).
  const v=venue(),ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);
  await ex.handle({id:2,date:1e12+60000,text:chg(880,1760)});
  const r=await ex.handle({id:3,date:1e12+120000,text:chg(1760,3520)});
@@ -494,4 +495,111 @@ test('copy page: entry failures below the closes with coin, long/short and reaso
  const h=m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev});
  assert.match(h,/진입 실패·건너뜀/);assert.match(h,/전체 14건/);assert.match(h,/1 \/ 2쪽/);assert.ok(h.includes('>C9<')&&!h.includes('>C10<'));assert.match(h,/<th>이유<\/th>/);
  m.setCopyFailPage(1);assert.ok(m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev}).includes('>C13<'));m.setCopyFailPage(0);
+});
+
+// User decision 2026-11-17 ("2,3번 둘다 적용시켜줘").
+const chgS=(a,b)=>`📊 포지션 변경\n🪙 TNSRUSDT  🔴 Short\n수량 ${a} → ${b}\n현재가 0.05 USDT`;
+const noStops=v=>make(v,{config:{stops:false}});
+
+test('copy (2026-11-17): after an EXTERNAL close (no stop of ours) the next trader add enters late and the next entry card enters',async()=>{
+ const {externalClose}=await import('../copy_executor.mjs');
+ // Gone from the venue (closed by hand), found by the routine check: STOP_OR_EXTERNAL without a stop of ours.
+ const v=venue(),ex=noStops(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);await ex.reconcile();await ex.reconcile();
+ const row=ex.status().closed[0];assert.equal(row.closeReason,'STOP_OR_EXTERNAL');assert.equal(externalClose(row),true);
+ const r=await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)});
+ assert.equal(r.ok,true,JSON.stringify(ex.status().events.slice(0,3)));assert.ok(v.size>0);
+ const late=ex.status().events.find(x=>x.type==='LATE_ENTRY');assert.equal(late.cause,'COPY_CLOSED_EXTERNALLY');assert.equal(late.causeDetail,'STOP_OR_EXTERNAL');
+ const opened=ex.status().events.find(x=>x.type==='OPENED');assert.equal(opened.late,true);assert.equal(opened.refollow,true);
+ assert.match(copyEventText(opened),/다시 진입/);
+ const {copyHTML}=await import('../public/live_control.js');
+ assert.match(copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:[late]}),/바깥 청산됨 .*트레이더 추매에 다시 따라 들어감/);
+ // Found gone when a card came (POSITION_GONE), then a new entry card: entered.
+ const v2=venue(),ex2=noStops(v2);await ex2.handle({id:1,date:1e12,text:OPEN});v2.setSize(0);
+ assert.equal((await ex2.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'POSITION_GONE');
+ assert.equal((await ex2.handle({id:3,date:1e12+120000,text:OPEN.replace('0.05296','0.05100')})).ok,true);assert.ok(v2.size>0);
+ assert.equal(ex2.status().events.find(x=>x.type==='OPENED').refollow,true);
+ // A cut after the external close is still not followed (no late entry on a reduction).
+ const v3=venue(),ex3=noStops(v3);await ex3.handle({id:1,date:1e12,text:OPEN});v3.setSize(0);await ex3.reconcile();await ex3.reconcile();
+ assert.equal((await ex3.handle({id:2,date:1e12+60000,text:chgS(1760,880)})).reason,'NOT_COPIED');assert.equal(v3.size,0);
+ // An existing venue position of the same coin still blocks the re-entry.
+ const v4=venue(),ex4=noStops(v4);await ex4.handle({id:1,date:1e12,text:OPEN});v4.setSize(0);await ex4.reconcile();await ex4.reconcile();v4.setSize(500);
+ assert.equal((await ex4.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'VENUE_POSITION_EXISTS');assert.equal(v4.size,500);
+});
+
+test('copy (2026-11-17): a loss-limit, emergency or our-stop close still blocks the next add and entry card',async()=>{
+ const {externalClose}=await import('../copy_executor.mjs');
+ for(const r of ['COPY_LOSS_LIMIT','LOSS_CAP_REACHED','NO_STOP','ZONE_BREAK_VOLUME','TRADER_CLOSE','SOMETHING_NEW'])assert.equal(externalClose({closeReason:r}),false,r);
+ assert.equal(externalClose({closeReason:'POSITION_GONE',stopOrderId:null,stop:null}),true);
+ assert.equal(externalClose({closeReason:'STOP_OR_EXTERNAL',stopOrderId:'7',stop:.07}),false,'our exchange stop may have filled');
+ // Ledger loss limit (stops off): closed, resumed, then the trader adds: not re-entered.
+ let v=venue(),ex=noStops(v);await ex.handle({id:1,date:1e12,text:OPEN});v.unreal='-210';await ex.reconcile();
+ assert.equal(ex.status().closed[0].closeReason,'COPY_LOSS_LIMIT');ex.resume();
+ assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');
+ assert.equal(ex.status().events.find(x=>x.reason==='NOT_COPIED').cause,'OUR_COPY_CLOSED');
+ assert.equal((await ex.handle({id:3,date:1e12+120000,text:OPEN.replace('0.05296','0.05100')})).reason,'OUR_COPY_CLOSED');assert.equal(v.size,0);
+ // Emergency close (no stop could be placed).
+ v=venue();ex=make(v);v.failStop='VENUE_ERROR_101204';await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(ex.status().closed[0].closeReason,'NO_STOP');
+ assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');assert.equal(v.size,0);
+ // Gone from the venue while our exchange stop was on it: kept blocking.
+ v=venue();ex=make(v);await ex.handle({id:1,date:1e12,text:OPEN});v.setSize(0);await ex.reconcile();await ex.reconcile();
+ assert.ok(ex.status().closed[0].stopOrderId);
+ assert.equal((await ex.handle({id:2,date:1e12+60000,text:chgS(880,1760)})).reason,'NOT_COPIED');
+ assert.equal((await ex.handle({id:3,date:1e12+120000,text:OPEN.replace('0.05296','0.05100')})).reason,'OUR_COPY_CLOSED');assert.equal(v.size,0);
+});
+
+// A transport that fails the chosen market orders without a venue answer; `filledFirst`: the request reached
+// the venue (filled) but the answer was lost.
+function flaky(v,{fail=1,filledFirst=false,match=p=>p.type==='MARKET'&&!p.reduceOnly,code='NETWORK_UNREACHABLE'}={}){
+ const place=v.client.placeOrder,attempts=[];let left=fail;
+ v.client.placeOrder=async p=>{if(match(p)){attempts.push(p.clientOrderId);
+   if(left>0){left--;if(filledFirst)await place(p);throw Object.assign(Error('fetch failed'),{code})}}
+  return place(p)};
+ return attempts;
+}
+const quick=ex=>{const waits=[];ex.sleep=async ms=>{waits.push(ms)};return waits};
+
+test('copy (2026-11-17): an entry or add lost to a network failure is sent again with the same clientOrderId, once filled',async()=>{
+ let v=venue(),ex=noStops(v),waits=quick(ex),tries=flaky(v);
+ assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).ok,true);
+ assert.equal(v.size,98,'one fill');assert.equal(tries.length,2);assert.equal(tries[0],tries[1],'same clientOrderId');assert.deepEqual(waits,[2000]);
+ const e=ex.status().events.find(x=>x.type==='ENTRY_RETRY');assert.equal(e.attempt,2);assert.equal(e.outcome,'RESENT');assert.equal(e.reason,'NETWORK_UNREACHABLE');
+ // An add: fails twice, the third try (after ~2 s and ~5 s) goes through.
+ tries=flaky(v,{fail:2});await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
+ assert.equal(v.size,192);assert.equal(tries.length,3);assert.equal(new Set(tries).size,1);assert.deepEqual(waits,[2000,2000,5000]);
+ assert.deepEqual(ex.status().events.filter(x=>x.type==='ADD_RETRY').map(x=>x.attempt).sort(),[2,3]);assert.equal(ex.status().positions[0].adds,1);
+ // Three failures: given up after two retries, reported as before.
+ tries=flaky(v,{fail:3});const r=await ex.handle({id:3,date:1e12,text:CHANGE(1760,3520)});
+ assert.equal(r.reason,'NETWORK_UNREACHABLE');assert.equal(tries.length,3);assert.equal(v.size,192);
+ // Hedge mode too.
+ const h=hedgeVenue(),exh=noStops(h);quick(exh);const th=flaky(h);
+ assert.equal((await exh.handle({id:1,date:1e12,text:OPEN})).ok,true);assert.equal(h.pos.SHORT.amt,98);assert.equal(th.length,2);
+});
+
+test('copy (2026-11-17): a request that did fill before the network failed is not sent again',async()=>{
+ // Judged by the venue position (the client has no order lookup here).
+ let v=venue(),ex=noStops(v);quick(ex);let tries=flaky(v,{filledFirst:true});
+ assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).ok,true);
+ assert.equal(v.size,98);assert.equal(tries.length,1,'no second order');assert.equal(ex.status().positions[0].qty,98);
+ let e=ex.status().events.find(x=>x.type==='ENTRY_RETRY');assert.equal(e.outcome,'ALREADY_FILLED');assert.equal(e.via,'POSITION');
+ // An add, judged by the order lookup by clientOrderId.
+ const looked=[];v.client.getOrder=async(sym,q)=>{looked.push(q.clientOrderId);return {order:{orderId:'9',status:'FILLED',executedQty:'94',avgPrice:'0.053'}}};
+ tries=flaky(v,{filledFirst:true});await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
+ assert.equal(v.size,192);assert.equal(tries.length,1);assert.equal(looked[0],tries[0]);assert.equal(ex.status().positions[0].adds,1);
+ e=ex.status().events.find(x=>x.type==='ADD_RETRY');assert.equal(e.via,'ORDER');
+ // The position cannot be read: nothing is sent blind.
+ v=venue();ex=noStops(v);quick(ex);await ex.handle({id:1,date:1e12,text:OPEN});tries=flaky(v,{fail:1});
+ const positions=v.client.positions;let n=0;v.client.positions=async s=>{if(++n>1)throw Object.assign(Error('down'),{code:'NETWORK_UNREACHABLE'});return positions(s)};
+ await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});assert.equal(tries.length,1);assert.equal(v.size,98);
+ assert.ok(ex.status().events.filter(x=>x.type==='ADD_RETRY').every(x=>x.outcome==='UNVERIFIED'));
+});
+
+test('copy (2026-11-17): a venue error code is not retried; a lost emergency close is retried reduce-only',async()=>{
+ const v=venue(),ex=noStops(v),waits=quick(ex);await ex.handle({id:1,date:1e12,text:OPEN});
+ let tries=flaky(v,{code:'VENUE_ERROR_101400'});const r=await ex.handle({id:2,date:1e12,text:CHANGE(880,1760)});
+ assert.equal(r.reason,'VENUE_ERROR_101400');assert.equal(tries.length,1);assert.deepEqual(waits,[]);assert.equal(v.size,98);
+ tries=flaky(v,{code:'HTTP_500'});await ex.handle({id:3,date:1e12,text:CHANGE(1760,3520)});assert.equal(tries.length,1);assert.deepEqual(waits,[]);
+ // The loss-limit close has no other retry path: one network failure, then closed.
+ tries=flaky(v,{match:p=>p.type==='MARKET'&&p.reduceOnly==='true'});v.unreal='-210';await ex.reconcile();
+ assert.equal(v.size,0);assert.equal(tries.length,2);assert.equal(tries[0],tries[1]);assert.equal(ex.status().closed[0].closeReason,'COPY_LOSS_LIMIT');
+ assert.equal(ex.status().events.find(x=>x.type==='CLOSE_RETRY').outcome,'RESENT');
 });
