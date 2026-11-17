@@ -194,9 +194,9 @@ test('restart: the ledger comes back, scalps start disarmed, an unfinished entry
 
 test('testnet page: the scalp details (collapsed "단타 신호·건너뜀") — rules, state, skip reasons in Korean, no own switch',async()=>{
  const v=venue(),ex=make(v);let h=scalpDetailsHTML(ex.status());assert.match(h,/4시간 추세 반대 제외/);
- assert.match(h,/상태 꺼짐/);assert.doesNotMatch(h,/data-scalp-arm|data-scalp-disarm/,'one testnet switch: the scalp has no button of its own');
+ assert.doesNotMatch(h,/상태 (꺼짐|켜짐)/,'on / off is the testnet switch\'s (user 2026-11-18: one place per fact)');assert.doesNotMatch(h,/data-scalp-arm|data-scalp-disarm/,'one testnet switch: the scalp has no button of its own');
  ex.arm();await ex.scan();ex.store.skips.push({at:T0,symbol:'XUSDT',reason:'PRICE_DRIFT'});ex.store.skipCounts.PRICE_DRIFT=1;
- h=scalpDetailsHTML(ex.status());assert.match(h,/상태 켜짐/);assert.match(h,/XUSDT/);
+ h=scalpDetailsHTML(ex.status());assert.doesNotMatch(h,/상태 켜짐/);assert.match(h,/XUSDT/);
  assert.match(h,/진입가에서 가격이 이미 벗어남 1회/);assert.match(h,/api\/scalp\/journal/);
  const off=new ScalpExecutor({config:scalpExecConfig({SCALP_EXEC_MODE:'LIVE'})});assert.match(scalpDetailsHTML(off.status()),/실계좌 모드는 거부됨/);
 });

@@ -487,3 +487,12 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .cal-note,.cal-state{margin:4px 0 0;font-size:10.5px;color:var(--dim)}
 .cal-err{color:#ffb4ab;font-weight:600}
 @media(min-width:1100px){.copy-side:has(.pnl-cal){position:static}}
+/* One place per fact (user 2026-11-18): no page-header bar on 실계좌; the mode chip, state and switch on one row; rules and long notes folded. */
+.real-screen #realCopy{padding-top:14px}
+.copy-side .copy-mode{flex-direction:row;flex-wrap:wrap;align-items:center}
+.copy-side .copy-mode .copy-msg:empty{display:none}
+.copy-rules-fold{margin:2px 0 8px}.copy-rules-fold>summary{cursor:pointer;font-size:11px;color:var(--dim);padding:4px 0;width:max-content}.copy-rules-fold[open]>summary{margin-bottom:2px}.copy-rules-fold .copy-rules{margin:0 0 4px}
+.real-about{margin:4px 18px 16px}.real-about .section-note{margin:0 16px}
+.live-rules-fold{margin:0 18px 0}.live-rules-fold summary small{color:var(--dim);font-weight:400;margin-left:6px}.live-rules-fold .live-status-full{border:0;padding:8px 0 2px}
+@media(max-width:690px){.real-about{margin:4px 14px 14px}.live-rules-fold{margin:0 14px}.live-rules-fold summary small{display:none}}
+@media(max-width:690px){.footer>span{display:block}}
