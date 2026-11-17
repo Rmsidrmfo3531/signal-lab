@@ -6,14 +6,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {backtestHourly,backtestScalp,backtestCandidates,summarize,scoreBucket,HOUR} from '../backtest.mjs';
+import {backtestHourly,backtestScalp,backtestCandidates,summarize,scoreBucket,HOUR,ZONE_TOUCH_PCT} from '../backtest.mjs';
 import {DETECTORS} from '../pattern_detectors.mjs';
 import {SCALP_DEFAULTS} from '../scalp_reversal.mjs';
 import {SCALP_EXEC_SETTINGS} from '../scalp_executor.mjs';
 import {DCA_DEFAULTS,clampMaxAdds,clampZoneDays,HOURLY_MAX_ADDS_DEFAULT} from '../dca_plan.mjs';
 
 const BASE='https://fapi.binance.com';
-const INTERVAL_MS={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000};
+const INTERVAL_MS={'1m':60000,'5m':300000,'15m':900000,'1h':3600000,'4h':14400000,'1d':86400000};
 export const DEFAULT_SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','BNBUSDT'];
 
 export function parseArgs(argv){
@@ -46,6 +46,8 @@ export function parseArgs(argv){
   // --exec: the testnet scalp executor's settings (move x2 = 5%, TP 38.2/50/61.8%, stop ATR x0.25, volume x3).
   // --scalp-min-rr X: TP1 net RR floor of the 5m scalp (default 1, the testnet executor uses SCALP_MIN_NET_RR).
   else if(key==='--scalp-min-rr'){out.scalpMinRR=Math.max(.1,Math.min(5,Number(value)||1));i++}
+  // --scalp-zone-signals (research, user 2026-11-17): also 2.5 %+ reversals whose extreme touched a 4H/1D volume zone.
+  else if(key==='--scalp-zone-signals'){out.scalpZoneSignals=true}
   else if(key==='--exec'){out.execSettings=true;if(!out.trendFlag)out.trendFilter=false} // the executor records the 4H trend, never filters
   else if(key==='--btc-long-filter'){if(!['up','notdown','off'].includes(value))throw Error('--btc-long-filter는 up, notdown, off 중 하나입니다');out.btcLongFilter=value==='off'?null:value;i++} // default 'up' (as the server); 'off' disables
   else if(key==='--min-box-atr'){out.minBoxWidthAtr=Math.max(0,Number(value)||0);i++}
@@ -133,7 +135,8 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  const lines=[],date=t=>new Date(t).toISOString().slice(0,16).replace('T',' ')+' UTC';
  lines.push('Signal Lab 백테스트 결과','='.repeat(60),`기간: ${date(startAt)} ~ ${date(endAt)} (${args.days}일)`,`종목: ${args.symbols.join(', ')}`,
   `비용 가정: 시장가 수수료 0.06% + 슬리피지 0.02% (진입·청산 매번), 1H·단타 고정 위험 $6/거래`,`TP1 전 매물대 차단 기준: POC의 ${Math.round(args.obstacle*100)}% 이상 · 1H 패턴: ${args.allPatterns?'전체':'박스권 상단 돌파·상승 추세선 이탈 숏·5/20 데드크로스 숏(--all-patterns로 전체)'} · 단타 4H 추세 필터 ${args.trendFilter?'켬':'끔'}`,
-  ...(args.execSettings?[`단타 설정: 테스트넷 실행기와 같음 (급변 5%·되돌림 38.2/50/61.8%·손절 ATR×0.25·거래량 3배, 4H 추세 ${args.trendFilter?'필터 켬':'기록만'}, 1차 목표 손익비 ${args.scalpMinRR??1} 이상)`]:[]),`체결 가정: 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결`,'');
+  ...(args.execSettings?[`단타 설정: 테스트넷 실행기와 같음 (급변 5%·되돌림 38.2/50/61.8%·손절 ATR×0.25·거래량 3배, 4H 추세 ${args.trendFilter?'필터 켬':'기록만'}, 1차 목표 손익비 ${args.scalpMinRR??1} 이상)`]:[]),
+  `단타 매물대 기준: 4H봉(최대 540개)·1D봉(최대 180개) 거래량 분포의 매물대(HVN), 급변 시작 전에 마감된 봉만 사용, 신호 극값(롱은 저가·숏은 고가)이 매물대 범위 ±${ZONE_TOUCH_PCT}% 안이면 '닿음'`,`체결 가정: 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결`,'');
  lines.push('[1] 1시간봉 전략 (현재 기준: 100점 중 90점 이상)','-'.repeat(60));
  const live=all.filter(t=>t.strategy==='HOURLY'&&t.book==='LIVE');
  lines.push(row('전체',summarize(live)));
@@ -173,7 +176,26 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
   for(const d of ['LONG','SHORT']){const m=l.filter(t=>t.direction===d);if(m.length)lines.push(row('    '+(d==='LONG'?'롱':'숏'),summarize(m)))}}
  // TP1 net RR band (user 2026-11-17 testnet floor 0.7): is the 0.7-1 band worth taking?
  for(const [label,f] of [['  1차 목표 손익비 1 이상',t=>t.netRR>=1],['  1차 목표 손익비 1 미만',t=>t.netRR!=null&&t.netRR<1]]){const l=fixed.filter(f);if(l.length)lines.push(row(label,summarize(l)))}
+ // 4H+ volume zones at the signal extreme (user 2026-11-17 "단타도 4H 이상 매물대"): touched or not, by direction.
+ const sides=(l,indent)=>{for(const d of ['LONG','SHORT']){const m=l.filter(t=>t.direction===d);if(m.length)lines.push(row(indent+(d==='LONG'?'롱':'숏'),summarize(m)))}};
+ for(const [tf,key] of [['4H','atZone4h'],['1D','atZone1d'],['4H+','atZone']]){
+  if(!fixed.some(t=>t[key]!=null))continue;
+  for(const [label,val] of [['닿음',true],['안 닿음',false]]){const l=fixed.filter(t=>t[key]===val);if(!l.length)continue;lines.push(row(`  ${tf} 매물대 ${label}`,summarize(l)));sides(l,'    ')}
+ }
+ {const strong=fixed.filter(t=>t.atZone4h===true&&t.zoneRank4h<=3);if(strong.length)lines.push(row('  4H 매물대 닿음 상위3',summarize(strong)));
+  const none=fixed.filter(t=>t.atZone==null);if(none.length)lines.push(row('  매물대 계산 불가',summarize(none)))}
  lines.push(`신호 흐름: 5분봉 ${scalpFunnel.bars}개 → 감지 ${scalpFunnel.signals} → 손익비 미달 제외 ${scalpFunnel.qualityRejected} · 진입 시 무효 ${scalpFunnel.entrySkipped}`);
+ // Candidate B (--scalp-zone-signals): 2.5 %+ reversals at a 4H/1D zone that the 5 % rule does not take.
+ if(args.scalpZoneSignals){
+  const zs=all.filter(t=>t.strategy==='SCALP'&&t.book==='ZONE'),zf=scalpFunnel.zone||{};
+  lines.push('',`후보 B: 매물대 반전 (급변 ${SCALP_DEFAULTS.minMovePct}% 이상 5% 미만 + 극값이 4H/1D 매물대 ±${ZONE_TOUCH_PCT}% 안, 나머지 규칙 동일, 기존 단타 보유 중이면 건너뜀)${args.execSettings?"":" - --exec 없이는 기본 급변이 이미 2.5%라 추가 신호 없음"}`);
+  lines.push(row('매물대 반전 (급변 2.5%+)',summarize(zs)));
+  sides(zs,'  ');
+  for(const [label,f] of [['  4H 매물대 닿음',t=>t.atZone4h===true],['  1D 매물대만 닿음',t=>t.atZone4h!==true&&t.atZone1d===true],['  4H 매물대 닿음 상위3',t=>t.atZone4h===true&&t.zoneRank4h<=3]]){const l=zs.filter(f);if(l.length)lines.push(row(label,summarize(l)))}
+  for(const [label,list] of halves(zs))lines.push(row(label+' (기간 절반씩)',summarize(list)));
+  lines.push(row('기존 5% + 매물대 반전',summarize([...fixed,...zs])));
+  lines.push(`매물대 반전 흐름: ${SCALP_DEFAULTS.minMovePct}%+ 감지 ${zf.signals??0} → 매물대 닿음 ${zf.atZone??0} → 4H 역추세 차단 ${zf.trendBlocked??0} · 손익비 미달 ${zf.qualityRejected??0} · 진입 시 무효 ${zf.entrySkipped??0} · 포지션 보유 중 제외 ${zf.busySkipped??0}`);
+ }
  lines.push('','[3-1] 단타 시간봉별 비교 (1분봉은 최근 '+args.scalp1mDays+'일만)','-'.repeat(60));
  const byTf=iv=>all.filter(t=>(t.strategy==='SCALP'||t.strategy==='SCALP_TF')&&(t.interval??'5m')===iv);
  for(const iv of ['1m','5m','15m'])for(const book of ['FIXED','DCA'])lines.push(row(`${iv} ${book==='FIXED'?'고정 위험':'매물대 분할'}`,summarize(byTf(iv).filter(t=>t.book===book))));
@@ -202,7 +224,7 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  return lines.join('\n');
 }
 function toCSV(trades){
- const cols=['strategy','book','symbol','direction','pattern','score','signalAt','entryAt','exitAt','entryFill','averageEntry','stop','exitReason','tp','addsFilled','netUSD','R','feesUSD','holdMs','pnlPctOfBalance','movePct','trend4h','withTrend','netRR'];
+ const cols=['strategy','book','symbol','direction','pattern','score','signalAt','entryAt','exitAt','entryFill','averageEntry','stop','exitReason','tp','addsFilled','netUSD','R','feesUSD','holdMs','pnlPctOfBalance','movePct','trend4h','withTrend','netRR','extreme','atZone4h','zoneDistPct4h','zoneShare4h','zoneRank4h','atZone1d','zoneDistPct1d','zoneShare1d','zoneRank1d','zoneSignal'];
  return '﻿'+cols.join(',')+'\n'+trades.map(t=>cols.map(k=>{let v=t[k]??'';if(/At$/.test(k)&&v)v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\n');
 }
 
@@ -235,6 +257,8 @@ export async function main(argv=process.argv.slice(2)){
   const h1=args.scalpOnly?[]:await klines(symbol,'1h',startAt-warm1h,endAt,args.cache);
   const m15=await klines(symbol,'15m',startAt-4*86400000,endAt,args.cache);
   const m5=await klines(symbol,'5m',startAt-6*HOUR,endAt,args.cache);
+  // Daily candles for the 1D zones of the scalp tag (one request); missing history only drops the 1D tag.
+  let d1=[];try{d1=await klines(symbol,'1d',startAt-200*86400000,endAt,args.cache)}catch{}
   process.stdout.write(`1H ${h1.length} · 5m ${m5.length} → 계산 중… `);
   // --scalp-only: the reversal scalps only (no 1H strategy, no 1h candles).
   const hourly=args.scalpOnly?{trades:[],funnel:{bars:0,patterns:0,validated:0,scoreOk:0,planned:0,chaseSkipped:0,planReasons:{}}}:backtestHourly({symbol,h1,h4,btcH4,m15,m5,filters,startAt,obstacleFraction:args.obstacle,...(args.allPatterns?{patterns:null}:args.patterns?.length?{patterns:args.patterns}:{}),
@@ -242,20 +266,21 @@ export async function main(argv=process.argv.slice(2)){
   if(hourly.funnel.split){hourlyFunnel.split??={planned:0,fallback:0,sources:{}};hourlyFunnel.split.planned+=hourly.funnel.split.planned;hourlyFunnel.split.fallback+=hourly.funnel.split.fallback;
    for(const [k,v] of Object.entries(hourly.funnel.split.sources))hourlyFunnel.split.sources[k]=(hourlyFunnel.split.sources[k]||0)+v}
   const dcaArgs={leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays};
-  const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,settings:args.execSettings?SCALP_EXEC_SETTINGS:{},...(args.scalpMinRR?{minNetRR:args.scalpMinRR}:{}),filters,startAt,balanceUSD:args.balance,dca:dcaArgs});
+  const scalp=backtestScalp({symbol,m5,m15,h4,d1,zoneSignals:args.scalpZoneSignals===true,trendFilter:args.trendFilter,settings:args.execSettings?SCALP_EXEC_SETTINGS:{},...(args.scalpMinRR?{minNetRR:args.scalpMinRR}:{}),filters,startAt,balanceUSD:args.balance,dca:dcaArgs});
   // Other scalp timeframes: 15m over the whole period, 1m over the last --scalp-1m-days days (1m data is large).
-  const scalp15=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:dcaArgs,interval:'15m',bars:m15}).trades;
+  const scalp15=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:dcaArgs,interval:'15m',bars:m15,zoneTags:false}).trades;
   let scalp1=[];
   if(args.scalp1mDays>0){const from=Math.max(startAt,endAt-args.scalp1mDays*86400000),m1=await klines(symbol,'1m',from-2*HOUR,endAt,args.cache);
-   scalp1=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt:from,balanceUSD:args.balance,dca:dcaArgs,interval:'1m',bars:m1}).trades}
+   scalp1=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt:from,balanceUSD:args.balance,dca:dcaArgs,interval:'1m',bars:m1,zoneTags:false}).trades}
   for(const k of ['bars','patterns','validated','scoreOk','planned','chaseSkipped'])hourlyFunnel[k]+=hourly.funnel[k];
   for(const [k,v] of Object.entries(hourly.funnel.planReasons))hourlyFunnel.planReasons[k]=(hourlyFunnel.planReasons[k]||0)+v;
   for(const k of ['bars','signals','qualityRejected','entrySkipped'])scalpFunnel[k]+=scalp.funnel[k];
+  if(scalp.funnel.zone){scalpFunnel.zone??={};for(const [k,v] of Object.entries(scalp.funnel.zone))scalpFunnel.zone[k]=(scalpFunnel.zone[k]||0)+v}
   for(const [k,v] of Object.entries(scalp.funnel.dcaRejected))scalpFunnel.dcaRejected[k]=(scalpFunnel.dcaRejected[k]||0)+v;
   finalBalances[symbol]=scalp.finalBalance;
   const cand=args.candidates?backtestCandidates({symbol,h1,h4,m15,m5,filters,startAt}).trades:[];
   results.push({symbol,trades:[...hourly.trades,...scalp.trades,...scalp15.map(t=>({...t,strategy:'SCALP_TF'})),...scalp1.map(t=>({...t,strategy:'SCALP_TF'})),...cand]});
-  console.log(`1H 거래 ${hourly.trades.filter(t=>t.book==='LIVE').length} · 단타 ${scalp.trades.filter(t=>t.book==='FIXED').length}`);
+  console.log(`1H 거래 ${hourly.trades.filter(t=>t.book==='LIVE').length} · 단타 ${scalp.trades.filter(t=>t.book==='FIXED').length}${args.scalpZoneSignals?` · 매물대 반전 ${scalp.trades.filter(t=>t.book==='ZONE').length}`:''}`);
  }
  const report=buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel,finalBalances});
  fs.mkdirSync(args.out,{recursive:true});
