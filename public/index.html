@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#090f18">
-  <meta name="description" content="Binance USDT-M perpetual futures live quotes, multi-timeframe support/resistance scanner, and conditional long/short alerts.">
-  <title>Signal Lab v5.8 — Binance 차트 분석 · BingX/Gate.io 시세</title>
+  <meta name="description" content="Signal Lab: BingX live copy trading, testnet strategies, market news and trade journal.">
+  <title>Signal Lab v5.8 — 실계좌 · 테스트넷 · 뉴스 · 매매일지</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -14,54 +14,22 @@
     <a class="brand" href="/" aria-label="Signal Lab 홈"><span class="brand-icon"><span></span></span><span class="brand-copy">SIGNAL<span class="brand-sub">신호 분석 · 테스트넷 매매</span></span></a>
     <div class="sidebar-label">메뉴</div>
     <nav class="nav" aria-label="메뉴">
-      <a href="#overview" class="navlink active"><span class="navi">◫</span>대시보드 · 차트<span class="navright">01</span></a>
-      <a href="#real" class="navlink"><span class="navi">●</span><span>실계좌 · 카피</span><span class="navright" id="navRealMode">…</span></a>
+      <a href="#real" class="navlink active"><span class="navi">●</span><span>실계좌 · 카피</span><span class="navright" id="navRealMode">…</span></a>
       <a href="#live" class="navlink"><span class="navi">◉</span><span id="navLiveLabel">테스트넷</span><span class="navright" id="navLiveMode">…</span></a>
       <a href="#news" class="navlink"><span class="navi">◈</span>시황·종목 뉴스<span class="navright">↗</span></a>
-      <a href="#alerts" class="navlink"><span class="navi">◷</span>알림 · 시스템<span class="navright">↗</span></a><a href="#journal" class="navlink"><span class="navi">▦</span>매매일지 · 위험관리<span class="navright">05</span></a>
+      <a href="#journal" class="navlink"><span class="navi">▦</span>매매일지 · 위험관리<span class="navright">↗</span></a>
     </nav>
     <div class="sidebar-bottom">
       <div class="sidebar-footnote">Binance 차트 분석 → BingX 실매매<br>실주문 기본 OFF · 켤 때마다 활성화</div>
     </div>
   </aside>
-  <main class="main" id="overview">
+  <main class="main">
     <header class="topbar">
-      <div class="topbar-left"><button class="mobile-menu" id="menuButton" aria-label="메뉴">☰</button><div class="breadcrumb">Signal Lab <span>/</span> <b id="crumbPage">대시보드</b></div></div>
-      <div class="topbar-right"><div class="dot-status" id="socketStatus"><i class="dot amber"></i><span>연결 대기</span></div><div class="kst-clock" id="clock">--:--:-- KST</div><button class="outline-btn" id="notificationButton">♧ 알림 켜기</button><button class="outline-btn" id="testNotificationButton" title="실제 거래 신호를 생성하지 않는 알림 테스트">🔔 알림 테스트</button></div>
+      <div class="topbar-left"><button class="mobile-menu" id="menuButton" aria-label="메뉴">☰</button><div class="breadcrumb">Signal Lab <span>/</span> <b id="crumbPage">실계좌 · 카피 매매</b></div></div>
+      <div class="topbar-right"><div class="dot-status" id="socketStatus"><i class="dot amber"></i><span>연결 대기</span></div><div class="kst-clock" id="clock">--:--:-- KST</div><button class="outline-btn" id="notificationButton">♧ 알림 켜기</button><button class="outline-btn" id="updateButton" title="신뢰할 수 있는 업데이트 서버를 설정해야 작동합니다">↻ 업데이트 확인</button></div>
     </header>
     <div class="content">
-      <section class="page-head"><div><p class="eyebrow">바이낸스 차트 기준 신호</p><h1>마켓 시그널 <span class="gradient">터미널</span></h1><p class="intro">바이낸스 차트 확정 신호 · BingX 실매매(테스트넷) · 시황 뉴스</p><p class="update-note" id="updateStatus" aria-live="polite">v5.8 · 업데이트 서버 미설정 (자동 업데이트 비활성)</p></div><div class="head-actions"><button class="secondary-btn" id="updateButton" title="신뢰할 수 있는 업데이트 서버를 설정해야 작동합니다">↻ 업데이트 확인</button><button class="secondary-btn" id="refreshButton">↻ 데이터 새로고침</button><button class="primary-btn" id="scanButton">✦ 선택 종목 분석</button></div></section>
       <div class="banner warning hidden" id="connectBanner" role="alert"><span>⚠</span><div><strong id="errorTitle">시세 연결 오류</strong><div id="errorDetail">바이낸스 접속을 확인하세요.</div></div><button id="dismissError" aria-label="닫기">✕</button></div>
-      <section id="scanner" class="panel scanner-panel" data-workspace-route="scanner"><div class="panel-header"><div><p class="panel-eyebrow">최종 신호</p><h3>확정 차트 패턴 · 롱 / 숏 시그널</h3></div><div class="scan-toolbar"><span class="scan-run" id="scanProgress">검색 대기</span><button type="button" class="outline-btn" id="runScanNow" title="서버에 즉시 자동 스캔을 요청합니다">↻ 지금 스캔</button><select id="signalFilter" aria-label="최종 시그널 방향 필터"><option value="all">최종 검증 신호 전체</option><option value="LONG">LONG 최종 신호</option><option value="SHORT">SHORT 최종 신호</option></select></div></div>        <details class="help-fold"><summary>점수·검증 기준 설명 보기</summary>
-<p class="section-note">암호화폐 분석은 Binance <strong>TRADING 상태의 USDT 무기한 선물</strong>을 우선 사용하고, 바이낸스에 없는 코인(시총 기준 통과)은 Gate.io·BingX 차트로 같은 규칙을 적용합니다. 완전히 마감된 1H·4H와 EMA200용 충분한 4H 데이터를 확인합니다. 종합점수는 4H EMA200 15점 · EMA100 5점 · 1H EMA20 10점 · 가격 패턴·확정 강도 25점 · ADX/DMI 15점 · RSI 10점 · MACD 5점 · 패턴별 거래량 10점 · ATR 5점의 <strong>단일 100점</strong>이며 승률이 아닙니다.</p>
-        <p class="section-note">메인에는 <strong>기술·신선도·호가·위험·매물대 목표·현재 진입 조건을 통과한 최종 신호만</strong> 표시합니다. 점수 계산 불가는 ‘평가 불가’로 표시합니다. Telegram은 이 최종 신호 목록과 동일한 검증 결과만 발송합니다. 80점 관찰·뉴스 Telegram 알림은 중지했습니다.</p>
-        <p class="section-note">TP1 40% · TP2 35% · TP3 25%는 실제 체결량 기반 매물대의 유효한 3개 목표가가 확인된 신규 거래에 적용합니다. <strong>TP_PROFILE_UNAVAILABLE이면 진입 보류</strong>하며 고정 2R·3R·4R 자동 대체는 OFF입니다. 실제 주문은 OFF입니다.</p>
-        <p class="section-note">WebSocket 가격·봉 마감 이벤트와 REST 순환 보완을 사용합니다. <strong>전체 종목을 매초 분석하지 않습니다.</strong> 아래에 실제 순환 검사 범위·주기·직전 성공/실패를 표시합니다.</p>
-        </details>
-        <p class="section-note" id="scorePolicyStatus" role="status" aria-live="polite">최종 신호 점수 기준: 서버 설정 조회 중 · 실전 성능 미검증 (UNVERIFIED) · 실거래 승인 아님</p>
-<div class="direction-entry-heading"><strong>최종 검증 LONG / SHORT 기준 진입가</strong><small>같은 최종 검증 목록의 참고가격 · 실제 주문 승인과 별개</small></div>
-        <div id="directionEntryBoard" class="direction-entry-board" aria-live="polite">
-          <div class="direction-entry-box long"><strong>LONG</strong><p>현재 최종 검증 신호 없음</p></div>
-          <div class="direction-entry-box short"><strong>SHORT</strong><p>현재 최종 검증 신호 없음</p></div>
-        </div>
-        <section class="scan-diagnostics" aria-label="실제 스캐너 분석 단계">
-          <div class="scan-diag-title"><strong>스캔 결과 분석 · 필터별 탈락 건수</strong><a href="/api/scan/diagnostics" target="_blank" rel="noopener noreferrer">진단 JSON ↗</a></div>
-          <div class="scan-diag-grid">
-            <div><span>분석된 고유 종목</span><strong id="diagUnique">—</strong></div>
-            <div><span>패턴 없음</span><strong id="diagNoPattern">—</strong></div>
-            <div><span>발견된 패턴</span><strong id="diagPattern">—</strong></div>
-            <div><span>기술 조건 통과</span><strong id="diagTechnicalPassed">—</strong></div>
-            <div><span>기술 조건 미달</span><strong id="diagQuality">—</strong></div>
-           
-            <div><span>거래소 호가·위험 검증 통과</span><strong id="diagVenuePassed">—</strong></div>
-            <div><span>거래소·호가 검증 보류</span><strong id="diagVenue">—</strong></div>
-            <div><span>진입 시점 재확인</span><strong id="diagEntry">—</strong></div>
-            <div><span>최종 신호</span><strong id="diagReady">—</strong></div>
-          </div>
-          <div id="diagReasons" class="scan-diag-reasons">진단 집계 대기 중…</div>
-          <small class="scan-diag-note">발견·기술 통과·호가 통과는 최근 분석의 고유 종목을 단계별로 집계합니다. 최종 신호는 현재 가격·호가·진입 시점까지 재검사한 목록과 같습니다. 서버에 표시되는 누적 분석 횟수에는 같은 코인을 반복 검사한 횟수가 포함됩니다. 탈락 상세는 진단에서만 확인하며 메인 신호에 포함하지 않습니다.</small>
-        </section>
-        <div class="table-scroll"><table class="scan-table"><thead><tr><th>종목</th><th>현재가</th><th>24H</th><th>방향 / 패턴</th><th>패턴 확정 / 매매 검증</th><th>롱/숏 기준 진입가</th><th>진입 시점 · 가격 구간</th><th>1·2·3차 목표 / 분할 익절</th><th>지지 / 저항</th><th>검사 시각</th><th>상세</th></tr></thead><tbody id="signalsBody"><tr><td colspan="11" class="table-empty">신호 검사 중입니다. 데이터 연결을 확인하세요.</td></tr></tbody></table></div><div class="scan-pages"><span class="scan-page-info" id="scanPageInfo">조회 대기</span><nav class="scan-page-controls" id="scanPageControls" aria-label="최종 신호 페이지"></nav></div><div class="scan-bottom"><span id="scanSummary">최종 검증 통과 신호만 표시 · 점수 → 확정 시각 → 종목명 순</span></div></section>
       <section id="real" class="panel paper-panel live-screen real-screen" data-workspace-route="real">
         <div class="panel-header live-head"><h3 class="sr-only">실계좌 카피 매매</h3><div id="realModeBadge" class="live-mode-inline" role="status" aria-live="polite"><span class="live-flag">상태 확인 중</span></div></div>
         <p class="section-note">실제 돈이 들어가는 BingX 실계좌입니다. 텔레그램 채널 카피 매매만 여기서 돌아가며, 신호 전략(테스트넷)과 원장·잔고·활성화 스위치가 모두 따로입니다. 서버를 다시 켜면 항상 비활성으로 시작합니다.</p>
@@ -89,66 +57,9 @@
           </details>
         </div>
       </section>
-      <section class="metrics" data-workspace-route="overview" aria-label="시장 상태">
-        <div class="metric"><span class="metric-kicker">바이낸스 무기한 선물</span><div class="metric-line"><strong id="metricContracts">—</strong><span class="metric-hint">TRADING 상태</span></div><div class="metric-foot">Binance 실제 상장 목록 기준</div></div>
-        <div class="metric"><span class="metric-kicker">스캔 종목</span><div class="metric-line"><strong id="metricScanned">—</strong><span class="metric-hint">누적 고유 종목</span></div><div class="metric-foot" id="coverageFoot">연결 후 순환 검색</div></div>
-        <div class="metric"><span class="metric-kicker">최종 검증 신호</span><div class="metric-line"><strong id="metricSignals">0</strong><span class="metric-hint">1H 마감 확정</span></div><div class="metric-foot" id="signalFoot">최종 기술·호가·매물대·진입 검증</div></div>
-        <div class="metric"><span class="metric-kicker">마지막 스캔</span><div class="metric-line"><strong id="metricLastScan" class="metric-time">—</strong></div><div class="metric-foot" id="scanFoot">서버에서 계속 검사</div></div>
-      </section>
-      <section class="work-grid" id="workGrid" data-workspace-route="overview">
-        <article class="panel chart-panel" id="chartPanel">
-          <div class="panel-header chart-head"><div class="pair-left"><div class="asset-logo" id="assetLogo">₿</div><div><div class="pair-name-row"><h2 id="pairName">BTCUSDT</h2><span class="perp-pill">PERPETUAL</span></div><div class="pair-subtitle">BINANCE FUTURES · USDT-M</div><div class="pair-subtitle pair-compare" id="pairCompare">Binance USDT 무기한 상장 확인 대기</div><div class="pair-direct" id="pairTradeLinks" aria-label="종목 바로가기"></div></div></div><div class="pair-stats"><div class="price" id="pairPrice">—</div><span class="change neutral" id="pairChange">24H —</span></div></div>
-          <div class="pair-direction-entries" id="pairDirectionEntries" aria-label="선택 종목 롱·숏 진입 기준가">
-            <div><span>LONG 진입 기준가</span><strong>—</strong></div><div><span>SHORT 진입 기준가</span><strong>—</strong></div>
-          </div>
-          <div class="chart-toolbar tv-toolbar">
-            <div class="chart-mode-group" role="group" aria-label="차트 제공 방식"><button type="button" class="chart-mode active" id="tvModeButton">TradingView</button><button type="button" class="chart-mode" id="basicModeButton">자체 차트</button></div>
-            <div class="chart-lookup"><input id="tvSymbolInput" aria-label="TradingView 선물 종목 입력" inputmode="text" placeholder="예: BTCUSDT" value="BTCUSDT" maxlength="29" autocomplete="off" spellcheck="false"><button type="button" id="tvGoButton" title="공통 상장 검증과 상관없이 TradingView 차트 열기">차트 보기 ↗</button></div>
-            <div class="timeframes" role="group" aria-label="차트 시간봉"><button data-time="1h" class="active">1시간</button><button data-time="4h">4시간</button><button data-time="1d">일봉</button></div>
-            <div class="chart-right"><span id="basicChartOptions" class="basic-chart-options hidden"><label class="check"><input type="checkbox" id="showEMA" checked> EMA20/100/200</label><label class="check"><input type="checkbox" id="showSR" checked> 지지·저항</label></span><button class="tv-action" id="chartWideButton" type="button" aria-pressed="false" title="차트를 가로로 넓게 보기">↔ 넓게</button><button class="tv-action" id="chartFullscreenButton" type="button" title="차트 전체화면">⛶ 전체화면</button><a class="tv-action tv-outlink" href="https://www.tradingview.com/chart/" id="tvExternalLink" rel="noopener noreferrer" target="_blank">TradingView ↗</a></div>
-          </div>
-          <div class="chart-wrap tradingview-active" id="chartWrap">
-            <div class="tv-host" id="tradingviewWidget" role="region" aria-label="TradingView 바이낸스 선물 차트"><div class="tv-message">TradingView 차트 준비 중…</div></div>
-            <canvas id="chart" class="hidden" aria-label="바이낸스 자체 캔들 차트" role="img"></canvas>
-            <div class="chart-overlay hidden" id="chartOverlay">과거 캔들 데이터 불러오는 중…</div><div class="chart-tooltip hidden" id="chartTooltip"></div>
-          </div>
-          <div class="chart-footer tv-chart-footer"><div class="legend" id="basicLegend"><span>차트: TradingView 공식 임베드 · 분석 수치는 Binance API 기반</span><span class="legend-basic hidden"><i class="legend-dot up"></i> 상승</span><span class="legend-basic hidden"><i class="legend-dot down"></i> 하락</span><span class="legend-basic hidden"><i class="legend-line support"></i> 지지대</span><span class="legend-basic hidden"><i class="legend-line resistance"></i> 저항대</span></div><span id="chartUpdated">TV 외부 시세</span></div>
-          <div class="chart-access-line" id="chartAccessStatus" role="status">TradingView 차트 열람과 최종 신호·실제 주문 승인은 별개입니다.</div>
-          <div class="tv-help">TradingView 자체 연결이 차단되면 <a href="https://www.tradingview.com/chart/" target="_blank" rel="noopener noreferrer" id="tvFallbackLink">새 탭에서 차트 열기 ↗</a> 또는 <b>자체 차트</b>를 사용하세요. 자체 분석의 지지·저항은 오른쪽 패널에 표시되며 TradingView 위젯에 자동으로 그려지지는 않습니다.</div>
-        </article>
-        <article class="panel insight-panel"><div class="panel-header compact"><div><p class="panel-eyebrow">시장 구조</p><h3>선택 종목 분석</h3></div><span id="analysisTag" class="subtle-tag">분석 대기</span></div>
-          <div class="insight-body"><div class="trend-strip"><span>4시간봉 추세</span><strong id="analysisTrend">—</strong></div><div class="level-label">주요 지지 구간 <span>지지</span></div><div id="supports" class="level-stack"><div class="empty-small">분석 대기 중</div></div><div class="level-label resistance-heading">주요 저항 구간 <span>저항</span></div><div id="resistances" class="level-stack"><div class="empty-small">분석 대기 중</div></div><div class="insight-divider"></div><div class="two-facts"><div><span>1H 거래량 / 20봉 평균</span><strong id="volRatio">—</strong></div><div><span>1H ATR(14)</span><strong id="atrValue">—</strong></div></div><div class="current-candidate" id="currentCandidate"><div class="empty-small">1H 확정봉과 마감된 4H 250~300개로 지표를 평가합니다. 데이터 부족 시 평가 불가입니다.</div></div></div>
-        </article>
-      </section>
-
-      <section class="panel execution-panel" id="execution" data-workspace-route="overview">
-        <div class="panel-header execution-head">
-          <div><p class="panel-eyebrow">주문 전 점검 · 조회 전용</p><h3>거래소(BingX) 호가·위험 검증</h3></div>
-          <div class="execution-controls">
-            <label>방향 <select id="executionSide" aria-label="방향"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select></label>
-            <label>계산 명목 상한 <select id="executionSize" aria-label="포지션 명목금액"><option value="250">$250</option><option value="500">$500</option><option value="1000" selected>$1,000</option><option value="1500">$1,500</option></select></label>
-            <button class="outline-btn" id="executionRefresh">↻ 호가 검증</button>
-          </div>
-        </div>
-        <div class="execution-banner" id="executionVerdict" aria-live="polite">거래소 공개 호가 조회 대기</div>
-        <div class="execution-metrics">
-          <div><span>Binance Bid / Ask</span><strong id="execBidAsk">—</strong><small id="execQuoteTime">갱신 시각 확인 중</small></div>
-          <div><span>거래소 호가 스프레드</span><strong id="execSpread">—</strong><small id="execCost">모의 위험 계산 대기</small></div>
-          <div><span>호가 잔량 기준 슬리피지</span><strong id="execVenue">—</strong><small id="execMark">진입 수량 확인 대기</small></div>
-          <div><span>비용 가정과 실제 검증</span><strong id="execFunding">—</strong><small id="execFundingTime">실제 계정 요율·펀딩 정산 미검증</small></div>
-        </div>
-        <p class="execution-note">BingX·Gate.io 공개 호가 잔량과 계약 규칙으로 모의 수량·스프레드·슬리피지를 검사합니다. <b>예상 체결과 비용 가정은 실제 체결·계정 수수료·펀딩 정산이 아닙니다.</b> 계산 명목 상한을 높여도 손실 한도나 최소 주문 검증을 우회하지 않습니다. 실제 주문은 OFF입니다.</p>
-        <div class="execution-footer"><span id="execLimits">보수적 필터 검사 중</span><a href="https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Order-Book" target="_blank" rel="noopener noreferrer" class="trade-link neutral">공식 API 문서 ↗</a></div>
-      </section>
-      <section id="matched" class="panel matched-panel" data-workspace-route="overview" style="display:none" aria-hidden="true">
-        <div class="panel-header matched-head"><div><p class="panel-eyebrow">바이낸스 상장 종목</p><h3>Binance USDT 무기한 선물 종목</h3></div><div class="matched-actions"><input id="marketSearch" type="search" placeholder="코인 검색 · 예: LINK" aria-label="Binance 선물 종목 검색"><span class="subtle-tag" id="matchedCount">조회 중…</span></div></div>
-        <p class="section-note">Binance의 <strong>거래 중 · USDT 무기한</strong> 조건을 충족한 암호화폐 목록입니다. <span id="matchVerified">공식 목록 확인 중…</span></p>
-        <div class="table-scroll"><table class="scan-table matched-table"><thead><tr><th>코인</th><th>Binance 선물</th><th>계약 유형</th><th>Binance 가격 (USDT)</th><th>상장 상태</th><th>Binance 24h 거래대금 (USDT)</th><th>차트</th></tr></thead><tbody id="matchedBody"><tr><td colspan="7" class="table-empty">Binance 공식 상장 목록을 조회하고 있습니다.</td></tr></tbody></table></div>
-        <div class="match-footer"><span>상장 정보와 시세의 수집 시각을 구분하며, 이 목록은 주문 승인이 아닙니다.</span><div class="match-pager"><button id="matchPrev" class="table-link">← 이전</button><span id="matchPage">0 / 0</span><button id="matchNext" class="table-link">다음 →</button></div></div>
-      </section>
       <section id="news" class="panel news-panel" data-workspace-route="news">
         <div class="panel-header news-head"><div><p class="news-disclaimer">기사는 5개씩 표시합니다. 한국어 번역과 원문·출처·링크·한국시간을 함께 보존하며 번역 실패 시 원문과 오류 상태를 표시합니다. 호재·악재 표시는 키워드 분류이며 실제 원인·영향을 확정하지 않습니다.</p></div>
-          <div class="news-controls"><select id="newsFilter" aria-label="뉴스 필터"><option value="all">전체 뉴스</option><option value="market">시장 영향 중요 뉴스</option><option value="coin">선택 코인 뉴스</option><option value="risk">악재 가능성</option><option value="opportunity">호재 가능성</option></select><input id="newsSearch" type="search" placeholder="코인·뉴스 키워드 검색" aria-label="뉴스 검색"><button id="newsRefresh" class="outline-btn">새로고침</button></div>
+          <div class="news-controls"><select id="newsFilter" aria-label="뉴스 필터"><option value="all">전체 뉴스</option><option value="market">시장 영향 중요 뉴스</option><option value="risk">악재 가능성</option><option value="opportunity">호재 가능성</option></select><input id="newsSearch" type="search" placeholder="코인·뉴스 키워드 검색" aria-label="뉴스 검색"><button id="newsRefresh" class="outline-btn">새로고침</button></div>
         </div>
         <p id="marketCommentary" class="market-commentary" role="status">Binance 실측 가격·상승/하락 비율·거래량·변동성 시황 조회 대기 · 사건 원인과 가격 전망은 생성하지 않습니다.</p>
         <div class="news-status" id="newsStatus">뉴스 제공처 연결 확인 중…</div>
@@ -162,7 +73,6 @@
           </div>
         </nav>
       </section>
-      <section class="lower-grid" data-workspace-route="alerts"><article class="panel notify-panel" id="notifyPanel"><div class="panel-header"><div><p class="panel-eyebrow">알림</p><h3>알림 설정</h3></div><span class="subtle-tag">켜기 · 끄기</span></div><div id="notifySettings" class="notify-settings"><p class="empty-small">알림 설정 불러오는 중…</p></div></article><article class="panel alerts-panel" id="alerts"><div class="panel-header"><div><p class="panel-eyebrow">이벤트 기록</p><h3>시그널 알림 기록</h3></div><span class="subtle-tag" id="alertCount">0건</span></div><div class="alert-list" id="alertsList"><div class="empty-state">아직 발생한 시그널 알림이 없습니다.<small>조건 충족 시 데스크톱 알림과 거래소 바로가기를 제공합니다. 브라우저가 꺼졌을 때는 텔레그램 알림을 설정하세요.</small></div></div></article><article class="panel setup-panel"><div class="panel-header"><div><p class="panel-eyebrow">시스템 · 위험</p><h3>시스템 상태 및 위험 관리</h3></div><span class="radar-icon">⌁</span></div><div class="system-line"><span>바이낸스 실시간 WS</span><strong id="sysWS">연결 중</strong></div><div class="system-line"><span>Binance USDT 무기한 상장</span><strong id="sysMarketUniverse">조회 중</strong></div><div class="system-line"><span>과거 캔들 REST</span><strong id="sysREST">연결 중</strong></div><div class="system-line"><span>자동 스캔</span><strong id="sysScan">실시간 이벤트 대기</strong></div><div class="system-line"><span>실시간 봉 데이터 마지막 수신</span><strong id="sysLiveHealth">수신 대기</strong></div><div class="system-line"><span>WS 구독 응답</span><strong id="sysSubscriptions">확인 중</strong></div><div class="system-line"><span>직전 보완 스캔 성공 / 실패</span><strong id="sysScanHealth">—</strong></div><div class="system-line"><span>실시간 가격 마지막 수신</span><strong id="sysQuoteAge">—</strong></div><div class="system-line"><span>거래 기록 저장</span><strong id="sysStorage">확인 중</strong></div><div class="system-line"><span>뉴스 마지막 확인</span><strong id="sysNewsAge">—</strong></div><div class="system-line"><span>분석 오류 예시</span><strong id="sysScanErrors">—</strong></div><div class="system-line"><span>텔레그램 알림</span><strong id="sysTG">미설정</strong></div><div class="system-divider"></div><p class="risk-title">분석·실매매 구분</p><div class="leverage-tags"><span>Binance 기술 분석</span><span>실매매 기본 OFF</span><span>켤 때마다 활성화</span></div><p class="risk-advice">실매매는 <code>.env</code>의 모드(OFF·TESTNET·LIVE)와 API 키가 있고, <b>실매매 화면에서 활성화</b>한 뒤에만 최종 신호에 주문을 냅니다. 모든 진입에는 거래소 손절이 함께 걸리고 1회·하루 손실 한도를 지킵니다. 자동 모의매매는 꺼져 있습니다(<code>PAPER_TRADING=on</code>으로 켬).</p><div class="info-bar">ⓘ ‘알림 켜기’로 PC 시스템 알림을 허용하고 ‘알림 테스트’로 확인하세요. 알림을 클릭하면 사이트의 해당 코인 차트를 열 수 있으며 Binance 버튼은 주문 없이 선물 페이지로 이동합니다. 브라우저를 닫았을 때는 Telegram 봇 설정이 필요합니다.</div></article></section>
       <section id="journal" class="panel journal-panel" data-workspace-route="journal">
         <div class="panel-header journal-heading"><div><p class="news-disclaimer">거래소 계좌를 읽지 않습니다. 직접 입력한 거래만 집계하며 미실현손익과 누락된 비용은 포함하지 않습니다.</p></div><a class="outline-btn" href="/api/journal/export" download>↓ 매매일지 CSV</a></div>
         <div class="journal-stats"><div><span>기록상 오늘 실현손익</span><strong id="journalToday">—</strong></div><div><span>기록상 이번 주 실현손익</span><strong id="journalWeek">—</strong></div><div><span>총 실현손익 / 승률</span><strong id="journalTotal">—</strong></div><div><span>열린 포지션 계획손절 합계</span><strong id="journalOpenRisk">—</strong></div></div>
@@ -189,18 +99,17 @@
           <div class="journal-history"><h4>패턴별 결과 · 개선 방향 <small>실매매 자동 기록 기준</small></h4><div id="journalInsights" class="table-scroll"></div><h4>거래 기록 <small>실매매는 자동 기록 · 수동 입력도 가능</small></h4><div id="journalList" class="journal-items"><div class="empty-small">기록된 매매가 없습니다.</div></div></div>
         </div>
       </section>
-      <footer class="footer"><span>SIGNAL LAB v5.8 · CRYPTO · TRADINGVIEW · LIVE SCAN · PATTERN LIFECYCLE · MANUAL JOURNAL · LIVE/TESTNET ORDERS</span><span>실주문은 실매매 화면에서 활성화한 경우에만 · 매매 위험은 사용자 부담</span></footer>
+      <footer class="footer"><span>SIGNAL LAB v5.8 · 실계좌 카피 · 테스트넷 · 뉴스 · 매매일지</span><span>실주문은 화면에서 활성화한 경우에만 · 매매 위험은 사용자 부담</span></footer>
     </div>
   </main>
 </div>
 <div class="toast-holder" id="toastHolder" aria-live="polite"></div>
 <dialog id="closeTradeDialog" class="dialog"><form method="dialog"><h3>기록된 포지션 종료</h3><p>실제 체결한 청산 가격과 추가 비용을 입력합니다. 수동 기록이며 거래소에 주문을 보내지 않습니다.</p><input id="closeTradePrice" type="number" min="0.000000000001" step="any" placeholder="실제 청산 체결가" required><input id="closeTradeFee" type="number" min="0" step="any" value="0" placeholder="추가 수수료·스프레드 비용 ($)"><input id="closeTradeFunding" type="number" step="any" value="0" placeholder="추가 펀딩 지급 ($, 수취는 음수)"><div id="closeTradeError" class="dialog-error"></div><div class="dialog-buttons"><button class="secondary-btn" value="cancel">취소</button><button class="primary-btn" type="button" id="closeTradeSave">기록상 종료</button></div></form></dialog>
 <script type="module" src="/workspace_nav.js"></script>
-<script type="module" src="/notify_settings.js"></script>
 <script type="module" src="/app.js"></script>
 <script type="module" src="/live_control.js"></script>
 <nav class="mobile-bottom-nav" aria-label="모바일 빠른 이동">
-<a href="#real"><span>●</span>실계좌</a><a href="#live"><span>◉</span>테스트넷</a><a href="#chartPanel"><span>▥</span>차트</a><a href="#alerts"><span>◷</span>알림</a><a href="#venues"><span>◌</span>시세</a>
+<a href="#real"><span>●</span>실계좌</a><a href="#live"><span>◉</span>테스트넷</a><a href="#news"><span>◈</span>뉴스</a><a href="#journal"><span>▦</span>일지</a>
 </nav>
 </body>
 </html>

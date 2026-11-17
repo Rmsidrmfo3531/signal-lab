@@ -6,7 +6,6 @@ import path from 'node:path';
 import {pullSeries,fetchTwelveSeries} from '../tradfi_feed.mjs';
 import {entryTiming} from '../public/trade_plan.js';
 import {describeScanFunnel} from '../scan_diagnostics.mjs';
-import {tradingViewInterval} from '../public/tradingview.js';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 
 test('disabled TradFi performs no 1H, 4H or shorter candle requests even with an old feed key',async()=>{
@@ -39,14 +38,11 @@ test('strict funnel does not require removed subhour confirmation field',()=>{
  assert.equal(Object.hasOwn(f,'confirmation15m'),false);
 });
 
-test('server and web page contain no 15 minute scanner dependency and expose >=1 hour chart options',()=>{
+test('server contains no 15 minute scanner dependency',()=>{
+ // The web chart (1h/4h/1d buttons, TradingView) was removed with the 대시보드 page (user 2026-11-17).
  const server=fs.readFileSync(path.join(root,'server.mjs'),'utf8'),ui=fs.readFileSync(path.join(root,'public/index.html'),'utf8');
  assert.doesNotMatch(server,/klines\(symbol,'15m'/);
  assert.doesNotMatch(server,/@kline_15m/);
  assert.doesNotMatch(server,/confirmed15m/);
  assert.doesNotMatch(ui,/data-time="15m"|value="15m"|15분봉 확인 보류/);
- assert.match(ui,/data-time="1h"/);assert.match(ui,/data-time="4h"/);assert.match(ui,/data-time="1d"/);
- assert.equal(tradingViewInterval('1h'),'60');
- assert.equal(tradingViewInterval('4h'),'240');
- assert.equal(tradingViewInterval('1d'),'D');
 });
