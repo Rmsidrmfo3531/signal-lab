@@ -158,7 +158,7 @@ test('page: copy and manual closes in one newest-first list with 수동 badges a
  assert.equal(st.copy.n,8);assert.equal(st.copy.net,4);assert.equal(st.manual.n,2,'PENDING not counted yet');assert.equal(st.manual.net,2);assert.equal(st.pending,1);
  assert.equal(st.all.n,10);assert.equal(st.all.net,6);assert.equal(st.all.wins,5);
  m.setCopyPage(0);let h=m.copyHTML(c);
- assert.match(h,/전체 11건 · 수동 3건/);assert.match(h,/1 \/ 2쪽/);
+ assert.match(h,/전체 11건<\/small>/,'the 수동 count is in the 카피 / 수동 line (user 2026-11-18: one place per fact)');assert.match(h,/1 \/ 2쪽/);
  assert.match(h,/종료<b >10건/);assert.match(h,/누적 손익<b class="paper-profit">\+\$6\.00/);assert.match(h,/승률<b >50%/);
  assert.match(h,/카피 <b class="paper-profit">\+\$4\.00<\/b> \(8건\) · 수동 <b class="paper-profit">\+\$2\.00<\/b> \(2건\) · <span class="muted">정산 중 1건/);
  const desk=h.slice(h.indexOf('<th>종료</th>'));

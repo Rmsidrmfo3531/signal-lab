@@ -7,7 +7,7 @@ import {LiveExecutor} from '../live_executor.mjs';
 import {liveConfig} from '../live_orders.mjs';
 import {livePositionView,liveClosedView,liveSummary,liveOverview,liveReasonKo,checkLiveLevels} from '../live_overview.mjs';
 import {priceFmt,priceDecimals} from '../public/price_format.js';
-import {positionCardHTML,closedCardHTML,summaryHTML,skippedHTML,modeBadgeHTML,liveRows,levelReason} from '../public/live_control.js';
+import {positionCardHTML,closedCardHTML,summaryHTML,skippedHTML,modeBadgeHTML,liveRows,levelReason,LIVE_RULE_KEYS} from '../public/live_control.js';
 
 const NOW=Date.parse('2026-11-12T03:00:00Z');
 const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'live-overview-'));
@@ -64,11 +64,16 @@ test('closed trades and summary: venue settlement, estimates marked, pending and
   skipped:[{at:NOW,symbol:'ETHUSDT',venue:'BINGX',reasons:['NOT_ARMED','MAX_OPEN_POSITIONS']}]},records,priceOf:()=>0.21,now:NOW});
  assert.equal(o.positions.length,1);assert.equal(o.closed.length,5);assert.deepEqual(o.skipped[0].reasonsKo,['활성화 안 됨','동시 포지션 최대']);
  assert.match(skippedHTML(o.skipped),/ETHUSDT<\/b> 활성화 안 됨 · 동시 포지션 최대/);
- assert.match(modeBadgeHTML({mode:'TESTNET',armed:true}),/TESTNET[\s\S]*모의 자금[\s\S]*활성화됨/);
- assert.match(modeBadgeHTML({mode:'LIVE',armed:false}),/LIVE[\s\S]*실제 돈[\s\S]*비활성/);assert.match(modeBadgeHTML({mode:'OFF'}),/OFF/);
+ // One place per fact (user 2026-11-18): the header shows the mode (and 긴급 정지); on / off is the 활성화 button's.
+ assert.match(modeBadgeHTML({mode:'TESTNET',armed:true}),/TESTNET[\s\S]*모의 자금/);assert.doesNotMatch(modeBadgeHTML({mode:'TESTNET',armed:true}),/활성화/);
+ assert.match(modeBadgeHTML({mode:'LIVE',armed:false}),/LIVE[\s\S]*실제 돈/);assert.doesNotMatch(modeBadgeHTML({mode:'LIVE',armed:false}),/비활성/);assert.match(modeBadgeHTML({mode:'OFF'}),/OFF/);
  assert.match(modeBadgeHTML({mode:'TESTNET',killSwitch:true}),/긴급 정지 중/);
  const rows=Object.fromEntries(liveRows({...o,balance:{venue:'BINGX',usd:1234.5,at:NOW,capUSD:400}}));
- assert.match(rows['잔고'],/\$1,234\.50 BingX 순자산 · 계산은 최대 \$400까지/);assert.match(rows['상태'],/활성화됨/);
+ assert.match(rows['잔고'],/\$1,234\.50 BingX 순자산 · 계산은 최대 \$400까지$/,'no second time stamp (the header has it)');
+ assert.equal(rows['상태'],undefined,'no 상태 row: the state is on the button');
+ const L=Object.fromEntries(liveRows({...o,limits:{riskProfile:'GROWTH',sizing:'BALANCE',maxLossPct:3,dailyMaxLossPct:9,maxOpen:8,maxPerDirection:4}}));
+ assert.equal(L['손실 한도'],undefined,'the risk profile row already has the loss limits');assert.doesNotMatch(L['위험 프로필'],/동시/,'동시 포지션 has its own row');
+ assert.ok(['전략','위험 프로필','수량','동시 포지션'].every(k=>LIVE_RULE_KEYS.includes(k)),'rules go behind 규칙 보기');
 });
 
 test('manual levels for a live position: checked against the current price, only changes returned, TP1 locked after it filled',()=>{

@@ -71,7 +71,7 @@ test('real-account page: one 보유 중 list from the exchange (user 2026-11-17 
  const rec=[{symbol:'BTCUSDT',direction:'LONG',adds:3,openedAt:Date.now()-90*60000,qty:0.002},{symbol:'SOLUSDT',direction:'SHORT',adds:0,openedAt:Date.now()}];
  const h=copyHTML({...base,positions:rec,venuePositions:vp,venuePositionsAt:Date.now(),venuePositionsError:null});
  assert.match(h,/보유 중 <small>2개 · 카피 1개 · 수동 1개<\/small>/);
- assert.match(h,/보유<b >2개<\/b>/,'side stat counts all positions');assert.doesNotMatch(h,/거래소 전체 포지션/,'one list only');
+ assert.doesNotMatch(h,/보유<b/,'the count is the list heading\'s only (user 2026-11-18)');assert.doesNotMatch(h,/미실현<b/,'the 미실현 합계 line has the total');assert.doesNotMatch(h,/거래소 전체 포지션/,'one list only');
  assert.equal((h.match(/class="copy-sub">보유 중/g)||[]).length,1);
  assert.match(h,/vp-badge copy">카피/);assert.match(h,/vp-badge manual">수동/);
  assert.match(h,/추매 3회 · 1시간 30분/);assert.match(h,/>3회<\/td>/);
@@ -86,4 +86,26 @@ test('real-account page: one 보유 중 list from the exchange (user 2026-11-17 
  assert.equal(venuePositionsHTML({...base,mode:'TESTNET',venuePositions:vp}),'','testnet copy: no section');
  const old=copyHTML({...base,positions:rec});assert.match(old,/보유 중 <small>2개<\/small>/,'no venue data: the copy list as before');
  assert.doesNotMatch(copyHTML({...base,venuePositions:[{...vp[1],symbol:'<img src=x>'}]}),/<img/,'escaped');
+});
+
+test('real-account page shows each fact once (user 2026-11-18 "활성화됨 부분이 2개"): one 활성화됨 next to its button, one time stamp, rules folded',async()=>{
+ const fs=await import('node:fs');
+ const {copyHTML}=await import('../public/live_control.js');
+ const html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
+ const real=html.match(/<section id="real"[\s\S]*?<\/section>/)[0];
+ assert.doesNotMatch(real,/realModeBadge|활성화됨/,'no second state chip in the page header');
+ const now=Date.now(),vp=[{symbol:'BTCUSDT',origin:'copy',direction:'LONG',size:1,avg:1,mark:1,unrealized:1,leverage:10,margin:1,marginMode:'CROSSED'}];
+ const c={mode:'LIVE',enabled:true,armed:true,killed:false,funds:{equity:100,available:80,at:now},positions:[{symbol:'BTCUSDT',direction:'LONG',qty:1,avg:1,leverage:10,openedAt:now}],closed:[],events:[],
+  venuePositions:vp,venuePositionsAt:now,venuePositionsError:null,daily:{at:now,since:now-86400000,byDay:{}}};
+ const h=copyHTML(c),text=h.replace(/<[^>]+>/g,' ');
+ assert.equal(text.split('활성화됨').length-1,1,'활성화됨 once');assert.match(h,/● 활성화됨<\/b>\s*<button[^>]*data-copy-disarm/,'next to its button');
+ assert.equal(text.split('실계좌').length-1,1,'the mode once');assert.doesNotMatch(text,/실제 돈으로 주문합니다/);
+ assert.equal((text.match(/3초마다 갱신/g)||[]).length,1);assert.doesNotMatch(text,/거래소 기준 · 조회 전용|잔고 \S+ \S+ \S+ 확인/,'one stamp per panel');
+ assert.match(h,/<details class="copy-rules-fold"><summary>규칙 보기<\/summary><p class="copy-rules">/);
+ const off=copyHTML({...c,armed:false}).replace(/<[^>]+>/g,' ');assert.equal(off.split('비활성').length-1,1,'off: ○ 비활성 once, next to the 활성화하기 button');
+ assert.match(copyHTML({...c,armed:false}),/data-copy-arm/);
+ const killed=copyHTML({...c,killed:true,ledgerLossPct:50});assert.doesNotMatch(killed,/copy-state/,'stopped: the 정지 line (with 다시 시작) says it once');assert.match(killed,/data-copy-resume/);
+ // Testnet copy follows the testnet switch: no state, chip, balance or stamp of its own.
+ const tn=copyHTML({...c,mode:'TESTNET',followArmed:true});assert.doesNotMatch(tn,/copy-state|copy-chip|>잔고<|3초마다/);assert.match(tn,/사용 가능/);
+ assert.match(copyHTML({...c,mode:'TESTNET',enabled:false}),/카피 꺼짐/);
 });

@@ -115,7 +115,8 @@ test('totals over both strategies and the 신호 / 단타 breakdown line; budget
  assert.match(h,/신호 <b class="paper-profit">\+\$6\.00<\/b> \(2건\) · 단타 <b class="paper-profit">\+\$2\.00<\/b> \(3건\)/);
  assert.equal(testnetStats({records,mode:null}).signal.trades,0,'no signal strategy on the testnet: scalp only');
  const line=testnetBudgetHTML({armed:true,signal:{armed:true},scalp:{armed:true},budget:{dailyLossPct:15,lossUSD:12,limitUSD:1500,openRiskUSD:40.5,marginUSD:100,marginCapUSD:3000,marginCapPct:30}});
- assert.match(line,/● 활성화/);assert.match(line,/오늘 손실 <b class="paper-loss">−\$12\.00<\/b> \/ 한도 <b>\$1,500\.00<\/b> \(15%\) · 열린 위험 <b>\$40\.50<\/b>/);
+ assert.doesNotMatch(line,/활성화|테스트넷/,'on / off is the button\'s, the mode the header\'s (user 2026-11-18)');
+ assert.match(testnetBudgetHTML({armed:false,partial:true,signal:{armed:true},scalp:{armed:false},budget:{dailyLossPct:15}}),/일부 활성화[\s\S]*신호 ● · 단타 ○/,'a part-on switch says which');assert.match(line,/오늘 손실 <b class="paper-loss">−\$12\.00<\/b> \/ 한도 <b>\$1,500\.00<\/b> \(15%\) · 열린 위험 <b>\$40\.50<\/b>/);
  assert.match(testnetBudgetHTML({armed:false,partial:false,budget:{stopped:true,dailyLossPct:15}}),/오늘 정지/);
  assert.match(positionCardHTML({symbol:'ETHUSDT',direction:'LONG',status:'OPEN',venue:'BINGX',targets:[]},{badge:TN_BADGE.signal}),/vp-badge tn-signal">신호/);
  assert.doesNotMatch(positionCardHTML({symbol:'ETHUSDT',direction:'LONG',status:'OPEN',venue:'BINGX',targets:[]}),/tn-signal/,'LIVE cards unchanged');
