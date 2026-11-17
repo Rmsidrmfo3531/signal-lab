@@ -63,22 +63,27 @@ test('reader: 3 s cache, one request at a time, last good list kept on error, ne
  assert.doesNotMatch(JSON.stringify(e),/<b>/);
 });
 
-test('real-account page: 거래소 전체 포지션 with 카피 / 수동 badges, totals, empty state, failure note',async()=>{
+test('real-account page: one 보유 중 list from the exchange (user 2026-11-17 23:19), 카피 / 수동 badges, copy adds and hold time, totals, empty state, failure note',async()=>{
  const {copyHTML,venuePositionsHTML}=await import('../public/live_control.js');
  const base={mode:'LIVE',enabled:true,armed:true,positions:[],closed:[{symbol:'Z',direction:'LONG',netUSD:1,openedAt:1,closedAt:2}],events:[]};
  const vp=[{symbol:'BTCUSDT',origin:'copy',direction:'LONG',size:0.002,avg:50000,mark:51000,unrealized:2,roePct:20,leverage:10,margin:10,liquidation:45000,marginMode:'CROSSED'},
   {symbol:'ETHUSDT',origin:'manual',direction:'SHORT',size:0.5,avg:3000,mark:2900,unrealized:50,roePct:16.7,leverage:5,margin:310,liquidation:null,marginMode:'ISOLATED'}];
- const h=copyHTML({...base,venuePositions:vp,venuePositionsAt:Date.now(),venuePositionsError:null});
- assert.match(h,/거래소 전체 포지션 <small>2개 · 수동 1개<\/small>/);
+ const rec=[{symbol:'BTCUSDT',direction:'LONG',adds:3,openedAt:Date.now()-90*60000,qty:0.002},{symbol:'SOLUSDT',direction:'SHORT',adds:0,openedAt:Date.now()}];
+ const h=copyHTML({...base,positions:rec,venuePositions:vp,venuePositionsAt:Date.now(),venuePositionsError:null});
+ assert.match(h,/보유 중 <small>2개 · 카피 1개 · 수동 1개<\/small>/);
+ assert.match(h,/보유<b >2개<\/b>/,'side stat counts all positions');assert.doesNotMatch(h,/거래소 전체 포지션/,'one list only');
+ assert.equal((h.match(/class="copy-sub">보유 중/g)||[]).length,1);
  assert.match(h,/vp-badge copy">카피/);assert.match(h,/vp-badge manual">수동/);
+ assert.match(h,/추매 3회 · 1시간 30분/);assert.match(h,/>3회<\/td>/);
+ assert.match(h,/거래소 확인 중인 카피 기록 1개: <b>SOLUSDT<\/b>/);
  assert.match(h,/미실현 합계 <b class="paper-profit">\+\$52\.00<\/b> · 수동만 <b class="paper-profit">\+\$50\.00/);
- for(const th of ['종목','구분','방향','배율','수량','평단','현재가','증거금','미실현','수익률','청산가'])assert.ok(h.includes(`>${th}</th>`),th);
- assert.ok(h.indexOf('보유 중')<h.indexOf('거래소 전체 포지션')&&h.indexOf('거래소 전체 포지션')<h.indexOf('최근 종료'),'between 보유 중 and 최근 종료');
- assert.match(h,/copy-list only-mob/);assert.match(h,/격리/);
- const empty=copyHTML({...base,venuePositions:[],venuePositionsAt:Date.now()});assert.match(empty,/거래소에 열린 포지션이 없습니다\./);assert.match(empty,/0개 · 수동 0개/);
+ for(const th of ['종목','구분','방향','배율','수량','평단','현재가','증거금','추매','보유','미실현','수익률','청산가'])assert.ok(h.includes(`>${th}</th>`),th);
+ assert.ok(h.indexOf('보유 중')<h.indexOf('최근 종료'));assert.match(h,/copy-list only-mob/);assert.match(h,/격리/);
+ const empty=copyHTML({...base,venuePositions:[],venuePositionsAt:Date.now()});assert.match(empty,/보유 중인 포지션이 없습니다/);assert.match(empty,/0개 · 카피 0개 · 수동 0개/);
  const failed=venuePositionsHTML({...base,venuePositions:vp,venuePositionsAt:Date.now()-5000,venuePositionsError:'HTTP_429'});assert.match(failed,/갱신 실패/);assert.match(failed,/BTCUSDT/);
  assert.match(venuePositionsHTML({...base,venuePositions:null,venuePositionsError:'HTTP_500'}),/갱신 실패[\s\S]*아직 읽지 못했습니다/);
  assert.equal(venuePositionsHTML(base),'','no venue data (no real-account client): no section');
  assert.equal(venuePositionsHTML({...base,mode:'TESTNET',venuePositions:vp}),'','testnet copy: no section');
+ const old=copyHTML({...base,positions:rec});assert.match(old,/보유 중 <small>2개<\/small>/,'no venue data: the copy list as before');
  assert.doesNotMatch(copyHTML({...base,venuePositions:[{...vp[1],symbol:'<img src=x>'}]}),/<img/,'escaped');
 });
