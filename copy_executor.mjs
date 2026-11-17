@@ -98,11 +98,11 @@ export class CopyExecutor{
  disarm(){this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
  #save(){if(!this.file)return;this.store.closed=this.store.closed.slice(-MAX_CLOSED);this.store.events=this.store.events.slice(-MAX_EVENTS);this.store.seen=this.store.seen.slice(-MAX_SEEN);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...this.store})}
- #event(type,detail={}){const e={type,at:this.now(),mode:this.config.mode,...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
+ #event(type,detail={}){const cur=this.curMsg,e={type,at:this.now(),mode:this.config.mode,...(detail.symbol&&cur?.symbol===detail.symbol&&cur.direction?{direction:cur.direction}:{}),...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
  status(){return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
-  closed:this.store.closed.slice(-200).reverse(),closedTotal:this.store.closed.length,events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
+  closed:this.store.closed.slice(-200).reverse(),closedTotal:this.store.closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
 
  /** status() with fresh numbers for the screen (user 2026-11-14: the real-account page did not update):
   * open positions' PnL from the venue's last price (cached tickers, ~20 s), the balance re-read when
@@ -124,6 +124,7 @@ export class CopyExecutor{
   const m=parseCopyMessage(text);
   this.store.seen.push(key);
   if(!m){this.#save();return {ok:true,ignored:true}}
+  this.curMsg=m; // events of this message carry its direction (copy page failure list)
   const at=num(date)??this.now();
   if(m.kind==='MONITOR_START'){this.store.monitorStartAt=at;this.#event('MONITOR_START');this.#save();return {ok:true}}
   // Messages are retried for minutes when the server restarts, so they can arrive out of order: one older

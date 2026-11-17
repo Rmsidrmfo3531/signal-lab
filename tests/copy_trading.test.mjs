@@ -487,3 +487,11 @@ test('copy page: recent closes 10 per page with page buttons and the full count 
  m.setCopyPage(9);h=m.copyHTML(c);assert.match(h,/3 \/ 3쪽/,'past the end: last page');assert.ok(h.includes('>S22<')&&!h.includes('>S0<'));
  m.setCopyPage(0);assert.doesNotMatch(m.copyHTML({...c,closed:c.closed.slice(0,5),closedTotal:5}),/copy-pager/);
 });
+
+test('copy page: entry failures below the closes with coin, long/short and reason, 10 per page (user 2026-11-17)',async()=>{
+ const m=await import('../public/live_control.js');m.setCopyFailPage(0);
+ const ev=Array.from({length:14},(_,i)=>({type:'SKIPPED',at:Date.now()-i*1e5,symbol:'C'+i,direction:i%2?'SHORT':'LONG',reason:'MARGIN_SHORT'}));
+ const h=m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev});
+ assert.match(h,/진입 실패·건너뜀/);assert.match(h,/전체 14건/);assert.match(h,/1 \/ 2쪽/);assert.ok(h.includes('>C9<')&&!h.includes('>C10<'));assert.match(h,/<th>이유<\/th>/);
+ m.setCopyFailPage(1);assert.ok(m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev}).includes('>C13<'));m.setCopyFailPage(0);
+});
