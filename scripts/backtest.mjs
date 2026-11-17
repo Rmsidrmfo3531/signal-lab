@@ -44,6 +44,8 @@ export function parseArgs(argv){
   else if(key==='--skip-top'){out.skipTop=Math.max(0,Math.min(200,Math.round(Number(value))||0));i++}
   else if(key==='--scalp-only'){out.scalpOnly=true}
   // --exec: the testnet scalp executor's settings (move x2 = 5%, TP 38.2/50/61.8%, stop ATR x0.25, volume x3).
+  // --scalp-min-rr X: TP1 net RR floor of the 5m scalp (default 1, the testnet executor uses SCALP_MIN_NET_RR).
+  else if(key==='--scalp-min-rr'){out.scalpMinRR=Math.max(.1,Math.min(5,Number(value)||1));i++}
   else if(key==='--exec'){out.execSettings=true;if(!out.trendFlag)out.trendFilter=false} // the executor records the 4H trend, never filters
   else if(key==='--btc-long-filter'){if(!['up','notdown','off'].includes(value))throw Error('--btc-long-filter는 up, notdown, off 중 하나입니다');out.btcLongFilter=value==='off'?null:value;i++} // default 'up' (as the server); 'off' disables
   else if(key==='--min-box-atr'){out.minBoxWidthAtr=Math.max(0,Number(value)||0);i++}
@@ -131,7 +133,7 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  const lines=[],date=t=>new Date(t).toISOString().slice(0,16).replace('T',' ')+' UTC';
  lines.push('Signal Lab 백테스트 결과','='.repeat(60),`기간: ${date(startAt)} ~ ${date(endAt)} (${args.days}일)`,`종목: ${args.symbols.join(', ')}`,
   `비용 가정: 시장가 수수료 0.06% + 슬리피지 0.02% (진입·청산 매번), 1H·단타 고정 위험 $6/거래`,`TP1 전 매물대 차단 기준: POC의 ${Math.round(args.obstacle*100)}% 이상 · 1H 패턴: ${args.allPatterns?'전체':'박스권 상단 돌파·상승 추세선 이탈 숏·5/20 데드크로스 숏(--all-patterns로 전체)'} · 단타 4H 추세 필터 ${args.trendFilter?'켬':'끔'}`,
-  ...(args.execSettings?[`단타 설정: 테스트넷 실행기와 같음 (급변 5%·되돌림 38.2/50/61.8%·손절 ATR×0.25·거래량 3배, 4H 추세 ${args.trendFilter?'필터 켬':'기록만'})`]:[]),`체결 가정: 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결`,'');
+  ...(args.execSettings?[`단타 설정: 테스트넷 실행기와 같음 (급변 5%·되돌림 38.2/50/61.8%·손절 ATR×0.25·거래량 3배, 4H 추세 ${args.trendFilter?'필터 켬':'기록만'}, 1차 목표 손익비 ${args.scalpMinRR??1} 이상)`]:[]),`체결 가정: 신호 봉 마감 직후 5분봉 시가 진입, 같은 5분봉에서 손절·익절이 모두 닿으면 손절 우선, 갭은 시가 체결`,'');
  lines.push('[1] 1시간봉 전략 (현재 기준: 100점 중 90점 이상)','-'.repeat(60));
  const live=all.filter(t=>t.strategy==='HOURLY'&&t.book==='LIVE');
  lines.push(row('전체',summarize(live)));
@@ -169,6 +171,8 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  const tk=t=>t.trend4h==='range'?'range':t.withTrend==null?'unknown':t.withTrend?'with':'against',TK={with:'4H 추세 순',against:'4H 역추세',range:'4H 횡보',unknown:'4H 추세 없음'};
  for(const k of ['with','against','range','unknown']){const l=fixed.filter(t=>tk(t)===k);if(!l.length)continue;lines.push(row('  '+TK[k],summarize(l)));
   for(const d of ['LONG','SHORT']){const m=l.filter(t=>t.direction===d);if(m.length)lines.push(row('    '+(d==='LONG'?'롱':'숏'),summarize(m)))}}
+ // TP1 net RR band (user 2026-11-17 testnet floor 0.7): is the 0.7-1 band worth taking?
+ for(const [label,f] of [['  1차 목표 손익비 1 이상',t=>t.netRR>=1],['  1차 목표 손익비 1 미만',t=>t.netRR!=null&&t.netRR<1]]){const l=fixed.filter(f);if(l.length)lines.push(row(label,summarize(l)))}
  lines.push(`신호 흐름: 5분봉 ${scalpFunnel.bars}개 → 감지 ${scalpFunnel.signals} → 손익비 미달 제외 ${scalpFunnel.qualityRejected} · 진입 시 무효 ${scalpFunnel.entrySkipped}`);
  lines.push('','[3-1] 단타 시간봉별 비교 (1분봉은 최근 '+args.scalp1mDays+'일만)','-'.repeat(60));
  const byTf=iv=>all.filter(t=>(t.strategy==='SCALP'||t.strategy==='SCALP_TF')&&(t.interval??'5m')===iv);
@@ -198,7 +202,7 @@ export function buildReport({args,startAt,endAt,results,hourlyFunnel,scalpFunnel
  return lines.join('\n');
 }
 function toCSV(trades){
- const cols=['strategy','book','symbol','direction','pattern','score','signalAt','entryAt','exitAt','entryFill','averageEntry','stop','exitReason','tp','addsFilled','netUSD','R','feesUSD','holdMs','pnlPctOfBalance','movePct','trend4h','withTrend'];
+ const cols=['strategy','book','symbol','direction','pattern','score','signalAt','entryAt','exitAt','entryFill','averageEntry','stop','exitReason','tp','addsFilled','netUSD','R','feesUSD','holdMs','pnlPctOfBalance','movePct','trend4h','withTrend','netRR'];
  return '﻿'+cols.join(',')+'\n'+trades.map(t=>cols.map(k=>{let v=t[k]??'';if(/At$/.test(k)&&v)v=new Date(v).toISOString();return '"'+String(v).replaceAll('"','""')+'"'}).join(',')).join('\n');
 }
 
@@ -238,7 +242,7 @@ export async function main(argv=process.argv.slice(2)){
   if(hourly.funnel.split){hourlyFunnel.split??={planned:0,fallback:0,sources:{}};hourlyFunnel.split.planned+=hourly.funnel.split.planned;hourlyFunnel.split.fallback+=hourly.funnel.split.fallback;
    for(const [k,v] of Object.entries(hourly.funnel.split.sources))hourlyFunnel.split.sources[k]=(hourlyFunnel.split.sources[k]||0)+v}
   const dcaArgs={leverage:args.leverage,unitPct:args.unitPct,maxLossPct:args.maxLossPct,maxAdds:args.maxAdds,zoneDays:args.zoneDays};
-  const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,settings:args.execSettings?SCALP_EXEC_SETTINGS:{},filters,startAt,balanceUSD:args.balance,dca:dcaArgs});
+  const scalp=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,settings:args.execSettings?SCALP_EXEC_SETTINGS:{},...(args.scalpMinRR?{minNetRR:args.scalpMinRR}:{}),filters,startAt,balanceUSD:args.balance,dca:dcaArgs});
   // Other scalp timeframes: 15m over the whole period, 1m over the last --scalp-1m-days days (1m data is large).
   const scalp15=backtestScalp({symbol,m5,m15,h4,trendFilter:args.trendFilter,filters,startAt,balanceUSD:args.balance,dca:dcaArgs,interval:'15m',bars:m15}).trades;
   let scalp1=[];

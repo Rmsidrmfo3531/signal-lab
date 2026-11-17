@@ -83,7 +83,7 @@ test('scalp replay: a crash + hammer opens a fixed-risk trade and a zone scale-i
  const m15=[];for(let i=0;i+3<=rows.length;i+=3){const b=rows.slice(i,i+3);m15.push([b[0][0],b[0][1],String(Math.max(...b.map(x=>+x[2]))),String(Math.min(...b.map(x=>+x[3]))),b[2][4],String(b.reduce((a,x)=>a+ +x[5],0)),b[2][6]])}
  const r=backtestScalp({symbol:'SOLUSDT',m5:rows,m15,filters:{tickSize:.0001,stepSize:.01,minQty:.01,minNotional:1},startAt:start+864*M5});
  assert.ok(r.funnel.signals>=1,JSON.stringify(r.funnel));
- const fixed=r.trades.find(t=>t.book==='FIXED');assert.ok(fixed,'fixed-risk scalp trade');assert.ok(fixed.tp>=1,'the rebound reaches TP1');
+ const fixed=r.trades.find(t=>t.book==='FIXED');assert.ok(fixed,'fixed-risk scalp trade');assert.ok(fixed.tp>=1,'the rebound reaches TP1');assert.ok(fixed.netRR>=1,'TP1 net RR is kept on the trade');
  const dca=r.trades.find(t=>t.book==='DCA');assert.ok(dca||Object.keys(r.funnel.dcaRejected).length,'scale-in trade or a recorded reason');
  if(dca){assert.ok(Number.isFinite(dca.pnlPctOfBalance));assert.equal(r.finalBalance,1000+dca.netUSD)}
  // 4H trend tag (user 2026-11-16): measured with h4 even without the filter; the filter alone blocks.

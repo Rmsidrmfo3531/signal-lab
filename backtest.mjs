@@ -191,7 +191,7 @@ const closes=h4.map(r=>Number(r[4]));
   const estimate={eligible:true,tickSize:filters.tickSize,quantityStep:filters.stepSize,entryBasis:entry,quantity,minNotional:filters.minNotional,minQuantity:filters.minQty};
   const quality=buildScalpPlan({signal:det,estimate,costs,minNetRR});
   if(!quality.ok||!positive(quantity)){funnel.qualityRejected++;continue}
-  const base={strategy:'SCALP',interval,symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct,trend4h,withTrend};
+  const base={strategy:'SCALP',interval,symbol,direction:det.direction,pattern:det.pattern,signalAt:closeAt,movePct:det.evidence.movePct,trend4h,withTrend,netRR:quality.estimatedNetRR};
   if(books.includes('FIXED')&&k>busy.FIXED){
    const t=simulateTrade({direction:det.direction,m5:m5c,startIdx:k,entryRef:entry,stop:det.stop,targets:quality.targets,quantity,maxHoldMs,costs});
    if(t){busy.FIXED=t.endIdx;trades.push({...base,book:'FIXED',stop:det.stop,targets:quality.targets,...t})}
