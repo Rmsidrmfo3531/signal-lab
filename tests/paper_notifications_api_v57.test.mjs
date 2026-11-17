@@ -49,14 +49,14 @@ test('paper notification API: get/toggle/test/store history without synthetic po
   // 알림 설정: one endpoint for every server-side switch; the page offers all of them.
   let all=await get('/api/notifications/settings');
   assert.equal(all.telegramSignals,false,'scanner Telegram alerts are off by default (live alerts stay on)');assert.equal(all.telegramLive,true);assert.equal(all.telegramPaper,false);assert.equal(all.windowsPaper,true);
-  assert.equal(all.paperTrading,false,'the settings page hides the paper switches while paper trading is off');
+  assert.equal(all.paperTrading,false,'paper trading is off by default');
   assert.equal((await post('/api/notifications/settings',{telegramSignals:'off'})).status,400);
   all=(await post('/api/notifications/settings',{telegramSignals:false,telegramPaper:true})).body;
   assert.equal(all.telegramSignals,false);assert.equal(all.telegramPaper,true);
   assert.equal((await get('/api/paper/notifications')).telegram.enabled,true,'paper page sees the same switch');
-  assert.match(html,/id="notifySettings"/);const panel=await (await request(base+'/notify_settings.js')).text();
-  for(const key of ['telegramSignals','telegramPaper','windowsPaper','signalScreen','paperScreen','sound'])assert.match(panel,new RegExp(key));
-  assert.match(panel,/paper:true/);assert.match(panel,/server\?\.paperTrading===true/);
+  // The 알림 · 시스템 settings panel left the dashboard (user 2026-11-17); the saved server switches stay in force.
+  assert.doesNotMatch(html,/id="notifySettings"/);const panel=await (await request(base+'/notify_settings.js')).text();
+  for(const key of ['liveScreen','sound'])assert.match(panel,new RegExp(key));
   await post('/api/paper/notifications/settings',{enabled:false});
   await stopChild(child,{killTree:true});
   launch();let restored;

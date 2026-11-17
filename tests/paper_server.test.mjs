@@ -49,7 +49,7 @@ test('paper off by default: stored paper history stays readable (API, CSV) and t
   const csv=await(await request(`http://127.0.0.1:${port}/api/paper/export`)).text();
   assert.match(csv,/BTCUSDT/);assert.match(csv,/realizedPnLUSD/);
   const html=await(await request(`http://127.0.0.1:${port}/`)).text();
-  assert.match(html,/id="live"/);assert.match(html,/id="liveModeBadge"/);assert.match(html,/id="scanPageControls"/);assert.ok(html.indexOf('id="scanner"')<html.indexOf('id="live"'));
+  assert.match(html,/id="live"/);assert.match(html,/id="liveModeBadge"/);assert.doesNotMatch(html,/id="scanner"|id="scanPageControls"/,'scanner page removed (user 2026-11-17)');
   assert.ok(!html.includes('id="paper"')&&!html.includes('id="tradfi"'));
   assert.match(html,/href="#live"/);assert.doesNotMatch(html,/href="#paper"/);
   const gone=await request(`http://127.0.0.1:${port}/paper_ui.js`);assert.equal(gone.status,404);await gone.arrayBuffer();

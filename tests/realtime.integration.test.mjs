@@ -43,10 +43,9 @@ test('real-time ticker, confirmed kline event, auto scan and manual scan work en
    assert.equal(result.status,202);
    assert.equal((await result.json()).accepted,true);
    const page=await (await request(`http://127.0.0.1:${port}/`)).text();
-   assert.match(page,/id="runScanNow"/);
-   assert.match(page,/id="sysLiveHealth"/);
+   // The scanner/system screens left the dashboard (user 2026-11-17); the server scan above and /api/scan keep working.
+   assert.doesNotMatch(page,/id="runScanNow"|id="sysLiveHealth"|id="diagReasons"/);
    assert.doesNotMatch(page,/id="scanRecentList"/);
-   assert.match(page,/id="diagReasons"/);
    assert.doesNotMatch(page,/id="structureList"/);
    assert.doesNotMatch(page,/id="historyList"/);
    const funnel=await(await request(`http://127.0.0.1:${port}/api/scan/diagnostics`)).json();
