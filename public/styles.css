@@ -450,3 +450,6 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .vp-total b{font-weight:700}
 .vp-table th,.vp-table td{padding-left:7px;padding-right:7px}
 .vp-table td small.muted{font-size:10.5px}
+/* Copy + manual totals (user 2026-11-17 "수동 매매도 기록은 똑같이"): the split under the stats. */
+.copy-split{margin:-2px 0 8px;font-size:11.5px;color:var(--dim);overflow-wrap:anywhere}.copy-split b{font-weight:700}
+.copy-table td .vp-badge{margin-left:4px;vertical-align:1px}

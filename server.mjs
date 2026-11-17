@@ -53,6 +53,7 @@ import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
 import {liveOverview,checkLiveLevels} from './live_overview.mjs';
 import {createVenuePositionsReader} from './venue_positions.mjs';
+import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
 
@@ -279,7 +280,12 @@ const copyClient=COPY.mode==='LIVE'&&process.env.BINGX_API_KEY&&process.env.BING
 // most every 3 s (venue_positions.mjs), shown under the copy positions as 카피 / 수동. Real-money copy only.
 const venuePositionsReader=COPY.mode==='LIVE'&&copyClient?.mode==='LIVE'&&typeof copyClient.positions==='function'
  ?createVenuePositionsReader({read:()=>copyClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
-async function copyLiveStatus(){const s=await copyTrader.liveStatus();return venuePositionsReader?{...s,...await venuePositionsReader.snapshot(s.positions)}:s}
+// Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
+// same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
+async function copyLiveStatus(){const s=await copyTrader.liveStatus();if(!venuePositionsReader)return s;
+ const v=await venuePositionsReader.snapshot(s.positions);if(!manualLedger)return {...s,...v};
+ try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
+ return {...s,...v,manual:manualLedger.status()}}
 const bingxFunds=data=>{const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>x?.asset==='USDT')??list[0],equity=Number(u?.equity??u?.balance)||0,free=Number(u?.availableMargin);
  return {equity,available:Number.isFinite(free)?Math.max(0,free):equity}};
 copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',
@@ -305,6 +311,13 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode===
  balance:async()=>{if(COPY.mode==='LIVE')return bingxFunds(await copyClient.balance());const f=await live.accountFunds('BINGX');const cap=LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
   const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
+// Read-only: never orders, its own file (manual-trades-live.json), never the copy ledger. The copy loss limit, the copy
+// margin limits and every copy decision stay computed from the copy ledger only (copy_executor.mjs); manual trades
+// join only the page totals and the hourly report. Polled every 15 s on its own (shared 3 s cache with the page).
+const manualLedger=venuePositionsReader?new ManualLedger({directory:storage.dir,client:copyClient,
+ copyRecords:()=>[...Object.values(copyTrader.store.positions),...copyTrader.store.closed],log:(...a)=>console.log(...a)}):null;
+if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(Object.values(copyTrader.store.positions)));await manualLedger.settle()}
+ catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
 // 되돌림 단타 (5m dip-rebound LONG) on the BingX TESTNET only (scalp_executor.mjs, user 2026-11-14 22:29):
 // its own ledger (scalp-store.json), SCALP_EXEC_MODE=OFF|TESTNET (LIVE refused), disarmed after every start.
 const SCALP_EXEC=scalpExecConfig(process.env);
@@ -632,7 +645,7 @@ function reportLedgers(){
  const read=f=>{try{const file=path.join(storage.dir,f);return fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):null}catch{return null}};
  const equity=mode=>COPY.mode===mode?copyTrader?.funds?.equity??null:null;
  const pack=(f,mode)=>{const store=read(f);return store?{store,equityUSD:mode?equity(mode):null}:null};
- return {copyLive:pack('copy-store-live.json','LIVE'),copyTestnet:pack('copy-store.json','TESTNET'),scalp:pack('scalp-store.json',null)};
+ return {copyLive:pack('copy-store-live.json','LIVE'),manualLive:pack(MANUAL_LEDGER_FILE,'LIVE'),copyTestnet:pack('copy-store.json','TESTNET'),scalp:pack('scalp-store.json',null)};
 }
 // Exact results from BingX itself (user 2026-11-17 "수익률이 얼마인지 정확하게"): income + balance of the real
 // account (copy) and the testnet account, since the dates below (KST); read-only.
