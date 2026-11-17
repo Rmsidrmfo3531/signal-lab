@@ -81,7 +81,11 @@ export class BingXTradeClient{
  openOrders(symbol){return this.request('GET','/openApi/swap/v2/trade/openOrders',{symbol})}
  getOrder(symbol,{orderId,clientOrderId}){return this.request('GET','/openApi/swap/v2/trade/order',{symbol,...(orderId?{orderId}:{clientOrderId})})}
  cancelOrder(symbol,orderId){return this.request('DELETE','/openApi/swap/v2/trade/order',{symbol,orderId})}
+ // Read only (copy: why a position vanished, review 2026-11-17): liquidation / ADL orders, and the order history.
+ forceOrders({symbol,autoCloseType,startTime,endTime,limit=50}={}){return this.request('GET','/openApi/swap/v2/trade/forceOrders',defined({symbol,autoCloseType,startTime,endTime,limit}))}
+ allOrders({symbol,startTime,endTime,limit=500}={}){return this.request('GET','/openApi/swap/v2/trade/allOrders',defined({symbol,startTime,endTime,limit}))}
 }
+const defined=o=>Object.fromEntries(Object.entries(o).filter(([,v])=>v!==undefined&&v!==null&&v!==''));
 
 // ---- Gate.io -------------------------------------------------------------------
 /** Official SDK (gen_sign): METHOD\nPATH\nQUERY\nhex(SHA512(body))\nTIMESTAMP,

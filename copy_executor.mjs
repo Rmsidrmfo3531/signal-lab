@@ -34,6 +34,39 @@ const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const orderOf=d=>d?.order??d;
 const venueSymbolOf=s=>s.replace(/USDT$/,'-USDT');
 
+// Closes that were not ours (user decision 2026-11-17 "2,3번 둘다 적용시켜줘", fail-closed after review): only a
+// close CONFIRMED as manual lets the trader's next add (late entry) or entry card be followed again. Every
+// closeReason this file produces:
+//  TRADER_CLOSE, TRADER_CUT_ALL   followed the trader (never block anyway)
+//  COPY_LOSS_LIMIT                ledger loss cap (#emergency from reconcile)            ours: blocks
+//  LOSS_CAP_REACHED, NO_STOP      emergency closes from #protect                          ours: blocks
+//  ZONE_BREAK_VOLUME              our volume-zone exit (#emergency from reconcile)        ours: blocks
+//  LIQUIDATION, ADL               BingX force order found for the window (#goneEvidence)  blocks
+//  STOP_OR_EXTERNAL               reconcile found it gone twice in a row                  see below
+//  POSITION_GONE                  gone when a card came (read twice, ~1 s apart)          see below
+// The last two count as external only when (a) no close of ours was under way (p.closing), (b) the position
+// carried no exchange stop of ours (no stopOrderId, no stop price — always so with COPY_STOPS off, the
+// default), and (c) closeEvidence.kind is MANUAL_CLOSE: BingX showed no liquidation / ADL in the window and its
+// order history showed a FILLED closing order whose clientOrderId is not ours ('cp…'). No such order, a
+// failed query, or any other or unknown reason: ours / unconfirmed, keeps blocking until the trader closes.
+export const EXTERNAL_CLOSE_REASONS=Object.freeze(['STOP_OR_EXTERNAL','POSITION_GONE']);
+export function externalClose(p){return Boolean(p)&&!p.closing&&EXTERNAL_CLOSE_REASONS.includes(p.closeReason)&&!p.stopOrderId&&!(Number(p.stop)>0)&&p.closeEvidence?.kind==='MANUAL_CLOSE'}
+/** The label key for a blocking close: EXTERNAL_UNCONFIRMED when it looked external but was not confirmed. */
+export function closeLabelKey(p){return EXTERNAL_CLOSE_REASONS.includes(p?.closeReason)&&p?.closeEvidence?.kind==='UNCONFIRMED'?'EXTERNAL_UNCONFIRMED':p?.closeReason??null}
+const CLOSE_KO={EXTERNAL_UNCONFIRMED:'바깥 청산 확인 불가',LIQUIDATION:'강제청산',ADL:'자동 감축(ADL)',COPY_LOSS_LIMIT:'카피 손실 한도',NO_STOP:'보호 손절 실패',LOSS_CAP_REACHED:'손실 한도 도달',ZONE_BREAK_VOLUME:'매물대 이탈',STOP_OR_EXTERNAL:'보호 손절 또는 외부 청산'};
+// forceOrders / allOrders answers: an array, or {orders: array | null}. Any other shape throws (review 2026-11-17:
+// an unknown shape must not read as "no liquidation"), so the close stays UNCONFIRMED and blocks.
+function rowsOf(d){
+ if(Array.isArray(d))return d;
+ if(d&&typeof d==='object'&&Object.hasOwn(d,'orders')&&(Array.isArray(d.orders)||d.orders===null))return d.orders||[];
+ throw Object.assign(Error('UNEXPECTED_HISTORY_SHAPE'),{code:'UNEXPECTED_HISTORY_SHAPE'});
+}
+// A request that got no answer from the venue (user 2026-11-17 "3번"): connection failure or timeout. A venue
+// error code (VENUE_ERROR_*, HTTP_*) is an answer and is never retried by #send.
+export function noVenueAnswer(e){return ['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET'].includes(e?.code)||['AbortError','TimeoutError'].includes(e?.name)}
+// BingX "order does not exist" for a lookup by clientOrderId (the only answer that proves the order is absent).
+const orderAbsent=e=>/80016/.test(String(e?.code||''))||/not exist/i.test(String(e?.message||''));
+
 /** BingX contract for a channel symbol: the same name, a 1000-coin contract (1000PEPEUSDT), or a stock
  * perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT). contracts: Map(symbol -> normalized contract). */
 export function resolveCopyContract(contracts,symbol){
@@ -87,11 +120,13 @@ export function copyConfig(env=process.env,liveMode='OFF'){
 }
 
 export class CopyExecutor{
- constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{}}){
-  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent});
+ constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
+  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
+  // An order in flight does not survive a restart.
+  for(const p of Object.values(this.store.positions))delete p.inflight;
   this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;
  }
  arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
@@ -158,13 +193,74 @@ export class CopyExecutor{
  #qty(c,raw,mode='DOWN'){try{return Number(roundDecimalToStep(mode==='DOWN'?raw*(1+1e-9):raw,c.quantityStep,mode))}catch{return 0}} // 1e-9: 299.99999… is 300
  // Hedge mode (p.hedge, user 2026-11-17): the row of this position's own side; one-way: the symbol's row.
  async #position(p){const list=await this.client.positions(p.venueSymbol),row=positionRow(list,p.venueSymbol,{hedge:p.hedge===true,direction:p.direction});
-  return {size:row?Math.abs(Number(row.positionAmt)||0):0,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null}}
+  const size=row?Math.abs(Number(row.positionAmt)||0):0;if(size>0)p.seenAt=this.now(); // the last confirmed state (#goneEvidence window)
+  return {size,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null}}
+ /** A position read empty once is read again ~1 s later before it counts as gone (a venue list can come back
+  * empty for a moment). */
+ async #recheck(p,now){if(now.size>0)return now;await this.sleep(this.goneRecheckMs);return this.#position(p)}
+ /** A new order tag: p.orderSeq goes up on every new order, failed ones included, so a later order never
+  * reuses an earlier clientOrderId (review 2026-11-17). Retries of the same order keep its tag. */
+ #tag(p,kind){p.orderSeq=(Number(p.orderSeq)||0)+1;return `${kind}.${p.orderSeq}`}
  async #market(p,side,quantity,{reduceOnly=false,tag}){
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
-  const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)};
+  const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:this.#clientId(p,tag)};
   // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
   if(reduceOnly&&p.hedge!==true)params.reduceOnly='true';
   const res=orderOf(await this.client.placeOrder(params));return {orderId:res?.orderId??null,avg:pos(res?.avgPrice)};
+ }
+ #clientId(p,tag){return ('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)}
+ /** Entry / add market order with a bounded retry when the request got no venue answer (user 2026-11-17: three
+  * BTC adds lost to "BingX: fetch failed"): up to retryDelaysMs.length (2) more tries after ~2 s and ~5 s, with
+  * the SAME clientOrderId, all within retryBudgetMs (~30 s; the message queue waits meanwhile). Before each resend:
+  *  - the position must still be ours and open, copying not stopped (loss limit) and the gate open (kill
+  *    switch, disarm); otherwise RETRY_ABANDONED and the error is thrown;
+  *  - the order is looked up by clientOrderId: a fill -> taken as filled, nothing sent; resent only when BingX
+  *    answers "order does not exist" (80016) AND the venue size has not moved by one quantity step. Anything
+  *    else (lookup failed, size moved, no lookup call) -> not sent (an under-fill rather than a double fill).
+  * A venue error code is never retried here. event: ENTRY_RETRY / ADD_RETRY. p.inflight marks it meanwhile. */
+ async #send(p,side,quantity,{tag},{event,before,step}){
+  const cid=this.#clientId(p,tag),started=Date.now(),delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[];
+  if(event==='ENTRY_RETRY')p.entryCids=[...(p.entryCids||[]),cid]; // looked up again before the ledger drops or adopts it
+  let error;p.inflight=true;
+  try{
+   try{return await this.#market(p,side,quantity,{tag})}catch(e){if(!noVenueAnswer(e))throw e;error=e}
+   for(let i=0;i<delays.length;i++){
+    const attempt=i+2,ev=(outcome,extra={})=>this.#event(event,{symbol:p.symbol,attempt,reason:error.code||error.name,outcome,...extra,clientOrderId:cid,
+     detail:`${attempt}차 시도 · ${{ALREADY_FILLED:'앞 주문이 이미 체결됨(다시 보내지 않음)',UNVERIFIED:'체결 여부 확인 불가(보내지 않음)',RESENT:'같은 주문 번호로 다시 보냄',BUDGET:'재시도 시간 한도(약 30초) 초과'}[outcome]}`});
+    if(Date.now()-started+delays[i]>this.retryBudgetMs){ev('BUDGET');break}
+    await this.sleep(delays[i]);
+    const seen=await this.#orderOutcome(p,cid,{before,step});
+    if(seen.filled){ev('ALREADY_FILLED',{via:seen.via});return {orderId:seen.orderId??null,avg:seen.avg??null,qty:seen.qty??null}}
+    if(!seen.absent){ev('UNVERIFIED',seen.why?{why:seen.why}:{});continue}
+    const block=this.#resendBlock(p);
+    if(block){this.#event('RETRY_ABANDONED',{symbol:p.symbol,kind:event,attempt,reason:block,clientOrderId:cid,detail:`다시 보내기 전 상태 변경(${block}) — 보내지 않음`});
+     throw Object.assign(Error('RETRY_ABANDONED'),{code:'RETRY_ABANDONED',cause:block})}
+    ev('RESENT');
+    try{return await this.#market(p,side,quantity,{tag})}catch(e){if(!noVenueAnswer(e))throw e;error=e}
+   }
+   throw error;
+  }finally{p.inflight=false}
+ }
+ /** Why an entry / add must not be sent again now (null: it may). */
+ #resendBlock(p){
+  if(this.store.positions[this.#key(p)]!==p||p.status!=='OPEN')return 'POSITION_NOT_OPEN';
+  if(p.closing)return 'CLOSING';
+  if(this.store.killed)return 'COPY_LOSS_LIMIT';
+  let g;try{g=this.gate()}catch{g={ok:false,reason:'GATE_ERROR'}}
+  return g?.ok?null:g?.reason||'GATE_CLOSED';
+ }
+ /** Did the order with this clientOrderId go through? {filled} / {absent} (BingX says it does not exist and the
+  * position has not moved by a quantity step) / {} (cannot tell: never resent). */
+ async #orderOutcome(p,clientOrderId,{before,step}){
+  if(typeof this.client.getOrder!=='function')return {why:'NO_ORDER_LOOKUP'};
+  try{const o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId})),st=String(o?.status||'').toUpperCase(),exec=num(o?.executedQty)??0;
+   if(o&&(exec>0||st==='FILLED'||st==='PARTIALLY_FILLED'))return {filled:true,via:'ORDER',orderId:o.orderId??null,avg:pos(o.avgPrice),qty:exec>0?exec:null};
+   // Known to the venue and finished without a fill: absent; anything else (NEW / PENDING / no status): unknown.
+   if(!(o&&['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st)))return {why:'ORDER_STATE_'+(st||'UNKNOWN')};
+  }catch(e){if(!orderAbsent(e))return {why:'LOOKUP_'+(e.code||'FAILED')}}
+  try{const now=await this.#position(p),moved=Math.abs(now.size-(Number(before)||0)),unit=pos(step)??0;
+   return moved>=(unit>0?unit:1e-12)*(1-1e-9)?{why:'SIZE_MOVED'}:{absent:true}}
+  catch(e){return {why:'POSITION_'+(e.code||'FAILED')}}
  }
  // Whole-position stop where the loss would reach maxLossPct of the balance; re-set after each change.
  // The new stop goes in first and the old one is cancelled after it, so the position is never left
@@ -232,20 +328,69 @@ export class CopyExecutor{
   if(!against.length)return null;
   const z=against[0].z;return {stop:far(z)*(1-dir*buf),zone:{priceLow:Number(z.priceLow),priceHigh:Number(z.priceHigh)},distPct:+(against[0].dist*100).toFixed(2)};
  }
+ /** Close at market, reduce-only (loss limit, no stop, zone exit; it has no other retry path). The intent is
+  * saved first (p.closing), so a close whose fill cannot be verified is still booked as ours later. Each attempt
+  * re-reads the position and closes what is left; up to retryDelaysMs.length more attempts when an order or a
+  * read got no venue answer; booked (#closed) only once the size reads 0. */
  async #emergency(p,reason){
-  try{const now=await this.#position(p);if(now.size>0)await this.#market(p,p.direction==='LONG'?'SELL':'BUY',now.size,{reduceOnly:true,tag:'emergency'+this.now()});this.#closed(p,reason,now)}
-  catch(error){this.#event('ERROR',{symbol:p.symbol,kind:'EMERGENCY_CLOSE',reason:error.code||error.message})}
+  if(p.status!=='OPEN'||this.store.positions[this.#key(p)]!==p)return;
+  if(!p.closing){p.closing={reason,at:this.now()};this.#save()}
+  const delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[],started=Date.now();let last=null,lastErr=null;
+  p.inflight=true;
+  try{
+   for(let i=0;i<=delays.length;i++){
+    if(i>0){
+     if(Date.now()-started+delays[i-1]>this.retryBudgetMs)break;
+     this.#event('CLOSE_RETRY',{symbol:p.symbol,attempt:i+1,reason:lastErr?.code||lastErr?.name||null,outcome:'RECHECK',detail:`${i+1}차 시도 · 포지션을 다시 읽고 남은 수량을 청산`});
+     await this.sleep(delays[i-1]);
+     if(p.status!=='OPEN'||this.store.positions[this.#key(p)]!==p){this.#event('RETRY_ABANDONED',{symbol:p.symbol,kind:'CLOSE_RETRY',attempt:i+1,reason:'POSITION_NOT_OPEN'});return}
+    }
+    let now;
+    try{now=await this.#recheck(p,await this.#position(p))}catch(e){if(!noVenueAnswer(e)&&e.code!=='HTTP_429')throw e;lastErr=e;continue}
+    if(!(now.size>0)){this.#closed(p,p.closing.reason,last??now);return}
+    last=now;
+    try{await this.#market(p,p.direction==='LONG'?'SELL':'BUY',now.size,{reduceOnly:true,tag:this.#tag(p,'emergency')})}
+    catch(e){if(!noVenueAnswer(e))throw e;lastErr=e;continue}
+    // Answered: read again (a size still there is closed by the next attempt).
+    let after=null;try{after=await this.#recheck(p,await this.#position(p))}catch(e){lastErr=e;continue}
+    if(!(after.size>0)){this.#closed(p,p.closing.reason,now);return}
+   }
+   this.#emergencyError(p,{reason:lastErr?.code||lastErr?.message||'NOT_CLOSED',detail:'긴급 청산 확인 실패 — 다음 정기 확인에서 다시 청산'});
+  }catch(error){this.#emergencyError(p,{reason:error.code||error.message})}
+  finally{p.inflight=false}
  }
- /** Our own last close of this coin and side (a manual close, the loss limit, a stop; not one that followed
-  * the trader) with no trader close since: entering again would undo it (review 2026-11-14). */
- #ownClose(m){
+ /** A failed emergency close: an ERROR event (screen, Telegram) at most once per position per 10 minutes; the
+  * repeats in between are logged only (review 2026-11-17: a close the venue keeps refusing is retried every check). */
+ #emergencyError(p,{reason,detail}){
+  const at=this.now();
+  if(p.emergencyNoticeAt!=null&&at-p.emergencyNoticeAt<600000){this.log(`[COPY] ERROR ${p.symbol} EMERGENCY_CLOSE ${reason} (repeat, notice held)`);return}
+  p.emergencyNoticeAt=at;this.#event('ERROR',{symbol:p.symbol,kind:'EMERGENCY_CLOSE',reason,...(detail?{detail}:{})});
+ }
+ /** Did one of this position's entry orders fill? {filled, qty} / {absent} (every one "does not exist") / {}
+  * (cannot tell: no lookup call, no recorded order, or a failed lookup). */
+ async #entryFill(p){
+  const cids=p.entryCids||[];if(!cids.length||typeof this.client.getOrder!=='function')return {};
+  let absent=0;
+  for(const clientOrderId of cids){
+   try{const o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId})),st=String(o?.status||'').toUpperCase(),exec=num(o?.executedQty)??0;
+    if(o&&(exec>0||st==='FILLED'||st==='PARTIALLY_FILLED'))return {filled:true,qty:exec>0?exec:null,avg:pos(o.avgPrice)};
+    if(o&&['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st))absent++;}
+   catch(e){if(orderAbsent(e))absent++}
+  }
+  return absent===cids.length?{absent:true}:{};
+ }
+ /** Our last close of this coin and side that did not follow the trader, with no trader close since. Unless it
+  * was a confirmed manual close (externalClose), entering again would undo it (review 2026-11-14 / 2026-11-17). */
+ #lastOwnClose(m){
   const key=this.#key(m),own=[...this.store.closed].reverse().find(x=>`${x.symbol}|${x.direction}`===key);
   if(!own||['TRADER_CLOSE','TRADER_CUT_ALL'].includes(own.closeReason))return null;
   return (this.store.lastTraderCloseAt[key]||0)>=(own.closedAt||0)?null:own;
  }
  async #open(m,at){
   const key=this.#key(m),prev=this.store.positions[key];
-  if(prev?.status!=='OPEN'){const own=this.#ownClose(m);if(own){this.#event('SKIPPED',{symbol:m.symbol,reason:'OUR_COPY_CLOSED',detail:`우리가 ${new Date(own.closedAt).toISOString().slice(11,16)}Z에 먼저 정리(${own.closeReason}) · 트레이더 청산 뒤에 다시 따라감`});return {ok:false,reason:'OUR_COPY_CLOSED'}}}
+  if(prev?.status!=='OPEN'){const own=this.#lastOwnClose(m);if(own&&!externalClose(own)){this.#event('SKIPPED',{symbol:m.symbol,reason:'OUR_COPY_CLOSED',detail:`우리가 ${new Date(own.closedAt).toISOString().slice(11,16)}Z에 먼저 정리(${CLOSE_KO[closeLabelKey(own)]||closeLabelKey(own)}) · 트레이더 청산 뒤에 다시 따라감`,causeDetail:closeLabelKey(own)});return {ok:false,reason:'OUR_COPY_CLOSED'}}
+   // A confirmed manual close (user 2026-11-17): followed again, marked on the entry.
+   if(own)m={...m,refollow:true,refollowAfter:own.closeReason}}
   if(prev?.status==='OPEN'){
    // The same card again (both alert formats, or a repeat) is not a new buy: same entry price within 3 min.
    if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs)return {ok:true,snapshot:true};
@@ -338,7 +483,8 @@ export class CopyExecutor{
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
   this.store.positions[key]=p;
   let fill;
-  try{fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open'})}
+  // The venue position was checked empty above: before = 0 for the retry check.
+  try{fill=await this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:this.#tag(p,'open')},{event:'ENTRY_RETRY',before:0,step:c.quantityStep})}
   catch(error){
    // 101400 is a refusal (nothing filled). When it names the venue minimum, one more try at that minimum
    // if it still fits the same margin limits; otherwise the ledger entry is dropped, so no empty position
@@ -351,13 +497,14 @@ export class CopyExecutor{
    const used=Object.values(this.store.positions).filter(x=>x.status==='OPEN'&&x!==p).reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
    if(need>qty&&margin<=this.config.minOrderMaxMarginUSD&&!(eq&&used+margin>eq*this.config.maxTotalMarginPct/100)&&(free===null||margin<=free*.9)){
     this.#event('ENTRY_RETRY_MIN',{symbol:m.symbol,from:qty,to:need});qty=need;p.firstQty=need;p.minOrder=true;
-    try{fill=await this.#market(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:'open-min'})}
-    catch(e2){if(e2.code==='VENUE_ERROR_101400')delete this.store.positions[key];throw e2}}
-   else{if(error.code==='VENUE_ERROR_101400')delete this.store.positions[key];throw error}}
+    try{fill=await this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:this.#tag(p,'open')},{event:'ENTRY_RETRY',before:0,step:c.quantityStep})}
+    catch(e2){if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(e2.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw e2}}
+   // RETRY_ABANDONED comes only after BingX said the order does not exist: nothing to keep either.
+   else{if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(error.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw error}}
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
   await this.#protect(p);
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
+  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
   return {ok:true};
  }
  /** The quantity a BingX 101400 message asks for ("minimum order amount is 149 AKE" / "minimum order
@@ -375,13 +522,16 @@ export class CopyExecutor{
   // Our own close of this coin and side (not one that followed the trader's close), with no trader entry
   // since: a late entry would undo it (a manual close, the loss limit, a stop). Checked before the events,
   // which are trimmed and can hold other skips in between.
-  const own=this.#ownClose(m);if(own)return {cause:'OUR_COPY_CLOSED',causeAt:own.closedAt,causeDetail:own.closeReason??null};
+  const own=this.#lastOwnClose(m);if(own&&!externalClose(own))return {cause:'OUR_COPY_CLOSED',causeAt:own.closedAt,causeDetail:closeLabelKey(own)};
   const ev=this.store.events,lastClose=p&&p.status!=='OPEN'&&p.closeReason!=='TRADER_CLOSE'?p.closedAt||0:0;
-  for(let i=ev.length-1;i>=0;i--){const e=ev[i];if(e.symbol!==m.symbol)continue;
-   if(e.type==='OPENED')break;
+  // This coin and side only (events of the other side carry their own direction).
+  for(let i=ev.length-1;i>=0;i--){const e=ev[i];if(e.symbol!==m.symbol||e.direction&&e.direction!==m.direction)continue;
+   if(e.type==='OPENED'||own&&e.at<(own.closedAt||0))break;
    // An entry from a '- → q' change card is logged with kind CHANGE; its step says 진입 주문.
    if((e.type==='SKIPPED'&&e.reason!=='NOT_COPIED')||(e.type==='ERROR'&&(e.entry||e.kind==='OPEN'||/진입/.test(e.detail||''))))return {cause:e.reason||e.type,causeAt:e.at,causeDetail:e.detail??null}}
-  if(lastClose)return {cause:'OUR_COPY_CLOSED',causeAt:lastClose,causeDetail:p.closeReason??null};
+  // A confirmed manual close on the venue (user 2026-11-17): an add is followed again (late entry).
+  if(own)return {cause:'COPY_CLOSED_EXTERNALLY',causeAt:own.closedAt,causeDetail:own.closeReason??null};
+  if(lastClose)return {cause:externalClose(p)?'COPY_CLOSED_EXTERNALLY':'OUR_COPY_CLOSED',causeAt:lastClose,causeDetail:closeLabelKey(p)};
   return {cause:'NO_ENTRY_RECEIVED'};
  }
  async #change(m,at){
@@ -392,14 +542,15 @@ export class CopyExecutor{
    const why=this.#whyNotCopied(m,p);
    // Late entry (user 2026-11-14): the trader adds to a position we never got into -> enter now as a new
    // position (the trader's current total is its "first" quantity). Not after our own close of it (a loss
-   // limit or a stop must not be undone), and not on a reduction.
+   // limit or a stop must not be undone), and not on a reduction. After an external close (user 2026-11-17)
+   // it is entered again (#open marks it refollow).
    if(this.config.lateEntry&&m.to>m.from&&why.cause!=='OUR_COPY_CLOSED'){
     this.#event('LATE_ENTRY',{symbol:m.symbol,from:m.from,to:m.to,...why});
     return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to,late:true},at);
    }
    this.#event('SKIPPED',{symbol:m.symbol,reason:'NOT_COPIED',from:m.from,to:m.to,...why});return {ok:false,reason:'NOT_COPIED'}}
-  const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#position(p);p.qty=now.size;
-  if(!(p.qty>0)){p.status='CLOSED';this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
+  const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#recheck(p,await this.#position(p));p.qty=now.size;
+  if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   if(ratio>1){
    p.theirTotal=m.to;return this.#buyMore(p,m,m.to-m.from,{price:pos(m.price),ratio,c,now});
   }else{
@@ -416,9 +567,10 @@ export class CopyExecutor{
  // One more buy of the trader's `theirQty`: 1 $ x theirQty / their first quantity (when known), else the
  // same proportion of our position as theirQty is of theirs.
  async #buyMore(p,m,theirQty,{price,ratio=null,c=null,now=null}={}){
-  c??=await this.#contract(p.symbol);now??=await this.#position(p);p.qty=now.size;
-  if(!(p.qty>0)){this.#closed(p,'POSITION_GONE',now);return {ok:false,reason:'POSITION_GONE'}}
-  const g=this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(g.reason==='COPY_MAX_ADDS'?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  c??=await this.#contract(p.symbol);now??=await this.#recheck(p,await this.#position(p));p.qty=now.size;
+  if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
+  // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
+  const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
   const byFirst=p.scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
@@ -435,8 +587,8 @@ export class CopyExecutor{
   const eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
   if(eq&&used+buy*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(buy*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
   if(free!==null&&buy*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(buy*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
-  const fill=await this.#market(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:'add'+(p.adds+1)});p.adds++;
-  p.steps.push({kind:'ADD',at:this.now(),qty:buy,avg:fill.avg,theirQty,marginUSD});this.#save();
+  const fill=await this.#send(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:this.#tag(p,'add')},{event:'ADD_RETRY',before:p.qty,step:c.quantityStep});p.adds++;
+  p.steps.push({kind:'ADD',at:this.now(),qty:fill.qty??buy,avg:fill.avg,theirQty,marginUSD});this.#save();
   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('ADDED',{symbol:p.symbol,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
   return {ok:true};
@@ -456,30 +608,86 @@ export class CopyExecutor{
   return {ok:true};
  }
  // Realized result: the venue's unrealized PnL just before the close (an estimate: fees not included).
+ // A close of ours that was under way (p.closing) is booked under its own reason. Booked once per position; the
+ // ledger slot is freed only when it still holds this position.
  #closed(p,reason,now,theirPnlUSD=null){
-  p.status='CLOSED';p.closedAt=this.now();p.closeReason=reason;
+  if(this.store.closed.some(x=>x.id===p.id))return;
+  reason=p.closing?.reason??reason;
+  p.status='CLOSED';p.closedAt=this.now();p.closeReason=reason;delete p.inflight;
   const row={...p,netUSD:now?.unrealized??null,netSource:now?.unrealized!=null?'ESTIMATE_BEFORE_FEES':'UNKNOWN',theirPnlUSD};
-  this.store.closed.push(row);delete this.store.positions[this.#key(p)];
-  this.#event('CLOSED',{symbol:p.symbol,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds});
+  this.store.closed.push(row);const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];
+  this.#event('CLOSED',{symbol:p.symbol,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds,...(p.closeEvidence?{evidence:p.closeEvidence.kind}:{})});
+ }
+ /** A position found gone on the venue without our close order: classified (#goneEvidence) and booked. An entry
+  * whose answer was lost (no step) is looked up first: only when BingX says none of its orders exists is the row
+  * dropped without a closed record (ENTRY_NOT_FILLED); filled or not verifiable, it is classified and booked. */
+ async #gone(p,reason,now){
+  const key=this.#key(p);
+  if(!p.steps?.length&&!p.closing){const f=await this.#entryFill(p);
+   if(f.absent){if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
+    this.#event('ENTRY_NOT_FILLED',{symbol:p.symbol,reason,detail:'진입 주문이 거래소에 없음(80016) — 원장에서 지움'});return {ok:false,reason:'POSITION_GONE'}}
+   p.steps=[{kind:f.filled?'OPEN':'ENTRY_UNVERIFIED',at:this.now(),qty:f.qty??null,avg:f.avg??null}]}
+  if(!p.closing){p.closeEvidence=await this.#goneEvidence(p);if(['LIQUIDATION','ADL'].includes(p.closeEvidence.kind))reason=p.closeEvidence.kind}
+  this.#closed(p,reason,now);return {ok:false,reason:'POSITION_GONE'};
+ }
+ /** Why it is gone (fail closed, review 2026-11-17): HAD_STOP (our exchange stop may have filled), LIQUIDATION /
+  * ADL (a BingX force order in the window), MANUAL_CLOSE (a FILLED closing order in the window that is not ours:
+  * clientOrderId without our 'cp' prefix, not our stop), else UNCONFIRMED (none found, or a query failed). The
+  * window starts a minute before the last time the position was seen on the venue. */
+ async #goneEvidence(p){
+  if(p.stopOrderId||Number(p.stop)>0)return {kind:'HAD_STOP'};
+  const c=this.client,to=this.now(),from=Math.max(0,(p.seenAt??p.openedAt??to)-60000);
+  if(typeof c.forceOrders!=='function'||typeof c.allOrders!=='function')return {kind:'UNCONFIRMED',why:'NO_HISTORY_API',from,to};
+  try{
+   for(const type of ['LIQUIDATION','ADL']){const rows=rowsOf(await c.forceOrders({symbol:p.venueSymbol,autoCloseType:type,startTime:from,endTime:to}));
+    if(rows.length)return {kind:type,orderId:rows[0]?.orderId!=null?String(rows[0].orderId):null,at:num(rows[0]?.updateTime??rows[0]?.time),from,to}}
+   const rows=rowsOf(await c.allOrders({symbol:p.venueSymbol,startTime:from,endTime:to,limit:500}));
+   const forced=rows.find(o=>/LIQUID|ADL/i.test(String(o?.type||'')+String(o?.autoCloseType||'')));
+   if(forced)return {kind:'LIQUIDATION',orderId:forced.orderId!=null?String(forced.orderId):null,from,to};
+   const closeSide=p.direction==='LONG'?'SELL':'BUY';
+   const hit=rows.find(o=>{const st=String(o?.status||'').toUpperCase(),t=num(o?.updateTime??o?.time),ps=String(o?.positionSide||'BOTH').toUpperCase();
+    return ((num(o?.executedQty)??0)>0||st==='FILLED')&&String(o?.side||'').toUpperCase()===closeSide&&(p.hedge===true?ps===p.direction:ps==='BOTH')
+     &&t!=null&&t>=from&&!String(o?.clientOrderId||'').toLowerCase().startsWith('cp')&&String(o?.orderId??'')!==String(p.stopOrderId??'')});
+   return hit?{kind:'MANUAL_CLOSE',orderId:hit.orderId!=null?String(hit.orderId):null,clientOrderId:hit.clientOrderId||null,type:hit.type??null,at:num(hit.updateTime??hit.time),from,to}
+    :{kind:'UNCONFIRMED',why:'NO_MANUAL_CLOSE_ORDER',from,to};
+  }catch(e){return {kind:'UNCONFIRMED',why:e.code||e.message||'QUERY_FAILED',from,to}}
  }
  /** Routine check: closed positions booked, missing stops placed again, failed closes / cuts retried,
-  * and the whole-ledger loss limit. */
- async reconcile(){
+  * and the whole-ledger loss limit. Runs in the message queue (review 2026-11-17: it must not interleave with an
+  * order waiting for its retry); a check already queued or running is not queued twice; idle() counts it. */
+ reconcile(){
+  if(this.reconciling)return this.reconciling;
+  this.pendingCount=(this.pendingCount||0)+1;
+  const p=this.queue.then(()=>this.#reconcile()).finally(()=>{this.pendingCount--;this.reconciling=null});
+  this.queue=p.catch(()=>{});this.reconciling=p;return p;
+ }
+ async #reconcile(){
+  const inflight=job=>this.store.positions[this.#key(job.m)]?.inflight===true;
   for(const job of this.store.pending.splice(0)){
    // A retry belongs to the position it was made for: never applied to a newer one with the same key.
    if(job.pid&&this.store.positions[this.#key(job.m)]?.id!==job.pid)continue;
+   if(inflight(job)){this.store.pending.push(job);continue} // an order of that position is waiting for its retry
    job.tries++;
    try{const r=job.m.kind==='CLOSE'?await this.#close(job.m,'TRADER_CLOSE'):await this.#change(job.m,job.at);if(r?.ok===false&&!['NOT_COPIED','POSITION_GONE'].includes(r.reason)&&job.tries<5)this.store.pending.push(job)}
    catch(error){if(job.tries<5)this.store.pending.push(job);else this.#event('ERROR',{symbol:job.m.symbol,kind:'RETRY_GAVE_UP',reason:error.code||error.message})}
   }
   let unrealized=0;
   for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN')){
+   if(p.inflight)continue; // never counted or booked while one of its orders waits for a retry
    try{const now=await this.#position(p);
     // One empty answer is not enough to close the ledger (a venue list can come back empty for a moment;
     // the position would stay on the venue and the next card would buy again): two checks in a row.
     if(!(now.size>0)){p.zeroSeen=(p.zeroSeen||0)+1;if(p.zeroSeen<2){this.#save();continue}
-     if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}this.#closed(p,'STOP_OR_EXTERNAL',now);continue}
+     if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}await this.#gone(p,'STOP_OR_EXTERNAL',now);continue}
     p.zeroSeen=0;
+    // An entry whose answer was lost: taken over only when its order shows filled; "does not exist" or a failed
+    // lookup -> not ours to manage: dropped from the ledger, the venue position left alone (UNCONFIRMED_ADOPT).
+    if(!p.steps?.length){const f=await this.#entryFill(p);
+     if(!f.filled){const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
+      this.#event('UNCONFIRMED_ADOPT',{symbol:p.symbol,reason:f.absent?'ENTRY_ORDER_NOT_FOUND':'ENTRY_LOOKUP_FAILED',size:now.size,detail:`거래소에 ${now.size} 보유 — 우리 진입 체결이 확인되지 않아 원장에 넣지 않음(직접 확인 필요)`});continue}
+     p.steps=[{kind:'ADOPTED',at:this.now(),qty:now.size}]}
+    // A close of ours that did not go through (no answer, a refusal): closed again.
+    if(p.closing&&!['TRADER_CLOSE','TRADER_CUT_ALL'].includes(p.closing.reason)){await this.#emergency(p,p.closing.reason);continue}
     p.qty=now.size;p.avg=now.avg??p.avg;p.unrealized=now.unrealized;p.mark=now.mark;unrealized+=Number(now.unrealized)||0;
     if(this.config.stops&&(!p.stopOrderId||p.stopStale)||!this.config.stops&&p.stopOrderId)await this.#protect(p);
     if(this.config.stops&&p.stopZone&&await this.#zoneBroken(p).catch(()=>false)){await this.#emergency(p,'ZONE_BREAK_VOLUME');continue}
@@ -488,7 +696,7 @@ export class CopyExecutor{
   const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity);
   if(bal)this.funds={equity:num(bal.equity),available:num(bal.available),at:this.now()};
   if(eq&&!this.store.killed&&unrealized<=-eq*this.config.ledgerLossPct/100){
-   this.store.killed=true;this.#event('COPY_LOSS_LIMIT',{reason:`open loss ${unrealized.toFixed(2)} ≤ -${this.config.ledgerLossPct}% of ${eq.toFixed(2)}`});
+   this.store.killed=true;this.#event('COPY_LOSS_LIMIT',{reason:`open loss ${unrealized.toFixed(2)} ≤ -${this.config.ledgerLossPct}% of ${eq.toFixed(2)}`});this.#save(); // on disk before any order
    for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'))await this.#emergency(p,'COPY_LOSS_LIMIT');
   }
   this.#save();
