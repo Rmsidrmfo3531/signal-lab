@@ -479,3 +479,11 @@ test('copy: a "- → q" entry refused twice still explains the next change card;
  ex=new CopyExecutor({config:copyConfig({COPY_MAX_TOTAL_MARGIN_PCT:'1'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.051,balance:async()=>({equity:100,available:90}),now:()=>1e12});
  await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(n,1);assert.equal(v.size,0);assert.equal(ex.status().positions.length,0);
 });
+
+test('copy page: recent closes 10 per page with page buttons and the full count (user 2026-11-17)',async()=>{
+ const m=await import('../public/live_control.js');
+ const c={mode:'LIVE',enabled:true,positions:[],events:[],closed:Array.from({length:23},(_,i)=>({symbol:'S'+i,direction:'LONG',closedAt:Date.now()-i*1e6,netUSD:1})),closedTotal:23};
+ m.setCopyPage(0);let h=m.copyHTML(c);assert.match(h,/전체 23건/);assert.match(h,/1 \/ 3쪽/);assert.ok(h.includes('>S9<')&&!h.includes('>S10<'));assert.match(h,/data-copy-page="-1" disabled/);
+ m.setCopyPage(9);h=m.copyHTML(c);assert.match(h,/3 \/ 3쪽/,'past the end: last page');assert.ok(h.includes('>S22<')&&!h.includes('>S0<'));
+ m.setCopyPage(0);assert.doesNotMatch(m.copyHTML({...c,closed:c.closed.slice(0,5),closedTotal:5}),/copy-pager/);
+});

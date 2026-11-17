@@ -41,10 +41,14 @@ export function summarizeIncome(rows,balance,{since,now=Date.now()}={}){
  }
  const equity=balance?.equity??null,unreal=balance?.unrealized??0;
  const start=equity==null?null:equity-unreal-trading-flows;
+ // Return base = the capital the account trades with now, before this period's result (equity - open - result).
+ // A large withdrawal (the testnet's 100k VST moved out) would otherwise make the base meaningless; a deposit makes
+ // this base larger, so the return is never overstated.
+ const base=equity==null?null:equity-unreal-trading;
  return {since,at:now,asset:balance?.asset??null,equityUSD:equity==null?null:r4(equity),unrealizedUSD:r4(unreal),
   realizedPnlUSD:r4(byType.REALIZED_PNL||0),feesUSD:r4(byType.TRADING_FEE||0),fundingUSD:r4(byType.FUNDING_FEE||0),
   tradingNetUSD:r4(trading),transfersUSD:r4(flows),startCapitalUSD:start==null?null:r4(start),
-  returnPct:start>0?r2(trading/start*100):null,returnWithOpenPct:start>0?r2((trading+unreal)/start*100):null,
+  capitalBaseUSD:base==null?null:r4(base),returnPct:base>0?r2(trading/base*100):null,returnWithOpenPct:base>0?r2((trading+unreal)/base*100):null,
   closes:rows.filter(x=>x.incomeType==='REALIZED_PNL').length,rows:rows.length,
   byType:Object.fromEntries(Object.entries(byType).map(([k,v])=>[k,r4(v)])),
   byDay:Object.fromEntries(Object.entries(byDay).map(([k,v])=>[k,r4(v)])),

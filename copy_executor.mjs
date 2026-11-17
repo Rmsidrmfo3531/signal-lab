@@ -102,7 +102,7 @@ export class CopyExecutor{
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
  status(){return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
-  closed:this.store.closed.slice(-50).reverse(),closedTotal:this.store.closed.length,events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
+  closed:this.store.closed.slice(-200).reverse(),closedTotal:this.store.closed.length,events:this.store.events.slice(-30).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
 
  /** status() with fresh numbers for the screen (user 2026-11-14: the real-account page did not update):
   * open positions' PnL from the venue's last price (cached tickers, ~20 s), the balance re-read when
