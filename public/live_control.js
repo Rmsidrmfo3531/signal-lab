@@ -152,9 +152,10 @@ function notCopiedWhy(e,when,all=[]){
 }
 
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
-let copyPage=0,lastCopy=null;
+let copyPage=0,failPage=0,lastCopy=null;
 export const COPY_PAGE_SIZE=10;
 export function setCopyPage(p){copyPage=Math.max(0,p|0)}
+export function setCopyFailPage(p){failPage=Math.max(0,p|0)}
 export function copyHTML(c){
  lastCopy=c;
  if(!c)return '';
@@ -181,7 +182,11 @@ export function copyHTML(c){
  const rules=`<p class="copy-rules">수량 ${c.sizing==='BALANCE_RATIO'?`트레이더 × 내 잔고 ÷ $${Number(c.traderBalanceUSD).toLocaleString()}`:c.sizing==='MIN_ORDER'?`첫 증거금 $${esc(c.firstMarginUSD??0)} (거래소 최소 주문보다 작으면 최소 주문), 추매는 트레이더 비율`:`첫 증거금 $${esc(c.marginUSD)}`} · 추매 최대 ${esc(c.maxAdds??10)}회 · 손절 ${c.stops?`포지션당 잔고 ${esc(c.maxLossPct)}%`:'없음(트레이더 청산만)'} · 한도 증거금 ${esc(c.maxTotalMarginPct)}%·손실 ${esc(c.ledgerLossPct)}% · 손익은 수수료 전 추정${f?.at?` · 잔고 ${when(f.at)} 확인`:''}</p>`;
  const row=p=>`<li><b>${esc(p.symbol)}</b>${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
  const done=x=>`<li><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}<b class="${cls(x.netUSD)} end">${money(x.netUSD)}</b></li>`;
- const notes=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY'].includes(e.type)).slice(0,10);
+ // Entry failures and skips under the closes (user 2026-11-17 "코인 종목 / 롱,숏 / 진입 실패 이유"), 10 per page.
+ const notesAll=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY'].includes(e.type));
+ const fPages=Math.max(1,Math.ceil(notesAll.length/COPY_PAGE_SIZE)),fPage=Math.min(failPage,fPages-1),notes=notesAll.slice(fPage*COPY_PAGE_SIZE,fPage*COPY_PAGE_SIZE+COPY_PAGE_SIZE);
+ const failPager=fPages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-copy-fail-page="-1"${fPage===0?' disabled':''}>‹ 이전</button><span class="muted">${fPage+1} / ${fPages}쪽</span><button type="button" class="outline-btn small" data-copy-fail-page="1"${fPage>=fPages-1?' disabled':''}>다음 ›</button></div>`:'';
+ const why=e=>`${esc(e.type==='LATE_ENTRY'?'늦은 진입 시도 (진입 알림을 놓친 포지션의 추매)':COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when,c.events||[])}`;
  // Desktop (user 2026-11-14: the web view felt like a phone): the same data as tables with more columns;
  // phones keep the compact lists. CSS shows one or the other (.only-desk / .only-mob).
  const margin=p=>p.qty>0&&p.avg>0&&p.leverage>0?p.qty*p.avg/p.leverage:null,roe=p=>{const m=margin(p);return m&&p.unrealized!=null?p.unrealized/m*100:null};
@@ -193,7 +198,7 @@ export function copyHTML(c){
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`)+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(c.closedTotal??closed.length)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
-  (notes.length?`<h5 class="copy-sub">건너뜀·문제</h5><ul class="copy-list muted">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span>${esc(e.symbol||'')} · ${esc(e.type==='LATE_ENTRY'?'늦은 진입 시도 (진입 알림을 놓친 포지션의 추매)':COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when,c.events||[])}</li>`).join('')}</ul>`:'')+'</div>';
+  (notes.length?`<h5 class="copy-sub">진입 실패·건너뜀 <small>전체 ${notesAll.length}건</small></h5><ul class="copy-list muted only-mob">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span><b>${esc(e.symbol||'')}</b> ${e.direction?side(e.direction):''} · ${why(e)}</li>`).join('')}</ul><table class="copy-table only-desk"><thead><tr><th>시각</th><th>종목</th><th>방향</th><th>이유</th></tr></thead><tbody>${notes.map(e=>`<tr><td class="muted">${when(e.at)}</td><td><b>${esc(e.symbol||'—')}</b></td><td>${e.direction?side(e.direction):'—'}</td><td>${why(e)}</td></tr>`).join('')}</tbody></table>${failPager}`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
 
@@ -267,7 +272,9 @@ function bindCopyButtons(el){
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('click',e=>{
   const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
-  const pg=e.target.closest('[data-copy-page]');
+  const fp=e.target.closest('[data-copy-fail-page]');
+ if(fp){setCopyFailPage(failPage+Number(fp.dataset.copyFailPage));const box=fp.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);return}
+ const pg=e.target.closest('[data-copy-page]');
  if(pg){setCopyPage(copyPage+Number(pg.dataset.copyPage));const box=pg.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);pg.blur?.();return}
  if(resume)return call(resume,'/api/copy/resume',{confirm:'COPY_RESUME'},'다시 시작하는 중…');
   if(disarm)return call(disarm,'/api/copy/disarm',null,'끄는 중…');
