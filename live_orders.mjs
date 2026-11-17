@@ -208,6 +208,8 @@ export function preflight({config,armed,killSwitch,credentials,row,records,now=D
  if(config.mode==='LIVE'&&row?.venueOnly)reasons.push('VENUE_ONLY_TESTNET_ONLY');
  else if(!credentials?.[venue])reasons.push('CREDENTIALS_MISSING');
  if(row?.decision?.ready!==true)reasons.push('SIGNAL_NOT_READY');
+ // Orders are built per side (positionSide LONG / SHORT in hedge mode): nothing else is ever sent.
+ if(row?.direction!=='LONG'&&row?.direction!=='SHORT')reasons.push('DIRECTION_INVALID');
  if(!Array.isArray(row?.targets)||row.targets.length!==3||!positive(row?.stop))reasons.push('PLAN_INCOMPLETE');
  const active=records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status));
  if(active.some(r=>r.status==='UNKNOWN'))reasons.push('UNRESOLVED_ORDER_STATE');

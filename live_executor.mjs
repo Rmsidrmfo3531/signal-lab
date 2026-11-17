@@ -22,7 +22,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {leverageForScore} from './paper.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {venueStop,venueCosts} from './venue_execution.mjs';
-import {readPositionMode,leverageSideFor,positionRow,orderOnSide} from './bingx_position_mode.mjs';
+import {readPositionMode,leverageSideFor,positionRow,orderOnSide,ordersOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight} from './live_orders.mjs';
 
 const MAX_RECORDS=300,MAX_DELETED_KEYS=500,MAX_EVENTS=40;
@@ -183,7 +183,8 @@ export class LiveExecutor{
   // Checked again after the balance read: copy trading may have reserved the symbol meanwhile.
   try{if(this.externalHeld?.()?.has?.(row.symbol))return {sent:false,reasons:['SYMBOL_HELD_BY_COPY']}}catch{}
   this.busy.add(row.symbol);
-  const record={clientOrderId,signalKey,venue,mode:this.config.mode,symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
+  // hedge: null until the account's mode is read (BingX): a record cut off before that sent nothing (#recover).
+  const record={clientOrderId,signalKey,venue,mode:this.config.mode,...(venue==='BINGX'?{hedge:null}:{}),symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
    plannedEntry:posNum(row.entry),stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,strategyProfile:split?.strategyProfile||'CURRENT',...(row.liveRoutedFrom?{routedFrom:row.liveRoutedFrom}:{}),...(split?{balanceUSD:split.balanceUSD,freeUSD:split.freeUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
    // Signal context for the trade journal review (no effect on orders).
    signal:{pattern:row.pattern??null,score:Number.isFinite(Number(row.score))?Number(row.score):null,btcTrend:row.btcContext?.trend??null,trend4h:typeof row.trend==='string'?row.trend:null},
@@ -208,7 +209,11 @@ export class LiveExecutor{
   // readable: nothing is sent (never guessed).
   const mode=await readPositionMode(client);
   if(!mode.ok){record.status='FAILED';this.#event(record,'REJECTED',{reason:mode.reason+':'+mode.detail});return}
-  record.hedge=mode.hedge;this.#save(); // on disk before any order: a restart's recovery uses the same mode
+  record.hedge=mode.hedge;
+  // Hedge mode: a position on the other side of this coin shares the symbol's fund-flow rows, so this trade
+  // is then settled from its fills, not from those rows (review 2026-11-17). Not readable: assumed present.
+  if(record.hedge){try{if(otherSideAmount(await client.positions(record.venueSymbol),record.venueSymbol,record.direction)>0)record.otherSideSeen=true}catch{record.otherSideSeen=true}}
+  this.#save(); // on disk before any order: a restart's recovery uses the same mode
   const plan=this.#plan(record);
   try{
    const current=await client.marginType(record.venueSymbol);
@@ -412,7 +417,9 @@ export class LiveExecutor{
    if(record.venue==='BINGX'){
     const open=await this.clients.BINGX.openOrders(record.venueSymbol).catch(()=>null),list=open?.orders??(Array.isArray(open)?open:null);
     if(!list)return fail('TEST_ORDERS_UNVERIFIED','open orders check failed');
-    if(list.length)return fail('TEST_ORDERS_LEFT',`${list.length} open`);
+    // Hedge mode: only this position's side (a stop of a manual position on the other side is not ours).
+    const mine=record.hedge===true?ordersOnSide(list,{hedge:true,direction:record.direction}):list;
+    if(mine.length)return fail('TEST_ORDERS_LEFT',`${mine.length} open`);
    }
    record.status='CLOSED';record.closedAt=this.now();record.closeReason='TEST_CLOSE';this.#event(record,'TEST_CLOSED');
   }catch(error){fail('TEST_CLOSE_FAILED',error.code||error.message)}
@@ -434,6 +441,9 @@ export class LiveExecutor{
  }
  /** After a restart cut an entry short: find or place the stop for whatever the venue holds. */
  async #recover(record){
+  // Cut off before the position mode was read: nothing was sent for it (the venue is not touched, so a
+  // manual position on the coin is never taken as this trade's).
+  if(record.hedge===null&&record.status==='UNKNOWN'&&!record.entryOrderId){record.status='FAILED';record.closeReason='ENTRY_NOT_SENT_AFTER_RESTART';record.recovery='DONE';this.#event(record,'RECOVERY_NO_ORDER_SENT');return}
   const client=this.clients.BINGX,pos=await this.#position(record);
   const open=await client.openOrders(record.venueSymbol),list=open?.orders??(Array.isArray(open)?open:[]);
   // Add orders of a cut-off entry were never tracked (no order ids): take them off the book.
@@ -480,6 +490,7 @@ export class LiveExecutor{
   for(const record of [...open.slice(start),...open.slice(0,start)]){
    try{
     const pos=await this.#position(record,{cached:true}),{size,entryPrice}=pos;
+    if(pos.otherSide>0&&!record.otherSideSeen){record.otherSideSeen=true;this.#event(record,'OTHER_SIDE_SEEN',{reason:`${pos.otherSide}`})}
     this.#observe(record,pos);
     if(size===0){
      record.status='CLOSED';record.closedAt=this.now();record.closeReason=record.closeReason||'POSITION_FLAT';
@@ -561,6 +572,9 @@ export class LiveExecutor{
   * then (and for Gate.io) an estimate from the observed exits, marked ESTIMATE. */
  async #settle(record){
   record.settleAttempts=(record.settleAttempts||0)+1;
+  // A hedge trade that saw a position on the other side of its coin: the symbol's fund-flow rows mix both
+  // positions, so the estimate from its own exits is used (review 2026-11-17).
+  if(record.otherSideSeen){record.realized={...this.#estimate(record),reason:'HEDGE_OTHER_SIDE'};this.#event(record,'SETTLED',{reason:'estimate (other side held) '+record.realized?.netUSD});return}
   if(record.venue==='BINGX'&&typeof this.clients.BINGX?.income==='function'){
    try{
     const from=(record.createdAt||record.closedAt)-30000,to=Math.min(this.now(),record.closedAt+120000);
@@ -664,7 +678,8 @@ export class LiveExecutor{
    return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
     marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit),
     // Side only when the venue states it (positionSide LONG/SHORT); an unsigned amount is not guessed.
-    side:row&&['LONG','SHORT'].includes(row.positionSide)?row.positionSide:null};
+    side:row&&['LONG','SHORT'].includes(row.positionSide)?row.positionSide:null,
+    otherSide:record.hedge===true?otherSideAmount(list,record.venueSymbol,record.direction):0};
   }
   const p=await client.position(record.venueSymbol);
   return {size:Math.abs(Number(p?.size)||0),entryPrice:Number(p?.entry_price)||0,markPrice:posNum(p?.mark_price),unrealizedPnLUSD:p?num(p.unrealised_pnl):null,

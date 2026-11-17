@@ -23,7 +23,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {scalpReasonKo} from './scalp_telegram.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
-import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide} from './bingx_position_mode.mjs';
+import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
@@ -154,7 +154,7 @@ function positionOf(list,vs,direction,hedge=false){
  // Hedge mode (user 2026-11-17): the row of our own side only, its amount unsigned; an opposite-side row is
  // another position (size 0 and any 0 for us: it neither blocks an entry nor is closed by us).
  if(hedge){const row=positionRow(list,vs,{hedge:true,direction}),size=row?Math.abs(Number(row.positionAmt)||0):0;
-  return {size,any:size,signed:dirOf(direction)*size,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null,row}}
+  return {size,any:size,signed:dirOf(direction)*size,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null,row,other:otherSideAmount(list,vs,direction)}}
  const row=(Array.isArray(list)?list:[]).find(x=>x?.symbol===vs),signed=row?signedAmount(row):0;
  // A one-way row with positionSide BOTH and a positive amount does not say its side: it is taken as ours
  // (one position per coin, and an entry is refused when one already exists). Reading a short as 0 would
@@ -352,7 +352,8 @@ export class ScalpExecutor{
   // position: its stop, targets, breakeven and closes use the mode it was opened under. Never guessed.
   const mode=await readPositionMode(cl);if(!mode.ok)return skip(mode.reason,mode.detail);
   const hedge=mode.hedge;
-  {const now=await this.#position(vs,d,hedge);if(now.any>0)return skip('VENUE_POSITION_EXISTS',`${now.signed}`)}
+  // otherSide: a position on the other side of this coin (hedge mode) shares the symbol's fund-flow rows.
+  let otherSide=false;{const now=await this.#position(vs,d,hedge);if(now.any>0)return skip('VENUE_POSITION_EXISTS',`${now.signed}`);otherSide=now.other>0}
   try{
    const m=await cl.marginType(vs).catch(()=>null);
    if(m?.marginType!=='CROSSED'){await cl.setMarginType(vs,'CROSSED');const again=await cl.marginType(vs);if(again?.marginType!=='CROSSED')throw err('CROSS_NOT_CONFIRMED')}
@@ -360,7 +361,7 @@ export class ScalpExecutor{
    if(set?.leverage!==undefined&&Number(set.leverage)!==plan.leverage)throw err('LEVERAGE_NOT_CONFIRMED');
   }catch(e){return skip('MARGIN_SETUP_FAILED',e?.code||e?.message)}
   const tick=c.tickSize,px=v=>grid(v,tick,awayMode(d))??String(v);
-  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,interval:'5m',
+  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
    pattern:det.pattern,barAt:det.barAt,plannedEntry:det.entry,checkedPrice:plan.entry,driftPct:plan.driftPct,entry:plan.entry,stop:plan.stop,initialStop:plan.stop,targets:plan.targets,
    qty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,marginUSD:plan.marginUSD,netRR:plan.netRR,
    tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
@@ -411,7 +412,7 @@ export class ScalpExecutor{
   const now=this.now(),income=typeof this.client?.income==='function';
   for(const x of this.store.closed){
    if(x.journaled)continue;
-   if(!(x.realized||!income||(x.settleTries||0)>=SETTLE_TRIES||now-(x.closedAt||0)>=2*3600000))continue;
+   if(!(x.realized||!income||x.otherSideSeen||(x.settleTries||0)>=SETTLE_TRIES||now-(x.closedAt||0)>=2*3600000))continue;
    // Already in the file (written before a restart that came before the ledger was saved): not again.
    if(x.id&&this.journalIds?.has(x.id)){x.journaled=true;continue}
    x.journalAt=now;if(!x.journalV)x.journalBackfill=true;
@@ -490,7 +491,10 @@ export class ScalpExecutor{
     // An entry still being placed (its stop / targets not yet sent) is left to the entry path.
     if(p.status==='SUBMITTING'||this.reserved.has(p.symbol))continue;
     try{
-     const {size,row}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true),mark=pos(row?.markPrice);
+     const {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true),mark=pos(row?.markPrice);
+     // Hedge mode: a position on the other side of this coin at any check -> this trade is not settled from the
+     // symbol's fund flow (its PnL and funding would be mixed in, review 2026-11-17); the fill estimate stays.
+     if(other>0&&!p.otherSideSeen){p.otherSideSeen=true;this.#event('OTHER_SIDE_SEEN',{symbol:p.symbol,direction:p.direction,reason:`${other}`})}
      if(p.status==='UNKNOWN'){
       if(size>0){p.status='OPEN';p.filled=p.size=size;p.avg=pos(row.avgPrice)??p.entry;p.openedAt??=this.now();this.#event('ENTRY_RECOVERED',{symbol:p.symbol,qty:size});
        const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts;if(await this.#protect(p))await this.#placeTargets(p)}
@@ -511,7 +515,7 @@ export class ScalpExecutor{
      if(p.status==='OPEN'&&p.tpOrderIds.some((id,i)=>!id&&p.parts[i]>0&&!p.tpDone[i]&&p.tpTries[i]<3))await this.#placeTargets(p);
     }catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;break}this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message})}
    }
-   for(const x of this.store.closed.filter(x=>!x.realized&&(x.settleTries||0)<SETTLE_TRIES&&this.now()-x.closedAt>=SETTLE_DELAY_MS&&this.now()-x.closedAt<2*3600000))await this.#settle(x).catch(()=>{});
+   for(const x of this.store.closed.filter(x=>!x.realized&&!x.otherSideSeen&&(x.settleTries||0)<SETTLE_TRIES&&this.now()-x.closedAt>=SETTLE_DELAY_MS&&this.now()-x.closedAt<2*3600000))await this.#settle(x).catch(()=>{});
    this.#flushJournal();
    // A check that runs only to finish the journal (disarmed, nothing open) changes nothing else.
    const journalOnly=!this.store.open.length&&!this.armed;
@@ -542,7 +546,7 @@ export class ScalpExecutor{
   const rest=Math.max(0,p.filled-out);if(rest>1e-12){const px=pos(await withTimeout(this.priceOf(p.symbol,vs),3000))??p.mark??p.stop;gross+=dir*(px-p.avg)*rest;exitNotional+=px*rest;out+=rest}
   const fee=(p.avg*p.filled+exitNotional)*(p.takerRate||SCALP_EXEC_COSTS.takerRate),r=x=>Math.round(x*1e4)/1e4;
   p.status='CLOSED';p.closedAt=this.now();p.closeReason=reason;p.tpHits=tpFilled;
-  const row={...p,estimate:{source:'ESTIMATE',pnlUSD:r(gross),feeUSD:r(-fee),netUSD:r(gross-fee)},netUSD:r(gross-fee),netSource:'ESTIMATE',holdMs:p.closedAt-(p.openedAt||p.createdAt)};
+  const row={...p,estimate:{source:'ESTIMATE',pnlUSD:r(gross),feeUSD:r(-fee),netUSD:r(gross-fee)},netUSD:r(gross-fee),netSource:p.otherSideSeen?'ESTIMATE_OTHER_SIDE':'ESTIMATE',holdMs:p.closedAt-(p.openedAt||p.createdAt)};
   // R multiple on the actual entry and the initial stop (replaced by the settled result when the journal line is written).
   {const risk=dir*(p.avg-p.initialStop)*p.filled;row.rMultiple=risk>0?r((gross-fee)/risk):null}
   this.store.closed.push(row);this.store.open=this.store.open.filter(x=>x!==p);
@@ -551,6 +555,8 @@ export class ScalpExecutor{
  /** BingX fund flow (realized PnL + fees + funding) of this trade's symbol and lifetime, read after the close. */
  async #settle(x){
   x.settleTries=(x.settleTries||0)+1;if(typeof this.client.income!=='function')return;
+  // A hedge trade that saw a position on the other side: the symbol's rows mix both, the fill estimate stays.
+  if(x.otherSideSeen)return;
   const from=(x.createdAt||x.closedAt)-30000,to=Math.min(this.now(),x.closedAt+120000);
   const data=await this.client.income({symbol:x.venueSymbol,startTime:from,endTime:to,limit:1000}),list=Array.isArray(data)?data:Array.isArray(data?.list)?data.list:[];
   const rows=list.filter(y=>y?.symbol===x.venueSymbol&&Number(y.time)>=from&&Number(y.time)<=to);

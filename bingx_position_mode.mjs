@@ -28,8 +28,12 @@ export async function readPositionMode(client){
  const hedge=hedgeOf(resp);
  return hedge===null?{ok:false,reason:'BINGX_POSITION_MODE_UNKNOWN',detail:'dualSidePosition missing'}:{ok:true,hedge};
 }
-/** positionSide of the orders for one position: BOTH in one-way mode, the position's own side in hedge mode. */
-export const positionSideFor=({hedge,direction})=>hedge?(direction==='SHORT'?'SHORT':'LONG'):'BOTH';
+const sideErr=(code,detail)=>Object.assign(Error(code+(detail?': '+detail:'')),{code});
+/** The position's direction, checked: LONG or SHORT, anything else throws DIRECTION_INVALID (never defaulted). */
+export function checkDirection(direction){if(direction!=='LONG'&&direction!=='SHORT')throw sideErr('DIRECTION_INVALID',String(direction).slice(0,20));return direction}
+/** positionSide of the orders for one position: BOTH in one-way mode, the position's own side in hedge mode.
+ * A direction other than LONG / SHORT throws (review 2026-11-17: not silently read as LONG). */
+export const positionSideFor=({hedge,direction})=>{checkDirection(direction);return hedge?direction:'BOTH'};
 /** The side argument of the leverage setting (BOTH in one-way, LONG / SHORT in hedge mode). */
 export const leverageSideFor=positionSideFor;
 /** {positionSide} plus reduceOnly 'true' only for a closing order in one-way mode. */
@@ -46,12 +50,28 @@ export function forMode(params,hedge){
 }
 /** The venue row of one position. One-way: the symbol's row (as before). Hedge: the row of the position's own
  * side (positionSide LONG / SHORT); an opposite-side row is another position and never read as this one. */
-export function positionRow(list,venueSymbol,{hedge=false,direction}={}){
+// Hedge mode: a non-zero row of the symbol that states no LONG / SHORT side cannot be told apart, so the read
+// fails (POSITION_SIDE_UNKNOWN) instead of being taken as "no position": callers keep the stop and targets.
+function hedgeRows(list,venueSymbol){
  const rows=(Array.isArray(list)?list:[]).filter(x=>x?.symbol===venueSymbol);
- if(!hedge)return rows[0]??null;
- const side=direction==='SHORT'?'SHORT':'LONG';
- return rows.find(x=>String(x?.positionSide||'').toUpperCase()===side)??null;
+ for(const x of rows){const side=String(x?.positionSide||'').toUpperCase();
+  if(side!=='LONG'&&side!=='SHORT'&&Math.abs(Number(x?.positionAmt)||0)>0)throw sideErr('POSITION_SIDE_UNKNOWN',`${venueSymbol} ${side||'-'} ${x.positionAmt}`)}
+ return rows;
+}
+export function positionRow(list,venueSymbol,{hedge=false,direction}={}){
+ if(!hedge)return (Array.isArray(list)?list:[]).find(x=>x?.symbol===venueSymbol)??null;
+ const side=checkDirection(direction);
+ return hedgeRows(list,venueSymbol).find(x=>String(x?.positionSide||'').toUpperCase()===side)??null;
+}
+/** Hedge mode: the amount held on the OTHER side of this symbol (0 when none). Its realized PnL and funding
+ * share the symbol's fund-flow rows with ours, so a trade that saw one is not settled from those rows. */
+export function otherSideAmount(list,venueSymbol,direction){
+ const other=checkDirection(direction)==='LONG'?'SHORT':'LONG';
+ const row=hedgeRows(list,venueSymbol).find(x=>String(x?.positionSide||'').toUpperCase()===other);
+ return row?Math.abs(Number(row.positionAmt)||0):0;
 }
 /** An open order belongs to this position: one-way, any order of the symbol; hedge, an order stating the
  * same positionSide (or stating none). */
 export const orderOnSide=(o,{hedge,direction})=>!hedge||!o?.positionSide||String(o.positionSide).toUpperCase()===positionSideFor({hedge:true,direction});
+/** The order list of one position (orderOnSide applied). */
+export const ordersOnSide=(list,side)=>(Array.isArray(list)?list:[]).filter(o=>orderOnSide(o,side));

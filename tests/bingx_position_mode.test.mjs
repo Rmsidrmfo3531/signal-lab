@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {hedgeOf,isHedge,readPositionMode,positionSideFor,leverageSideFor,sideParams,forMode,positionRow,orderOnSide} from '../bingx_position_mode.mjs';
+import {hedgeOf,isHedge,readPositionMode,positionSideFor,leverageSideFor,sideParams,forMode,positionRow,orderOnSide,ordersOnSide,otherSideAmount} from '../bingx_position_mode.mjs';
 
 test('mode answer: booleans and strings, nothing guessed',async()=>{
  assert.equal(hedgeOf({dualSidePosition:true}),true);assert.equal(hedgeOf({dualSidePosition:'true'}),true);assert.equal(hedgeOf({dualSidePosition:'TRUE'}),true);
@@ -28,9 +28,20 @@ test('position rows: one-way = the symbol row; hedge = the row of the position s
  const rows=[{symbol:'A-USDT',positionSide:'SHORT',positionAmt:'5'},{symbol:'A-USDT',positionSide:'LONG',positionAmt:'2'},{symbol:'B-USDT',positionSide:'BOTH',positionAmt:'-1'}];
  assert.equal(positionRow(rows,'A-USDT',{hedge:true,direction:'LONG'}).positionAmt,'2');
  assert.equal(positionRow(rows,'A-USDT',{hedge:true,direction:'SHORT'}).positionAmt,'5');
- assert.equal(positionRow(rows,'B-USDT',{hedge:true,direction:'SHORT'}),null,'a BOTH row is not a hedge position');
+ assert.throws(()=>positionRow(rows,'B-USDT',{hedge:true,direction:'SHORT'}),e=>e.code==='POSITION_SIDE_UNKNOWN','hedge: a non-zero row without LONG / SHORT is not read as "no position"');
+ assert.equal(positionRow([{symbol:'B-USDT',positionSide:'BOTH',positionAmt:'0'}],'B-USDT',{hedge:true,direction:'LONG'}),null,'an empty row is ignored');
+ assert.equal(positionRow(rows,'B-USDT',{direction:'SHORT'}).positionAmt,'-1','one-way unchanged');
+ assert.equal(otherSideAmount(rows,'A-USDT','LONG'),5);assert.equal(otherSideAmount(rows,'A-USDT','SHORT'),2);assert.equal(otherSideAmount([],'A-USDT','LONG'),0);
+ assert.deepEqual(ordersOnSide([{positionSide:'SHORT'},{positionSide:'LONG'},{}],{hedge:true,direction:'LONG'}),[{positionSide:'LONG'},{}]);
  assert.equal(positionRow(rows,'A-USDT',{direction:'LONG'}),rows[0],'one-way: the first row, as before');
  assert.equal(positionRow(null,'A-USDT',{hedge:true,direction:'LONG'}),null);
  assert.equal(orderOnSide({positionSide:'SHORT'},{hedge:true,direction:'LONG'}),false);assert.equal(orderOnSide({positionSide:'LONG'},{hedge:true,direction:'LONG'}),true);
  assert.equal(orderOnSide({},{hedge:true,direction:'LONG'}),true);assert.equal(orderOnSide({positionSide:'SHORT'},{hedge:false,direction:'LONG'}),true);
+});
+
+test('a direction other than LONG / SHORT is refused, never read as LONG',()=>{
+ for(const bad of ['long','BOTH','',undefined,null])for(const hedge of [true,false]){
+  assert.throws(()=>positionSideFor({hedge,direction:bad}),e=>e.code==='DIRECTION_INVALID',String(bad));
+  assert.throws(()=>sideParams({hedge,direction:bad,closing:true}),e=>e.code==='DIRECTION_INVALID')}
+ assert.throws(()=>positionRow([],'A-USDT',{hedge:true,direction:'short'}),e=>e.code==='DIRECTION_INVALID');
 });

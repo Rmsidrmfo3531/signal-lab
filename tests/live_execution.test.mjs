@@ -41,7 +41,7 @@ function mockBingX({available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=
     if(entry==='timeout')throw TypeError('fetch failed');
     if(entry==='reject')return json({code:101204,msg:'Insufficient margin'});
     const o={orderID:String(++id),type:'MARKET',clientOrderId:q.clientOrderId,status:'FILLED'};orders.push(o);
-    if(stopAttached)orders.push({orderID:String(++id),type:'STOP_MARKET',...(q.positionSide!=='BOTH'?{positionSide:q.positionSide}:{})});
+    if(stopAttached&&q.stopLoss)orders.push({orderID:String(++id),type:'STOP_MARKET',...(q.positionSide!=='BOTH'?{positionSide:q.positionSide}:{})});
     return json({code:0,data:{order:o}});
    }
    if(q.type==='STOP_MARKET'&&stopPlacement==='fail')return json({code:109400,msg:'stop rejected'});
@@ -679,4 +679,55 @@ test('BingX hedge account: the mode is kept on the record; entry, targets, break
  const be=m.calls.slice(before).find(c=>c.method==='POST'&&c.params.type==='STOP_MARKET').params;
  assert.deepEqual([be.side,be.positionSide,be.stopPrice,be.quantity],['SELL','LONG','100.02','0.12']);assert.ok(!('reduceOnly' in be));
  long='0';await ex.reconcile();assert.equal(r.status,'CLOSED','flat on its own side although the SHORT row remains');
+});
+
+test('BingX hedge: a position on the other side of the coin -> settled from its own exits, never from the symbol fund flow',async()=>{
+ for(const later of [false,true]){
+  let long='0.20',short=later?'0':'5';const clock={t:NOW};
+  const m=mockBingX({hedge:true,rows:()=>[...(Number(short)>0?[{symbol:'ETH-USDT',positionSide:'SHORT',positionAmt:short,avgPrice:'120'}]:[]),...(Number(long)>0?[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:long,avgPrice:'100.02',markPrice:'99'}]:[])]});
+  const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>clock.t,priceOf:()=>99});ex.arm();
+  await ex.onSignal(row(),{signalKey:'o'+later});const r=ex.store.records[0];
+  assert.equal(Boolean(r.otherSideSeen),!later,'seen at the entry');
+  await ex.reconcile();if(later){short='3';await ex.reconcile()}
+  assert.equal(r.otherSideSeen,true);
+  long='0';await ex.reconcile();assert.equal(r.status,'CLOSED');
+  clock.t+=200000;await ex.reconcile();
+  assert.equal(r.realized.reason,'HEDGE_OTHER_SIDE');assert.equal(r.realized.source,'ESTIMATE');assert.ok(r.realized.netUSD<0,'our own loss at 99');
+  assert.ok(!m.calls.some(c=>c.path==='/openApi/swap/v2/user/income'),'fund flow not read');
+ }
+});
+
+test('BingX: a record cut off before the position mode was read is closed as not sent, without touching the venue',async()=>{
+ const dir=tmp(),base={venue:'BINGX',mode:'TESTNET',symbol:'ETHUSDT',venueSymbol:'ETH-USDT',direction:'LONG',status:'SUBMITTING',createdAt:NOW,events:[],targets:[105,108,112],targetOrderIds:[],quantity:{total:0.2,parts:[0.08,0.07,0.05]}};
+ fs.writeFileSync(path.join(dir,'live-orders.json'),JSON.stringify({version:1,killSwitch:false,records:[{...base,clientOrderId:'c1',signalKey:'s1',hedge:null}]}));
+ const m=mockBingX({hedge:true,rows:()=>[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:'3',avgPrice:'90'}]}),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
+ assert.equal(ex.store.records[0].recovery,'PENDING');await ex.reconcile();
+ const r=ex.store.records[0];assert.equal(r.status,'FAILED');assert.equal(r.closeReason,'ENTRY_NOT_SENT_AFTER_RESTART');assert.equal(r.recovery,'DONE');
+ assert.equal(m.calls.length,0,'the manual LONG 3 is never adopted');assert.equal(ex.store.killSwitch,false);
+ fs.rmSync(dir,{recursive:true,force:true});
+});
+
+test('BingX hedge: a non-zero row without LONG / SHORT keeps the record open with its orders (RECONCILE_ERROR)',async()=>{
+ let rows=[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:'0.20',avgPrice:'100.02'}];const m=mockBingX({hedge:true,rows:()=>rows});
+ const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();await ex.onSignal(row(),{signalKey:'u'});
+ rows=[{symbol:'ETH-USDT',positionSide:'BOTH',positionAmt:'0.20',avgPrice:'100.02'}];await ex.reconcile();await ex.reconcile();
+ const r=ex.store.records[0];assert.equal(r.status,'OPEN');assert.ok(!m.calls.some(c=>c.method==='DELETE'),'stop and targets stay');
+ assert.ok(r.events.some(e=>e.type==='RECONCILE_ERROR'&&/POSITION_SIDE_UNKNOWN/.test(e.reason)));
+});
+
+test('BingX hedge round trip: a manual stop on the other side is not counted as left over',async()=>{
+ let long='0.20';const m=mockBingX({hedge:true,rows:()=>Number(long)>0?[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:long,avgPrice:'100.02'}]:[]});
+ m.orders.push({orderID:'999',type:'STOP_MARKET',positionSide:'SHORT'});
+ const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});ex.arm();
+ const res=await ex.testRoundTrip(row('BINGX'),{holdMs:0,sleep:async()=>{long='0'}});
+ assert.equal(res.ok,true,JSON.stringify(res.events));assert.equal(ex.store.killSwitch,false);
+ assert.ok(m.orders.some(o=>o.orderID==='999'),'the other side stop is left alone');
+});
+
+test('direction other than LONG / SHORT: preflight refuses, the order builder throws',()=>{
+ const qty=liveQuantity({quantity:0.6,estimatedStopLossUSD:6,maxRiskUSD:2,contract:row().venueContract});
+ const base={config:config(),armed:true,killSwitch:false,credentials:{BINGX:true},records:[],now:NOW,qty};
+ assert.ok(preflight({...base,row:row('BINGX',{direction:'long'})}).reasons.includes('DIRECTION_INVALID'));
+ assert.ok(!preflight({...base,row:row('BINGX',{direction:'SHORT'})}).reasons.includes('DIRECTION_INVALID'));
+ for(const hedge of [true,false])assert.throws(()=>bingxOrders({symbol:'ETH-USDT',direction:'BOTH',stop:98,targets:[1,2,3],qty:{total:1,parts:[1,0,0]},clientOrderId:'x',hedge}),/DIRECTION_INVALID/);
 });

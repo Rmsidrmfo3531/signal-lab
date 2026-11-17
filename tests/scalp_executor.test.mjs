@@ -327,7 +327,7 @@ test('scan order: coins that moved most over the last scans are read first; volu
 // ---- Hedge (dual-side) mode (user 2026-11-17 "hedge mode로 해보고 싶은데"): BingX fake with one row per side ----
 // Positions are LONG / SHORT rows with positive amounts; an order is refused when it carries reduceOnly or
 // positionSide BOTH (as BingX does in hedge mode). manual: a position on the other side opened by hand.
-function hedgeVenue({fillAt=PX,manual=null}={}){
+function hedgeVenue({fillAt=PX,manual=null,income=null}={}){
  const calls=[],orders=new Map(),pos={LONG:{amt:0,avg:0},SHORT:{amt:0,avg:0}};let mark=0,id=1;
  if(manual)pos[manual.side]={amt:manual.amt,avg:manual.avg??100};
  const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
@@ -339,6 +339,7 @@ function hedgeVenue({fillAt=PX,manual=null}={}){
   openOrders:async()=>({orders:[...orders.values()].filter(o=>o.status==='NEW')}),
   getOrder:async(s,{orderId,clientOrderId})=>({order:[...orders.values()].find(o=>orderId?o.orderId===orderId:o.clientOrderId===clientOrderId)??null}),
   cancelOrder:async(s,oid)=>{calls.push({op:'cancel',oid});const o=orders.get(oid);if(o&&o.status==='NEW')o.status='CANCELED';return {}},
+  ...(income?{income:async q=>{calls.push({op:'income'});return income(q)}}:{}),
   placeOrder:async p=>{calls.push({op:'order',...p});
    if('reduceOnly' in p)throw Object.assign(Error('reduceOnly not allowed in hedge mode'),{code:'VENUE_ERROR_109400'});
    if(!['LONG','SHORT'].includes(p.positionSide))throw Object.assign(Error('PositionSide must be LONG or SHORT in hedge mode'),{code:'VENUE_ERROR_109400'});
@@ -383,4 +384,32 @@ test('hedge mode: SHORT entry uses SELL + SHORT, targets BUY + SHORT; a same-sid
  // A position opened before this change (no hedge field) keeps the one-way orders.
  const v3=venue(),ex3=make(v3);ex3.arm();await ex3.scan();assert.equal(ex3.store.open[0].hedge,false);assert.equal(placed(v3,'MARKET')[0].positionSide,'BOTH');
  assert.ok(placed(v3,'TAKE_PROFIT_MARKET').every(o=>o.reduceOnly==='true'));
+});
+
+test('hedge mode: a position on the other side of the coin -> no settlement from the symbol fund flow (fill estimate kept)',async()=>{
+ // The symbol's fund flow holds the other side's +38.4 realized PnL: it must not become this trade's result.
+ const flow=q=>[{symbol:'SOL-USDT',incomeType:'REALIZED_PNL',income:'38.4',time:String(q.startTime+60000)},{symbol:'SOL-USDT',incomeType:'TRADING_FEE',income:'-0.2',time:String(q.startTime+60000)}];
+ const run=async({manual,later})=>{
+  const v=hedgeVenue({manual,income:flow}),clock={t:T0},ex=make(v,{clock});ex.arm();await ex.scan();const p=ex.store.open[0];
+  if(later){v.pos.SHORT={amt:4,avg:120};clock.t+=30000;await ex.reconcile()}
+  clock.t=BUCKET*I+2*3600000;v.mark=p.avg-.05;await ex.reconcile(); // time exit
+  clock.t+=200000;await ex.reconcile();return {v,ex,x:ex.store.closed[0]};
+ };
+ for(const c of [{manual:{side:'SHORT',amt:3,avg:110}},{later:true}]){
+  const {v,ex,x}=await run(c);
+  assert.equal(x.otherSideSeen,true,JSON.stringify(c));assert.equal(x.realized,undefined);assert.equal(x.netSource,'ESTIMATE_OTHER_SIDE');
+  assert.ok(x.netUSD<0,'the estimate of our own losing exit, not +38.2');assert.equal(v.calls.filter(k=>k.op==='income').length,0,'fund flow never read');
+  assert.equal(x.journaled,true,'journaled from the estimate right away');assert.ok(ex.journal(5)[0].pnl.netUSD<0);
+ }
+ // Control: no other side -> the exchange settlement as before.
+ const {x}=await run({});assert.equal(x.otherSideSeen,undefined);assert.equal(x.netSource,'EXCHANGE');
+});
+
+test('hedge mode: a non-zero row without LONG / SHORT is an error, not "flat" — stop and targets stay',async()=>{
+ const v=hedgeVenue(),clock={t:T0},ex=make(v,{clock});ex.arm();await ex.scan();const p=ex.store.open[0];
+ const real=v.client.positions;v.client.positions=async()=>[{symbol:'SOL-USDT',positionSide:'BOTH',positionAmt:String(p.size),avgPrice:String(p.avg)}];
+ for(let i=0;i<3;i++){clock.t+=20000;await ex.reconcile()}
+ assert.equal(ex.store.open.length,1);assert.equal(ex.store.open[0].zeroSeen??0,0);assert.ok(!v.calls.some(c=>c.op==='cancel'));
+ assert.ok(ex.store.events.some(e=>e.type==='RECONCILE_ERROR'&&e.reason==='POSITION_SIDE_UNKNOWN'));
+ v.client.positions=real;clock.t+=20000;await ex.reconcile();assert.equal(ex.store.open.length,1);
 });
