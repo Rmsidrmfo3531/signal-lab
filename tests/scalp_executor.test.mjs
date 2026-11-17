@@ -424,4 +424,14 @@ test('better price (toward the stop) is taken while half the stop distance is le
  assert.equal(tight.reasons[0],'PRICE_DRIFT');assert.equal(tight.toward,'STOP');assert.ok(tight.stopLeftPct<50);
  assert.equal(planScalpOrder({det,price:det.stop,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons[0],'PRICE_DRIFT','at the stop: never');
  assert.equal(scalpExecConfig({SCALP_STOP_KEEP_PCT:'0'}).stopKeepPct,0);
+ // Review 2026-11-17: no drift always passes even with a stop shorter than 3 costs; a stop on the wrong side never
+ // plans; a price past the signal extreme is out; SHORT is symmetric.
+ const tightStop={...det,stop:det.entry*(1-.003)};
+ assert.notEqual(planScalpOrder({det:tightStop,price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons?.[0],'PRICE_DRIFT');
+ assert.equal(planScalpOrder({det:tightStop,price:det.entry*(1-.0005),contract:SOL,equity:10000,leverage:10,config:cfg}).reasons[0],'PRICE_DRIFT','under 3 costs: no move toward the stop');
+ assert.equal(planScalpOrder({det:{...det,stop:det.entry*1.01},price:det.entry*1.002,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons[0],'ENTRY_AT_OR_BEYOND_STOP');
+ assert.equal(planScalpOrder({det:{...det,evidence:{...det.evidence,extreme:det.entry-planned*.3}},price:det.entry-planned*.4,contract:SOL,equity:10000,leverage:10,config:cfg}).beyondExtreme,true);
+ const ds=detectScalpReversal(rise(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings}),ps=ds.stop-ds.entry;
+ const sb=planScalpOrder({det:ds,price:ds.entry+ps*.3,contract:SOL,equity:10000,leverage:10,config:cfg});
+ assert.ok(sb.ok||sb.reasons[0]!=='PRICE_DRIFT'||sb.beyondExtreme,'SHORT: a better (higher) price with 70 % left is not a plain drift skip');
 });

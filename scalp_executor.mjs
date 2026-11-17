@@ -130,9 +130,13 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  // distance left is at least stopKeepPct % of the planned one and 3 round-trip costs (risk sizing then buys more
  // with the same $ risk; the review's 0.04 % stop case stays out). stopKeepPct 0 = the old 0.4 % / 1 ATR.
  const planned=dirOf(det.direction)*(det.entry-det.stop),left=dirOf(det.direction)*(price-det.stop);
- const rt=price*(2*costs.takerRate+2*costs.slippageBps/1e4);
- if(!away&&config.stopKeepPct>0&&planned>0){
-  const need=Math.max(planned*config.stopKeepPct/100,3*rt);
+ if(!(planned>0))return fail('ENTRY_AT_OR_BEYOND_STOP'); // a stop on the wrong side (or missing) never plans
+ const rt=price*(2*Math.max(costs.takerRate,pos(c?.takerFeeRate)??0)+2*costs.slippageBps/1e4+(costs.fundingRate||0));
+ if(!away&&config.stopKeepPct>0&&driftPct>0){
+  // Never more than the planned distance; a planned stop already under 3 costs takes no move toward it.
+  // The signal extreme (low / high) must still hold.
+  const need=Math.min(planned,Math.max(planned*config.stopKeepPct/100,3*rt)),ext=Number(det.evidence?.extreme);
+  if(Number.isFinite(ext)&&ext>0&&!(dirOf(det.direction)*(price-ext)>0))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),toward:'STOP',beyondExtreme:true});
   if(!(left>=need))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),toward:'STOP',stopLeftPct:planned>0?+(left/planned*100).toFixed(1):null,allowedPct:planned>0?+((planned-need)/det.entry*100).toFixed(3):null});
  }else{
   const allowed=away?Math.max(config.maxDriftPct,(Number(det.evidence?.movePct)||0)*(config.driftMovePct||0)/100):config.maxDriftPct;
