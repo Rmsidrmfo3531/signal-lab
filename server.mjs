@@ -6,6 +6,7 @@ import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
 import {exchangePnl} from './exchange_pnl.mjs';
+import {createDailyPnl} from './daily_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
@@ -290,7 +291,7 @@ const venuePositionsReader=COPY.mode==='LIVE'&&copyClient?.mode==='LIVE'&&typeof
  ?createVenuePositionsReader({read:()=>copyClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
-async function copyLiveStatus(){const s=await copyTrader.liveStatus();if(!venuePositionsReader)return s;
+async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status()}:s0;if(!venuePositionsReader)return s;
  const v=await venuePositionsReader.snapshot(s.positions);if(!manualLedger)return {...s,...v};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
  return {...s,...v,manual:manualLedger.status()}}
@@ -326,6 +327,11 @@ const manualLedger=venuePositionsReader?new ManualLedger({directory:storage.dir,
  copyRecords:()=>[...Object.values(copyTrader.store.positions),...copyTrader.store.closed],log:(...a)=>console.log(...a)}):null;
 if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(Object.values(copyTrader.store.positions)));await manualLedger.settle()}
  catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
+// Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
+// copy and manual together, read in the background at most every 5 min; the page gets the cached value (daily).
+const dailyPnl=COPY.mode==='LIVE'&&copyClient?.mode==='LIVE'&&typeof copyClient.income==='function'
+ ?createDailyPnl({client:copyClient,since:Date.parse(process.env.EXCHANGE_PNL_LIVE_SINCE||'2026-11-14T00:00:00+09:00'),log:(...a)=>console.warn(...a)}):null;
+dailyPnl?.start();
 // 되돌림 단타 (5m dip-rebound LONG) on the BingX TESTNET only (scalp_executor.mjs, user 2026-11-14 22:29):
 // its own ledger (scalp-store.json), SCALP_EXEC_MODE=OFF|TESTNET (LIVE refused), disarmed after every start.
 if(SCALP_EXEC.refused)console.warn('[SCALP] SCALP_EXEC_MODE refused:',SCALP_EXEC.refused,'— scalps stay OFF (testnet only)');

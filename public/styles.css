@@ -468,3 +468,22 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 #liveScalpSection summary small{font-weight:400;color:var(--dim);margin-left:6px}
 @media(max-width:690px){.tn-budget{margin:10px 14px 0}.live-metrics .tn-split{padding:9px 12px}#liveScalpSection summary small{display:block;margin:2px 0 0}}
 .tn-scalp-card .tn-tp{font-style:normal;white-space:nowrap}
+/* Daily P&L calendar (user 2026-11-18 "캘린더 느낌으로 내가 하루에 번 돈의 기록"): left column on the desktop, after the
+   stats on phones; 7 columns from Monday, fits ~340-380 px without scrolling. */
+.pnl-cal{margin:6px 0 12px;padding:10px 10px 8px;border:1px solid var(--line);border-radius:10px;background:#0e1b2a;min-width:0}
+.pnl-cal .copy-sub{margin:0 0 6px}
+.cal-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 6px}
+.cal-head strong{font-size:13px}.cal-head button{min-width:34px;height:28px;min-height:0;padding:0 10px;line-height:1}.cal-head button[disabled]{opacity:.35;cursor:default}
+.cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px}
+.cal-dow{text-align:center;font-size:10.5px;color:var(--dim);padding:2px 0}.cal-dow.cal-we{color:#8b9ab0}
+.cal-cell{display:flex;flex-direction:column;justify-content:space-between;min-width:0;min-height:42px;padding:3px 3px 4px;border-radius:6px;background:#0b1622;border:1px solid #16263a;overflow:hidden}
+.cal-cell b{font-size:10.5px;font-weight:600;color:var(--muted);line-height:1.1}
+.cal-cell i{font-style:normal;font-size:9.5px;font-weight:700;letter-spacing:-.02em;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;line-height:1.2}
+.cal-cell.cal-pad{background:transparent;border-color:transparent}
+.cal-cell.cal-off{opacity:.45}
+.cal-cell.cal-up b,.cal-cell.cal-down b{color:var(--text)}
+.cal-cell.cal-today{outline:2px solid var(--accent);outline-offset:-2px}
+.cal-sum{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;margin:8px 0 2px;font-size:11.5px;color:var(--dim)}.cal-sum b{font-weight:700;color:var(--text)}
+.cal-note,.cal-state{margin:4px 0 0;font-size:10.5px;color:var(--dim)}
+.cal-err{color:#ffb4ab;font-weight:600}
+@media(min-width:1100px){.copy-side:has(.pnl-cal){position:static}}

@@ -204,6 +204,54 @@ export function copyStats(c){
  const all=mergedCloses(c),copy=all.filter(x=>x.origin!=='manual'),manualAll=all.filter(x=>x.origin==='manual'),manual=manualAll.filter(x=>x.netUSD!=null&&fin(x.netUSD));
  return {all:one([...copy,...manual]),copy:one(copy),manual:one(manual),pending:manualAll.filter(x=>x.netSource==='PENDING').length};
 }
+// Daily P&L calendar on the 실계좌 page (user 2026-11-18 "캘린더 느낌으로 내가 하루에 번 돈의 기록"): the server's cached
+// BingX income per KST day (c.daily.byDay, copy and manual together), one month at a time, weeks from Monday.
+const KST_MS=9*3600000;
+export const kstDate=t=>new Date(t+KST_MS).toISOString().slice(0,10);
+const ymShift=(ym,d)=>{const [y,m]=ym.split('-').map(Number),t=new Date(Date.UTC(y,m-1+d,1));return t.toISOString().slice(0,7)};
+let calMonth=null; // 'YYYY-MM' shown, null = the current KST month
+export function setCalMonth(ym){calMonth=typeof ym==='string'&&/^\d{4}-\d{2}$/.test(ym)?ym:null}
+export const getCalMonth=()=>calMonth;
+/** Weeks (Monday first) of the month ym ('YYYY-MM'): 7 cells each, null outside the month, else {date, day, value}
+ * (value = the day's net USD, null when the venue has no rows that day). */
+export function calendarWeeks(byDay,ym){
+ const [y,m]=ym.split('-').map(Number),first=new Date(Date.UTC(y,m-1,1)),days=new Date(Date.UTC(y,m,0)).getUTCDate(),lead=(first.getUTCDay()+6)%7;
+ const cells=[...Array(lead).fill(null)];
+ for(let d=1;d<=days;d++){const date=`${ym}-${String(d).padStart(2,'0')}`,v=byDay?.[date];cells.push({date,day:d,value:fin(v)?Number(v):null})}
+ while(cells.length%7)cells.push(null);
+ return Array.from({length:cells.length/7},(_,i)=>cells.slice(i*7,i*7+7));
+}
+/** Month totals: net, profit / loss day counts, best and worst day, the largest absolute day (for the tint). */
+export function monthSummary(byDay,ym){
+ const rows=Object.entries(byDay||{}).filter(([d,v])=>d.startsWith(ym+'-')&&fin(v)).map(([date,v])=>({date,value:Number(v)})).sort((a,b)=>a.date<b.date?-1:1);
+ const net=rows.reduce((a,x)=>a+x.value,0),best=rows.reduce((a,x)=>!a||x.value>a.value?x:a,null),worst=rows.reduce((a,x)=>!a||x.value<a.value?x:a,null);
+ return {days:rows.length,net,wins:rows.filter(x=>x.value>0).length,losses:rows.filter(x=>x.value<0).length,best:best&&best.value>0?best:null,worst:worst&&worst.value<0?worst:null,maxAbs:rows.reduce((a,x)=>Math.max(a,Math.abs(x.value)),0)};
+}
+// Cell amounts fit a ~40 px phone cell: cents under $10, one decimal under $100, whole dollars under $1000, then k
+// (the exact amount is in the cell's title).
+const calAmt=v=>{const a=Math.abs(v),s=v>0?'+':v<0?'−':'';return s+'$'+(a<9.995?a.toFixed(2):a<99.95?a.toFixed(1):a<999.5?Math.round(a).toString():(a/1000).toFixed(1)+'k')};
+const hhmm=t=>new Date(Number(t)+KST_MS).toISOString().slice(11,16);
+export function pnlCalendarHTML(daily,{now=Date.now()}={}){
+ if(!daily||typeof daily!=='object')return '';
+ const today=kstDate(now),thisMonth=today.slice(0,7),sinceDay=fin(daily.since)?kstDate(Number(daily.since)):null;
+ const floor=sinceDay?sinceDay.slice(0,7):ymShift(thisMonth,-12);
+ const ym=calMonth&&calMonth<thisMonth?(calMonth<floor?floor:calMonth):thisMonth;
+ const byDay=daily.byDay&&typeof daily.byDay==='object'?daily.byDay:{},sum=monthSummary(byDay,ym),[yy,mm]=ym.split('-').map(Number);
+ const loaded=fin(daily.at),tint=v=>{if(!(v!==0&&sum.maxAbs>0))return '';const a=(0.1+0.45*Math.min(1,Math.abs(v)/sum.maxAbs)).toFixed(2);return ` style="background:rgba(${v>0?'66,206,172':'241,113,134'},${a})"`};
+ const cell=c=>{if(!c)return '<span class="cal-cell cal-pad"></span>';
+  const before=sinceDay&&c.date<sinceDay,future=c.date>today,v=c.value;
+  const cls=['cal-cell',c.date===today?'cal-today':'',before||future?'cal-off':'',v>0?'cal-up':v<0?'cal-down':''].filter(Boolean).join(' ');
+  const title=`${mm}월 ${c.day}일${v!==null?' '+usd(v):before?' · 기록 범위 밖':future?'':loaded?' · 거래 없음':''}`;
+  return `<span class="${cls}" title="${esc(title)}"${v!==null?tint(v):''}><b>${c.day}</b>${v!==null?`<i class="${v?pnlClass(v):''}">${esc(calAmt(v))}</i>`:''}</span>`};
+ const state=daily.error?`<span class="cal-err" title="${esc(daily.error)}">갱신 실패 · ${loaded?esc(hhmm(daily.at))+' 기준':'불러온 기록 없음'}</span>`
+  :loaded?`<span class="muted">${esc(hhmm(daily.at))} 기준 · 5분마다 갱신</span>`:'<span class="muted">불러오는 중…</span>';
+ const day=x=>x?`${Number(x.date.slice(8))}일 <b class="${pnlClass(x.value)}">${esc(usd(x.value))}</b>`:'—';
+ const foot=`<div class="cal-sum"><span>월 합계 <b class="${sum.days?pnlClass(sum.net):''}">${sum.days?esc(usd(sum.net)):'—'}</b></span><span>수익일 <b class="paper-profit">${sum.wins}</b> · 손실일 <b class="paper-loss">${sum.losses}</b></span>
+  <span>최고 ${day(sum.best)}</span><span>최저 ${day(sum.worst)}</span></div>`+(sinceDay&&sinceDay>`${ym}-01`&&sinceDay.slice(0,7)===ym?`<p class="cal-note">거래소 기록 ${esc(sinceDay)}부터</p>`:'');
+ return `<section class="pnl-cal" aria-label="일별 손익"><h5 class="copy-sub">일별 손익 <small>거래소 기준 · 카피+수동</small></h5>
+ <div class="cal-head"><button type="button" class="outline-btn small" data-cal-month="-1" aria-label="이전 달"${ym<=floor?' disabled':''}>‹</button><strong>${yy}년 ${mm}월</strong><button type="button" class="outline-btn small" data-cal-month="1" aria-label="다음 달"${ym>=thisMonth?' disabled':''}>›</button></div>
+ <div class="cal-grid" data-cal-ym="${esc(ym)}">${'월화수목금토일'.split('').map((d,i)=>`<span class="cal-dow${i>4?' cal-we':''}">${d}</span>`).join('')}${calendarWeeks(byDay,ym).flat().map(cell).join('')}</div>${foot}<p class="cal-state">${state}</p></section>`;
+}
 export function copyHTML(c){
  lastCopy=c;
  if(!c)return '';
@@ -252,7 +300,7 @@ export function copyHTML(c){
  const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>종목</th><th>방향</th><th class="num">추매</th><th>보유 시간</th><th class="num">트레이더 손익</th><th class="num">내 손익</th></tr></thead><tbody>${shown.map(x=>`<tr class="${isMan(x)?'vp-manual':''}"><td class="muted">${when(x.closedAt)}</td><td><b>${esc(x.symbol)}</b> ${manBadge(x)}</td><td>${side(x.direction)}</td><td class="num">${esc(x.adds||0)}회</td><td class="muted">${held(x.openedAt,x.closedAt)}</td><td class="num">${x.theirPnlUSD!=null?money(x.theirPnlUSD):'—'}</td><td class="num"><b class="${cls(x.netUSD)}">${result(x)}</b></td></tr>`).join('')}</tbody></table>`;
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,...fresh);
  const stamp=updated>0?`<p class="copy-stamp">손익·잔고 ${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
- const side_=`<div class="copy-side">${modeLine}${kill}${stats}${rules}${stamp}</div>`;
+ const side_=`<div class="copy-side">${modeLine}${kill}${stats}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건${c.manual?` · 수동 ${esc(c.manual.closedTotal??0)}건`:''}</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
@@ -427,6 +475,8 @@ function bindCopyButtons(el){
   const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
   const fp=e.target.closest('[data-copy-fail-page]');
  if(fp){setCopyFailPage(failPage+Number(fp.dataset.copyFailPage));const box=fp.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);return}
+ const cm=e.target.closest('[data-cal-month]');
+ if(cm){const grid=cm.closest('.pnl-cal')?.querySelector('[data-cal-ym]'),cur=grid?.dataset.calYm;if(cur){const next=ymShift(cur,Number(cm.dataset.calMonth));setCalMonth(next>=kstDate(Date.now()).slice(0,7)?null:next)}const box=cm.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);cm.blur?.();return}
  const pg=e.target.closest('[data-copy-page]');
  if(pg){setCopyPage(copyPage+Number(pg.dataset.copyPage));const box=pg.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);pg.blur?.();return}
  if(resume)return call(resume,'/api/copy/resume',{confirm:'COPY_RESUME'},'다시 시작하는 중…');
