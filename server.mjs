@@ -85,7 +85,7 @@ const CONFIG={
  rotatingBatch:Math.max(5,Math.min(100,Number(process.env.SCAN_ROTATING_BATCH||18))),
  hotBatch:Math.max(5,Math.min(80,Number(process.env.SCAN_HOT_BATCH||12))),
  quoteVolume:Math.max(0,Number(process.env.MIN_DAILY_VOLUME_USDT||5000000)),
- tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
+ tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',tgScannerChat:(process.env.TELEGRAM_SCANNER_CHAT_ID||'').trim(),
  // Paper entries / closes to Telegram (opt-in on the paper page; needs the bot token and chat ID above).
  paperTelegram:process.env.PAPER_TELEGRAM==='true'?true:process.env.PAPER_TELEGRAM==='false'?false:null,
  // Automatic paper trading (new paper positions, 1/5/15m scalps, paper notices) is OFF by default since
@@ -453,6 +453,7 @@ if(copyClient&&COPY.mode==='LIVE'){
 }else if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
 function copyNotice(e){
  if(e?.type==='COPY_SETTLED')reportsDirty=true;
+ if(e?.mode==='LIVE'&&e.type==='ENTRY_RECEIPT'){void manualLedger?.confirmCopyEntry(e.orderId);return}
  if(e?.mode==='LIVE'&&manualLedger&&['OPENED','ADDED','REDUCED','CLOSED'].includes(e.type)){
   reportsDirty=true;void manualLedger.settle();return;
  }
@@ -464,21 +465,24 @@ function copyNotice(e){
 function confirmedRealTradeNotice(e){
  const text=realTradeText(e);if(!text)return;
  reportsDirty=true;
+ // Delayed confirmation is valuable on Telegram. A late real copy entry popup is not timely.
+ if(e.alertOrigin==='COPY'&&e.type==='MANUAL_OPEN'&&Date.now()-e.observedAt>12000)return;
  if(e.alertOrigin==='COPY'||e.alertOrigin==='SIGNAL')try{send('live-notice',{type:e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
 }
 let lastRealTradeTelegramAt=0;
 async function sendRealTradeTelegram(e){
  const text=realTradeText(e);if(!text)return {error:'INVALID_ALERT'};
- if(persisted.notifySettings?.telegramLive===false)return {paused:true,error:'DISABLED'};
- if(!CONFIG.tgToken||!CONFIG.tgChat)return {paused:true,error:'NOT_CONFIGURED'};
+ const chat_id=scannerTelegramChat();
+ if(!CONFIG.tgToken||!chat_id)return {paused:true,error:'SCANNER_NOT_CONFIGURED'};
  const delay=lastRealTradeTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
- if(persisted.notifySettings?.telegramLive===false)return {paused:true,error:'DISABLED'};
  lastRealTradeTelegramAt=Date.now();
- const r=await telegramPost({chat_id:CONFIG.tgChat,text}),body=await r.json().catch(()=>null);
- reportsDirty=true;
- if(r.ok&&body?.ok===true)return {ok:true};
+ let r;
+ try{r=await telegramPost({chat_id,text})}finally{reportsDirty=true}
+ const body=await r.json().catch(()=>null);
+ if(r.ok&&body?.ok===true&&Number.isInteger(body.result?.message_id))return {ok:true,chatType:body.result.chat?.type??null};
  const retrySeconds=Number(body?.parameters?.retry_after??r.headers.get('retry-after'));
- return {error:r.ok?'TELEGRAM_UNCONFIRMED':`HTTP_${r.status}`,retryMs:retrySeconds>0?retrySeconds*1000:0};
+ const error=r.status===401?'BOT_AUTH_FAILED':r.status===403?'BOT_POST_FORBIDDEN':/chat not found/i.test(body?.description??'')?'SCANNER_CHAT_NOT_FOUND':r.ok?'TELEGRAM_UNCONFIRMED':`HTTP_${r.status}`;
+ return {error,retryMs:retrySeconds>0?retrySeconds*1000:0};
 }
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never
@@ -645,7 +649,8 @@ async function refreshMarketStats(){
  try{await marketStatsPending}finally{marketStatsPending=null}
 }
 async function tgNotify(s){
- if(!CONFIG.tgToken||!CONFIG.tgChat)return;
+ const chat_id=scannerTelegramChat();
+ if(!CONFIG.tgToken||!chat_id)return;
  if(persisted.notifySettings?.telegramSignals===false)return; // switched off in 알림 설정
  try{
  // Final-results API is the source of truth. Any later quote/venue rejection
@@ -655,13 +660,14 @@ async function tgNotify(s){
  const urls=state.activeSet.has(matched.symbol)?officialMarketLinks(matched.symbol):null;
  if(!urls){console.warn('Telegram suppressed: market link not verified',s.symbol);return}
  const paperPosition=paper.store.open.find(p=>p.key===signalKey({market:'CRYPTO',symbol:matched.symbol,direction:matched.direction,pattern:matched.pattern,barAt:matched.patternConfirmedAt}));
- const payload={chat_id:CONFIG.tgChat,...telegramMessage(matched,urls,{paperPosition})};
+ const payload={chat_id,...telegramMessage(matched,urls,{paperPosition})};
   const r=await telegramPost(payload);
   if(!r.ok)console.error('Telegram HTTP',r.status);
  }catch{console.error('Telegram delivery unconfirmed')}
 }
 // The one Telegram transport. Callers: final signals (tgNotify, guarded by the final results) and
 // opt-in paper entry/close notices (paperTelegram, simulation text only).
+function scannerTelegramChat(){return CONFIG.tgScannerChat||CONFIG.tgChat.trim()}
 function telegramPost(payload){
  return fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
@@ -789,7 +795,7 @@ async function uploadReport(force=false){
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange});
   report.release=appVersion.displayVersion;
   if(manualLedger)report.manualAlerts={...manualLedger.alertStatus(),telegram:{...manualLedger.telegramStatus(),
-   enabled:persisted.notifySettings?.telegramLive!==false,configured:Boolean(CONFIG.tgToken&&CONFIG.tgChat)}};
+   enabled:true,configured:Boolean(CONFIG.tgToken&&scannerTelegramChat()),destination:'SCANNER_CHANNEL'}};
   if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
    balanceAsset:b.balanceAsset,balanceRefreshMs:TESTNET_BALANCE_REFRESH_MS,balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();

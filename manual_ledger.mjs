@@ -106,13 +106,13 @@ export class ManualLedger{
    managedFast:Array.isArray(saved?.managedFast)?saved.managedFast:[],
    copyAlertsSince:saved?.copyAlertsSince??null,alertOrders:Array.isArray(saved?.alertOrders)?saved.alertOrders:[],
    telegramQueue:Array.isArray(saved?.telegramQueue)?saved.telegramQueue:[],telegramSent:saved?.telegramSent??0,telegramByOrigin:saved?.telegramByOrigin??{},
-   telegramLastAt:saved?.telegramLastAt??null,telegramError:saved?.telegramError??null};
+   telegramLastAt:saved?.telegramLastAt??null,telegramChatType:saved?.telegramChatType??null,telegramError:saved?.telegramError??null};
   if(Array.isArray(saved?.reductions))for(const note of saved.reductions)this.#queueAlert(note,note,note.fromAt);
   for(const row of this.store.closed){
    if(row.notifySettlement&&row.exitNote)this.#queueAlert(row,row.exitNote,row.exitNote.fromAt);
    delete row.notifySettlement;delete row.exitNote;
   }
-  this.fillSides=new Map();this.copyAlertRetries=new Map();this.delivery=null;
+  this.fillSides=new Map();this.copyAlertRetries=new Map();this.copyEntryTasks=new Map();this.delivery=null;
   this.historyAttempts=new Map();this.lastHistoryAt=null;
   this.lastPositionKeys=new Set();
   this.lastReadAt=0;this.started=false;this.candidates=new Map();this.settling=null;this.notices=[];
@@ -366,7 +366,8 @@ export class ManualLedger{
   return changed;
  }
  async #copyAlert({p,o,stage,key},now){
-  const symbol=p.venueSymbol,orderId=String(o.id),response=await this.client.getOrder(symbol,{orderId}),order=response?.order??response;
+  const symbol=p.venueSymbol,orderId=String(o.id);
+  const response=stage.receipt?.updateTime?stage.receipt:await this.client.getOrder(symbol,{orderId}),order=response?.order??response;
   if(String(order?.orderId??order?.orderID)!==orderId||order?.symbol!==symbol||String(order?.side).toUpperCase()!==o.side)return null;
   if(!['FILLED','CANCELED','CANCELLED','EXPIRED'].includes(String(order.status).toUpperCase()))return null;
   const size=num(order.executedQty),avg=num(order.avgPrice);
@@ -401,6 +402,25 @@ export class ManualLedger{
   const to=from-size<=qtyTolerance(from)?0:from-size;
   return {type:to===0?'MANUAL_SETTLED':'MANUAL_REDUCE',detail:{...detail,from,to,netSource:'EXCHANGE_FILLS',netUSD:Number((pnl+fee).toFixed(12))}};
  }
+ confirmCopyEntry(orderId){
+  if(!this.copyOrderAlerts||!orderId)return Promise.resolve();
+  const existing=this.copyEntryTasks.get(orderId);if(existing)return existing;
+  const p=this.#copyList().find(x=>x.alertOrigin==='COPY'&&x.fillOrders?.some(o=>o.id===orderId));
+  const o=p?.fillOrders.find(o=>o.id===orderId),stage=o?.notice;
+  if(!/^open\./.test(stage?.tag??''))return Promise.resolve();
+  const key=alertOrderKey(p.venueSymbol,orderId);
+  const run=(async()=>{
+   for(const delay of [0,750,1500]){
+    if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
+    if(this.store.alertOrders.includes(key))return;
+    let event;
+    try{event=await this.#copyAlert({p,o,stage,key},this.now())}catch{}
+    if(!event)continue;
+    this.#event(event.type,event.detail,true);this.#save();void this.deliverAlerts();return;
+   }
+  })().catch(()=>this.log('[MANUAL] copy entry receipt failed')).finally(()=>this.copyEntryTasks.delete(orderId));
+  this.copyEntryTasks.set(orderId,run);return run;
+ }
  deliverAlerts(){
   if(!this.sendTelegram||!this.store.telegramQueue.length)return Promise.resolve();
   if(!this.delivery)this.delivery=this.#deliverAlerts().catch(()=>this.log('[MANUAL] Telegram queue failed')).finally(()=>{this.delivery=null});
@@ -414,7 +434,7 @@ export class ManualLedger{
    if(outcome?.ok){
     this.store.telegramQueue=this.store.telegramQueue.filter(x=>x!==item);this.store.telegramSent++;
     const origin=item.event.alertOrigin??'MANUAL';this.store.telegramByOrigin[origin]=(this.store.telegramByOrigin[origin]??0)+1;
-    this.store.telegramLastAt=this.now();this.store.telegramError=null;
+    this.store.telegramLastAt=this.now();this.store.telegramChatType=['channel','supergroup','group','private'].includes(outcome.chatType)?outcome.chatType:null;this.store.telegramError=null;
    }else{
     item.attempts=(item.attempts??0)+1;
     item.nextAt=this.now()+Math.max(outcome?.retryMs??0,Math.min(15*60000,15000*2**Math.min(item.attempts-1,6)));
@@ -606,7 +626,8 @@ export class ManualLedger{
   for(const e of confirmed){const key=e.alertOrigin??'MANUAL';byOrigin[key]=(byOrigin[key]??0)+1}
   return {pending:this.store.pendingAlerts.length,confirmedRecent:confirmed.length,byOrigin};
  }
- telegramStatus(){return {pending:this.store.telegramQueue.length,sent:this.store.telegramSent,byOrigin:{...this.store.telegramByOrigin},lastAt:this.store.telegramLastAt,error:this.store.telegramError}}
+ telegramStatus(){return {pending:this.store.telegramQueue.length,sent:this.store.telegramSent,byOrigin:{...this.store.telegramByOrigin},lastAt:this.store.telegramLastAt,
+  chatType:this.store.telegramChatType,error:this.store.telegramError}}
  /** For the page: open records, the last 200 closes (newest first, origin manual) and totals of the settled ones. */
  status(){
   const pub=x=>{const {claimed,missing,goneAt,notifySettlement,exitNote,historyFillKeys,...rest}=x;return {...rest,origin:'manual'}};
