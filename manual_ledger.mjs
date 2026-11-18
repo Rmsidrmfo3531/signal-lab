@@ -106,7 +106,7 @@ export class ManualLedger{
    managedFast:Array.isArray(saved?.managedFast)?saved.managedFast:[],
    copyAlertsSince:saved?.copyAlertsSince??null,alertOrders:Array.isArray(saved?.alertOrders)?saved.alertOrders:[],
    telegramQueue:Array.isArray(saved?.telegramQueue)?saved.telegramQueue:[],telegramSent:saved?.telegramSent??0,telegramByOrigin:saved?.telegramByOrigin??{},
-   telegramLastAt:saved?.telegramLastAt??null,telegramError:saved?.telegramError??null};
+   telegramLastAt:saved?.telegramLastAt??null,telegramChatType:saved?.telegramChatType??null,telegramError:saved?.telegramError??null};
   if(Array.isArray(saved?.reductions))for(const note of saved.reductions)this.#queueAlert(note,note,note.fromAt);
   for(const row of this.store.closed){
    if(row.notifySettlement&&row.exitNote)this.#queueAlert(row,row.exitNote,row.exitNote.fromAt);
@@ -414,7 +414,7 @@ export class ManualLedger{
    if(outcome?.ok){
     this.store.telegramQueue=this.store.telegramQueue.filter(x=>x!==item);this.store.telegramSent++;
     const origin=item.event.alertOrigin??'MANUAL';this.store.telegramByOrigin[origin]=(this.store.telegramByOrigin[origin]??0)+1;
-    this.store.telegramLastAt=this.now();this.store.telegramError=null;
+    this.store.telegramLastAt=this.now();this.store.telegramChatType=['channel','supergroup','group','private'].includes(outcome.chatType)?outcome.chatType:null;this.store.telegramError=null;
    }else{
     item.attempts=(item.attempts??0)+1;
     item.nextAt=this.now()+Math.max(outcome?.retryMs??0,Math.min(15*60000,15000*2**Math.min(item.attempts-1,6)));
@@ -606,7 +606,8 @@ export class ManualLedger{
   for(const e of confirmed){const key=e.alertOrigin??'MANUAL';byOrigin[key]=(byOrigin[key]??0)+1}
   return {pending:this.store.pendingAlerts.length,confirmedRecent:confirmed.length,byOrigin};
  }
- telegramStatus(){return {pending:this.store.telegramQueue.length,sent:this.store.telegramSent,byOrigin:{...this.store.telegramByOrigin},lastAt:this.store.telegramLastAt,error:this.store.telegramError}}
+ telegramStatus(){return {pending:this.store.telegramQueue.length,sent:this.store.telegramSent,byOrigin:{...this.store.telegramByOrigin},lastAt:this.store.telegramLastAt,
+  chatType:this.store.telegramChatType,error:this.store.telegramError}}
  /** For the page: open records, the last 200 closes (newest first, origin manual) and totals of the settled ones. */
  status(){
   const pub=x=>{const {claimed,missing,goneAt,notifySettlement,exitNote,historyFillKeys,...rest}=x;return {...rest,origin:'manual'}};

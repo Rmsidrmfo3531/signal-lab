@@ -469,16 +469,17 @@ function confirmedRealTradeNotice(e){
 let lastRealTradeTelegramAt=0;
 async function sendRealTradeTelegram(e){
  const text=realTradeText(e);if(!text)return {error:'INVALID_ALERT'};
- if(persisted.notifySettings?.telegramLive===false)return {paused:true,error:'DISABLED'};
- if(!CONFIG.tgToken||!CONFIG.tgChat)return {paused:true,error:'NOT_CONFIGURED'};
+ const chat_id=scannerTelegramChat();
+ if(!CONFIG.tgToken||!chat_id)return {paused:true,error:'SCANNER_NOT_CONFIGURED'};
  const delay=lastRealTradeTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
- if(persisted.notifySettings?.telegramLive===false)return {paused:true,error:'DISABLED'};
  lastRealTradeTelegramAt=Date.now();
- const r=await telegramPost({chat_id:CONFIG.tgChat,text}),body=await r.json().catch(()=>null);
- reportsDirty=true;
- if(r.ok&&body?.ok===true)return {ok:true};
+ let r;
+ try{r=await telegramPost({chat_id,text})}finally{reportsDirty=true}
+ const body=await r.json().catch(()=>null);
+ if(r.ok&&body?.ok===true&&Number.isInteger(body.result?.message_id))return {ok:true,chatType:body.result.chat?.type??null};
  const retrySeconds=Number(body?.parameters?.retry_after??r.headers.get('retry-after'));
- return {error:r.ok?'TELEGRAM_UNCONFIRMED':`HTTP_${r.status}`,retryMs:retrySeconds>0?retrySeconds*1000:0};
+ const error=r.status===401?'BOT_AUTH_FAILED':r.status===403?'BOT_POST_FORBIDDEN':/chat not found/i.test(body?.description??'')?'SCANNER_CHAT_NOT_FOUND':r.ok?'TELEGRAM_UNCONFIRMED':`HTTP_${r.status}`;
+ return {error,retryMs:retrySeconds>0?retrySeconds*1000:0};
 }
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never
@@ -645,7 +646,8 @@ async function refreshMarketStats(){
  try{await marketStatsPending}finally{marketStatsPending=null}
 }
 async function tgNotify(s){
- if(!CONFIG.tgToken||!CONFIG.tgChat)return;
+ const chat_id=scannerTelegramChat();
+ if(!CONFIG.tgToken||!chat_id)return;
  if(persisted.notifySettings?.telegramSignals===false)return; // switched off in 알림 설정
  try{
  // Final-results API is the source of truth. Any later quote/venue rejection
@@ -655,13 +657,14 @@ async function tgNotify(s){
  const urls=state.activeSet.has(matched.symbol)?officialMarketLinks(matched.symbol):null;
  if(!urls){console.warn('Telegram suppressed: market link not verified',s.symbol);return}
  const paperPosition=paper.store.open.find(p=>p.key===signalKey({market:'CRYPTO',symbol:matched.symbol,direction:matched.direction,pattern:matched.pattern,barAt:matched.patternConfirmedAt}));
- const payload={chat_id:CONFIG.tgChat,...telegramMessage(matched,urls,{paperPosition})};
+ const payload={chat_id,...telegramMessage(matched,urls,{paperPosition})};
   const r=await telegramPost(payload);
   if(!r.ok)console.error('Telegram HTTP',r.status);
  }catch{console.error('Telegram delivery unconfirmed')}
 }
 // The one Telegram transport. Callers: final signals (tgNotify, guarded by the final results) and
 // opt-in paper entry/close notices (paperTelegram, simulation text only).
+function scannerTelegramChat(){return String(process.env.TELEGRAM_SCANNER_CHAT_ID??'').trim()||CONFIG.tgChat.trim()}
 function telegramPost(payload){
  return fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
@@ -789,7 +792,7 @@ async function uploadReport(force=false){
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange});
   report.release=appVersion.displayVersion;
   if(manualLedger)report.manualAlerts={...manualLedger.alertStatus(),telegram:{...manualLedger.telegramStatus(),
-   enabled:persisted.notifySettings?.telegramLive!==false,configured:Boolean(CONFIG.tgToken&&CONFIG.tgChat)}};
+   enabled:true,configured:Boolean(CONFIG.tgToken&&scannerTelegramChat()),destination:'SCANNER_CHANNEL'}};
   if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
    balanceAsset:b.balanceAsset,balanceRefreshMs:TESTNET_BALANCE_REFRESH_MS,balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();
