@@ -173,3 +173,11 @@ test('open position shows margin in use and realized result so far (venue figure
  const est=livePositionView({...base,position:{size:1000,entryPrice:0.2,at:NOWX-5000}},{now:NOWX});
  assert.deepEqual(est.margin,{usd:20,source:'ESTIMATE'});assert.equal(est.realizedOpen,null);
 });
+
+test('the rules identify 9% as signal-only when the shared testnet budget is 15%',()=>{
+ const limits=liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_DAILY_MAX_LOSS_PCT:'9'});
+ const rows=Object.fromEntries(liveRows({mode:'TESTNET',limits,testnet:{budget:{dailyLossPct:15,marginCapPct:30}}}));
+ assert.match(rows['위험 프로필'],/신호 자체 열린 위험·하루 9%/);
+ assert.doesNotMatch(rows['위험 프로필'],/공동/);
+ assert.match(rows['테스트넷 공동 한도'],/신호\+단타 하루 손실·열린 위험 15%/);
+});

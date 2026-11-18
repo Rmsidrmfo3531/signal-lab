@@ -120,17 +120,17 @@ export function copyConfig(env=process.env,liveMode='OFF'){
 }
 
 export class CopyExecutor{
- constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
-  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,isBusy,balance,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
+ constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),entryGateRevision=()=>null,isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
+  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,entryGateRevision,isBusy,balance,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
   // An order in flight does not survive a restart.
   for(const p of Object.values(this.store.positions))delete p.inflight;
-  this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;
+  this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;this.entryRevision=0;
  }
  arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
- disarm(){this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
+ disarm(){this.entryRevision++;this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
  #save(){if(!this.file)return;this.store.closed=this.store.closed.slice(-MAX_CLOSED);this.store.events=this.store.events.slice(-MAX_EVENTS);this.store.seen=this.store.seen.slice(-MAX_SEEN);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...this.store})}
  #event(type,detail={}){const cur=this.curMsg,e={type,at:this.now(),mode:this.config.mode,...(detail.symbol&&cur?.symbol===detail.symbol&&cur.direction?{direction:cur.direction}:{}),...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
@@ -150,10 +150,15 @@ export class CopyExecutor{
   return this.status();
  }
  /** One channel message ({id, date (ms), text}); processed one at a time, each id once. */
- handle(message){this.pendingCount=(this.pendingCount||0)+1;const p=this.queue.then(()=>this.#handle(message)).finally(()=>{this.pendingCount--});this.queue=p.catch(()=>{});return p}
+ handle(message){
+  const entry={revision:this.entryRevision,gateRevision:this.entryGateRevision()};
+  this.pendingCount=(this.pendingCount||0)+1;
+  const p=this.queue.then(()=>this.#handle(message,entry)).finally(()=>{this.pendingCount--});
+  this.queue=p.catch(()=>{});return p;
+ }
  /** No message being processed (the update restart waits for this). */
  idle(){return !(this.pendingCount>0)}
- async #handle({id,date,text}){
+ async #handle({id,date,text},entry){
   const key=String(id??createHash('sha1').update(String(text)).digest('hex'));
   if(this.store.seen.includes(key))return {ok:true,duplicate:true};
   const m=parseCopyMessage(text);
@@ -175,7 +180,7 @@ export class CopyExecutor{
   if(!this.config.enabled){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_OFF'});this.#save();return {ok:false,reason:'COPY_OFF'}}
   this.step=null;
   try{
-   const r=m.kind==='OPEN'?await this.#open(m,at):m.kind==='CHANGE'?await this.#change(m,at):await this.#close(m,'TRADER_CLOSE');
+   const r=m.kind==='OPEN'?await this.#open(m,at,entry):m.kind==='CHANGE'?await this.#change(m,at,entry):await this.#close(m,'TRADER_CLOSE');
    // Our ledger may close this position just now (found gone on the venue): the trader's close comes after it.
    if(m.kind==='CLOSE'||(m.kind==='CHANGE'&&m.to===0))this.store.lastTraderCloseAt[this.#key(m)]=this.now();
    this.#save();return r;
@@ -201,12 +206,12 @@ export class CopyExecutor{
  /** A new order tag: p.orderSeq goes up on every new order, failed ones included, so a later order never
   * reuses an earlier clientOrderId (review 2026-11-17). Retries of the same order keep its tag. */
  #tag(p,kind){p.orderSeq=(Number(p.orderSeq)||0)+1;return `${kind}.${p.orderSeq}`}
- async #market(p,side,quantity,{reduceOnly=false,tag}){
+ async #market(p,side,quantity,{reduceOnly=false,tag,beforeSend}){
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
   const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:this.#clientId(p,tag)};
   // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
   if(reduceOnly&&p.hedge!==true)params.reduceOnly='true';
-  const res=orderOf(await this.client.placeOrder(params));return {orderId:res?.orderId??null,avg:pos(res?.avgPrice)};
+  const res=orderOf(await this.client.placeOrder(params,{beforeSend}));return {orderId:res?.orderId??null,avg:pos(res?.avgPrice)};
  }
  #clientId(p,tag){return ('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)}
  /** Entry / add market order with a bounded retry when the request got no venue answer (user 2026-11-17: three
@@ -218,36 +223,63 @@ export class CopyExecutor{
   *    answers "order does not exist" (80016) AND the venue size has not moved by one quantity step. Anything
   *    else (lookup failed, size moved, no lookup call) -> not sent (an under-fill rather than a double fill).
   * A venue error code is never retried here. event: ENTRY_RETRY / ADD_RETRY. p.inflight marks it meanwhile. */
- async #send(p,side,quantity,{tag},{event,before,step}){
+ async #send(p,side,quantity,{tag},{event,before,step,entry,marginUSD}){
+  const margin=await this.#orderMargin(marginUSD);
+  const blocked=this.#sendBlock(p,entry),orderBlock=blocked?{reason:blocked}:margin;
+  if(orderBlock)throw Object.assign(Error(orderBlock.reason),{code:orderBlock.reason,orderBlock});
   const cid=this.#clientId(p,tag),started=Date.now(),delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[];
   if(event==='ENTRY_RETRY')p.entryCids=[...(p.entryCids||[]),cid]; // looked up again before the ledger drops or adopts it
+  const sendMarket=async()=>{
+   try{return await this.#market(p,side,quantity,{tag,beforeSend:()=>this.#sendBlock(p,entry)})}
+   catch(e){
+    if(e?.code==='ENTRY_NOT_SENT')throw Object.assign(Error(e.reason),{code:e.reason,orderBlock:{reason:e.reason}});
+    throw e;
+   }
+  };
   let error;p.inflight=true;
   try{
-   try{return await this.#market(p,side,quantity,{tag})}catch(e){if(!noVenueAnswer(e))throw e;error=e}
+   try{return await sendMarket()}catch(e){if(!noVenueAnswer(e))throw e;error=e}
    for(let i=0;i<delays.length;i++){
     const attempt=i+2,ev=(outcome,extra={})=>this.#event(event,{symbol:p.symbol,attempt,reason:error.code||error.name,outcome,...extra,clientOrderId:cid,
      detail:`${attempt}차 시도 · ${{ALREADY_FILLED:'앞 주문이 이미 체결됨(다시 보내지 않음)',UNVERIFIED:'체결 여부 확인 불가(보내지 않음)',RESENT:'같은 주문 번호로 다시 보냄',BUDGET:'재시도 시간 한도(약 30초) 초과'}[outcome]}`});
     if(Date.now()-started+delays[i]>this.retryBudgetMs){ev('BUDGET');break}
     await this.sleep(delays[i]);
+    const margin=await this.#orderMargin(marginUSD);
     const seen=await this.#orderOutcome(p,cid,{before,step});
     if(seen.filled){ev('ALREADY_FILLED',{via:seen.via});return {orderId:seen.orderId??null,avg:seen.avg??null,qty:seen.qty??null}}
     if(!seen.absent){ev('UNVERIFIED',seen.why?{why:seen.why}:{});continue}
-    const block=this.#resendBlock(p);
+    const block=this.#sendBlock(p,entry)||margin?.reason;
     if(block){this.#event('RETRY_ABANDONED',{symbol:p.symbol,kind:event,attempt,reason:block,clientOrderId:cid,detail:`다시 보내기 전 상태 변경(${block}) — 보내지 않음`});
      throw Object.assign(Error('RETRY_ABANDONED'),{code:'RETRY_ABANDONED',cause:block})}
+    if(Date.now()-started>this.retryBudgetMs){ev('BUDGET');break}
     ev('RESENT');
-    try{return await this.#market(p,side,quantity,{tag})}catch(e){if(!noVenueAnswer(e))throw e;error=e}
+    try{return await sendMarket()}catch(e){if(!noVenueAnswer(e))throw e;error=e}
    }
    throw error;
   }finally{p.inflight=false}
  }
- /** Why an entry / add must not be sent again now (null: it may). */
- #resendBlock(p){
+ /** Both account values must be present for the margin checks before an entry, add, or resend. */
+ async #orderMargin(need){
+  if(!Number.isFinite(need)||need<=0)return {reason:'PRICE_UNVERIFIED'};
+  let funds;try{funds=await this.balance()}catch{}
+  const equity=pos(funds?.equity),raw=funds?.available;
+  const free=raw==null||String(raw).trim()===''?null:num(raw);
+  if(!equity||free===null)return {reason:'NO_BALANCE'};
+  const used=Object.values(this.store.positions).filter(p=>p.status==='OPEN')
+   .reduce((total,p)=>total+(p.qty||0)*(p.avg||0)/(p.leverage||1),0);
+  const remaining=equity*this.config.maxTotalMarginPct/100-used;
+  if(need>remaining)return {reason:'COPY_MARGIN_CAP',need:+need.toFixed(2),free:+remaining.toFixed(2)};
+  if(need>free*.9)return {reason:'MARGIN_SHORT',need:+need.toFixed(2),free};
+  return null;
+ }
+ #sendBlock(p,entry){
   if(this.store.positions[this.#key(p)]!==p||p.status!=='OPEN')return 'POSITION_NOT_OPEN';
   if(p.closing)return 'CLOSING';
   if(this.store.killed)return 'COPY_LOSS_LIMIT';
   let g;try{g=this.gate()}catch{g={ok:false,reason:'GATE_ERROR'}}
-  return g?.ok?null:g?.reason||'GATE_CLOSED';
+  if(!g?.ok)return g?.reason||'GATE_CLOSED';
+  if(entry.revision!==this.entryRevision||entry.gateRevision!==this.entryGateRevision())return 'ENTRY_INTERRUPTED';
+  return null;
  }
  /** Did the order with this clientOrderId go through? {filled} / {absent} (BingX says it does not exist and the
   * position has not moved by a quantity step) / {} (cannot tell: never resent). */
@@ -386,7 +418,7 @@ export class CopyExecutor{
   if(!own||['TRADER_CLOSE','TRADER_CUT_ALL'].includes(own.closeReason))return null;
   return (this.store.lastTraderCloseAt[key]||0)>=(own.closedAt||0)?null:own;
  }
- async #open(m,at){
+ async #open(m,at,entry){
   const key=this.#key(m),prev=this.store.positions[key];
   if(prev?.status!=='OPEN'){const own=this.#lastOwnClose(m);if(own&&!externalClose(own)){this.#event('SKIPPED',{symbol:m.symbol,reason:'OUR_COPY_CLOSED',detail:`우리가 ${new Date(own.closedAt).toISOString().slice(11,16)}Z에 먼저 정리(${CLOSE_KO[closeLabelKey(own)]||closeLabelKey(own)}) · 트레이더 청산 뒤에 다시 따라감`,causeDetail:closeLabelKey(own)});return {ok:false,reason:'OUR_COPY_CLOSED'}}
    // A confirmed manual close (user 2026-11-17): followed again, marked on the entry.
@@ -399,7 +431,7 @@ export class CopyExecutor{
    prev.lastTheirEntry=m.entry;prev.lastTheirQty=m.quantity;prev.lastTheirAt=at;
    // The trader's total follows the trader, whether or not our buy goes through.
    if(prev.theirTotal>0)prev.theirTotal+=m.quantity;
-   return this.#buyMore(prev,m,m.quantity,{price:pos(m.price)??pos(m.entry)});
+   return this.#buyMore(prev,m,m.quantity,{price:pos(m.price)??pos(m.entry),entry});
   }
   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs){this.#event('SKIPPED',{symbol:m.symbol,reason:'MONITOR_RESTART_SNAPSHOT'});return {ok:false,reason:'SNAPSHOT'}}
   const g=this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
@@ -411,9 +443,9 @@ export class CopyExecutor{
   if(this.store.killed){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_LOSS_LIMIT'});return {ok:false,reason:'COPY_LOSS_LIMIT'}}
   // Reserved before the first venue call, so the signal strategy cannot enter the same symbol meanwhile.
   this.reserved.add(m.symbol);
-  try{return await this.#openReserved(m,at,key)}finally{this.reserved.delete(m.symbol)}
+  try{return await this.#openReserved(m,at,key,entry)}finally{this.reserved.delete(m.symbol)}
  }
- async #openReserved(m,at,key){
+ async #openReserved(m,at,key,entry){
   const c=await this.#contract(m.symbol),venueSymbol=c.venueSymbol||venueSymbolOf(m.symbol);
   // A '- → q' change has no leverage: the last one seen for the symbol (else 10).
   if(m.leverage)this.store.leverageOf[m.symbol]=m.leverage;
@@ -469,10 +501,6 @@ export class CopyExecutor{
   // (within 30 %), else it may be a contract count and is not traded.
   if(scale!=null&&m.marginUSD>0&&m.leverage>0){const implied=m.quantity*(price/mult)/(m.marginUSD*m.leverage);
    if(implied<.7||implied>1.3)throw Object.assign(Error('QUANTITY_UNIT_UNCLEAR'),{code:'QUANTITY_UNIT_UNCLEAR'})}
-  {const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
-   if(eq&&used+qty*price/leverage>eq*this.config.maxTotalMarginPct/100){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_MARGIN_CAP'});return {ok:false,reason:'COPY_MARGIN_CAP'}}
-   // Entries too must fit in 90 % of the free margin (the same check as the adds).
-   const free=num(bal?.available);if(free!==null&&qty*price/leverage>free*.9){this.#event('SKIPPED',{symbol:m.symbol,reason:'MARGIN_SHORT',need:+(qty*price/leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}}
   // A venue minimum far above the planned size (an expensive stock perp, a low leverage) is not taken.
   if(minOrder&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
@@ -482,23 +510,31 @@ export class CopyExecutor{
   try{const zones=await Promise.race([this.zonesOf(m.symbol,{tickSize:c.tickSize}),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
   this.store.positions[key]=p;
+  const skipBeforeSend=block=>{
+   if(this.store.positions[key]===p)delete this.store.positions[key];
+   this.#event('SKIPPED',{symbol:m.symbol,...block});
+   return {ok:false,reason:block.reason};
+  };
+  const sendOpen=()=>this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:this.#tag(p,'open')},
+   {event:'ENTRY_RETRY',before:0,step:c.quantityStep,entry,marginUSD:qty*Math.max(price,venuePrice||0)/leverage});
   let fill;
   // The venue position was checked empty above: before = 0 for the retry check.
-  try{fill=await this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:this.#tag(p,'open')},{event:'ENTRY_RETRY',before:0,step:c.quantityStep})}
+  try{fill=await sendOpen()}
   catch(error){
+   if(error.orderBlock)return skipBeforeSend(error.orderBlock);
    // 101400 is a refusal (nothing filled). When it names the venue minimum, one more try at that minimum
    // if it still fits the same margin limits; otherwise the ledger entry is dropped, so no empty position
    // is left to be closed later as "external".
    const need=error.code==='VENUE_ERROR_101400'?this.#venueMinimum(c,error.message,minPrice):null;
    // The same limits as the first order (5 $ minimum-order margin, the copy margin cap, 90 % of the free
    // margin), measured at the higher of the card and venue prices.
-   const bal=need>qty?await this.balance().catch(()=>null):null,eq=pos(bal?.equity),free=num(bal?.available);
-   const margin=need?need*Math.max(price,venuePrice>0?venuePrice:0)/leverage:Infinity;
-   const used=Object.values(this.store.positions).filter(x=>x.status==='OPEN'&&x!==p).reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
-   if(need>qty&&margin<=this.config.minOrderMaxMarginUSD&&!(eq&&used+margin>eq*this.config.maxTotalMarginPct/100)&&(free===null||margin<=free*.9)){
+   const margin=need?need*Math.max(price,venuePrice||0)/leverage:Infinity;
+   if(need>qty&&margin<=this.config.minOrderMaxMarginUSD){
     this.#event('ENTRY_RETRY_MIN',{symbol:m.symbol,from:qty,to:need});qty=need;p.firstQty=need;p.minOrder=true;
-    try{fill=await this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:this.#tag(p,'open')},{event:'ENTRY_RETRY',before:0,step:c.quantityStep})}
-    catch(e2){if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(e2.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw e2}}
+    try{fill=await sendOpen()}
+    catch(e2){
+     if(e2.orderBlock)return skipBeforeSend(e2.orderBlock);
+     if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(e2.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw e2}}
    // RETRY_ABANDONED comes only after BingX said the order does not exist: nothing to keep either.
    else{if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(error.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw error}}
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
@@ -534,10 +570,10 @@ export class CopyExecutor{
   if(lastClose)return {cause:externalClose(p)?'COPY_CLOSED_EXTERNALLY':'OUR_COPY_CLOSED',causeAt:lastClose,causeDetail:closeLabelKey(p)};
   return {cause:'NO_ENTRY_RECEIVED'};
  }
- async #change(m,at){
+ async #change(m,at,entry){
   const key=this.#key(m),p=this.store.positions[key];
   if(m.to===0)return this.#close(m,'TRADER_CLOSE');
-  if(m.from===0&&(!p||p.status!=='OPEN'))return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to},at);
+  if(m.from===0&&(!p||p.status!=='OPEN'))return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to},at,entry);
   if(!p||p.status!=='OPEN'){
    const why=this.#whyNotCopied(m,p);
    // Late entry (user 2026-11-14): the trader adds to a position we never got into -> enter now as a new
@@ -546,13 +582,13 @@ export class CopyExecutor{
    // it is entered again (#open marks it refollow).
    if(this.config.lateEntry&&m.to>m.from&&why.cause!=='OUR_COPY_CLOSED'){
     this.#event('LATE_ENTRY',{symbol:m.symbol,from:m.from,to:m.to,...why});
-    return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to,late:true},at);
+    return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to,late:true},at,entry);
    }
    this.#event('SKIPPED',{symbol:m.symbol,reason:'NOT_COPIED',from:m.from,to:m.to,...why});return {ok:false,reason:'NOT_COPIED'}}
   const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#recheck(p,await this.#position(p));p.qty=now.size;
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   if(ratio>1){
-   p.theirTotal=m.to;return this.#buyMore(p,m,m.to-m.from,{price:pos(m.price),ratio,c,now});
+   p.theirTotal=m.to;return this.#buyMore(p,m,m.to-m.from,{price:pos(m.price),ratio,c,now,entry});
   }else{
    const down=this.#qty(c,p.qty*(1-ratio)),up=this.#qty(c,p.qty*(1-ratio),'UP'),want=p.qty*(1-ratio);
    const cut=Math.min(p.qty,want-down<=up-want?down:up);if(!(cut>0))return {ok:true,tooSmall:true};
@@ -566,7 +602,7 @@ export class CopyExecutor{
  }
  // One more buy of the trader's `theirQty`: 1 $ x theirQty / their first quantity (when known), else the
  // same proportion of our position as theirQty is of theirs.
- async #buyMore(p,m,theirQty,{price,ratio=null,c=null,now=null}={}){
+ async #buyMore(p,m,theirQty,{price,ratio=null,c=null,now=null,entry}={}){
   c??=await this.#contract(p.symbol);now??=await this.#recheck(p,await this.#position(p));p.qty=now.size;
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
@@ -583,11 +619,15 @@ export class CopyExecutor{
    buy=this.#qty(c,raw);if(!(buy>0)||buy<minQ||buy*price<minN){p.addCarry=raw;this.#event('ADD_CARRIED',{symbol:p.symbol,carry:+raw.toPrecision(6)});return {ok:true,carried:true}}
    p.addCarry=Math.max(0,raw-buy)}
   else if(!(add>0))return {ok:true,tooSmall:true};
-  const bal=await this.balance().catch(()=>null),free=num(bal?.available);
-  const eq=pos(bal?.equity),used=Object.values(this.store.positions).filter(x=>x.status==='OPEN').reduce((t,x)=>t+(x.qty||0)*(x.avg||0)/(x.leverage||1),0);
-  if(eq&&used+buy*price/p.leverage>eq*this.config.maxTotalMarginPct/100){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_MARGIN_CAP',need:+(buy*price/p.leverage).toFixed(2),free:+(eq*this.config.maxTotalMarginPct/100-used).toFixed(2)});return {ok:false,reason:'COPY_MARGIN_CAP'}}
-  if(free!==null&&buy*price/p.leverage>free*.9){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MARGIN_SHORT',need:+(buy*price/p.leverage).toFixed(2),free});return {ok:false,reason:'MARGIN_SHORT'}}
-  const fill=await this.#send(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:this.#tag(p,'add')},{event:'ADD_RETRY',before:p.qty,step:c.quantityStep});p.adds++;
+  let fill;
+  try{fill=await this.#send(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:this.#tag(p,'add')},
+   {event:'ADD_RETRY',before:p.qty,step:c.quantityStep,entry,marginUSD:buy*Math.max(price,now.mark||0)/p.leverage})}
+  catch(e){
+   if(!e.orderBlock)throw e;
+   this.#event('ADD_SKIPPED',{symbol:p.symbol,...e.orderBlock});
+   return {ok:false,reason:e.orderBlock.reason};
+  }
+  p.adds++;
   p.steps.push({kind:'ADD',at:this.now(),qty:fill.qty??buy,avg:fill.avg,theirQty,marginUSD});this.#save();
   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('ADDED',{symbol:p.symbol,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});

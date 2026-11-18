@@ -141,7 +141,7 @@ export function scalpSplits(total,step,minPart=0){
 
 /** The order plan for a detected LONG or SHORT: price check, stop/targets on the tick grid, risk sizing,
  * splits, TP1 net RR (buildScalpPlan, as backtestScalp). Pure. */
-export function planScalpOrder({det,price,contract:c,equity,available=null,usedMargin=0,leverage,config,costs=SCALP_EXEC_COSTS}){
+export function planScalpOrder({det,price,contract:c,equity,available=null,usedMargin=0,totalMarginCapUSD=null,leverage,config,costs=SCALP_EXEC_COSTS}){
  const fail=(reason,extra={})=>({ok:false,reasons:[reason],...extra});
  if(!pos(price))return fail('PRICE_UNAVAILABLE');
  const drift=Math.abs(price-det.entry),driftPct=drift/det.entry*100;
@@ -177,7 +177,7 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  if(!pos(equity))return fail('NO_BALANCE');
  const riskUSD=equity*config.riskPct/100,lev=pos(leverage)??1;
  let qty=riskUSD/(dir*(entry-stop)),capped=false;
- const cap=Math.min(equity*config.maxMarginPct/100,equity*config.maxTotalMarginPct/100-usedMargin,available!=null?available*.9:Infinity);
+ const cap=Math.min(equity*config.maxMarginPct/100,(totalMarginCapUSD??equity*config.maxTotalMarginPct/100)-usedMargin,available!=null?available*.9:Infinity);
  if(!(cap>0))return fail('MARGIN_CAP');
  if(qty*entry/lev>cap){qty=cap*lev/entry;capped=true}
  qty=Number(grid(qty*(1+1e-9),step,'DOWN'))||0;
@@ -223,7 +223,7 @@ export class ScalpExecutor{
   // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the daily loss, open risk and margin shared with the
   // signal strategy on the testnet (TESTNET_DAILY_LOSS_PCT, default 15 %). Without it the scalp's own 3 % rules apply.
   this.budget=budget;this.reservedRisk=new Map();
-  this.armed=false;this.reserved=new Set();this.universe=[];this.universeAt=0;this.trendCache=new Map();this.lastScanBucket=null;this.lastScan=null;
+  this.armed=false;this.entryRevision=0;this.reserved=new Set();this.universe=[];this.universeAt=0;this.trendCache=new Map();this.lastScanBucket=null;this.lastScan=null;
   this.scanning=false;this.reconciling=false;this.lastReconcileAt=0;this.cooldownUntil=0;this.funds=null;
   // Trade journal (scalp_journal.mjs, user 2026-11-16 22:18): every finished trade, never truncated; the stats
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
@@ -265,7 +265,7 @@ export class ScalpExecutor{
   if(this.#todayStopped()&&!this.budget)throw err('DAILY_LOSS_LIMIT');
   this.armed=true;this.#event('ARMED');this.#save();return this.status();
  }
- disarm(reason='MANUAL'){const was=this.armed;this.armed=false;if(was)this.#event('DISARMED',{reason});this.#save();return this.status()}
+ disarm(reason='MANUAL'){const was=this.armed;this.entryRevision++;this.armed=false;if(was)this.#event('DISARMED',{reason});this.#save();return this.status()}
  /** Symbols (and venue symbols) this ledger holds or is entering: other strategies on the account skip them. */
  heldSymbols(){const s=new Set(this.reserved);for(const p of this.store.open){s.add(p.symbol);s.add(p.venueSymbol)}return s}
  // Reading candles (the scan) does not block a restart: only orders being placed (reserved) or a position
@@ -309,7 +309,7 @@ export class ScalpExecutor{
  }
  async scan(now=this.now()){
   if(this.scanning)return this.lastScan;this.scanning=true;
-  const bucket=Math.floor(now/I5),st={at:now,bucket,checked:0,signals:0,entered:0,error:null};this.lastScanBucket=bucket;
+  const revision=this.entryRevision,bucket=Math.floor(now/I5),st={at:now,bucket,checked:0,signals:0,entered:0,error:null};this.lastScanBucket=bucket;
   try{
    const why=this.#blocked();if(why){st.error=why;return st}
    await this.#refreshUniverse(now);
@@ -317,7 +317,7 @@ export class ScalpExecutor{
    // signal was ~50 s old and big movers drifted past the price check). One bulk ticker read per scan.
    const order=await this.#byRecentMove(bucket);st.firstSymbols=order.slice(0,5).map(u=>u.symbol);
    for(const [seq,u] of order.entries()){const ix=this.universe.indexOf(u);
-    if(this.#blocked())break;
+    if(revision!==this.entryRevision||this.#blocked())break;
     // BingX answers 100410 when the shared public request rate is exceeded (2026-11-16: 10 of 80 coins per
     // scan): wait a little and read that coin once more instead of skipping it.
     let rows;try{rows=await this.#paced(()=>this.candles(u.symbol,'5m',61),st)}
@@ -346,7 +346,7 @@ export class ScalpExecutor{
      else{
       // 매물대 반전: the zone touch first; then every rule of the 5 % scalp (#consider) unchanged.
       const z=kind===SCALP_KINDS.ZONE?await this.#zoneCheck(u,det,st):{ok:true};
-      r=z.ok?await this.#consider(u,det):z;
+      r=z.ok?await this.#consider(u,det,revision):z;
      }
     }finally{this.cur=null}
     if(r?.entered){st.entered++;if(kind===SCALP_KINDS.ZONE)st.zoneEntered=(st.zoneEntered||0)+1}
@@ -416,11 +416,11 @@ export class ScalpExecutor{
   const cap=this.config.balanceCapUSD>0?this.config.balanceCapUSD:Infinity,equity=Math.min(eq,cap),used=Math.max(0,eq-(num(b.available)??eq));
   this.funds={equity,available:Math.max(0,Math.min(num(b.available)??equity,equity-used)),at:this.now()};return this.funds;
  }
- async #consider(u,det){
+ async #consider(u,det,revision){
   const key=scalpClientId(u.symbol,det.barAt,det.direction),skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   if(this.store.sent.includes(key))return {entered:false,reason:'ALREADY_SENT'};
   // Blocked since the scan loop looked (kill switch, disarm, cooldown during the candle / zone reads): no order (review L2).
-  {const why=this.#blocked();if(why)return skip(why)}
+  {const why=this.#blocked()||(revision!==this.entryRevision?'NOT_ARMED':null);if(why)return skip(why)}
   const pre=await this.#precheck(u,det);if(pre)return pre;
   // Reserved right after the check, before any await: the signal strategy sees it through heldSymbols and
   // cannot enter the same coin in between (review 2026-11-16).
@@ -431,10 +431,10 @@ export class ScalpExecutor{
    const funds=await this.#funds();if(!funds)return skip('NO_BALANCE');
    let lev=this.config.leverage;
    try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)lev=Math.max(1,Math.min(lev,Math.floor(max)))}catch{}
-   // Shared budget: the margin of both strategies within the shared cap (the larger of the two caps).
-   const shared=this.budget?this.budget.snapshot(funds.equity,{who:'scalp'}):null;
-   const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,usedMargin:shared?shared.marginUSD:this.#usedMargin(),leverage:lev,
-    config:shared?{...this.config,maxTotalMarginPct:this.budget.marginCapPct}:this.config});
+   const shared=this.budget?.snapshot(funds.equity,{who:'scalp'});
+   if(shared&&!shared.ok)return skip('TESTNET_BUDGET_UNAVAILABLE');
+   const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
+    usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:this.config});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
    // No count cap on testnet (user 2026-11-16), so the daily loss limit caps the risk up front: today's realized loss
@@ -442,7 +442,7 @@ export class ScalpExecutor{
    if(this.budget){
     // Shared TESTNET budget (testnet_budget.mjs): today's loss of both strategies + every open stop risk of both
     // + this trade within TESTNET_DAILY_LOSS_PCT of the equity; per-trade risk stays 0.5 %.
-    const b=this.budget.check({equity:funds.equity,newRiskUSD:Number(plan.riskUSD)||0,margin:false,who:'scalp'});
+    const b=this.budget.check({equity:funds.equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'});
     if(this.cur?.plan&&b.snap?.ok)this.cur.plan.openRiskUSD=+(b.snap.usedUSD+(Number(plan.riskUSD)||0)).toFixed(2);
     if(!b.ok)return skip(b.reason,b.detail);
    }else{const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
@@ -451,7 +451,7 @@ export class ScalpExecutor{
     if(risk>limit)return skip('OPEN_RISK_LIMIT',`$${risk.toFixed(2)} > $${limit.toFixed(2)}`)}
    // Held for the shared budget until the position is in the ledger (the signal strategy checks in between).
    this.reservedRisk.set(u.symbol,{riskUSD:Number(plan.riskUSD)||0,marginUSD:Number(plan.marginUSD)||0});
-   return await this.#enter(u,det,c,plan,key);
+   return await this.#enter(u,det,c,plan,key,{revision,equity:funds.equity});
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
   finally{this.reserved.delete(u.symbol);this.reservedRisk.delete(u.symbol)}
  }
@@ -474,7 +474,7 @@ export class ScalpExecutor{
    openRisk:()=>this.#openRisk()+reserved('riskUSD'),usedMargin:()=>this.#usedMargin()+reserved('marginUSD'),
    unrealized:()=>this.store.open.reduce((t,p)=>t+(Number(p.unrealized)||0),0),stoppedToday:day=>this.store.dailyStop?.day===day&&this.store.dailyStop.shared===true};
  }
- async #enter(u,det,c,plan,id){
+ async #enter(u,det,c,plan,id,{revision,equity}){
   const cl=this.client,vs=u.venueSymbol,d=det.direction,skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   // The account's position mode (one-way or hedge, user 2026-11-17), read before every entry and kept on the
   // position: its stop, targets, breakeven and closes use the mode it was opened under. Never guessed.
@@ -488,6 +488,14 @@ export class ScalpExecutor{
    const set=await cl.setLeverage(vs,leverageSideFor({hedge,direction:d}),plan.leverage);
    if(set?.leverage!==undefined&&Number(set.leverage)!==plan.leverage)throw err('LEVERAGE_NOT_CONFIRMED');
   }catch(e){return skip('MARGIN_SETUP_FAILED',e?.code||e?.message)}
+  const beforeSend=()=>{
+   const blocked=this.#blocked()||(revision!==this.entryRevision?'NOT_ARMED':null);
+   if(blocked)return blocked;
+   // Our reservation is included, either in reservedRisk or in the ledger once it has been saved.
+   const shared=this.budget?.check({equity,who:'scalp'});
+   return shared&&!shared.ok?shared.reason:null;
+  };
+  const blocked=beforeSend();if(blocked)return skip(blocked);
   const tick=c.tickSize,px=v=>grid(v,tick,awayMode(d))??String(v);
   const kind=this.cur?.kind||SCALP_KINDS.MOVE;
   const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,kind,...(kind===SCALP_KINDS.ZONE&&this.cur?.zone?{zone:this.cur.zone}:{}),mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
@@ -502,8 +510,12 @@ export class ScalpExecutor{
   this.reservedRisk.delete(u.symbol);
   let fill;
   try{fill=await cl.placeOrder({symbol:vs,side:openSide(d),positionSide:positionSideFor({hedge,direction:d}),type:'MARKET',quantity:String(plan.qty),clientOrderId:id,
-   stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:Number(px(plan.stop)),workingType:'MARK_PRICE'})})}
+   stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:Number(px(plan.stop)),workingType:'MARK_PRICE'})},{beforeSend})}
   catch(e){
+   if(e?.code==='ENTRY_NOT_SENT'){
+    this.store.open=this.store.open.filter(x=>x!==p);this.store.sent=this.store.sent.filter(x=>x!==id);
+    this.#save();return skip(e.reason);
+   }
    // Never sent blindly again: the client id is looked up first; an unknown outcome blocks new entries.
    let found=null;try{found=await cl.getOrder(vs,{clientOrderId:id})}catch{}
    if(!orderId(found)){

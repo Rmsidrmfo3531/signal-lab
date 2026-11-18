@@ -780,3 +780,54 @@ test('copy review N3, adopt: an entry whose answer was lost is looked up before 
  await ex.reconcile();assert.equal(ex.status().positions.length,0);assert.equal(v.size,500);
  const e=ex.status().events.find(x=>x.type==='UNCONFIRMED_ADOPT');assert.equal(e.reason,'ENTRY_ORDER_NOT_FOUND');assert.match(copyEventText(e),/직접 확인/);
 });
+
+test('real copy does not dispatch a pending entry or add after a stop, and still follows a close',async()=>{
+ for(const [kind,stop] of [['entry','disarm'],['add','disarm'],['entry','global kill reset']]){
+  const v=venue(),waiting=Promise.withResolvers(),resume=Promise.withResolvers();
+  let ex,pause=false,gateRevision=0;
+  const cfg=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'},'OFF');
+  ex=new CopyExecutor({config:cfg,client:v.client,contractOf:async()=>contract,now:()=>1e12,
+   gate:()=>ex.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'},entryGateRevision:()=>gateRevision,
+   balance:async()=>{if(pause){waiting.resolve();await resume.promise}return {equity:400,available:300}}});
+  ex.arm();
+  if(kind==='add')assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).ok,true);
+  const size=v.size,orders=v.calls.filter(c=>c.type==='MARKET').length;
+  pause=true;
+  const pending=ex.handle({id:2,date:1e12,text:kind==='add'?CHANGE(880,1760):OPEN});
+  await waiting.promise;
+  if(stop==='disarm')ex.disarm();else gateRevision++;
+  resume.resolve();
+  assert.equal((await pending).reason,stop==='disarm'?'COPY_DISARMED':'ENTRY_INTERRUPTED');
+  assert.equal(v.size,size);
+  assert.equal(v.calls.filter(c=>c.type==='MARKET').length,orders);
+  assert.equal(ex.status().positions.length,kind==='add'?1:0);
+  if(kind==='add'){
+   assert.equal((await ex.handle({id:3,date:1e12,text:CLOSE})).ok,true);
+   assert.equal(v.size,0);
+  }
+ }
+});
+
+test('copy blocks new risk when either balance field is unverified; a known zero is insufficient margin',async()=>{
+ const cfg=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'},'OFF');
+ for(const [balance,reason] of [
+  [async()=>{throw Error('unavailable')},'NO_BALANCE'],
+  [async()=>({equity:400}),'NO_BALANCE'],
+  [async()=>({equity:400,available:null}),'NO_BALANCE'],
+  [async()=>({equity:400,available:0}),'MARGIN_SHORT'],
+ ]){
+  const v=venue();
+  let healthy=true;
+  const ex=new CopyExecutor({config:cfg,client:v.client,contractOf:async()=>contract,
+   balance:async()=>healthy?{equity:400,available:300}:balance(),now:()=>1e12});
+  healthy=false;
+  assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).reason,reason);
+  assert.equal(v.size,0);
+  healthy=true;
+  assert.equal((await ex.handle({id:2,date:1e12,text:OPEN})).ok,true);
+  const size=v.size;
+  healthy=false;
+  assert.equal((await ex.handle({id:3,date:1e12,text:CHANGE(880,1760)})).reason,reason);
+  assert.equal(v.size,size);
+ }
+});

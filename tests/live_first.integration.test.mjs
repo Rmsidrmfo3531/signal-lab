@@ -17,6 +17,13 @@ test('paper off by default: a final signal opens a TESTNET live position, no pap
  try{
   await app.start();
   const status=await app.get('/api/status');assert.equal(status.paperTrading,false);assert.equal(status.live.mode,'TESTNET');
+  const pkg=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
+  const update=await app.get('/api/update');
+  assert.match(pkg.displayVersion,/^\d{4}-\d{2}-\d{2}_ver[1-9]\d*$/);
+  for(const response of [status,update]){
+   assert.equal(response.displayVersion,pkg.displayVersion);
+   assert.equal(response.version,pkg.version);
+  }
   assert.equal((await app.get('/api/scalp')).enabled,false,'paper-only scalps do not run with paper trading off');
   const before=await app.get('/api/live/overview');assert.equal(before.mode,'TESTNET');assert.equal(before.armed,false);assert.deepEqual(before.positions,[]);
   // Testnet reversal scalps: their own status and switch, disarmed at start, arm needs the confirm phrase.

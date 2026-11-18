@@ -130,13 +130,13 @@ import {liveClosedView} from '../live_overview.mjs';
 import {scalpHTML} from '../public/live_control.js';
 const T10=Date.parse('2026-11-10T12:00:00Z');
 const rjson=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
-function mockBingX({positionAmt=()=>'0.20'}={}){
+function mockBingX({positionAmt=()=>'0.20',maxLeverage=50}={}){
  const orders=[];let id=1000;
  const fetcher=async(url,options)=>{
   const u=new URL(url),q=Object.fromEntries([...u.searchParams].filter(([k])=>k!=='signature'));
   if(u.pathname==='/openApi/swap/v3/user/balance')return rjson({code:0,data:[{asset:'USDT',balance:'1000',equity:'1000',availableMargin:'1000'}]});
   if(u.pathname==='/openApi/swap/v2/trade/marginType'&&options.method==='GET')return rjson({code:0,data:{marginType:'CROSSED'}});
-  if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='GET')return rjson({code:0,data:{maxLongLeverage:50,maxShortLeverage:50}});
+  if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='GET')return rjson({code:0,data:{maxLongLeverage:maxLeverage,maxShortLeverage:maxLeverage}});
   if(u.pathname==='/openApi/swap/v2/trade/leverage'&&options.method==='POST')return rjson({code:0,data:{symbol:q.symbol,leverage:Number(q.leverage)}});
   if(u.pathname==='/openApi/swap/v1/positionSide/dual')return rjson({code:0,data:{dualSidePosition:false}});
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='POST'){
@@ -306,4 +306,70 @@ test('L4: a scalp entry being placed counts its risk once (the reservation is dr
  ex.arm();await ex.scan();const risk=ex.store.open[0].riskUSD;
  assert.ok(Math.abs(seen.openRiskUSD-risk)<1,`once during placeOrder: ${seen.openRiskUSD} vs ${risk}`);
  assert.ok(Math.abs(budget.snapshot(10000).by.scalp.openRiskUSD-risk)<1e-6);
+});
+
+test('confirmed signal leverage is included before sending the entry against the shared margin cap',async()=>{
+ const mock=mockBingX({maxLeverage:5});
+ const budget=new TestnetBudget({now:()=>T10}).register('scalp',{usedMargin:()=>297.5});
+ const ex=new LiveExecutor({config:cfg10({sizing:'RISK_USD'}),clients:{BINGX:mock.client},now:()=>T10,budget});
+ budget.register('signal',ex.budgetSource());
+ ex.arm();
+ const result=await ex.onSignal(sigRow({entry:100,leverage:10}),{signalKey:'capped-leverage'});
+ assert.deepEqual(result,{sent:false,reasons:['TESTNET_MARGIN_CAP']});
+ assert.equal(mock.orders.length,0);
+ assert.equal(ex.store.records.length,0);
+ assert.equal(budget.snapshot().marginUSD,297.5);
+});
+
+test('scalp sizing uses the remaining shared margin on the lower account basis',async()=>{
+ const clock={t:T0},funds={equity:10000,available:9000},budget=new TestnetBudget({now:()=>clock.t});
+ const v=venue(),ex=scalpMake(v,{clock,funds,budget});
+ budget.register('signal',{usedMargin:()=>290}).register('scalp',ex.budgetSource());
+ budget.basis(1000,'signal');
+ ex.arm();
+ assert.equal((await ex.scan()).entered,1,'the valid smaller order can still be sent');
+ const snapshot=budget.snapshot();
+ assert.equal(snapshot.marginCapUSD,300);
+ assert.ok(snapshot.marginUSD>290&&snapshot.marginUSD<=300);
+});
+
+test('testnet scalp stops entry after preparation, before adding a sent ID',async()=>{
+ for(const stop of ['disarm','kill','lowered budget']){
+  const clock={t:T0},funds={equity:10000,available:9000},budget=new TestnetBudget({now:()=>clock.t});
+  let sent=0;
+  const v=venue({onMarket:()=>sent++}),ex=scalpMake(v,{clock,funds,budget});
+  budget.register('signal',{usedMargin:()=>290}).register('scalp',ex.budgetSource());
+  const waiting=Promise.withResolvers(),resume=Promise.withResolvers();
+  v.client.setLeverage=async()=>{waiting.resolve();await resume.promise;return {leverage:10}};
+  ex.arm();
+  const scan=ex.scan();
+  await waiting.promise;
+  if(stop==='disarm'){ex.disarm();ex.arm()}
+  if(stop==='kill'){ex.gate=()=>({ok:false,reason:'KILL_SWITCH'});ex.disarm('KILL_SWITCH')}
+  if(stop==='lowered budget')budget.basis(1000,'signal');
+  resume.resolve();
+  assert.equal((await scan).entered,0,stop);
+  assert.equal(sent,0);
+  assert.equal(ex.store.sent.length,0);
+  assert.equal(ex.store.open.length,0);
+  assert.equal(ex.reservedRisk.size,0);
+ }
+});
+
+test('the shared margin cap is checked again before placing resting adds after the entry fills',async()=>{
+ const mock=mockBingX({positionAmt:()=>'0.20'});
+ let scalpMargin=0;
+ const budget=new TestnetBudget({now:()=>T10}).register('scalp',{usedMargin:()=>scalpMargin});
+ const cfg=cfg10({sizing:'BALANCE',unitPct:.19,maxLossPct:1,maxAdds:7,dailyMaxLossPct:3,maxOpen:4,maxPerDirection:2,
+  strategyProfile:'HYBRID',hybridMaxAdds:3,riskProfile:'CONSERVATIVE'});
+ const ex=new LiveExecutor({config:cfg,clients:{BINGX:mock.client},now:()=>T10,budget});
+ budget.register('signal',ex.budgetSource());
+ const openOrders=mock.client.openOrders.bind(mock.client);
+ mock.client.openOrders=(...args)=>{scalpMargin=299;return openOrders(...args)};
+ ex.arm();
+ assert.equal((await ex.onSignal(hybridSig,{signalKey:'margin-after-entry'})).status,'OPEN');
+ const record=ex.store.records[0];
+ assert.ok(record.stopOrderId);
+ assert.ok(record.adds.length>0&&record.adds.every(add=>add.skipped&&!add.orderId));
+ assert.ok(record.events.some(e=>e.type==='ADDS_SKIPPED'&&e.reason==='TESTNET_MARGIN_CAP'));
 });
