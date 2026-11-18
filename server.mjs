@@ -9,7 +9,7 @@ import {exchangePnl} from './exchange_pnl.mjs';
 import {createDailyPnl} from './daily_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
-import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
+import {ScalpExecutor,scalpExecConfig,SCALP_PROFIT_HOLD_TARGET_MIN} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
 import {scalpReportFiles} from './scalp_journal.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
@@ -848,6 +848,7 @@ async function uploadReport(force=false){
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime={mode:SCALP_EXEC.mode,armed:scalpExec.armed,scaleInEnabled:SCALP_EXEC.scaleIn,stopLossEnabled:SCALP_EXEC.stopLossEnabled,
    repeatedScaleIn:SCALP_EXEC.scaleIn&&!SCALP_EXEC.stopLossEnabled,open:scalpExec.store.open.length,
+   ...(SCALP_EXEC.mode==='TESTNET'&&!SCALP_EXEC.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0}:{}),
    stopRetirementPending:scalpExec.store.open.filter(p=>p.stopRetirementError).length,
    openAdds:scalpExec.store.open.reduce((n,p)=>n+(p.scaleIn?.count||0),0)};
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});

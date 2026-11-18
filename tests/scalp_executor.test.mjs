@@ -71,7 +71,7 @@ const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
 const short=(opt={})=>{const v=venue({fillAt:PX_S,...opt.venue}),clock=opt.clock||{t:T0};return {v,clock,ex:make(v,{clock,price:PX_S,trend:down4h,rows:rise,...opt})}};
 
-test('testnet takes profit after 45 minutes only at a fee-covering price and recovers a lost reply',async()=>{
+test('profit-only testnet checks immediately, covers fees and booked loss, and recovers a lost reply',async()=>{
  for(const direction of ['LONG','SHORT']){
   const dir=tmp(),clock={t:T0},shortSide=direction==='SHORT',sign=shortSide?-1:1;
   const v=venue({fillAt:shortSide?PX_S:PX,loseEarlyReply:shortSide});
@@ -81,15 +81,19 @@ test('testnet takes profit after 45 minutes only at a fee-covering price and rec
    let ex=make(v,inputs);ex.arm();await ex.scan();
    const p=ex.store.open[0];assert.equal(p.direction,direction);
    const requests=()=>placed(v,'LIMIT').filter(x=>x.timeInForce==='IOC');
-   v.mark=p.avg+sign;
-   clock.t=p.openedAt+44*60000;await ex.reconcile();assert.equal(requests().length,0);
+   const getPositions=v.client.positions;
+   let bookedLoss=0;
+   v.client.positions=async(...args)=>(await getPositions(...args)).map(row=>({...row,realisedProfit:String(-bookedLoss)}));
    v.mark=p.avg+sign*.02;
-   clock.t=p.openedAt+45*60000;await ex.reconcile();assert.equal(requests().length,0);
+   clock.t=p.openedAt+15000;await ex.reconcile();assert.equal(requests().length,0);
+   bookedLoss=p.size*2;
    v.mark=p.avg+sign;
+   clock.t+=15000;await ex.reconcile();assert.equal(requests().length,0);
+   v.mark=p.avg+sign*3;
    clock.t+=15000;await ex.reconcile();
    const [order]=requests();
    assert.equal(order.side,shortSide?'BUY':'SELL');assert.equal(order.reduceOnly,'true');
-   assert.ok(sign*(Number(order.price)-p.avg)>.0012*p.avg);
+   assert.ok(sign*(Number(order.price)-p.avg)>2+.0012*p.avg);
    assert.equal(v.size,0);
    if(shortSide){assert.ok(p.earlyTakeProfit);ex=make(v,inputs)}
    clock.t+=15000;await ex.reconcile();clock.t+=15000;await ex.reconcile();
@@ -259,8 +263,9 @@ test('unprotected testnet scalps repeat equal-first-margin adds at progressively
   await moves(afterFirst-sign*(dist+.03));assert.equal(a.count,2);
   const adds=placed(v,'LIMIT');assert.equal(new Set(adds.map(o=>o.clientOrderId)).size,2);
   for(const o of a.orders)assert.ok(Math.abs(o.marginUSD-first)<=o.price*Number(p.quantityStep)/p.leverage+1e-8);
-  const active=[...v.orders.values()].filter(o=>o.type==='TAKE_PROFIT_MARKET'&&o.status==='NEW');
+  const active=[...v.orders.values()].filter(o=>o.type==='TAKE_PROFIT'&&o.status==='NEW');
   assert.ok(Math.abs(active.reduce((n,o)=>n+Number(o.quantity),0)-p.filled)<1e-8);
+  assert.ok(active.every(o=>sign*(Number(o.price)-p.avg)>0),'the conditional exits also enforce a profitable limit');
   clock.t=p.deadline+I;await moves(a.anchor);assert.equal(ex.store.open.length,1,'adverse position survives expiry');
   const firstTarget=active.find(o=>o.stopPrice===active[0].stopPrice);v.fill(firstTarget);
   clock.t+=I;await moves(a.anchor-sign*(dist+.03));assert.equal(a.count,2,'reducing a position ends the add cycle');
@@ -272,19 +277,21 @@ test('unprotected testnet scalps repeat equal-first-margin adds at progressively
  }
 });
 
-test('switching an open scalp to no-stop retries owned-stop removal and preserves external stops and existing targets',async()=>{
+test('switching an open scalp to profit-only retires its market stop and targets while preserving external orders',async()=>{
  const v=venue(),clock={t:T0},dir=tmp();
  try{
   const legacy=make(v,{clock,dir});legacy.arm();assert.equal((await legacy.scan()).entered,1);
   const owned=legacy.store.open[0].stopOrderId,manual=(await v.client.placeOrder({symbol:'SOL-USDT',side:'SELL',type:'STOP_MARKET',stopPrice:'80',clientOrderId:'manual'})).order;
-  const takeProfits=placed(v,'TAKE_PROFIT_MARKET').length;
+  const legacyTargets=[...legacy.store.open[0].tpOrderIds];
+  const externalTarget=(await v.client.placeOrder({symbol:'SOL-USDT',side:'SELL',type:'TAKE_PROFIT_MARKET',stopPrice:'110',clientOrderId:'manual-target'})).order;
   const migrated=make(v,{clock,dir,config:{stopLossEnabled:false,scaleIn:true}}),cancel=v.client.cancelOrder;
   v.client.cancelOrder=async()=>{};
   await migrated.reconcile();assert.equal(migrated.store.open[0].stopRetirementError,'SCALP_STOP_CANCEL_PENDING');
   v.client.cancelOrder=cancel;
   await migrated.reconcile();assert.equal(v.orders.get(owned).status,'CANCELED');assert.equal(manual.status,'NEW');
   assert.equal(migrated.store.open[0].stopOrderId,null);assert.equal(migrated.store.open[0].scaleIn.version,2);
-  assert.equal(placed(v,'TAKE_PROFIT_MARKET').length,takeProfits);
+  assert.ok(legacyTargets.every(id=>v.orders.get(id).status==='CANCELED'));
+  assert.equal(externalTarget.status,'NEW');assert.ok(migrated.store.open[0].profitTargetsReady);
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
