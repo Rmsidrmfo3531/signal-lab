@@ -374,6 +374,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .update-modal{position:fixed;inset:0;z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:18vh 16px 16px;background:rgba(5,9,15,.55);backdrop-filter:blur(2px)}
 .update-card{width:min(440px,100%);background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px 22px;box-shadow:0 20px 60px rgba(0,0,0,.45)}
 .update-title{display:block;font-size:16px;margin-bottom:14px}
+.update-version{margin:-6px 0 12px;color:var(--muted);font-size:12.5px;overflow-wrap:anywhere}
 .update-bar{height:10px;border-radius:999px;background:var(--panel-deep);border:1px solid var(--line-soft);overflow:hidden}
 .update-bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3d7fe0,var(--accent));transition:width .1s linear}
 .update-modal.done .update-bar i{background:var(--up)}.update-modal.error .update-bar i{background:var(--down)}

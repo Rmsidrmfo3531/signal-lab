@@ -14,8 +14,9 @@ function toast(message,error=false){const node=document.createElement('div');nod
 async function json(url,options){const res=await fetch(url,{cache:'no-store',...options});const data=await res.json().catch(()=>({}));if(!res.ok)throw Error(data.error||`HTTP ${res.status}`);return data}
 function banner(title,detail){$('errorTitle').textContent=title;$('errorDetail').textContent=detail;$('connectBanner').classList.remove('hidden')}
 function clearBanner(){$('connectBanner').classList.add('hidden')}
+const appVersionText=info=>info?.displayVersion||(info?.version?'v'+info.version:'');
 function setAppVersion(info){
- const version=info?.displayVersion||(info?.version?'v'+info.version:'');
+ const version=appVersionText(info);
  const label=$('appVersion');
  if(!label||!version)return;
  label.textContent=version;label.hidden=false;
@@ -187,45 +188,73 @@ $('notificationButton').addEventListener('click',async()=>{
  const r=await Notification.requestPermission();$('notificationButton').textContent=r==='granted'?'✓ 브라우저 알림 ON':'♧ 알림 권한 확인';toast(r==='granted'?'브라우저를 열어 둔 상태에서 실매매·카피 알림을 받습니다.':'알림 권한이 허용되지 않았습니다.',r!=='granted');if(r==='granted')ping();
 });
 // Cloud server: one tap fetches the GitHub version, lists the changes, applies and restarts.
-fetch('/api/update',{cache:'no-store'}).then(r=>r.json()).then(u=>{setAppVersion(u);gitUpdate=u.git===true;if(gitUpdate){$('updateButton').textContent='↻ 업데이트';$('updateButton').title='GitHub 최신 버전을 확인하고 적용합니다'}}).catch(()=>{});
+let updateBoot=null,manualUpdate=false,autoUpdateNotice=false;
+const updateTime=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+function showCompletedUpdate(info){
+ let done=null,auto=false;
+ try{done=JSON.parse(sessionStorage.getItem('updateDone')||'null');
+  auto=Boolean(sessionStorage.getItem('autoReloaded'));
+  sessionStorage.removeItem('updateDone');sessionStorage.removeItem('autoReloaded');
+ }catch{}
+ if(!done&&!auto)return;
+ const version=appVersionText(info)||done?.toDisplayVersion,at=Number(done?.appliedAt||info?.bootId);
+ const on=[done?.rearmCopy&&'카피',done?.rearm&&'신호 전략',done?.rearmScalp&&'되돌림 단타'].filter(Boolean);
+ const versionLine=version?(done?.fromDisplayVersion&&done.fromDisplayVersion!==version?done.fromDisplayVersion+' → ':'')+version:'';
+ const message=['✅ 업데이트 완료',versionLine,at>0&&Number.isFinite(at)?'서버 적용 '+updateTime.format(at)+' KST':'',on.length?on.join('·')+' 다시 켜짐':''].filter(Boolean).join(' · ');
+ toast(message);
+}
+json('/api/update').then(u=>{
+ updateBoot=u;setAppVersion(u);gitUpdate=u.git===true;
+ if(gitUpdate){$('updateButton').textContent='↻ 업데이트';$('updateButton').title='GitHub 최신 버전을 확인하고 적용합니다'}
+ showCompletedUpdate(u);
+}).catch(()=>showCompletedUpdate(null));
 // Update progress: a centred popup with a 0.1 % progress bar fed by the server's own steps
 // (/api/update/git/progress); while the server restarts the bar keeps moving until it is back.
 function updateModal(){
  let m=document.getElementById('updateModal');
  if(!m){m=document.createElement('div');m.id='updateModal';m.className='update-modal';m.setAttribute('role','dialog');m.setAttribute('aria-modal','true');
-  m.innerHTML='<div class="update-card"><b class="update-title"></b><div class="update-bar"><i></i></div><div class="update-row"><span class="update-label"></span><strong class="update-pct"></strong></div><p class="update-note"></p><button type="button" class="outline-btn update-close" hidden>확인</button></div>';
+  m.innerHTML='<div class="update-card"><b class="update-title"></b><p class="update-version" hidden></p><div class="update-bar"><i></i></div><div class="update-row"><span class="update-label"></span><strong class="update-pct"></strong></div><p class="update-note"></p><button type="button" class="outline-btn update-close" hidden>확인</button></div>';
   document.body.appendChild(m);m.querySelector('.update-close').addEventListener('click',()=>m.remove())}
  return m;
 }
-function setUpdate({title,label,pct,note,done=false,error=false}){
+function setUpdate({title,version,label,pct,note,done=false,error=false}){
  const m=updateModal();m.classList.toggle('error',error);m.classList.toggle('done',done);
  if(title!==undefined)m.querySelector('.update-title').textContent=title;
+ if(version!==undefined){const v=m.querySelector('.update-version');v.textContent=version;v.hidden=!version}
  if(label!==undefined)m.querySelector('.update-label').textContent=label;
  if(pct!==undefined){const v=Math.max(0,Math.min(100,pct));m.querySelector('.update-bar i').style.width=v.toFixed(1)+'%';m.querySelector('.update-pct').textContent=v.toFixed(1)+'%'}
  if(note!==undefined)m.querySelector('.update-note').textContent=note;
  m.querySelector('.update-close').hidden=!(done||error);
 }
-// After the reload: the completion popup (centre, slightly above the middle).
-// Automatic update (2026-11-16): when the server comes back as a new process (new bootId) the page reloads by
-// itself, and says so in a small notice that goes away.
-{let boot=null,told=false;
- try{if(sessionStorage.getItem('autoReloaded')){sessionStorage.removeItem('autoReloaded');setTimeout(()=>toast('🔄 새 버전이 적용되어 화면을 새로고침했습니다'),300)}}catch{}
- setInterval(async()=>{try{const u=await (await fetch('/api/update',{cache:'no-store'})).json();
-  if(boot&&u.bootId&&u.bootId!==boot){try{sessionStorage.setItem('autoReloaded','1')}catch{}location.reload();return}boot=u.bootId||boot;
-  if(!told&&!document.getElementById('updateModal')){const j=await (await fetch('/api/update/git/progress',{cache:'no-store'})).json();if(j?.active&&j.source==='auto'){told=true;toast('🔄 자동 업데이트 중입니다. 끝나면 화면이 저절로 새로고침됩니다.')}}
- }catch{}},10000);}
-// A small notice that goes away by itself (user 2026-11-16: no close button to press).
-try{const d=JSON.parse(sessionStorage.getItem('updateDone')||'null');if(d){sessionStorage.removeItem('updateDone');
- const on=[d.rearmCopy&&'카피',d.rearm&&'신호 전략',d.rearmScalp&&'되돌림 단타'].filter(Boolean);
- setTimeout(()=>toast(`✅ 업데이트 완료 (${d.from} → ${d.to})`+(on.length?` · ${on.join('·')} 다시 켜짐`:'')),300)}}catch{}
-async function runGitUpdate(b){
+// After an automatic update, reload and use the running server's version for the completion toast.
+setInterval(async()=>{if(manualUpdate)return;try{
+ const u=await json('/api/update');
+ if(manualUpdate)return;
+ if(updateBoot?.bootId&&u.bootId&&u.bootId!==updateBoot.bootId){
+  if(appVersionText(u)!==appVersionText(updateBoot))try{sessionStorage.setItem('autoReloaded','1')}catch{}
+  location.reload();return;
+ }
+ if(u.bootId)updateBoot=u;
+ if(!autoUpdateNotice&&!document.getElementById('updateModal')){
+  const job=await json('/api/update/git/progress');
+  if(job?.active&&job.source==='auto'&&!manualUpdate){
+   autoUpdateNotice=true;
+   toast(['🔄 자동 업데이트 중',job.toDisplayVersion,'완료 후 새로고침됩니다'].filter(Boolean).join(' · '));
+  }
+ }
+}catch{}},10000);
+async function runGitUpdate(){
  const check=await json('/api/update/git');
- if(check.state==='current'){toast(`이미 최신 버전입니다 (${check.current})`);return}
- if(check.state!=='available'){setUpdate({title:'업데이트를 확인하지 못했습니다',label:'',pct:0,note:check.message||'',error:true});return}
+ const from=check.currentDisplayVersion||appVersionText(updateBoot)||$('appVersion')?.textContent;
+ const to=check.latestDisplayVersion;
+ if(check.state==='current'){toast(['최신 버전 사용 중',from].filter(Boolean).join(' · '));return}
+ if(check.state!=='available'){setUpdate({title:'업데이트를 확인하지 못했습니다',version:from||'',label:'',pct:0,note:check.message||'',error:true});return}
  const list=check.changes.map(c=>'· '+c.subject).join('\n');
- if(!confirm(`새 버전 ${check.changes.length}건을 적용하고 서버를 재시작합니다.\n\n${list}\n\n재시작 후 카피(실계좌 포함)·신호 전략(테스트넷)·되돌림 단타가 모두 자동으로 켜집니다.`))return;
+ const versionLine=[from,to].filter(Boolean).join(' → ');
+ if(!confirm(`새 버전을 적용하고 서버를 재시작합니다.\n${versionLine?versionLine+'\n':''}\n${list}\n\n재시작 후 카피(실계좌 포함)·신호 전략(테스트넷)·되돌림 단타가 모두 자동으로 켜집니다.`))return;
+ manualUpdate=true;
  let shown=0,target=1,label='업데이트 시작',down=false,applied=null,finished=false,restartAt=0;
- setUpdate({title:'업데이트 중',label,pct:0,note:'창을 닫지 말고 잠시 기다려 주세요. 보통 30초~1분 걸립니다.'});
+ setUpdate({title:'업데이트 중',version:versionLine,label,pct:0,note:'창을 닫지 말고 잠시 기다려 주세요. 보통 30초~1분 걸립니다.'});
  // Smooth 0.1 % steps toward the latest known progress.
  const anim=setInterval(()=>{if(shown<target){shown=Math.min(target,shown+Math.max(0.1,(target-shown)*0.08));setUpdate({pct:shown,label})}},100);
  // "주문 처리 중" (an order or position check running) is not a failure: tried again every 5 s for 2 minutes.
@@ -241,9 +270,14 @@ async function runGitUpdate(b){
    const r=await fetch('/api/update/git/progress',{cache:'no-store'});
    if(!r.ok)throw Error('down');
    const p=await r.json();
-   if(down){ // back after the restart
+   const originalBoot=check.bootId||updateBoot?.bootId;
+   const restarted=originalBoot&&p.bootId?originalBoot!==p.bootId:down;
+   const expected=applied?.toDisplayVersion||to,running=appVersionText(p);
+   if(restarted&&applied&&(!expected||!running||expected===running)){
     finished=true;target=100;label='완료';await new Promise(r=>setTimeout(r,600));clearInterval(anim);setUpdate({pct:100,label:'완료'});
-    try{sessionStorage.setItem('updateDone',JSON.stringify({from:applied?.from||check.current,to:applied?.to||check.latest,rearm:applied?.rearm===true,rearmCopy:applied?.rearmCopy===true,rearmScalp:applied?.rearmScalp===true}))}catch{}
+    try{sessionStorage.setItem('updateDone',JSON.stringify({fromDisplayVersion:applied.fromDisplayVersion||from,
+     toDisplayVersion:running||expected,appliedAt:p.bootId||null,
+     rearm:applied.rearm===true,rearmCopy:applied.rearmCopy===true,rearmScalp:applied.rearmScalp===true}))}catch{}
     location.reload();return;
    }
    if(p.active){target=Math.max(target,p.pct);label=p.label||label}
@@ -258,7 +292,7 @@ async function runGitUpdate(b){
  if(!finished&&applied){clearInterval(anim);location.reload()}
 }
 $('updateButton').addEventListener('click',async()=>{const b=$('updateButton');b.disabled=true;
- if(gitUpdate){try{await runGitUpdate(b)}catch(e){setUpdate({title:'업데이트 실패',label:e.message,pct:0,note:'',error:true})}finally{b.disabled=false}return}
+ if(gitUpdate){try{await runGitUpdate()}catch(e){setUpdate({title:'업데이트 실패',label:e.message,pct:0,note:'',error:true})}finally{manualUpdate=false;b.disabled=false}return}
  try{const x=await json('/api/update/check',{method:'POST'});updateStatusText(x);toast(x.message||'업데이트 확인 완료',x.state==='error')}catch(e){toast('업데이트 확인 실패: '+e.message,true)}finally{b.disabled=false}});
 $('dismissError').addEventListener('click',clearBanner);
 $('newsFilter').addEventListener('change',()=>{app.newsPage=1;app.expandedNewsId=null;renderNews()});
