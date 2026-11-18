@@ -316,17 +316,23 @@ export class CopyExecutor{
   else (p.fillOrders??=[]).push({id:orderId,side,confirmed,...(notice?{notice}:{})});
  }
  #fillNotice(p,tag){return this.config.mode==='LIVE'?{tag,from:Number(p.qty)||0,at:this.now()}:null}
+ #notifyOrderReceipt(p,id){
+  if(this.config.mode!=='LIVE'||id==null)return;
+  this.#save();this.#event('ORDER_RECEIPT',{symbol:p.symbol,orderId:String(id)});
+ }
  async #market(p,side,quantity,{reduceOnly=false,tag,beforeSend}){
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
   const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:this.#clientId(p,tag)};
   // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
   if(reduceOnly&&p.hedge!==true)params.reduceOnly='true';
   const notice=this.#fillNotice(p,tag),res=orderOf(await this.client.placeOrder(params,{beforeSend}));
-  if(notice&&/^open\./.test(tag)&&String(res?.status).toUpperCase()==='FILLED'&&pos(res?.executedQty)&&pos(res?.avgPrice)){
+  if(notice&&String(res?.status).toUpperCase()==='FILLED'&&pos(res?.executedQty)&&pos(res?.avgPrice)){
    notice.receipt={orderId:res.orderId,symbol:res.symbol??params.symbol,side:res.side??side,positionSide:res.positionSide??params.positionSide,
-    status:res.status,executedQty:res.executedQty,avgPrice:res.avgPrice,updateTime:res.updateTime??res.updatedTime??res.filledTm};
+    status:res.status,executedQty:res.executedQty,avgPrice:res.avgPrice,updateTime:res.updateTime??res.updatedTime??res.filledTm,
+    profit:res.realizedPnl??res.realizedPnL??res.profit,commission:res.fee??res.commission};
   }
   this.#rememberFillOrder(p,res?.orderId,side,Number(res?.executedQty)>0||res?.status==='FILLED',notice);
+  this.#notifyOrderReceipt(p,res?.orderId);
   return {orderId:res?.orderId??null,avg:pos(res?.avgPrice),status:res?.status??null};
  }
  #clientId(p,tag){return ('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)}
@@ -362,7 +368,7 @@ export class CopyExecutor{
     await this.sleep(delays[i]);
     const margin=await this.#orderMargin(marginUSD);
     const seen=await this.#orderOutcome(p,cid,{before,step});
-    if(seen.filled){this.#rememberFillOrder(p,seen.orderId,side,true,this.#fillNotice(p,tag));ev('ALREADY_FILLED',{via:seen.via});return {orderId:seen.orderId??null,avg:seen.avg??null,qty:seen.qty??null}}
+    if(seen.filled){this.#rememberFillOrder(p,seen.orderId,side,true,this.#fillNotice(p,tag));this.#notifyOrderReceipt(p,seen.orderId);ev('ALREADY_FILLED',{via:seen.via});return {orderId:seen.orderId??null,avg:seen.avg??null,qty:seen.qty??null}}
     if(!seen.absent){ev('UNVERIFIED',seen.why?{why:seen.why}:{});continue}
     const block=this.#sendBlock(p,entry)||margin?.reason;
     if(block){this.#event('RETRY_ABANDONED',{symbol:p.symbol,kind:event,attempt,reason:block,clientOrderId:cid,detail:`다시 보내기 전 상태 변경(${block}) — 보내지 않음`});
@@ -666,7 +672,6 @@ export class CopyExecutor{
    // RETRY_ABANDONED comes only after BingX said the order does not exist: nothing to keep either.
    else{if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(error.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw error}}
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
-  if(this.config.mode==='LIVE'&&fill.orderId!=null)this.#event('ENTRY_RECEIPT',{symbol:p.symbol,orderId:String(fill.orderId)});
   await this.#protect(p,{ownFill:true});
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
@@ -797,6 +802,7 @@ export class CopyExecutor{
     const notice=this.#fillNotice(p,close.pending.tag);
     if(notice){notice.from=close.pending.requestedQty;notice.at=close.pending.at??close.at}
     this.#rememberFillOrder(p,order?.orderId,side,Number(order?.executedQty)>0||order?.status==='FILLED',notice);
+    this.#notifyOrderReceipt(p,order?.orderId);
     if(!['FILLED','CANCELED','CANCELLED','REJECTED','EXPIRED','FAILED'].includes(String(order?.status).toUpperCase()))return {ok:false,reason:'CLOSE_PENDING'};
    }catch(error){if(!orderAbsent(error))return {ok:false,reason:'CLOSE_PENDING'}}
    delete close.pending;

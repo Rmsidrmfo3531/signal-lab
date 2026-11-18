@@ -577,8 +577,10 @@ export class LiveExecutor{
   for(const record of [...open.slice(start),...open.slice(0,start)]){
    try{
     const pos=await this.#position(record,{cached:true}),{size,entryPrice}=pos;
+    const priorSize=record.position?.size;
     if(pos.otherSide>0&&!record.otherSideSeen){record.otherSideSeen=true;this.#event(record,'OTHER_SIDE_SEEN',{reason:`${pos.otherSide}`})}
     this.#observe(record,pos);
+    if(record.mode==='TESTNET'&&size>0&&priorSize-size>Math.max(1e-12,priorSize*1e-9))this.#event(record,'PARTIAL_EXIT',{qty:priorSize-size,left:size});
     if(size===0){
      record.status='CLOSED';record.closedAt=this.now();record.closeReason=record.closeReason||'POSITION_FLAT';
      this.closing.add(record.signalKey);try{

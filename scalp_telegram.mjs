@@ -30,6 +30,8 @@ export function scalpEventText(e){
  if(e.type==='DISARMED')return ['DAILY_LOSS_LIMIT','NO_PROTECTIVE_STOP'].includes(e.reason)?null:`${SCALP_LABEL} 비활성화`;
  if(e.type==='OPENED')return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배`;
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
+ if(e.type==='SCALE_IN_FILLED'&&e.qty>0)return `➕ ${head} ${side(e)} 추가 진입${e.count>0?` ${e.count}회차`:''}\n수량 +${fmt(e.qty)} · 체결가 ${fmt(e.price)} · 잔여 ${fmt(e.left)}`;
+ if(e.type==='PARTIAL_EXIT')return `🎯 ${head} ${side(e)} 부분 청산\n청산 수량 ${fmt(e.qty)} · 잔여 ${fmt(e.left)}`;
  if(e.type==='CLOSED')return `${Number(e.netUSD)>0?'✅':Number(e.netUSD)<0?'🔻':'⚪'} ${head} ${side(e)} 청산 · ${scalpReasonKo(e.reason)}\n손익 ${usd(e.netUSD)} (수수료 포함 추정) · 목표 ${e.tp||0}개 · 보유 ${mins(e.holdMs)}`;
  if(e.type==='DAILY_LOSS_LIMIT')return e.shared?`⛔ [테스트넷] 하루 손실 한도 도달 (신호+단타 ${usd(e.lossUSD)})\n오늘(한국 시간)은 신호 전략·단타 모두 신규 진입과 추매를 멈췄습니다.`
   :`⛔ ${SCALP_LABEL} 하루 손실 한도 도달 (${usd(e.lossUSD)})\n오늘은 신규 진입과 추매를 멈췄습니다.`;

@@ -30,20 +30,22 @@ test('server contains a single Telegram delivery path guarded by live final resu
  // notices (live_telegram.mjs: entry/add/target/close/problems of orders already placed) — nothing else.
  // + the testnet reversal-scalp notices (scalp_telegram.mjs: entry/close/problems, guarded by the live-notice setting).
  // The same transport also carries automatic updates and confirmed real-account trade notices.
- assert.equal([...server.matchAll(/(?<!function )telegramPost\(/g)].length,9);
+ assert.equal([...server.matchAll(/(?<!function )telegramPost\(/g)].length,6);
  assert.match(server,/function updateNotice\(text\)\{try\{if\(CONFIG\.tgToken&&CONFIG\.tgChat\)telegramPost\(/);
- assert.match(server,/const text=scalpEventText\(e\);if\(!text\)return;[\s\S]{0,400}?telegramLive===false[\s\S]{0,200}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
+ assert.match(server,/const text=scalpEventText\(e\);if\(!text\)return;[\s\S]{0,400}?sendTradeTelegram\(text\)/);
  // A one-time warning when the copy mode changed with open copies on the other ledger.
  assert.match(server,/카피 모드가 \$\{COPY\.mode==='LIVE'\?'실계좌':'테스트넷'\}로 바뀌었습니다/);
  // The copy-trading notice (copy_telegram.mjs text only, guarded by the live-notice setting).
- assert.match(server,/const text=copyEventText\(e\);if\(!text\)return;[\s\S]{0,400}?telegramLive===false[\s\S]{0,200}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
- assert.match(server,/const text=liveEventText\(record,type,detail\);if\(!text\)return;[\s\S]{0,400}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
+ assert.match(server,/const text=copyEventText\(e\);if\(!text\)return;[\s\S]{0,400}?sendTradeTelegram\(text\)/);
+ assert.match(server,/const text=liveEventText\(record,type,detail\);if\(!text\)return;[\s\S]{0,400}?sendTradeTelegram\(text\)/);
+ assert.match(server,/async function sendTradeTelegram\(text\)\{[\s\S]{0,260}?telegramLive===false[\s\S]{0,200}?sendRealTradeRequest\(\{chat_id,text\}\)/);
  assert.match(server,/onEvent:confirmedRealTradeNotice/);
- assert.match(server,/async function sendRealTradeTelegram\(e\)\{[\s\S]{0,250}?const chat_id=scannerTelegramChat\(\);[\s\S]{0,700}?telegramPost\(\{chat_id,text\}\)/);
+ assert.match(server,/async function sendRealTradeTelegram\(e\)\{[\s\S]{0,250}?await resolveScannerTelegramChannel\(\);[\s\S]{0,700}?sendRealTradeRequest\(\{chat_id,text\}\)/);
+ assert.match(server,/createTelegramNetworkRecovery\(telegramPost\)/);
  assert.match(server,/manualLedger&&\['OPENED','ADDED','REDUCED','CLOSED'\]\.includes\(e\.type\)\)\{[\s\S]{0,100}?manualLedger\.settle\(\);return;/);
  assert.match(server,/sendTelegram:sendRealTradeTelegram/);
- assert.match(server,/if\(r\.ok&&body\?\.ok===true&&Number\.isInteger\(body\.result\?\.message_id\)\)return \{ok:true/);
- assert.match(server,/record\.venue==='BINGX'&&\['PROTECTED','ADD_FILLED','SETTLED'\]\.includes\(type\)\)return;/);
+ assert.match(server,/Number\.isInteger\(body\.result\?\.message_id\)&&body\.result\.chat\?\.type==='channel'&&body\.result\.chat\.id===chat_id/);
+ assert.match(server,/record\.venue==='BINGX'&&\['PROTECTED','ADD_FILLED','SETTLED'\]\.includes\(type\)\)\{refreshRealTradeNotices\(\);return\}/);
  assert.match(server,/telegramPost\(\{chat_id:CONFIG\.tgChat,text:readinessText\(r\)\}\)/);
  assert.match(server,/const r=await telegramPost\(payload\)/);
  assert.match(server,/void telegramPost\(\{chat_id:CONFIG\.tgChat,text,/);

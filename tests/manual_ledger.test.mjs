@@ -269,7 +269,7 @@ test('live copy entry confirms from the signed filled reply immediately and is n
   fillOrders:[{id:orderId,side:'BUY',notice:{tag:'open.1',at,from:0,receipt:{orderId,symbol:'BTC-USDT',side:'BUY',status:'FILLED',executedQty:1,avgPrice:10,updateTime:at}}}]};
  let reads=0;
  const m=new ManualLedger({now:c.now,copyOrderAlerts:true,copyRecords:()=>[p],onEvent:e=>events.push(e),client:{getOrder:async()=>{reads++;throw Error('unexpected read')}}});
- await Promise.all([m.confirmCopyEntry(orderId),m.confirmCopyEntry(orderId)]);
+ await Promise.all([m.confirmCopyOrder(orderId),m.confirmCopyOrder(orderId)]);
  await m.settle();
  assert.equal(reads,0);assert.equal(events.length,1);assert.equal(events[0].observedAt,at);
  assert.match(manualTradeText(events[0]),/실계좌 \| 카피 \| 신규 진입/);

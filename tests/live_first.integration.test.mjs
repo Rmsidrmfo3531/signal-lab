@@ -135,16 +135,16 @@ test('real manual entry and add reach Telegram only after matching exchange fill
  const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],fakeBingxLiveFills:[],env:{
   BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',
   COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',PAPER_TRADING:'off',
-  TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_CHAT_ID:'-123456',
+  TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_SCANNER_CHAT_ID:'@scanner_fixture',
  }});
- const notices=async()=>(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.host==='api.telegram.org');
+ const notices=async()=>(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.host==='api.telegram.org'&&r.path==='/sendMessage');
  try{
   await app.start();
   const before=await until(()=>app.get('/api/copy'),c=>c.venuePositionsAt!=null);
   assert.equal(before.manual.open.length,0);
   const fill=(id,price)=>({symbol:'BTC-USDT',side:'BUY',positionSide:'BOTH',tradeId:id,orderId:id,qty:.01,price,time:Date.now()+1});
   const first=fill('101',50000);
-  await app.write({fakeBingxLivePositions:[position],fakeBingxLiveFills:[first]});
+  await app.write({fakeBingxLivePositions:[position],fakeBingxLiveFills:[]});
   await until(()=>app.get('/api/copy'),c=>c.manual?.open?.length===1,{timeout:14000,label:'manual position after two reads'});
   assert.equal((await notices()).length,0,'position snapshot alone sends nothing');
   await app.write({fakeBingxLivePositions:[{...position,positionAmt:'0.02',avgPrice:'50050'}],fakeBingxLiveFills:[first,fill('102',50100)]});
@@ -178,12 +178,15 @@ test('Chrome and the scanner channel receive the same confirmed copy trade even 
   const reader=events.body.getReader();
   const chrome=async()=>{const decoder=new TextDecoder();let contents='';
    for(;;){const {done,value}=await reader.read();if(done)throw Error('Chrome notice was missing');contents+=decoder.decode(value,{stream:true});
-    const match=/event: live-notice\ndata: ([^\n]+)/.exec(contents);
-    if(match){await reader.cancel();return JSON.parse(match[1]).text}
+    const matches=[...contents.matchAll(/event: live-notice\ndata: ([^\n]+)\n\n/g)];
+    if(matches.length>=2){await reader.cancel();return matches.map(m=>JSON.parse(m[1]).text)}
    }};
-  const [notices,chromeText]=await Promise.all([until(async()=>{await app.get('/api/copy');return read()},x=>x.length===2,{timeout:12000,label:'Telegram copy order receipts'}),chrome()]);
-  const notice=notices.find(n=>n.text.includes('BTCUSDT'));assert.ok(notices.some(n=>n.text.includes('ETHUSDT')),'a late entry still reaches Telegram');
-  assert.equal(notice.text,chromeText);assert.equal(notice.chatId,'@scanner_fixture');
+  const [notices,chromeTexts]=await Promise.all([until(async()=>{await app.get('/api/copy');return read()},x=>x.length===2,{timeout:12000,label:'Telegram copy order receipts'}),chrome()]);
+  const notice=notices.find(n=>n.text.includes('BTCUSDT'));
+  assert.deepEqual(notices.map(n=>n.text).sort(),chromeTexts.sort(),'both channels also receive a delayed confirmation');
+  assert.ok(notices.every(n=>n.chatId===-1001234567890));
+  const lookups=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.path==='/getChat');
+  assert.deepEqual(lookups.map(r=>r.chatId),['@scanner_fixture']);
   assert.match(notice.text,/^🔴 실계좌 \| 카피 \| 신규 진입\nBTCUSDT · 롱 · 10배\n수량 0\.02 · 평균 진입가 50,000 USDT/);
   assert.equal((await app.get('/api/copy')).manual.open.length,0);
   const file=async()=>JSON.parse(await fs.readFile(`${app.data}/manual-trades-live.json`,'utf8'));

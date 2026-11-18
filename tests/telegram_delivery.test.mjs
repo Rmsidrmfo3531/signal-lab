@@ -11,6 +11,7 @@ import {evaluateSignal} from '../signal_pipeline.mjs';
 import {getSignalScorePolicy,TREND_GATE_PATTERNS} from '../signal_policy.mjs';
 import {officialMarketLinks,telegramMessage} from '../links.mjs';
 import {finalTelegramMatch} from '../telegram_final.mjs';
+import {createTelegramNetworkRecovery} from '../telegram_transport.mjs';
 import {signalKey} from '../paper.mjs';
 import {syntheticFinalSignalContext} from './fixtures/binance_signal.mjs';
 
@@ -19,6 +20,26 @@ function section(start,end){const a=source.indexOf(start),b=source.indexOf(end,a
 const code=[section('async function tgNotify(s){','let updateCheckPromise='),
  section('function publishCryptoSignal(','// Event-driven scanner.'),
  section('function assessAnalysis(','function watches()')].join('\n');
+test('real trade notices never post to the legacy chat or to a private scanner destination',async()=>{
+ const tradeCode=section('let lastRealTradeTelegramAt=0;','// Re-arm after a one-tap update')+
+  section('function telegramPost(payload,','const SERVER_BOOT_ID');
+ for(const [scanner,error,expectedMethods] of [
+  ['', 'SCANNER_NOT_CONFIGURED', []],
+  ['123456', 'SCANNER_CHAT_NOT_CHANNEL', ['getChat']],
+ ]){
+  const methods=[];
+  const sandbox={CONFIG:{tgToken:'offline-test-token',tgChat:'123456',tgScannerChat:scanner},
+   createTelegramNetworkRecovery,realTradeText:()=> 'confirmed trade',reportsDirty:false,AbortSignal,
+   fetch:async(url)=>{
+    methods.push(new URL(url).pathname.split('/').at(-1));
+    return {ok:true,json:async()=>({ok:true,result:{id:123456,type:'private'}})};
+   }};
+  vm.createContext(sandbox);vm.runInContext(tradeCode,sandbox);
+  const outcome=await sandbox.sendRealTradeTelegram({alertOrigin:'COPY'});
+  assert.equal(outcome.error,error);
+  assert.deepEqual(methods,expectedMethods);
+ }
+});
 function harness(){
  const now=Date.now(),{row,context:marketContext}=syntheticFinalSignalContext(now);
  Object.assign(row,{scoreVersion:'ISSUE6-100-V1',risk:{leverage:20},executionVenue:'BINGX'});

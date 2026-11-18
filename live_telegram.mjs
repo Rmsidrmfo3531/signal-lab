@@ -54,6 +54,7 @@ export function liveEventText(r,type,detail={}){
  }
  if(type==='ADD_FILLED'){const n=(r.adds||[]).filter(a=>a.filled).length;if(!n)return null; // partial fill: the notice comes when it completes
   return `➕ 추매 ${n}차 체결 · ${head}\n평균 진입가 ${fmt(r.position?.entryPrice)} · 손절 ${fmt(r.stop)}`}
+ if(type==='PARTIAL_EXIT'&&r.mode==='TESTNET')return `🎯 부분 청산 · ${head}\n청산 수량 ${amount(detail.qty)} · 잔여 ${amount(detail.left)}`;
  if(type==='PROTECTION_RECOVERED')return `🛡 손절 보호 복구 · ${head}\n서버 재시작으로 끊긴 진입을 거래소에서 확인했습니다. 손절 ${fmt(r.stop)} ${detail.reason==='STOP_FOUND'?'주문이 걸려 있습니다':'주문을 다시 걸었습니다'}.`;
  if(type==='STOP_TO_BREAKEVEN')return `🎯 1차 목표 도달 · ${head}\n손절을 진입가(${fmt(r.stop)})로 올렸습니다. 남은 물량은 손실 없이 관리됩니다.`;
  if(type==='SETTLED'){
