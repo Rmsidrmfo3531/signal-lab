@@ -407,7 +407,6 @@ function copyNotice(e){
 }
 function manualTradeNotice(e){
  const text=manualTradeText(e);if(!text)return;
- try{send('live-notice',{type:e.type,symbol:e.symbol,text,at:Date.now()})}catch{}
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
  telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[MANUAL TELEGRAM] HTTP',r.status)}).catch(()=>console.error('[MANUAL TELEGRAM] delivery unconfirmed'));
 }
