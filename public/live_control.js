@@ -422,7 +422,8 @@ export function testnetBudgetHTML(t){
  const b=t.budget||{},state=b.stopped?'<b class="copy-state kill">■ 오늘 정지 (하루 손실 한도)</b>':t.partial?'<b class="copy-state on">◐ 일부 활성화</b>':'';
  const who=t.partial?[t.signal?`신호 ${t.signal.armed?'●':'○'}`:null,t.scalp?`단타 ${t.scalp.armed?'●':'○'}`:null].filter(Boolean).join(' · '):'';
  const loss=Number(b.lossUSD)>0?`−$${Number(b.lossUSD).toFixed(2)}`:'$0.00';
- return `${state}${who?`<span class="tn-who">${esc(who)}</span>`:''}<span class="tn-budget-nums">공동 한도 · 오늘 손실 <b class="${Number(b.lossUSD)>0?'paper-loss':''}">${loss}</b> / 한도 <b>${fin(b.limitUSD)?tnUsd(b.limitUSD):'잔고 확인 중'}</b> (${esc(b.dailyLossPct??'—')}%) · 열린 위험 <b>${tnUsd(b.openRiskUSD)}</b>${fin(b.marginUSD)?` · 증거금 ${tnUsd(b.marginUSD)}${fin(b.marginCapUSD)?` / ${tnUsd(b.marginCapUSD)} (${esc(b.marginCapPct)}%)`:''}`:''}</span>${t.scalpError?`<small class="muted">단타 켜지 않음: ${esc(t.scalpError)}</small>`:''}`;
+ const balance=fin(b.equityUSD)?`기준 잔고 ${tnUsd(b.equityUSD)}${fin(b.accountEquityUSD)&&b.accountEquityUSD>b.equityUSD?` · 계좌 ${tnUsd(b.accountEquityUSD)}`:''}${b.balanceAt?` · ${esc(auditTime(b.balanceAt))} KST`:''}`:'';
+ return `${state}${who?`<span class="tn-who">${esc(who)}</span>`:''}<span class="tn-budget-nums">공동 한도 · 오늘 손실 <b class="${Number(b.lossUSD)>0?'paper-loss':''}">${loss}</b> / 한도 <b>${fin(b.limitUSD)?tnUsd(b.limitUSD):'잔고 확인 중'}</b> (${esc(b.dailyLossPct??'—')}%) · 열린 위험 <b>${tnUsd(b.openRiskUSD)}</b>${fin(b.marginUSD)?` · 증거금 ${tnUsd(b.marginUSD)}${fin(b.marginCapUSD)?` / ${tnUsd(b.marginCapUSD)} (${esc(b.marginCapPct)}%)`:''}`:''}</span>${balance?`<small class="tn-who">${balance}</small>`:''}${b.balanceError?'<small class="live-warn-text">최근 잔고 조회 실패</small>':''}${t.scalpError?`<small class="muted">단타 켜지 않음: ${esc(t.scalpError)}</small>`:''}`;
 }
 
 /** One open scalp position as a card next to the signal cards (badge 단타). */
@@ -546,6 +547,11 @@ function render(o){
  const tn=o.testnet||null,on=tn?tn.armed===true:Boolean(o.armed&&o.mode!=='OFF'),some=tn?Boolean(tn.armed||tn.partial):on,canArm=tn?Boolean(tn.signal||tn.scalp):o.mode!=='OFF';
  if($('liveModeBadge'))$('liveModeBadge').innerHTML=modeBadgeHTML(tn?{...o,mode:o.mode==='OFF'&&tn.scalp?'TESTNET':o.mode,armed:on}:o);
  if($('testnetBudget')){$('testnetBudget').hidden=!tn;if(tn)$('testnetBudget').innerHTML=testnetBudgetHTML(tn)}
+ const budgetEdit=$('testnetBudgetEdit'),budgetForm=$('testnetBudgetForm');
+ if(budgetEdit&&budgetForm){
+  budgetEdit.hidden=!tn?.budget||!canArm;
+  if(tn?.budget&&!budgetEdit.open){for(const key of ['dailyLossPct','marginCapPct'])budgetForm.elements.namedItem(key).value=tn.budget[key]??''}
+ }
  const status=$('liveStatus'),rows=liveRows(o),kv=([k,v])=>{const row=document.createElement('div'),dt=document.createElement('span'),dd=document.createElement('b');
   row.className='kv-row';dt.textContent=k;dd.textContent=v;row.append(dt,dd);return row};
  // Account facts stay visible; the rules sit behind "규칙 보기".
@@ -600,6 +606,15 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
   const text=mode==='LIVE'?'실거래(실제 돈)를 활성화합니다. 다음 최종 신호부터 거래소에 실제 돈으로 주문이 나갑니다. 계속할까요?':'테스트넷(모의 자금)의 신호 전략과 되돌림 단타를 함께 활성화합니다. 다음 최종 신호·5분봉 단타 신호부터 BingX 테스트넷에 주문이 나갑니다(하루 손실 한도는 둘이 공동). 계속할까요?';
   if(confirm(text))post('/api/live/arm',{confirm:'ARM'}).catch(fail)});
  $('liveDisarm')?.addEventListener('click',()=>post('/api/live/disarm').catch(fail));
+ $('testnetBudgetForm')?.addEventListener('submit',async e=>{
+  e.preventDefault();const form=e.currentTarget,btn=form.querySelector('button'),msg=$('testnetBudgetMessage');
+  btn.disabled=true;msg.textContent='저장 중…';
+  try{
+   const {budget}=await post('/api/live/testnet-budget',{dailyLossPct:form.elements.namedItem('dailyLossPct').valueAsNumber,marginCapPct:form.elements.namedItem('marginCapPct').valueAsNumber});
+   msg.textContent=budget.stopped?'저장됨 · 오늘 거래 정지 상태':'저장됨';
+  }catch(err){msg.textContent=err.message==='INVALID_TESTNET_BUDGET'?'하루 손실 1~50%, 증거금 1~30%를 입력하세요.':'공동 한도 변경 결과를 확인하지 못했습니다.'}
+  finally{btn.disabled=false}
+ });
  $('liveKill')?.addEventListener('click',()=>post('/api/live/kill').catch(fail));
  $('liveResetKill')?.addEventListener('click',()=>{if(confirm('긴급 정지를 해제합니다. 거래소 계정 상태를 먼저 확인하셨나요?'))post('/api/live/reset-kill',{confirm:'RESET'}).catch(fail)});
  $('liveTest')?.addEventListener('click',async()=>{

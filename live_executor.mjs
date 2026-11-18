@@ -48,12 +48,13 @@ const recordMargin=record=>{
 const SETTLE_TRIES=4,SETTLE_WINDOW_MS=2*3600000,SETTLE_DELAY_MS=150000;
 
 export class LiveExecutor{
- constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null,onEvent=null,externalHeld=null,budget=null}={}){
+ constructor({config,clients={},directory,now=Date.now,log=()=>{},onChange=()=>{},priceOf=()=>null,onEvent=null,externalHeld=null,budget=null,testnetBingxFunds=null}={}){
   // externalHeld(): symbols another ledger (copy trading) holds on the same account: not traded here.
   this.externalHeld=externalHeld;
   // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the shared TESTNET daily loss / open risk / margin
   // budget with the reversal scalp. Only ever given on TESTNET (never LIVE); without it the rules below are unchanged.
   this.budget=config?.mode==='TESTNET'?budget:null;
+  this.testnetBingxFunds=config?.mode==='TESTNET'?testnetBingxFunds:null;
   // priceOf(record): the venue's public mid price, used only to estimate an exit when the venue gives none.
   Object.assign(this,{config,clients,now,log,onChange,priceOf,onEvent});
   this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();this.reconciling=false;
@@ -164,7 +165,7 @@ export class LiveExecutor{
   if(this.budget){
    if(!(record.plannedEntry>0))return 'PRICE_UNAVAILABLE';
    // The provisional record is already included in the shared budget, with the venue's confirmed leverage.
-   const checked=this.budget.check({equity:budgetEquity,who:'signal'});
+   const checked=this.budget.check({equity:budgetEquity,who:record.venue==='BINGX'?'signal':'signal-alt'});
    if(!checked.ok)return checked.reason;
   }
   if(record.balanceUSD>0&&recordMargin(record)>Math.min(record.balanceUSD*(this.config.marginUsePct??25)/100,record.freeUSD*.9)+1e-9)return 'MARGIN_SHORT';
@@ -230,7 +231,7 @@ export class LiveExecutor{
    if(budgetEquity===null){try{const f=await this.#funds(venue);budgetEquity=this.config.balanceCapUSD>0?Math.min(f.equity,this.config.balanceCapUSD):f.equity}catch{extra.push('BALANCE_UNAVAILABLE')}}
    if(budgetEquity!==null){
     const margin=budgetMargin??(Number(qty.base)||0)*(posNum(row.entry)||posNum(row.venueEntry)||0)/leverage;
-    const b=this.budget.check({equity:budgetEquity,newRiskUSD:Number(qty.riskUSD)||0,newMarginUSD:margin,who:'signal'});
+    const b=this.budget.check({equity:budgetEquity,newRiskUSD:Number(qty.riskUSD)||0,newMarginUSD:margin,who:venue==='BINGX'?'signal':'signal-alt'});
     if(!b.ok)extra.push(b.reason);
    }
   }
@@ -440,6 +441,7 @@ export class LiveExecutor{
  /** Account equity and the margin still free (BingX availableMargin, Gate available). */
  async #funds(venue){
   if(venue==='BINGX'){
+   if(this.testnetBingxFunds)return this.testnetBingxFunds();
    const data=await this.clients.BINGX.balance(),list=Array.isArray(data)?data:[data?.balance??data];
    const usdt=list.find(x=>x?.asset==='USDT')??list[0],equity=Number(usdt?.equity??usdt?.balance)||0;
    const raw=usdt?.availableMargin,free=Number(raw);

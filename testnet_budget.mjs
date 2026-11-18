@@ -31,6 +31,7 @@ export function testnetDailyLossPct(env=process.env){
 }
 
 const EQUITY_FRESH_MS=10*60000;
+const ACCOUNT_EQUITY_FRESH_MS=30000;
 /** TESTNET_MARGIN_CAP_PCT: the shared margin cap, default and maximum 30 % (review L5: never follows LIVE_MARGIN_USE_PCT). */
 export const TESTNET_MARGIN_CAP_MAX=30;
 export function testnetMarginCapPct(env=process.env){
@@ -38,12 +39,28 @@ export function testnetMarginCapPct(env=process.env){
  return raw!==undefined&&raw!==''&&Number.isFinite(v)&&v>=1&&v<=TESTNET_MARGIN_CAP_MAX?v:TESTNET_MARGIN_CAP_MAX;
 }
 export class TestnetBudget{
- constructor({dailyLossPct=TESTNET_DAILY_LOSS_DEFAULT,marginCapPct=TESTNET_MARGIN_CAP_MAX,now=()=>Date.now(),directory=null,fileName='testnet-budget.json',log=()=>{}}={}){
-  Object.assign(this,{dailyLossPct,marginCapPct:Math.min(TESTNET_MARGIN_CAP_MAX,Number(marginCapPct)||TESTNET_MARGIN_CAP_MAX),now,log});
+ constructor({dailyLossPct=TESTNET_DAILY_LOSS_DEFAULT,marginCapPct=TESTNET_MARGIN_CAP_MAX,accountEquity=false,capitalCapUSD=null,now=()=>Date.now(),directory=null,fileName='testnet-budget.json',log=()=>{}}={}){
+  Object.assign(this,{dailyLossPct,marginCapPct:Math.min(TESTNET_MARGIN_CAP_MAX,Number(marginCapPct)||TESTNET_MARGIN_CAP_MAX),accountEquity,capitalCapUSD,now,log});
   this.sources=new Map();this.equities=new Map();
   this.file=directory?path.join(directory,fileName):null;
   let saved=null;try{saved=this.file?readStore(this.file):null}catch(e){this.log('[TESTNET BUDGET] state unreadable',e.message)}
-  this.state={stop:saved?.stop&&typeof saved.stop.day==='string'?saved.stop:null};
+  const settings=saved?.settings;
+  const valid=settings&&validBudgetSettings(settings);
+  this.state={stop:saved?.stop&&typeof saved.stop.day==='string'?saved.stop:null,settings:valid?settings:null};
+  if(valid)Object.assign(this,{dailyLossPct:settings.dailyLossPct,marginCapPct:settings.marginCapPct});
+  this.account=null;this.accountError=null;
+ }
+ #save(state){if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...state})}}
+ configure({dailyLossPct,marginCapPct}={}){
+  const settings={dailyLossPct,marginCapPct};
+  if(!validBudgetSettings(settings))throw codeErr('INVALID_TESTNET_BUDGET',400);
+  const state={...this.state,settings};this.#save(state);
+  this.state=state;Object.assign(this,settings);
+  return this.status();
+ }
+ observeAccount(equity){
+  if(!fin(equity)||Number(equity)<0){this.accountError='BALANCE_UNAVAILABLE';return}
+  this.account={equity:Number(equity),at:this.now()};this.accountError=null;
  }
  /** name 'signal' | 'scalp'. getters: realizedToday(day) -> net USD of the trades closed that KST day (loss < 0),
   * openRisk() -> USD to the stops, usedMargin() -> USD, optional unrealized() -> USD, stoppedToday(day) -> bool,
@@ -52,6 +69,12 @@ export class TestnetBudget{
  /** One balance basis for both strategies (review L7): the smaller of the given equity and the other strategy's recent one. */
  basis(equity,who=null){
   const at=this.now(),v=fin(equity)&&Number(equity)>0?Number(equity):null;
+  if(this.accountEquity){
+   if(who==='signal-alt'&&v!==null)this.equities.set(who,{v,at});
+   if(!this.account||at-this.account.at>ACCOUNT_EQUITY_FRESH_MS)return null;
+   const alt=this.equities.get('signal-alt'),other=alt&&at-alt.at<=ACCOUNT_EQUITY_FRESH_MS?alt.v:Infinity;
+   return Math.min(this.account.equity,this.capitalCapUSD>0?this.capitalCapUSD:Infinity,other);
+  }
   if(v!==null&&who)this.equities.set(who,{v,at});
   const vals=[...(v!==null?[v]:[]),...[...this.equities.values()].filter(x=>at-x.at<=EQUITY_FRESH_MS).map(x=>x.v)];
   return vals.length?Math.min(...vals):null;
@@ -62,7 +85,7 @@ export class TestnetBudget{
  markStopped(detail={}){
   const day=kstDay(this.now());if(this.state.stop?.day===day)return false;
   this.state.stop={day,at:this.now(),...detail};
-  if(this.file){try{fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,stop:this.state.stop})}catch(e){this.log('[TESTNET BUDGET] save',e.message)}}
+  try{this.#save(this.state)}catch(e){this.log('[TESTNET BUDGET] save',e.message)}
   return true;
  }
  /** Today's numbers. A getter that throws makes the snapshot unusable (ok:false): no entry is allowed on it. */
@@ -77,12 +100,12 @@ export class TestnetBudget{
     by[name]=s;realized+=s.realizedNetUSD;loss+=s.lossUSD;lossOpen+=s.lossWithOpenUSD;open+=s.openRiskUSD;margin+=s.marginUSD;unreal+=s.unrealizedUSD;stopped||=s.stopped;provisional||=s.provisional;
    }catch(e){ok=false;by[name]={error:e?.code||e?.message||'READ_FAILED'}}
   }
-  const eq=this.basis(equity,who),limit=eq?eq*this.dailyLossPct/100:null,stored=this.storedStop();
+  const eq=this.basis(equity,who),limit=eq!==null?eq*this.dailyLossPct/100:null,stored=this.storedStop();
   if(stored)stopped=true;
   // Reached from final values: written once for the rest of the KST day. From a placeholder: blocks now, not written.
-  if(ok&&limit!==null&&loss>=limit){stopped=true;if(!provisional&&!stored)this.markStopped({lossUSD:+loss.toFixed(2),limitUSD:+limit.toFixed(2),reason:'REALIZED'})}
+  if(ok&&limit!==null&&loss>0&&loss>=limit){stopped=true;if(!provisional&&!stored)this.markStopped({lossUSD:+loss.toFixed(2),limitUSD:+limit.toFixed(2),reason:'REALIZED'})}
   return {ok,day,equityUSD:eq,dailyLossPct:this.dailyLossPct,limitUSD:limit,realizedNetUSD:realized,lossUSD:loss,lossWithOpenUSD:lossOpen,openRiskUSD:open,usedUSD:loss+open,
-   unrealizedUSD:unreal,marginUSD:margin,marginCapPct:this.marginCapPct,marginCapUSD:eq?eq*this.marginCapPct/100:null,stopped,provisional,storedStop:this.storedStop(),by};
+   unrealizedUSD:unreal,marginUSD:margin,marginCapPct:this.marginCapPct,marginCapUSD:eq!==null?eq*this.marginCapPct/100:null,stopped,provisional,storedStop:this.storedStop(),by};
  }
  /** Today's day stop (stored, the shared loss reached, or the scalp's shared realized + unrealized stop). */
  stopped(equity=null){const s=this.snapshot(equity);return s.ok&&s.stopped}
@@ -100,9 +123,13 @@ export class TestnetBudget{
  /** For the page: rounded numbers. */
  status(equity=null){const s=this.snapshot(equity);
   return {ok:s.ok,day:s.day,dailyLossPct:s.dailyLossPct,equityUSD:s.equityUSD,limitUSD:s.limitUSD===null?null:r2(s.limitUSD),realizedNetUSD:r2(s.realizedNetUSD),lossUSD:r2(s.lossUSD),
+   ...(this.accountEquity?{accountEquityUSD:this.account?.equity??null,balanceAt:this.account?.at??null,balanceError:this.accountError}:{}),
    openRiskUSD:r2(s.openRiskUSD),usedUSD:r2(s.usedUSD),marginUSD:r2(s.marginUSD),marginCapPct:s.marginCapPct,marginCapUSD:s.marginCapUSD===null?null:r2(s.marginCapUSD),stopped:s.stopped,provisional:s.provisional,
    by:Object.fromEntries(Object.entries(s.by).map(([k,v])=>[k,v.error?v:{realizedNetUSD:r2(v.realizedNetUSD),lossUSD:r2(v.lossUSD),openRiskUSD:r2(v.openRiskUSD),marginUSD:r2(v.marginUSD)}]))};
  }
+}
+function validBudgetSettings({dailyLossPct,marginCapPct}){
+ return Number.isFinite(dailyLossPct)&&dailyLossPct>=1&&dailyLossPct<=50&&Number.isFinite(marginCapPct)&&marginCapPct>=1&&marginCapPct<=TESTNET_MARGIN_CAP_MAX;
 }
 
 const codeErr=(code,status=409)=>Object.assign(Error(code),{code,httpStatus:status});

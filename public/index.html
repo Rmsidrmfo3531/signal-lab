@@ -39,6 +39,15 @@
           <details class="venues-details live-rules-fold"><summary>규칙 보기 <small>전략 · 위험 한도 · 수량 · 동시 포지션</small></summary><div id="liveRules" class="venues-status kv-list live-status-full"></div></details>
           <div class="live-actions"><button type="button" class="outline-btn" id="liveArm">활성화</button><button type="button" class="outline-btn" id="liveDisarm">비활성화</button><button type="button" class="outline-btn danger-btn live-kill" id="liveKill">긴급 정지</button><button type="button" class="outline-btn" id="liveResetKill">긴급 정지 해제</button><button type="button" class="outline-btn" id="liveTest" hidden title="테스트넷에서만: DOGE 소액 롱을 실제 신호와 같은 순서로 주문하고 5초 뒤 청산">테스트넷 시험 주문</button></div>
           <div id="testnetBudget" class="copy-mode tn-budget" role="status" aria-live="polite" hidden></div>
+          <details id="testnetBudgetEdit" class="venues-details tn-budget-edit" hidden>
+            <summary>공동 한도 변경</summary>
+            <form id="testnetBudgetForm" class="tn-budget-form">
+              <label>하루 손실·열린 위험 (%) <input name="dailyLossPct" type="number" min="1" max="50" step="any" inputmode="decimal" required></label>
+              <label>공동 증거금 (%) <input name="marginCapPct" type="number" min="1" max="30" step="any" inputmode="decimal" required></label>
+              <button type="submit" class="outline-btn small">저장</button>
+              <span id="testnetBudgetMessage" role="status"></span>
+            </form>
+          </details>
           <div id="liveError" class="venues-status warn" role="alert" hidden></div>
           <div id="liveTestResult" class="venues-status kv-list live-test-result" role="status" hidden></div>
           <p id="livePaperNote" class="section-note" hidden><strong>자동 모의매매도 켜져 있습니다</strong> (<code>PAPER_TRADING=on</code>). 모의 기록은 화면에 표시하지 않으며 <a href="/api/paper/export" download>CSV로 내려받을</a> 수 있습니다.</p>

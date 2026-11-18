@@ -265,12 +265,17 @@ function liveClients(){
 let copyTrader=null,scalpExec=null;
 // 되돌림 단타 settings (read here: the shared testnet budget below needs them before both executors exist).
 const SCALP_EXEC=scalpExecConfig(process.env);
+const signalClients=liveClients();
+const hasTestnetBingx=LIVE.mode==='TESTNET'&&Boolean(signalClients.BINGX)||LIVE.mode!=='LIVE'&&SCALP_EXEC.mode==='TESTNET'&&Boolean(process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET);
+const testnetCapitalCaps=[LIVE.mode==='TESTNET'?LIVE.balanceCapUSD:0,SCALP_EXEC.mode==='TESTNET'?(SCALP_EXEC.balanceCapUSD||LIVE.balanceCapUSD):0].filter(x=>x>0);
 // One shared TESTNET risk budget for the signal strategy and the reversal scalp (testnet_budget.mjs, user 2026-11-17
 // "한도까지 하나로" / "하루 손실을 늘리면 되지"): TESTNET_DAILY_LOSS_PCT (default 15) of the equity for today's loss of both +
 // every open stop risk of both + the new trade (each strategy's loss counted alone); margin of both within TESTNET_MARGIN_CAP_PCT
 // (30 %). The shared day stop is kept in testnet-budget.json. The signal side only on TESTNET.
-const testnetBudget=new TestnetBudget({dailyLossPct:testnetDailyLossPct(process.env),marginCapPct:testnetMarginCapPct(process.env),directory:storage.dir,log:(...a)=>console.warn(...a)});
-const live=new LiveExecutor({config:LIVE,clients:liveClients(),directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),budget:LIVE.mode==='TESTNET'?testnetBudget:null,
+const testnetBudget=new TestnetBudget({dailyLossPct:testnetDailyLossPct(process.env),marginCapPct:testnetMarginCapPct(process.env),accountEquity:hasTestnetBingx,
+ capitalCapUSD:testnetCapitalCaps.length?Math.min(...testnetCapitalCaps):null,directory:storage.dir,log:(...a)=>console.warn(...a)});
+const live=new LiveExecutor({config:LIVE,clients:signalClients,directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),budget:LIVE.mode==='TESTNET'?testnetBudget:null,
+ testnetBingxFunds:hasTestnetBingx?testnetAccountFunds:null,
  // Copy positions on the same testnet account are kept apart; a real-money copy uses another account.
  // Testnet reversal scalps (scalp_executor.mjs) share the testnet account too.
  externalHeld:()=>new Set([...(COPY_ON_SAME_ACCOUNT()?copyTrader?.heldSymbols()??[]:[]),...(LIVE.mode==='TESTNET'?scalpExec?.heldSymbols()??[]:[])]),
@@ -297,9 +302,10 @@ async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPn
  const v=await venuePositionsReader.snapshot(s.positions);if(!manualLedger)return {...s,...v};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
  return {...s,...v,manual:manualLedger.status()}}
-const bingxFunds=(data,{requireAvailable=false}={})=>{
+const bingxFunds=(data,{requireAvailable=false,requireEquity=false}={})=>{
  const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>x?.asset==='USDT')??list[0];
- const equity=Number(u?.equity??u?.balance)||0,raw=u?.availableMargin,free=Number(raw);
+ const amount=u?.equity??u?.balance,number=Number(amount),equity=requireEquity&&(amount==null||String(amount).trim()===''||!Number.isFinite(number))?null:number||0;
+ const raw=u?.availableMargin,free=Number(raw);
  if(requireAvailable&&(raw==null||String(raw).trim()===''||!Number.isFinite(free)))return {equity,available:null};
  return {equity,available:Number.isFinite(free)?Math.max(0,free):equity};
 };
@@ -352,6 +358,20 @@ const scalpMarket=new BingXMarketData({minIntervalMs:SCALP_EXEC.klineGapMs});
 // TESTNET-only client of its own. Never a LIVE client (the executor refuses one).
 const scalpClient=SCALP_EXEC.mode!=='TESTNET'?null:LIVE.mode==='TESTNET'&&live.clients.BINGX?live.clients.BINGX
  :process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'TESTNET',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)}):null;
+const testnetAccount={funds:null,pending:null,triedAt:0};
+async function testnetAccountFunds(){
+ const client=LIVE.mode==='TESTNET'&&live.clients.BINGX||scalpClient;
+ if(!client||client.mode!=='TESTNET')throw Error('BALANCE_UNAVAILABLE');
+ if(testnetAccount.pending)return testnetAccount.pending;
+ if(Date.now()-testnetAccount.triedAt<5000&&testnetAccount.funds)return testnetAccount.funds;
+ testnetAccount.triedAt=Date.now();
+ testnetAccount.pending=client.balance().then(data=>{
+  const funds=bingxFunds(data,{requireEquity:true});
+  if(funds.equity==null||!Number.isFinite(funds.equity)||funds.equity<0)throw Error('BALANCE_UNAVAILABLE');
+  testnetBudget.observeAccount(funds.equity);testnetAccount.funds=funds;return funds;
+ }).catch(e=>{testnetAccount.funds=null;testnetBudget.observeAccount(null);throw e}).finally(()=>{testnetAccount.pending=null});
+ return testnetAccount.pending;
+}
 let scalpTickers={at:0,rows:[]};
 // One bulk ticker read at a time: callers arriving while it runs share it (review 2026-11-17: the scan-order read
 // and the 5m reads use the same paced queue, so a duplicate read delayed the scan).
@@ -372,7 +392,7 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
  markOf:venueSymbol=>scalpLast(venueSymbol,20000),
  // Same balance cap as the signal strategy unless SCALP_BALANCE_CAP_USD is set (applied in the executor).
- balance:async()=>{const f=bingxFunds(await scalpClient.balance());const cap=SCALP_EXEC.balanceCapUSD>0?Infinity:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
+ balance:async()=>{const f=hasTestnetBingx?await testnetAccountFunds():bingxFunds(await scalpClient.balance());const cap=SCALP_EXEC.balanceCapUSD>0?Infinity:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
   const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
  // The signal strategy (testnet) and the testnet copy share this account: their symbols are skipped.
  isBusy:(symbol,venueSymbol)=>LIVE.mode==='TESTNET'&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&(r.symbol===symbol||r.venueSymbol===venueSymbol)))
@@ -383,6 +403,7 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  budget:LIVE.mode==='LIVE'?null:testnetBudget});
 if(LIVE.mode==='TESTNET')testnetBudget.register('signal',live.budgetSource());
 if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',scalpExec.budgetSource());
+if(hasTestnetBingx)setInterval(()=>{void testnetAccountFunds().catch(()=>{})},10000).unref?.();
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
 function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
@@ -713,6 +734,8 @@ async function uploadReport(force=false){
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange:await exchangeReport().catch(e=>({error:e.message}))});
   report.release=appVersion.displayVersion;
+  if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
+   balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime={mode:SCALP_EXEC.mode,armed:scalpExec.armed,scaleInEnabled:SCALP_EXEC.scaleIn};
@@ -1523,7 +1546,8 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
   if(pathname==='/api/live/overview'&&req.method==='GET'){
-   const scalp=SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?await scalpExec.liveStatus():null,balance=await liveBalanceSnapshot();
+   const [scalp,balance]=await Promise.all([SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?scalpExec.liveStatus():null,liveBalanceSnapshot(),
+    hasTestnetBingx?testnetAccountFunds().catch(()=>null):null]);
    // One testnet screen (user 2026-11-17): one switch, the shared budget, totals over both strategies. Not for LIVE.
    const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(balance?.usd)>0?Math.min(Number(balance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
     return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
@@ -1531,6 +1555,11 @@ const server=http.createServer(async(req,res)=>{
    priceOf:liveRecordPrice,balance,paperTrading:CONFIG.paperTrading})})}
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
+   if(pathname==='/api/live/testnet-budget'){
+    if(LIVE.mode==='LIVE'||LIVE.mode!=='TESTNET'&&SCALP_EXEC.mode!=='TESTNET')return response(res,409,{error:'NOT_TESTNET'});
+    try{const budget=testnetBudget.configure(body);reportsDirty=true;return response(res,200,{budget})}
+    catch(e){return response(res,e.httpStatus||500,{error:e.code==='INVALID_TESTNET_BUDGET'?e.code:'TESTNET_BUDGET_SAVE_FAILED'})}
+   }
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
     // TESTNET / OFF: one switch for the signal strategy and the reversal scalp (user 2026-11-17). LIVE: unchanged.
     let status;
