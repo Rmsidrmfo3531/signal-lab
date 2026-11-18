@@ -4,9 +4,23 @@ import {BingXMarketData,BINGX_HOSTS,spacedQueue} from '../bingx_market.mjs';
 import {GateMarketData,GATEIO_HOST} from '../gateio_market.mjs';
 import {VenueQuoteService,parseVenueSymbols,MAX_VENUE_SYMBOLS} from '../venue_service.mjs';
 import {normalizeBook} from '../venue_market_data.mjs';
+import {confirmedBingxFills,completeBingxOrders} from '../live_clients.mjs';
 
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
 const NOW=Date.parse('2026-11-10T12:00:00Z');
+
+test('BingX fill response without trade ID or side resolves against the exact order and requires full-order P&L',async()=>{
+ const fills={fill_orders:[{orderId:'71233',volume:'0.3',price:'100',commission:'-0.03',filledTime:'2026-11-10T20:00:00.000+0800'},
+  {orderId:'71233',volume:'0.7',price:'101',commission:'-0.07',filledTm:String(NOW+1000)}]};
+ const client={getOrder:async(symbol,{orderId})=>{assert.equal(symbol,'BTC-USDT');assert.equal(orderId,'71233');return {order:{symbol,orderId,
+  side:'SELL',positionSide:'LONG',status:'Filled',executedQty:'1',profit:'5.50'}}}};
+ const rows=await confirmedBingxFills(client,fills,{symbol:'BTC-USDT'});
+ assert.deepEqual(rows.map(f=>[f.symbol,f.side,f.positionSide,f.at,f.pnl,f.fee]),[
+  ['BTC-USDT','SELL','LONG',NOW,0,-.03],['BTC-USDT','SELL','LONG',NOW+1000,5.5,-.07]]);
+ assert.equal(completeBingxOrders(rows),true);assert.equal(completeBingxOrders(rows.slice(1)),false);
+ const partial=await confirmedBingxFills(client,[fills.fill_orders[0]],{symbol:'BTC-USDT'});
+ assert.equal(partial[0].pnl,null,'an incomplete order cannot supply confirmed realized P&L');
+});
 function recorder(handler){const calls=[];const fetcher=async(url,options)=>{calls.push({url:String(url),options});return handler(String(url),options)};return {calls,fetcher}}
 
 test('BingX client calls only documented public GET paths on the official host, without credentials',async()=>{

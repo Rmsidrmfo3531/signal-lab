@@ -10,16 +10,17 @@ const tradeAmount=new Intl.NumberFormat('en-US',{maximumFractionDigits:12});
 const observedTime=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
 const amount=v=>v==null||!Number.isFinite(Number(v))?'—':tradeAmount.format(Number(v));
 const MANUAL_ACTION={MANUAL_OPEN:'신규 진입',MANUAL_ADD:'추가 진입',MANUAL_REDUCE:'부분',MANUAL_SETTLED:'전량'};
+const REAL_ORIGIN={MANUAL:'수동',COPY:'카피',SIGNAL:'자동 신호'};
 
 /** Text for a confirmed real-account change from the manual ledger. */
-export function manualTradeText(e){
+export function realTradeText(e){
  const actionBase=MANUAL_ACTION[e?.type];
  if(!actionBase||!e.symbol||e.fromFills!==true)return null;
  const closing=e.type==='MANUAL_REDUCE'||e.type==='MANUAL_SETTLED';
  const net=e.netUSD;
  if(closing&&(e.netSource!=='EXCHANGE_FILLS'||!Number.isFinite(net)))return null;
  const action=closing?`${actionBase} ${net===0?'본전':net>0?'익절':'손절'}`:actionBase;
- const head=[`🔴 실계좌 | 수동 | ${action}`,[e.symbol,SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ const head=[`🔴 실계좌 | ${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`,[e.symbol,SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
  else if(closing){
@@ -35,6 +36,7 @@ export function manualTradeText(e){
  const at=Number(e.observedAt??e.at);
  return [...head,detail,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n');
 }
+export {realTradeText as manualTradeText};
 const PROBLEM={ENTRY_OUTCOME_UNKNOWN:'진입 결과를 확인하지 못했습니다',STOP_FAILED:'손절 주문 등록 실패',TARGET_FAILED:'목표 주문 등록 실패',
  EMERGENCY_CLOSED:'보호 주문 실패로 긴급 청산했습니다',LATE_ADD_CLOSE_FAILED:'청산 뒤 체결된 추매 정리 실패',EMERGENCY_CLOSE_FAILED:'긴급 청산 실패 · 즉시 확인 필요',ERROR:'주문 처리 오류 · 긴급 정지',RECOVERY_ERROR:'재시작 후 손절 보호 복구 실패',RECOVERY_MANUAL:'재시작으로 끊긴 진입 · 자동 복구 불가(Gate.io) · 긴급 정지',LATE_ADD_CLOSED:'청산 뒤 체결된 추매를 정리했습니다',TEST_CLOSE_INCOMPLETE:'시험 주문 정리 미완료',STOP_WHOLE_FAILED:'전체 손절 주문 갱신 실패',REJECTED:'주문이 거부됐습니다'};
 

@@ -24,7 +24,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
-import {executionFills,summarizeBalancedFills} from './live_clients.mjs';
+import {confirmedBingxFills,summarizeBalancedFills} from './live_clients.mjs';
 import {directionOf,venueRows} from './venue_positions.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,positionRow} from './bingx_position_mode.mjs';
@@ -865,12 +865,13 @@ export class CopyExecutor{
     if(!orders.size){mark('ORDER_LINK_MISSING');return}
     if(orders.size>64){mark('ORDER_LIMIT');return}
     const raw=[];let history=null;
-    if(typeof this.client.fillHistory==='function')try{history=executionFills(await this.client.fillHistory({symbol:p.venueSymbol,...window}))}catch(e){if(typeof this.client.fillOrders!=='function')throw e}
+    if(typeof this.client.fillHistory==='function')try{history=await confirmedBingxFills(this.client,await this.client.fillHistory({symbol:p.venueSymbol,...window}),{symbol:p.venueSymbol,orders})}catch(e){if(typeof this.client.fillOrders!=='function')throw e}
     for(const [orderId,order] of orders){
      const isOwned=f=>f.orderId===orderId&&f.symbol===p.venueSymbol&&f.side===order.side&&f.at>=window.startTs&&f.at<=window.endTs;
      let owned=history?.filter(isOwned)??[];
      if(!owned.length&&typeof this.client.fillOrders==='function')try{
-      const receipts=executionFills(await this.client.fillOrders({...window,orderId}));owned=receipts.filter(isOwned);
+      const receipts=await confirmedBingxFills(this.client,await this.client.fillOrders({...window,orderId}),{symbol:p.venueSymbol,orders:new Map([[orderId,order]])});
+      owned=receipts.filter(isOwned);
      }catch(e){if(history===null||order.confirmed)throw e}
      if(order.confirmed&&!owned.length){mark('FILL_PENDING');return}
      raw.push(...owned);
@@ -901,7 +902,7 @@ export class CopyExecutor{
   for(const row of rowsOf(await this.client.allOrders({symbol:p.venueSymbol,startTime:startTs,endTime:endTs,limit:500}))){
    const id=row?.orderId==null?null:String(row.orderId),side=String(row?.side).toUpperCase();
    if(id&&(owned.has(String(row.clientOrderId).toLowerCase())||id===String(p.stopOrderId))&&[openSide,closeSide].includes(side)){
-    orders.set(id,{id,side,confirmed:Number(row.executedQty)>0||row.status==='FILLED'});
+    orders.set(id,{id,side,confirmed:Number(row.executedQty)>0||String(row.status).toUpperCase()==='FILLED',order:{...row,symbol:row.symbol??p.venueSymbol}});
    }
   }
   return orders;

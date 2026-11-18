@@ -29,7 +29,7 @@ test('server contains a single Telegram delivery path guarded by live final resu
  // daily testnet readiness report (live_readiness.mjs: results only, no signals) and live trade
  // notices (live_telegram.mjs: entry/add/target/close/problems of orders already placed) — nothing else.
  // + the testnet reversal-scalp notices (scalp_telegram.mjs: entry/close/problems, guarded by the live-notice setting).
- // The same transport also carries automatic updates and confirmed real-account manual trades.
+ // The same transport also carries automatic updates and confirmed real-account trade notices.
  assert.equal([...server.matchAll(/(?<!function )telegramPost\(/g)].length,9);
  assert.match(server,/function updateNotice\(text\)\{try\{if\(CONFIG\.tgToken&&CONFIG\.tgChat\)telegramPost\(/);
  assert.match(server,/const text=scalpEventText\(e\);if\(!text\)return;[\s\S]{0,400}?telegramLive===false[\s\S]{0,200}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
@@ -38,8 +38,10 @@ test('server contains a single Telegram delivery path guarded by live final resu
  // The copy-trading notice (copy_telegram.mjs text only, guarded by the live-notice setting).
  assert.match(server,/const text=copyEventText\(e\);if\(!text\)return;[\s\S]{0,400}?telegramLive===false[\s\S]{0,200}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
  assert.match(server,/const text=liveEventText\(record,type,detail\);if\(!text\)return;[\s\S]{0,400}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
- assert.match(server,/onEvent:manualTradeNotice/);
- assert.match(server,/const text=manualTradeText\(e\);if\(!text\)return;[\s\S]{0,400}?telegramLive===false[\s\S]{0,200}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
+ assert.match(server,/onEvent:confirmedRealTradeNotice/);
+ assert.match(server,/const text=realTradeText\(e\);if\(!text\)return;[\s\S]{0,800}?telegramLive===false[\s\S]{0,300}?telegramPost\(\{chat_id:CONFIG\.tgChat,text\}\)/);
+ assert.match(server,/manualLedger&&\['OPENED','ADDED','REDUCED','CLOSED'\]\.includes\(e\.type\)\)return;/);
+ assert.match(server,/record\.venue==='BINGX'&&\['PROTECTED','ADD_FILLED','SETTLED'\]\.includes\(type\)\)return;/);
  assert.match(server,/telegramPost\(\{chat_id:CONFIG\.tgChat,text:readinessText\(r\)\}\)/);
  assert.match(server,/const r=await telegramPost\(payload\)/);
  assert.match(server,/void telegramPost\(\{chat_id:CONFIG\.tgChat,text,/);
