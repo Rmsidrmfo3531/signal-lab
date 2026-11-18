@@ -263,6 +263,18 @@ test('copy order receipts drive alerts without usable position snapshots, and re
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
+test('live copy entry confirms from the signed filled reply immediately and is never emitted twice',async()=>{
+ const c=clock(),events=[],at=c.now(),orderId='5117';
+ const p={alertOrigin:'COPY',alertOwnerId:'fast-copy-entry',symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',
+  fillOrders:[{id:orderId,side:'BUY',notice:{tag:'open.1',at,from:0,receipt:{orderId,symbol:'BTC-USDT',side:'BUY',status:'FILLED',executedQty:1,avgPrice:10,updateTime:at}}}]};
+ let reads=0;
+ const m=new ManualLedger({now:c.now,copyOrderAlerts:true,copyRecords:()=>[p],onEvent:e=>events.push(e),client:{getOrder:async()=>{reads++;throw Error('unexpected read')}}});
+ await Promise.all([m.confirmCopyEntry(orderId),m.confirmCopyEntry(orderId)]);
+ await m.settle();
+ assert.equal(reads,0);assert.equal(events.length,1);assert.equal(events[0].observedAt,at);
+ assert.match(manualTradeText(events[0]),/실계좌 \| 카피 \| 신규 진입/);
+});
+
 test('copy loss limit: computed from the copy ledger only — a large manual loss on the same account changes nothing',async()=>{
  const dir=tmp();let size=0;
  const client={leverage:async()=>({maxLongLeverage:20}),setMarginType:async()=>({}),setLeverage:async()=>({}),cancelOrder:async()=>({}),

@@ -453,6 +453,7 @@ if(copyClient&&COPY.mode==='LIVE'){
 }else if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
 function copyNotice(e){
  if(e?.type==='COPY_SETTLED')reportsDirty=true;
+ if(e?.mode==='LIVE'&&e.type==='ENTRY_RECEIPT'){void manualLedger?.confirmCopyEntry(e.orderId);return}
  if(e?.mode==='LIVE'&&manualLedger&&['OPENED','ADDED','REDUCED','CLOSED'].includes(e.type)){
   reportsDirty=true;void manualLedger.settle();return;
  }
@@ -464,6 +465,8 @@ function copyNotice(e){
 function confirmedRealTradeNotice(e){
  const text=realTradeText(e);if(!text)return;
  reportsDirty=true;
+ // Delayed confirmation is valuable on Telegram. A late real copy entry popup is not timely.
+ if(e.alertOrigin==='COPY'&&e.type==='MANUAL_OPEN'&&Date.now()-e.observedAt>12000)return;
  if(e.alertOrigin==='COPY'||e.alertOrigin==='SIGNAL')try{send('live-notice',{type:e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
 }
 let lastRealTradeTelegramAt=0;

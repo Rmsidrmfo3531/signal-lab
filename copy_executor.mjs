@@ -322,6 +322,10 @@ export class CopyExecutor{
   // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
   if(reduceOnly&&p.hedge!==true)params.reduceOnly='true';
   const notice=this.#fillNotice(p,tag),res=orderOf(await this.client.placeOrder(params,{beforeSend}));
+  if(notice&&/^open\./.test(tag)&&String(res?.status).toUpperCase()==='FILLED'&&pos(res?.executedQty)&&pos(res?.avgPrice)){
+   notice.receipt={orderId:res.orderId,symbol:res.symbol??params.symbol,side:res.side??side,positionSide:res.positionSide??params.positionSide,
+    status:res.status,executedQty:res.executedQty,avgPrice:res.avgPrice,updateTime:res.updateTime??res.updatedTime??res.filledTm};
+  }
   this.#rememberFillOrder(p,res?.orderId,side,Number(res?.executedQty)>0||res?.status==='FILLED',notice);
   return {orderId:res?.orderId??null,avg:pos(res?.avgPrice),status:res?.status??null};
  }
@@ -662,6 +666,7 @@ export class CopyExecutor{
    // RETRY_ABANDONED comes only after BingX said the order does not exist: nothing to keep either.
    else{if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(error.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw error}}
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
+  if(this.config.mode==='LIVE'&&fill.orderId!=null)this.#event('ENTRY_RECEIPT',{symbol:p.symbol,orderId:String(fill.orderId)});
   await this.#protect(p,{ownFill:true});
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
