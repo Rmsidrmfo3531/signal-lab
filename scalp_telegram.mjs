@@ -12,7 +12,7 @@ export const SCALP_REASON_KO=Object.freeze({SIDE_OFF:'꺼 둔 방향의 신호 (
  NOT_ARMED:'비활성',SCALP_MODE_OFF:'꺼짐 (SCALP_EXEC_MODE=OFF)',LIVE_REFUSED:'실계좌 모드는 거부됨 — 테스트넷 전용',MODE_INVALID:'알 수 없는 모드 — 꺼짐',CREDENTIALS_MISSING:'BingX API 키 없음',
  SCALP_TESTNET_ONLY:'테스트넷 전용',KILL_SWITCH:'긴급 정지 중',KILL_SWITCH_ON:'긴급 정지 중',UPDATING:'업데이트 중',DAILY_LOSS_LIMIT:'하루 손실 한도 도달',UNRESOLVED_ORDER_STATE:'확인 안 된 주문이 있음',RATE_LIMIT_COOLDOWN:'요청 과다로 잠시 쉼',
  // Close reasons
- STOP:'손절',BREAKEVEN_STOP:'1차 목표 뒤 본전 손절',ALL_TARGETS:'목표 모두 도달',TIME_STOP:'2시간 보유 시간 만료',EXTERNAL:'외부 청산',NO_STOP:'보호 손절 실패로 긴급 청산',MANUAL:'수동',NO_PROTECTIVE_STOP:'보호 손절 실패'});
+ STOP:'손절',BREAKEVEN_STOP:'1차 목표 뒤 본전 손절',ALL_TARGETS:'목표 모두 도달',TIME_STOP:'2시간 보유 시간 만료',EARLY_TAKE_PROFIT:'조기 익절',EXTERNAL:'외부 청산',NO_STOP:'보호 손절 실패로 긴급 청산',MANUAL:'수동',NO_PROTECTIVE_STOP:'보호 손절 실패'});
 export const scalpReasonKo=r=>SCALP_REASON_KO[r]||r||'';
 const fmt=v=>{const x=Number(v);if(!Number.isFinite(x))return '—';const a=Math.abs(x);return a>=1000?x.toLocaleString('en-US',{maximumFractionDigits:2}):a>=1?String(+x.toFixed(4)):String(+x.toPrecision(4))};
 const usd=v=>{const x=Number(v);return Number.isFinite(x)?(x>=0?'+':'−')+'$'+Math.abs(x).toFixed(2):'—'};

@@ -33,7 +33,7 @@ export function ledgerSummary(store,{now=Date.now(),equityUSD=null,settlementOf=
  if(!store)return null;
  // manualLive (manual_ledger.mjs): manual trades on the real account, each trade marked origin 'manual'.
  const origin=store.origin==='manual'?'manual':null;
- const closed=(store.closed||[]).filter(x=>x&&x.test!==true).slice().sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
+ const closed=(store.closed||[]).filter(x=>x&&x.test!==true&&!x.archivedFromHistory).sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
  const open=Array.isArray(store.open)?store.open:Object.values(store.positions||{});
  let cum=0,peak=0,maxDD=0,wins=0,known=0,settled=0,confirmedWins=0,confirmedNet=0,estimated=0,unknown=0,pending=0;
  for(const x of closed){

@@ -24,7 +24,7 @@ const ENTRY=Number(crash().at(-1)[4]),PX=+(ENTRY+.02).toFixed(2),ENTRY_S=Number(
 const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
 
 // One-way BingX fake: amt is the signed position (+ long, - short), as positionAmt.
-function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fillAdd=true,loseAddReply=false}={}){
+function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fillAdd=true,loseAddReply=false,loseEarlyReply=false}={}){
  const calls=[],orders=new Map();let amt=0,avg=0,mark=0,id=1;
  const reduce=q=>{amt=amt>0?+Math.max(0,amt-q).toFixed(8):+Math.min(0,amt+q).toFixed(8)};
  const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
@@ -45,6 +45,14 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fi
     if(loseAddReply)throw Object.assign(Error('response lost'),{code:'NETWORK_UNREACHABLE'});
     return {order:o};
    }
+   if(p.type==='LIMIT'&&p.timeInForce==='IOC'){
+    const q=Number(p.quantity),canFill=p.side==='SELL'?mark>=Number(p.price):mark<=Number(p.price);
+    if(!canFill)return {order:add(p,{status:'EXPIRED',executedQty:'0'})};
+    reduce(q);
+    const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark)});
+    if(loseEarlyReply)throw Object.assign(Error('response lost'),{code:'NETWORK_UNREACHABLE'});
+    return {order:o};
+   }
    if(p.type==='MARKET'){const q=Number(p.quantity);
     if(p.reduceOnly){reduce(q);return {order:add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark||avg)})}}
     avg=mark||fillAt;amt=+(amt+(p.side==='SELL'?-q:q)).toFixed(8);const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(avg)});
@@ -62,6 +70,35 @@ function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=
 const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
 const short=(opt={})=>{const v=venue({fillAt:PX_S,...opt.venue}),clock=opt.clock||{t:T0};return {v,clock,ex:make(v,{clock,price:PX_S,trend:down4h,rows:rise,...opt})}};
+
+test('testnet takes profit after 45 minutes only at a fee-covering price and recovers a lost reply',async()=>{
+ for(const direction of ['LONG','SHORT']){
+  const dir=tmp(),clock={t:T0},shortSide=direction==='SHORT',sign=shortSide?-1:1;
+  const v=venue({fillAt:shortSide?PX_S:PX,loseEarlyReply:shortSide});
+  const inputs={clock,dir,config:{stopLossEnabled:false,scaleIn:false},
+   ...(shortSide?{price:PX_S,trend:down4h,rows:rise}:{})};
+  try{
+   let ex=make(v,inputs);ex.arm();await ex.scan();
+   const p=ex.store.open[0];assert.equal(p.direction,direction);
+   const requests=()=>placed(v,'LIMIT').filter(x=>x.timeInForce==='IOC');
+   v.mark=p.avg+sign;
+   clock.t=p.openedAt+44*60000;await ex.reconcile();assert.equal(requests().length,0);
+   v.mark=p.avg+sign*.02;
+   clock.t=p.openedAt+45*60000;await ex.reconcile();assert.equal(requests().length,0);
+   v.mark=p.avg+sign;
+   clock.t+=15000;await ex.reconcile();
+   const [order]=requests();
+   assert.equal(order.side,shortSide?'BUY':'SELL');assert.equal(order.reduceOnly,'true');
+   assert.ok(sign*(Number(order.price)-p.avg)>.0012*p.avg);
+   assert.equal(v.size,0);
+   if(shortSide){assert.ok(p.earlyTakeProfit);ex=make(v,inputs)}
+   clock.t+=15000;await ex.reconcile();clock.t+=15000;await ex.reconcile();
+   assert.equal(requests().length,1);
+   assert.equal(ex.store.closed[0].closeReason,'EARLY_TAKE_PROFIT');
+   assert.ok(ex.store.closed[0].netUSD>0);
+  }finally{fs.rmSync(dir,{recursive:true,force:true})}
+ }
+});
 
 test('config: TESTNET or OFF only — LIVE is refused; settings as the user set them; costs = backtest costs',()=>{
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
