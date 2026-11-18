@@ -24,11 +24,17 @@ const venueOnlySymbols=()=>Object.keys(control().venueOnly||{});
 globalThis.fetch=async(input,options={})=>{
  const url=new URL(typeof input==='string'?input:input.url??String(input));
  if(['127.0.0.1','localhost','[::1]'].includes(url.hostname))return realFetch(input,options);
- // Telegram sendMessage is captured (text only, never the bot path/token) and answered ok.
+ // Telegram API calls stay in this fixture. The bot path and token are never recorded.
+ const scannerChannelId=-1001234567890;
+ if(url.hostname==='api.telegram.org'&&/\/getChat$/.test(url.pathname)&&options.method==='POST'){
+  const {chat_id:chatId}=JSON.parse(String(options.body));
+  if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:'/getChat',chatId})+'\n');
+  return json({ok:true,result:{id:scannerChannelId,type:'channel'}});
+ }
  if(url.hostname==='api.telegram.org'&&/\/sendMessage$/.test(url.pathname)&&(options.method||'').toUpperCase()==='POST'){
   let payload={};try{payload=JSON.parse(String(options.body))}catch{}
   if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:'/sendMessage',text:payload.text,chatId:payload.chat_id})+'\n');
-  return json({ok:true,result:{message_id:1,chat:{type:'channel'}}});
+  return json({ok:true,result:{message_id:1,chat:{id:payload.chat_id,type:'channel'}}});
  }
  // BingX TESTNET (VST) host, only when a test asks for it (control().fakeBingxTestnet): an in-memory
  // fake account so the live order path can run end to end. Nothing leaves this process. The real
