@@ -202,9 +202,10 @@ export function mergedCloses(c){
 }
 /** Totals of the closes the page counts: every copy close (as before) and every settled manual close (a manual close
  * still PENDING has no result yet). {all, copy, manual}: n, wins, net, gross, loss; plus pending manual closes. */
-export function copyStats(c){
+const confirmedCopyResult=x=>['EXCHANGE','EXCHANGE_FILLS'].includes(x.netSource)&&fin(x.netUSD)&&String(x.netUSD).trim()!=='';
+export function copyStats(c,{confirmedOnly=false}={}){
  const one=list=>{
-  const known=list.filter(x=>!['PENDING','UNKNOWN'].includes(x.netSource)&&x.netUSD!=null&&String(x.netUSD).trim()!==''&&fin(x.netUSD));
+  const known=list.filter(x=>confirmedOnly?confirmedCopyResult(x):!['PENDING','UNKNOWN'].includes(x.netSource)&&x.netUSD!=null&&String(x.netUSD).trim()!==''&&fin(x.netUSD));
   const values=known.map(x=>Number(x.netUSD)),wins=values.filter(x=>x>0),losses=values.filter(x=>x<0);
   const sum=rows=>rows.reduce((a,x)=>a+x,0),confirmed=known.filter(x=>['EXCHANGE','EXCHANGE_FILLS'].includes(x.netSource)).map(x=>Number(x.netUSD));
   const settled=confirmed.length;
@@ -269,6 +270,8 @@ const AUDIT_ISSUES={POSITION_MISSING:'포지션 미확인',SIZE_MISMATCH:'수량
  STOP_MISMATCH:'보호 손절 조건 불일치',CLOSE_DELAYED:'청산 지연',UNEXPECTED_OPEN_ORDER:'추가 진입 미체결 주문 확인',
  ORDERS_UNREADABLE:'미체결 주문 조회 실패',POSITIONS_UNREADABLE:'포지션 조회 실패'};
 const SETTLEMENT_STATES={CONFIRMED:'정산 확인',WAITING:'체결 내역 대기',NO_ORDER_IDS:'연결할 주문 ID 없음',ORDER_LINK_MISSING:'주문 ID 연결 실패',
+ MIXED_WITH_COPY:'같은 종목의 카피 거래와 정산 내역 겹침',MIXED_WITH_MANUAL:'같은 종목의 수동 거래와 정산 내역 겹침',
+ ENTRY_HISTORY_UNVERIFIED:'시작 전 진입 체결 확인 필요',POSITION_SIDE_UNVERIFIED:'체결의 롱·숏 방향 확인 필요',TRADE_LINK_UNVERIFIED:'체결 내역과 해당 거래를 연결하지 못함',
  FILL_PENDING:'체결 내역 대기',QUANTITY_MISMATCH:'진입·청산 체결 수량 불일치',INCOMPLETE_FILLS:'체결 손익·수수료 내역 불충분',
  HISTORY_WINDOW_EXPIRED:'정산 조회 기간 경과',LOOKUP_UNAVAILABLE:'체결 조회 미설정',LOOKUP_FAILED:'거래소 정산 조회 실패',
  MISSING_TIMESTAMPS:'거래 시각 기록 부족',ORDER_LIMIT:'자동 정산 주문 수 한도 초과'};
@@ -297,12 +300,12 @@ export function copyHTML(c){
  const cls=v=>v>0?'paper-profit':v<0?'paper-loss':'';
  const when=t=>t?new Date(t).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'';
  const held=(a,b)=>{const h=(b-a)/3600000;return !(h>=0)?'':h<1?Math.max(1,Math.round(h*60))+'분':h<48?(+h.toFixed(1))+'시간':(+(h/24).toFixed(1))+'일'};
- const open=c.positions||[],closed=mergedCloses(c),st=copyStats(c),net=st.all.net,wins=st.all.wins,counted=st.all.n;
+ const isLive=c.mode==='LIVE',open=c.positions||[],closed=mergedCloses(c),st=copyStats(c,{confirmedOnly:isLive}),net=st.all.net,wins=st.all.wins,counted=st.all.n;
  const closedTotal=(c.closedTotal??(c.closed||[]).length)+(c.manual?(c.manual.closedTotal??(c.manual.closed||[]).length):0);
  const pages=Math.max(1,Math.ceil(closed.length/COPY_PAGE_SIZE)),page=Math.min(copyPage,pages-1),shown=closed.slice(page*COPY_PAGE_SIZE,page*COPY_PAGE_SIZE+COPY_PAGE_SIZE);
  const pager=pages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-copy-page="-1"${page===0?' disabled':''}>‹ 이전</button><span class="muted">${page+1} / ${pages}쪽</span><button type="button" class="outline-btn small" data-copy-page="1"${page>=pages-1?' disabled':''}>다음 ›</button></div>`:'';
  const gross=st.all.gross,loss=st.all.loss;
- const unreal=open.reduce((a,p)=>a+(Number(p.unrealized)||0),0),isLive=c.mode==='LIVE';
+ const unreal=open.reduce((a,p)=>a+(Number(p.unrealized)||0),0);
  // One place per fact (user 2026-11-18 "실계좌 카피 부분에 활성화됨 부분이 2개"): the real account shows its mode chip,
  // the on/off state and the switch on one line; a stop by the loss limit is the 정지 line below (with its button).
  // A testnet copy follows the testnet switch above it, so it shows no state of its own (only 카피 꺼짐).
@@ -318,19 +321,20 @@ export function copyHTML(c){
  // 보유 N개 is the list heading's; with the exchange list its 미실현 합계 line has the unrealized total; a testnet copy's
  // balance is the testnet account's, shown once in the status box above.
  const stats=`<div class="copy-stats">${isLive?stat('잔고',usd(f?.equity)):''}${stat('사용 가능',usd(f?.available))}${vpList?'':stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}
-  ${stat('종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat('누적 손익',money(counted?net:null),`class="${cls(net)}"`)}</div>`+
+  ${stat(isLive?'정산 확인':'종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat('누적 손익',money(counted?net:null),`class="${cls(net)}"`)}</div>`+
   (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.n?st.copy.net:null)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.n?st.manual.net:null)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}</p>`:'')+
-  (st.all.n||st.all.unknown?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
+  (isLive?(closed.length>counted?`<p class="copy-rules muted">정산 미확정 ${closed.length-counted}건 <button type="button" class="outline-btn small" data-copy-settle${c.settlementRefreshing?' disabled':''}>${c.settlementRefreshing?'재조회 중…':'정산 다시 조회'}</button></p>`:''):
+   st.all.n||st.all.unknown?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
  const rules=`<details class="copy-rules-fold"><summary>규칙 보기</summary><p class="copy-rules">수량 ${c.sizing==='BALANCE_RATIO'?`트레이더 × 내 잔고 ÷ $${Number(c.traderBalanceUSD).toLocaleString()}`:c.sizing==='MIN_ORDER'?`첫 증거금 $${esc(c.firstMarginUSD??0)} (거래소 최소 주문보다 작으면 최소 주문), 추매는 트레이더 비율`:`첫 증거금 $${esc(c.marginUSD)}`} · 추매 최대 ${esc(c.maxAdds??10)}회 · 손절 ${c.stops?`포지션당 잔고 ${esc(c.maxLossPct)}%`:'없음(트레이더 청산만)'} · 한도 증거금 ${esc(c.maxTotalMarginPct)}%·손실 ${esc(c.ledgerLossPct)}%</p></details>`;
- const comparison=isLive&&c.closed?.length?`<div class="copy-stats" aria-label="카피 거래 손익 비교">${stat(`카피 · 거래소 확인 ${st.copy.settled}건`,`${money(st.copy.settled?st.copy.confirmedNet:null)} · 승률 ${st.copy.settled?Math.round(st.copy.confirmedWins/st.copy.settled*100)+'%':'—'}`)}${stat(`카피 · 추정 포함 ${st.copy.n}건`,`${money(st.copy.n?st.copy.net:null)} · 승률 ${st.copy.n?Math.round(st.copy.wins/st.copy.n*100)+'%':'—'}`)}</div>`:'';
  const row=p=>`<li><b>${esc(p.symbol)}</b>${p.closing?'<small>청산 중</small>':''}${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
  // Manual closes: the yellow 수동 badge; the result is BingX's own (income) unless marked 추정 / 정산 중.
  const isMan=x=>x.origin==='manual',manBadge=x=>isMan(x)?'<span class="vp-badge manual">수동</span>':'';
  const SRC={MIXED_WITH_COPY:'추정 · 같은 코인 카피와 겹쳐 거래소 내역을 나눌 수 없음',MIXED_WITH_MANUAL:'추정 · 같은 코인 수동 포지션과 겹침',
   ESTIMATE:'추정 · 거래소 내역 없음',ESTIMATE_BEFORE_FEES:'수수료 반영 전 추정',EXCHANGE_FILLS:'거래소 체결 · 수수료 포함, 펀딩 제외'};
- const result=x=>x.netSource==='PENDING'?`<span class="muted" title="거래소 손익 내역을 기다리는 중${fin(x.estimateUSD)?` · 추정 ${money(Number(x.estimateUSD))}`:''}">정산 중</span>`
+ const result=x=>isLive&&!confirmedCopyResult(x)?'<span class="muted">정산 미확정</span>':x.netSource==='PENDING'?`<span class="muted" title="거래소 손익 내역을 기다리는 중${fin(x.estimateUSD)?` · 추정 ${money(Number(x.estimateUSD))}`:''}">정산 중</span>`
   :x.netUSD==null?'<span class="muted">확인 불가</span>':`${money(x.netUSD)}${SRC[x.netSource]?` <small class="muted" title="${esc(SRC[x.netSource])}">${x.netSource==='EXCHANGE_FILLS'?'체결':'추정'}</small>`:''}`;
- const settlement=x=>{const s=x.settlement,label=SETTLEMENT_STATES[s?.state];return isLive&&label?`<small class="muted">${esc(label)}${s.checkedAt?` · ${esc(when(s.checkedAt))} 조회`:''}</small>`:''};
+ const settlement=x=>{const s=x.settlement,state=s?.state??(confirmedCopyResult(x)?'CONFIRMED':SETTLEMENT_STATES[x.netSource]?x.netSource:'WAITING'),label=SETTLEMENT_STATES[state];
+  return isLive&&label?`<small class="muted"${s?.error?` title="${esc(s.error)}"`:''}>${esc(label)}${s?.checkedAt?` · ${esc(when(s.checkedAt))} 조회`:''}</small>`:''};
  const done=x=>`<li class="${isMan(x)?'vp-manual':''}"><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${manBadge(x)}${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}${settlement(x)}<b class="${cls(x.netUSD)} end">${result(x)}</b></li>`;
  // Entry failures and skips under the closes (user 2026-11-17 "코인 종목 / 롱,숏 / 진입 실패 이유"), 10 per page.
  const notesAll=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY'].includes(e.type));
@@ -347,7 +351,7 @@ export function copyHTML(c){
  // One time stamp per panel: the real-account page's (3 s refresh); the testnet page has its header time.
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,Number(c.venuePositionsAt)||0,...fresh);
  const stamp=isLive&&updated>0?`<p class="copy-stamp">${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
- const side_=`<div class="copy-side">${modeLine}${kill}${stats}${comparison}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
+ const side_=`<div class="copy-side">${modeLine}${kill}${stats}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">${copyAuditHTML(c.audit)}`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
@@ -526,6 +530,7 @@ function bindCopyButtons(el){
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('click',e=>{
   const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
+  const settle=e.target.closest('[data-copy-settle]');if(settle)return call(settle,'/api/copy/recheck-settlement',null,'재조회 중…');
   // Keep the failure box open/closed across the 3 s re-render (the browser toggles the <details> itself).
  if(e.target.closest('[data-fail-toggle]')){failOpen=!e.target.closest('details')?.open;}
  const fp=e.target.closest('[data-copy-fail-page]');

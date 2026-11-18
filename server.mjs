@@ -298,7 +298,7 @@ const venuePositionsReader=COPY.mode==='LIVE'&&copyClient?.mode==='LIVE'&&typeof
  ?createVenuePositionsReader({read:()=>copyClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
-async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status()}:s0;if(!venuePositionsReader)return s;
+async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;if(!venuePositionsReader)return s;
  const v=await venuePositionsReader.snapshot(s.positions);if(!manualLedger)return {...s,...v};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
  return {...s,...v,manual:manualLedger.status()}}
@@ -420,7 +420,19 @@ try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy
 // First balance / positions read soon after start (the panel shows the copy account's balance).
 if(COPY.enabled)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{})},8000).unref?.();
 if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
-if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
+let historyRefresh=null;
+function refreshTradeHistory({recheck=false}={}){
+ if(historyRefresh)return historyRefresh;
+ const before=manualLedger?.store.closed.filter(p=>p.netSource==='EXCHANGE_FILLS').length;
+ historyRefresh=Promise.all([copyTrader.settle({limit:10,recheck}),manualLedger?.settle({historyLimit:10,recheck})]).then(()=>{
+  if(before!==manualLedger?.store.closed.filter(p=>p.netSource==='EXCHANGE_FILLS').length)reportsDirty=true;
+ }).catch(e=>console.error('[TRADE SETTLE]',e.message)).finally(()=>{historyRefresh=null});
+ return historyRefresh;
+}
+if(copyClient&&COPY.mode==='LIVE'){
+ setTimeout(()=>{void refreshTradeHistory()},10000).unref?.();
+ setInterval(()=>{void refreshTradeHistory()},20000).unref?.();
+}else if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
 function copyNotice(e){
  if(e?.type==='COPY_SETTLED')reportsDirty=true;
  const text=copyEventText(e);if(!text)return;
@@ -1539,6 +1551,10 @@ const server=http.createServer(async(req,res)=>{
    try{return response(res,200,scalpExec.arm())}catch(e){return response(res,e.httpStatus||409,{error:e.code||e.message})}}
   if(pathname==='/api/scalp/disarm'&&req.method==='POST')return response(res,200,scalpExec.disarm());
   if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,await copyLiveStatus());
+  if(pathname==='/api/copy/recheck-settlement'&&req.method==='POST'){
+   if(COPY.mode!=='LIVE'||!copyClient)return response(res,409,{error:'LIVE_SETTLEMENT_UNAVAILABLE'});
+   const running=Boolean(historyRefresh);void refreshTradeHistory({recheck:true});return response(res,202,{running:true,started:!running});
+  }
   if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
   if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,copyTrader.arm())}
   if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
