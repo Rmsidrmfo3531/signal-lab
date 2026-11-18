@@ -73,6 +73,16 @@ function checkedPositions(data,symbol=null){
 }
 const sameSize=(a,b)=>Math.abs(a-b)<=Math.max(1e-10,Math.max(Math.abs(a),Math.abs(b))*1e-8);
 const settlementSource=p=>['EXCHANGE','EXCHANGE_FILLS'].includes(p.netSource);
+// Closed rows reviewed in the 2026-11-18 17:37 KST operating report.
+// Keep them in the ledger for trade attribution and re-entry checks.
+const ARCHIVE_COPY_CLOSES=new Set([
+ 1794627081316,1794648129144,1794648241304,1794648375377,
+ 1794648499079,1794648592768,1794648763743,1794657832600,
+ 1794667581540,1794677025315,1794708252960,1794727616903,
+ 1794732646060,1794829087365,1794838467159,1794840032182,
+ 1794841683171,1794875187966,1794886481680,1794887049051,
+ 1794889578744,1794890953865,
+]);
 // A request that got no answer from the venue (user 2026-11-17 "3번"): connection failure or timeout. A venue
 // error code (VENUE_ERROR_*, HTTP_*) is an answer and is never retried by #send.
 export function noVenueAnswer(e){return ['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET'].includes(e?.code)||['AbortError','TimeoutError'].includes(e?.name)}
@@ -141,6 +151,14 @@ export class CopyExecutor{
   for(const p of Object.values(this.store.positions))delete p.inflight;
   this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;this.entryRevision=0;this.settling=null;this.settleAttempts=new Map();
   this.audit=auditOrders?{positionAt:null,checkedAt:null,error:null,lanes:new Map()}:null;
+  const archive=config.mode==='LIVE'?this.store.closed.filter(p=>ARCHIVE_COPY_CLOSES.has(p.closedAt)&&!p.archivedFromHistory&&!settlementSource(p)):[];
+  if(archive.length){
+   for(const p of archive)p.archivedFromHistory=true;
+   try{this.#save()}catch(e){
+    for(const p of archive)delete p.archivedFromHistory;
+    this.log('[COPY] history archive failed',e.message);
+   }
+  }
  }
  arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
  disarm(){this.entryRevision++;this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
@@ -149,8 +167,9 @@ export class CopyExecutor{
  #event(type,detail={}){const cur=this.curMsg,e={type,at:this.now(),mode:this.config.mode,...(detail.symbol&&cur?.symbol===detail.symbol&&cur.direction?{direction:cur.direction}:{}),...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
- status(){return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
-  closed:this.store.closed.slice(-200).reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:this.store.closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
+ status(){const closed=this.store.closed.filter(p=>!p.archivedFromHistory);
+  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+  closed:closed.slice(-200).reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
   ...(this.audit?{audit:this.auditStatus()}:{})}}
 
  /** status() with fresh numbers for the screen (user 2026-11-14: the real-account page did not update):
@@ -862,7 +881,7 @@ export class CopyExecutor{
  }
  async #settleClosed(limit){
   const now=this.now();
-  const due=this.store.closed.filter(p=>now-p.closedAt>=15000&&!['CONFIRMED','MISSING_TIMESTAMPS','NO_ORDER_IDS','LOOKUP_UNAVAILABLE'].includes(this.settlementStatus(p).state));
+  const due=this.store.closed.filter(p=>!p.archivedFromHistory&&now-p.closedAt>=15000&&!['CONFIRMED','MISSING_TIMESTAMPS','NO_ORDER_IDS','LOOKUP_UNAVAILABLE'].includes(this.settlementStatus(p).state));
   const valid=new Set(due.map(p=>p.id));
   for(const key of this.settleAttempts.keys())if(!valid.has(key))this.settleAttempts.delete(key);
   const batch=due.filter(p=>!this.settleAttempts.has(p.id)||now-this.settleAttempts.get(p.id)>=5*60000)

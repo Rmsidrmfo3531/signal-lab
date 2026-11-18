@@ -312,6 +312,30 @@ test('copy loss limit: computed from the copy ledger only — a large manual los
  const copyFile=JSON.parse(fs.readFileSync(path.join(dir,'copy-store-live.json'),'utf8'));assert.ok(!JSON.stringify(copyFile).includes('BTC-USDT'),'the copy ledger never holds the manual trade');
 });
 
+test('reviewed older unresolved copy closes leave the history and retry queue while their ledger rows survive restart',async()=>{
+ const dir=tmp(),fileName='copy-store-live.json',file=path.join(dir,fileName),selected=1794627081316,another=1794648129144;
+ const base={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',openedAt:selected-60000,netSource:'UNKNOWN'};
+ const closed=[{...base,id:'archive',closedAt:selected,settlement:{state:'QUANTITY_MISMATCH'}},
+  {...base,id:'confirmed',closedAt:another,netSource:'EXCHANGE_FILLS',netUSD:2},
+  {...base,id:'later',closedAt:another+1,settlement:{state:'ORDER_LINK_MISSING'}}];
+ fs.writeFileSync(file,JSON.stringify({closed}));
+ const client={allOrders:async()=>[],fillOrders:async()=>[]};
+ const make=()=>new CopyExecutor({config:{mode:'LIVE'},client,directory:dir,fileName,now:()=>another+1e6});
+ try{
+  const first=make();
+  assert.equal(first.store.closed.length,3);
+  assert.deepEqual(first.status().closed.map(p=>p.id),['later','confirmed']);
+  assert.equal(first.status().closedTotal,2);
+  const persisted=JSON.parse(fs.readFileSync(file,'utf8'));
+  assert.equal(persisted.closed[0].archivedFromHistory,true);
+  assert.equal(ledgerSummary(persisted).closedCount,2);
+  const restarted=make();
+  await restarted.settle({recheck:true,limit:10});
+  assert.deepEqual([...restarted.settleAttempts.keys()],['later']);
+  assert.equal(restarted.store.closed[0].settlement.state,'QUANTITY_MISMATCH');
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
 test('page: copy and manual closes in one newest-first list with 수동 badges and the 10-per-page pager; stats include both',async()=>{
  const m=await import('../public/live_control.js');const T=1_800_000_000_000;
  const copyClosed=Array.from({length:8},(_,i)=>({symbol:'C'+i,direction:'LONG',openedAt:T-9e6,closedAt:T-i*2e5,netUSD:i%2?-1:2,adds:1}));
