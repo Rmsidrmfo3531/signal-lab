@@ -331,9 +331,9 @@ export function copyHTML(c){
  // Manual closes: the yellow 수동 badge; the result is BingX's own (income) unless marked 추정 / 정산 중.
  const isMan=x=>x.origin==='manual',manBadge=x=>isMan(x)?'<span class="vp-badge manual">수동</span>':'';
  const SRC={MIXED_WITH_COPY:'추정 · 같은 코인 카피와 겹쳐 거래소 내역을 나눌 수 없음',MIXED_WITH_MANUAL:'추정 · 같은 코인 수동 포지션과 겹침',
-  ESTIMATE:'추정 · 거래소 내역 없음',ESTIMATE_BEFORE_FEES:'수수료 반영 전 추정',EXCHANGE_FILLS:'거래소 체결 · 수수료 포함, 펀딩 제외'};
+   ESTIMATE:'추정 · 거래소 내역 없음',ESTIMATE_BEFORE_FEES:'수수료 반영 전 추정'};
  const result=x=>isLive&&!confirmedCopyResult(x)?'<span class="muted">정산 미확정</span>':x.netSource==='PENDING'?`<span class="muted" title="거래소 손익 내역을 기다리는 중${fin(x.estimateUSD)?` · 추정 ${money(Number(x.estimateUSD))}`:''}">정산 중</span>`
-  :x.netUSD==null?'<span class="muted">확인 불가</span>':`${money(x.netUSD)}${SRC[x.netSource]?` <small class="muted" title="${esc(SRC[x.netSource])}">${x.netSource==='EXCHANGE_FILLS'?'체결':'추정'}</small>`:''}`;
+  :x.netUSD==null?'<span class="muted">확인 불가</span>':`${money(x.netUSD)}${SRC[x.netSource]?` <small class="muted" title="${esc(SRC[x.netSource])}">추정</small>`:''}`;
  const settlement=x=>{const s=x.settlement,state=s?.state??(confirmedCopyResult(x)?'CONFIRMED':SETTLEMENT_STATES[x.netSource]?x.netSource:'WAITING'),label=SETTLEMENT_STATES[state];
   return isLive&&label?`<small class="muted"${s?.error?` title="${esc(s.error)}"`:''}>${esc(label)}${s?.checkedAt?` · ${esc(when(s.checkedAt))} 조회`:''}</small>`:''};
  const done=x=>`<li class="${isMan(x)?'vp-manual':''}"><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${manBadge(x)}${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}${settlement(x)}<b class="${cls(x.netUSD)} end">${result(x)}</b></li>`;
