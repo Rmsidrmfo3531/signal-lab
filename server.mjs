@@ -53,7 +53,7 @@ import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
 import {liveOverview,checkLiveLevels,testnetStats} from './live_overview.mjs';
-import {TestnetBudget,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch} from './testnet_budget.mjs';
+import {TestnetBudget,TESTNET_BALANCE_REFRESH_MS,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch} from './testnet_budget.mjs';
 import {createVenuePositionsReader} from './venue_positions.mjs';
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
@@ -303,10 +303,14 @@ async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPn
  const v=await venuePositionsReader.snapshot(realCopyPositions());if(!manualLedger)return {...s,...v};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
  return {...s,...v,manual:manualLedger.status()}}
-const bingxFunds=(data,{requireAvailable=false,requireEquity=false}={})=>{
- const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>x?.asset==='USDT')??list[0];
- const amount=u?.equity??u?.balance,number=Number(amount),equity=requireEquity&&(amount==null||String(amount).trim()===''||!Number.isFinite(number))?null:number||0;
+const bingxFunds=(data,{requireAvailable=false,testnet=false}={})=>{
+ const list=Array.isArray(data)?data:[data?.balance??data];
+ const usdt=list.find(x=>x?.asset==='USDT');
+ const u=testnet?(list.find(x=>x?.asset==='VST')??usdt):(usdt??list[0]);
+ const amount=testnet?u?.equity:(u?.equity??u?.balance),number=Number(amount);
+ const equity=testnet&&(amount==null||String(amount).trim()===''||!Number.isFinite(number))?null:number||0;
  const raw=u?.availableMargin,free=Number(raw);
+ if(testnet)return {asset:u?.asset??null,equity,available:raw!=null&&String(raw).trim()!==''&&Number.isFinite(free)?Math.max(0,free):0};
  if(requireAvailable&&(raw==null||String(raw).trim()===''||!Number.isFinite(free)))return {equity,available:null};
  return {equity,available:Number.isFinite(free)?Math.max(0,free):equity};
 };
@@ -362,19 +366,29 @@ const scalpMarket=new BingXMarketData({minIntervalMs:SCALP_EXEC.klineGapMs});
 // TESTNET-only client of its own. Never a LIVE client (the executor refuses one).
 const scalpClient=SCALP_EXEC.mode!=='TESTNET'?null:LIVE.mode==='TESTNET'&&live.clients.BINGX?live.clients.BINGX
  :process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'TESTNET',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)}):null;
-const testnetAccount={funds:null,pending:null,triedAt:0};
+const testnetAccount={funds:null,pending:null,checkedAt:0,error:null};
 async function testnetAccountFunds(){
  const client=LIVE.mode==='TESTNET'&&live.clients.BINGX||scalpClient;
  if(!client||client.mode!=='TESTNET')throw Error('BALANCE_UNAVAILABLE');
  if(testnetAccount.pending)return testnetAccount.pending;
- if(Date.now()-testnetAccount.triedAt<5000&&testnetAccount.funds)return testnetAccount.funds;
- testnetAccount.triedAt=Date.now();
+ if(Date.now()-testnetAccount.checkedAt<TESTNET_BALANCE_REFRESH_MS-500){
+  if(testnetAccount.error)throw testnetAccount.error;
+  if(testnetAccount.funds)return testnetAccount.funds;
+ }
  testnetAccount.pending=client.balance().then(data=>{
-  const funds=bingxFunds(data,{requireEquity:true});
+  const funds=bingxFunds(data,{testnet:true});
   if(funds.equity==null||!Number.isFinite(funds.equity)||funds.equity<0)throw Error('BALANCE_UNAVAILABLE');
-  testnetBudget.observeAccount(funds.equity);testnetAccount.funds=funds;return funds;
- }).catch(e=>{testnetAccount.funds=null;testnetBudget.observeAccount(null);throw e}).finally(()=>{testnetAccount.pending=null});
+  testnetBudget.observeAccount(funds.equity,funds.asset);
+  testnetAccount.funds=funds;testnetAccount.error=null;return funds;
+ }).catch(e=>{testnetAccount.funds=null;testnetAccount.error=e;testnetBudget.observeAccount(null);throw e})
+  .finally(()=>{testnetAccount.checkedAt=Date.now();testnetAccount.pending=null});
  return testnetAccount.pending;
+}
+// Budget reads can report an unavailable or expired sample while the signed queue is waiting on BingX.
+async function refreshTestnetBudgetBalance(){
+ let timer;
+ try{await Promise.race([testnetAccountFunds(),new Promise(resolve=>{timer=setTimeout(resolve,1500).unref()})])}
+ catch{}finally{clearTimeout(timer)}
 }
 let scalpTickers={at:0,rows:[]};
 // One bulk ticker read at a time: callers arriving while it runs share it (review 2026-11-17: the scan-order read
@@ -407,7 +421,7 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  budget:LIVE.mode==='LIVE'?null:testnetBudget});
 if(LIVE.mode==='TESTNET')testnetBudget.register('signal',live.budgetSource());
 if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',scalpExec.budgetSource());
-if(hasTestnetBingx)setInterval(()=>{void testnetAccountFunds().catch(()=>{})},10000).unref?.();
+if(hasTestnetBingx)setInterval(()=>{void testnetAccountFunds().catch(()=>{})},TESTNET_BALANCE_REFRESH_MS).unref?.();
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
 function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
@@ -481,6 +495,11 @@ const liveBalance={venue:null,usd:null,at:0,error:'',pending:null};
 async function liveBalanceSnapshot(){
  const venue=LIVE.venues.find(v=>live.credentials()[v]);
  if(LIVE.mode==='OFF'||!venue)return null;
+ if(LIVE.mode==='TESTNET'&&venue==='BINGX'&&hasTestnetBingx){
+  await refreshTestnetBudgetBalance();
+  const b=testnetBudget.status();
+  return {venue,usd:b.balanceError?null:b.accountEquityUSD,at:b.balanceAt,error:b.balanceError,capUSD:LIVE.balanceCapUSD||null};
+ }
  if(Date.now()-liveBalance.at>=30000&&!liveBalance.pending){
   liveBalance.pending=live.accountBalance(venue).then(usd=>Object.assign(liveBalance,{venue,usd:Number.isFinite(usd)?usd:null,error:''}),
    e=>Object.assign(liveBalance,{venue,error:e.code||'BALANCE_UNAVAILABLE'})).finally(()=>{liveBalance.at=Date.now();liveBalance.pending=null});
@@ -754,14 +773,16 @@ async function uploadReport(force=false){
  reportsBusy=true;
  try{
   let scalpExport=null;try{scalpExport=scalpExec?scalpReportFiles({journalFile:scalpExec.journalFile,signalsFile:scalpExec.signalsFile}):null}catch(e){console.warn('[REPORTS] scalp',e.message)}
+  const exchange=await exchangeReport().catch(e=>({error:e.message}));
+  if(hasTestnetBingx)await refreshTestnetBudgetBalance();
   const report=buildReport({readiness:readiness(),insights:patternInsights(persisted.journal.filter(x=>x.source==='LIVE_AUTO'&&x.review).map(x=>x.review)),
    journal:persisted.journal,records:[...live.store.records,...(live.store.archived||[])],
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
-   scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange:await exchangeReport().catch(e=>({error:e.message}))});
+   scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange});
   report.release=appVersion.displayVersion;
   if(manualLedger)report.manualAlerts=manualLedger.alertStatus();
   if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
-   balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
+   balanceAsset:b.balanceAsset,balanceRefreshMs:TESTNET_BALANCE_REFRESH_MS,balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime={mode:SCALP_EXEC.mode,armed:scalpExec.armed,scaleInEnabled:SCALP_EXEC.scaleIn,stopLossEnabled:SCALP_EXEC.stopLossEnabled,
@@ -1578,20 +1599,26 @@ const server=http.createServer(async(req,res)=>{
    return response(res,200,await copyTrader.handle({id:body.id,date:Number(body.date)||Date.now(),text:body.text}));
   }
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
+  if(pathname==='/api/live/testnet-budget'&&req.method==='GET'){
+   if(!hasTestnetBingx)return response(res,404,{error:'BINGX_TESTNET_UNAVAILABLE'});
+   await refreshTestnetBudgetBalance();
+   return response(res,200,{...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status()});
+  }
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
   if(pathname==='/api/live/overview'&&req.method==='GET'){
-   const [scalp,balance]=await Promise.all([SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?scalpExec.liveStatus():null,liveBalanceSnapshot(),
-    hasTestnetBingx?testnetAccountFunds().catch(()=>null):null]);
+   const [scalp,rawBalance]=await Promise.all([SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?scalpExec.liveStatus():null,liveBalanceSnapshot(),
+    hasTestnetBingx?refreshTestnetBudgetBalance():null]);
    // One testnet screen (user 2026-11-17): one switch, the shared budget, totals over both strategies. Not for LIVE.
-   const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(balance?.usd)>0?Math.min(Number(balance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
+   const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(rawBalance?.usd)>0?Math.min(Number(rawBalance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
     return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
+   const b=testnet?.budget,balance=hasTestnetBingx&&rawBalance?.venue==='BINGX'&&b?{...rawBalance,usd:b.balanceError?null:b.accountEquityUSD,at:b.balanceAt,error:b.balanceError}:rawBalance;
    return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance,paperTrading:CONFIG.paperTrading})})}
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
    if(pathname==='/api/live/testnet-budget'){
     if(LIVE.mode==='LIVE'||LIVE.mode!=='TESTNET'&&SCALP_EXEC.mode!=='TESTNET')return response(res,409,{error:'NOT_TESTNET'});
-    try{const budget=testnetBudget.configure(body);reportsDirty=true;return response(res,200,{budget})}
+    try{if(hasTestnetBingx)await refreshTestnetBudgetBalance();const budget=testnetBudget.configure(body);reportsDirty=true;return response(res,200,{budget})}
     catch(e){return response(res,e.httpStatus||500,{error:e.code==='INVALID_TESTNET_BUDGET'?e.code:'TESTNET_BUDGET_SAVE_FAILED'})}
    }
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});

@@ -12,7 +12,7 @@
 //    trade's risk must stay within the same % of the equity.
 //  - Margin: the margin of both together within TESTNET_MARGIN_CAP_PCT (default and maximum 30 %, the scalp's cap);
 //    each executor keeps its own 90 % free-margin check.
-//  - One balance basis: the smaller of the equity figures the two strategies read (each may apply its own cap).
+//  - One balance basis: the latest shared account equity, subject to an explicit capital cap or an alternate venue balance.
 // Per-trade risk, the signal's own open-risk cap (its profile %), 8 / 4-per-direction and the scalp's one-per-symbol
 // stay per strategy. Each executor registers getters, so both stay testable on their own (no budget = old rules).
 import fs from 'node:fs';
@@ -31,7 +31,9 @@ export function testnetDailyLossPct(env=process.env){
 }
 
 const EQUITY_FRESH_MS=10*60000;
-const ACCOUNT_EQUITY_FRESH_MS=30000;
+export const TESTNET_BALANCE_REFRESH_MS=3000;
+const ACCOUNT_EQUITY_FRESH_MS=3*TESTNET_BALANCE_REFRESH_MS;
+const ALTERNATE_EQUITY_FRESH_MS=30000;
 /** TESTNET_MARGIN_CAP_PCT: the shared margin cap, default and maximum 30 % (review L5: never follows LIVE_MARGIN_USE_PCT). */
 export const TESTNET_MARGIN_CAP_MAX=30;
 export function testnetMarginCapPct(env=process.env){
@@ -58,9 +60,9 @@ export class TestnetBudget{
   this.state=state;Object.assign(this,settings);
   return this.status();
  }
- observeAccount(equity){
+ observeAccount(equity,asset=null){
   if(!fin(equity)||Number(equity)<0){this.accountError='BALANCE_UNAVAILABLE';return}
-  this.account={equity:Number(equity),at:this.now()};this.accountError=null;
+  this.account={equity:Number(equity),asset,at:this.now()};this.accountError=null;
  }
  /** name 'signal' | 'scalp'. getters: realizedToday(day) -> net USD of the trades closed that KST day (loss < 0),
   * openRisk() -> USD to the stops, usedMargin() -> USD, optional unrealized() -> USD, stoppedToday(day) -> bool,
@@ -71,8 +73,8 @@ export class TestnetBudget{
   const at=this.now(),v=fin(equity)&&Number(equity)>0?Number(equity):null;
   if(this.accountEquity){
    if(who==='signal-alt'&&v!==null)this.equities.set(who,{v,at});
-   if(!this.account||at-this.account.at>ACCOUNT_EQUITY_FRESH_MS)return null;
-   const alt=this.equities.get('signal-alt'),other=alt&&at-alt.at<=ACCOUNT_EQUITY_FRESH_MS?alt.v:Infinity;
+   if(this.accountError||!this.account||at-this.account.at>ACCOUNT_EQUITY_FRESH_MS)return null;
+   const alt=this.equities.get('signal-alt'),other=alt&&at-alt.at<=ALTERNATE_EQUITY_FRESH_MS?alt.v:Infinity;
    return Math.min(this.account.equity,this.capitalCapUSD>0?this.capitalCapUSD:Infinity,other);
   }
   if(v!==null&&who)this.equities.set(who,{v,at});
@@ -122,8 +124,9 @@ export class TestnetBudget{
  }
  /** For the page: rounded numbers. */
  status(equity=null){const s=this.snapshot(equity);
-  return {ok:s.ok,day:s.day,dailyLossPct:s.dailyLossPct,equityUSD:s.equityUSD,limitUSD:s.limitUSD===null?null:r2(s.limitUSD),realizedNetUSD:r2(s.realizedNetUSD),lossUSD:r2(s.lossUSD),
-   ...(this.accountEquity?{accountEquityUSD:this.account?.equity??null,balanceAt:this.account?.at??null,balanceError:this.accountError}:{}),
+  return {ok:s.ok,at:this.now(),day:s.day,dailyLossPct:s.dailyLossPct,equityUSD:s.equityUSD,limitUSD:s.limitUSD===null?null:r2(s.limitUSD),realizedNetUSD:r2(s.realizedNetUSD),lossUSD:r2(s.lossUSD),
+   ...(this.accountEquity?{accountEquityUSD:this.account?.equity??null,balanceAsset:this.account?.asset??null,balanceAt:this.account?.at??null,
+    balanceError:this.accountError||(this.account&&s.equityUSD===null?'BALANCE_STALE':null)}:{}),
    openRiskUSD:r2(s.openRiskUSD),usedUSD:r2(s.usedUSD),marginUSD:r2(s.marginUSD),marginCapPct:s.marginCapPct,marginCapUSD:s.marginCapUSD===null?null:r2(s.marginCapUSD),stopped:s.stopped,provisional:s.provisional,
    by:Object.fromEntries(Object.entries(s.by).map(([k,v])=>[k,v.error?v:{realizedNetUSD:r2(v.realizedNetUSD),lossUSD:r2(v.lossUSD),openRiskUSD:r2(v.openRiskUSD),marginUSD:r2(v.marginUSD)}]))};
  }

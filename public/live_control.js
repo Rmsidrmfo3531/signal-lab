@@ -28,8 +28,9 @@ const side=d=>d==='LONG'?'<span class="paper-long">롱</span>':d==='SHORT'?'<spa
 export function liveRows(s){
  const L=s.limits||{},b=s.balance;
  const balance=!b?'—':b.error?`조회 실패 (${b.error})`:fin(b.usd)?`${money(b.usd)} ${LABEL[b.venue]||b.venue||''} 순자산${b.capUSD?` · 계산은 최대 $${b.capUSD}까지`:''}`:'조회 중';
+ const showBalance=!(s.testnet?.budget?.accountEquityUSD!==undefined&&(!b||b.venue==='BINGX'));
  // One place per fact (user 2026-11-18): the on/off state is on the 활성화 button, the time in the header (liveUpdated).
- return [['거래소',(s.venues||[]).map(v=>LABEL[v]||v).join(' · ')||'—'],['잔고',balance],
+ return [['거래소',(s.venues||[]).map(v=>LABEL[v]||v).join(' · ')||'—'],...(showBalance?[['잔고',balance]]:[]),
   ['API 키',['BINGX','GATEIO'].map(v=>`${LABEL[v]} ${s.credentialsConfigured?.[v]?'설정됨':'없음'}`).join(' · ')],
   ...(L.strategyProfile?[['전략',L.strategyProfile==='HYBRID'?`HYBRID · 위험 한도로 수량 역산 · 추매 1·1·2·4(최대 ${L.hybridMaxAdds}회) 매물대`:'CURRENT (기존 규칙)']]:[]),
   ...(L.riskProfile?[['위험 프로필',L.riskProfile==='GROWTH'?`수익형(거래당 ${L.maxLossPct??3}% · ${s.testnet?'신호 자체 ':''}열린 위험·하루 ${L.dailyMaxLossPct??9}%)`:L.riskProfile==='CONSERVATIVE'?'보수(거래당 1% · 하루 3%)':'기존(승인 전 실거래 값)']]:[]),
@@ -426,8 +427,10 @@ export function testnetBudgetHTML(t){
  const b=t.budget||{},state=b.stopped?'<b class="copy-state kill">■ 오늘 정지 (하루 손실 한도)</b>':t.partial?'<b class="copy-state on">◐ 일부 활성화</b>':'';
  const who=t.partial?[t.signal?`신호 ${t.signal.armed?'●':'○'}`:null,t.scalp?`단타 ${t.scalp.armed?'●':'○'}`:null].filter(Boolean).join(' · '):'';
  const loss=Number(b.lossUSD)>0?`−$${Number(b.lossUSD).toFixed(2)}`:'$0.00';
- const balance=fin(b.equityUSD)?`기준 잔고 ${tnUsd(b.equityUSD)}${fin(b.accountEquityUSD)&&b.accountEquityUSD>b.equityUSD?` · 계좌 ${tnUsd(b.accountEquityUSD)}`:''}${b.balanceAt?` · ${esc(auditTime(b.balanceAt))} KST`:''}`:'';
- return `${state}${who?`<span class="tn-who">${esc(who)}</span>`:''}<span class="tn-budget-nums">공동 한도 · 오늘 손실 <b class="${Number(b.lossUSD)>0?'paper-loss':''}">${loss}</b> / 한도 <b>${fin(b.limitUSD)?tnUsd(b.limitUSD):'잔고 확인 중'}</b> (${esc(b.dailyLossPct??'—')}%) · 열린 위험 <b>${tnUsd(b.openRiskUSD)}</b>${fin(b.marginUSD)?` · 증거금 ${tnUsd(b.marginUSD)}${fin(b.marginCapUSD)?` / ${tnUsd(b.marginCapUSD)} (${esc(b.marginCapPct)}%)`:''}`:''}</span>${balance?`<small class="tn-who">${balance}</small>`:''}${b.balanceError?'<small class="live-warn-text">최근 잔고 조회 실패</small>':''}${t.scalpError?`<small class="muted">단타 켜지 않음: ${esc(t.scalpError)}</small>`:''}`;
+ const capped=fin(b.equityUSD)&&fin(b.accountEquityUSD)&&b.accountEquityUSD>b.equityUSD;
+ const balance=fin(b.equityUSD)?`${fin(b.accountEquityUSD)?`BingX 순자산 ${tnUsd(b.accountEquityUSD)}`:`기준 순자산 ${tnUsd(b.equityUSD)}`}${capped?` · 한도 기준 ${tnUsd(b.equityUSD)}`:''}${b.balanceAt?` · ${esc(auditTime(b.balanceAt))} KST`:''}`:'';
+ const budgetError=b.balanceError==='BALANCE_STALE'?'현재 순자산 갱신 지연':b.balanceError?'현재 순자산 조회 실패':'';
+ return `${state}${who?`<span class="tn-who">${esc(who)}</span>`:''}<span class="tn-budget-nums">공동 한도 · 오늘 손실 <b class="${Number(b.lossUSD)>0?'paper-loss':''}">${loss}</b> / 한도 <b>${fin(b.limitUSD)?tnUsd(b.limitUSD):'잔고 확인 중'}</b> (${esc(b.dailyLossPct??'—')}%) · 열린 위험 <b>${tnUsd(b.openRiskUSD)}</b>${fin(b.marginUSD)?` · 증거금 ${tnUsd(b.marginUSD)} / ${fin(b.marginCapUSD)?tnUsd(b.marginCapUSD):'—'} (${esc(b.marginCapPct??'—')}%)`:''}</span>${balance?`<small class="tn-who">${balance}</small>`:''}${budgetError?`<small class="live-warn-text">${budgetError}</small>`:''}${t.scalpError?`<small class="muted">단타 켜지 않음: ${esc(t.scalpError)}</small>`:''}`;
 }
 
 /** One open scalp position as a card next to the signal cards (badge 단타). */
@@ -545,6 +548,12 @@ function bindCopyButtons(el){
   if(disarm)return call(disarm,'/api/copy/disarm',null,'끄는 중…');
   if(arm&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?'))return call(arm,'/api/copy/arm',{confirm:'COPY_ARM'},'켜는 중…')})}
 
+let testnetBudgetAt=0,testnetBudgetPolling=false;
+function renderTestnetBudget(el,t){
+ if(!el||t?.budget?.at<testnetBudgetAt)return;
+ testnetBudgetAt=t?.budget?.at??0;testnetBudgetPolling=t?.budget?.accountEquityUSD!==undefined;
+ el.hidden=!t;if(t)el.innerHTML=testnetBudgetHTML(t);
+}
 function render(o){
  const $=id=>document.getElementById(id),m=modeInfo(o.mode);
  if($('liveReadiness')){$('liveReadiness').hidden=!o.readiness;$('liveReadiness').innerHTML=readinessHTML(o.readiness,(o.positions||[]).map(p=>({symbol:p.symbol,direction:p.direction,unrealizedUSD:p.unrealized?.usd??null})))}
@@ -553,7 +562,7 @@ function render(o){
  // One testnet switch (signal + scalp, user 2026-11-17): the page shows the combined state; LIVE keeps the signal's own.
  const tn=o.testnet||null,on=tn?tn.armed===true:Boolean(o.armed&&o.mode!=='OFF'),some=tn?Boolean(tn.armed||tn.partial):on,canArm=tn?Boolean(tn.signal||tn.scalp):o.mode!=='OFF';
  if($('liveModeBadge'))$('liveModeBadge').innerHTML=modeBadgeHTML(tn?{...o,mode:o.mode==='OFF'&&tn.scalp?'TESTNET':o.mode,armed:on}:o);
- if($('testnetBudget')){$('testnetBudget').hidden=!tn;if(tn)$('testnetBudget').innerHTML=testnetBudgetHTML(tn)}
+ renderTestnetBudget($('testnetBudget'),tn);
  const budgetEdit=$('testnetBudgetEdit'),budgetForm=$('testnetBudgetForm');
  if(budgetEdit&&budgetForm){
   budgetEdit.hidden=!tn?.budget||!canArm;
@@ -657,8 +666,17 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
  const visible=()=>['live','real'].some(id=>$(id)&&!$(id).hidden);
  const tick=()=>{if(visible())load().catch(fail)};
  setInterval(tick,10000);setTimeout(()=>load().catch(fail),400);
+ let budgetBusy=false;
+ const refreshBudget=async()=>{
+  if(!testnetBudgetPolling||$('live')?.hidden||document.hidden||budgetBusy)return;
+  budgetBusy=true;
+  try{const r=await fetch('/api/live/testnet-budget',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok)renderTestnetBudget($('testnetBudget'),await r.json())}
+  catch{}finally{budgetBusy=false}
+ };
+ setInterval(refreshBudget,3000);
+ document.addEventListener('visibilitychange',refreshBudget);
  // 실계좌 page: the copy panel alone every 3 s (prices cached 3 s on the server, balance 15 s), while visible.
  let fastBusy=false;
  setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy)return;fastBusy=true;
-  try{const r=await fetch('/api/copy',{cache:'no-store'});if(r.ok){const c=await r.json();if(c?.mode==='LIVE'&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}catch{}finally{fastBusy=false}},3000);window.addEventListener('hashchange',()=>setTimeout(tick,60));
+  try{const r=await fetch('/api/copy',{cache:'no-store'});if(r.ok){const c=await r.json();if(c?.mode==='LIVE'&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}catch{}finally{fastBusy=false}},3000);window.addEventListener('hashchange',()=>setTimeout(()=>{tick();void refreshBudget()},60));
 }
