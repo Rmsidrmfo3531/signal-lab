@@ -37,6 +37,12 @@ const given=v=>v===undefined||v===null||v===''||!Number.isFinite(Number(v))?null
 const posNum=v=>{const x=num(v);return x>0?x:null};
 // Venue units (lots / contracts) to base-asset units.
 const baseUnits=(record,qty)=>record.venueContract?.quantityUnit==='CONTRACT'?qty*(Number(record.venueContract.contractSizeBase)||0):qty;
+const recordMargin=record=>{
+ const price=Number(record.position?.entryPrice)||Number(record.firstEntryPrice)||Number(record.plannedEntry)||0;
+ const held=record.position?.size>0?Number(record.position.size):Number(record.quantity?.total)||0;
+ const adds=(record.adds||[]).filter(a=>!a.filled&&!a.cancelled&&!a.skipped).reduce((sum,a)=>sum+baseUnits(record,Number(a.qty)||0)*(Number(a.price)||0),0);
+ return (baseUnits(record,held)*price+adds)/(Number(record.leverage)||1);
+};
 // The venue lists fund-flow rows a little after a fill, and the read window ends 120 s after the
 // close: the first read waits SETTLE_DELAY_MS so a late last fill (the final stop) is not missed.
 const SETTLE_TRIES=4,SETTLE_WINDOW_MS=2*3600000,SETTLE_DELAY_MS=150000;
@@ -51,6 +57,7 @@ export class LiveExecutor{
   // priceOf(record): the venue's public mid price, used only to estimate an exit when the venue gives none.
   Object.assign(this,{config,clients,now,log,onChange,priceOf,onEvent});
   this.file=directory?path.join(directory,'live-orders.json'):null;this.armed=false;this.busy=new Set();this.skipSeen=new Map();this.inFlight=new Set();this.lastTry=new Map();this.closing=new Set();this.reconciling=false;
+  this.entryRevision=0;this.killRevision=0;
   const stored=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={version:1,killSwitch:stored?.killSwitch===true,records:Array.isArray(stored?.records)?stored.records:[],skipped:[],
    deletedKeys:Array.isArray(stored?.deletedKeys)?stored.deletedKeys.slice(-MAX_DELETED_KEYS):[],
@@ -122,10 +129,7 @@ export class LiveExecutor{
    realizedToday:day=>today(day).reduce((t,r)=>t+value(r).net,0),
    provisionalToday:day=>today(day).some(r=>value(r).placeholder),
    openRisk:()=>active().reduce((t,r)=>t+(Number(r.plannedRiskUSD)||0),0),
-   usedMargin:()=>active().reduce((t,r)=>{const lev=Number(r.leverage)||1,px=Number(r.position?.entryPrice)||Number(r.firstEntryPrice)||Number(r.plannedEntry)||0;
-    const held=r.position?.size>0?Number(r.position.size):Number(r.quantity?.total)||0;
-    const adds=(r.adds||[]).filter(a=>!a.filled&&!a.cancelled&&!a.skipped).reduce((s,a)=>s+baseUnits(r,Number(a.qty)||0)*(Number(a.price)||0),0);
-    return t+(baseUnits(r,held)*px+adds)/lev},0),
+   usedMargin:()=>active().reduce((t,r)=>t+recordMargin(r),0),
    unrealized:()=>active().reduce((t,r)=>t+(Number(r.position?.unrealizedPnLUSD)||0),0)};
  }
  credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
@@ -142,11 +146,30 @@ export class LiveExecutor{
   if(this.store.killSwitch)throw Object.assign(Error('KILL_SWITCH_ON'),{httpStatus:409});
   this.armed=true;this.lastTry.clear();this.onChange(this.status());return this.status();
  }
- disarm(){this.armed=false;this.onChange(this.status());return this.status()}
- kill(reason='MANUAL'){this.armed=false;this.store.killSwitch=true;this.store.skipped.push({at:this.now(),reason:'KILL_SWITCH:'+reason});this.#save();
+ disarm(){this.entryRevision++;this.armed=false;this.onChange(this.status());return this.status()}
+ kill(reason='MANUAL'){this.entryRevision++;this.killRevision++;this.armed=false;this.store.killSwitch=true;this.store.skipped.push({at:this.now(),reason:'KILL_SWITCH:'+reason});this.#save();
   try{this.onEvent?.({symbol:'실매매 전체',mode:this.config.mode},'KILL_SWITCH',{reason})}catch{}
   return this.status()}
  resetKill(){this.store.killSwitch=false;this.#save();return this.status()}
+
+ #entryBlock(revision){
+  if(this.store.killSwitch)return 'KILL_SWITCH_ON';
+  if(this.updating||this.paused)return 'UPDATING';
+  if(!this.armed||revision!==this.entryRevision)return 'NOT_ARMED';
+  return null;
+ }
+ #orderBlock(record,{revision,budgetEquity}){
+  const blocked=this.#entryBlock(revision);
+  if(blocked)return blocked;
+  if(this.budget){
+   if(!(record.plannedEntry>0))return 'PRICE_UNAVAILABLE';
+   // The provisional record is already included in the shared budget, with the venue's confirmed leverage.
+   const checked=this.budget.check({equity:budgetEquity,who:'signal'});
+   if(!checked.ok)return checked.reason;
+  }
+  if(record.balanceUSD>0&&recordMargin(record)>Math.min(record.balanceUSD*(this.config.marginUsePct??25)/100,record.freeUSD*.9)+1e-9)return 'MARGIN_SHORT';
+  return null;
+ }
 
  /** Called once per newly published final signal (already venue-checked). */
  async onSignal(row,{signalKey}){
@@ -160,9 +183,9 @@ export class LiveExecutor{
   const last=this.lastTry.get(signalKey);if(last>this.now()-30000&&!this.hasSignal(signalKey))return {sent:false,reasons:['RETRY_WAIT']};
   this.lastTry.set(signalKey,this.now());if(this.lastTry.size>500)this.lastTry.delete(this.lastTry.keys().next().value);
   this.inFlight.add(signalKey);
-  try{return await this.#onSignal(row,{signalKey})}finally{this.inFlight.delete(signalKey)}
+  try{return await this.#onSignal(row,{signalKey,revision:this.entryRevision})}finally{this.inFlight.delete(signalKey)}
  }
- async #onSignal(row,{signalKey}){
+ async #onSignal(row,{signalKey,revision}){
   const venue=row?.executionVenue,contract=row?.venueContract&&{...row.venueContract,symbol:row.symbol};
   const clientOrderId=liveClientId(signalKey);
   if(this.store.records.some(r=>r.clientOrderId===clientOrderId))return {sent:false,reasons:['DUPLICATE_SIGNAL']};
@@ -220,19 +243,26 @@ export class LiveExecutor{
    if(!(last>this.now()-600000)){this.skipSeen.set(tag,this.now());if(this.skipSeen.size>500)this.skipSeen.delete(this.skipSeen.keys().next().value);
     this.store.skipped=[...this.store.skipped,{at:this.now(),symbol:row?.symbol,venue,reasons:check.reasons}].slice(-50);this.onChange(this.status())}
    return {sent:false,reasons:check.reasons}}
+  const blocked=this.#entryBlock(revision);if(blocked)return {sent:false,reasons:[blocked]};
   if(this.busy.has(row.symbol))return {sent:false,reasons:['SYMBOL_BUSY']};
   // Checked again after the balance read: copy trading may have reserved the symbol meanwhile.
   try{if(this.externalHeld?.()?.has?.(row.symbol))return {sent:false,reasons:['SYMBOL_HELD_BY_COPY']}}catch{}
   this.busy.add(row.symbol);
   // hedge: null until the account's mode is read (BingX): a record cut off before that sent nothing (#recover).
   const record={clientOrderId,signalKey,venue,mode:this.config.mode,...(venue==='BINGX'?{hedge:null}:{}),symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
-   plannedEntry:posNum(row.entry),stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,strategyProfile:split?.strategyProfile||'CURRENT',...(row.liveRoutedFrom?{routedFrom:row.liveRoutedFrom}:{}),...(split?{balanceUSD:split.balanceUSD,freeUSD:split.freeUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
+   plannedEntry:posNum(row.entry)??posNum(row.venueEntry),stop:row.stop,targets:[...row.targets],quantity:qty,marginMode:'CROSS',leverage,sizing:this.config.sizing,strategyProfile:split?.strategyProfile||'CURRENT',...(row.liveRoutedFrom?{routedFrom:row.liveRoutedFrom}:{}),...(split?{balanceUSD:split.balanceUSD,freeUSD:split.freeUSD,adds:split.adds,zoneSource:split.zoneSource,peakSize:qty.total}:{}),plannedRiskUSD:qty.riskUSD,day:check.day,status:'SUBMITTING',createdAt:this.now(),
    // Signal context for the trade journal review (no effect on orders).
    signal:{pattern:row.pattern??null,score:Number.isFinite(Number(row.score))?Number(row.score):null,btcTrend:row.btcContext?.trend??null,trend4h:typeof row.trend==='string'?row.trend:null},
    entryOrderId:null,stopOrderId:null,targetOrderIds:[],breakevenMoved:false,events:[]};
   this.store.records.push(record);this.#save();
+  let stoppedBeforeSend;
   try{
-   if(venue==='BINGX')await this.#openBingX(record);else await this.#openGate(record);
+   const guard={revision,budgetEquity};
+   stoppedBeforeSend=venue==='BINGX'?await this.#openBingX(record,guard):await this.#openGate(record,guard);
+   if(stoppedBeforeSend){
+    this.store.records=this.store.records.filter(r=>r!==record);
+    this.store.skipped=[...this.store.skipped,{at:this.now(),symbol:row.symbol,venue,reasons:[stoppedBeforeSend]}].slice(-50);
+   }
   }catch(error){
    // Anything unexpected after the entry may have filled: stop trading until checked.
    // An OPEN record already has its stop handled; only an unfinished entry is unknown.
@@ -240,10 +270,10 @@ export class LiveExecutor{
    this.#event(record,'ERROR',{reason:error.code||error.message});
    if(record.status==='UNKNOWN')this.kill('UNRESOLVED_'+record.venue);
   }finally{this.busy.delete(row.symbol);this.#save()}
-  return {sent:true,status:record.status};
+  return stoppedBeforeSend?{sent:false,reasons:[stoppedBeforeSend]}:{sent:true,status:record.status};
  }
 
- async #openBingX(record){
+ async #openBingX(record,guard){
   const client=this.clients.BINGX;
   // The account's position mode (one-way or hedge, user 2026-11-17), read before every entry and kept on the
   // record: its stop, targets, adds, breakeven and closes use the mode it was opened under. Not stated or not
@@ -267,9 +297,11 @@ export class LiveExecutor{
    if(set?.leverage!==undefined&&Number(set.leverage)!==record.leverage)throw Object.assign(Error('leverage not confirmed'),{code:'BINGX_LEVERAGE_NOT_CONFIRMED'});
    this.#event(record,'MARGIN_SET',{reason:`CROSS ${record.leverage}x`});
   }catch(error){record.status='FAILED';this.#event(record,'REJECTED',{reason:'MARGIN_SETUP_FAILED:'+(error.code||error.message)});return}
+  const beforeSend=()=>this.#orderBlock(record,guard),blocked=beforeSend();if(blocked)return blocked;
   let entry;
-  try{entry=await client.placeOrder(plan.entry)}
+  try{entry=await client.placeOrder(plan.entry,{beforeSend})}
   catch(error){
+   if(error.code==='ENTRY_NOT_SENT')return error.reason;
    // Outcome unknown (timeout/network) or rejected: look the client id up before anything else.
    let found=null;try{found=await client.getOrder(record.venueSymbol,{clientOrderId:record.clientOrderId})}catch{}
    if(!found||!bingxOrderId(found)){
@@ -300,10 +332,10 @@ export class LiveExecutor{
    catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})} // the stop still protects the position
   }
   this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});
-  if(record.adds?.length)await this.#placeAdds(record);
+  if(record.adds?.length)await this.#placeAdds(record,guard);
  }
 
- async #openGate(record){
+ async #openGate(record,guard){
   const client=this.clients.GATEIO,contract=record.venueSymbol;
   const plan=gateOrders({contract,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
   const account=await client.account();
@@ -316,9 +348,11 @@ export class LiveExecutor{
    if(got>0&&got!==record.leverage){this.#event(record,'LEVERAGE_CAPPED',{reason:`${record.leverage}x>${got}x`});record.leverage=got}
    this.#event(record,'MARGIN_SET',{reason:`CROSS ${record.leverage}x`});
   }catch(error){record.status='FAILED';this.#event(record,'REJECTED',{reason:'MARGIN_SETUP_FAILED:'+(error.code||error.message)});return}
+  const beforeSend=()=>this.#orderBlock(record,guard),blocked=beforeSend();if(blocked)return blocked;
   let entry;
-  try{entry=await client.placeOrder(plan.entry)}
+  try{entry=await client.placeOrder(plan.entry,{beforeSend})}
   catch(error){
+   if(error.code==='ENTRY_NOT_SENT')return error.reason;
    let found=null;try{found=await client.getOrder(plan.entry.text)}catch{}
    if(!found?.id){
     if(error.code==='NETWORK_UNREACHABLE'){record.status='UNKNOWN';this.#event(record,'ENTRY_OUTCOME_UNKNOWN',{reason:error.code});this.kill('UNRESOLVED_GATEIO');return}
@@ -347,13 +381,19 @@ export class LiveExecutor{
    catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})}
   }
   this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});
-  if(record.adds?.length){if(filled!==record.quantity.total)record.peakSize=filled;await this.#placeAdds(record)}
+  if(record.adds?.length){if(filled!==record.quantity.total)record.peakSize=filled;await this.#placeAdds(record,guard)}
  }
 
  /** Split buys: the stop must cover the whole future position (BingX: closePosition stop,
   * placed before the entry's own stop is cancelled; Gate.io's stop already closes it all),
   * then the resting limit adds. An add that cannot be placed is skipped, never retried blindly. */
- async #placeAdds(record){
+ async #placeAdds(record,guard){
+  const skipRemaining=(from,reason)=>{
+   for(const add of record.adds.slice(from))add.skipped=true;
+   this.#event(record,'ADDS_SKIPPED',{reason});
+  };
+  const beforeSend=()=>this.#orderBlock(record,guard),blocked=beforeSend();
+  if(blocked){skipRemaining(0,blocked);return}
   const client=this.clients[record.venue],full=record.adds.reduce((s,a)=>s+a.qty,record.quantity.total);
   if(record.venue==='BINGX'){
    const plan=this.#plan(record);
@@ -363,9 +403,13 @@ export class LiveExecutor{
   }
   const plan=this.#plan(record);
   for(const [i,a] of record.adds.entries()){
+   const blocked=beforeSend();
+   if(blocked){skipRemaining(i,blocked);break}
    const id=record.venue==='BINGX'?record.clientOrderId+'a'+String.fromCharCode(97+i):record.clientOrderId.slice(0,24)+'a'+String.fromCharCode(97+i);
-   try{const o=await client.placeOrder(plan.add(a.price,a.qty,id));a.orderId=record.venue==='BINGX'?bingxOrderId(o):String(o.id)}
-   catch(error){a.orderId=null;a.skipped=true;this.#event(record,'ADD_FAILED',{reason:`${i+1}: `+(error.code||error.message)})}
+   try{const o=await client.placeOrder(plan.add(a.price,a.qty,id),{beforeSend});a.orderId=record.venue==='BINGX'?bingxOrderId(o):String(o.id)}
+   catch(error){
+    if(error.code==='ENTRY_NOT_SENT'){skipRemaining(i,error.reason);break}
+    a.orderId=null;a.skipped=true;this.#event(record,'ADD_FAILED',{reason:`${i+1}: `+(error.code||error.message)})}
   }
   this.#event(record,'ADDS_PLACED',{reason:`${record.adds.filter(a=>a.orderId).length}/${record.adds.length}`});
  }

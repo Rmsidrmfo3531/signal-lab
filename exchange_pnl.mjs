@@ -15,14 +15,19 @@ export function balanceOf(data){
 
 /** All income rows from `since` to `now`, read in 7-day windows (newest data the venue keeps), de-duplicated. */
 export async function incomeRows(client,{since,now=Date.now(),limit=1000}={}){
+ if(!Number.isFinite(since)||!Number.isFinite(now)||since>now)throw Object.assign(Error('INVALID_INCOME_WINDOW'),{code:'INVALID_INCOME_WINDOW'});
+ const badIncome=()=>Object.assign(Error('BAD_INCOME_RESPONSE'),{code:'BAD_INCOME_RESPONSE'});
+ const number=v=>(typeof v==='number'||typeof v==='string'&&v.trim()!=='')&&Number.isFinite(Number(v));
  const out=new Map();
  const read=async(from,to,depth=0)=>{
   const res=await client.income({startTime:from,endTime:to,limit});
-  const rows=Array.isArray(res)?res:Array.isArray(res?.list)?res.list:Array.isArray(res?.data)?res.data:[];
+  const rows=Array.isArray(res)?res:Array.isArray(res?.list)?res.list:Array.isArray(res?.data)?res.data:null;
+  if(!rows)throw badIncome();
   // A full page may hide rows: read the window again in halves (down to ~10 minutes).
   if(rows.length>=limit){if(depth>=10)throw Object.assign(new Error('INCOME_PAGE_FULL'),{code:'INCOME_PAGE_FULL',from,to});
    const mid=Math.floor((from+to)/2);await read(from,mid,depth+1);await read(mid,to,depth+1);return}
-  for(const x of rows){const key=[x.tranId??x.tradeId??'',x.incomeType,x.symbol,x.time,x.income].join('|');out.set(key,x)}
+  for(const x of rows){if(!number(x?.time)||!number(x?.income))throw badIncome();
+   const key=[x.tranId??x.tradeId??'',x.incomeType,x.symbol,x.time,x.income].join('|');out.set(key,x)}
  };
  for(let from=since;from<now;from+=WINDOW)await read(from,Math.min(now,from+WINDOW));
  return [...out.values()].sort((a,b)=>Number(a.time)-Number(b.time));

@@ -25,6 +25,12 @@ function bingxQuery(params,signature){
  return parts.join('&')+'&signature='+signature;
 }
 
+// A local refusal is distinct from an unknown exchange response: the caller may release its reservation.
+function checkOrderDispatch(beforeSend){
+ const reason=beforeSend?.();
+ if(reason)throw Object.assign(Error(reason),{code:'ENTRY_NOT_SENT',reason});
+}
+
 export class BingXTradeClient{
  constructor({apiKey,secret,mode='TESTNET',fetcher=globalThis.fetch,now=Date.now,timeoutMs=10000,recvWindow=5000}={}){
   if(!['LIVE','TESTNET'].includes(mode))throw Error('LIVE_MODE_INVALID');
@@ -42,9 +48,10 @@ export class BingXTradeClient{
   // an order (POST) inside the queue waits at most 3 s of a pause, so a stop or an emergency close
   // is not held back. If the venue still refuses, the caller sees HTTP_429 and handles it.
   const slot=maxPause=>{const p=chain.then(async()=>{await sleep(Math.max(Math.min(cooldownUntil-Date.now(),maxPause),last+gapMs-Date.now()));last=Date.now()});chain=p.catch(()=>{});return p};
-  this.request=async(method,path,params={},retried=false)=>{
+  this.request=async(method,path,params={},retried=false,beforeSend)=>{
    if(method==='GET')while(cooldownUntil>Date.now())await sleep(cooldownUntil-Date.now());
    await slot(method==='GET'?0:3000);
+   checkOrderDispatch(beforeSend);
    const signed={...params,recvWindow,timestamp:now()};
    const url=`${host}${path}?${bingxQuery(signed,bingxSign(signed,secret))}`;
    let response;
@@ -56,7 +63,7 @@ export class BingXTradeClient{
     // A 429 means the venue did not take the order, so an order (often a stop or an emergency
     // close) is sent again up to twice, each time after the pause (at most 10 s of it).
     const tries=Number(retried)||0;
-    if(method!=='GET'&&tries<2){await sleep(Math.min(cooldownUntil-Date.now(),10000));return this.request(method,path,params,tries+1)}
+    if(method!=='GET'&&tries<2){await sleep(Math.min(cooldownUntil-Date.now(),10000));return this.request(method,path,params,tries+1,beforeSend)}
     let msg='';try{msg=(await readLimitedJSON(response,200_000))?.msg}catch{}
     throw new VenueHttpError('HTTP_429',clean(msg));
    }
@@ -76,7 +83,7 @@ export class BingXTradeClient{
  setMarginType(symbol,marginType){return this.request('POST','/openApi/swap/v2/trade/marginType',{symbol,marginType})}
  leverage(symbol){return this.request('GET','/openApi/swap/v2/trade/leverage',{symbol})}
  setLeverage(symbol,side,leverage){return this.request('POST','/openApi/swap/v2/trade/leverage',{symbol,side,leverage})}
- placeOrder(params){return this.request('POST','/openApi/swap/v2/trade/order',params)}
+ placeOrder(params,{beforeSend}={}){return this.request('POST','/openApi/swap/v2/trade/order',params,false,beforeSend)}
  testOrder(params){return this.request('POST','/openApi/swap/v2/trade/order/test',params)}
  openOrders(symbol){return this.request('GET','/openApi/swap/v2/trade/openOrders',{symbol})}
  getOrder(symbol,{orderId,clientOrderId}){return this.request('GET','/openApi/swap/v2/trade/order',{symbol,...(orderId?{orderId}:{clientOrderId})})}
@@ -100,7 +107,8 @@ export class GateTradeClient{
   if(!['LIVE','TESTNET'].includes(mode))throw Error('LIVE_MODE_INVALID');
   if(!apiKey||!secret)throw Error('LIVE_CREDENTIALS_MISSING');
   const host=LIVE_HOSTS.GATEIO[mode];
-  this.request=async(method,path,{query={},body}={})=>{
+  this.request=async(method,path,{query={},body,beforeSend}={})=>{
+   checkOrderDispatch(beforeSend);
    const fullPath='/api/v4'+path,search=new URLSearchParams(query).toString(),payload=body===undefined?'':JSON.stringify(body);
    const timestamp=String(Math.floor(now()/1000));
    const SIGN=gateSign({method,path:fullPath,query:decodeURIComponent(search.replace(/\+/g,' ')),body:payload,timestamp},secret);
@@ -118,7 +126,7 @@ export class GateTradeClient{
  position(contract){return this.request('GET','/futures/usdt/positions/'+encodeURIComponent(contract))}
  /** Cross margin: leverage=0 with cross_leverage_limit = the cross leverage. */
  setCrossLeverage(contract,leverage){return this.request('POST','/futures/usdt/positions/'+encodeURIComponent(contract)+'/leverage',{query:{leverage:'0',cross_leverage_limit:String(leverage)}})}
- placeOrder(order){return this.request('POST','/futures/usdt/orders',{body:order})}
+ placeOrder(order,{beforeSend}={}){return this.request('POST','/futures/usdt/orders',{body:order,beforeSend})}
  getOrder(id){return this.request('GET','/futures/usdt/orders/'+encodeURIComponent(id))}
  cancelOrder(id){return this.request('DELETE','/futures/usdt/orders/'+encodeURIComponent(id))}
  placeTrigger(order){return this.request('POST','/futures/usdt/price_orders',{body:order})}

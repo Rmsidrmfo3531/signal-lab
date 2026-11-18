@@ -22,11 +22,11 @@ test('signatures reproduce the official examples (BingX openssl example, Gate.io
 });
 
 // ---- Mock venues that verify every signature exactly as documented ---------------
-function mockBingX({available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,modeFail=false,entry='ok',stopAttached=true,positionAmt=()=>'0.20',stopPlacement='ok',rows=null}={}){
+function mockBingX({mode='TESTNET',available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=false,hedge=false,modeFail=false,entry='ok',stopAttached=true,positionAmt=()=>'0.20',stopPlacement='ok',rows=null}={}){
  const calls=[],orders=[];let id=1000;
  const fetcher=async(url,options)=>{
   const u=new URL(url),q=Object.fromEntries([...u.searchParams].filter(([k])=>k!=='signature'));
-  assert.equal(u.origin,LIVE_HOSTS.BINGX.TESTNET);assert.equal(options.headers['X-BX-APIKEY'],'bingx-key');
+  assert.equal(u.origin,LIVE_HOSTS.BINGX[mode]);assert.equal(options.headers['X-BX-APIKEY'],'bingx-key');
   assert.equal(u.searchParams.get('signature'),createHmac('sha256',BINGX_SECRET).update(Object.keys(q).sort().map(k=>`${k}=${q[k]}`).join('&')).digest('hex'),'BingX signature');
   assert.ok(!url.includes(BINGX_SECRET));
   const call={method:options.method,path:u.pathname,params:q};calls.push(call);
@@ -56,7 +56,7 @@ function mockBingX({available=()=>'1000',margin='ISOLATED',maxLev=50,marginFail=
   if(u.pathname==='/openApi/swap/v2/user/positions')return json({code:0,data:rows?rows():[{symbol:'ETH-USDT',positionAmt:positionAmt(),avgPrice:'100.02',positionSide:'LONG'}]});
   throw Error('unexpected '+u.pathname);
  };
- return {calls,orders,client:new BingXTradeClient({apiKey:'bingx-key',secret:BINGX_SECRET,mode:'TESTNET',fetcher,now:()=>NOW})};
+ return {calls,orders,client:new BingXTradeClient({apiKey:'bingx-key',secret:BINGX_SECRET,mode,fetcher,now:()=>NOW})};
 }
 function mockGate({dual=false,fill=20,stop='ok',size=()=>20}={}){
  const calls=[];let id=50;
@@ -763,4 +763,61 @@ test('shared testnet budget: the scalp\'s open risk, today\'s loss and margin co
   r.realized={source:'EXCHANGE',netUSD:4.5};assert.equal(ex.budgetSource().realizedToday('2026-11-10'),4.5);assert.equal(ex.budgetSource().realizedToday('2026-11-11'),0)}
  // LIVE: the executor never takes a budget (its own OPEN_RISK_LIMIT rule stays).
  {const budget=new TestnetBudget({});const ex=new LiveExecutor({config:config({mode:'LIVE',liveConfirmed:true}),clients:{},now:()=>NOW,budget});assert.equal(ex.budget,null)}
+});
+
+test('a pending signal entry is abandoned after disarm or kill, even if trading is rearmed',async()=>{
+ for(const [venue,mode,stop] of [
+  ['BINGX','TESTNET','disarm'],['BINGX','LIVE','kill'],['GATEIO','TESTNET','disarm'],['GATEIO','TESTNET','kill'],
+ ]){
+  const mock=venue==='BINGX'?mockBingX({mode,margin:'CROSSED'}):mockGate();
+  const leverageMethod=venue==='BINGX'?'setLeverage':'setCrossLeverage';
+  const original=mock.client[leverageMethod].bind(mock.client);
+  const waiting=Promise.withResolvers(),resume=Promise.withResolvers();
+  mock.client[leverageMethod]=async(...args)=>{waiting.resolve();await resume.promise;return original(...args)};
+  const ex=new LiveExecutor({config:config({mode,liveConfirmed:mode==='LIVE'}),clients:{[venue]:mock.client},now:()=>NOW});
+  ex.arm();
+  const signal=ex.onSignal(row(venue,{entry:100}),{signalKey:'pending-entry'});
+  await waiting.promise;
+  if(stop==='kill')ex.kill('TEST');
+  else{ex.disarm();ex.arm()}
+  resume.resolve();
+  const reason=stop==='kill'?'KILL_SWITCH_ON':'NOT_ARMED';
+  assert.deepEqual(await signal,{sent:false,reasons:[reason]},venue+' '+stop);
+  assert.equal(ex.store.records.length,0,'the unsent record does not require reconciliation');
+  const orders=venue==='BINGX'?'/openApi/swap/v2/trade/order':'/api/v4/futures/usdt/orders';
+  assert.equal(mock.calls.some(c=>c.method==='POST'&&c.path===orders),false);
+ }
+});
+
+test('an entry already filled before disarm still receives its protective stop and exits, but no new adds',async()=>{
+ const mock=mockBingX({margin:'CROSSED',positionAmt:()=>'0.20',stopAttached:false});
+ const cfg=config({sizing:'BALANCE',unitPct:.19,maxLossPct:1,maxAdds:7,dailyMaxLossPct:3,maxOpen:4,maxPerDirection:2,strategyProfile:'HYBRID',hybridMaxAdds:3});
+ const ex=new LiveExecutor({config:cfg,clients:{BINGX:mock.client},now:()=>NOW});
+ const openOrders=mock.client.openOrders.bind(mock.client);
+ mock.client.openOrders=(...args)=>{ex.disarm();return openOrders(...args)};
+ const zones=[97,94,91,88,85,82].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
+ ex.arm();
+ const result=await ex.onSignal(row('BINGX',{entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'test',zones}]}}),{signalKey:'filled-before-stop'});
+ assert.equal(result.status,'OPEN');
+ const record=ex.store.records[0];
+ assert.ok(record.stopOrderId);
+ assert.ok(record.targetOrderIds.every(Boolean));
+ assert.ok(record.adds.length>0&&record.adds.every(add=>add.skipped&&!add.orderId));
+});
+
+test('BingX checks the entry guard after its queue and again before an HTTP 429 resend',async()=>{
+ let calls=0,armed=true;
+ const client=new BingXTradeClient({apiKey:'mock',secret:'mock',fetcher:async()=>{
+  calls++;armed=false;
+  return new Response('',{status:429,headers:{'Retry-After':'0.001'}});
+ }});
+ const params={symbol:'BTC-USDT',type:'MARKET',quantity:'1'};
+ const guarded={beforeSend:()=>armed?null:'NOT_ARMED'};
+ const queued=client.placeOrder(params,guarded);
+ armed=false;
+ await assert.rejects(queued,{code:'ENTRY_NOT_SENT',reason:'NOT_ARMED'});
+ assert.equal(calls,0);
+ armed=true;
+ await assert.rejects(client.placeOrder(params,guarded),{code:'ENTRY_NOT_SENT',reason:'NOT_ARMED'});
+ assert.equal(calls,1,'the known refusal is never resent after disarm');
 });

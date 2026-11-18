@@ -124,3 +124,17 @@ test('calendar UI: on the real-account copy page after the stats, not on the tes
  const src=(await import('node:fs')).readFileSync(new URL('../public/live_control.js',import.meta.url),'utf8');
  assert.match(src,/closest\('\[data-cal-month\]'\)[\s\S]{0,400}box\.innerHTML=copyHTML\(lastCopy\)/);
 });
+
+test('a malformed venue income response keeps the last good calendar value',async()=>{
+ let now=K('2026-11-18T10:00:00'),unexpected=false;
+ const income={incomeType:'REALIZED_PNL',income:'27.50',time:now-1800000,symbol:'BTC-USDT',tranId:'1'};
+ const client={income:async({startTime,endTime})=>unexpected?{unexpected:[]}:income.time>=startTime&&income.time<endTime?[income]:[],
+  balance:async()=>({balance:{asset:'USDT',equity:'1000',unrealizedProfit:'0'}})};
+ const calendar=createDailyPnl({client,now:()=>now});
+ await calendar.refresh();
+ const good=calendar.status();
+ assert.deepEqual(good.byDay,{'2026-11-18':27.5});
+ now+=5*60000;unexpected=true;
+ await calendar.refresh();
+ assert.deepEqual(calendar.status(),{...good,error:'BAD_INCOME_RESPONSE',errorAt:now});
+});

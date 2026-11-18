@@ -295,8 +295,12 @@ async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPn
  const v=await venuePositionsReader.snapshot(s.positions);if(!manualLedger)return {...s,...v};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
  return {...s,...v,manual:manualLedger.status()}}
-const bingxFunds=data=>{const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>x?.asset==='USDT')??list[0],equity=Number(u?.equity??u?.balance)||0,free=Number(u?.availableMargin);
- return {equity,available:Number.isFinite(free)?Math.max(0,free):equity}};
+const bingxFunds=(data,{requireAvailable=false}={})=>{
+ const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>x?.asset==='USDT')??list[0];
+ const equity=Number(u?.equity??u?.balance)||0,raw=u?.availableMargin,free=Number(raw);
+ if(requireAvailable&&(raw==null||String(raw).trim()===''||!Number.isFinite(free)))return {equity,available:null};
+ return {equity,available:Number.isFinite(free)?Math.max(0,free):equity};
+};
 copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
  // A coin missing or suspended in the cached list re-reads the list (new listings / delistings, 2026-11-16).
@@ -312,13 +316,18 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode===
   for(const f of list){const r=await f.collector.get(symbol,{tickSize:Number(tickSize),eligible:true}).catch(()=>null);if(r?.ok)out.push(...r.profile.hvn.map(z=>({priceLow:z.priceLow,priceHigh:z.priceHigh})))}
   return out},
  // Testnet copy follows the signal strategy's switch; real-money copy has its own (off after every restart).
- gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:COPY.mode==='LIVE'?(copyTrader.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'}):LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
+ entryGateRevision:()=>COPY.mode==='LIVE'?live.killRevision:live.entryRevision,
+ gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:live.updating||live.paused?{ok:false,reason:'UPDATING'}:COPY.mode==='LIVE'?(copyTrader.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'}):LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
  // Also a symbol the live executor is entering right now (busy), not only recorded positions.
  isBusy:symbol=>COPY_ON_SAME_ACCOUNT()&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol))||COPY.mode==='TESTNET'&&Boolean(scalpExec?.heldSymbols().has(symbol)),
  // The same balance cap as the signal strategy (a 100,000 virtual USDT testnet trades like the real account).
  // The testnet balance cap does not apply to a real-money copy (its own real equity).
- balance:async()=>{if(COPY.mode==='LIVE')return bingxFunds(await copyClient.balance());const f=await live.accountFunds('BINGX');const cap=LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
-  const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
+ balance:async()=>{
+  const funds=bingxFunds(await copyClient.balance(),{requireAvailable:true});
+  if(COPY.mode==='LIVE'||funds.available===null||!(LIVE.balanceCapUSD>0))return funds;
+  const used=Math.max(0,funds.equity-funds.available),equity=Math.min(funds.equity,LIVE.balanceCapUSD);
+  return {equity,available:Math.max(0,Math.min(funds.available,equity-used))};
+ },
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
 // Read-only: never orders, its own file (manual-trades-live.json), never the copy ledger. The copy loss limit, the copy
 // margin limits and every copy decision stay computed from the copy ledger only (copy_executor.mjs); manual trades

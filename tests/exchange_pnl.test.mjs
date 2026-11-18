@@ -23,3 +23,11 @@ test('exchange PnL: income totals, transfers kept out of the result, return on s
  await assert.rejects(incomeRows({income:async()=>Array.from({length:3},(_,i)=>({tranId:i}))},{since:T0,now:T0+D,limit:3}),/INCOME_PAGE_FULL/);
  assert.equal(summarizeIncome([],null,{since:T0}).returnPct,null);
 });
+
+test('malformed income pages or rows surface an error, while a valid empty page reports zero',async()=>{
+ const summarize=income=>exchangePnl({income:async()=>income,balance:async()=>({})},{since:T0,now:T0+D});
+ for(const bad of [null,{}, {data:{}}, [{time:T0,income:''}], [{time:'invalid',income:1}]]){
+  assert.deepEqual(await summarize(bad),{error:'BAD_INCOME_RESPONSE',since:T0});
+ }
+ assert.equal((await summarize({list:[]})).tradingNetUSD,0);
+});
