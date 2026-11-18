@@ -128,7 +128,9 @@ API 실주문이 확인되어 **자동 모의매매는 기본으로 꺼졌습니
 | `TP1_MOVE_STOP_TO_BREAKEVEN` | `true` | 신규 거래 TP1 완료 후 본절 이동 |
 | `TP1_BREAKEVEN_MODE` | `ENTRY_FILL` | 평균 진입가 또는 `COST_COVERED` 가정 |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 없음 | 기존 비공개 Telegram 설정 |
-| `TELEGRAM_SCANNER_CHAT_ID` | 미설정 | 거래 알림을 받을 스캐너 채널의 숫자 ID 또는 `@username`. 봇에 채널 메시지 게시 권한이 필요합니다. 최종 신호의 기존 기본 대상은 `TELEGRAM_CHAT_ID`입니다. |
+| `TELEGRAM_SCANNER_CHAT_ID` | `TELEGRAM_CHAT_ID` | 실계좌 거래 알림과 최종 신호의 선택적 전용 채널. 지정할 때는 채널의 숫자 ID 또는 `@username`을 사용하고 봇에 게시 권한을 부여합니다. |
+
+테스트넷 거래와 테스트넷 준비도는 텔레그램으로 발송하지 않습니다. 테스트넷 체결은 화면과 크롬 알림에서 계속 확인할 수 있습니다.
 | `TELEGRAM_WATCH_MIN_SCORE` / `TELEGRAM_SCORE_WATCH_ENABLED` | 적용 안 함 | 과거 관찰 알림 설정은 데이터에 남아 있어도 Telegram 발송에 사용하지 않음 |
 | `NEWS_TRANSLATION_URL` | 없음 | 선택 LibreTranslate 호환 서비스 |
 | `NEWS_OPENAI_API_KEY` | 없음 | 뉴스용 OpenAI API 키. 없으면 서버의 `OPENAI_API_KEY` 사용 |

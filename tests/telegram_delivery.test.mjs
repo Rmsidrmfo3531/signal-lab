@@ -20,15 +20,31 @@ function section(start,end){const a=source.indexOf(start),b=source.indexOf(end,a
 const code=[section('async function tgNotify(s){','let updateCheckPromise='),
  section('function publishCryptoSignal(','// Event-driven scanner.'),
  section('function assessAnalysis(','function watches()')].join('\n');
-test('real trade notices never post to the legacy chat or to a private scanner destination',async()=>{
+test('confirmed real trades use the configured Telegram chat when no dedicated scanner channel is set',async()=>{
  const tradeCode=section('let lastRealTradeTelegramAt=0;','// Re-arm after a one-tap update')+
   section('function telegramPost(payload,','const SERVER_BOOT_ID');
- for(const [scanner,error,expectedMethods] of [
-  ['', 'SCANNER_NOT_CONFIGURED', []],
-  ['123456', 'SCANNER_CHAT_NOT_CHANNEL', ['getChat']],
+ const requests=[];
+ const sandbox={CONFIG:{tgToken:'offline-test-token',tgChat:'123456',tgScannerChat:''},
+  createTelegramNetworkRecovery,realTradeText:()=> 'confirmed trade',reportsDirty:false,AbortSignal,
+  fetch:async(url,options)=>{
+   requests.push([new URL(url).pathname.split('/').at(-1),JSON.parse(options.body)]);
+   return {ok:true,json:async()=>({ok:true,result:{message_id:81,chat:{id:123456,type:'private'}}})};
+  }};
+ vm.createContext(sandbox);vm.runInContext(tradeCode,sandbox);
+ const outcome=await sandbox.sendRealTradeTelegram({alertOrigin:'COPY'});
+ assert.equal(outcome.ok,true);
+ assert.equal(outcome.chatType,'private');
+ assert.deepEqual(requests,[['sendMessage',{chat_id:'123456',text:'confirmed trade'}]]);
+});
+test('real trades stay in the queue without a destination or when the explicit scanner is private',async()=>{
+ const tradeCode=section('let lastRealTradeTelegramAt=0;','// Re-arm after a one-tap update')+
+  section('function telegramPost(payload,','const SERVER_BOOT_ID');
+ for(const [chat,scanner,error,expectedMethods] of [
+  ['', '', 'TELEGRAM_NOT_CONFIGURED', []],
+  ['123456', '123456', 'SCANNER_CHAT_NOT_CHANNEL', ['getChat']],
  ]){
   const methods=[];
-  const sandbox={CONFIG:{tgToken:'offline-test-token',tgChat:'123456',tgScannerChat:scanner},
+  const sandbox={CONFIG:{tgToken:'offline-test-token',tgChat:chat,tgScannerChat:scanner},
    createTelegramNetworkRecovery,realTradeText:()=> 'confirmed trade',reportsDirty:false,AbortSignal,
    fetch:async(url)=>{
     methods.push(new URL(url).pathname.split('/').at(-1));
