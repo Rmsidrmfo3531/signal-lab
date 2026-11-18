@@ -78,3 +78,24 @@ test('PAPER_TRADING=on turns automatic paper entries back on',{timeout:30000},as
   assert.equal((await app.get('/api/live/overview')).mode,'OFF','live stays OFF by default');
  }finally{await app.close()}
 });
+
+test('real-account calendar publishes recent income when older windows are empty and balance fails',async()=>{
+ const at=Date.now()-60000,day=new Date(at+9*3600000).toISOString().slice(0,10);
+ const row={incomeType:'REALIZED_PNL',income:'27.50',time:at,symbol:'BTC-USDT',tranId:'fixture-income'};
+ const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[row],env:{
+  BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',
+  COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',PAPER_TRADING:'off',
+ }});
+ try{
+  await app.start();
+  const copy=await until(()=>app.get('/api/copy'),c=>c.daily?.at!=null);
+  assert.equal(copy.mode,'LIVE');
+  assert.deepEqual(copy.daily.byDay,{[day]:27.5});
+  assert.equal(copy.daily.error,null);
+  const overview=await app.get('/api/live/overview');
+  assert.deepEqual(overview.copy.daily.byDay,{[day]:27.5});
+  const requests=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
+  const reads=requests.filter(r=>r.host==='open-api.bingx.com'&&r.path==='/openApi/swap/v2/user/income');
+  assert.ok(reads.length>1,'the mock served older windows before the recent income');
+ }finally{await app.close()}
+});
