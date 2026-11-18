@@ -122,7 +122,10 @@ function fakeBingxTestnet(url,options){
  if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,method,path:p,type:q.type??null,stopPrice:q.stopPrice??null})+'\n');
  const mark=symbol=>price(String(symbol).replace('-',''));
  if(p==='/openApi/swap/v1/positionSide/dual')return ok({dualSidePosition:'false'});
- if(p==='/openApi/swap/v3/user/balance'){const equity=String(control().fakeBingxTestnetEquity??100000);return ok([{asset:'USDT',balance:equity,equity,availableMargin:equity}])}
+ if(p==='/openApi/swap/v3/user/balance'){
+  const sample=control(),equity=String(sample.fakeBingxTestnetEquity??100000);
+  return ok(sample.fakeBingxTestnetBalances??[{asset:'USDT',balance:equity,equity,availableMargin:equity}]);
+ }
  if(p==='/openApi/swap/v2/trade/marginType')return method==='GET'?ok({marginType:'CROSSED'}):ok({});
  if(p==='/openApi/swap/v2/trade/leverage')return method==='GET'?ok({maxLongLeverage:50,maxShortLeverage:50}):ok({symbol:q.symbol,leverage:Number(q.leverage)});
  if(p==='/openApi/swap/v2/trade/order'&&method==='POST'){

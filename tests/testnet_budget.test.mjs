@@ -56,10 +56,25 @@ test('shared BingX equity follows the latest account sample, retains a configure
  assert.equal(b.check({equity:1100,who:'signal-alt'}).snap.equityUSD,1100,'a separately funded strategy may impose a lower bound');
  now+=6000;b.observeAccount(800);assert.equal(b.status().limitUSD,120);
  const oldAt=b.status().balanceAt;
- now+=31000;b.observeAccount(null);
- assert.equal(b.status().limitUSD,null);assert.equal(b.status().balanceAt,oldAt);assert.equal(b.status().balanceError,'BALANCE_UNAVAILABLE');
+ now+=10000;
+ assert.equal(b.status().balanceError,'BALANCE_STALE');assert.equal(b.check({equity:1000,who:'scalp'}).reason,'NO_BALANCE');
+ b.observeAccount(1000);b.observeAccount(null);
+ assert.equal(b.status().limitUSD,null);assert.ok(b.status().balanceAt>oldAt);assert.equal(b.status().balanceError,'BALANCE_UNAVAILABLE');
  assert.equal(b.check({equity:1000,who:'scalp'}).reason,'NO_BALANCE');
  b.observeAccount(0);assert.equal(b.status().limitUSD,0);assert.equal(b.storedStop(),null,'a flat zero balance does not persist a day stop');
+});
+
+test('both strategies are gated immediately when the shared net equity falls',()=>{
+ const b=new TestnetBudget({accountEquity:true,now:()=>NOW}).register('signal',{usedMargin:()=>180}).register('scalp',{openRisk:()=>100});
+ b.observeAccount(1000,'VST');
+ for(const who of ['signal','scalp'])assert.equal(b.check({equity:1000,who,newMarginUSD:80}).ok,true);
+ b.observeAccount(800,'VST');
+ for(const who of ['signal','scalp']){
+  assert.equal(b.check({equity:1000,who,newMarginUSD:80}).reason,'TESTNET_MARGIN_CAP');
+  assert.equal(b.check({equity:1000,who,newRiskUSD:30}).reason,'OPEN_RISK_LIMIT');
+ }
+ b.observeAccount(null);
+ for(const who of ['signal','scalp'])assert.equal(b.check({equity:1000,who}).reason,'NO_BALANCE');
 });
 
 test('budget edits apply immediately and reload, and leave a previously reached daily stop in place',()=>{
