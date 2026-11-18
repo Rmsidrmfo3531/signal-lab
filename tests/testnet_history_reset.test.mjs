@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {test} from 'node:test';
+import {resetTestnetHistory,withTestnetResetRisk} from '../testnet_history_reset.mjs';
+import {atomicWriteStore,readStore} from '../persistence.mjs';
+import {SCALP_JOURNAL_FILE,scalpReportFiles} from '../scalp_journal.mjs';
+
+const now=Date.parse('2026-11-18T23:20:00+09:00');
+
+test('reset clears completed testnet records and journal only once, keeping live records and in-flight orders',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'testnet-reset-'));
+ t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const file=name=>path.join(dir,name),put=(name,value)=>atomicWriteStore(file(name),value);
+ const get=name=>readStore(file(name));
+ const closed={mode:'TESTNET',status:'CLOSED',closedAt:now-1000,realized:{source:'EXCHANGE',netUSD:-7}};
+ const open={mode:'TESTNET',status:'OPEN',entryOrderId:'running'},uncertain={mode:'TESTNET',status:'UNKNOWN'};
+ const live={...closed,mode:'LIVE'};
+ put('live-orders.json',{records:[closed,open,uncertain,live,{mode:'TESTNET',status:'FAILED'}],archived:[closed,live],killSwitch:true});
+ put('scalp-store.json',{closed:[{closedAt:now-1000,netUSD:3},{closedAt:now-86400000,netUSD:-99}],open:[open],events:[{}],sent:['processed']});
+ put('copy-store.json',{closed:[closed],positions:{active:open},pending:[uncertain]});
+ put('copy-store-live.json',{closed:[live]});
+ put('manual-trades-live.json',{closed:[live]});
+ put('testnet-budget.json',{settings:{dailyLossPct:15,marginCapPct:30},stop:{day:'2026-11-18'}});
+ const realJournal={source:'LIVE_AUTO',mode:'LIVE'},manualJournal={source:'MANUAL'};
+ put('store.json',{journal:[{source:'LIVE_AUTO',mode:'TESTNET'},realJournal,manualJournal]});
+ const journal=file(SCALP_JOURNAL_FILE);
+ fs.writeFileSync(journal,'{"id":"old"}\n');
+ assert.equal(resetTestnetHistory(dir,{now,apply:false}),null);
+ const reset=resetTestnetHistory(dir,{now});
+ assert.deepEqual(reset.removed,{signal:3,scalp:2,copy:1,journal:1});
+ assert.deepEqual(get('live-orders.json'),{records:[open,uncertain,live],archived:[live],killSwitch:true});
+ assert.deepEqual(get('scalp-store.json'),{closed:[],open:[open],events:[],sent:['processed'],skips:[],skipCounts:{}});
+ assert.deepEqual(get('copy-store.json'),{closed:[],positions:{active:open},pending:[uncertain],events:[]});
+ assert.deepEqual(get('copy-store-live.json'),{closed:[live]});
+ assert.deepEqual(get('manual-trades-live.json'),{closed:[live]});
+ assert.equal(get('testnet-budget.json').stop.day,'2026-11-18');
+ assert.deepEqual(get('store.json').journal,[realJournal,manualJournal]);
+ assert.equal(scalpReportFiles({journalFile:journal,now}).summary.all.trades,0);
+ assert.equal(scalpReportFiles({journalFile:journal,now}).files['scalp/trades.jsonl'],'');
+ const signalRisk=withTestnetResetRisk({realizedToday:()=>2},reset,'signal');
+ const scalpRisk=withTestnetResetRisk({realizedToday:()=>2},reset,'scalp');
+ assert.equal(signalRisk.realizedToday('2026-11-18'),-12);
+ assert.equal(scalpRisk.realizedToday('2026-11-18'),5);
+ assert.equal(signalRisk.realizedToday('2026-11-19'),2);
+ put('scalp-store.json',{closed:[{netUSD:1}]});
+ assert.deepEqual(resetTestnetHistory(dir,{now:now+86400000}),reset);
+ assert.deepEqual(get('scalp-store.json').closed,[{netUSD:1}]);
+});
+
+test('a failed journal removal resumes with the original trade count and risk totals',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'testnet-reset-'));
+ t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const journal=path.join(dir,SCALP_JOURNAL_FILE);
+ fs.mkdirSync(journal);
+ atomicWriteStore(path.join(dir,'scalp-store.json'),{closed:[{netUSD:-4,closedAt:now-1000}]});
+ assert.throws(()=>resetTestnetHistory(dir,{now}));
+ fs.rmdirSync(journal);
+ const reset=resetTestnetHistory(dir,{now:now+1000});
+ assert.equal(reset.at,now);
+ assert.equal(reset.removed.scalp,1);
+ assert.equal(reset.risk.scalp.netUSD,-4);
+ assert.equal(reset.completed,true);
+});

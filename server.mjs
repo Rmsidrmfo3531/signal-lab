@@ -55,6 +55,7 @@ import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
 import {liveOverview,checkLiveLevels,testnetStats} from './live_overview.mjs';
 import {TestnetBudget,TESTNET_BALANCE_REFRESH_MS,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch} from './testnet_budget.mjs';
+import {resetTestnetHistory,withTestnetResetRisk} from './testnet_history_reset.mjs';
 import {createVenuePositionsReader} from './venue_positions.mjs';
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
@@ -163,6 +164,11 @@ const lanPassword=lanMode?(process.env.MOBILE_ACCESS_PASSWORD||randomBytes(6).to
 // foreign Host name (DNS rebinding) and for cross-site browser origins.
 const allowedHosts=allowedHostNames();
 const dataPath=storage.storePath;
+const LIVE=liveConfig(process.env);
+LIVE.testnetSignalEntries=/^(on|true|1|yes)$/i.test(String(process.env.TESTNET_SIGNAL_ENTRIES||'').trim());
+const TESTNET_SCALP_ONLY=LIVE.mode==='TESTNET'&&!LIVE.testnetSignalEntries;
+const SCALP_EXEC=scalpExecConfig(process.env);
+const testnetHistoryReset=resetTestnetHistory(storage.dir,{apply:SCALP_EXEC.mode==='TESTNET'&&(TESTNET_SCALP_ONLY||LIVE.mode==='OFF')});
 let persisted={watchlist:['BTCUSDT','ETHUSDT','SOLUSDT'],seen:{},alerts:[],newsSeen:{},journal:[],tradfiSeen:{}};
 const historical=readStore(dataPath);
 if(historical)persisted={...persisted,...historical};
@@ -253,9 +259,6 @@ function paperTelegram(event,{test=false}={}){
 // Binance remains the chart/analysis source and is shown only as a reference price.
 const venueQuotes=new VenueQuoteService();
 // ---- Live / testnet orders (OFF unless LIVE_TRADING_MODE is set; armed per start) -----
-const LIVE=liveConfig(process.env);
-LIVE.testnetSignalEntries=/^(on|true|1|yes)$/i.test(String(process.env.TESTNET_SIGNAL_ENTRIES||'').trim());
-const TESTNET_SCALP_ONLY=LIVE.mode==='TESTNET'&&!LIVE.testnetSignalEntries;
 function liveClients(){
  if(LIVE.mode==='OFF')return {};
  const mode=LIVE.mode==='LIVE'?'LIVE':'TESTNET',clients={};
@@ -266,8 +269,6 @@ function liveClients(){
  return clients;
 }
 let copyTrader=null,scalpExec=null;
-// 되돌림 단타 settings (read here: the shared testnet budget below needs them before both executors exist).
-const SCALP_EXEC=scalpExecConfig(process.env);
 const signalClients=liveClients();
 const hasTestnetBingx=LIVE.mode==='TESTNET'&&Boolean(signalClients.BINGX)||LIVE.mode!=='LIVE'&&SCALP_EXEC.mode==='TESTNET'&&Boolean(process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET);
 const testnetCapitalCaps=[LIVE.mode==='TESTNET'?LIVE.balanceCapUSD:0,SCALP_EXEC.mode==='TESTNET'?(SCALP_EXEC.balanceCapUSD||LIVE.balanceCapUSD):0].filter(x=>x>0);
@@ -429,8 +430,8 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:scalpNotice,
  // The shared testnet budget (never with a LIVE signal strategy: then the scalp keeps its own 3 % rules).
  budget:LIVE.mode==='LIVE'?null:testnetBudget});
-if(LIVE.mode==='TESTNET')testnetBudget.register('signal',live.budgetSource());
-if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',scalpExec.budgetSource());
+if(LIVE.mode==='TESTNET')testnetBudget.register('signal',withTestnetResetRisk(live.budgetSource(),testnetHistoryReset,'signal'));
+if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',withTestnetResetRisk(scalpExec.budgetSource(),testnetHistoryReset,'scalp'));
 if(hasTestnetBingx)setInterval(()=>{void testnetAccountFunds().catch(()=>{})},TESTNET_BALANCE_REFRESH_MS).unref?.();
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
 function scalpNotice(e){
@@ -821,7 +822,7 @@ async function exchangeReport(){
  const testnetClient=scalpClient||(LIVE.mode==='TESTNET'?live.clients.BINGX:null);
  const out={};
  if(COPY.mode==='LIVE'&&copyClient)out.live=await exchangePnl(copyClient,{since:EXCHANGE_PNL_SINCE.live});
- if(testnetClient)out.testnet=await exchangePnl(testnetClient,{since:EXCHANGE_PNL_SINCE.testnet});
+ if(testnetClient)out.testnet=await exchangePnl(testnetClient,{since:testnetHistoryReset?.at??EXCHANGE_PNL_SINCE.testnet});
  return Object.keys(out).length?out:null;
 }
 async function uploadReport(force=false){
@@ -839,6 +840,7 @@ async function uploadReport(force=false){
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange});
   report.release=appVersion.displayVersion;
+  if(testnetHistoryReset)report.testnetHistoryReset={at:testnetHistoryReset.at,removed:testnetHistoryReset.removed};
   if(manualLedger)report.manualAlerts={...manualLedger.alertStatus(),telegram:{...manualLedger.telegramStatus(),
     enabled:true,configured:Boolean(CONFIG.tgToken&&(CONFIG.tgScannerChat||CONFIG.tgChat.trim())),
     destination:CONFIG.tgScannerChat?'SCANNER_CHANNEL':'CONFIGURED_CHAT'}};
