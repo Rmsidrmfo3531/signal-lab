@@ -1,6 +1,6 @@
 import http from 'node:http';
 import {exec,execFile} from 'node:child_process';
-import {gitUpdateAvailable,gitCheck,gitApply,checkTree} from './git_update.mjs';
+import {gitUpdateAvailable,gitCheck,gitApply,checkTree,displayVersionOf} from './git_update.mjs';
 import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
@@ -61,7 +61,7 @@ import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recor
 
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const appPackage=JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8'));
-const appVersion={version:appPackage.version,displayVersion:appPackage.displayVersion||'v'+appPackage.version};
+const appVersion={version:appPackage.version,displayVersion:displayVersionOf(appPackage)};
 const storage=prepareData(__dirname);
 const releaseDataLock=acquireDataLock(storage.dir);
 // Heartbeat so a second PC sharing this data folder (OneDrive etc.) sees the server is running.
@@ -606,7 +606,10 @@ async function runGitUpdate(source='button'){
   // Every file parses, every import resolves, and server.mjs links with all its named imports
   // (link_check.mjs loads the modules without running them).
   const linkCheck=root=>new Promise((ok,fail)=>execFile(process.execPath,['--no-warnings','--experimental-vm-modules',path.join(root,'link_check.mjs'),path.join(root,'server.mjs')],{timeout:60000},(e,out,err)=>e?fail(Error(String(err||e.message).trim().split('\n').pop())):ok()));
-  const result=await gitApply(__dirname,{onStep:s=>s==='fetched'?step(12,'새 버전 받는 중'):step(25,'새 버전 적용 · 파일 검사 시작'),
+  const result=await gitApply(__dirname,{onStep:(s,check)=>{
+   if(s==='fetched'){updateJob={...updateJob,toDisplayVersion:check.latestDisplayVersion};step(12,'새 버전 받는 중')}
+   else step(25,'새 버전 적용 · 파일 검사 시작');
+  },
    checkSyntax:async root=>{await checkTree(root,{nodeCheck,onFile:(i,n)=>step(25+55*i/n,`파일 검사 ${i}/${n}`)});step(82,'모듈 연결 검사');await linkCheck(root);step(86,'검사 통과')}});
   if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,at:Date.now()};live.updating=false;if(wasArmed)live.arm();if(source==='auto'&&result.state!=='current')updateNotice(`⚠️ 자동 업데이트 중단: ${result.message||result.state}`);return {status:result.ok?200:409,body:result}}
   // User 2026-11-16 "업데이트 후 항상 전부 켜기": after an update everything is switched on, whatever it
@@ -615,7 +618,7 @@ async function runGitUpdate(source='button'){
   const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET',copyArmed:COPY.enabled===true,scalpArmed:!!scalpExec};
    if(st.signalArmed||st.copyArmed||st.scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to,source}))}catch{}};
   console.log('[UPDATE]',source,result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
-  if(source==='auto')updateNotice(`🔄 자동 업데이트 적용 ${result.from} → ${result.to}\n${(result.changes||[]).slice(0,8).map(c=>'· '+c.subject).join('\n')}\n잠시 뒤 서버가 재시작되고 카피·신호 전략·단타가 자동으로 다시 켜집니다.`);
+  if(source==='auto')updateNotice(`🔄 자동 업데이트 적용 ${result.fromDisplayVersion||appVersion.displayVersion} → ${result.toDisplayVersion||'새 버전'}\n${(result.changes||[]).slice(0,8).map(c=>'· '+c.subject).join('\n')}\n잠시 뒤 서버가 재시작되고 카피·신호 전략·단타가 자동으로 다시 켜집니다.`);
   (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
    // Paused only once idle; if never idle in 10 minutes the restart waits for the next try.
    if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;updateJob={...updateJob,active:false};pendingRestart={writeMarker,from:result.from,to:result.to};if(wasArmed)live.arm();try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
@@ -1563,9 +1566,9 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/tradfi/refresh'&&req.method==='POST')return response(res,409,{accepted:false,...tradfiPublic()});
   if(pathname==='/api/scan'&&req.method==='POST'){if(state.scanActive)return response(res,202,{accepted:false,reason:'스캔 진행 중',status:getStatus()});void runScan();return response(res,202,{accepted:true,message:'백그라운드 스캔 시작',status:getStatus()})}
   // Cloud server (git checkout under systemd): check / apply from GitHub with one tap.
-  if(pathname==='/api/update/git'&&req.method==='GET'){if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});try{return response(res,200,await gitCheck(__dirname))}catch(e){return response(res,502,{error:e.message})}}
+  if(pathname==='/api/update/git'&&req.method==='GET'){if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});try{return response(res,200,{...await gitCheck(__dirname),bootId:SERVER_BOOT_ID})}catch(e){return response(res,502,{error:e.message})}}
   // Progress of a one-tap update (for the progress bar): phase and percent, polled by the screen.
-  if(pathname==='/api/update/git/progress'&&req.method==='GET')return response(res,200,updateJob);
+  if(pathname==='/api/update/git/progress'&&req.method==='GET')return response(res,200,{...updateJob,...appVersion,bootId:SERVER_BOOT_ID});
   if(pathname==='/api/update/git'&&req.method==='POST'){
    if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});
    const body=await bodyJson(req).catch(()=>({}));if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
