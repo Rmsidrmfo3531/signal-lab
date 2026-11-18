@@ -14,16 +14,23 @@ function toast(message,error=false){const node=document.createElement('div');nod
 async function json(url,options){const res=await fetch(url,{cache:'no-store',...options});const data=await res.json().catch(()=>({}));if(!res.ok)throw Error(data.error||`HTTP ${res.status}`);return data}
 function banner(title,detail){$('errorTitle').textContent=title;$('errorDetail').textContent=detail;$('connectBanner').classList.remove('hidden')}
 function clearBanner(){$('connectBanner').classList.add('hidden')}
-// Update state goes to the topbar update button's tooltip (the old status line was in the removed page header).
+function setAppVersion(info){
+ const version=info?.displayVersion||(info?.version?'v'+info.version:'');
+ const label=$('appVersion');
+ if(!label||!version)return;
+ label.textContent=version;label.hidden=false;
+}
+// Update state goes to the topbar update button's tooltip.
 function updateStatusText(info){
  const el=$('updateButton');if(!el||gitUpdate)return;
- const current='5.8.0';
+ const current=$('appVersion')?.textContent;
  const state=info?.state||'unconfigured';
  const labels={unconfigured:'자동 업데이트 비활성 — 배포 서버 URL 미설정',checking:'새 버전 확인 중',current:'최신 버전 사용 중',staged:'새 버전 준비됨 — 서버를 재시작하면 설치',error:'업데이트 확인 오류'};
- el.title='v'+current+' · '+(labels[state]||info?.message||'상태 확인 중')+(state==='staged'&&info?.version?' · 대상 '+info.version:'')+(state==='error'&&info?.message?' · '+info.message:'');
+ el.title=(current?current+' · ':'')+(labels[state]||info?.message||'상태 확인 중')+(state==='staged'&&info?.version?' · 대상 '+info.version:'')+(state==='error'&&info?.message?' · '+info.message:'');
 }
 function setStatus(s){app.status=s;
- if(s.update)updateStatusText({...s.update,version:'5.8.0'});
+ setAppVersion(s);
+ if(s.update)updateStatusText(s.update);
  const tickerFresh=s.ws==='connected'&&s.lastTickerAt&&Date.now()-s.lastTickerAt<90000;
  const alive=Boolean(tickerFresh&&Date.now()-s.lastTickerAt<30000);
  $('socketStatus').innerHTML=`<i class="dot ${alive?'green':s.rest==='connected'?'amber':'red'}"></i><span>${alive?'실시간 연결':s.rest==='connected'?'주기 조회':'연결 대기'}</span>`;
@@ -162,7 +169,7 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('news',e=>{try{applyNews(JSON.parse(e.data))}catch{}});
  es.addEventListener('live-notice',e=>{try{liveNotice(JSON.parse(e.data))}catch{}});
  es.addEventListener('journal',()=>loadJournal());
- es.addEventListener('update',e=>{try{updateStatusText({...JSON.parse(e.data),version:'5.8.0'})}catch{}});
+ es.addEventListener('update',e=>{try{updateStatusText(JSON.parse(e.data))}catch{}});
  es.onerror=()=>{if(es.readyState===EventSource.CLOSED)banner('서버 연결 종료','Node.js 서버를 다시 실행하세요.');$('socketStatus').innerHTML='<i class="dot red"></i><span>서버 재접속</span>'};
 }
 async function loadAll(){
@@ -180,7 +187,7 @@ $('notificationButton').addEventListener('click',async()=>{
  const r=await Notification.requestPermission();$('notificationButton').textContent=r==='granted'?'✓ 브라우저 알림 ON':'♧ 알림 권한 확인';toast(r==='granted'?'브라우저를 열어 둔 상태에서 실매매·카피 알림을 받습니다.':'알림 권한이 허용되지 않았습니다.',r!=='granted');if(r==='granted')ping();
 });
 // Cloud server: one tap fetches the GitHub version, lists the changes, applies and restarts.
-fetch('/api/update',{cache:'no-store'}).then(r=>r.json()).then(u=>{gitUpdate=u.git===true;if(gitUpdate){$('updateButton').textContent='↻ 업데이트';$('updateButton').title='GitHub 최신 버전을 확인하고 적용합니다'}}).catch(()=>{});
+fetch('/api/update',{cache:'no-store'}).then(r=>r.json()).then(u=>{setAppVersion(u);gitUpdate=u.git===true;if(gitUpdate){$('updateButton').textContent='↻ 업데이트';$('updateButton').title='GitHub 최신 버전을 확인하고 적용합니다'}}).catch(()=>{});
 // Update progress: a centred popup with a 0.1 % progress bar fed by the server's own steps
 // (/api/update/git/progress); while the server restarts the bar keeps moving until it is back.
 function updateModal(){
@@ -252,7 +259,7 @@ async function runGitUpdate(b){
 }
 $('updateButton').addEventListener('click',async()=>{const b=$('updateButton');b.disabled=true;
  if(gitUpdate){try{await runGitUpdate(b)}catch(e){setUpdate({title:'업데이트 실패',label:e.message,pct:0,note:'',error:true})}finally{b.disabled=false}return}
- try{const x=await json('/api/update/check',{method:'POST'});updateStatusText({...x,version:'5.8.0'});toast(x.message||'업데이트 확인 완료',x.state==='error')}catch(e){toast('업데이트 확인 실패: '+e.message,true)}finally{b.disabled=false}});
+ try{const x=await json('/api/update/check',{method:'POST'});updateStatusText(x);toast(x.message||'업데이트 확인 완료',x.state==='error')}catch(e){toast('업데이트 확인 실패: '+e.message,true)}finally{b.disabled=false}});
 $('dismissError').addEventListener('click',clearBanner);
 $('newsFilter').addEventListener('change',()=>{app.newsPage=1;app.expandedNewsId=null;renderNews()});
 $('newsSearch').addEventListener('input',()=>{app.newsPage=1;app.expandedNewsId=null;renderNews()});

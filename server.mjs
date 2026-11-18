@@ -60,6 +60,8 @@ import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,mark
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
 
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
+const appPackage=JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8'));
+const appVersion={version:appPackage.version,displayVersion:appPackage.displayVersion||'v'+appPackage.version};
 const storage=prepareData(__dirname);
 const releaseDataLock=acquireDataLock(storage.dir);
 // Heartbeat so a second PC sharing this data folder (OneDrive etc.) sees the server is running.
@@ -716,7 +718,7 @@ async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
  updateCheckPromise=(async()=>{
   if(!CONFIG.updateManifestURL){state.update={state:'unconfigured',lastCheck:Date.now(),message:'배포 서버 URL 미설정 — 자동 업데이트 비활성'};return state.update}
-  const currentVersion=JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version;
+  const currentVersion=appVersion.version;
   state.update={...state.update,state:'checking',lastCheck:Date.now()};send('update',state.update);
   try{
    const result=await stageUpdate({root:__dirname,manifestURL:CONFIG.updateManifestURL,currentVersion});
@@ -1247,7 +1249,7 @@ setInterval(()=>{
  }
 },30000);
 function getScanFunnel(){return describeScanFunnel(state.analyses,{activeSymbols:state.activeSymbols,researchSymbols:state.researchSymbols,assess:row=>assessAnalysis(row)});}
-function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},version:'5.8.0',publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',sharedData:{dir:storage.dir,separateEnv:path.dirname(storage.envPath)!==storage.dir,pcs:sharedCheck.hosts.map(h=>({host:h.host,lastAt:h.lastAt,current:h.current})),conflicts:sharedCheck.conflicts,sharedEnvLeft:Boolean(storage.sharedEnvLeft)},venueOnly:{enabled:CONFIG.venueOnly.enabled,...state.venueOnlyInfo,referenceRatio:CONFIG.venueOnly.referenceRatio,references:CONFIG.venueOnly.references,symbols:[...state.venueOnlySet].slice(0,40)},live:{mode:LIVE.mode,armed:live.armed,killSwitch:live.store.killSwitch},paperTrading:CONFIG.paperTrading,paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
+function getStatus(){return {scorePolicy:getSignalScorePolicy(),storage:{...storageHealth},...appVersion,publicReadBudget:publicReadBudget.snapshot(),integrationVersion:'ISSUE6',sharedData:{dir:storage.dir,separateEnv:path.dirname(storage.envPath)!==storage.dir,pcs:sharedCheck.hosts.map(h=>({host:h.host,lastAt:h.lastAt,current:h.current})),conflicts:sharedCheck.conflicts,sharedEnvLeft:Boolean(storage.sharedEnvLeft)},venueOnly:{enabled:CONFIG.venueOnly.enabled,...state.venueOnlyInfo,referenceRatio:CONFIG.venueOnly.referenceRatio,references:CONFIG.venueOnly.references,symbols:[...state.venueOnlySet].slice(0,40)},live:{mode:LIVE.mode,armed:live.armed,killSwitch:live.store.killSwitch},paperTrading:CONFIG.paperTrading,paperVenues:CONFIG.paperVenues,venueRefreshAt:state.venueRefreshAt||0,venueError:state.venueError||'',chartReference:'BINANCE',analysisVenue:'BINANCE',actualOrdersEnabled:false,scanCoverage:{mode:'WATCHLIST_HOT_AND_ROTATING_BATCH',totalContracts:state.activeSymbols.length,hotBatch:CONFIG.hotBatch,rotatingBatch:CONFIG.rotatingBatch,intervalMs:CONFIG.scanMs,fourHourHistory:301,liveEventTimeframes:['1h','4h']},scanMode:state.scanMode,scanFunnel:getScanFunnel(),structureCount:recentStructures().length,historicalCount:recentHistory().length,researchCount:state.researchSymbols.length,verifiedAt:state.lastValidatedAt,rest:state.rest,ws:state.ws,binancePerps:state.binancePerps,error:state.error,activeCount:state.activeSymbols.length,scannedTotal:state.analyses.size,
  cycleScanned:state.cycleScanned,cycle:state.cycle,scannedSinceBoot:state.scannedSinceBoot,lastScan:state.lastScan,lastScanAttempt:state.lastScanAttempt,scanStartedAt:state.scanStartedAt,scanFailedAt:state.scanFailedAt,marketError:state.marketError,marketRetryCount:state.marketRetryCount,lastMarket:state.lastMarket,lastTickerAt:state.lastTickerAt,lastTickerCount:state.lastTickerCount,scanSuccess:state.scanSuccess,scanFailed:state.scanFailed,lastScanFailures:state.lastScanFailures,lastScanSuccessAt:state.lastScanSuccessAt,
  intervalMs:CONFIG.scanMs,minimumVolume:CONFIG.quoteVolume,telegramConfigured:Boolean(CONFIG.tgToken&&CONFIG.tgChat),watchlist:persisted.watchlist,scanning:state.scanActive,executionRefreshAt:state.executionRefreshAt,lastMarketListings:state.lastMarketListings,blockedSignals:state.blockedSignals,lastBlockReason:state.lastBlockReason,executionLimits:{maxQuoteAgeSeconds:15,maxFeedAgeSeconds:90,maxSpreadBps:20,maxRiskUSD:CONFIG.maxRiskUSD,minNetRR:1.8,analysisOnly:true},
  strictRejected:[...state.analyses.values()].filter(x=>x.pattern&&!x.technicalQualified).length,strictTechPassed:[...state.analyses.values()].filter(x=>x.pattern&&x.technicalQualified===true).length,
@@ -1567,7 +1569,7 @@ const server=http.createServer(async(req,res)=>{
    const body=await bodyJson(req).catch(()=>({}));if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
    const r=await runGitUpdate('button');return response(res,r.status,r.body);
   }
-  if(pathname==='/api/update')return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,bootId:SERVER_BOOT_ID,configured:Boolean(CONFIG.updateManifestURL),version:JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8')).version,pending:pendingInfo(__dirname)?.version||null});
+  if(pathname==='/api/update')return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,bootId:SERVER_BOOT_ID,configured:Boolean(CONFIG.updateManifestURL),...appVersion,pending:pendingInfo(__dirname)?.version||null});
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
   if(pathname==='/api/market-commentary'){
    try{await refreshMarketStats()}catch{}
