@@ -24,7 +24,7 @@ const ENTRY=Number(crash().at(-1)[4]),PX=+(ENTRY+.02).toFixed(2),ENTRY_S=Number(
 const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
 
 // One-way BingX fake: amt is the signed position (+ long, - short), as positionAmt.
-function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX}={}){
+function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fillAdd=true,loseAddReply=false}={}){
  const calls=[],orders=new Map();let amt=0,avg=0,mark=0,id=1;
  const reduce=q=>{amt=amt>0?+Math.max(0,amt-q).toFixed(8):+Math.min(0,amt+q).toFixed(8)};
  const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
@@ -35,8 +35,16 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX}={
   openOrders:async()=>({orders:[...orders.values()].filter(o=>o.status==='NEW')}),
   getOrder:async(s,{orderId,clientOrderId})=>({order:[...orders.values()].find(o=>orderId?o.orderId===orderId:o.clientOrderId===clientOrderId)??null}),
   cancelOrder:async(s,oid)=>{calls.push({op:'cancel',oid});const o=orders.get(oid);if(o&&o.status==='NEW')o.status='CANCELED';return {}},
-  placeOrder:async p=>{calls.push({op:'order',...p});
+  placeOrder:async(p,{beforeSend}={})=>{const reason=beforeSend?.();if(reason)throw Object.assign(Error(reason),{code:'ENTRY_NOT_SENT',reason});calls.push({op:'order',...p});
    if(failStop&&p.type==='STOP_MARKET')throw Object.assign(Error('no'),{code:'VENUE_ERROR_1'});
+   if(p.type==='LIMIT'&&p.timeInForce==='FOK'){
+    if(!fillAdd)return {order:add(p,{status:'CANCELED',executedQty:'0'})};
+    const q=Number(p.quantity),price=Number(p.price);
+    avg=(avg*Math.abs(amt)+price*q)/(Math.abs(amt)+q);amt=+(amt+(p.side==='SELL'?-q:q)).toFixed(8);
+    const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(price)});
+    if(loseAddReply)throw Object.assign(Error('response lost'),{code:'NETWORK_UNREACHABLE'});
+    return {order:o};
+   }
    if(p.type==='MARKET'){const q=Number(p.quantity);
     if(p.reduceOnly){reduce(q);return {order:add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark||avg)})}}
     avg=mark||fillAt;amt=+(amt+(p.side==='SELL'?-q:q)).toFixed(8);const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(avg)});
@@ -47,9 +55,9 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX}={
   fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(Math.abs(amt));o.avgPrice=String(price??o.stopPrice);reduce(Number(o.executedQty))}};
 }
 function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash,budget=null,zone=null}={}){
- return new ScalpExecutor({config:{...scalpExecConfig({}),...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
+ return new ScalpExecutor({config:{...scalpExecConfig({}),scaleIn:false,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
   candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
-  balance:async()=>funds,gate,isBusy,directory:dir,now:()=>clock.t,budget,...(zone?{zoneCandles:zone}:{})});
+  balance:async()=>typeof funds==='function'?funds():funds,gate,isBusy,directory:dir,now:()=>clock.t,budget,...(zone?{zoneCandles:zone}:{})});
 }
 const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
@@ -78,7 +86,7 @@ test('universe: BingX USDT perpetuals by quote volume, stock/fx NC* and untradab
 });
 
 test('detection on synthetic closed 5m candles -> plan: 38.2/50/61.8 % targets, stop below the low, risk-sized, 40/35/25 splits',()=>{
- const cfg=scalpExecConfig({}),rows=crash();
+ const cfg=scalpExecConfig({SCALP_SCALE_IN:'off'}),rows=crash();
  const det=detectScalpReversal(rows,{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
  assert.equal(det.ok,true,JSON.stringify(det.reasons));assert.equal(det.direction,'LONG');assert.ok(det.evidence.movePct>=5);
  assert.equal(det.barAt,BUCKET*I,'entry at the next candle open');
@@ -102,6 +110,66 @@ test('splits below the venue minimum merge into the earlier target; below the mi
  assert.deepEqual(scalpSplits(1,'0.01',.5),{parts:[1,0,0],targets:1,merged:true});
  assert.equal(scalpSplits(.2,'0.01',.5),null);
  assert.deepEqual(scalpSplits(7,'1',1),{parts:[2,2,3],targets:3,merged:false});
+});
+
+async function scaleExample({side='LONG',fillAdd=true,loseAddReply=false,lowFunds=false,noStop=false,disarm=false,delayRecovery=false}={}){
+ const direction=side==='LONG'?1:-1,entry=direction>0?PX:PX_S,signal=direction>0?crash:rise;
+ const clock={t:T0},v=venue({fillAt:entry,fillAdd,loseAddReply}),dir=delayRecovery?tmp():null;
+ let price=entry,extra=[],reads=0;
+ const inputs={clock,price:()=>price,trend:direction>0?up4h:down4h,rows:()=>[...signal(),...extra],dir,
+  funds:()=>{reads++;return {equity:10000,available:lowFunds&&reads>1?1:9000}},config:{scaleIn:true}};
+ const ex=make(v,inputs);ex.arm();assert.equal((await ex.scan()).entered,1);
+ const p=ex.store.open[0],original=p.filled,stop=p.stop;
+ const distance=direction*(p.avg-stop),level=f=>stop+direction*distance*f;
+ const open=level(.53),close=level(.62),adverse=level(.45);
+ const ref=(BUCKET+1)*I;
+ extra=[[ref,open,Math.max(open,close,adverse),Math.min(open,close,adverse),close,100,ref+I-1]];
+ price=level(.64);clock.t=ref+I+5000;v.mark=price;
+ if(noStop){const place=v.client.placeOrder;v.client.placeOrder=(o,g)=>o.type==='STOP_MARKET'?Promise.reject(Error('refused')):place(o,g)}
+ if(disarm)ex.disarm();
+ let lookup=v.client.getOrder;
+ if(delayRecovery)v.client.getOrder=(s,q)=>q.clientOrderId?Promise.resolve(null):lookup(s,q);
+ await ex.reconcile();
+ if(delayRecovery){
+  assert.equal(p.scaleIn.state,'PENDING');
+  v.client.getOrder=lookup;
+  const restarted=make(v,inputs);
+  await restarted.reconcile();
+  const recovered=restarted.store.open[0];
+  assert.equal(recovered.scaleIn.state,'FILLED');
+  assert.ok(recovered.filled>original);
+ }
+ return {v,ex,p,clock,original,stop,reads};
+}
+
+test('scale-in uses equal entry margin after a closed retest on either side, resizes targets and never adds twice',async()=>{
+ for(const side of ['LONG','SHORT']){
+  const {v,ex,p,clock,original,stop,reads}=await scaleExample({side,loseAddReply:side==='SHORT'});
+  assert.ok(reads>=2,'fresh account balance read for the add');
+  assert.equal(p.scaleIn.state,'FILLED');
+  assert.equal(p.stop,stop);
+  assert.ok(p.filled>original&&p.scaleIn.riskAfterUSD<=50);
+  assert.ok(Math.abs(p.scaleIn.initialMarginUSD-p.scaleIn.fillMarginUSD)<=p.scaleIn.fillPrice*Number(p.quantityStep)/p.leverage+1e-9);
+  assert.equal(placed(v,'LIMIT')[0].timeInForce,'FOK');
+  const stops=placed(v,'STOP_MARKET');assert.equal(stops.length,1);
+  assert.equal(stops[0].closePosition,'true');
+  const targets=[...v.orders.values()].filter(o=>o.type==='TAKE_PROFIT_MARKET'&&o.status==='NEW');
+  assert.equal(targets.length,3);
+  assert.ok(Math.abs(targets.reduce((n,o)=>n+Number(o.quantity),0)-p.filled)<1e-8);
+  assert.ok(targets.every(o=>o.clientOrderId.startsWith(p.id+'u')));
+  clock.t+=I;await ex.reconcile();assert.equal(placed(v,'LIMIT').length,1);
+ }
+});
+
+test('scale-in skips on low free funds or missing whole stop, does not retry a canceled add, and recovers across restarts',async()=>{
+ for(const options of [{lowFunds:true},{noStop:true},{disarm:true},{fillAdd:false}]){
+  const {v,p,original}=await scaleExample(options);
+  assert.equal(p.filled,original);
+  assert.equal(placed(v,'LIMIT').length,options.fillAdd===false?1:0);
+  if(options.noStop)assert.ok([...v.orders.values()].some(o=>o.type==='STOP_MARKET'&&o.status==='NEW'));
+ }
+ const {v}=await scaleExample({loseAddReply:true,delayRecovery:true});
+ assert.equal(placed(v,'LIMIT').length,1);
 });
 
 test('scan after the 5m close: market entry with the stop attached, stop confirmed, reduce-only targets, once per candle',async()=>{
@@ -210,7 +278,7 @@ test('sides: SCALP_EXEC_SIDES (default both), one-way position sign',()=>{
 });
 
 test('SHORT detection -> plan: stop above the high (rounded up), 38.2/50/61.8 % targets below the entry, same risk',()=>{
- const cfg=scalpExecConfig({}),det=detectScalpReversal(rise(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ const cfg=scalpExecConfig({SCALP_SCALE_IN:'off'}),det=detectScalpReversal(rise(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
  assert.equal(det.ok,true,JSON.stringify(det.reasons));assert.equal(det.direction,'SHORT');
  const {extreme,origin}=det.evidence,move=extreme-origin;
  assert.ok([.382,.5,.618].every((f,i)=>Math.abs(det.targets[i]-(extreme-f*move))<1e-9));

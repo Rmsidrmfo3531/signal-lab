@@ -66,6 +66,11 @@ export function journalLine(x){
  const dir=x.direction==='SHORT'?-1:1,avg=Number(x.avg),plan=Number(x.checkedPrice??x.entry),signal=Number(x.plannedEntry);
  const riskUnit=dir*(avg-Number(x.initialStop)),riskActual=riskUnit>0?riskUnit*Number(x.filled||x.qty):null;
  const realized=x.realized??null,net=realized?.netUSD??x.netUSD??null;
+ const a=x.scaleIn,scaleIn=a?{version:a.version,state:a.state,reason:a.reason??null,riskPct:a.riskPct,budgetUSD:r4(a.budgetUSD),
+  touchedAt:a.touchedAt??null,recoveredAt:a.recoveredAt??null,attemptedAt:a.attemptedAt??null,requestedQty:a.requestedQty??null,
+  initialEntry:a.initialEntry??null,initialQty:a.initialQty??null,limit:a.limit??null,fillQty:a.fillQty??null,fillPrice:a.fillPrice??null,
+  filledAt:a.filledAt??null,budgetAtAddUSD:r4(a.budgetAtAddUSD),riskAfterUSD:r4(a.riskAfterUSD),
+  initialRiskUSD:r4(a.initialRiskUSD),initialMarginUSD:r4(a.initialMarginUSD),plannedMarginUSD:r4(a.plannedMarginUSD),fillMarginUSD:r4(a.fillMarginUSD)}:null;
  const bps=(a,b)=>a>0&&b>0?r2(dir*(a-b)/b*1e4):null; // + = worse for us (paid more on a LONG, got less on a SHORT)
  // kind: MOVE_REVERSAL (5 % move) or ZONE_REVERSAL (매물대 반전, 2.5 % at a 4H / 1D zone; zone = the touched zone).
  return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,
@@ -81,7 +86,7 @@ export function journalLine(x){
   excursion:{mfePct:x.mfePct??null,mfeR:x.mfeR??null,mfeAt:x.mfeAt??null,maePct:x.maePct??null,maeR:x.maeR??null,maeAt:x.maeAt??null},
   pnl:{estimate:x.estimate??null,realized,netUSD:net,netSource:realized?'EXCHANGE':'ESTIMATE',feeUSD:realized?.feeUSD??x.estimate?.feeUSD??null,
    riskUSDActual:r4(riskActual),r:riskActual>0&&Number.isFinite(Number(net))?r4(Number(net)/riskActual):null},
-  backfilled:x.journalBackfill===true||undefined,writtenAt:x.journalAt??null};
+  ...(scaleIn?{scaleIn}:{}),backfilled:x.journalBackfill===true||undefined,writtenAt:x.journalAt??null};
 }
 
 // ---- Summary for the reports push (latest.json `scalp`) --------------------------------------
@@ -99,10 +104,14 @@ const by=(list,key)=>{const m={};for(const x of list){const k=key(x);if(k==null)
 /** Stats by side, exit reason, move-size bucket, hour of day (KST, entry) and universe rank bucket. */
 export function summarizeJournal(lines,{now=Date.now()}={}){
  const list=(lines||[]).filter(x=>x&&x.exit);
+ const experiment=list.filter(x=>x.scaleIn?.version===1),filled=experiment.filter(x=>x.scaleIn.fillQty>0);
  const move=x=>{const m=Number(x.evidence?.movePct);const b=MOVE_BUCKETS.find(([a,c])=>m>=a&&m<c);return b?bucketLabel(b,'%'):null};
  const rank=x=>{const k=Number(x.universe?.rank);const b=RANK_BUCKETS.find(([a,c])=>k>=a&&k<=c);return b?bucketLabel(b,'위'):null};
  const hour=x=>{const t=x.entry?.at??x.barAt;return t?String(kst(t).getUTCHours()).padStart(2,'0'):null};
  return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
+  scaleIn:{all:groupStats(experiment),filled:groupStats(filled),withoutFill:groupStats(experiment.filter(x=>!(x.scaleIn.fillQty>0))),
+   touched:experiment.filter(x=>x.scaleIn.touchedAt!=null).length,recovered:experiment.filter(x=>x.scaleIn.recoveredAt!=null).length,
+   attempted:experiment.filter(x=>x.scaleIn.attemptedAt!=null).length,byDecision:by(experiment,x=>x.scaleIn.reason??x.scaleIn.state)},
   byMoveBucket:by(list,move),byHourKst:by(list,hour),byUniverseRank:by(list,rank),byTrend4h:by(list,x=>x.trend4h??'unknown'),byWithTrend:by(list,x=>x.trend4h==='range'?'range':x.withTrend==null?'unknown':x.withTrend?'with':'against'),
   last:list.slice(-5).map(x=>({symbol:x.symbol,kind:x.kind||'MOVE_REVERSAL',direction:x.direction,exitAt:x.exit?.at,reason:x.exit?.reason,r:x.pnl?.r,netUSD:x.pnl?.netUSD}))};
 }
