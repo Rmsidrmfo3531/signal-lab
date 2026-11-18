@@ -33,7 +33,7 @@ globalThis.fetch=async(input,options={})=>{
  }
  if(url.hostname==='api.telegram.org'&&/\/sendMessage$/.test(url.pathname)&&(options.method||'').toUpperCase()==='POST'){
   let payload={};try{payload=JSON.parse(String(options.body))}catch{}
-  if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:'/sendMessage',text:payload.text,chatId:payload.chat_id})+'\n');
+  if(process.env.SIGNAL_LAB_TEST_REQUESTS)fs.appendFileSync(process.env.SIGNAL_LAB_TEST_REQUESTS,JSON.stringify({host:url.hostname,path:'/sendMessage',text:payload.text,chatId:payload.chat_id,entities:payload.entities})+'\n');
   return json({ok:true,result:{message_id:1,chat:{id:payload.chat_id,type:'channel'}}});
  }
  // BingX TESTNET (VST) host, only when a test asks for it (control().fakeBingxTestnet): an in-memory

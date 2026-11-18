@@ -13,7 +13,7 @@ import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
 import {scalpReportFiles} from './scalp_journal.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
-import {liveEventText,realTradeText} from './live_telegram.mjs';
+import {liveEventText,realTradeMessage,realTradeText} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -513,13 +513,13 @@ async function sendTradeTelegram(text){
  if(!response?.ok)console.warn('[TRADE TELEGRAM]',error??`HTTP_${response?.status}`);
 }
 async function sendRealTradeTelegram(e){
- const text=realTradeText(e);if(!text)return {error:'INVALID_ALERT'};
+ const message=realTradeMessage(e);if(!message)return {error:'INVALID_ALERT'};
  const destination=await resolveTradeTelegramDestination();reportsDirty=true;
  if(!destination.chatId)return destination;
  const chat_id=destination.chatId;
  const delay=lastRealTradeTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
  lastRealTradeTelegramAt=Date.now();
- const {response:r,error:networkError,transport}=await sendRealTradeRequest({chat_id,text});
+ const {response:r,error:networkError,transport}=await sendRealTradeRequest({chat_id,...message});
  if(!r)return {error:networkError,transport};
  const body=await r.json().catch(()=>null);
  const chat=body?.result?.chat;

@@ -41,7 +41,7 @@ test('server contains a single Telegram delivery path guarded by live final resu
  assert.match(server,/const text=liveEventText\(record,type,detail\);if\(!text\)return;[\s\S]{0,400}?if\(record\?\.mode==='LIVE'&&record\.test!==true\)void sendTradeTelegram\(text\)/);
  assert.match(server,/async function sendTradeTelegram\(text\)\{[\s\S]{0,260}?telegramLive===false[\s\S]{0,200}?sendRealTradeRequest\(\{chat_id,text\}\)/);
  assert.match(server,/onEvent:confirmedRealTradeNotice/);
- assert.match(server,/async function sendRealTradeTelegram\(e\)\{[\s\S]{0,250}?await resolveTradeTelegramDestination\(\);[\s\S]{0,700}?sendRealTradeRequest\(\{chat_id,text\}\)/);
+ assert.match(server,/async function sendRealTradeTelegram\(e\)\{[\s\S]{0,250}?await resolveTradeTelegramDestination\(\);[\s\S]{0,700}?sendRealTradeRequest\(\{chat_id,\.\.\.message\}\)/);
  assert.match(server,/createTelegramNetworkRecovery\(telegramPost\)/);
  assert.match(server,/manualLedger&&\['OPENED','ADDED','REDUCED','CLOSED'\]\.includes\(e\.type\)\)\{[\s\S]{0,100}?manualLedger\.settle\(\);return;/);
  assert.match(server,/sendTelegram:sendRealTradeTelegram/);
