@@ -209,6 +209,35 @@ test('manual alerts survive delayed receipts, restart and missing hedge directio
  fs.rmSync(dir,{recursive:true,force:true});
 });
 
+test('real managed copy fills send all position actions, including a reduction and add between equal-size reads',async()=>{
+ const c=clock(),at=c.now(),events=[],managed=[],fills=[];
+ const m=new ManualLedger({now:c.now,client:{fillOrders:async()=>fills},copyRecords:()=>managed,onEvent:e=>events.push(e)});
+ const owner={id:'copy0',alertOwnerId:'copy0',alertOrigin:'COPY',venueSymbol:'BTC-USDT',symbol:'BTCUSDT',direction:'LONG',status:'OPEN',openedAt:at+5000};
+ const receipts=(id,side,qty,time,realizedPnl=0,fee=-.01)=>fills.push({orderId:id,tradeId:id,symbol:'BTC-USDT',positionSide:'BOTH',side,qty,price:10,time,realizedPnl,fee});
+ m.observe(snap(at,[]));managed.push(owner);
+ receipts('1','BUY',1,at+5000);m.observe(snap(c.add(15000),[row({size:1})],managed));
+ receipts('2','BUY',1,at+20000);m.observe(snap(c.add(15000),[row({size:2})],managed));
+ receipts('3','SELL',1,at+35000,3);receipts('4','BUY',1,at+40000);m.observe(snap(c.add(15000),[row({size:2})],managed));
+ receipts('5','SELL',1,at+50000,-2);m.observe(snap(c.add(15000),[row({size:1})],managed));
+ receipts('6','SELL',1,at+65000,.01);owner.status='CLOSED';owner.closedAt=at+66000;
+ m.observe(snap(c.add(15000),[]));m.observe(snap(c.add(15000),[]));
+ c.add(45000);await m.settle();await m.recoverFastTrades();await m.settle();
+ const labels=events.sort((a,b)=>a.observedAt-b.observedAt).map(e=>manualTradeText(e).split('\n')[0]);
+ assert.deepEqual(labels,['신규 진입','추가 진입','부분 익절','추가 진입','부분 손절','전량 본전'].map(label=>'🔴 실계좌 | 카피 | '+label));
+ assert.equal(m.status().closedTotal,0);assert.deepEqual(m.alertStatus().byOrigin,{COPY:6});
+});
+
+test('a fast owned automatic signal trade between flat snapshots is confirmed once and stays out of the manual ledger',async()=>{
+ const c=clock(),at=c.now(),events=[],fills=[{orderId:'12',tradeId:'1',symbol:'BTC-USDT',positionSide:'BOTH',side:'BUY',qty:1,price:10,time:at+1000,realizedPnl:0,fee:-.01},
+  {orderId:'13',tradeId:'2',symbol:'BTC-USDT',positionSide:'BOTH',side:'SELL',qty:1,price:11,time:at+2000,realizedPnl:1,fee:-.01}];
+ const owner={alertOrigin:'SIGNAL',alertOwnerId:'short-window',symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',status:'CLOSED',entryOrderId:'12',createdAt:at+500,closedAt:at+3000};
+ const m=new ManualLedger({now:c.now,client:{fillOrders:async()=>fills},copyRecords:()=>[owner],onEvent:e=>events.push(e)});
+ m.observe(snap(at,[]));m.observe(snap(c.add(15000),[]));c.add(45000);
+ await m.recoverFastTrades();c.add(45000);await m.recoverFastTrades();
+ assert.deepEqual(events.map(e=>manualTradeText(e).split('\n')[0]),['🔴 실계좌 | 자동 신호 | 신규 진입','🔴 실계좌 | 자동 신호 | 전량 익절']);
+ assert.equal(m.status().closedTotal,0);
+});
+
 test('copy loss limit: computed from the copy ledger only — a large manual loss on the same account changes nothing',async()=>{
  const dir=tmp();let size=0;
  const client={leverage:async()=>({maxLongLeverage:20}),setMarginType:async()=>({}),setLeverage:async()=>({}),cancelOrder:async()=>({}),

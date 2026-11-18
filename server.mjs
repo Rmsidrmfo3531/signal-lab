@@ -13,7 +13,7 @@ import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
 import {scalpReportFiles} from './scalp_journal.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
-import {liveEventText,manualTradeText} from './live_telegram.mjs';
+import {liveEventText,realTradeText} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -294,12 +294,13 @@ const copyClient=COPY.mode!=='LIVE'?live.clients.BINGX:
   ?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'LIVE',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)}):null;
 // Every open position on the real account (user 2026-11-17: manual positions too), read-only: GET positions at
 // most every 3 s (venue_positions.mjs), shown under the copy positions as 카피 / 수동. Real-money copy only.
-const venuePositionsReader=COPY.mode==='LIVE'&&copyClient?.mode==='LIVE'&&typeof copyClient.positions==='function'
- ?createVenuePositionsReader({read:()=>copyClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
+const realBingxClient=copyClient?.mode==='LIVE'?copyClient:LIVE.mode==='LIVE'?live.clients.BINGX:null;
+const venuePositionsReader=realBingxClient?.mode==='LIVE'
+ ?createVenuePositionsReader({read:()=>realBingxClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
 async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;if(!venuePositionsReader)return s;
- const v=await venuePositionsReader.snapshot(s.positions);if(!manualLedger)return {...s,...v};
+ const v=await venuePositionsReader.snapshot(realCopyPositions());if(!manualLedger)return {...s,...v};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
  return {...s,...v,manual:manualLedger.status()}}
 const bingxFunds=(data,{requireAvailable=false,requireEquity=false}={})=>{
@@ -340,9 +341,12 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode===
 // Read-only: never orders, its own file (manual-trades-live.json), never the copy ledger. The copy loss limit, the copy
 // margin limits and every copy decision stay computed from the copy ledger only (copy_executor.mjs); manual trades
 // join only the page totals and the hourly report. Polled every 15 s on its own (shared 3 s cache with the page).
-const manualLedger=venuePositionsReader?new ManualLedger({directory:storage.dir,client:copyClient,
- copyRecords:()=>[...Object.values(copyTrader.store.positions),...copyTrader.store.closed,...(LIVE.mode==='LIVE'?live.store.records.filter(x=>x.venue==='BINGX'):[])],log:(...a)=>console.log(...a),onEvent:manualTradeNotice}):null;
-if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(Object.values(copyTrader.store.positions)));await Promise.all([manualLedger.settle(),manualLedger.recoverFastTrades()])}
+const realCopyPositions=()=>COPY.mode==='LIVE'?Object.values(copyTrader.store.positions):[];
+const manualLedger=venuePositionsReader?new ManualLedger({directory:storage.dir,client:realBingxClient,
+ copyRecords:()=>[...(COPY.mode==='LIVE'?[...realCopyPositions(),...copyTrader.store.closed].map(p=>({...p,alertOrigin:'COPY',alertOwnerId:p.id})):[]),
+  ...(LIVE.mode==='LIVE'?live.store.records.filter(p=>p.mode==='LIVE'&&p.venue==='BINGX'&&!p.test).map(p=>({...p,alertOrigin:'SIGNAL',alertOwnerId:p.signalKey})):[])],
+ log:(...a)=>console.log(...a),onEvent:confirmedRealTradeNotice}):null;
+if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(realCopyPositions()));await Promise.all([manualLedger.settle(),manualLedger.recoverFastTrades()])}
  catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
 // Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
 // copy and manual together, read in the background at most every 5 min; the page gets the cached value (daily).
@@ -435,22 +439,24 @@ if(copyClient&&COPY.mode==='LIVE'){
 }else if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
 function copyNotice(e){
  if(e?.type==='COPY_SETTLED')reportsDirty=true;
+ if(e?.mode==='LIVE'&&manualLedger&&['OPENED','ADDED','REDUCED','CLOSED'].includes(e.type))return;
  const text=copyEventText(e);if(!text)return;
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
  telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[COPY TELEGRAM] HTTP',r.status)}).catch(e2=>console.error('[COPY TELEGRAM]',e2.message));
 }
-let manualTelegram=Promise.resolve(),lastManualTelegramAt=0;
-function manualTradeNotice(e){
- const text=manualTradeText(e);if(!text)return;
+let realTradeTelegram=Promise.resolve(),lastRealTradeTelegramAt=0;
+function confirmedRealTradeNotice(e){
+ const text=realTradeText(e);if(!text)return;
  reportsDirty=true;
+ if(e.alertOrigin==='COPY'||e.alertOrigin==='SIGNAL')try{send('live-notice',{type:e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
- manualTelegram=manualTelegram.then(async()=>{
-  const delay=lastManualTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
+ realTradeTelegram=realTradeTelegram.then(async()=>{
+  const delay=lastRealTradeTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
   if(persisted.notifySettings?.telegramLive===false)return;
-  lastManualTelegramAt=Date.now();
-  const r=await telegramPost({chat_id:CONFIG.tgChat,text});if(!r.ok)console.error('[MANUAL TELEGRAM] HTTP',r.status);
- }).catch(()=>console.error('[MANUAL TELEGRAM] delivery unconfirmed'));
+  lastRealTradeTelegramAt=Date.now();
+  const r=await telegramPost({chat_id:CONFIG.tgChat,text});if(!r.ok)console.error('[REAL TRADE TELEGRAM] HTTP',r.status);
+ }).catch(()=>console.error('[REAL TRADE TELEGRAM] delivery unconfirmed'));
 }
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never
@@ -766,6 +772,7 @@ async function uploadReport(force=false){
 setInterval(()=>{void uploadReport()},15*60000).unref?.();setTimeout(()=>{void uploadReport(true)},90000).unref?.();
 // Live trade notices to Telegram (live_telegram.mjs), on unless switched off in 알림 설정.
 function liveTelegramNotice(record,type,detail){
+ if(record?.mode==='LIVE'&&record.venue==='BINGX'&&['PROTECTED','ADD_FILLED','SETTLED'].includes(type))return;
  const text=liveEventText(record,type,detail);if(!text)return;
  // Open dashboards show it as a Chrome/system notification (public/app.js 'live-notice').
  try{send('live-notice',{type,symbol:record?.symbol??null,text,at:Date.now()})}catch{}

@@ -155,24 +155,89 @@ export class GateTradeClient{
 // BingX read-only execution receipts. Missing quantity or costs never become zero.
 const number=v=>v==null||String(v).trim()===''||!Number.isFinite(Number(v))?null:Number(v);
 const id=v=>v==null||String(v).trim()===''?null:String(v);
+const fillTime=row=>{
+ for(const value of [row?.time,row?.tradeTime,row?.filledTm,row?.filledTime]){
+  const numeric=number(value);
+  if(numeric>0)return numeric>=1e9&&numeric<1e11?numeric*1000:numeric;
+  if(typeof value==='string'&&/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)){const at=Date.parse(value);if(at>0)return at}
+ }
+ return null;
+};
+const fillQty=row=>number(row?.qty??row?.filledQty??row?.volume);
+const fillPnl=row=>number(row?.realizedPnl??row?.realizedPnL??row?.profit);
+const fillFee=row=>number(row?.fee??row?.commission);
+const qtyEqual=(a,b)=>Math.abs(a-b)<=Math.max(1e-12,Math.max(a,b)*1e-8);
 
-export function executionFills(response){
+function fillRows(response){
  if(response===null||response?.fill_orders===null||response?.fillOrders===null)return [];
  const rows=Array.isArray(response)?response:response?.fill_orders??response?.fillOrders;
  if(!Array.isArray(rows))throw Error('UNEXPECTED_FILL_HISTORY');
+ return rows;
+}
+
+export function executionFills(response){
+ const rows=fillRows(response),seenRaw=new Map();
  const fills=new Map();
  for(const x of rows){
-  const tradeId=id(x?.tradeId??x?.fillId),orderId=id(x?.orderId);
+  const orderId=id(x?.orderId??x?.orderID);
   const symbol=x?.symbol,side=String(x?.side??'').toUpperCase(),positionSide=String(x?.positionSide??'').toUpperCase();
-  const qty=number(x?.qty??x?.filledQty??x?.volume),price=number(x?.price??x?.tradePrice),at=number(x?.time??x?.tradeTime);
-  if(!tradeId||!orderId||typeof symbol!=='string'||!['BUY','SELL'].includes(side)||!(qty>0)||!(price>0)||!(at>0))throw Error('UNEXPECTED_FILL_ROW');
-  fills.set(tradeId,{tradeId,orderId,symbol,side,positionSide,qty,price,at,
-   pnl: number(x.realizedPnl??x.realizedPnL??x.profit),fee:number(x.fee??x.commission)});
+  const qty=fillQty(x),price=number(x?.price??x?.tradePrice),at=fillTime(x),fee=fillFee(x);
+  if(!orderId||typeof symbol!=='string'||!symbol||!['BUY','SELL'].includes(side)||!(qty>0)||!(price>0)||!(at>0))throw Error('UNEXPECTED_FILL_ROW');
+  let tradeId=id(x?.tradeId??x?.fillId);
+  if(!tradeId){const fingerprint=[orderId,at,qty,price,fee].join(':');const ordinal=(seenRaw.get(fingerprint)??0)+1;seenRaw.set(fingerprint,ordinal);tradeId=`fill:${fingerprint}:${ordinal}`}
+  fills.set(`${symbol}|${tradeId}`,{tradeId,orderId,symbol,side,positionSide,qty,price,at,
+   pnl:fillPnl(x),fee,wholeOrderQty:x.wholeOrderQty??null});
  }
  return [...fills.values()].sort((a,b)=>a.at-b.at||a.tradeId.length-b.tradeId.length||a.tradeId.localeCompare(b.tradeId));
 }
 
+/** Some fill responses omit direction, fill IDs or P&L. Order-level P&L is usable only for the entire order. */
+export async function confirmedBingxFills(client,response,{symbol=null,orders=null}={}){
+ const groups=new Map();
+ for(const row of fillRows(response)){
+  const orderId=id(row?.orderId??row?.orderID);
+  if(orders&&!orders.has(orderId))continue;
+  if(!orderId)throw Error('UNEXPECTED_FILL_ROW');
+  const group=groups.get(orderId)??[];group.push({...row,orderId,symbol:row.symbol??symbol});groups.set(orderId,group);
+ }
+ const complete=[];
+ for(const [orderId,rows] of groups){
+  const known=orders?.get(orderId),venueSymbol=rows[0].symbol;
+  if(!venueSymbol||rows.some(r=>r.symbol!==venueSymbol))throw Error('UNEXPECTED_FILL_ROW');
+  const missingSide=rows.some(r=>!r.side),missingPnl=rows.some(r=>fillPnl(r)===null),missingFee=rows.some(r=>fillFee(r)===null);
+  let order=known?.order??null;
+  if(!order&&(missingSide&&!known?.side||missingPnl||missingFee)&&typeof client?.getOrder==='function')try{
+   const data=await client.getOrder(venueSymbol,{orderId});order=data?.order??data;
+  }catch{}
+  if(String(order?.orderId??order?.orderID)!==orderId||order?.symbol!==venueSymbol)order=null;
+  const side=String(order?.side??known?.side??'').toUpperCase();
+  if(side&&rows.some(r=>r.side&&String(r.side).toUpperCase()!==side))throw Error('FILL_ORDER_SIDE_MISMATCH');
+  for(const row of rows){row.side=row.side||side;row.positionSide=row.positionSide||order?.positionSide}
+  const executed=number(order?.executedQty),qty=rows.reduce((sum,r)=>sum+(fillQty(r)??0),0);
+  if(executed>0&&qtyEqual(executed,qty)&&['FILLED','CANCELED','CANCELLED','EXPIRED'].includes(String(order?.status).toUpperCase())){
+   const pnl=fillPnl(order),fee=fillFee(order),usePnl=missingPnl&&pnl!==null,useFee=missingFee&&fee!==null;
+   if(usePnl||useFee){
+    const last=rows.reduce((a,b)=>fillTime(a)>fillTime(b)?a:b);
+    for(const row of rows){if(usePnl)row.realizedPnl=row===last?pnl:0;if(useFee)row.fee=row===last?fee:0;row.wholeOrderQty=executed}
+   }
+  }
+  complete.push(...rows);
+ }
+ return executionFills(complete);
+}
+
+export function completeBingxOrders(fills){
+ const whole=new Map();
+ for(const f of fills)if(f.wholeOrderQty!=null)whole.set(f.orderId,f.wholeOrderQty);
+ for(const [id,qty] of whole){
+  const first=fills.findIndex(f=>f.orderId===id),last=fills.findLastIndex(f=>f.orderId===id),span=fills.slice(first,last+1);
+  if(span.some(f=>f.orderId!==id)||!qtyEqual(span.reduce((sum,f)=>sum+f.qty,0),qty))return false;
+ }
+ return true;
+}
+
 export function summarizeBalancedFills(fills,direction){
+ if(!completeBingxOrders(fills))return null;
  const side=direction==='SHORT'?'SELL':'BUY';
  let openQty=0,closeQty=0,entryValue=0,pnlUSD=0,feeUSD=0;
  for(const fill of fills){
