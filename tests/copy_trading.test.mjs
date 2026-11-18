@@ -34,7 +34,45 @@ function venue({free=500}={}){
 }
 const contract={symbol:'TNSRUSDT',venueSymbol:'TNSR-USDT',tickSize:'0.00001',quantityStep:'1',minQuantityBase:'1',minNotionalUSDT:2,tradable:true};
 const make=(v,extra={})=>new CopyExecutor({config:{...copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),...extra.config},client:v.client,contractOf:async()=>contract,
- balance:async()=>({equity:400,available:typeof extra.free==='function'?extra.free():extra.free??300}),isBusy:extra.isBusy??(()=>false),gate:extra.gate??(()=>({ok:true})),now:()=>1e12});
+ balance:async()=>({equity:400,available:typeof extra.free==='function'?extra.free():extra.free??300}),isBusy:extra.isBusy??(()=>false),gate:extra.gate??(()=>({ok:true})),now:extra.now??(()=>1e12),auditOrders:extra.auditOrders??false});
+
+test('real copy audit checks startup and orders, locks repeated mismatches and lets protection and closing continue',async()=>{
+ const v=venue();let now=1e12,orders=[],positionUnavailable=false;
+ const positions=v.client.positions,place=v.client.placeOrder;
+ v.client.positions=async(symbol)=>{if(!symbol&&positionUnavailable)throw Error('offline');return positions(symbol)};
+ v.client.openOrders=async()=>({orders});
+ v.client.placeOrder=async(params,opts)=>{const r=await place(params,opts);if(params.type==='STOP_MARKET')orders=[{...params,orderId:r.order.orderId,status:'NEW'}];return r};
+ const ex=make(v,{config:{mode:'LIVE'},auditOrders:true,now:()=>now});ex.goneRecheckMs=0;
+ const msg=(id,text)=>ex.handle({id,date:now,text});
+ assert.equal((await msg(1,OPEN)).reason,'COPY_AUDIT_UNAVAILABLE');
+ await ex.reconcile();assert.equal(ex.auditStatus().ready,true);
+ orders=[{symbol:'TNSR-USDT',orderId:'external',positionSide:'BOTH'}];
+ assert.equal((await msg(2,OPEN)).reason,'COPY_OPEN_ORDERS_EXIST');
+ orders=[];assert.equal((await msg(3,OPEN)).ok,true);
+ await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].stop,'OK');
+ const stop=orders[0];v.setSize(105);orders=[];
+ await ex.reconcile();assert.deepEqual(ex.auditStatus().lanes[0].issues,['SIZE_MISMATCH','STOP_MISSING']);
+ assert.equal(ex.auditStatus().lanes[0].blocked,false);
+ await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].blocked,true);
+ assert.equal(ex.auditStatus().lanes[0].expectedQty,98,'routine display refresh does not accept the different venue size');
+ assert.equal((await msg(4,CHANGE(880,1760))).reason,'COPY_AUDIT_BLOCKED');
+ assert.equal(v.calls.filter(c=>c.type==='MARKET').length,1);
+ v.setSize(98);orders=[stop];await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].blocked,false);
+ orders=[{...stop,side:'SELL'}];await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].stop,'MISMATCH');
+ positionUnavailable=true;now+=136000;await ex.reconcile();assert.equal(ex.auditStatus().ready,false);
+ assert.equal((await msg(5,CHANGE(1760,3520))).reason,'COPY_AUDIT_UNAVAILABLE');
+ positionUnavailable=false;
+ let readStarted,releaseRead,timer;
+ const reading=new Promise(resolve=>{readStarted=resolve});
+ v.client.openOrders=()=>new Promise(resolve=>{releaseRead=resolve;readStarted()});
+ const audit=ex.reconcile();await reading;
+ try{
+  const close=await Promise.race([msg(6,CLOSE),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('audit held the close queue')),1000)})]);
+  assert.equal(close.ok,true);assert.equal(v.size,0);
+ }finally{clearTimeout(timer);releaseRead({orders});await audit}
+ assert.ok(v.calls.some(c=>c.op==='cancel'&&String(c.o)===String(stop.orderId)));
+ assert.equal(ex.auditStatus().lanes.length,0,'a concurrent close cannot leave behind a stale open audit result');
+});
 
 test('copy: 1 $ margin at the trader leverage (capped by the venue), doubles with the trader, cuts in proportion, closes, protective stop each time',async()=>{
  const v=venue(),ex=make(v);
@@ -94,6 +132,22 @@ test('copy settlement matches exact order IDs and reports exchange fees separate
  ];
  ex.now=()=>1e12+20000;await ex.settle();
  assert.equal(row.netSource,'EXCHANGE_FILLS');assert.equal(row.netUSD,.95);assert.equal(row.feeUSD,-.05);assert.equal(row.pnlUSD,1);
+ assert.deepEqual(ex.status().closed[0].settlement,{state:'CONFIRMED',checkedAt:1e12+20000});
+});
+
+test('copy settlement keeps the reason and check time, then replaces it after matching receipts arrive',async()=>{
+ const v=venue(),ex=make(v);ex.goneRecheckMs=0;
+ await ex.handle({id:1,date:1e12,text:OPEN});await ex.handle({id:2,date:1e12,text:CLOSE});
+ const p=ex.store.closed[0],entry=p.fillOrders.find(x=>x.side==='SELL').id,exit=p.fillOrders.at(-1).id;
+ let now=1e12+20000,closeQty=49;
+ ex.now=()=>now;
+ v.client.fillOrders=async({orderId})=>orderId===entry||orderId===exit?[{orderId,tradeId:orderId,symbol:'TNSR-USDT',
+  side:orderId===entry?'SELL':'BUY',qty:orderId===entry?98:closeQty,price:.05,fee:-.01,realizedPnl:1,time:p.openedAt+(orderId===exit?500:0)}]:[];
+ await ex.settle();assert.deepEqual(ex.status().closed[0].settlement,{state:'QUANTITY_MISMATCH',checkedAt:now});
+ assert.equal(p.netSource,'ESTIMATE_BEFORE_FEES');
+ closeQty=98;now+=5*60000;await ex.settle();assert.deepEqual(ex.status().closed[0].settlement,{state:'CONFIRMED',checkedAt:now});
+ const old={openedAt:1e10,closedAt:1e10+1000,netSource:'UNKNOWN'};
+ assert.deepEqual(ex.settlementStatus(old),{state:'HISTORY_WINDOW_EXPIRED',checkedAt:null});
 });
 
 test('copy: no entry right after a monitor restart, while disarmed, or on a symbol the signal strategy holds; add skipped without margin',async()=>{

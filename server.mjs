@@ -284,9 +284,9 @@ function COPY_ON_SAME_ACCOUNT(){return COPY.mode===(LIVE.mode==='LIVE'?'LIVE':'T
 // Update restarts wait for the copy queue too (a market fill is saved before the next step).
 function allIdle(){return live.idle()&&(copyTrader?.idle?.()??true)&&(scalpExec?.idle?.()??true)}
 // Real-money copy (COPY_MODE=LIVE + COPY_LIVE_CONFIRM): its own BingX live client and ledger file.
-const copyClient=COPY.mode==='LIVE'&&process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET
- ?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'LIVE',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)})
- :live.clients.BINGX;
+const copyClient=COPY.mode!=='LIVE'?live.clients.BINGX:
+ process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET
+  ?new BingXTradeClient({apiKey:process.env.BINGX_API_KEY,secret:process.env.BINGX_API_SECRET,mode:'LIVE',now:()=>Date.now()+(venueQuotes.clients.BINGX?.clockOffsetMs||0)}):null;
 // Every open position on the real account (user 2026-11-17: manual positions too), read-only: GET positions at
 // most every 3 s (venue_positions.mjs), shown under the copy positions as 카피 / 수동. Real-money copy only.
 const venuePositionsReader=COPY.mode==='LIVE'&&copyClient?.mode==='LIVE'&&typeof copyClient.positions==='function'
@@ -303,7 +303,7 @@ const bingxFunds=(data,{requireAvailable=false}={})=>{
  if(requireAvailable&&(raw==null||String(raw).trim()===''||!Number.isFinite(free)))return {equity,available:null};
  return {equity,available:Number.isFinite(free)?Math.max(0,free):equity};
 };
-copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',
+copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',auditOrders:COPY.mode==='LIVE',
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
  // A coin missing or suspended in the cached list re-reads the list (new listings / delistings, 2026-11-16).
  contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.contractsFor(symbol),symbol),
@@ -401,6 +401,7 @@ if(COPY.enabled)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{})},8000)
 if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
 if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
 function copyNotice(e){
+ if(e?.type==='COPY_SETTLED')reportsDirty=true;
  const text=copyEventText(e);if(!text)return;
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
@@ -684,7 +685,8 @@ let reportsDay=null,reportsDirty=false,reportsBusy=false;
 function reportLedgers(){
  const read=f=>{try{const file=path.join(storage.dir,f);return fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):null}catch{return null}};
  const equity=mode=>COPY.mode===mode?copyTrader?.funds?.equity??null:null;
- const pack=(f,mode)=>{const store=read(f);return store?{store,equityUSD:mode?equity(mode):null}:null};
+ const pack=(f,mode)=>{const store=read(f);return store?{store,equityUSD:mode?equity(mode):null,
+  ...(mode&&mode===COPY.mode&&f!==MANUAL_LEDGER_FILE?{settlementOf:p=>copyTrader.settlementStatus(p)}:{})}:null};
  return {copyLive:pack('copy-store-live.json','LIVE'),manualLive:pack(MANUAL_LEDGER_FILE,'LIVE'),copyTestnet:pack('copy-store.json','TESTNET'),scalp:pack('scalp-store.json',null)};
 }
 // Exact results from BingX itself (user 2026-11-17 "수익률이 얼마인지 정확하게"): income + balance of the real
@@ -711,6 +713,7 @@ async function uploadReport(force=false){
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange:await exchangeReport().catch(e=>({error:e.message}))});
   report.release=appVersion.displayVersion;
+  if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime={mode:SCALP_EXEC.mode,armed:scalpExec.armed,scaleInEnabled:SCALP_EXEC.scaleIn};
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});

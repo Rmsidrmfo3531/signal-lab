@@ -95,6 +95,8 @@ test('real-account calendar publishes recent income when older windows are empty
   assert.equal(copy.daily.error,null);
   const overview=await app.get('/api/live/overview');
   assert.deepEqual(overview.copy.daily.byDay,{[day]:27.5});
+  const audited=await until(()=>app.get('/api/copy'),c=>c.audit?.ready,{timeout:15000,label:'real copy startup position audit'});
+  assert.ok(audited.audit.positionAt>0);assert.deepEqual(audited.audit.lanes,[]);
   const requests=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
   const reads=requests.filter(r=>r.host==='open-api.bingx.com'&&r.path==='/openApi/swap/v2/user/income');
   assert.ok(reads.length>1,'the mock served older windows before the recent income');

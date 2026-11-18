@@ -29,29 +29,31 @@ const shortReason=v=>v==null?null:String(v).replace(/\d{9,}/g,'#').slice(0,80);
 
 /** Copy (testnet / real account) or scalp ledger: closed and open positions, totals and serious events.
  * Whitelisted fields only (no order ids, no position ids). Null when the ledger file does not exist. */
-export function ledgerSummary(store,{now=Date.now(),equityUSD=null}={}){
+export function ledgerSummary(store,{now=Date.now(),equityUSD=null,settlementOf=p=>p.settlement??null}={}){
  if(!store)return null;
  // manualLive (manual_ledger.mjs): manual trades on the real account, each trade marked origin 'manual'.
  const origin=store.origin==='manual'?'manual':null;
  const closed=(store.closed||[]).filter(x=>x&&x.test!==true).slice().sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
  const open=Array.isArray(store.open)?store.open:Object.values(store.positions||{});
- let cum=0,peak=0,maxDD=0,wins=0,known=0,settled=0,estimated=0,unknown=0,pending=0;
+ let cum=0,peak=0,maxDD=0,wins=0,known=0,settled=0,confirmedWins=0,confirmedNet=0,estimated=0,unknown=0,pending=0;
  for(const x of closed){
   if(x.netSource==='PENDING'){pending++;continue}
   const n=Number(x.netUSD);
   if(x.netSource==='UNKNOWN'||x.netUSD==null||String(x.netUSD).trim()===''||!Number.isFinite(n)){unknown++;continue}
   known++;
-  if(['EXCHANGE','EXCHANGE_FILLS'].includes(x.netSource))settled++;else estimated++;
+  if(['EXCHANGE','EXCHANGE_FILLS'].includes(x.netSource)){settled++;confirmedNet+=n;if(n>0)confirmedWins++}else estimated++;
   if(n>0)wins++;cum+=n;peak=Math.max(peak,cum);maxDD=Math.max(maxDD,peak-cum);
  }
  const week=now-7*86400000,events=(store.events||[]).filter(e=>e&&(e.at||0)>=week);
  const counts={};for(const e of events)counts[e.type]=(counts[e.type]||0)+1;
  return {equityUSD:num(equityUSD),closedCount:closed.length,settled,estimated,unknown,pending,winRateSample:known,wins,
+  confirmedWinRatePct:settled?Math.round(confirmedWins/settled*1000)/10:null,confirmedNetUSD:settled?num(confirmedNet):null,
   winRatePct:known?Math.round(wins/known*1000)/10:null,netUSD:known?num(cum):null,maxDrawdownUSD:known?num(maxDD):null,killed:store.killed===true,
-  trades:closed.slice(-100).map(x=>({...(origin?{origin}:{}),...(x.kind?{kind:x.kind}:{}),symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
+  trades:closed.slice(-100).map(x=>{const settlement=settlementOf(x);return { ...(origin?{origin}:{}),...(x.kind?{kind:x.kind}:{}),symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
    avg:num(x.avg),adds:typeof x.adds==='number'?x.adds:Array.isArray(x.adds)?x.adds.filter(a=>a?.filled).length:null,reduces:x.reduces??null,tpHits:x.tpHits??null,
    netUSD:num(x.netUSD),netSource:x.netSource??null,theirPnlUSD:num(x.theirPnlUSD),
-   ...(origin?{maxSize:num(x.maxSize),estimateUSD:num(x.estimateUSD),adoptedAtStart:x.adoptedAtStart===true,mergedIntoCopy:Boolean(x.mergedIntoCopy)}:{})})),
+   ...(settlement?{settlement:{state:shortReason(settlement.state),checkedAt:num(settlement.checkedAt)}}:{}),
+   ...(origin?{maxSize:num(x.maxSize),estimateUSD:num(x.estimateUSD),adoptedAtStart:x.adoptedAtStart===true,mergedIntoCopy:Boolean(x.mergedIntoCopy)}:{})}}),
   open:open.filter(p=>p&&p.status!=='CLOSED').map(p=>({...(origin?{origin}:{}),symbol:p.symbol,direction:p.direction,leverage:p.leverage??null,openedAt:p.openedAt??p.createdAt??null,avg:num(p.avg),adds:typeof p.adds==='number'?p.adds:null,stop:num(p.stop)})),
   eventCounts7d:counts,
   // Skips and errors of the last 7 days with their reason (user 2026-11-17: "오류로 못 들어간 건지 분석해서 못 들어간 건지").
@@ -70,7 +72,7 @@ export function buildReport({readiness,insights,journal=[],records=[],scalp=null
   open:records.filter(r=>r.status==='OPEN'&&r.test!==true).map(r=>({symbol:r.symbol,direction:r.direction,createdAt:r.createdAt,pattern:r.signal?.pattern??null})),
   // copyLive = real-money copy (copy-store-live.json), manualLive = manual trades on that account
   // (manual-trades-live.json), copyTestnet, scalp (testnet only).
-  ledgers:Object.fromEntries(Object.entries(ledgers).map(([k,v])=>[k,v?ledgerSummary(v.store,{now,equityUSD:v.equityUSD}):null]))};
+  ledgers:Object.fromEntries(Object.entries(ledgers).map(([k,v])=>[k,v?ledgerSummary(v.store,{now,equityUSD:v.equityUSD,settlementOf:v.settlementOf}):null]))};
  const text=JSON.stringify(report);
  for(const key of text.matchAll(/"([^"]+)":/g))if(SECRET.test(key[1]))throw Error('REPORT_SECRET_FIELD '+key[1]);
  return report;
