@@ -14,26 +14,26 @@ const MANUAL_ACTION={MANUAL_OPEN:'신규 진입',MANUAL_ADD:'추가 진입',MANU
 /** Text for a confirmed real-account change from the manual ledger. */
 export function manualTradeText(e){
  const actionBase=MANUAL_ACTION[e?.type];
- if(!actionBase||!e.symbol)return null;
+ if(!actionBase||!e.symbol||e.fromFills!==true)return null;
  const closing=e.type==='MANUAL_REDUCE'||e.type==='MANUAL_SETTLED';
- const net=e.netUSD==null||!Number.isFinite(Number(e.netUSD))?null:Number(e.netUSD);
- const cents=net===null?null:Math.round(Math.abs(net)*100);
- const action=closing?`${actionBase} ${!cents?'청산':net>0?'익절':'손절'}`:actionBase;
+ const net=e.netUSD;
+ if(closing&&(e.netSource!=='EXCHANGE_FILLS'||!Number.isFinite(net)))return null;
+ const action=closing?`${actionBase} ${net===0?'본전':net>0?'익절':'손절'}`:actionBase;
  const head=[`🔴 실계좌 | 수동 | ${action}`,[e.symbol,SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
  else if(closing){
-  const source=e.netSource==='EXCHANGE'?'거래소 정산 · 수수료·펀딩 포함':e.netSource==='EXCHANGE_FILLS'?'거래소 체결 · 수수료 포함, 펀딩 제외':e.netSource?.startsWith('MIXED_WITH_')?'추정 · 동일 종목 정산 혼재':'추정';
   const size=e.size??(Number(e.from)-Number(e.to));
+  const result=net===0?'$0.00':Math.abs(net)<.01?`${net>0?'+':'−'}$${amount(Math.abs(net))}`:usd(net);
   detail=[`청산 수량 ${amount(size)}${e.type==='MANUAL_REDUCE'?` · 잔여 ${amount(e.to)}`:''}`,
-   net===null?'순손익 확인 불가':`순손익 ${cents?usd(net):'$0.00 · 본전'} (${source})`].join('\n');
+   `순손익 ${result} (거래소 체결 · 수수료 포함, 펀딩 제외)`].join('\n');
  }else{
   const change=Number(e.to)-Number(e.from);
   detail=`수량 ${change>0?'+':'−'}${amount(Math.abs(change))} · 잔여 ${amount(e.to)}`;
-  if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n평균 진입가 ${amount(e.avg)} USDT`;
+  if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n추가 체결가 ${amount(e.avg)} USDT`;
  }
  const at=Number(e.observedAt??e.at);
- return [...head,detail,at>0&&Number.isFinite(at)?`${e.fromFills?'체결':'감지'} ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n');
+ return [...head,detail,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n');
 }
 const PROBLEM={ENTRY_OUTCOME_UNKNOWN:'진입 결과를 확인하지 못했습니다',STOP_FAILED:'손절 주문 등록 실패',TARGET_FAILED:'목표 주문 등록 실패',
  EMERGENCY_CLOSED:'보호 주문 실패로 긴급 청산했습니다',LATE_ADD_CLOSE_FAILED:'청산 뒤 체결된 추매 정리 실패',EMERGENCY_CLOSE_FAILED:'긴급 청산 실패 · 즉시 확인 필요',ERROR:'주문 처리 오류 · 긴급 정지',RECOVERY_ERROR:'재시작 후 손절 보호 복구 실패',RECOVERY_MANUAL:'재시작으로 끊긴 진입 · 자동 복구 불가(Gate.io) · 긴급 정지',LATE_ADD_CLOSED:'청산 뒤 체결된 추매를 정리했습니다',TEST_CLOSE_INCOMPLETE:'시험 주문 정리 미완료',STOP_WHOLE_FAILED:'전체 손절 주문 갱신 실패',REJECTED:'주문이 거부됐습니다'};

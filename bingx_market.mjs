@@ -15,7 +15,7 @@ export class VenueHttpError extends Error{constructor(code,message){super(messag
 
 // BingX order ids are 19-digit integers (> 2^53): JSON.parse would round them (…737 -> …700) and a
 // cancel would then name another order. They are kept as exact strings before parsing.
-export const keepBigIds=text=>text.replace(/("(?:orderId|orderID|clientOrderID|tradeId|positionId)"\s*:\s*)(-?\d{16,})(?=\s*[,}\]])/g,'$1"$2"');
+export const keepBigIds=text=>text.replace(/("(?:orderId|orderID|clientOrderID|tradeId|fillId|positionId)"\s*:\s*)(-?\d{16,})(?=\s*[,}\]])/g,'$1"$2"');
 export async function readLimitedJSON(response,maxBytes=MAX_BYTES,{bigIds=false}={}){
  const length=Number(response.headers?.get?.('content-length')||0);
  if(length>maxBytes)throw new VenueHttpError('RESPONSE_TOO_LARGE');
