@@ -23,7 +23,10 @@
 // from the copy ledger only. Nothing here feeds them; manual trades only join the page's totals and the report.
 import fs from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
+import {executionFills,summarizeBalancedFills} from './live_clients.mjs';
+import {readPositionMode} from './bingx_position_mode.mjs';
 
 export const MANUAL_LEDGER_FILE='manual-trades-live.json';
 const MAX_CLOSED=1000,MAX_EVENTS=200,MAX_CLAIMED=3000;
@@ -32,6 +35,18 @@ const num=v=>v===null||v===undefined||v===''?null:Number.isFinite(Number(v))?Num
 const r6=x=>x==null?null:Math.round(x*1e6)/1e6;
 const keyOf=(venueSymbol,direction)=>`${venueSymbol}|${direction}`;
 const incomeKey=x=>String(x?.tranId??x?.tradeId??[x?.incomeType,x?.symbol,x?.time,x?.income].join('|'));
+function flatTrades(rows){
+ const completed=[];let balance=0,parts=[];
+ for(const fill of rows){
+  const next=balance+(fill.side==='BUY'?fill.qty:-fill.qty);
+  const tolerance=Math.max(1e-9,Math.abs(balance)*1e-8);
+  // A single one-way fill that crosses zero needs split accounting to distinguish the two trades.
+  if(balance&&Math.sign(next)!==Math.sign(balance)&&Math.abs(next)>tolerance)return [];
+  parts.push(fill);balance=next;
+  if(Math.abs(balance)<=tolerance){completed.push(parts);parts=[];balance=0}
+ }
+ return parts.length?[]:completed;
+}
 
 export class ManualLedger{
  /** client: the BingX real-account client (income() only). copyRecords(): the copy ledger's positions and closed
@@ -43,6 +58,7 @@ export class ManualLedger{
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={origin:'manual',account:'BINGX_LIVE',positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],claimed:saved?.claimed||[]};
   this.lastReadAt=0;this.started=false;this.candidates=new Map();this.settling=null;this.notices=[];
+  this.lastFillSnapshot=null;this.fillWindows=[];this.scanningFills=null;this.lastFillScanAt=0;
  }
  #save(){
   if(this.file){
@@ -62,6 +78,12 @@ export class ManualLedger{
  observe(snap){
   const rows=Array.isArray(snap?.venuePositions)?snap.venuePositions:null,at=num(snap?.venuePositionsAt);
   if(!rows||!at||at<=this.lastReadAt)return false;
+  if(typeof this.client?.fillOrders==='function'){
+   const symbols=new Set(rows.map(r=>r.venueSymbol)),prior=this.lastFillSnapshot;
+   if(prior&&at-prior.at<=5*60000)this.fillWindows.push({from:prior.at,to:at,blocked:new Set([...prior.symbols,...symbols])});
+   this.lastFillSnapshot={at,symbols};
+   this.fillWindows=this.fillWindows.slice(-240);
+  }
   this.lastReadAt=at;const first=!this.started;this.started=true;let changed=false;
   const byKey=new Map();for(const r of rows)if(r?.venueSymbol&&r.direction&&r.size>0)byKey.set(keyOf(r.venueSymbol,r.direction),r);
   for(const [key,p] of Object.entries(this.store.positions)){
@@ -127,6 +149,54 @@ export class ManualLedger{
   delete row.missing;delete row.goneAt;
   this.store.closed.push(row);
   this.#event('MANUAL_CLOSE',{symbol:p.symbol,direction:p.direction,size:p.size,estimateUSD:row.estimateUSD});
+ }
+ /** Recover trades opened and closed entirely between successful position reads. */
+ recoverFastTrades(){
+  if(typeof this.client?.fillOrders!=='function')return Promise.resolve();
+  if(this.scanningFills)return this.scanningFills;
+  const now=this.now();
+  if(now-this.lastFillScanAt<30000)return Promise.resolve();
+  const ready=this.fillWindows.filter(w=>w.to<=now-45000);
+  if(!ready.length)return Promise.resolve();
+  const first=ready[0],windows=ready.filter(w=>w.from<first.from+5*60000);
+  this.lastFillScanAt=now;
+  this.scanningFills=this.#recoverWindows(windows,now).catch(e=>this.log(`[MANUAL] fill history ${e?.code||e?.message||'FAILED'}`)).finally(()=>{this.scanningFills=null});
+  return this.scanningFills;
+ }
+ async #recoverWindows(windows,now){
+  const fills=executionFills(await this.client.fillOrders({startTs:windows[0].from,endTs:windows.at(-1).to}));
+  const ambiguous=fills.some(f=>!['LONG','SHORT','BOTH'].includes(f.positionSide));
+  const mode=ambiguous&&typeof this.client.positionMode==='function'?await readPositionMode(this.client):null;
+  const oneWay=mode?.ok&&mode.hedge===false,managed=this.#copyList();
+  let changed=false;
+  for(const w of windows){
+   const groups=new Map();
+   for(const f of fills){
+    if(f.at<=w.from||f.at>=w.to||w.blocked.has(f.symbol))continue;
+    if(managed.some(p=>p.venueSymbol===f.symbol&&(p.openedAt??p.createdAt??0)<=w.to&&(p.closedAt??Infinity)>=w.from))continue;
+    const dir=['LONG','SHORT'].includes(f.positionSide)?f.positionSide:f.positionSide==='BOTH'||oneWay?'BOTH':null;
+    const rows=groups.get(f.symbol)||[];rows.push({...f,dir});groups.set(f.symbol,rows);
+   }
+   for(const [venueSymbol,rows] of groups){
+    if(rows.some(f=>!f.dir)||rows.some(f=>f.dir==='BOTH')&&rows.some(f=>f.dir!=='BOTH'))continue;
+    for(const lane of new Set(rows.map(f=>f.dir)))for(const laneFills of flatTrades(rows.filter(f=>f.dir===lane))){
+     const direction=lane==='BOTH'?(laneFills[0].side==='BUY'?'LONG':'SHORT'):lane;
+     const result=summarizeBalancedFills(laneFills,direction);
+     if(!result)continue;
+     const openedAt=laneFills[0].at,closedAt=laneFills.at(-1).at;
+     const tradeId='fills:'+createHash('sha256').update(laneFills.map(f=>f.tradeId).join('|')).digest('hex').slice(0,24);
+     if(this.store.closed.some(p=>p.id===tradeId||p.venueSymbol===venueSymbol&&p.direction===direction&&p.openedAt<=closedAt&&p.closedAt>=openedAt))continue;
+     const symbol=venueSymbol.replace(/-/g,'');
+     this.store.closed.push({id:tradeId,origin:'manual',status:'CLOSED',symbol,venueSymbol,direction,openedAt,closedAt,
+      size:result.qty,qty:result.qty,avg:result.avg,pnlUSD:result.pnlUSD,feeUSD:result.feeUSD,netUSD:result.netUSD,
+      netSource:'EXCHANGE_FILLS',settledAt:now,closeReason:'MISSED_SNAPSHOT_ROUND_TRIP'});
+     this.#event('MANUAL_SETTLED',{symbol,direction,size:result.qty,netSource:'EXCHANGE_FILLS',netUSD:result.netUSD,observedAt:closedAt,fromFills:true},true);
+     changed=true;
+    }
+   }
+  }
+  if(changed){this.store.closed.sort((a,b)=>a.closedAt-b.closedAt);this.#save()}
+  const done=new Set(windows);this.fillWindows=this.fillWindows.filter(w=>!done.has(w));
  }
 
  /** Settles closed records still PENDING (oldest first). One run at a time; never throws. */

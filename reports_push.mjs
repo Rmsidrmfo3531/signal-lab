@@ -35,11 +35,19 @@ export function ledgerSummary(store,{now=Date.now(),equityUSD=null}={}){
  const origin=store.origin==='manual'?'manual':null;
  const closed=(store.closed||[]).filter(x=>x&&x.test!==true).slice().sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
  const open=Array.isArray(store.open)?store.open:Object.values(store.positions||{});
- let cum=0,peak=0,maxDD=0,wins=0,known=0;
- for(const x of closed){const n=Number(x.netUSD);if(!Number.isFinite(n))continue;known++;if(n>0)wins++;cum+=n;peak=Math.max(peak,cum);maxDD=Math.max(maxDD,peak-cum)}
+ let cum=0,peak=0,maxDD=0,wins=0,known=0,settled=0,estimated=0,unknown=0,pending=0;
+ for(const x of closed){
+  if(x.netSource==='PENDING'){pending++;continue}
+  const n=Number(x.netUSD);
+  if(x.netSource==='UNKNOWN'||x.netUSD==null||String(x.netUSD).trim()===''||!Number.isFinite(n)){unknown++;continue}
+  known++;
+  if(['EXCHANGE','EXCHANGE_FILLS'].includes(x.netSource))settled++;else estimated++;
+  if(n>0)wins++;cum+=n;peak=Math.max(peak,cum);maxDD=Math.max(maxDD,peak-cum);
+ }
  const week=now-7*86400000,events=(store.events||[]).filter(e=>e&&(e.at||0)>=week);
  const counts={};for(const e of events)counts[e.type]=(counts[e.type]||0)+1;
- return {equityUSD:num(equityUSD),closedCount:closed.length,settled:known,wins,winRatePct:known?Math.round(wins/known*1000)/10:null,netUSD:num(cum),maxDrawdownUSD:num(maxDD),killed:store.killed===true,
+ return {equityUSD:num(equityUSD),closedCount:closed.length,settled,estimated,unknown,pending,winRateSample:known,wins,
+  winRatePct:known?Math.round(wins/known*1000)/10:null,netUSD:known?num(cum):null,maxDrawdownUSD:known?num(maxDD):null,killed:store.killed===true,
   trades:closed.slice(-100).map(x=>({...(origin?{origin}:{}),...(x.kind?{kind:x.kind}:{}),symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
    avg:num(x.avg),adds:typeof x.adds==='number'?x.adds:Array.isArray(x.adds)?x.adds.filter(a=>a?.filled).length:null,reduces:x.reduces??null,tpHits:x.tpHits??null,
    netUSD:num(x.netUSD),netSource:x.netSource??null,theirPnlUSD:num(x.theirPnlUSD),

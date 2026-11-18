@@ -137,6 +137,20 @@ test('manual: positions open at start are adopted at once (adoptedAtStart); a sa
  assert.deepEqual(notices,[],'existing positions are not announced on startup');
 });
 
+test('manual fill fallback records flat round trips missed by the snapshots and skips overlapping copy positions',async()=>{
+ const c=clock(),start=c.now(),events=[];
+ const fill=(tradeId,symbol,side,time,realizedPnl=0)=>({tradeId,orderId:tradeId,symbol,side,qty:2,price:10,fee:-.1,realizedPnl,time:start+time,positionSide:'BOTH'});
+ const fills=[fill('1','BTC-USDT','BUY',1000),fill('2','BTC-USDT','SELL',2000,2),fill('3','BTC-USDT','SELL',3000),fill('4','BTC-USDT','BUY',4000,1),
+  fill('5','ETH-USDT','BUY',5000),fill('6','ETH-USDT','SELL',6000,3),fill('7','SOL-USDT','BUY',7000),fill('8','SOL-USDT','SELL',8000,4)];
+ const m=new ManualLedger({now:c.now,client:{fillOrders:async()=>fills},
+  copyRecords:()=>[{venueSymbol:'ETH-USDT',openedAt:start+3000,closedAt:start+12000}],onEvent:e=>events.push(e)});
+ m.observe(snap(start,[row({symbol:'SOLUSDT',venueSymbol:'SOL-USDT'})]));
+ m.observe(snap(c.add(15000),[]));
+ c.add(45000);await m.recoverFastTrades();await m.recoverFastTrades();
+ assert.deepEqual(events.map(e=>[e.symbol,e.direction,e.netUSD,e.fromFills]),[['BTCUSDT','LONG',1.8,true],['BTCUSDT','SHORT',.8,true]]);
+ assert.ok(m.status().closed.every(t=>t.netSource==='EXCHANGE_FILLS'));
+});
+
 test('copy loss limit: computed from the copy ledger only — a large manual loss on the same account changes nothing',async()=>{
  const dir=tmp();let size=0;
  const client={leverage:async()=>({maxLongLeverage:20}),setMarginType:async()=>({}),setLeverage:async()=>({}),cancelOrder:async()=>({}),

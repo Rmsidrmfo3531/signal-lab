@@ -6,6 +6,15 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {buildReport,pushReport,tradeSummary,ledgerSummary} from '../reports_push.mjs';
 
+test('ledger: missing and pending results stay out of the win rate and settled count',()=>{
+ const s=ledgerSummary({closed:[{netUSD:1.5,netSource:'EXCHANGE_FILLS'},{netUSD:null,netSource:'UNKNOWN'},
+  {netUSD:-.5,netSource:'ESTIMATE_BEFORE_FEES'},{netUSD:null,netSource:'PENDING'}]});
+ assert.equal(s.closedCount,4);
+ assert.deepEqual([s.settled,s.estimated,s.unknown,s.pending,s.winRateSample],[1,1,1,1,2]);
+ assert.equal(s.winRatePct,50);assert.equal(s.netUSD,1);
+ assert.equal(ledgerSummary({closed:[{netUSD:null,netSource:'UNKNOWN'}]}).winRatePct,null);
+});
+
 const rec={signalKey:'CRYPTO:AUSDT:SHORT:P1:1',clientOrderId:'slabc',entryOrderId:'1736012449498123737',stopOrderId:'9',targetOrderIds:['8'],
  venueSymbol:'A-USDT',symbol:'AUSDT',mode:'TESTNET',direction:'SHORT',status:'CLOSED',createdAt:1,closedAt:2,stop:1.1,targets:[0.9],
  realized:{source:'EXCHANGE',netUSD:1.5,pnlUSD:1.6,feeUSD:-0.1},signal:{pattern:'P1',score:90},events:[{type:'CLOSED',at:2}]};

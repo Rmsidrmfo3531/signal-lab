@@ -1,7 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {paginateNews,clipNewsText,pageWindow,NEWS_PER_PAGE} from '../public/news_pagination.js';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import {paginateNews,clipNewsText,pageWindow,featureNews,NEWS_PER_PAGE} from '../public/news_pagination.js';
 import {parseRSS} from '../news.mjs';
+
+test('the top two important articles prefer different, recent stories and preserve other article order',()=>{
+ const now=1e12,high=(id,title,published=now-1000,source=id)=>({id,title,published,source,impact:'high'});
+ const general={...high('general','A new market note'),impact:'general'};
+ const a=high('a','SEC approves spot BTC ETF application',now-2000,'A'),b=high('b','SEC approves spot Bitcoin ETF application reports',now-3000,'B');
+ const c=high('c','Fed interest rate decision and press conference',now-500),old=high('old','Crude oil rises in overnight futures',now-7*3600000);
+ const result=featureNews([general,c,a,b,old],now);
+ assert.deepEqual(result.items.map(x=>x.id),['a','c','general','b','old']);
+ assert.deepEqual(result.featured.get('a'),['A','B']);assert.equal(result.featured.has('b'),false);
+});
+
+test('a failed article can be retried and a successful receipt is cached',async()=>{
+ const source=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+ const first=source.indexOf('const newsBodies=new Map()'),end=source.indexOf("if(typeof document!=='undefined')",first);
+ const host={},requests=[];
+ const context=vm.createContext({AbortSignal,CSS:{escape:s=>s},escapeHtml:s=>s,document:{querySelector:()=>host},fetch:async url=>{
+  requests.push(url);
+  if(requests.length===1)throw Error('offline');
+  return {json:async()=>({ok:true,paragraphs:['article text']})};
+ }});
+ vm.runInContext(source.slice(first,end),context);
+ await context.loadNewsBody('test-article');assert.match(host.innerHTML,/다시 시도/);
+ await context.loadNewsBody('test-article',{retry:true});assert.match(host.innerHTML,/article text/);
+ await context.loadNewsBody('test-article',{retry:true});assert.equal(requests.length,2);
+});
 
 test('news is paginated to exactly five on each full page',()=>{
  const items=Array.from({length:12},(_,i)=>({id:String(i)}));
