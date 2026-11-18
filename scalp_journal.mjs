@@ -64,18 +64,21 @@ export function trackExcursion(p,mark,at){
 /** One journal line for a finished trade (the closed ledger row). */
 export function journalLine(x){
  const dir=x.direction==='SHORT'?-1:1,avg=Number(x.avg),plan=Number(x.checkedPrice??x.entry),signal=Number(x.plannedEntry);
- const riskUnit=dir*(avg-Number(x.initialStop)),riskActual=riskUnit>0?riskUnit*Number(x.filled||x.qty):null;
+ const repeat=x.scaleIn?.version===2;
+ const riskUnit=dir*((repeat?x.scaleIn.initialEntry:avg)-Number(x.initialStop)),riskActual=riskUnit>0?riskUnit*Number(repeat?x.scaleIn.initialQty:x.filled||x.qty):null;
  const realized=x.realized??null,net=realized?.netUSD??x.netUSD??null;
  const a=x.scaleIn,scaleIn=a?{version:a.version,state:a.state,reason:a.reason??null,riskPct:a.riskPct,budgetUSD:r4(a.budgetUSD),
   touchedAt:a.touchedAt??null,recoveredAt:a.recoveredAt??null,attemptedAt:a.attemptedAt??null,requestedQty:a.requestedQty??null,
   initialEntry:a.initialEntry??null,initialQty:a.initialQty??null,limit:a.limit??null,fillQty:a.fillQty??null,fillPrice:a.fillPrice??null,
   filledAt:a.filledAt??null,budgetAtAddUSD:r4(a.budgetAtAddUSD),riskAfterUSD:r4(a.riskAfterUSD),
-  initialRiskUSD:r4(a.initialRiskUSD),initialMarginUSD:r4(a.initialMarginUSD),plannedMarginUSD:r4(a.plannedMarginUSD),fillMarginUSD:r4(a.fillMarginUSD)}:null;
+  initialRiskUSD:r4(a.initialRiskUSD),initialMarginUSD:r4(a.initialMarginUSD),plannedMarginUSD:r4(a.plannedMarginUSD),fillMarginUSD:r4(a.fillMarginUSD),
+  ...(repeat?{count:a.count,orders:a.orders}: {})}:null;
  const bps=(a,b)=>a>0&&b>0?r2(dir*(a-b)/b*1e4):null; // + = worse for us (paid more on a LONG, got less on a SHORT)
  // kind: MOVE_REVERSAL (5 % move) or ZONE_REVERSAL (매물대 반전, 2.5 % at a 4H / 1D zone; zone = the touched zone).
  return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,
   barAt:x.barAt,detectedAt:x.detectedAt??null,evidence:x.evidence??null,candle:x.candle??null,atr:x.atr??null,trend4h:x.trend4h??null,withTrend:x.withTrend??null,
-  plan:{signalClose:signal||null,checkedPrice:plan||null,entry:x.entry,stop:x.initialStop,targets:x.targets,parts:x.parts,targetCount:x.targetCount??null,merged:x.merged===true,
+  plan:{signalClose:signal||null,checkedPrice:plan||null,entry:x.entry,stop:x.stopLossEnabled===false?null:x.initialStop,
+   ...(x.stopLossEnabled===false?{riskReference:x.initialStop}:{}),targets:x.targets,parts:x.parts,targetCount:x.targetCount??null,merged:x.merged===true,
    tp1NetR:r4(Number(x.netRR)),riskUSD:r4(Number(x.riskUSD)),marginUSD:r4(Number(x.marginUSD)),driftPct:x.driftPct??null},
   entry:{at:x.openedAt??null,price:avg||null,qty:x.filled??x.qty,leverage:x.leverage,delayMs:x.openedAt&&x.barAt?x.openedAt-x.barAt:null,
    slippageBpsVsPlan:bps(avg,plan),slippageBpsVsSignal:bps(avg,signal)},
@@ -105,6 +108,7 @@ const by=(list,key)=>{const m={};for(const x of list){const k=key(x);if(k==null)
 export function summarizeJournal(lines,{now=Date.now()}={}){
  const list=(lines||[]).filter(x=>x&&x.exit);
  const experiment=list.filter(x=>x.scaleIn?.version===1),filled=experiment.filter(x=>x.scaleIn.fillQty>0);
+ const repeated=list.filter(x=>x.scaleIn?.version===2),repeatedFilled=repeated.filter(x=>x.scaleIn.count>0);
  const move=x=>{const m=Number(x.evidence?.movePct);const b=MOVE_BUCKETS.find(([a,c])=>m>=a&&m<c);return b?bucketLabel(b,'%'):null};
  const rank=x=>{const k=Number(x.universe?.rank);const b=RANK_BUCKETS.find(([a,c])=>k>=a&&k<=c);return b?bucketLabel(b,'위'):null};
  const hour=x=>{const t=x.entry?.at??x.barAt;return t?String(kst(t).getUTCHours()).padStart(2,'0'):null};
@@ -112,6 +116,8 @@ export function summarizeJournal(lines,{now=Date.now()}={}){
   scaleIn:{all:groupStats(experiment),filled:groupStats(filled),withoutFill:groupStats(experiment.filter(x=>!(x.scaleIn.fillQty>0))),
    touched:experiment.filter(x=>x.scaleIn.touchedAt!=null).length,recovered:experiment.filter(x=>x.scaleIn.recoveredAt!=null).length,
    attempted:experiment.filter(x=>x.scaleIn.attemptedAt!=null).length,byDecision:by(experiment,x=>x.scaleIn.reason??x.scaleIn.state)},
+  repeatedScaleIn:{all:groupStats(repeated),filled:groupStats(repeatedFilled),adds:repeated.reduce((sum,x)=>sum+(Number(x.scaleIn.count)||0),0),
+   byAddCount:by(repeated,x=>x.scaleIn.count)},
   byMoveBucket:by(list,move),byHourKst:by(list,hour),byUniverseRank:by(list,rank),byTrend4h:by(list,x=>x.trend4h??'unknown'),byWithTrend:by(list,x=>x.trend4h==='range'?'range':x.withTrend==null?'unknown':x.withTrend?'with':'against'),
   last:list.slice(-5).map(x=>({symbol:x.symbol,kind:x.kind||'MOVE_REVERSAL',direction:x.direction,exitAt:x.exit?.at,reason:x.exit?.reason,r:x.pnl?.r,netUSD:x.pnl?.netUSD}))};
 }
