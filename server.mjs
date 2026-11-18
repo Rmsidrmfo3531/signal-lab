@@ -428,10 +428,16 @@ function copyNotice(e){
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
  telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[COPY TELEGRAM] HTTP',r.status)}).catch(e2=>console.error('[COPY TELEGRAM]',e2.message));
 }
+let manualTelegram=Promise.resolve(),lastManualTelegramAt=0;
 function manualTradeNotice(e){
  const text=manualTradeText(e);if(!text)return;
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
- telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[MANUAL TELEGRAM] HTTP',r.status)}).catch(()=>console.error('[MANUAL TELEGRAM] delivery unconfirmed'));
+ manualTelegram=manualTelegram.then(async()=>{
+  const delay=lastManualTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
+  if(persisted.notifySettings?.telegramLive===false)return;
+  lastManualTelegramAt=Date.now();
+  const r=await telegramPost({chat_id:CONFIG.tgChat,text});if(!r.ok)console.error('[MANUAL TELEGRAM] HTTP',r.status);
+ }).catch(()=>console.error('[MANUAL TELEGRAM] delivery unconfirmed'));
 }
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never

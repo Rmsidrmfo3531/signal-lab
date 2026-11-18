@@ -47,9 +47,9 @@ test('manual: open (2 reads) -> add -> reduce -> close (2 reads) -> settled from
  assert.equal(m.status().netUSD,16.15);assert.equal(m.status().settled,1);
  assert.deepEqual(notices.map(e=>e.type),['MANUAL_OPEN','MANUAL_ADD','MANUAL_REDUCE','MANUAL_SETTLED']);
  assert.match(manualTradeText(notices[0]),/^🔴 실계좌 \| 수동 \| 신규 진입\nBTCUSDT · 롱 · 10배/);
- assert.match(manualTradeText(notices[1]),/수량 \+0\.02 · 잔여 0\.03\n평균 진입가 50,500 USDT/);
- assert.match(manualTradeText(notices[2]),/일부 청산[\s\S]*수량 −0\.01 · 잔여 0\.02/);
- assert.match(manualTradeText(notices[3]),/전량 청산[\s\S]*순손익 \+\$16\.15 \(거래소 정산 · 수수료·펀딩 포함\)[\s\S]*KST/);
+ assert.match(manualTradeText(notices[1]),/추가 진입[\s\S]*수량 \+0\.02 · 잔여 0\.03\n평균 진입가 50,500 USDT/);
+ assert.match(manualTradeText(notices[2]),/부분 익절[\s\S]*청산 수량 0\.01 · 잔여 0\.02/);
+ assert.match(manualTradeText(notices[3]),/전량 익절[\s\S]*순손익 \+\$9\.49 \(추정\)[\s\S]*KST/);
  await m.settle();assert.equal(notices.length,4,'settlement is announced once');
  // On disk, its own file; reloaded as is.
  const saved=JSON.parse(fs.readFileSync(path.join(dir,MANUAL_LEDGER_FILE),'utf8'));assert.equal(saved.origin,'manual');assert.equal(saved.closed[0].netUSD,16.15);
@@ -147,8 +147,36 @@ test('manual fill fallback records flat round trips missed by the snapshots and 
  m.observe(snap(start,[row({symbol:'SOLUSDT',venueSymbol:'SOL-USDT'})]));
  m.observe(snap(c.add(15000),[]));
  c.add(45000);await m.recoverFastTrades();await m.recoverFastTrades();
- assert.deepEqual(events.map(e=>[e.symbol,e.direction,e.netUSD,e.fromFills]),[['BTCUSDT','LONG',1.8,true],['BTCUSDT','SHORT',.8,true]]);
+ assert.deepEqual(events.map(e=>[e.type,e.symbol,e.direction,e.netUSD,e.fromFills]),[
+  ['MANUAL_OPEN','BTCUSDT','LONG',undefined,true],['MANUAL_SETTLED','BTCUSDT','LONG',1.9,true],
+  ['MANUAL_OPEN','BTCUSDT','SHORT',undefined,true],['MANUAL_SETTLED','BTCUSDT','SHORT',.9,true]]);
  assert.ok(m.status().closed.every(t=>t.netSource==='EXCHANGE_FILLS'));
+});
+
+test('manual alerts use each exact reduction and final fill, while the journal still settles the entire trade',async()=>{
+ const c=clock(),events=[],dir=tmp(),inc=incomeClient([]),fills=[];
+ const client={...inc,fillOrders:async({startTs,endTs})=>fills.filter(f=>f.time>startTs&&f.time<=endTs)};
+ const make=()=>new ManualLedger({directory:dir,now:c.now,client,onEvent:e=>events.push(e)});
+ let m=make();m.observe(snap(c.now(),[row({size:3,avg:100,mark:110})]));
+ const partAt=c.add(15000);m.observe(snap(partAt,[row({size:1,avg:100,mark:110})]));
+ fills.push({symbol:'BTC-USDT',tradeId:'21',orderId:'9',positionSide:'BOTH',side:'SELL',qty:1,price:103,fee:-0.1,realizedPnl:3,time:partAt-2000},
+  {symbol:'BTC-USDT',tradeId:'22',orderId:'10',positionSide:'BOTH',side:'SELL',qty:1,price:99,fee:-0.1,realizedPnl:-1,time:partAt-1000});
+ assert.equal(events.length,0,'wait for fills before classifying the reduction');
+ m=make();c.add(45000);await m.settle();await m.settle();
+ assert.deepEqual(events.map(e=>[e.to,e.netUSD,e.fromFills]),[[2,2.9,true],[1,-1.1,true]],'persisted pending partial orders each emit once');
+ assert.match(manualTradeText(events[0]),/부분 익절[\s\S]*잔여 2/);assert.match(manualTradeText(events[1]),/부분 손절[\s\S]*잔여 1/);
+ const gone=c.add(1000);m.observe(snap(gone,[]));c.add(15000);m.observe(snap(c.now(),[]));
+ fills.push({symbol:'BTC-USDT',tradeId:'23',orderId:'11',positionSide:'BOTH',side:'SELL',qty:1,price:98,fee:-0.1,realizedPnl:-2,time:gone-100});
+ c.add(45000);await m.settle();assert.equal(m.status().closed[0].netSource,'PENDING');
+ assert.match(manualTradeText(events[2]),/전량 손절[\s\S]*순손익 −\$2\.10 \(거래소 체결[\s\S]*체결 .+ KST/);
+ inc.rows.push({symbol:'BTC-USDT',tranId:'later',incomeType:'REALIZED_PNL',income:'8',time:gone-100});
+ await m.settle();assert.equal(m.status().closed[0].netUSD,8);assert.equal(events.length,3,'later whole-trade income never sends a second full-close alert');
+});
+
+test('manual notifications keep zero and unknown close P&L neutral',()=>{
+ const base={symbol:'BTCUSDT',direction:'SHORT',from:2,to:1};
+ assert.match(manualTradeText({...base,type:'MANUAL_REDUCE',netUSD:null}),/부분 청산[\s\S]*순손익 확인 불가/);
+ assert.match(manualTradeText({...base,type:'MANUAL_SETTLED',size:1,netUSD:-.004}),/전량 청산[\s\S]*\$0\.00 · 본전/);
 });
 
 test('copy loss limit: computed from the copy ledger only — a large manual loss on the same account changes nothing',async()=>{

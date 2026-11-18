@@ -140,5 +140,9 @@ test('real manual position sends a differently formatted Telegram alert through 
   assert.match(messages[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT/);
   await app.get('/api/copy');
   assert.equal((await notices()).length,1);
+  await app.write({fakeBingxLivePositions:[{...position,positionAmt:'0.02',avgPrice:'50050'}]});
+  await until(()=>app.get('/api/copy'),c=>c.manual?.open?.[0]?.size===0.02,{timeout:12000,label:'updated manual position size'});
+  const added=await until(notices,list=>list.length===2);
+  assert.match(added[1].text,/^🔴 실계좌 \| 수동 \| 추가 진입[\s\S]*수량 \+0\.01 · 잔여 0\.02/);
  }finally{await app.close()}
 });
