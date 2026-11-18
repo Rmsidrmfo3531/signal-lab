@@ -421,6 +421,11 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .only-desk{display:none}
 .copy-stamp{margin:0 0 8px;font-size:11px;color:var(--dim)}
 .copy-table{width:100%;border-collapse:collapse;font-size:12.5px;margin:0 0 12px}
+/* Wide tables scroll independently; lists remain the mobile presentation. */
+.copy-table-scroll{display:none;min-width:0;max-width:100%;margin:0 0 12px}
+.copy-table-scroll .copy-table{width:max-content;min-width:100%;table-layout:auto;margin:0}
+.copy-table-scroll .copy-table th,.copy-table-scroll .copy-table td{white-space:nowrap}
+.copy-table-scroll:focus-visible{outline:2px solid #69aed8;outline-offset:2px}
 .copy-table th{font-weight:600;font-size:11px;color:var(--dim);text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
 .copy-table td{padding:8px 10px;border-bottom:1px solid #16263a;white-space:nowrap}
 .copy-table tbody tr:hover{background:#0f1f30}
@@ -428,13 +433,14 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .copy-table .muted{color:var(--dim)}
 @media(min-width:1100px){
  .only-desk{display:table}.only-mob{display:none}
- .copy-layout{display:grid;grid-template-columns:minmax(320px,380px) 1fr;gap:20px;align-items:start;padding:4px 18px 14px}
+ .copy-table-scroll{display:block;width:100%;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:#3c566c transparent}
+ .copy-layout{display:grid;grid-template-columns:minmax(320px,380px) minmax(0,1fr);gap:20px;align-items:start;padding:4px 18px 14px}
  .copy-side{position:sticky;top:12px}
  .copy-side .copy-mode{flex-direction:column;align-items:flex-start}
  .copy-side .copy-stats{grid-template-columns:repeat(2,1fr);gap:10px}
  .copy-side .copy-stats>span{padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#0e1b2a;font-size:11px}
  .copy-side .copy-stats b{font-size:17px;margin-top:3px}
- .copy-main{min-width:0;overflow-x:auto}
+ .copy-main{min-width:0;overflow-x:visible}
  .copy-main .copy-sub{font-size:13px;margin:4px 0 8px}
 }
 .copy-layout{padding:0 14px 12px}.copy-rules{overflow-wrap:anywhere;white-space:normal}
