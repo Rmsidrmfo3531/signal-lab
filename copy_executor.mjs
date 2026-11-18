@@ -201,11 +201,13 @@ export class CopyExecutor{
  // Hedge mode (p.hedge, user 2026-11-17): the row of this position's own side; one-way: the symbol's row.
  async #position(p){
   const list=venueRows(await this.client.positions(p.venueSymbol));
-  if(!list)throw Object.assign(Error('UNEXPECTED_POSITION_RESPONSE'),{code:'UNEXPECTED_POSITION_RESPONSE'});
-  const row=positionRow(list,p.venueSymbol,{hedge:p.hedge===true,direction:p.direction}),amt=row?num(row.positionAmt):0;
-  if(amt===null)throw Object.assign(Error('UNEXPECTED_POSITION_RESPONSE'),{code:'UNEXPECTED_POSITION_RESPONSE'});
+  if(!list||list.some(row=>typeof row?.symbol!=='string'||!row.symbol||row.symbol===p.venueSymbol&&
+   !((typeof row.positionAmt==='number'||typeof row.positionAmt==='string')&&String(row.positionAmt).trim()&&Number.isFinite(Number(row.positionAmt)))))
+   throw Object.assign(Error('UNEXPECTED_POSITION_RESPONSE'),{code:'UNEXPECTED_POSITION_RESPONSE'});
+  const row=positionRow(list,p.venueSymbol,{hedge:p.hedge===true,direction:p.direction}),amt=row?Number(row.positionAmt):0;
   const size=Math.abs(amt);if(size>0)p.seenAt=this.now(); // the last confirmed state (#goneEvidence window)
-  return {size,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:row?num(row.unrealizedProfit):null}}
+  const unrealized=row?.unrealizedProfit;
+  return {size,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:unrealized==null||String(unrealized).trim()===''?null:num(unrealized)}}
  /** A position read empty once is read again ~1 s later before it counts as gone (a venue list can come back
   * empty for a moment). */
  async #recheck(p,now){if(now.size>0)return now;await this.sleep(this.goneRecheckMs);return this.#position(p)}
@@ -402,6 +404,7 @@ export class CopyExecutor{
     // Answered: read again (a size still there is closed by the next attempt).
     let after=null;try{after=await this.#recheck(p,await this.#position(p))}catch(e){lastErr=e;continue}
     if(!(after.size>0)){await this.#completeClose(p,p.closing.reason,now);return}
+    if(after.size<now.size){p.closing.partial=true;this.#save()}
    }
    this.#emergencyError(p,{reason:lastErr?.code||lastErr?.message||'NOT_CLOSED',detail:'긴급 청산 확인 실패 — 다음 정기 확인에서 다시 청산'});
   }catch(error){this.#emergencyError(p,{reason:error.code||error.message})}
@@ -668,6 +671,7 @@ export class CopyExecutor{
   const close=p.closing??={reason,at:this.now(),theirPnlUSD:m.theirPnlUSD??null};
   const side=p.direction==='LONG'?'SELL':'BUY';
   if(close.pending){
+   if(now.size<close.pending.requestedQty&&!close.partial){close.partial=true;this.#save()}
    if(typeof this.client.getOrder!=='function')return {ok:false,reason:'CLOSE_PENDING'};
    try{
     const order=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:this.#clientId(p,close.pending.tag)}));
@@ -680,7 +684,7 @@ export class CopyExecutor{
   }
   p.qty=now.size;
   const tag=this.#tag(p,'close');
-  close.pending={tag};this.#save();
+  close.pending={tag,requestedQty:now.size};this.#save();
   let order;
   try{order=await this.#market(p,side,now.size,{reduceOnly:true,tag})}
   catch(error){

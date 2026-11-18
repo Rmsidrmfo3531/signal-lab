@@ -70,10 +70,15 @@ test('copy: a partial full-close keeps the stop and an unresolved order is looke
  assert.equal((await ex.handle({id:2,date:1e12+1000,text:CLOSE})).reason,'CLOSE_PENDING');
  assert.equal(v.size,49);assert.equal(ex.status().positions[0].stopOrderId,stop);
  assert.equal(ex.status().closed.length,0);assert.equal(v.calls.filter(r=>r.op==='cancel').length,0);
+ const positions=v.client.positions;
+ v.client.positions=async()=>[{symbol:'TNSR-USDT',positionAmt:null}];
+ await ex.reconcile();assert.equal(ex.status().positions[0].stopOrderId,stop,'a missing amount does not confirm a flat position');
+ v.client.positions=positions;
  await ex.reconcile();assert.equal(attempts,1,'open close order must not be submitted a second time');
  terminal=true;await ex.reconcile();
  assert.equal(v.size,0);assert.equal(ex.status().closed[0].closeReason,'TRADER_CLOSE');
  assert.equal(v.calls.filter(r=>r.op==='cancel').length,1);assert.equal(ex.status().closed[0].theirPnlUSD,1.72);
+ assert.equal(ex.status().closed[0].netSource,'UNKNOWN','a partial close must wait for the complete fill history');
 });
 
 test('copy settlement matches exact order IDs and reports exchange fees separately',async()=>{
