@@ -25,12 +25,13 @@ import {createHash} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {executionFills,summarizeBalancedFills} from './live_clients.mjs';
-import {venueRows} from './venue_positions.mjs';
+import {directionOf,venueRows} from './venue_positions.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,positionRow} from './bingx_position_mode.mjs';
 
 export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'MIN_ORDER',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
+const AUDIT_MAX_AGE=135000,CLOSE_DELAY=120000,SETTLEMENT_HISTORY=7*86400000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const orderOf=d=>d?.order??d;
@@ -63,6 +64,15 @@ function rowsOf(d){
  if(d&&typeof d==='object'&&Object.hasOwn(d,'orders')&&(Array.isArray(d.orders)||d.orders===null))return d.orders||[];
  throw Object.assign(Error('UNEXPECTED_HISTORY_SHAPE'),{code:'UNEXPECTED_HISTORY_SHAPE'});
 }
+function checkedPositions(data,symbol=null){
+ const rows=venueRows(data);
+ if(!rows||rows.some(r=>typeof r?.symbol!=='string'||!r.symbol||(!symbol||r.symbol===symbol)&&
+  !((typeof r.positionAmt==='number'||typeof r.positionAmt==='string')&&String(r.positionAmt).trim()&&Number.isFinite(Number(r.positionAmt)))))
+  throw Object.assign(Error('UNEXPECTED_POSITION_RESPONSE'),{code:'UNEXPECTED_POSITION_RESPONSE'});
+ return rows;
+}
+const sameSize=(a,b)=>Math.abs(a-b)<=Math.max(1e-10,Math.max(Math.abs(a),Math.abs(b))*1e-8);
+const settlementSource=p=>['EXCHANGE','EXCHANGE_FILLS'].includes(p.netSource);
 // A request that got no answer from the venue (user 2026-11-17 "3번"): connection failure or timeout. A venue
 // error code (VENUE_ERROR_*, HTTP_*) is an answer and is never retried by #send.
 export function noVenueAnswer(e){return ['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET'].includes(e?.code)||['AbortError','TimeoutError'].includes(e?.name)}
@@ -122,7 +132,7 @@ export function copyConfig(env=process.env,liveMode='OFF'){
 }
 
 export class CopyExecutor{
- constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),entryGateRevision=()=>null,isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
+ constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),entryGateRevision=()=>null,isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},auditOrders=false,retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
   Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,entryGateRevision,isBusy,balance,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
@@ -130,6 +140,7 @@ export class CopyExecutor{
   // An order in flight does not survive a restart.
   for(const p of Object.values(this.store.positions))delete p.inflight;
   this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;this.entryRevision=0;this.settling=null;this.settleAttempts=new Map();
+  this.audit=auditOrders?{positionAt:null,checkedAt:null,error:null,lanes:new Map()}:null;
  }
  arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
  disarm(){this.entryRevision++;this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
@@ -139,7 +150,8 @@ export class CopyExecutor{
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
  status(){return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
-  closed:this.store.closed.slice(-200).reverse(),closedTotal:this.store.closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null}}
+  closed:this.store.closed.slice(-200).reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:this.store.closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
+  ...(this.audit?{audit:this.auditStatus()}:{})}}
 
  /** status() with fresh numbers for the screen (user 2026-11-14: the real-account page did not update):
   * open positions' PnL from the venue's last price (cached tickers, ~20 s), the balance re-read when
@@ -200,14 +212,96 @@ export class CopyExecutor{
  #qty(c,raw,mode='DOWN'){try{return Number(roundDecimalToStep(mode==='DOWN'?raw*(1+1e-9):raw,c.quantityStep,mode))}catch{return 0}} // 1e-9: 299.99999… is 300
  // Hedge mode (p.hedge, user 2026-11-17): the row of this position's own side; one-way: the symbol's row.
  async #position(p){
-  const list=venueRows(await this.client.positions(p.venueSymbol));
-  if(!list||list.some(row=>typeof row?.symbol!=='string'||!row.symbol||row.symbol===p.venueSymbol&&
-   !((typeof row.positionAmt==='number'||typeof row.positionAmt==='string')&&String(row.positionAmt).trim()&&Number.isFinite(Number(row.positionAmt)))))
-   throw Object.assign(Error('UNEXPECTED_POSITION_RESPONSE'),{code:'UNEXPECTED_POSITION_RESPONSE'});
+  const list=checkedPositions(await this.client.positions(p.venueSymbol),p.venueSymbol);
   const row=positionRow(list,p.venueSymbol,{hedge:p.hedge===true,direction:p.direction}),amt=row?Number(row.positionAmt):0;
   const size=Math.abs(amt);if(size>0)p.seenAt=this.now(); // the last confirmed state (#goneEvidence window)
   const unrealized=row?.unrealizedProfit;
-  return {size,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:unrealized==null||String(unrealized).trim()===''?null:num(unrealized)}}
+  return {size,direction:directionOf(row),avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:unrealized==null||String(unrealized).trim()===''?null:num(unrealized)}}
+ auditStatus(){
+  const a=this.audit;if(!a)return null;
+  const positions=Object.values(this.store.positions).filter(p=>p.status==='OPEN'),now=this.now();
+  const lanes=positions.map(p=>{
+   const observed=a.lanes.get(p.id);
+   const stale=observed?.verifiedAt==null||now-observed.verifiedAt>AUDIT_MAX_AGE;
+   const blocked=Boolean(observed?.blocked||observed&&stale);
+   return {symbol:p.symbol,direction:p.direction,expectedQty:p.auditQty??p.qty??null,venueQty:observed?.venueQty??null,
+    stop:observed?.stop??'UNKNOWN',checkedAt:observed?.checkedAt??null,verifiedAt:observed?.verifiedAt??null,
+    issues:observed?.issues??[],blocked,stale};
+  });
+  const ready=a.positionAt!=null&&now-a.positionAt<=AUDIT_MAX_AGE;
+  return {checkedAt:a.checkedAt,positionAt:a.positionAt,ready,error:a.error,lanes};
+ }
+ #auditBlock(symbol,venueSymbol){
+  if(!this.audit)return null;
+  const now=this.now(),a=this.audit;
+  if(a.positionAt==null||now-a.positionAt>AUDIT_MAX_AGE)return 'COPY_AUDIT_UNAVAILABLE';
+  for(const p of Object.values(this.store.positions)){
+   if(p.status!=='OPEN'||p.symbol!==symbol&&p.venueSymbol!==venueSymbol)continue;
+   const lane=a.lanes.get(p.id);
+   if(lane&&(lane.blocked||lane.verifiedAt==null||now-lane.verifiedAt>AUDIT_MAX_AGE))return 'COPY_AUDIT_BLOCKED';
+  }
+  return null;
+ }
+ async #auditOpenOrders(symbol){
+  const orders=rowsOf(await this.client.openOrders(symbol));
+  if(orders.some(o=>o?.symbol!==symbol||o?.orderId==null||String(o.orderId).trim()===''))throw Error('UNEXPECTED_OPEN_ORDERS');
+  return orders;
+ }
+ #compareLane(p,qty,orders){
+  const issues=[],expected=p.auditQty??pos(p.qty);
+  if(p.closing){if(this.now()-p.closing.at>=CLOSE_DELAY)issues.push('CLOSE_DELAYED')}
+  else if(!(qty>0))issues.push('POSITION_MISSING');
+  else if(expected==null||!sameSize(qty,expected))issues.push('SIZE_MISMATCH');
+  let stop=this.config.stops?'UNKNOWN':'OFF';
+  if(orders===null)issues.push('ORDERS_UNREADABLE');
+  const onSide=o=>!p.hedge||!o.positionSide||String(o.positionSide).toUpperCase()===p.direction;
+  const opening=p.direction==='LONG'?'BUY':'SELL';
+  if(orders?.some(o=>onSide(o)&&String(o.side).toUpperCase()===opening&&
+   String(o.reduceOnly).toLowerCase()!=='true'&&String(o.closePosition).toLowerCase()!=='true'))issues.push('UNEXPECTED_OPEN_ORDER');
+  if(orders&&this.config.stops&&qty>0){
+   const o=p.stopOrderId==null?null:orders.find(o=>String(o.orderId)===String(p.stopOrderId));
+   if(!o){stop='MISSING';issues.push('STOP_MISSING')}
+   else{
+    const full=String(o.closePosition).toLowerCase()==='true';
+    const size=pos(o.quantity??o.origQty),side=String(o.side||'').toUpperCase(),lane=String(o.positionSide||'').toUpperCase();
+    const expectedSide=p.direction==='LONG'?'SELL':'BUY',expectedLane=positionSideFor({hedge:p.hedge===true,direction:p.direction});
+    const protectedSize=full||size!=null&&(size>qty||sameSize(size,qty))&&
+     (p.hedge===true||o.closePosition==null||String(o.reduceOnly).toLowerCase()==='true');
+    const trigger=pos(o.stopPrice),tick=pos(p.tickSize),priceOK=trigger!=null&&pos(p.stop)!=null&&(tick?Math.abs(trigger-p.stop)<tick*.51:sameSize(trigger,p.stop));
+    const match=String(o.type).toUpperCase()==='STOP_MARKET'&&side===expectedSide&&(!lane||lane===expectedLane)&&
+     !['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(String(o.status).toUpperCase())&&protectedSize&&priceOK;
+    stop=match?'OK':'MISMATCH';if(!match)issues.push('STOP_MISMATCH');
+   }
+  }
+  return {issues,stop,venueQty:qty};
+ }
+ async #auditReconcile(){
+  const a=this.audit;if(!a)return;
+  a.checkedAt=this.now();
+  // Capture the managed state before I/O. Orders and stop prices can change while these reads are in flight.
+  const open=Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>({p,qty:p.auditQty,seq:p.orderSeq,stop:p.stopOrderId,reduces:p.reduces,closing:p.closing}));
+  let rows;
+  try{rows=checkedPositions(await this.client.positions());a.positionAt=this.now();a.error=null}
+  catch{a.error='POSITIONS_UNREADABLE';return}
+  const symbols=[...new Set(open.map(({p})=>p.venueSymbol))];
+  const orders=new Map(await Promise.all(symbols.map(async symbol=>[symbol,await this.#auditOpenOrders(symbol).catch(()=>null)])));
+  for(const {p,qty,seq,stop,reduces,closing} of open){
+   if(p.status!=='OPEN'||this.store.positions[this.#key(p)]!==p||p.inflight||p.auditQty!==qty||p.orderSeq!==seq||
+    p.stopOrderId!==stop||p.reduces!==reduces||p.closing!==closing)continue;
+   const prior=a.lanes.get(p.id),now=this.now();
+   let result;
+   try{
+    const row=positionRow(rows,p.venueSymbol,{hedge:p.hedge===true,direction:p.direction});
+    const qty=row?Math.abs(Number(row.positionAmt)):0;
+    result=this.#compareLane(p,qty,orders.get(p.venueSymbol));
+    if(qty>0&&directionOf(row)!==p.direction)result.issues.push('POSITION_SIDE_MISMATCH');
+   }catch{result={issues:['POSITIONS_UNREADABLE'],stop:'UNKNOWN',venueQty:null}}
+   const count=Object.fromEntries(result.issues.map(code=>[code,(prior?.count[code]??0)+1]));
+   const blocked=result.issues.length>0&&(prior?.verifiedAt==null||prior?.blocked||Object.values(count).some(n=>n>=2));
+   a.lanes.set(p.id,{...result,count,blocked,checkedAt:now,verifiedAt:result.issues.length?prior?.verifiedAt??null:now});
+  }
+  const ids=new Set(Object.values(this.store.positions).map(p=>p.id));for(const id of a.lanes.keys())if(!ids.has(id))a.lanes.delete(id);
+ }
  /** A position read empty once is read again ~1 s later before it counts as gone (a venue list can come back
   * empty for a moment). */
  async #recheck(p,now){if(now.size>0)return now;await this.sleep(this.goneRecheckMs);return this.#position(p)}
@@ -296,7 +390,7 @@ export class CopyExecutor{
   let g;try{g=this.gate()}catch{g={ok:false,reason:'GATE_ERROR'}}
   if(!g?.ok)return g?.reason||'GATE_CLOSED';
   if(entry.revision!==this.entryRevision||entry.gateRevision!==this.entryGateRevision())return 'ENTRY_INTERRUPTED';
-  return null;
+  return this.#auditBlock(p.symbol,p.venueSymbol);
  }
  /** Did the order with this clientOrderId go through? {filled} / {absent} (BingX says it does not exist and the
   * position has not moved by a quantity step) / {} (cannot tell: never resent). */
@@ -316,10 +410,12 @@ export class CopyExecutor{
  // without one (closePosition stops cover the whole position whatever its size). If the new stop
  // cannot be placed, the old one stays (the routine check tries again); with no stop at all — or a
  // stop price already passed — the position is closed at market.
- async #protect(p){
+ async #protect(p,{ownFill=false}={}){
+  const now=await this.#position(p);
+  p.qty=now.size;if(now.avg)p.avg=now.avg;
+  if(this.audit&&ownFill&&now.size>0)p.auditQty=now.size;
   if(!this.config.stops){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}p.stopOrderId=null;p.stop=null;p.stopStale=false;p.stopSource='NONE';
-   const now=await this.#position(p);p.qty=now.size;if(now.avg)p.avg=now.avg;return}
-  const now=await this.#position(p);p.qty=now.size;if(now.avg)p.avg=now.avg;
+   return}
   if(!(p.qty>0))return;
   const bal=await this.balance().catch(()=>null),equity=pos(bal?.equity);
   const dir=p.direction==='LONG'?1:-1,avg=p.avg||now.mark;
@@ -454,6 +550,7 @@ export class CopyExecutor{
   }
   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs){this.#event('SKIPPED',{symbol:m.symbol,reason:'MONITOR_RESTART_SNAPSHOT'});return {ok:false,reason:'SNAPSHOT'}}
   const g=this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  const audit=this.#auditBlock(m.symbol);if(audit){this.#event('SKIPPED',{symbol:m.symbol,reason:audit});return {ok:false,reason:audit}}
   if(this.isBusy(m.symbol)){this.#event('SKIPPED',{symbol:m.symbol,reason:'SYMBOL_HELD_BY_SIGNAL_STRATEGY'});return {ok:false,reason:'SYMBOL_BUSY'}}
   // Our copy of the other side of this coin: one-way mode would merge the two. A copy opened in hedge mode
   // (user 2026-11-17) is a separate venue position, so the other side may be copied too (the account cannot
@@ -490,8 +587,15 @@ export class CopyExecutor{
   // with ours and the trader's close would then close it all (user 2026-11-14, BTC 0.005). Hedge mode: the
   // same side only (the other side is a separate position).
   this.step='거래소 포지션 확인';
-  {const list=await this.client.positions(venueSymbol),row=positionRow(list,venueSymbol,{hedge,direction:m.direction}),size=row?Math.abs(Number(row.positionAmt)||0):0;
+  {const list=checkedPositions(await this.client.positions(venueSymbol),venueSymbol),row=positionRow(list,venueSymbol,{hedge,direction:m.direction}),size=row?Math.abs(Number(row.positionAmt)):0;
    if(size>0){this.#event('SKIPPED',{symbol:m.symbol,reason:'VENUE_POSITION_EXISTS',detail:`거래소에 이미 ${size} 보유`});return {ok:false,reason:'VENUE_POSITION_EXISTS'}}}
+  if(this.audit){
+   const orders=await this.#auditOpenOrders(venueSymbol).catch(()=>null);
+   const expected=positionSideFor({hedge,direction:m.direction});
+   const reason=this.#auditBlock(m.symbol,venueSymbol)??(!orders?'COPY_ORDERS_UNREADABLE':
+    orders.some(o=>!hedge||!o.positionSide||String(o.positionSide).toUpperCase()===expected||String(o.positionSide).toUpperCase()==='BOTH')?'COPY_OPEN_ORDERS_EXIST':null);
+   if(reason){this.#event('SKIPPED',{symbol:m.symbol,reason});return {ok:false,reason}}
+  }
   this.step='증거금 모드 설정';
   try{await this.client.setMarginType(venueSymbol,'CROSSED')}catch{}
   this.step='레버리지 설정';
@@ -557,7 +661,7 @@ export class CopyExecutor{
    // RETRY_ABANDONED comes only after BingX said the order does not exist: nothing to keep either.
    else{if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(error.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw error}}
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
-  await this.#protect(p);
+  await this.#protect(p,{ownFill:true});
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null});
   return {ok:true};
@@ -619,7 +723,7 @@ export class CopyExecutor{
    await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});
    p.theirTotal=m.to; // set after our cut went through, so a retried cut uses the same from / to
    p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:cut,ratio});
-   await this.#protect(p);this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:cut,left:p.qty});
+   await this.#protect(p,{ownFill:true});this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:cut,left:p.qty});
   }
   return {ok:true};
  }
@@ -630,6 +734,15 @@ export class CopyExecutor{
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
   const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  if(this.audit){
+   let reason=this.#auditBlock(p.symbol,p.venueSymbol);
+   if(!reason){
+    const orders=await this.#auditOpenOrders(p.venueSymbol).catch(()=>null);
+    const {issues}=this.#compareLane(p,now.size,orders);
+    if(issues.length||!p.steps?.length||now.direction!==p.direction)reason=orders?'COPY_AUDIT_BLOCKED':'COPY_ORDERS_UNREADABLE';
+   }
+   if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason});return {ok:false,reason}}
+  }
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
   const byFirst=p.scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
@@ -652,7 +765,7 @@ export class CopyExecutor{
   }
   p.adds++;
   p.steps.push({kind:'ADD',at:this.now(),qty:fill.qty??buy,avg:fill.avg,theirQty,marginUSD});this.#save();
-  await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
+  await this.#protect(p,{ownFill:true});if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   this.#event('ADDED',{symbol:p.symbol,direction:p.direction,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
   return {ok:true};
  }
@@ -717,6 +830,17 @@ export class CopyExecutor{
   this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds,...(p.closeEvidence?{evidence:p.closeEvidence.kind}:{})});
  }
  /** Per-position exchange settlement by exact order id, run outside the order queue. */
+ settlementStatus(p){
+  const checkedAt=p.settlement?.checkedAt??p.settledAt??null;
+  let state;
+  if(settlementSource(p))state='CONFIRMED';
+  else if(!(p.openedAt>0&&p.closedAt>=p.openedAt))state='MISSING_TIMESTAMPS';
+  else if(this.now()-p.closedAt>=SETTLEMENT_HISTORY||p.closedAt-p.openedAt>=SETTLEMENT_HISTORY)state='HISTORY_WINDOW_EXPIRED';
+  else if(!p.fillOrders?.length&&!(p.entryCids?.length&&typeof this.client?.allOrders==='function'))state='NO_ORDER_IDS';
+  else if(typeof this.client?.fillOrders!=='function')state='LOOKUP_UNAVAILABLE';
+  else state=p.settlement?.state??'WAITING';
+  return {state,checkedAt};
+ }
  settle(){
   if(typeof this.client?.fillOrders!=='function')return Promise.resolve();
   if(this.settling)return this.settling;
@@ -725,9 +849,7 @@ export class CopyExecutor{
  }
  async #settleClosed(){
   const now=this.now();
-  const due=this.store.closed.filter(p=>!['EXCHANGE','EXCHANGE_FILLS'].includes(p.netSource)
-   &&(p.fillOrders?.length||p.entryCids?.length&&typeof this.client.allOrders==='function')
-   &&now-p.closedAt>=15000&&now-p.closedAt<7*86400000&&p.closedAt-p.openedAt<7*86400000);
+  const due=this.store.closed.filter(p=>now-p.closedAt>=15000&&!['CONFIRMED','MISSING_TIMESTAMPS','HISTORY_WINDOW_EXPIRED','NO_ORDER_IDS','LOOKUP_UNAVAILABLE'].includes(this.settlementStatus(p).state));
   const valid=new Set(due.map(p=>p.id));
   for(const key of this.settleAttempts.keys())if(!valid.has(key))this.settleAttempts.delete(key);
   const next=due.filter(p=>!this.settleAttempts.has(p.id)||now-this.settleAttempts.get(p.id)>=5*60000)
@@ -735,23 +857,31 @@ export class CopyExecutor{
   if(next){
    const p=next;
    this.settleAttempts.set(p.id,now);
+   const mark=state=>{if(this.store.closed.includes(p)){p.settlement={state,checkedAt:this.now()};this.#save()}};
    try{
     const window={startTs:Math.max(1,p.openedAt-60000),endTs:Math.min(now,p.closedAt+30000)};
     const orders=p.fillTracked?new Map((p.fillOrders||[]).map(o=>[o.id,o])):await this.#legacyOrders(p,window);
-    if(!orders.size||orders.size>64)return;
+    if(!orders.size){mark('ORDER_LINK_MISSING');return}
+    if(orders.size>64){mark('ORDER_LIMIT');return}
     const raw=[];
     for(const [orderId,order] of orders){
      const receipts=executionFills(await this.client.fillOrders({...window,orderId}));
      const owned=receipts.filter(f=>f.orderId===orderId&&f.symbol===p.venueSymbol&&f.side===order.side&&f.at>=window.startTs&&f.at<=window.endTs);
-     if(order.confirmed&&!owned.length)return;
+     if(order.confirmed&&!owned.length){mark('FILL_PENDING');return}
      raw.push(...owned);
     }
     const fills=raw.sort((a,b)=>a.at-b.at||a.tradeId.length-b.tradeId.length||a.tradeId.localeCompare(b.tradeId));
+    if(!fills.length){mark('FILL_PENDING');return}
+    const openSide=p.direction==='SHORT'?'SELL':'BUY';
+    const totals={BUY:0,SELL:0};for(const f of fills)totals[f.side]+=f.qty;
+    if(!(totals[openSide]>0)||!(totals.BUY>0&&totals.SELL>0)||!sameSize(totals.BUY,totals.SELL)){mark('QUANTITY_MISMATCH');return}
     const result=summarizeBalancedFills(fills,p.direction);
-    if(!result||this.store.closed.indexOf(p)<0)return;
+    if(!result){mark('INCOMPLETE_FILLS');return}
+    if(!this.store.closed.includes(p))return;
     Object.assign(p,{netSource:'EXCHANGE_FILLS',netUSD:result.netUSD,pnlUSD:result.pnlUSD,feeUSD:result.feeUSD,settledAt:now});
-    this.#save();
-   }catch(error){this.log(`[COPY] fill settlement ${error?.code||error?.message||'FAILED'}`)}
+    mark('CONFIRMED');
+    this.#event('COPY_SETTLED',{symbol:p.symbol,direction:p.direction});
+   }catch(error){mark('LOOKUP_FAILED');this.log(`[COPY] fill settlement ${error?.code||error?.message||'FAILED'}`)}
   }
  }
  async #legacyOrders(p,{startTs,endTs}){
@@ -811,10 +941,13 @@ export class CopyExecutor{
  reconcile(){
   if(this.reconciling)return this.reconciling;
   this.pendingCount=(this.pendingCount||0)+1;
-  const p=this.queue.then(()=>this.#reconcile()).finally(()=>{this.pendingCount--;this.reconciling=null});
-  this.queue=p.catch(()=>{});this.reconciling=p;return p;
+  const management=this.queue.then(()=>this.#reconcile()).finally(()=>{this.pendingCount--});
+  this.queue=management.catch(()=>{});
+  this.reconciling=management.then(()=>this.#auditReconcile()).finally(()=>{this.reconciling=null});
+  return this.reconciling;
  }
  async #reconcile(){
+  if(this.audit)for(const p of Object.values(this.store.positions))if(p.auditQty==null)p.auditQty=pos(p.qty);
   const inflight=job=>this.store.positions[this.#key(job.m)]?.inflight===true;
   const retried=new Set();
   for(const job of this.store.pending.splice(0)){
@@ -846,7 +979,7 @@ export class CopyExecutor{
     if(!p.steps?.length){const f=await this.#entryFill(p);
      if(!f.filled){const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
       this.#event('UNCONFIRMED_ADOPT',{symbol:p.symbol,reason:f.absent?'ENTRY_ORDER_NOT_FOUND':'ENTRY_LOOKUP_FAILED',size:now.size,detail:`거래소에 ${now.size} 보유 — 우리 진입 체결이 확인되지 않아 원장에 넣지 않음(직접 확인 필요)`});continue}
-     p.steps=[{kind:'ADOPTED',at:this.now(),qty:now.size}]}
+     p.steps=[{kind:'ADOPTED',at:this.now(),qty:now.size}];if(this.audit)p.auditQty=now.size}
     // A close of ours that did not go through (no answer, a refusal): closed again.
     if(p.closing&&!['TRADER_CLOSE','TRADER_CUT_ALL'].includes(p.closing.reason)){await this.#emergency(p,p.closing.reason);continue}
     p.qty=now.size;p.avg=now.avg??p.avg;p.unrealized=now.unrealized;p.mark=now.mark;unrealized+=Number(now.unrealized)||0;

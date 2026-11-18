@@ -12,7 +12,11 @@ test('ledger: missing and pending results stay out of the win rate and settled c
  assert.equal(s.closedCount,4);
  assert.deepEqual([s.settled,s.estimated,s.unknown,s.pending,s.winRateSample],[1,1,1,1,2]);
  assert.equal(s.winRatePct,50);assert.equal(s.netUSD,1);
+ assert.equal(s.confirmedWinRatePct,100);assert.equal(s.confirmedNetUSD,1.5);
  assert.equal(ledgerSummary({closed:[{netUSD:null,netSource:'UNKNOWN'}]}).winRatePct,null);
+ const withStatus=ledgerSummary({closed:[{netSource:'UNKNOWN',settlement:{state:'ORDER_LINK_MISSING',checkedAt:123}}]});
+ assert.deepEqual(withStatus.trades[0].settlement,{state:'ORDER_LINK_MISSING',checkedAt:123});
+ assert.equal(withStatus.confirmedWinRatePct,null);assert.equal(withStatus.confirmedNetUSD,null);
 });
 
 const rec={signalKey:'CRYPTO:AUSDT:SHORT:P1:1',clientOrderId:'slabc',entryOrderId:'1736012449498123737',stopOrderId:'9',targetOrderIds:['8'],
