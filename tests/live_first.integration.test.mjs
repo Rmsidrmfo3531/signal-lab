@@ -121,9 +121,9 @@ test('real-account calendar publishes recent income when older windows are empty
  }finally{await app.close()}
 });
 
-test('real manual position sends a differently formatted Telegram alert through the configured transport',async()=>{
+test('real manual entry and add reach Telegram only after matching exchange fills',{timeout:30000},async()=>{
  const position={symbol:'BTC-USDT',positionSide:'BOTH',positionAmt:'0.01',avgPrice:'50000',markPrice:'50100',leverage:'10'};
- const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],env:{
+ const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],fakeBingxLiveFills:[],env:{
   BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',
   COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',PAPER_TRADING:'off',
   TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_CHAT_ID:'-123456',
@@ -133,16 +133,17 @@ test('real manual position sends a differently formatted Telegram alert through 
   await app.start();
   const before=await until(()=>app.get('/api/copy'),c=>c.venuePositionsAt!=null);
   assert.equal(before.manual.open.length,0);
-  await app.write({fakeBingxLivePositions:[position]});
+  const fill=(id,price)=>({symbol:'BTC-USDT',side:'BUY',positionSide:'BOTH',tradeId:id,orderId:id,qty:.01,price,time:Date.now()+1});
+  const first=fill('101',50000);
+  await app.write({fakeBingxLivePositions:[position],fakeBingxLiveFills:[first]});
   await until(()=>app.get('/api/copy'),c=>c.manual?.open?.length===1,{timeout:14000,label:'manual position after two reads'});
-  const messages=await until(notices,list=>list.length===1);
-  assert.match(messages[0].text,/^🔴 실계좌 \| 수동 \| 신규 진입\nBTCUSDT · 롱 · 10배/);
-  assert.match(messages[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT/);
-  await app.get('/api/copy');
-  assert.equal((await notices()).length,1);
-  await app.write({fakeBingxLivePositions:[{...position,positionAmt:'0.02',avgPrice:'50050'}]});
+  assert.equal((await notices()).length,0,'position snapshot alone sends nothing');
+  await app.write({fakeBingxLivePositions:[{...position,positionAmt:'0.02',avgPrice:'50050'}],fakeBingxLiveFills:[first,fill('102',50100)]});
   await until(()=>app.get('/api/copy'),c=>c.manual?.open?.[0]?.size===0.02,{timeout:12000,label:'updated manual position size'});
-  const added=await until(notices,list=>list.length===2);
+  await app.write({clockOffsetMs:60000});
+  const added=await until(async()=>{await app.get('/api/copy');return notices()},list=>list.length===2,{timeout:16000,label:'confirmed Telegram notices'});
+  assert.match(added[0].text,/^🔴 실계좌 \| 수동 \| 신규 진입\nBTCUSDT · 롱 · 10배/);
+  assert.match(added[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT/);
   assert.match(added[1].text,/^🔴 실계좌 \| 수동 \| 추가 진입[\s\S]*수량 \+0\.01 · 잔여 0\.02/);
  }finally{await app.close()}
 });

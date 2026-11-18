@@ -431,6 +431,7 @@ function copyNotice(e){
 let manualTelegram=Promise.resolve(),lastManualTelegramAt=0;
 function manualTradeNotice(e){
  const text=manualTradeText(e);if(!text)return;
+ reportsDirty=true;
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
  manualTelegram=manualTelegram.then(async()=>{
   const delay=lastManualTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
@@ -740,6 +741,7 @@ async function uploadReport(force=false){
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange:await exchangeReport().catch(e=>({error:e.message}))});
   report.release=appVersion.displayVersion;
+  if(manualLedger)report.manualAlerts=manualLedger.alertStatus();
   if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
    balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();

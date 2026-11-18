@@ -98,6 +98,18 @@ export class BingXTradeClient{
  fillOrders({startTs,endTs,orderId}){
   return this.request('GET','/openApi/swap/v2/trade/allFillOrders',defined({tradingUnit:'COIN',currency:'USDT',startTs,endTs,orderId}));
  }
+ async fillHistory({symbol,startTs,endTs}){
+  const rows=[],pageSize=100;
+  for(let pageIndex=1;pageIndex<=4;pageIndex++){
+   const data=await this.request('GET','/openApi/swap/v2/trade/fillHistory',{symbol,startTs,endTs,pageIndex,pageSize,currency:'USDT'});
+   if(data===null||data?.fill_orders===null||data?.fillOrders===null)return rows;
+   const page=data?.fill_orders??data?.fillOrders??(Array.isArray(data)?data:null);
+   if(!Array.isArray(page))throw Error('UNEXPECTED_FILL_HISTORY');
+   rows.push(...page);
+   if(page.length<pageSize)return rows;
+  }
+  throw Error('INCOMPLETE_FILL_HISTORY');
+ }
 }
 const defined=o=>Object.fromEntries(Object.entries(o).filter(([,v])=>v!==undefined&&v!==null&&v!==''));
 

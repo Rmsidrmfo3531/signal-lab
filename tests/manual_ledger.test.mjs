@@ -40,17 +40,13 @@ test('manual: open (2 reads) -> add -> reduce -> close (2 reads) -> settled from
   {symbol:'BTC-USDT',incomeType:'TRADING_FEE',income:'-0.5',time:t5-4000,tranId:'e'},{symbol:'ETH-USDT',incomeType:'REALIZED_PNL',income:'99',time:t5-4000,tranId:'f'},
   {symbol:'BTC-USDT',incomeType:'REALIZED_PNL',income:'77',time:t1-600000,tranId:'g'},{symbol:'BTC-USDT',incomeType:'TRANSFER',income:'1000',time:t3,tranId:'h'});
  await m.settle();assert.equal(m.status().closed[0].netSource,'PENDING','not before settleDelayMs');
- assert.deepEqual(notices.map(e=>e.type),['MANUAL_OPEN','MANUAL_ADD','MANUAL_REDUCE']);
+ assert.deepEqual(notices,[],'position snapshots alone do not send an alert');
  c.add(20000);await m.settle();x=m.status().closed[0];
  assert.equal(x.netSource,'EXCHANGE');assert.equal(x.netUSD,16.15);assert.equal(x.pnlUSD,17);assert.equal(x.feeUSD,-0.75);assert.equal(x.fundingUSD,-0.1);
  assert.equal(inc.calls.at(-1).symbol,'BTC-USDT');assert.equal(inc.calls.at(-1).startTime,t1-60000);assert.ok(inc.calls.at(-1).endTime<=t5+120000);
  assert.equal(m.status().netUSD,16.15);assert.equal(m.status().settled,1);
- assert.deepEqual(notices.map(e=>e.type),['MANUAL_OPEN','MANUAL_ADD','MANUAL_REDUCE','MANUAL_SETTLED']);
- assert.match(manualTradeText(notices[0]),/^🔴 실계좌 \| 수동 \| 신규 진입\nBTCUSDT · 롱 · 10배/);
- assert.match(manualTradeText(notices[1]),/추가 진입[\s\S]*수량 \+0\.02 · 잔여 0\.03\n평균 진입가 50,500 USDT/);
- assert.match(manualTradeText(notices[2]),/부분 익절[\s\S]*청산 수량 0\.01 · 잔여 0\.02/);
- assert.match(manualTradeText(notices[3]),/전량 익절[\s\S]*순손익 \+\$9\.49 \(추정\)[\s\S]*KST/);
- await m.settle();assert.equal(notices.length,4,'settlement is announced once');
+ await m.settle();assert.equal(notices.length,0,'whole-position income cannot confirm which order closed the position');
+ assert.equal(m.alertStatus().pending,4);
  // On disk, its own file; reloaded as is.
  const saved=JSON.parse(fs.readFileSync(path.join(dir,MANUAL_LEDGER_FILE),'utf8'));assert.equal(saved.origin,'manual');assert.equal(saved.closed[0].netUSD,16.15);
  assert.equal(fs.existsSync(path.join(dir,'copy-store-live.json')),false,'never writes the copy ledger');
@@ -173,10 +169,30 @@ test('manual alerts use each exact reduction and final fill, while the journal s
  await m.settle();assert.equal(m.status().closed[0].netUSD,8);assert.equal(events.length,3,'later whole-trade income never sends a second full-close alert');
 });
 
-test('manual notifications keep zero and unknown close P&L neutral',()=>{
- const base={symbol:'BTCUSDT',direction:'SHORT',from:2,to:1};
- assert.match(manualTradeText({...base,type:'MANUAL_REDUCE',netUSD:null}),/부분 청산[\s\S]*순손익 확인 불가/);
- assert.match(manualTradeText({...base,type:'MANUAL_SETTLED',size:1,netUSD:-.004}),/전량 청산[\s\S]*\$0\.00 · 본전/);
+test('manual notifications require confirmed trade data and label exact zero as break-even',()=>{
+ const base={symbol:'BTCUSDT',direction:'SHORT',from:2,to:1,fromFills:true,netSource:'EXCHANGE_FILLS'};
+ assert.equal(manualTradeText({...base,type:'MANUAL_REDUCE',netUSD:null}),null);
+ assert.equal(manualTradeText({...base,type:'MANUAL_SETTLED',netUSD:-2,netSource:'ESTIMATE'}),null);
+ assert.equal(manualTradeText({...base,type:'MANUAL_OPEN',fromFills:false,size:1,avg:10}),null);
+ assert.match(manualTradeText({...base,type:'MANUAL_REDUCE',netUSD:0}),/부분 본전[\s\S]*순손익 \$0\.00/);
+ assert.match(manualTradeText({...base,type:'MANUAL_SETTLED',size:1,netUSD:0}),/전량 본전[\s\S]*순손익 \$0\.00/);
+ assert.match(manualTradeText({...base,type:'MANUAL_SETTLED',size:1,netUSD:-.004}),/전량 손절[\s\S]*−\$0\.004/);
+});
+
+test('manual alerts survive delayed receipts, restart and missing hedge direction until the exact fee is present',async()=>{
+ const c=clock(),dir=tmp(),events=[];let fill=null;
+ const m=()=>new ManualLedger({directory:dir,now:c.now,onEvent:e=>events.push(e),client:{
+  fillOrders:async()=>{throw Error('bulk unavailable')},fillHistory:async q=>{assert.equal(q.symbol,'BTC-USDT');return fill?[fill]:[]},
+  getOrder:async()=>({order:{symbol:'BTC-USDT',orderId:'91',positionSide:'SHORT',side:'BUY'}})}});
+ let ledger=m();ledger.observe(snap(c.now(),[row({positionSide:'SHORT',direction:'SHORT',size:2})]));
+ const partAt=c.add(15000);ledger.observe(snap(partAt,[row({positionSide:'SHORT',direction:'SHORT',size:1})]));
+ c.add(360000);await ledger.settle();assert.equal(events.length,0);assert.equal(ledger.alertStatus().pending,1);
+ ledger=m();fill={symbol:'BTC-USDT',orderId:'91',tradeId:'99',time:partAt-1000,side:'BUY',qty:1,price:5,realizedPnl:.1};
+ c.add(15000);await ledger.settle();assert.equal(events.length,0,'known realized P&L without a fee is still pending');
+ fill.fee=-.1;c.add(30000);await ledger.settle();await ledger.settle();
+ assert.equal(ledger.alertStatus().pending,0);assert.equal(events.length,1);
+ assert.match(manualTradeText(events[0]),/부분 본전[\s\S]*\$0\.00/);
+ fs.rmSync(dir,{recursive:true,force:true});
 });
 
 test('copy loss limit: computed from the copy ledger only — a large manual loss on the same account changes nothing',async()=>{
