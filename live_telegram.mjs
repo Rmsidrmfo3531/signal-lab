@@ -9,18 +9,24 @@ const usd=v=>{const x=Number(v);return Number.isFinite(x)?(x>=0?'+':'−')+'$'+M
 const tradeAmount=new Intl.NumberFormat('en-US',{maximumFractionDigits:12});
 const observedTime=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
 const amount=v=>v==null||!Number.isFinite(Number(v))?'—':tradeAmount.format(Number(v));
-const MANUAL_ACTION={MANUAL_OPEN:'신규 진입',MANUAL_ADD:'추매',MANUAL_REDUCE:'일부 청산',MANUAL_SETTLED:'전량 청산'};
+const MANUAL_ACTION={MANUAL_OPEN:'신규 진입',MANUAL_ADD:'추가 진입',MANUAL_REDUCE:'부분',MANUAL_SETTLED:'전량'};
 
 /** Text for a confirmed real-account change from the manual ledger. */
 export function manualTradeText(e){
- const action=e?.type==='MANUAL_SETTLED'&&e.fromFills?'진입·전량 청산':MANUAL_ACTION[e?.type];
- if(!action||!e.symbol)return null;
+ const actionBase=MANUAL_ACTION[e?.type];
+ if(!actionBase||!e.symbol)return null;
+ const closing=e.type==='MANUAL_REDUCE'||e.type==='MANUAL_SETTLED';
+ const net=e.netUSD==null||!Number.isFinite(Number(e.netUSD))?null:Number(e.netUSD);
+ const cents=net===null?null:Math.round(Math.abs(net)*100);
+ const action=closing?`${actionBase} ${!cents?'청산':net>0?'익절':'손절'}`:actionBase;
  const head=[`🔴 실계좌 | 수동 | ${action}`,[e.symbol,SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
- else if(e.type==='MANUAL_SETTLED'){
+ else if(closing){
   const source=e.netSource==='EXCHANGE'?'거래소 정산 · 수수료·펀딩 포함':e.netSource==='EXCHANGE_FILLS'?'거래소 체결 · 수수료 포함, 펀딩 제외':e.netSource?.startsWith('MIXED_WITH_')?'추정 · 동일 종목 정산 혼재':'추정';
-  detail=[`청산 수량 ${amount(e.size)}`,e.netUSD==null?'순손익 확인 불가':`순손익 ${usd(e.netUSD)} (${source})`].join('\n');
+  const size=e.size??(Number(e.from)-Number(e.to));
+  detail=[`청산 수량 ${amount(size)}${e.type==='MANUAL_REDUCE'?` · 잔여 ${amount(e.to)}`:''}`,
+   net===null?'순손익 확인 불가':`순손익 ${cents?usd(net):'$0.00 · 본전'} (${source})`].join('\n');
  }else{
   const change=Number(e.to)-Number(e.from);
   detail=`수량 ${change>0?'+':'−'}${amount(Math.abs(change))} · 잔여 ${amount(e.to)}`;
