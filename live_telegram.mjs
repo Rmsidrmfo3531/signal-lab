@@ -29,8 +29,8 @@ export function realTradeText(e){
   detail=[`청산 수량 ${amount(size)}${e.type==='MANUAL_REDUCE'?` · 잔여 ${amount(e.to)}`:''}`,
    `순손익 ${result} (거래소 체결 · 수수료 포함, 펀딩 제외)`].join('\n');
  }else{
-  const change=Number(e.to)-Number(e.from);
-  detail=`수량 ${change>0?'+':'−'}${amount(Math.abs(change))} · 잔여 ${amount(e.to)}`;
+  const change=e.size??(Number(e.to)-Number(e.from));
+  detail=`수량 +${amount(change)}${e.to!=null?` · 잔여 ${amount(e.to)}`:''}`;
   if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n추가 체결가 ${amount(e.avg)} USDT`;
  }
  const at=Number(e.observedAt??e.at);

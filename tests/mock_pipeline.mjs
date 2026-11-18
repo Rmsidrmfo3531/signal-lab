@@ -76,6 +76,10 @@ globalThis.fetch=async(input,options={})=>{
   return rows.slice(-limit).map(r=>({t:Number(r[0])/1000,o:String(r[1]),h:String(r[2]),l:String(r[3]),c:String(r[4]),v:String(Number(r[5])*100),sum:String(Number(r[5])*Number(r[4]))}))};
  if(url.hostname==='open-api.bingx.com'){
   const live=control(),liveIncome=live.fakeBingxLiveIncome;
+  if(url.pathname==='/openApi/swap/v2/trade/order'&&Array.isArray(live.fakeBingxLiveOrders)){
+   const order=live.fakeBingxLiveOrders.find(o=>o.orderId===url.searchParams.get('orderId')&&o.symbol===url.searchParams.get('symbol'));
+   return json({code:0,data:{order:order??null}});
+  }
   if(url.pathname==='/openApi/swap/v2/trade/allFillOrders'&&Array.isArray(live.fakeBingxLiveFills)){
    const from=Number(url.searchParams.get('startTs')),to=Number(url.searchParams.get('endTs'));
    return json({code:0,data:live.fakeBingxLiveFills.filter(f=>from<=f.time&&f.time<=to)});

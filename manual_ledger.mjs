@@ -38,6 +38,7 @@ const ownerOf=p=>p?.alertOrigin&&p.alertOwnerId?`${p.alertOrigin}|${p.alertOwner
 const incomeKey=x=>String(x?.tranId??x?.tradeId??[x?.incomeType,x?.symbol,x?.time,x?.income].join('|'));
 const FILL_DELAY_MS=45000;
 const qtyTolerance=qty=>Math.max(1e-12,Math.abs(qty)*1e-8);
+const alertOrderKey=(symbol,orderId)=>createHash('sha256').update(`${symbol}|${orderId}`).digest('hex').slice(0,32);
 function fillActions(fills,{symbol,direction,leverage,alertOrigin='MANUAL',initialSize=0}){
  const groups=[];
  for(const fill of fills){
@@ -48,7 +49,8 @@ function fillActions(fills,{symbol,direction,leverage,alertOrigin='MANUAL',initi
  let size=initialSize;
  return groups.map(group=>{
   const from=size,qty=group.reduce((sum,f)=>sum+f.qty,0),opening=group[0].side===(direction==='SHORT'?'SELL':'BUY');
-  const common={symbol,direction,leverage,alertOrigin,observedAt:group.at(-1).at,fromFills:true};
+  const common={symbol,direction,leverage,alertOrigin,observedAt:group.at(-1).at,fromFills:true,
+   alertKey:alertOrderKey(group[0].symbol,group[0].orderId)};
   if(opening){
    const avg=group.reduce((sum,f)=>sum+f.price*f.qty,0)/qty;size+=qty;
    return {type:from>0?'MANUAL_ADD':'MANUAL_OPEN',detail:{...common,from,to:size,size:qty,avg}};
@@ -94,20 +96,23 @@ function historicalManualCycle(rows,p){
 export class ManualLedger{
  /** client: read-only BingX income, fill and order queries. copyRecords(): the copy ledger's positions and closed
   * rows (read only, for the window check). */
- constructor({directory=null,fileName=MANUAL_LEDGER_FILE,client=null,copyRecords=()=>[],now=()=>Date.now(),log=()=>{},onEvent=()=>{},
+ constructor({directory=null,fileName=MANUAL_LEDGER_FILE,client=null,copyRecords=()=>[],now=()=>Date.now(),log=()=>{},onEvent=()=>{},copyOrderAlerts=false,sendTelegram=null,
   feeRate=0.0005,openReads=2,closeReads=2,settleDelayMs=20000,settleDeadlineMs=5*60000,preMs=60000,postMs=120000,copyCloseGraceMs=30000}={}){
-  Object.assign(this,{client,copyRecords,now,log,onEvent,feeRate,openReads,closeReads,settleDelayMs,settleDeadlineMs,preMs,postMs,copyCloseGraceMs});
+  Object.assign(this,{client,copyRecords,now,log,onEvent,copyOrderAlerts,sendTelegram,feeRate,openReads,closeReads,settleDelayMs,settleDeadlineMs,preMs,postMs,copyCloseGraceMs});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={origin:'manual',account:'BINGX_LIVE',positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],claimed:saved?.claimed||[],
    pendingAlerts:Array.isArray(saved?.pendingAlerts)?saved.pendingAlerts:[],managedPositions:saved?.managedPositions??{},
-   managedFast:Array.isArray(saved?.managedFast)?saved.managedFast:[]};
+   managedFast:Array.isArray(saved?.managedFast)?saved.managedFast:[],
+   copyAlertsSince:saved?.copyAlertsSince??null,alertOrders:Array.isArray(saved?.alertOrders)?saved.alertOrders:[],
+   telegramQueue:Array.isArray(saved?.telegramQueue)?saved.telegramQueue:[],telegramSent:saved?.telegramSent??0,telegramByOrigin:saved?.telegramByOrigin??{},
+   telegramLastAt:saved?.telegramLastAt??null,telegramError:saved?.telegramError??null};
   if(Array.isArray(saved?.reductions))for(const note of saved.reductions)this.#queueAlert(note,note,note.fromAt);
   for(const row of this.store.closed){
    if(row.notifySettlement&&row.exitNote)this.#queueAlert(row,row.exitNote,row.exitNote.fromAt);
    delete row.notifySettlement;delete row.exitNote;
   }
-  this.fillSides=new Map();
+  this.fillSides=new Map();this.copyAlertRetries=new Map();this.delivery=null;
   this.historyAttempts=new Map();this.lastHistoryAt=null;
   this.lastPositionKeys=new Set();
   this.lastReadAt=0;this.started=false;this.candidates=new Map();this.settling=null;this.notices=[];
@@ -116,13 +121,19 @@ export class ManualLedger{
  #save(){
   if(this.file){
    this.store.closed=this.store.closed.slice(-MAX_CLOSED);this.store.events=this.store.events.slice(-MAX_EVENTS);this.store.claimed=this.store.claimed.slice(-MAX_CLAIMED);
-   this.store.managedFast=this.store.managedFast.slice(-MAX_CLAIMED);
+   this.store.managedFast=this.store.managedFast.slice(-MAX_CLAIMED);this.store.alertOrders=this.store.alertOrders.slice(-MAX_CLAIMED);
    fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...this.store});
   }
   for(const event of this.notices.splice(0))try{this.onEvent(event)}catch{this.log('[MANUAL] notice failed')}
  }
  #event(type,detail={},notify=false){
+  if(notify&&detail.alertKey){
+   if(this.store.alertOrders.includes(detail.alertKey))return null;
+   this.store.alertOrders.push(detail.alertKey);
+   if(this.store.events.some(e=>!e.alertKey&&e.fromFills&&e.alertOrigin===detail.alertOrigin&&e.symbol===detail.symbol&&e.direction===detail.direction&&e.type===type&&e.observedAt===detail.observedAt&&e.size===detail.size))return null;
+  }
   const e={type,at:this.now(),...detail};this.store.events.push(e);if(notify)this.notices.push(e);
+  if(notify&&this.sendTelegram)this.store.telegramQueue.push({event:e,nextAt:this.now()});
   this.log(`[MANUAL] ${type} ${detail.symbol||''}`.trim());return e;
  }
  #copyList(){try{const l=this.copyRecords();return Array.isArray(l)?l.filter(Boolean):[]}catch{return []}}
@@ -325,6 +336,94 @@ export class ManualLedger{
   if(done.size)this.store.pendingAlerts=this.store.pendingAlerts.filter(note=>!done.has(note));
   return true;
  }
+ async #settleCopyAlerts(now){
+  if(!this.copyOrderAlerts||typeof this.client?.getOrder!=='function')return false;
+  const start=this.store.copyAlertsSince??(now-30*60000);
+  let changed=this.store.copyAlertsSince==null;this.store.copyAlertsSince=start;
+  const candidates=[];
+  for(const p of this.#copyList()){
+   if(p.alertOrigin!=='COPY'||!p.venueSymbol||!p.direction)continue;
+   const side=p.direction==='LONG'?'BUY':'SELL',openingOrders=(p.fillOrders??[]).filter(o=>o.side===side);
+   const openingSteps=(p.steps??[]).filter(s=>s.kind==='OPEN'||s.kind==='ADD');
+   for(const o of p.fillOrders??[]){
+    if(!o.id)continue;
+    const stage=o.notice??(o.side===side&&openingOrders.length===openingSteps.length&&openingSteps[0]?.kind==='OPEN'?openingSteps[openingOrders.indexOf(o)]:null);
+    if(!(stage?.at>0)||stage.at<start||stage.at>now||o.side!==side&&!(stage.from>0))continue;
+    const key=alertOrderKey(p.venueSymbol,o.id);
+    if(this.store.alertOrders.includes(key)||(this.copyAlertRetries.get(key)??0)>now)continue;
+    candidates.push({p,o,stage,key});
+   }
+  }
+  for(const candidate of candidates.sort((a,b)=>a.stage.at-b.stage.at).slice(0,6)){
+   const {key}=candidate;
+   try{
+    const e=await this.#copyAlert(candidate,now);
+    if(e){this.#event(e.type,e.detail,true);this.copyAlertRetries.delete(key);changed=true;continue}
+   }catch(e){this.log(`[MANUAL] copy order receipt ${e?.code||'LOOKUP_FAILED'}`)}
+   this.copyAlertRetries.set(key,now+60000);
+  }
+  while(this.copyAlertRetries.size>MAX_CLAIMED)this.copyAlertRetries.delete(this.copyAlertRetries.keys().next().value);
+  return changed;
+ }
+ async #copyAlert({p,o,stage,key},now){
+  const symbol=p.venueSymbol,orderId=String(o.id),response=await this.client.getOrder(symbol,{orderId}),order=response?.order??response;
+  if(String(order?.orderId??order?.orderID)!==orderId||order?.symbol!==symbol||String(order?.side).toUpperCase()!==o.side)return null;
+  if(!['FILLED','CANCELED','CANCELLED','EXPIRED'].includes(String(order.status).toUpperCase()))return null;
+  const size=num(order.executedQty),avg=num(order.avgPrice);
+  if(!(size>0)||!(avg>0))return null;
+  const lane=String(order.positionSide??'').toUpperCase();
+  if(p.hedge===true&&lane&&lane!==p.direction)return null;
+  const opening=o.side===(p.direction==='SHORT'?'SELL':'BUY');
+  let observedAt=num(order.updateTime??order.updatedTime??order.filledTm),pnl=num(order.realizedPnl??order.realizedPnL??order.profit),fee=num(order.fee??order.commission);
+  if(!(observedAt>0)||!opening&&(pnl===null||fee===null)){
+   if(typeof this.client.fillOrders!=='function'&&typeof this.client.fillHistory!=='function')return null;
+   const window={startTs:Math.max(1,stage.at-180000),endTs:Math.min(now,stage.at+300000)};
+   const confirm=async raw=>{const fills=await confirmedBingxFills(this.client,raw,{symbol,orders:new Map([[orderId,{order,side:o.side}]])});
+    return fills.length&&Math.abs(fills.reduce((total,f)=>total+f.qty,0)-size)<=qtyTolerance(size)&&
+     (opening||fills.every(f=>f.pnl!==null&&f.fee!==null))?fills:null};
+   let fills=null;
+   try{if(typeof this.client.fillOrders==='function')fills=await confirm(await this.client.fillOrders({...window,orderId}))}catch{}
+   if(!fills&&typeof this.client.fillHistory==='function')fills=await confirm(await this.client.fillHistory({symbol,...window}));
+   if(!fills)return null;
+   observedAt=fills.at(-1).at;
+   if(!opening){if(fills.some(f=>f.pnl===null||f.fee===null))return null;pnl=fills.reduce((sum,f)=>sum+f.pnl,0);fee=fills.reduce((sum,f)=>sum+f.fee,0)}
+  }
+  if(!(observedAt>0))return null;
+  if(observedAt>=1e9&&observedAt<1e11)observedAt*=1000;
+  if(observedAt>now+10000)return null;
+  const detail={symbol:p.symbol??symbol.replace(/-/g,''),direction:p.direction,leverage:p.leverage,alertOrigin:'COPY',fromFills:true,alertKey:key,observedAt,size};
+  const from=num(stage.from);
+  if(opening){
+   const entry=/^open(?:\.|$)/.test(stage.tag??'')||stage.kind==='OPEN';
+   return {type:entry?'MANUAL_OPEN':'MANUAL_ADD',detail:{...detail,avg,from,to:from!==null?from+size:null}};
+  }
+  if(!(from>0)||size-from>qtyTolerance(from))return null;
+  const to=from-size<=qtyTolerance(from)?0:from-size;
+  return {type:to===0?'MANUAL_SETTLED':'MANUAL_REDUCE',detail:{...detail,from,to,netSource:'EXCHANGE_FILLS',netUSD:Number((pnl+fee).toFixed(12))}};
+ }
+ deliverAlerts(){
+  if(!this.sendTelegram||!this.store.telegramQueue.length)return Promise.resolve();
+  if(!this.delivery)this.delivery=this.#deliverAlerts().catch(()=>this.log('[MANUAL] Telegram queue failed')).finally(()=>{this.delivery=null});
+  return this.delivery;
+ }
+ async #deliverAlerts(){
+  for(const item of this.store.telegramQueue.filter(x=>x.nextAt<=this.now()).slice(0,6)){
+   let outcome;
+   try{outcome=await this.sendTelegram(item.event)}catch{outcome={error:'TRANSPORT_FAILED'}}
+   if(outcome?.paused){this.store.telegramError=outcome.error;this.#save();return}
+   if(outcome?.ok){
+    this.store.telegramQueue=this.store.telegramQueue.filter(x=>x!==item);this.store.telegramSent++;
+    const origin=item.event.alertOrigin??'MANUAL';this.store.telegramByOrigin[origin]=(this.store.telegramByOrigin[origin]??0)+1;
+    this.store.telegramLastAt=this.now();this.store.telegramError=null;
+   }else{
+    item.attempts=(item.attempts??0)+1;
+    item.nextAt=this.now()+Math.max(outcome?.retryMs??0,Math.min(15*60000,15000*2**Math.min(item.attempts-1,6)));
+    this.store.telegramError=outcome?.error??'DELIVERY_UNCONFIRMED';
+   }
+   this.#save();
+   if(outcome?.retryMs>0)return;
+  }
+ }
  /** Recover trades opened and closed entirely between successful position reads. */
  recoverFastTrades(){
   if(typeof this.client?.fillOrders!=='function')return Promise.resolve();
@@ -413,10 +512,13 @@ export class ManualLedger{
  }
  async #settleAll(historyLimit){
   const now=this.now(),todo=this.store.closed.filter(x=>x.netSource==='PENDING'&&now>=x.closedAt+this.settleDelayMs).sort((a,b)=>a.closedAt-b.closedAt);
+  if(await this.#settleCopyAlerts(now))this.#save();
+  void this.deliverAlerts();
   let changed=await this.#settleAlerts(now);
   for(const x of todo){if(await this.#settleOne(x,now))changed=true}
   if(await this.#settleHistory(now,historyLimit))changed=true;
   if(changed)this.#save();
+  void this.deliverAlerts();
  }
  async #settleHistory(now,limit){
   if(typeof this.client?.fillOrders!=='function'&&typeof this.client?.fillHistory!=='function')return false;
@@ -504,6 +606,7 @@ export class ManualLedger{
   for(const e of confirmed){const key=e.alertOrigin??'MANUAL';byOrigin[key]=(byOrigin[key]??0)+1}
   return {pending:this.store.pendingAlerts.length,confirmedRecent:confirmed.length,byOrigin};
  }
+ telegramStatus(){return {pending:this.store.telegramQueue.length,sent:this.store.telegramSent,byOrigin:{...this.store.telegramByOrigin},lastAt:this.store.telegramLastAt,error:this.store.telegramError}}
  /** For the page: open records, the last 200 closes (newest first, origin manual) and totals of the settled ones. */
  status(){
   const pub=x=>{const {claimed,missing,goneAt,notifySettlement,exitNote,historyFillKeys,...rest}=x;return {...rest,origin:'manual'}};

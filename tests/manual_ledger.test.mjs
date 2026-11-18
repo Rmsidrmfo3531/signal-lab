@@ -238,6 +238,31 @@ test('a fast owned automatic signal trade between flat snapshots is confirmed on
  assert.equal(m.status().closedTotal,0);
 });
 
+test('copy order receipts drive alerts without usable position snapshots, and rejected Telegram posts survive restart',async()=>{
+ const c=clock(),at=c.now(),dir=tmp(),events=[],sent=[];
+ const fill=(id,side,qty,profit,commission)=>({orderId:id,symbol:'BTC-USDT',positionSide:'LONG',side,status:'FILLED',
+  executedQty:String(qty),avgPrice:'10',updateTime:at-15000+Number(id),profit,commission});
+ const receipts=new Map([fill('1','BUY',1),fill('2','BUY',1),fill('3','SELL',1,1,-.1),fill('4','SELL',1,.1,null)].map(o=>[o.orderId,o]));
+ const info=(id,side,tag,from)=>({id,side,notice:{tag,from,at:at-20000+Number(id)}});
+ const owner={alertOrigin:'COPY',alertOwnerId:'copy-order-receipts',symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',hedge:true,leverage:10,
+  fillOrders:[info('1','BUY','open.1',0),info('2','BUY','add.2',1),info('3','SELL','cut1',2),info('4','SELL','close.3',1)]};
+ const options={directory:dir,client:{getOrder:async(s,{orderId})=>({order:receipts.get(orderId)})},copyRecords:()=>[owner],copyOrderAlerts:true,now:c.now,onEvent:e=>events.push(e)};
+ try{
+  const m=new ManualLedger({...options,sendTelegram:async()=>({error:'HTTP_429',retryMs:30000})});
+  // It is already open by the time polling first sees it, and the next successful read is much later.
+  m.observe(snap(at,[row({size:1,positionSide:'LONG'})],[owner]));
+  await m.settle();await m.deliverAlerts();
+  assert.deepEqual(events.map(e=>manualTradeText(e).split('\n')[0]),['신규 진입','추가 진입','부분 익절'].map(x=>'🔴 실계좌 | 카피 | '+x));
+  assert.equal(m.telegramStatus().pending,3);assert.equal(m.telegramStatus().error,'HTTP_429');assert.equal(m.telegramStatus().sent,0);
+  const recovered=new ManualLedger({...options,sendTelegram:async e=>{sent.push(e);return {ok:true}}});
+  c.add(61000);receipts.get('4').commission=-.1;
+  await recovered.settle();await recovered.deliverAlerts();
+  assert.deepEqual(sent.map(e=>manualTradeText(e).split('\n')[0]),['신규 진입','추가 진입','부분 익절','전량 본전'].map(x=>'🔴 실계좌 | 카피 | '+x));
+  assert.equal(events.length,4);assert.equal(recovered.telegramStatus().pending,0);assert.deepEqual(recovered.telegramStatus().byOrigin,{COPY:4});
+  await recovered.settle();await recovered.deliverAlerts();assert.equal(sent.length,4);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
 test('copy loss limit: computed from the copy ledger only — a large manual loss on the same account changes nothing',async()=>{
  const dir=tmp();let size=0;
  const client={leverage:async()=>({maxLongLeverage:20}),setMarginType:async()=>({}),setLeverage:async()=>({}),cancelOrder:async()=>({}),

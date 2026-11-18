@@ -349,7 +349,7 @@ const realCopyPositions=()=>COPY.mode==='LIVE'?Object.values(copyTrader.store.po
 const manualLedger=venuePositionsReader?new ManualLedger({directory:storage.dir,client:realBingxClient,
  copyRecords:()=>[...(COPY.mode==='LIVE'?[...realCopyPositions(),...copyTrader.store.closed].map(p=>({...p,alertOrigin:'COPY',alertOwnerId:p.id})):[]),
   ...(LIVE.mode==='LIVE'?live.store.records.filter(p=>p.mode==='LIVE'&&p.venue==='BINGX'&&!p.test).map(p=>({...p,alertOrigin:'SIGNAL',alertOwnerId:p.signalKey})):[])],
- log:(...a)=>console.log(...a),onEvent:confirmedRealTradeNotice}):null;
+ log:(...a)=>console.log(...a),onEvent:confirmedRealTradeNotice,copyOrderAlerts:COPY.mode==='LIVE',sendTelegram:sendRealTradeTelegram}):null;
 if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(realCopyPositions()));await Promise.all([manualLedger.settle(),manualLedger.recoverFastTrades()])}
  catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
 // Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
@@ -453,24 +453,32 @@ if(copyClient&&COPY.mode==='LIVE'){
 }else if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
 function copyNotice(e){
  if(e?.type==='COPY_SETTLED')reportsDirty=true;
- if(e?.mode==='LIVE'&&manualLedger&&['OPENED','ADDED','REDUCED','CLOSED'].includes(e.type))return;
+ if(e?.mode==='LIVE'&&manualLedger&&['OPENED','ADDED','REDUCED','CLOSED'].includes(e.type)){
+  reportsDirty=true;void manualLedger.settle();return;
+ }
  const text=copyEventText(e);if(!text)return;
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
  telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[COPY TELEGRAM] HTTP',r.status)}).catch(e2=>console.error('[COPY TELEGRAM]',e2.message));
 }
-let realTradeTelegram=Promise.resolve(),lastRealTradeTelegramAt=0;
 function confirmedRealTradeNotice(e){
  const text=realTradeText(e);if(!text)return;
  reportsDirty=true;
  if(e.alertOrigin==='COPY'||e.alertOrigin==='SIGNAL')try{send('live-notice',{type:e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
- if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
- realTradeTelegram=realTradeTelegram.then(async()=>{
-  const delay=lastRealTradeTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
-  if(persisted.notifySettings?.telegramLive===false)return;
-  lastRealTradeTelegramAt=Date.now();
-  const r=await telegramPost({chat_id:CONFIG.tgChat,text});if(!r.ok)console.error('[REAL TRADE TELEGRAM] HTTP',r.status);
- }).catch(()=>console.error('[REAL TRADE TELEGRAM] delivery unconfirmed'));
+}
+let lastRealTradeTelegramAt=0;
+async function sendRealTradeTelegram(e){
+ const text=realTradeText(e);if(!text)return {error:'INVALID_ALERT'};
+ if(persisted.notifySettings?.telegramLive===false)return {paused:true,error:'DISABLED'};
+ if(!CONFIG.tgToken||!CONFIG.tgChat)return {paused:true,error:'NOT_CONFIGURED'};
+ const delay=lastRealTradeTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
+ if(persisted.notifySettings?.telegramLive===false)return {paused:true,error:'DISABLED'};
+ lastRealTradeTelegramAt=Date.now();
+ const r=await telegramPost({chat_id:CONFIG.tgChat,text}),body=await r.json().catch(()=>null);
+ reportsDirty=true;
+ if(r.ok&&body?.ok===true)return {ok:true};
+ const retrySeconds=Number(body?.parameters?.retry_after??r.headers.get('retry-after'));
+ return {error:r.ok?'TELEGRAM_UNCONFIRMED':`HTTP_${r.status}`,retryMs:retrySeconds>0?retrySeconds*1000:0};
 }
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never
@@ -780,7 +788,8 @@ async function uploadReport(force=false){
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange});
   report.release=appVersion.displayVersion;
-  if(manualLedger)report.manualAlerts=manualLedger.alertStatus();
+  if(manualLedger)report.manualAlerts={...manualLedger.alertStatus(),telegram:{...manualLedger.telegramStatus(),
+   enabled:persisted.notifySettings?.telegramLive!==false,configured:Boolean(CONFIG.tgToken&&CONFIG.tgChat)}};
   if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
    balanceAsset:b.balanceAsset,balanceRefreshMs:TESTNET_BALANCE_REFRESH_MS,balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();
