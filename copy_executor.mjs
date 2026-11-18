@@ -308,20 +308,21 @@ export class CopyExecutor{
  /** A new order tag: p.orderSeq goes up on every new order, failed ones included, so a later order never
   * reuses an earlier clientOrderId (review 2026-11-17). Retries of the same order keep its tag. */
  #tag(p,kind){p.orderSeq=(Number(p.orderSeq)||0)+1;return `${kind}.${p.orderSeq}`}
- #rememberFillOrder(p,id,side,confirmed=false){
+ #rememberFillOrder(p,id,side,confirmed=false,notice=null){
   if(id==null)return;
   const orderId=String(id);
   const prior=p.fillOrders?.find(o=>o.id===orderId);
-  if(prior)prior.confirmed=prior.confirmed||confirmed;
-  else (p.fillOrders??=[]).push({id:orderId,side,confirmed});
+  if(prior){prior.confirmed=prior.confirmed||confirmed;if(notice)prior.notice??=notice}
+  else (p.fillOrders??=[]).push({id:orderId,side,confirmed,...(notice?{notice}:{})});
  }
+ #fillNotice(p,tag){return this.config.mode==='LIVE'?{tag,from:Number(p.qty)||0,at:this.now()}:null}
  async #market(p,side,quantity,{reduceOnly=false,tag,beforeSend}){
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
   const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:this.#clientId(p,tag)};
   // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
   if(reduceOnly&&p.hedge!==true)params.reduceOnly='true';
-  const res=orderOf(await this.client.placeOrder(params,{beforeSend}));
-  this.#rememberFillOrder(p,res?.orderId,side,Number(res?.executedQty)>0||res?.status==='FILLED');
+  const notice=this.#fillNotice(p,tag),res=orderOf(await this.client.placeOrder(params,{beforeSend}));
+  this.#rememberFillOrder(p,res?.orderId,side,Number(res?.executedQty)>0||res?.status==='FILLED',notice);
   return {orderId:res?.orderId??null,avg:pos(res?.avgPrice),status:res?.status??null};
  }
  #clientId(p,tag){return ('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)}
@@ -357,7 +358,7 @@ export class CopyExecutor{
     await this.sleep(delays[i]);
     const margin=await this.#orderMargin(marginUSD);
     const seen=await this.#orderOutcome(p,cid,{before,step});
-    if(seen.filled){this.#rememberFillOrder(p,seen.orderId,side,true);ev('ALREADY_FILLED',{via:seen.via});return {orderId:seen.orderId??null,avg:seen.avg??null,qty:seen.qty??null}}
+    if(seen.filled){this.#rememberFillOrder(p,seen.orderId,side,true,this.#fillNotice(p,tag));ev('ALREADY_FILLED',{via:seen.via});return {orderId:seen.orderId??null,avg:seen.avg??null,qty:seen.qty??null}}
     if(!seen.absent){ev('UNVERIFIED',seen.why?{why:seen.why}:{});continue}
     const block=this.#sendBlock(p,entry)||margin?.reason;
     if(block){this.#event('RETRY_ABANDONED',{symbol:p.symbol,kind:event,attempt,reason:block,clientOrderId:cid,detail:`다시 보내기 전 상태 변경(${block}) — 보내지 않음`});
@@ -788,7 +789,9 @@ export class CopyExecutor{
    if(typeof this.client.getOrder!=='function')return {ok:false,reason:'CLOSE_PENDING'};
    try{
     const order=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:this.#clientId(p,close.pending.tag)}));
-    this.#rememberFillOrder(p,order?.orderId,side,Number(order?.executedQty)>0||order?.status==='FILLED');
+    const notice=this.#fillNotice(p,close.pending.tag);
+    if(notice){notice.from=close.pending.requestedQty;notice.at=close.pending.at??close.at}
+    this.#rememberFillOrder(p,order?.orderId,side,Number(order?.executedQty)>0||order?.status==='FILLED',notice);
     if(!['FILLED','CANCELED','CANCELLED','REJECTED','EXPIRED','FAILED'].includes(String(order?.status).toUpperCase()))return {ok:false,reason:'CLOSE_PENDING'};
    }catch(error){if(!orderAbsent(error))return {ok:false,reason:'CLOSE_PENDING'}}
    delete close.pending;
@@ -797,7 +800,7 @@ export class CopyExecutor{
   }
   p.qty=now.size;
   const tag=this.#tag(p,'close');
-  close.pending={tag,requestedQty:now.size};this.#save();
+  close.pending={tag,requestedQty:now.size,at:this.now()};this.#save();
   let order;
   try{order=await this.#market(p,side,now.size,{reduceOnly:true,tag})}
   catch(error){

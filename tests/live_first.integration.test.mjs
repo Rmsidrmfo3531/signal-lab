@@ -156,3 +156,25 @@ test('real manual entry and add reach Telegram only after matching exchange fill
   assert.match(added[1].text,/^🔴 실계좌 \| 수동 \| 추가 진입[\s\S]*수량 \+0\.01 · 잔여 0\.02/);
  }finally{await app.close()}
 });
+
+test('a persisted real copy order reaches Telegram even when snapshots miss that position',{timeout:25000},async()=>{
+ const at=Date.now()-60000,orderId='5071',position={id:'fixture-copy',status:'CLOSED',symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',leverage:10,
+  openedAt:at,closedAt:at+10000,steps:[{kind:'OPEN',at,qty:.02}],fillOrders:[{id:orderId,side:'BUY',confirmed:true}],netSource:'EXCHANGE_FILLS'};
+ const exchangeOrder={symbol:'BTC-USDT',side:'BUY',positionSide:'BOTH',status:'FILLED',orderId,executedQty:'0.02',avgPrice:'50000',updateTime:at};
+ const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],fakeBingxLivePositions:[],fakeBingxLiveOrders:[exchangeOrder],env:{
+  BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',
+  TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_CHAT_ID:'-123456',PAPER_TRADING:'off',
+ }});
+ const read=async()=>{const records=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
+  return records.filter(r=>r.host==='api.telegram.org'&&r.text?.includes('실계좌 | 카피'))};
+ try{
+  await fs.writeFile(`${app.data}/copy-store-live.json`,JSON.stringify({positions:{},closed:[position]}));
+  await app.start();
+  const [notice]=await until(async()=>{await app.get('/api/copy');return read()},x=>x.length>0,{timeout:12000,label:'Telegram copy order receipt'});
+  assert.match(notice.text,/^🔴 실계좌 \| 카피 \| 신규 진입\nBTCUSDT · 롱 · 10배\n수량 0\.02 · 평균 진입가 50,000 USDT/);
+  assert.equal((await app.get('/api/copy')).manual.open.length,0);
+  const file=async()=>JSON.parse(await fs.readFile(`${app.data}/manual-trades-live.json`,'utf8'));
+  const ledger=await until(file,x=>x.telegramSent===1);assert.equal(ledger.telegramByOrigin.COPY,1);assert.deepEqual(ledger.telegramQueue,[]);
+  assert.equal((await read()).length,1);
+ }finally{await app.close()}
+});
