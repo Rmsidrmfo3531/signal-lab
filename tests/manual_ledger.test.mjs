@@ -315,7 +315,7 @@ test('copy loss limit: computed from the copy ledger only — a large manual los
 test('page: copy and manual closes in one newest-first list with 수동 badges and the 10-per-page pager; stats include both',async()=>{
  const m=await import('../public/live_control.js');const T=1_800_000_000_000;
  const copyClosed=Array.from({length:8},(_,i)=>({symbol:'C'+i,direction:'LONG',openedAt:T-9e6,closedAt:T-i*2e5,netUSD:i%2?-1:2,adds:1}));
- const manualClosed=[{symbol:'M0',direction:'SHORT',openedAt:T-9e6,closedAt:T-1e5,netUSD:5,netSource:'EXCHANGE',adds:0},
+ const manualClosed=[{symbol:'M0',direction:'SHORT',openedAt:T-9e6,closedAt:T-1e5,netUSD:5,netSource:'EXCHANGE_FILLS',adds:0},
   {symbol:'M1',direction:'LONG',openedAt:T-9e6,closedAt:T-5e5,netUSD:-3,netSource:'MIXED_WITH_COPY',adds:2},
   {symbol:'M2',direction:'LONG',openedAt:T-9e6,closedAt:T-2.1e6,netUSD:null,estimateUSD:1.5,netSource:'PENDING',adds:0}];
  const c={mode:'LIVE',enabled:true,positions:[],events:[],closed:copyClosed,closedTotal:8,manual:{open:[],closed:manualClosed,closedTotal:3}};
@@ -331,6 +331,8 @@ test('page: copy and manual closes in one newest-first list with 수동 badges a
  assert.match(h,/정산 미확정 10건/);
  const desk=h.slice(h.indexOf('<th>종료</th>'));
  assert.match(desk,/<tr class="vp-manual"><td class="muted">[^<]*<\/td><td><b>M0<\/b> <span class="vp-badge manual">수동<\/span>/);
+ assert.match(desk,/<b class="paper-profit">\+\$5\.00<\/b><\/td><td><small class="muted">정산 확인<\/small>/);
+ assert.doesNotMatch(h,/>체결<\/small>/);
  assert.match(desk,/<tr class=""><td class="muted">[^<]*<\/td><td><b>C0<\/b> <\/td>/,'copy rows keep their look');
  assert.match(h,/<li class="vp-manual"><span class="muted">[^<]*<\/span><b>M1<\/b><span class="vp-badge manual">수동<\/span>/);
  assert.match(h,/같은 종목의 카피 거래와 정산 내역 겹침/);assert.doesNotMatch(h,/−\$3\.00|추정/);
