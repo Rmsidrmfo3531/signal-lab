@@ -130,6 +130,8 @@ API 실주문이 확인되어 **자동 모의매매는 기본으로 꺼졌습니
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 없음 | 기존 비공개 Telegram 설정 |
 | `TELEGRAM_WATCH_MIN_SCORE` / `TELEGRAM_SCORE_WATCH_ENABLED` | 적용 안 함 | 과거 관찰 알림 설정은 데이터에 남아 있어도 Telegram 발송에 사용하지 않음 |
 | `NEWS_TRANSLATION_URL` | 없음 | 선택 LibreTranslate 호환 서비스 |
+| `NEWS_OPENAI_API_KEY` | 없음 | 뉴스용 OpenAI API 키. 없으면 서버의 `OPENAI_API_KEY` 사용 |
+| `NEWS_OPENAI_MODEL` | `gpt-5.4-mini` | 뉴스 제목·발췌에 쓰는 OpenAI 모델 |
 
 ### 백테스트 (과거 데이터 검증)
 
@@ -268,6 +270,6 @@ npm run test:strategy:compare -- --input 과거데이터.json
 
 ### 화면 정리 (2026-11-12)
 - TradFi 화면과 BingX·Gate.io 시세 조회 화면을 없앴습니다. 실주문 제어는 `알림 · 시스템` 화면으로 옮겼습니다. (서버의 TradFi 모듈은 이미 꺼져 있고 과거 기록 보존용으로만 남아 있습니다.)
-- 영어 뉴스 제목·요약은 한국어로 번역해 보여 줍니다(`NEWS_TRANSLATION_URL`이 없으면 Google 공개 번역, `NEWS_TRANSLATION=off`로 끔). 번역 실패 시 원문을 그대로 보여 줍니다.
+- OpenAI API 키를 설정하면 기사 제목·요약을 문맥에 맞춰 함께 번역하고, 기사를 열 때는 본문 발췌를 문단별로 번역합니다. 키가 없는 경우 설정된 LibreTranslate 또는 Google 공개 번역을 사용합니다. `NEWS_TRANSLATION=off`로 끌 수 있고 번역 실패 시 원문을 보여 줍니다.
 - 모의 포지션 카드에 점수와 진입 이유(점수 항목 또는 단타 근거)를 표시합니다.
 - 긴 설명은 접어 두고 결과(성과·포지션)를 먼저 보여 줍니다.

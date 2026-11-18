@@ -34,7 +34,7 @@ import {estimateBinanceExecution} from './binance_execution.mjs';
 import {VolumeProfileCollector} from './profile_collector.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
 import {finalTelegramMatch} from './telegram_final.mjs';
-import {translateNewsArticles,googleTranslate,googleTranslateStatus} from './news_translation.mjs';
+import {translateNewsArticles,googleTranslate,googleTranslateStatus,createOpenAINewsTranslator} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
@@ -128,8 +128,8 @@ const CONFIG={
  // deeper 15m profile over DCA_ZONE_DAYS (3-15, default 14) so 5+ adds have zones to sit on.
  dcaMaxAdds:clampMaxAdds(process.env.DCA_MAX_ADDS),hourlyMaxAdds:clampMaxAdds(process.env.HOURLY_MAX_ADDS,HOURLY_MAX_ADDS_DEFAULT),dcaZoneDays:clampZoneDays(process.env.DCA_ZONE_DAYS),
  translationURL:process.env.NEWS_TRANSLATION_URL||'',
- // Korean translation of English news (Google public endpoint when no URL is set). NEWS_TRANSLATION=off keeps English.
- newsTranslation:process.env.NEWS_TRANSLATION!=='off',
+ // Korean translation of English news. An OpenAI key selects contextual AI translation.
+ newsTranslation:!/^(off|0|false|no)$/i.test(String(process.env.NEWS_TRANSLATION||'on').trim()),
  updateManifestURL:process.env.UPDATE_MANIFEST_URL||'',autoUpdate:process.env.AUTO_UPDATE!=='false',
  // Coins on Gate.io / BingX that Binance does not list: charts come from the venue itself.
  // Paper only (never live). Every coin of similar size or larger is included: market cap at least
@@ -710,6 +710,7 @@ async function uploadReport(force=false){
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange:await exchangeReport().catch(e=>({error:e.message}))});
   report.release=appVersion.displayVersion;
+  report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime={mode:SCALP_EXEC.mode,armed:scalpExec.armed,scaleInEnabled:SCALP_EXEC.scaleIn};
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});
   reportsDay=day;reportsHour=hourKey;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
@@ -1353,6 +1354,12 @@ async function translateArticle({text,signal}){
  const r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'ko',format:'text'}),signal});
  if(!r.ok)throw Error('TRANSLATION_HTTP');const result=await r.json();return {translatedText:result.translatedText};
 }
+const aiTranslateNews=CONFIG.newsTranslation?createOpenAINewsTranslator({
+ apiKey:process.env.NEWS_OPENAI_API_KEY?.trim()||process.env.OPENAI_API_KEY?.trim(),
+ model:process.env.NEWS_OPENAI_MODEL?.trim()||undefined,
+}):null;
+const NEWS_PROVIDER=!CONFIG.newsTranslation?{providerId:'UNCONFIGURED'}:aiTranslateNews?{translateBatch:aiTranslateNews,providerId:'OPENAI'}
+ :CONFIG.translationURL?{translate:translateArticle,providerId:'CONFIGURED_LIBRETRANSLATE'}:{translate:googleTranslate,providerId:'GOOGLE_PUBLIC'};
 let newsBootstrapped=false;
 async function pollNews(){
  const settled=await Promise.allSettled(FEEDS.map(async feed=>{
@@ -1368,15 +1375,12 @@ async function pollNews(){
  state.newsError=failures.length?`${failures.length}/${FEEDS.length}개 소스 오류`:'';
  if(!feeds.length){state.newsStatus='offline';send('news',{status:state.newsStatus,checked:state.newsChecked,articles:state.news,sourceCount:0,error:'RSS 제공처 모두 연결 실패'});return}
  const originalNews=prepareNews(feeds,state.newsChecked,state.ranked.map(x=>({symbol:x.baseAsset,name:x.baseAsset})));
- // English news is shown in Korean: the configured LibreTranslate URL, else Google's public endpoint
- // (NEWS_TRANSLATION=off keeps the original English).
- const provider=CONFIG.translationURL?{translate:translateArticle,id:'CONFIGURED_LIBRETRANSLATE'}:CONFIG.newsTranslation===true?{translate:googleTranslate,id:'GOOGLE_PUBLIC'}:{translate:undefined,id:'UNCONFIGURED'};
- // Titles and summaries of ~100 articles need a few hundred calls the first time: a longer budget,
- // then the per-text cache makes later polls fast.
- const incoming=await translateNewsArticles(originalNews,{translate:provider.translate,providerId:provider.id,timeoutMs:8000,budgetMs:45000});
+ // One AI request per article groups its title and source excerpts. The per-text cache serves later polls.
+ const incoming=await translateNewsArticles(originalNews,{...NEWS_PROVIDER,timeoutMs:10000,budgetMs:45000});
  {const need=incoming.filter(a=>a.translation?.status!=='NOT_REQUIRED'),done=need.filter(a=>['COMPLETE','PARTIAL'].includes(a.translation?.status)).length;
-  state.newsTranslation={provider:provider.id,done,total:need.length,error:googleTranslateStatus.lastError,checkedAt:Date.now()};
-  if(need.length)console.log(`[NEWS] 한국어 번역 ${done}/${need.length}건${done<need.length&&googleTranslateStatus.lastError?` · 최근 실패: ${googleTranslateStatus.lastError}`:''}`)}
+  const error=NEWS_PROVIDER.providerId==='GOOGLE_PUBLIC'?googleTranslateStatus.lastError:incoming.find(a=>a.translation?.status==='ERROR')?.translation.errorCode??null;
+  state.newsTranslation={provider:NEWS_PROVIDER.providerId,done,total:need.length,error,checkedAt:Date.now()};
+  if(need.length)console.log(`[NEWS] ${NEWS_PROVIDER.providerId} 한국어 번역 ${done}/${need.length}건${done<need.length&&error?` · 최근 실패: ${error}`:''}`)}
  state.newsStatus=feeds.length===FEEDS.length?'connected':'partial';state.news=incoming;
  const newsSeen=new Set(Object.keys(persisted.newsSeen)),nextSeen={...persisted.newsSeen},notifications=[];let changed=false;
  for(const article of incoming){
@@ -1589,8 +1593,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/news/detail'&&req.method==='GET'){
    const id=url.searchParams.get('id')||'',article=(state.news||[]).find(n=>n.id===id);
    if(!article)return response(res,404,{ok:false,error:'NOT_FOUND'});
-   const translate=CONFIG.translationURL?translateArticle:CONFIG.newsTranslation===true?googleTranslate:undefined;
-   return response(res,200,await articleDetail(article,{translate}));
+   return response(res,200,await articleDetail(article,NEWS_PROVIDER));
   }
   if(pathname==='/api/news')return response(res,200,{status:state.newsStatus,checked:state.newsChecked,sourceCount:state.newsSources.length,error:state.newsError,translation:state.newsTranslation??null,articles:state.news});
   if(pathname==='/api/journal'&&req.method==='GET')return response(res,200,{entries:persisted.journal.slice(0,200),summary:journalSummary(persisted.journal),
