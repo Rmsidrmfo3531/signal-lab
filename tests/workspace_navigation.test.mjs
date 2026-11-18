@@ -33,7 +33,7 @@ test('every element app.js looks up by id exists on the page (no console errors 
  assert.ok(ids.size>10);
  for(const id of ids)assert.match(html,new RegExp('id="'+id+'"'),'app.js uses a missing element: '+id);
  // The update button's bootId auto-reload and ORDER_IN_PROGRESS retry are kept.
- assert.match(appJs,/u\.bootId!==boot/);assert.match(appJs,/ORDER_IN_PROGRESS/);
+ assert.match(appJs,/u\.bootId!==updateBoot\.bootId/);assert.match(appJs,/ORDER_IN_PROGRESS/);
  for(const gone of ['renderSignals','renderTradingView','drawChart','loadExecution','renderAlerts','renderMatched'])assert.doesNotMatch(appJs,new RegExp(gone));
 });
 

@@ -231,11 +231,11 @@ setInterval(async()=>{if(manualUpdate)return;try{
  const u=await json('/api/update');
  if(manualUpdate)return;
  if(updateBoot?.bootId&&u.bootId&&u.bootId!==updateBoot.bootId){
-  if(autoUpdateNotice||appVersionText(u)!==appVersionText(updateBoot))try{sessionStorage.setItem('autoReloaded','1')}catch{}
+  if(appVersionText(u)!==appVersionText(updateBoot))try{sessionStorage.setItem('autoReloaded','1')}catch{}
   location.reload();return;
  }
  if(u.bootId)updateBoot=u;
- if(!autoUpdateNotice&&!$('updateModal')){
+ if(!autoUpdateNotice&&!document.getElementById('updateModal')){
   const job=await json('/api/update/git/progress');
   if(job?.active&&job.source==='auto'&&!manualUpdate){
    autoUpdateNotice=true;
