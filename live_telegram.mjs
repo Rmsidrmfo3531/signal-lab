@@ -3,9 +3,32 @@ import {tradeHorizon,holdTier} from './trade_horizon.mjs';
 // break-even, the settled close with its result, and order problems. Text only: symbol, side,
 // prices and results — never keys, order ids or account numbers.
 const SIDE={LONG:'롱',SHORT:'숏'};
-const MODE={TESTNET:'테스트넷',LIVE:'실제 돈'};
+const MODE={TESTNET:'테스트넷',LIVE:'🔴 실계좌 | 신호 전략'};
 const fmt=v=>{const x=Number(v);if(!Number.isFinite(x))return '—';const a=Math.abs(x);return a>=1000?x.toLocaleString('en-US',{maximumFractionDigits:2}):a>=1?String(+x.toFixed(4)):String(+x.toPrecision(4))};
 const usd=v=>{const x=Number(v);return Number.isFinite(x)?(x>=0?'+':'−')+'$'+Math.abs(x).toFixed(2):'—'};
+const tradeAmount=new Intl.NumberFormat('en-US',{maximumFractionDigits:12});
+const observedTime=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+const amount=v=>v==null||!Number.isFinite(Number(v))?'—':tradeAmount.format(Number(v));
+const MANUAL_ACTION={MANUAL_OPEN:'신규 진입',MANUAL_ADD:'추매',MANUAL_REDUCE:'일부 청산',MANUAL_SETTLED:'전량 청산'};
+
+/** Text for a confirmed real-account change from the manual ledger. */
+export function manualTradeText(e){
+ const action=MANUAL_ACTION[e?.type];
+ if(!action||!e.symbol)return null;
+ const head=[`🔴 실계좌 | 수동 | ${action}`,[e.symbol,SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ let detail;
+ if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
+ else if(e.type==='MANUAL_SETTLED'){
+  const source=e.netSource==='EXCHANGE'?'거래소 정산 · 수수료·펀딩 포함':e.netSource?.startsWith('MIXED_WITH_')?'추정 · 동일 종목 정산 혼재':'추정';
+  detail=[`청산 수량 ${amount(e.size)}`,e.netUSD==null?'순손익 확인 불가':`순손익 ${usd(e.netUSD)} (${source})`].join('\n');
+ }else{
+  const change=Number(e.to)-Number(e.from);
+  detail=`수량 ${change>0?'+':'−'}${amount(Math.abs(change))} · 잔여 ${amount(e.to)}`;
+  if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n평균 진입가 ${amount(e.avg)} USDT`;
+ }
+ const at=Number(e.observedAt??e.at);
+ return [...head,detail,at>0&&Number.isFinite(at)?`감지 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n');
+}
 const PROBLEM={ENTRY_OUTCOME_UNKNOWN:'진입 결과를 확인하지 못했습니다',STOP_FAILED:'손절 주문 등록 실패',TARGET_FAILED:'목표 주문 등록 실패',
  EMERGENCY_CLOSED:'보호 주문 실패로 긴급 청산했습니다',LATE_ADD_CLOSE_FAILED:'청산 뒤 체결된 추매 정리 실패',EMERGENCY_CLOSE_FAILED:'긴급 청산 실패 · 즉시 확인 필요',ERROR:'주문 처리 오류 · 긴급 정지',RECOVERY_ERROR:'재시작 후 손절 보호 복구 실패',RECOVERY_MANUAL:'재시작으로 끊긴 진입 · 자동 복구 불가(Gate.io) · 긴급 정지',LATE_ADD_CLOSED:'청산 뒤 체결된 추매를 정리했습니다',TEST_CLOSE_INCOMPLETE:'시험 주문 정리 미완료',STOP_WHOLE_FAILED:'전체 손절 주문 갱신 실패',REJECTED:'주문이 거부됐습니다'};
 

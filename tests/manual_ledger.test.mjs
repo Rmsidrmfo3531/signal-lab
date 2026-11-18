@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {ManualLedger,MANUAL_LEDGER_FILE} from '../manual_ledger.mjs';
+import {manualTradeText} from '../live_telegram.mjs';
 import {tagOrigins} from '../venue_positions.mjs';
 import {CopyExecutor,copyConfig} from '../copy_executor.mjs';
 import {ledgerSummary} from '../reports_push.mjs';
@@ -14,12 +15,13 @@ function clock(t0=1_800_000_000_000){let t=t0;return {now:()=>t,set:v=>{t=v},add
 function incomeClient(rows){const calls=[];return {calls,rows,income:async q=>{calls.push(q);return rows.filter(r=>(!q.symbol||r.symbol===q.symbol)&&r.time>=q.startTime&&r.time<=q.endTime)}}}
 
 test('manual: open (2 reads) -> add -> reduce -> close (2 reads) -> settled from BingX income (EXCHANGE)',async()=>{
- const dir=tmp(),c=clock(),inc=incomeClient([]),copy=[];
- const m=new ManualLedger({directory:dir,client:inc,copyRecords:()=>copy,now:c.now});
+ const dir=tmp(),c=clock(),inc=incomeClient([]),copy=[],notices=[];
+ const m=new ManualLedger({directory:dir,client:inc,copyRecords:()=>copy,now:c.now,onEvent:e=>notices.push(e)});
  const t0=c.now();
  m.observe(snap(t0,[]));                                           // first read after start: nothing to adopt
  const t1=c.add(15000);m.observe(snap(t1,[row()]));
  assert.equal(m.status().open.length,0,'one read is not enough to open');
+ assert.equal(notices.length,0);
  assert.equal(m.observe(snap(t1,[row()])),false,'the same read again (cached list) is ignored');
  const t2=c.add(15000);m.observe(snap(t2,[row()]));
  let o=m.status().open;assert.equal(o.length,1);assert.equal(o[0].origin,'manual');assert.equal(o[0].openedAt,t1,'opened at the first read');
@@ -38,10 +40,17 @@ test('manual: open (2 reads) -> add -> reduce -> close (2 reads) -> settled from
   {symbol:'BTC-USDT',incomeType:'TRADING_FEE',income:'-0.5',time:t5-4000,tranId:'e'},{symbol:'ETH-USDT',incomeType:'REALIZED_PNL',income:'99',time:t5-4000,tranId:'f'},
   {symbol:'BTC-USDT',incomeType:'REALIZED_PNL',income:'77',time:t1-600000,tranId:'g'},{symbol:'BTC-USDT',incomeType:'TRANSFER',income:'1000',time:t3,tranId:'h'});
  await m.settle();assert.equal(m.status().closed[0].netSource,'PENDING','not before settleDelayMs');
+ assert.deepEqual(notices.map(e=>e.type),['MANUAL_OPEN','MANUAL_ADD','MANUAL_REDUCE']);
  c.add(20000);await m.settle();x=m.status().closed[0];
  assert.equal(x.netSource,'EXCHANGE');assert.equal(x.netUSD,16.15);assert.equal(x.pnlUSD,17);assert.equal(x.feeUSD,-0.75);assert.equal(x.fundingUSD,-0.1);
  assert.equal(inc.calls.at(-1).symbol,'BTC-USDT');assert.equal(inc.calls.at(-1).startTime,t1-60000);assert.ok(inc.calls.at(-1).endTime<=t5+120000);
  assert.equal(m.status().netUSD,16.15);assert.equal(m.status().settled,1);
+ assert.deepEqual(notices.map(e=>e.type),['MANUAL_OPEN','MANUAL_ADD','MANUAL_REDUCE','MANUAL_SETTLED']);
+ assert.match(manualTradeText(notices[0]),/^🔴 실계좌 \| 수동 \| 신규 진입\nBTCUSDT · 롱 · 10배/);
+ assert.match(manualTradeText(notices[1]),/수량 \+0\.02 · 잔여 0\.03\n평균 진입가 50,500 USDT/);
+ assert.match(manualTradeText(notices[2]),/일부 청산[\s\S]*수량 −0\.01 · 잔여 0\.02/);
+ assert.match(manualTradeText(notices[3]),/전량 청산[\s\S]*순손익 \+\$16\.15 \(거래소 정산 · 수수료·펀딩 포함\)[\s\S]*KST/);
+ await m.settle();assert.equal(notices.length,4,'settlement is announced once');
  // On disk, its own file; reloaded as is.
  const saved=JSON.parse(fs.readFileSync(path.join(dir,MANUAL_LEDGER_FILE),'utf8'));assert.equal(saved.origin,'manual');assert.equal(saved.closed[0].netUSD,16.15);
  assert.equal(fs.existsSync(path.join(dir,'copy-store-live.json')),false,'never writes the copy ledger');
@@ -114,17 +123,18 @@ test('manual: a copy position of the same coin in the window -> MIXED_WITH_COPY 
 });
 
 test('manual: positions open at start are adopted at once (adoptedAtStart); a saved open record is kept, not adopted again',async()=>{
- const dir=tmp(),c=clock();
- const m=new ManualLedger({directory:dir,now:c.now});
+ const dir=tmp(),c=clock(),notices=[];
+ const m=new ManualLedger({directory:dir,now:c.now,onEvent:e=>notices.push(e)});
  m.observe(snap(c.now(),[row(),row({symbol:'ETHUSDT',venueSymbol:'ETH-USDT',direction:'SHORT',size:1,avg:3000,mark:2990})]));
  const o=m.status().open;assert.equal(o.length,2);assert.ok(o.every(x=>x.adoptedAtStart===true&&x.openedAt===c.now()));
  // Restart: the BTC record from before is kept (same openedAt); a failed refresh (no new read time) changes nothing.
  const first=o.find(x=>x.symbol==='BTCUSDT').openedAt;c.add(60000);
- const m2=new ManualLedger({directory:dir,now:c.now});assert.equal(m2.status().open.length,2);
+ const m2=new ManualLedger({directory:dir,now:c.now,onEvent:e=>notices.push(e)});assert.equal(m2.status().open.length,2);
  m2.observe(snap(c.now(),[row(),row({symbol:'XRPUSDT',venueSymbol:'XRP-USDT',size:5,avg:2,mark:2})]));
  const o2=m2.status().open;assert.equal(o2.find(x=>x.symbol==='BTCUSDT').openedAt,first);assert.equal(o2.find(x=>x.symbol==='XRPUSDT').adoptedAtStart,true);
  assert.equal(o2.find(x=>x.symbol==='ETHUSDT').missing,undefined,'internal fields stay off the page');
  assert.equal(m2.observe({venuePositions:null,venuePositionsAt:null,venuePositionsError:'HTTP_429'}),false);
+ assert.deepEqual(notices,[],'existing positions are not announced on startup');
 });
 
 test('copy loss limit: computed from the copy ledger only — a large manual loss on the same account changes nothing',async()=>{
