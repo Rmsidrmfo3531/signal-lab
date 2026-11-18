@@ -1,7 +1,7 @@
 {
   "name": "signal-lab",
   "version": "5.8.0",
-  "displayVersion": "2026-11-18 11:15 KST",
+  "displayVersion": "2026-11-18 11:22 KST",
   "private": true,
   "type": "module",
   "description": "Binance confirmed 1H+4H chart analysis, BingX/Gate.io public market data, responsive PC/mobile, persistent paper PNL",
