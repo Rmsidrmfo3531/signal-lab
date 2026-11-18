@@ -55,7 +55,7 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fi
   fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(Math.abs(amt));o.avgPrice=String(price??o.stopPrice);reduce(Number(o.executedQty))}};
 }
 function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash,budget=null,zone=null}={}){
- return new ScalpExecutor({config:{...scalpExecConfig({}),scaleIn:false,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
+ return new ScalpExecutor({config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
   candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
   balance:async()=>typeof funds==='function'?funds():funds,gate,isBusy,directory:dir,now:()=>clock.t,budget,...(zone?{zoneCandles:zone}:{})});
 }
@@ -65,6 +65,7 @@ const short=(opt={})=>{const v=venue({fillAt:PX_S,...opt.venue}),clock=opt.clock
 
 test('config: TESTNET or OFF only — LIVE is refused; settings as the user set them; costs = backtest costs',()=>{
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
+ assert.equal(c.stopLossEnabled,false);
  assert.equal(c.settings.minMovePct,5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,SCALP_TIMEFRAMES['5m'].minMovePct*2);
  assert.deepEqual(c.settings.retracements,[.382,.5,.618]);assert.equal(c.settings.stopAtr,.25);assert.equal(c.settings.climaxVolume,3);
  assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,0);assert.equal(scalpExecConfig({SCALP_MAX_OPEN:'5'}).maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'record'}).trendMode,'record');
@@ -159,6 +160,69 @@ test('scale-in uses equal entry margin after a closed retest on either side, res
   assert.ok(targets.every(o=>o.clientOrderId.startsWith(p.id+'u')));
   clock.t+=I;await ex.reconcile();assert.equal(placed(v,'LIMIT').length,1);
  }
+});
+
+test('unprotected testnet scalps repeat equal-first-margin adds at progressively adverse prices on both sides',async()=>{
+ for(const direction of ['LONG','SHORT']){
+  const sign=direction==='LONG'?1:-1,entry=sign===1?PX:PX_S,v=venue({fillAt:entry}),clock={t:T0};
+  let price=entry;
+  const ex=make(v,{clock,price:()=>price,trend:sign===1?up4h:down4h,rows:sign===1?crash:rise,config:{stopLossEnabled:false,scaleIn:true}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],a=p.scaleIn,first=a.initialMarginUSD,dist=Math.abs(a.initialEntry-p.initialStop)*.5;
+  assert.equal(placed(v,'MARKET')[0].stopLoss,undefined);
+  const moves=async value=>{price=value;v.mark=value;await ex.reconcile()};
+  clock.t+=I;await moves(a.anchor-sign*(dist+.03));
+  assert.equal(a.count,1);assert.equal(a.state,'WATCH');
+  const afterFirst=a.anchor;
+  await moves(afterFirst-sign*(dist+.06));assert.equal(a.count,1,'at most one attempt in a candle');
+  clock.t+=I;await moves(afterFirst-sign*(dist-.03));assert.equal(a.count,1,'a new adverse level must be reached');
+  await moves(afterFirst-sign*(dist+.03));assert.equal(a.count,2);
+  const adds=placed(v,'LIMIT');assert.equal(new Set(adds.map(o=>o.clientOrderId)).size,2);
+  for(const o of a.orders)assert.ok(Math.abs(o.marginUSD-first)<=o.price*Number(p.quantityStep)/p.leverage+1e-8);
+  const active=[...v.orders.values()].filter(o=>o.type==='TAKE_PROFIT_MARKET'&&o.status==='NEW');
+  assert.ok(Math.abs(active.reduce((n,o)=>n+Number(o.quantity),0)-p.filled)<1e-8);
+  clock.t=p.deadline+I;await moves(a.anchor);assert.equal(ex.store.open.length,1,'adverse position survives expiry');
+  const firstTarget=active.find(o=>o.stopPrice===active[0].stopPrice);v.fill(firstTarget);
+  clock.t+=I;await moves(a.anchor-sign*(dist+.03));assert.equal(a.count,2,'reducing a position ends the add cycle');
+  assert.equal(placed(v,'STOP_MARKET').length,0);assert.equal(placed(v,'MARKET').length,1);
+  for(const target of active.filter(o=>o.status==='NEW'))v.fill(target);
+  await ex.reconcile();await ex.reconcile();
+  assert.equal(ex.store.closed[0].closeReason,'ALL_TARGETS');assert.equal(ex.stats().repeatedScaleIn.adds,2);
+  assert.equal(ex.journal()[0].scaleIn.count,2);
+ }
+});
+
+test('switching an open scalp to no-stop retries owned-stop removal and preserves external stops and existing targets',async()=>{
+ const v=venue(),clock={t:T0},dir=tmp();
+ try{
+  const legacy=make(v,{clock,dir});legacy.arm();assert.equal((await legacy.scan()).entered,1);
+  const owned=legacy.store.open[0].stopOrderId,manual=(await v.client.placeOrder({symbol:'SOL-USDT',side:'SELL',type:'STOP_MARKET',stopPrice:'80',clientOrderId:'manual'})).order;
+  const takeProfits=placed(v,'TAKE_PROFIT_MARKET').length;
+  const migrated=make(v,{clock,dir,config:{stopLossEnabled:false,scaleIn:true}}),cancel=v.client.cancelOrder;
+  v.client.cancelOrder=async()=>{};
+  await migrated.reconcile();assert.equal(migrated.store.open[0].stopRetirementError,'SCALP_STOP_CANCEL_PENDING');
+  v.client.cancelOrder=cancel;
+  await migrated.reconcile();assert.equal(v.orders.get(owned).status,'CANCELED');assert.equal(manual.status,'NEW');
+  assert.equal(migrated.store.open[0].stopOrderId,null);assert.equal(migrated.store.open[0].scaleIn.version,2);
+  assert.equal(placed(v,'TAKE_PROFIT_MARKET').length,takeProfits);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
+test('repeated scalp adds wait for a new balance and resume a lost response without adding twice',async()=>{
+ const v=venue({loseAddReply:true}),clock={t:T0},dir=tmp();let price=PX,available=9000;
+ const inputs={clock,dir,price:()=>price,funds:()=>({equity:10000,available}),config:{stopLossEnabled:false,scaleIn:true}};
+ try{
+  const ex=make(v,inputs);ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],lookup=v.client.getOrder;
+  clock.t+=I;price=p.initialStop-.1;v.mark=price;available=.1;
+  await ex.reconcile();assert.equal(placed(v,'LIMIT').length,0);assert.equal(p.scaleIn.lastReason,'RISK_OR_MARGIN_CAP');
+  clock.t+=I;available=9000;v.client.getOrder=(s,q)=>q.clientOrderId?Promise.resolve(null):lookup(s,q);
+  await ex.reconcile();assert.equal(p.scaleIn.state,'PENDING');assert.equal(placed(v,'LIMIT').length,1);
+  v.client.getOrder=lookup;
+  const restarted=make(v,inputs);await restarted.reconcile();await restarted.reconcile();
+  assert.equal(restarted.store.open[0].scaleIn.count,1);assert.equal(placed(v,'LIMIT').length,1);
+  assert.equal(placed(v,'MARKET').length,1);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
 test('scale-in skips on low free funds or missing whole stop, does not retry a canceled add, and recovers across restarts',async()=>{

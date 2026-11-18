@@ -41,7 +41,7 @@ function venue(){
   fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(amt);o.avgPrice=String(price);amt=+Math.max(0,amt-Number(o.executedQty)).toFixed(8)}};
 }
 function make(v,dir,clock){
- return new ScalpExecutor({config:scalpExecConfig({}),client:v.client,contracts:async()=>new Map([['SOLUSDT',SOL]]),tickers:async()=>[{symbol:'XRP-USDT',quoteVolume:'9e8'},{symbol:'SOL-USDT',quoteVolume:'9e7'}],
+ return new ScalpExecutor({config:{...scalpExecConfig({}),stopLossEnabled:true},client:v.client,contracts:async()=>new Map([['SOLUSDT',SOL]]),tickers:async()=>[{symbol:'XRP-USDT',quoteVolume:'9e8'},{symbol:'SOL-USDT',quoteVolume:'9e7'}],
   candles:async(s,iv)=>iv==='5m'?(s==='XRPUSDT'?[]:[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]):up4h(clock.t),
   priceOf:async()=>PX,markOf:async()=>null,balance:async()=>({equity:10000,available:9000}),directory:dir,now:()=>clock.t});
 }
