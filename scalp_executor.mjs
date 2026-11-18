@@ -747,7 +747,7 @@ export class ScalpExecutor{
   }
   p.size=fresh.size;p.mark=fresh.mark??p.mark;p.riskUSD=a.riskAfterUSD=this.#repeatRisk(p,p.avg,p.mark)*fresh.size;
   Object.assign(a,{state:a.version===SCALP_REPEAT_SCALE_IN.version&&fresh.size>0?(p.everReduced?'SKIPPED':'WATCH'):'FILLED',reason:fresh.size>0?null:'FLAT_DURING_RESIZE'});
-  this.#save();this.#event('SCALE_IN_FILLED',{symbol:p.symbol,direction:p.direction,count:a.count,fillMarginUSD:a.fillMarginUSD});
+  this.#save();this.#event('SCALE_IN_FILLED',{symbol:p.symbol,direction:p.direction,count:a.count,fillMarginUSD:a.fillMarginUSD,qty:a.fillQty,price:a.fillPrice,left:p.size});
   if(!fresh.size){await this.#finish(p);return}
   await this.#placeTargets(p);
  }
@@ -982,7 +982,10 @@ export class ScalpExecutor{
      }
      if(!(size>0)){if((p.zeroSeen=(p.zeroSeen||0)+1)>=2)await this.#finish(p);continue}
      p.zeroSeen=0;
-     if(size<p.size-1e-12){p.everReduced=true;p.steps.push({kind:'REDUCE',at:this.now(),qty:+(p.size-size).toFixed(12),mark})}
+     if(size<p.size-1e-12){
+      const qty=+(p.size-size).toFixed(12);p.everReduced=true;p.steps.push({kind:'REDUCE',at:this.now(),qty,mark});
+      this.#event('PARTIAL_EXIT',{symbol:p.symbol,direction:p.direction,qty,left:size});
+     }
      p.size=size;p.avg=pos(row.avgPrice)??p.avg;p.mark=mark??p.mark;p.unrealized=num(row.unrealizedProfit)??(mark&&p.avg?dirOf(p.direction)*(mark-p.avg)*size:null);unrealized+=p.unrealized||0;
      const parts=p.parts.map((q,i)=>q+(p.addTargets||[]).reduce((n,g)=>n+g.parts[i],0));
      const done=p.filled-size,need=[parts[0],parts[0]+parts[1],parts[0]+parts[1]+parts[2]];

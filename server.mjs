@@ -34,6 +34,7 @@ import {estimateBinanceExecution} from './binance_execution.mjs';
 import {VolumeProfileCollector} from './profile_collector.mjs';
 import {planVolumeTargets} from './volume_targets.mjs';
 import {finalTelegramMatch} from './telegram_final.mjs';
+import {createTelegramNetworkRecovery,postTelegramIPv4} from './telegram_transport.mjs';
 import {translateNewsArticles,googleTranslate,googleTranslateStatus,createOpenAINewsTranslator} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {PublicReadBudget} from './public_read_budget.mjs';
@@ -344,14 +345,21 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode===
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:copyNotice});
 // Read-only: never orders, its own file (manual-trades-live.json), never the copy ledger. The copy loss limit, the copy
 // margin limits and every copy decision stay computed from the copy ledger only (copy_executor.mjs); manual trades
-// join only the page totals and the hourly report. Polled every 15 s on its own (shared 3 s cache with the page).
+// join only the page totals and the hourly report. The notification reader shares the account's 3 s position cache.
 const realCopyPositions=()=>COPY.mode==='LIVE'?Object.values(copyTrader.store.positions):[];
 const manualLedger=venuePositionsReader?new ManualLedger({directory:storage.dir,client:realBingxClient,
  copyRecords:()=>[...(COPY.mode==='LIVE'?[...realCopyPositions(),...copyTrader.store.closed].map(p=>({...p,alertOrigin:'COPY',alertOwnerId:p.id})):[]),
   ...(LIVE.mode==='LIVE'?live.store.records.filter(p=>p.mode==='LIVE'&&p.venue==='BINGX'&&!p.test).map(p=>({...p,alertOrigin:'SIGNAL',alertOwnerId:p.signalKey})):[])],
  log:(...a)=>console.log(...a),onEvent:confirmedRealTradeNotice,copyOrderAlerts:COPY.mode==='LIVE',sendTelegram:sendRealTradeTelegram}):null;
-if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(realCopyPositions()));await Promise.all([manualLedger.settle(),manualLedger.recoverFastTrades()])}
- catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
+let realTradePoll=null;
+function refreshRealTradeNotices(){
+ if(!manualLedger||realTradePoll)return;
+ realTradePoll=venuePositionsReader.snapshot(realCopyPositions()).then(s=>manualLedger.observe(s))
+  .catch(e=>console.warn('[MANUAL]',e.message)).finally(()=>{realTradePoll=null});
+ void realTradePoll.then(()=>{void manualLedger.settleNotifications();void manualLedger.recoverFastTrades()});
+}
+if(manualLedger){setInterval(refreshRealTradeNotices,3000).unref?.();
+ setInterval(()=>{void manualLedger.settle()},15000).unref?.()}
 // Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
 // copy and manual together, read in the background at most every 5 min; the page gets the cached value (daily).
 const dailyPnl=COPY.mode==='LIVE'
@@ -427,8 +435,7 @@ function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
  const text=scalpEventText(e);if(!text)return;
  try{send('live-notice',{type:'SCALP_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
- if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
- telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[SCALP TELEGRAM] HTTP',r.status)}).catch(e2=>console.error('[SCALP TELEGRAM]',e2.message));
+ void sendTradeTelegram(text);
 }
 // A copy ledger of the other mode with open positions is no longer managed: say so once at start.
 try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy-store-live.json');
@@ -453,36 +460,46 @@ if(copyClient&&COPY.mode==='LIVE'){
 }else if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
 function copyNotice(e){
  if(e?.type==='COPY_SETTLED')reportsDirty=true;
- if(e?.mode==='LIVE'&&e.type==='ENTRY_RECEIPT'){void manualLedger?.confirmCopyEntry(e.orderId);return}
+ if(e?.mode==='LIVE'&&e.type==='ORDER_RECEIPT'){void manualLedger?.confirmCopyOrder(e.orderId);return}
  if(e?.mode==='LIVE'&&manualLedger&&['OPENED','ADDED','REDUCED','CLOSED'].includes(e.type)){
   reportsDirty=true;void manualLedger.settle();return;
  }
  const text=copyEventText(e);if(!text)return;
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
- if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
- telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[COPY TELEGRAM] HTTP',r.status)}).catch(e2=>console.error('[COPY TELEGRAM]',e2.message));
+ void sendTradeTelegram(text);
 }
 function confirmedRealTradeNotice(e){
  const text=realTradeText(e);if(!text)return;
  reportsDirty=true;
- // Delayed confirmation is valuable on Telegram. A late real copy entry popup is not timely.
- if(e.alertOrigin==='COPY'&&e.type==='MANUAL_OPEN'&&Date.now()-e.observedAt>12000)return;
- if(e.alertOrigin==='COPY'||e.alertOrigin==='SIGNAL')try{send('live-notice',{type:e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
+ try{send('live-notice',{type:e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
 }
 let lastRealTradeTelegramAt=0;
+const sendRealTradeRequest=createTelegramNetworkRecovery(telegramPost);
+async function sendTradeTelegram(text){
+ const chat_id=scannerTelegramChat();
+ if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!chat_id)return;
+ let {response,error}=await sendRealTradeRequest({chat_id,text});
+ if(!response||response.status===429){
+  const retrySeconds=Number(response?.headers.get('retry-after'));
+  await new Promise(resolve=>setTimeout(resolve,Math.max(3000,(retrySeconds||0)*1000)));
+  if(persisted.notifySettings?.telegramLive===false)return;
+  ({response,error}=await sendRealTradeRequest({chat_id,text}));
+ }
+ if(!response?.ok)console.warn('[TRADE TELEGRAM]',error??`HTTP_${response?.status}`);
+}
 async function sendRealTradeTelegram(e){
  const text=realTradeText(e);if(!text)return {error:'INVALID_ALERT'};
  const chat_id=scannerTelegramChat();
  if(!CONFIG.tgToken||!chat_id)return {paused:true,error:'SCANNER_NOT_CONFIGURED'};
  const delay=lastRealTradeTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
  lastRealTradeTelegramAt=Date.now();
- let r;
- try{r=await telegramPost({chat_id,text})}finally{reportsDirty=true}
+ const {response:r,error:networkError,transport}=await sendRealTradeRequest({chat_id,text});reportsDirty=true;
+ if(!r)return {error:networkError,transport};
  const body=await r.json().catch(()=>null);
- if(r.ok&&body?.ok===true&&Number.isInteger(body.result?.message_id))return {ok:true,chatType:body.result.chat?.type??null};
+ if(r.ok&&body?.ok===true&&Number.isInteger(body.result?.message_id))return {ok:true,transport,chatType:body.result.chat?.type??null};
  const retrySeconds=Number(body?.parameters?.retry_after??r.headers.get('retry-after'));
  const error=r.status===401?'BOT_AUTH_FAILED':r.status===403?'BOT_POST_FORBIDDEN':/chat not found/i.test(body?.description??'')?'SCANNER_CHAT_NOT_FOUND':r.ok?'TELEGRAM_UNCONFIRMED':`HTTP_${r.status}`;
- return {error,retryMs:retrySeconds>0?retrySeconds*1000:0};
+ return {error,transport,retryMs:retrySeconds>0?retrySeconds*1000:0};
 }
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never
@@ -668,8 +685,10 @@ async function tgNotify(s){
 // The one Telegram transport. Callers: final signals (tgNotify, guarded by the final results) and
 // opt-in paper entry/close notices (paperTelegram, simulation text only).
 function scannerTelegramChat(){return CONFIG.tgScannerChat||CONFIG.tgChat.trim()}
-function telegramPost(payload){
- return fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
+function telegramPost(payload,{ipv4=false}={}){
+ const url=`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`;
+ if(ipv4)return postTelegramIPv4(url,payload);
+ return fetch(url,{
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
 }
 
@@ -811,12 +830,11 @@ async function uploadReport(force=false){
 setInterval(()=>{void uploadReport()},15*60000).unref?.();setTimeout(()=>{void uploadReport(true)},90000).unref?.();
 // Live trade notices to Telegram (live_telegram.mjs), on unless switched off in 알림 설정.
 function liveTelegramNotice(record,type,detail){
- if(record?.mode==='LIVE'&&record.venue==='BINGX'&&['PROTECTED','ADD_FILLED','SETTLED'].includes(type))return;
+ if(record?.mode==='LIVE'&&record.venue==='BINGX'&&['PROTECTED','ADD_FILLED','SETTLED'].includes(type)){refreshRealTradeNotices();return}
  const text=liveEventText(record,type,detail);if(!text)return;
  // Open dashboards show it as a Chrome/system notification (public/app.js 'live-notice').
  try{send('live-notice',{type,symbol:record?.symbol??null,text,at:Date.now()})}catch{}
- if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
- telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[LIVE TELEGRAM] HTTP',r.status)}).catch(e=>console.error('[LIVE TELEGRAM]',e.message));
+ void sendTradeTelegram(text);
 }
 async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
