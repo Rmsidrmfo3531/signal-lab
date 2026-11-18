@@ -117,6 +117,7 @@ API 실주문이 확인되어 **자동 모의매매는 기본으로 꺼졌습니
 | `TARGET_OBSTACLE_FRACTION` | `1` | TP1 앞 매물대가 가장 큰 매물대(POC)의 이 비율 이상이면 진입 안 함. 1 = POC 자체만 차단. 백테스트(60일·6종목)에서 0.5는 수익 거래를 막아 기본값을 1로 변경 |
 | `PAPER_VENUES` | `BINGX,GATEIO` | 모의 체결에 쓸 거래소(쉼표). 예: `GATEIO`만 쓰려면 `PAPER_VENUES=GATEIO` |
 | `LIVE_TRADING_MODE` | `OFF` | 실주문 모드 `OFF`·`TESTNET`·`LIVE` (LIVE는 `LIVE_TRADING_CONFIRM=REAL_MONEY` 필요) |
+| `TESTNET_SIGNAL_ENTRIES` | `off` | 테스트넷은 단타만 신규 진입. `on`을 지정하면 기존 신호 전략도 신규 진입 가능. |
 | `LIVE_SIZING` | `BALANCE` | 실주문 수량: `BALANCE`(잔고 비율 + 매물대 분할 추매) · `RISK_USD`(고정 금액) |
 | `LIVE_DAILY_MAX_LOSS_PCT` | `60` | BALANCE: 하루 계획 손실 합계 한도(잔고 %) |
 | `LIVE_MAX_RISK_USD` / `LIVE_DAILY_MAX_RISK_USD` / `LIVE_MAX_OPEN_POSITIONS` | `2` / `6` / 없음 | RISK_USD 방식 위험 한도 / 동시 포지션 개수(기본 제한 없음, 숫자를 넣으면 짝수·롱숏 반반으로 제한). 개수 대신 열린 포지션 최대 손실 합계가 잔고 × 하루 손실 한도 이내 |

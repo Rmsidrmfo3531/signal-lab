@@ -12,7 +12,7 @@ const KEY='synthetic-testnet-key-0123456789abcdef',SECRET='synthetic-testnet-sec
 
 test('paper off by default: a final signal opens a TESTNET live position, no paper position, and the live overview shows it',{timeout:60000},async()=>{
  const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true,fakeBingxTestnet:true,
-  env:{PAPER_TRADING:'',LIVE_TRADING_MODE:'TESTNET',LIVE_VENUES:'BINGX',BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,
+  env:{PAPER_TRADING:'',LIVE_TRADING_MODE:'TESTNET',TESTNET_SIGNAL_ENTRIES:'on',LIVE_VENUES:'BINGX',BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,
    TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_CHAT_ID:'123456'}});
  const post=async(target,body)=>{const r=await fetchLocal(app.base+target,{method:'POST',headers:{'content-type':'application/json',origin:app.base,'sec-fetch-site':'same-origin'},body:JSON.stringify(body)});return {status:r.status,body:await r.json()}};
  try{
@@ -68,6 +68,24 @@ test('paper off by default: a final signal opens a TESTNET live position, no pap
   assert.ok(!requests.some(r=>r.host==='open-api.bingx.com'&&r.method&&r.method!=='GET'),'nothing is written to the real BingX host');
   assert.ok(!requests.some(r=>r.host==='api.telegram.org'),'testnet trade does not reach Telegram');
   for(const secret of [KEY,SECRET])assert.ok(!app.logs().includes(secret),'keys never reach the server output');
+ }finally{await app.close()}
+});
+
+test('the default testnet switch arms only scalps and rejects the signal test-order route',{timeout:25000},async()=>{
+ const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true,fakeBingxTestnet:true,
+  env:{PAPER_TRADING:'off',LIVE_TRADING_MODE:'TESTNET',LIVE_VENUES:'BINGX',BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET}});
+ const post=(target,body)=>fetchLocal(app.base+target,{method:'POST',headers:{'content-type':'application/json',origin:app.base,'sec-fetch-site':'same-origin'},body:JSON.stringify(body)});
+ try{
+  await app.start();
+  const switched=await post('/api/live/arm',{confirm:'ARM'});
+  assert.equal(switched.status,200);
+  assert.deepEqual((await switched.json()).testnet,{signal:null,scalp:{armed:true},armed:true,partial:false,killSwitch:false,scalpOnly:true});
+  const blocked=await post('/api/live/test-order',{confirm:'TEST'});
+  assert.equal(blocked.status,409);assert.equal((await blocked.json()).error,'TESTNET_SIGNAL_DISABLED');
+  await app.get('/api/analyze?symbol=BTCUSDT');
+  const overview=await app.get('/api/live/overview');
+  assert.equal(overview.armed,false);assert.equal(overview.testnet.scalpOnly,true);assert.equal(overview.scalp.armed,true);
+  assert.deepEqual(overview.positions,[]);assert.equal(overview.testnet.stats.signal.trades,0);
  }finally{await app.close()}
 });
 

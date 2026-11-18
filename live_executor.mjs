@@ -143,6 +143,7 @@ export class LiveExecutor{
   // updating: the server is applying an update and will restart; trading stays off until then.
   if(this.updating)throw Object.assign(Error('UPDATING'),{httpStatus:409});
   if(this.config.mode==='OFF')throw Object.assign(Error('LIVE_MODE_OFF'),{httpStatus:409});
+  if(this.testnetSignalDisabled)throw Object.assign(Error('TESTNET_SIGNAL_DISABLED'),{httpStatus:409});
   if(this.config.mode==='LIVE'&&!this.config.liveConfirmed)throw Object.assign(Error('LIVE_CONFIRM_MISSING'),{httpStatus:409});
   if(this.store.killSwitch)throw Object.assign(Error('KILL_SWITCH_ON'),{httpStatus:409});
   this.armed=true;this.lastTry.clear();this.onChange(this.status());return this.status();
@@ -152,6 +153,7 @@ export class LiveExecutor{
   try{this.onEvent?.({symbol:'실매매 전체',mode:this.config.mode},'KILL_SWITCH',{reason})}catch{}
   return this.status()}
  resetKill(){this.store.killSwitch=false;this.#save();return this.status()}
+ get testnetSignalDisabled(){return this.config.mode==='TESTNET'&&this.config.testnetSignalEntries===false}
 
  #entryBlock(revision){
   if(this.store.killSwitch)return 'KILL_SWITCH_ON';
@@ -174,6 +176,7 @@ export class LiveExecutor{
 
  /** Called once per newly published final signal (already venue-checked). */
  async onSignal(row,{signalKey}){
+  if(this.testnetSignalDisabled)return {sent:false,reasons:['TESTNET_SIGNAL_DISABLED']};
   if(this.updating||this.paused)return {sent:false,reasons:['UPDATING']};
   // One evaluation per signal at a time: price ticks can offer the same signal again while the
   // balance is being read; without this both could pass the duplicate check.
@@ -625,8 +628,10 @@ export class LiveExecutor{
      if(old)await this.#cancel(record,old);
      this.#event(record,'STOP_TO_BREAKEVEN',{price:entryPrice,orderId:placed});
     }
-    // TP1 filled: no more adds (same rule as paper).
-    if(record.breakevenMoved&&record.adds?.some(a=>a.orderId&&!a.filled&&!a.cancelled))await this.#cancelAdds(record,'TP1_FILLED');
+    // A retired testnet signal position keeps its exits but cannot increase exposure.
+    const retired=record.mode==='TESTNET'&&this.testnetSignalDisabled;
+    if((retired||record.breakevenMoved)&&record.adds?.some(a=>a.orderId&&!a.filled&&!a.cancelled))
+     await this.#cancelAdds(record,retired?'TESTNET_SIGNAL_DISABLED':'TP1_FILLED');
    }catch(error){
     // A rate-limit answer is a pause, not a problem with this trade: logged, not recorded on it.
     // The rest of this round is skipped (every call would wait out the same pause). If the venue
