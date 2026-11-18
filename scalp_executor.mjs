@@ -43,6 +43,7 @@ export const SCALP_KINDS=Object.freeze({MOVE:'MOVE_REVERSAL',ZONE:'ZONE_REVERSAL
 export const SCALP_ZONE_MIN_MOVE_PCT=SCALP_TIMEFRAMES['5m'].minMovePct;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 export const SCALP_EXEC_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:2,spreadBps:1,fundingRate:.0001,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'});
+export const SCALP_SCALE_IN=Object.freeze({version:1,windowBars:6,near:.5,far:.75});
 const SCREEN_CLOSED=100,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.25],MAX_CLOSED=300,MAX_EVENTS=200,MAX_SKIPS=60,MAX_KEYS=500,SETTLE_DELAY_MS=150000,SETTLE_TRIES=4;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -95,6 +96,7 @@ export function scalpExecConfig(env=process.env){
   // signals as in the backtest; 'off' skips the measurement.
   trendMode:(m=>['on','true','1','yes'].includes(m)?'on':['off','false','0','no'].includes(m)?'off':['record','log'].includes(m)?'record':'on')(String(env.SCALP_EXEC_TREND_FILTER||'').trim().toLowerCase()),
   riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',0,0,200),leverage:n('SCALP_LEVERAGE',10,1,20),
+  scaleIn:!['off','false','0','no'].includes(String(env.SCALP_SCALE_IN??'').trim().toLowerCase()),
   // Margin per position and for all scalps together, as a share of the equity; quantity is cut to fit.
   maxMarginPct:n('SCALP_MAX_MARGIN_PCT',10,1,50),maxTotalMarginPct:n('SCALP_MAX_TOTAL_MARGIN_PCT',30,1,80),
   dailyLossPct:n('SCALP_DAILY_LOSS_PCT',3,.5,10),
@@ -141,6 +143,12 @@ export function scalpSplits(total,step,minPart=0){
 
 /** The order plan for a detected LONG or SHORT: price check, stop/targets on the tick grid, risk sizing,
  * splits, TP1 net RR (buildScalpPlan, as backtestScalp). Pure. */
+function riskAtStop(direction,entry,stop,takerRate,costs=SCALP_EXEC_COSTS){
+ const dir=dirOf(direction),slippage=costs.slippageBps/10000;
+ const exit=stop*(1-dir*slippage);
+ return Math.max(0,dir*(entry-exit)+takerRate*(entry+exit)+entry*(costs.fundingRate||0));
+}
+
 export function planScalpOrder({det,price,contract:c,equity,available=null,usedMargin=0,totalMarginCapUSD=null,leverage,config,costs=SCALP_EXEC_COSTS}){
  const fail=(reason,extra={})=>({ok:false,reasons:[reason],...extra});
  if(!pos(price))return fail('PRICE_UNAVAILABLE');
@@ -175,16 +183,23 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  const q=buildScalpPlan({signal:{...det,stop},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR:config.minNetRR});
  if(!q.ok)return fail(q.reasons[0],{netRR:q.estimatedNetRR??null});
  if(!pos(equity))return fail('NO_BALANCE');
- const riskUSD=equity*config.riskPct/100,lev=pos(leverage)??1;
- let qty=riskUSD/(dir*(entry-stop)),capped=false;
- const cap=Math.min(equity*config.maxMarginPct/100,(totalMarginCapUSD??equity*config.maxTotalMarginPct/100)-usedMargin,available!=null?available*.9:Infinity);
+ const riskUSD=equity*config.riskPct/100,lev=pos(leverage)??1,scaleIn=config.scaleIn===true;
+ const assumedEntry=entry*(1+dir*cost.slippageBps/10000);
+ const riskUnit=scaleIn?riskAtStop(det.direction,assumedEntry,stop,cost.takerRate,cost):dir*(entry-stop);
+ // Each unit of the initial entry reserves the same notional at the worst permitted add price.
+ const worstAdd=stop+(assumedEntry-stop)*SCALP_SCALE_IN.far;
+ const addRiskUnit=scaleIn?assumedEntry/worstAdd*riskAtStop(det.direction,worstAdd,stop,cost.takerRate,cost):0;
+ let qty=riskUSD/(riskUnit+addRiskUnit),capped=false;
+ const cap=Math.min(equity*config.maxMarginPct/100,(totalMarginCapUSD??equity*config.maxTotalMarginPct/100)-usedMargin,available!=null?available*.9:Infinity)/(scaleIn?2:1);
  if(!(cap>0))return fail('MARGIN_CAP');
  if(qty*entry/lev>cap){qty=cap*lev/entry;capped=true}
  qty=Number(grid(qty*(1+1e-9),step,'DOWN'))||0;
  const minPart=Number(grid(Math.max(Number(c.minQuantityBase)||0,(Number(c.minNotionalUSDT)||0)/entry*1.02,Number(step)),step,'UP'))||Number(step);
  const split=scalpSplits(qty,step,minPart);if(!split)return fail(capped?'MARGIN_CAP':'QUANTITY_BELOW_MINIMUM');
  return {ok:true,entry,stop,targets:q.targets,qty,parts:split.parts,targetCount:split.targets,merged:split.merged,minPart,leverage:lev,
-  riskUSD:qty*dir*(entry-stop),marginUSD:qty*entry/lev,capped,netRR:q.estimatedNetRR,driftPct:+driftPct.toFixed(3),takerRate:cost.takerRate};
+  riskUSD:qty*riskUnit,marginUSD:qty*entry/lev,capped,netRR:q.estimatedNetRR,driftPct:+driftPct.toFixed(3),takerRate:cost.takerRate,
+  scaleIn:scaleIn?{version:SCALP_SCALE_IN.version,state:'WATCH',riskPct:config.riskPct,budgetUSD:riskUSD,minPart,
+   minNotional:pos(c.minNotionalUSDT)||0}:null};
 }
 /** Deterministic client order ids: one signal candle of one symbol and side can be sent once (LONG keeps
  * the id it had before shorts were added, so a ledger written then still blocks a resend). */
@@ -243,7 +258,7 @@ export class ScalpExecutor{
  // With the shared budget only a stop written under it counts (review L2: a scalp-only 3 % stop saved before is ignored).
  #todayStopped(){const d=this.store.dailyStop;return d?.day===kstDay(this.now())&&(!this.budget||d.shared===true)}
  /** Why no new entry may be sent now (null = may). */
- #blocked(){
+ #blocked(ignoreAddId=null){
   if(this.config.mode!=='TESTNET')return this.config.refused||'SCALP_MODE_OFF';
   if(!this.client)return 'CREDENTIALS_MISSING';
   if(this.client.mode!=='TESTNET')return 'SCALP_TESTNET_ONLY';
@@ -252,7 +267,7 @@ export class ScalpExecutor{
   if(this.#todayStopped())return 'DAILY_LOSS_LIMIT';
   // Shared budget: the signal strategy's and the scalp's realized loss today reached the shared limit.
   if(this.budget?.stopped(this.funds?.equity))return 'DAILY_LOSS_LIMIT';
-  if(this.store.open.some(p=>p.status==='UNKNOWN'))return 'UNRESOLVED_ORDER_STATE';
+  if(this.store.open.some(p=>p.status==='UNKNOWN'||p.id!==ignoreAddId&&p.scaleIn?.state==='PENDING'))return 'UNRESOLVED_ORDER_STATE';
   if(this.cooldownUntil>this.now())return 'RATE_LIMIT_COOLDOWN';
   return null;
  }
@@ -409,8 +424,15 @@ export class ScalpExecutor{
   if(trend!==null)this.trendCache.set(symbol,{b,trend});return trend;
  }
  /** Loss to the stops of the open positions (0 once a stop sits at breakeven or better). */
- #openRisk(){return this.store.open.reduce((t,p)=>{const d=p.direction==='SHORT'?-1:1,e=Number(p.avg||p.entry),st=Number(p.stop),q=Number(p.size||p.qty||0);return t+(e>0&&st>0&&q>0?Math.max(0,d*(e-st))*q:0)},0)}
- #usedMargin(){return this.store.open.reduce((t,p)=>t+(p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1),0)}
+ #openRisk(){return this.store.open.reduce((t,p)=>{
+  const d=dirOf(p.direction),e=pos(p.avg||p.entry),st=pos(p.stop),q=pos(p.size||p.qty),pending=p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedRiskUSD||0):0;
+  if(!e||!st||!q)return t+pending;
+  const unit=p.scaleIn?riskAtStop(p.direction,e,st,p.takerRate):Math.max(0,d*(e-st));
+  if(p.scaleIn&&p.status==='SUBMITTING')return t+Math.max(unit*q,p.riskUSD)+pending;
+  return t+unit*q+pending;
+ },0)}
+ #usedMargin(){return this.store.open.reduce((t,p)=>t+(p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1)
+  +(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedMarginUSD||0):0),0)}
  async #funds(){
   const b=await this.balance().catch(()=>null),eq=pos(b?.equity);if(!eq)return null;
   const cap=this.config.balanceCapUSD>0?this.config.balanceCapUSD:Infinity,equity=Math.min(eq,cap),used=Math.max(0,eq-(num(b.available)??eq));
@@ -503,6 +525,7 @@ export class ScalpExecutor{
    qty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,marginUSD:plan.marginUSD,netRR:plan.netRR,
    tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
    avg:null,size:0,filled:0,stopOrderId:null,stopIds:[],tpOrderIds:[null,null,null],tpTries:[0,0,0],breakevenMoved:false,exitIds:[],steps:[],
+   ...(plan.scaleIn?{scaleIn:plan.scaleIn}:{}),
    // Journal context (analysis only).
    atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,withTrend:this.cur?.withTrend??null,universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
   this.store.open.push(p);this.store.sent.push(id);this.#save();
@@ -526,6 +549,10 @@ export class ScalpExecutor{
   p.entryOrderId=orderId(fill);p.status='OPEN';p.openedAt=this.now();
   const now=await this.#position(vs,d,hedge).catch(()=>({size:0}));
   p.filled=p.size=now.size>0?now.size:plan.qty;p.avg=now.avg??pos(orderOf(fill)?.avgPrice)??plan.entry;
+  if(p.scaleIn){
+   p.riskUSD=riskAtStop(d,p.avg,p.initialStop,p.takerRate)*p.filled;p.marginUSD=p.avg*p.filled/p.leverage;
+   Object.assign(p.scaleIn,{initialEntry:p.avg,initialQty:p.filled,initialMarginUSD:p.marginUSD,initialRiskUSD:p.riskUSD});
+  }
   if(Math.abs(p.filled-plan.qty)>Number(c.quantityStep)/2){const s=scalpSplits(p.filled,c.quantityStep,0);if(s)p.parts=s.parts}
   p.steps.push({kind:'OPEN',at:this.now(),qty:p.filled,avg:p.avg});this.#save();
   if(!await this.#protect(p))return {entered:false,reason:p.closeReason||'NO_STOP'};
@@ -584,11 +611,160 @@ export class ScalpExecutor{
   catch(e){this.#event('STOP_FAILED',{symbol:p.symbol,reason:e?.code||e?.message});await this.#emergency(p,'NO_STOP');this.disarm('NO_PROTECTIVE_STOP');return false}
  }
  #stopParams(p,price,tag,mode=awayMode(p.direction)){return {symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'STOP_MARKET',quantity:String(p.size),stopPrice:grid(price,p.tickSize,mode)??String(price),closePosition:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+tag).slice(0,40)}}
+ #addDecision(p,state,reason=null){
+  Object.assign(p.scaleIn,{state,reason});
+  this.#event('SCALE_IN_'+state,{symbol:p.symbol,direction:p.direction,reason});
+  this.#save();
+ }
+ async #wholeStopForAdd(p,quantity){
+  const old=p.stopOrderId,vs=p.venueSymbol;
+  const matches=o=>o&&String(o.type).toUpperCase()==='STOP_MARKET'&&(!o.workingType||o.workingType==='MARK_PRICE')
+   &&orderOnSide(o,{hedge:p.hedge===true,direction:p.direction})&&Math.abs(Number(o.stopPrice)-p.initialStop)<Number(p.tickSize)*.51;
+  const orders=await this.#openOrders(vs);
+  if(orders.some(o=>orderId(o)===old&&matches(o)&&String(o.closePosition).toLowerCase()==='true'))return true;
+  const params=this.#stopParams(p,p.initialStop,'ws');
+  const placed=await this.client.placeOrder({...params,quantity:String(Number(quantity.toFixed(12)))});
+  const id=orderId(placed);
+  if(!id)return false;
+  p.stopIds.push(id);this.#save();
+  const active=await this.#openOrders(vs);
+  if(!active.some(o=>orderId(o)===id&&matches(o)&&(o.closePosition==null||String(o.closePosition).toLowerCase()==='true'))){await this.client.cancelOrder(vs,id);return false}
+  if(old&&old!==id&&orders.some(o=>orderId(o)===old))await this.client.cancelOrder(vs,old);
+  p.stopOrderId=id;this.#save();return true;
+ }
+ /** One attempt: closed midpoint retest after entry, then a price in the band in the immediately following candle. */
+ async #considerAdd(p,mark){
+  const a=p.scaleIn,now=this.now(),bucket=Math.floor(now/I5)*I5,dir=dirOf(p.direction);
+  if(!a||a.state!=='WATCH')return;
+  if(now>=Math.min(p.deadline,p.openedAt+SCALP_SCALE_IN.windowBars*I5))return this.#addDecision(p,'SKIPPED',a.lastReason||'WINDOW_EXPIRED');
+  if(p.breakevenMoved||p.size<p.filled-Number(p.quantityStep)/2)return this.#addDecision(p,'SKIPPED','FIRST_REDUCTION');
+  if(!this.config.scaleIn||this.#blocked()||!mark||bucket<=p.openedAt||a.checkedBucket===bucket)return;
+  const revision=this.entryRevision,vs=p.venueSymbol,entry=p.avg,stop=p.initialStop,distance=dir*(entry-stop);
+  if(!(distance>0))return this.#addDecision(p,'SKIPPED','ENTRY_AT_OR_BEYOND_STOP');
+  const level=price=>dir*(price-stop)/distance;
+  const bars=await withTimeout(this.candles(p.symbol,'5m',3),3000);
+  const row=(bars||[]).find(r=>Number(r[0])===bucket-I5&&Number(r[6])<now);
+  if(!row||Number(row[0])<p.openedAt)return;
+  a.checkedBucket=bucket;
+  const [open,high,low,close]=row.slice(1,5).map(Number),adverse=dir>0?low:high,favorable=dir>0?high:low;
+  if(![open,high,low,close].every(pos))return;
+  if(level(adverse)<=SCALP_SCALE_IN.near)a.touchedAt=Number(row[6]);
+  if(level(adverse)<=0||dir*(p.targets[0]-favorable)<=0||level(adverse)>SCALP_SCALE_IN.near
+    ||level(close)<SCALP_SCALE_IN.near||dir*(close-open)<=0)return;
+  a.recoveredAt=Number(row[6]);
+  const [price,funds]=await Promise.all([withTimeout(this.priceOf(p.symbol,vs),3000),this.#funds()]);
+  if(!funds){a.lastReason='NO_BALANCE';return}
+  if(!pos(price)||level(price)<SCALP_SCALE_IN.near||level(price)>SCALP_SCALE_IN.far||level(mark)<=0){a.lastReason='PRICE_OUTSIDE_BAND';return}
+  const bandEdge=stop+dir*distance*SCALP_SCALE_IN.far,tick=Number(p.tickSize);
+  const limit=Number(grid(dir>0?Math.min(price+tick,bandEdge):Math.max(price-tick,bandEdge),p.tickSize,awayMode(p.direction)));
+  if(!(level(limit)>=SCALP_SCALE_IN.near&&level(limit)<=SCALP_SCALE_IN.far+1e-9))return;
+  const budget=Math.min(a.budgetUSD,funds.equity*a.riskPct/100),fee=p.takerRate;
+  const unit=riskAtStop(p.direction,limit,stop,fee),heldRisk=riskAtStop(p.direction,entry,stop,fee)*p.size;
+  const shared=this.budget?.snapshot(funds.equity,{who:'scalp'});
+  if(shared&&!shared.ok){a.lastReason='TESTNET_BUDGET_UNAVAILABLE';return}
+  const cap=Math.min(funds.available*.9,funds.equity*this.config.maxMarginPct/100-p.size*entry/p.leverage,
+   (shared?.marginCapUSD??funds.equity*this.config.maxTotalMarginPct/100)-(shared?.marginUSD??this.#usedMargin()));
+  const initialNotional=p.filled*entry,quantity=Number(grid(initialNotional/limit,p.quantityStep,'DOWN'));
+  const risk=quantity*unit,margin=quantity*limit/p.leverage;
+  if(!(quantity>0&&quantity>=a.minPart&&quantity*limit>=a.minNotional)){a.lastReason='MIN_QUANTITY';return}
+  if(heldRisk+risk>budget+1e-9||margin>cap+1e-9){a.lastReason='RISK_OR_MARGIN_CAP';return}
+  if(!this.#scaleBudget(funds.equity,risk,margin)){a.lastReason='TESTNET_BUDGET';return}
+  const guard=()=>this.#blocked(p.id)||(revision!==this.entryRevision?'NOT_ARMED':null)
+   ||(this.now()>=Math.min(bucket+I5,p.deadline,p.openedAt+SCALP_SCALE_IN.windowBars*I5)?'WINDOW_EXPIRED':null)
+   ||(!this.#scaleBudget(funds.equity)?'TESTNET_BUDGET':null);
+  if(guard())return;
+  try{if(!await this.#wholeStopForAdd(p,p.size+quantity))return this.#addDecision(p,'SKIPPED','NO_WHOLE_POSITION_STOP')}
+  catch{return this.#addDecision(p,'SKIPPED','NO_WHOLE_POSITION_STOP')}
+  const fresh=await this.#position(vs,p.direction,p.hedge===true);
+  if(Math.abs(fresh.size-p.size)>Number(p.quantityStep)/2||!fresh.mark||level(fresh.mark)<=0||dir*(p.targets[0]-fresh.mark)<=0
+     ||!fresh.avg||Math.abs(fresh.avg-entry)>Number(p.tickSize)/2)
+   return this.#addDecision(p,'SKIPPED','POSITION_CHANGED');
+  const blocked=guard()||(!this.#scaleBudget(funds.equity,risk,margin)?'TESTNET_BUDGET':null);
+  if(blocked)return this.#addDecision(p,'SKIPPED',blocked);
+  const id=p.id+'a1';
+  Object.assign(a,{state:'PENDING',clientOrderId:id,attemptedAt:this.now(),limit,requestedQty:quantity,reservedRiskUSD:risk,reservedMarginUSD:margin,
+   initialEntry:entry,initialQty:p.filled,initialMarginUSD:initialNotional/p.leverage,plannedMarginUSD:margin,budgetAtAddUSD:budget});
+  this.#save();
+  let order;
+  try{order=orderOf(await this.client.placeOrder({symbol:vs,side:openSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),
+   type:'LIMIT',timeInForce:'FOK',price:String(limit),quantity:String(quantity),clientOrderId:id},{beforeSend:guard}))}
+  catch(e){
+   if(e?.code==='ENTRY_NOT_SENT'||e?.code==='HTTP_429')return this.#addDecision(p,'SKIPPED',e.reason||e.code);
+   const found=orderOf(await this.client.getOrder(vs,{clientOrderId:id}).catch(()=>null));
+   if(!orderId(found)&&/^VENUE_ERROR_\d+$/.test(e?.code||'')&&!/duplicate|exist/i.test(e?.message||''))
+    return this.#addDecision(p,'SKIPPED',e.code);
+   order=found;
+  }
+  await this.#recoverAdd(p,order);
+ }
+ #scaleBudget(equity,risk=0,margin=0){
+  if(this.budget)return this.budget.check({equity,newRiskUSD:risk,newMarginUSD:margin,who:'scalp'}).ok;
+  const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((sum,x)=>sum+(Number(x.netUSD)||0),0);
+  return Math.max(0,-realized)+this.budgetSource().openRisk()+risk<=equity*this.config.dailyLossPct/100+1e-9
+   &&this.budgetSource().usedMargin()+margin<=equity*this.config.maxTotalMarginPct/100+1e-9;
+ }
+ async #recoverAdd(p,order=null){
+  const a=p.scaleIn,vs=p.venueSymbol;
+  if(a.state==='PENDING'){
+   order??=orderOf(await this.client.getOrder(vs,{clientOrderId:a.clientOrderId}).catch(()=>null));
+   const terminal=['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(String(order?.status).toUpperCase());
+   if(!terminal){
+    if(!a.unknownLogged){a.unknownLogged=true;this.#event('SCALE_IN_PENDING',{symbol:p.symbol,reason:'ORDER_OUTCOME_UNKNOWN'});this.#save()}
+    if(this.now()>=p.deadline){
+     const current=await this.#position(vs,p.direction,p.hedge===true);if(current.size>0)await this.#market(p,'ax'+(p.exitTries=(p.exitTries||0)+1));
+    }
+    return;
+   }
+   const added=pos(order.executedQty),fill=pos(order.avgPrice);
+   if(!added){
+    if(String(order.status).toUpperCase()==='FILLED')return;
+    return this.#addDecision(p,'SKIPPED','NOT_FILLED');
+   }
+   if(!fill)return;
+   const total=p.filled+added;
+   a.fillQty=added;a.fillPrice=fill;a.filledAt=this.now();a.fillMarginUSD=fill*added/p.leverage;a.state='RESIZE';
+   p.avg=(p.avg*p.filled+fill*added)/total;p.filled=total;p.size=total;
+   p.riskUSD=a.riskAfterUSD=riskAtStop(p.direction,p.avg,p.initialStop,p.takerRate)*total;p.marginUSD=p.avg*total/p.leverage;
+   p.steps.push({kind:'ADD',at:a.filledAt,qty:added,avg:p.avg});this.#save();
+  }
+  const fresh=await this.#position(vs,p.direction,p.hedge===true);
+  if(fresh.size<=0){this.#addDecision(p,'FILLED','FLAT_DURING_RESIZE');return this.#finish(p)}
+  if(Math.abs(fresh.size-p.filled)>Number(p.quantityStep)/2||this.now()>=p.deadline||a.riskAfterUSD>a.budgetAtAddUSD+1e-8){
+   this.#addDecision(p,'FILLED','EXIT_DURING_RESIZE');
+   return this.#emergency(p,'SCALE_IN_RESIZE_EXIT');
+  }
+  if(!(await this.#openOrders(vs)).some(o=>orderId(o)===p.stopOrderId)){
+   this.#addDecision(p,'FILLED','NO_WHOLE_POSITION_STOP');
+   await this.#emergency(p,'NO_STOP');this.disarm('NO_PROTECTIVE_STOP');return;
+  }
+  for(const [i,id] of p.tpOrderIds.entries()){
+   if(!id)continue;
+   let old=orderOf(await this.client.getOrder(vs,{orderId:id}));
+   if(!['CANCELED','CANCELLED','EXPIRED'].includes(String(old?.status).toUpperCase())){
+    if(!pos(old?.executedQty))await this.client.cancelOrder(vs,id);
+    old=orderOf(await this.client.getOrder(vs,{orderId:id}));
+   }
+   if(pos(old?.executedQty)){
+    this.#addDecision(p,'FILLED','TARGET_FILLED_DURING_RESIZE');
+    return this.#emergency(p,'SCALE_IN_RESIZE_EXIT');
+   }
+   if(!['CANCELED','CANCELLED','EXPIRED'].includes(String(old?.status).toUpperCase()))return;
+   p.tpOrderIds[i]=null;this.#save();
+  }
+  const after=await this.#position(vs,p.direction,p.hedge===true);
+  if(Math.abs(after.size-p.filled)>Number(p.quantityStep)/2){
+   this.#addDecision(p,'FILLED','POSITION_CHANGED_DURING_RESIZE');
+   return this.#emergency(p,'SCALE_IN_RESIZE_EXIT');
+  }
+  const s=scalpSplits(p.filled,p.quantityStep,a.minPart);
+  p.parts=s.parts;p.targetCount=s.targets;p.merged=s.merged;p.tpTries=[0,0,0];
+  this.#addDecision(p,'FILLED');await this.#placeTargets(p);
+ }
  async #placeTargets(p){
   for(const [i,q] of p.parts.entries()){
    if(!(q>0)||p.tpOrderIds[i]||p.tpDone?.[i]||p.tpTries[i]>=3)continue;p.tpTries[i]++;
    try{const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'TAKE_PROFIT_MARKET',quantity:String(q),stopPrice:grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]),
-    reduceOnly:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+'t'+(i+1)+(p.tpTries[i]>1?p.tpTries[i]:'')).slice(0,40)},p.hedge===true));p.tpOrderIds[i]=orderId(o)}
+    reduceOnly:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+(p.scaleIn?.fillQty?'u':'t')+(i+1)+(p.tpTries[i]>1?p.tpTries[i]:'')).slice(0,40)},p.hedge===true));p.tpOrderIds[i]=orderId(o)}
    catch(e){this.#event('TARGET_FAILED',{symbol:p.symbol,reason:`${i+1}: ${e?.code||e?.message}`})}
   }
  }
@@ -634,6 +810,7 @@ export class ScalpExecutor{
     // An entry still being placed (its stop / targets not yet sent) is left to the entry path.
     if(p.status==='SUBMITTING'||this.reserved.has(p.symbol))continue;
     try{
+     if(p.scaleIn?.state==='PENDING'||p.scaleIn?.state==='RESIZE'){await this.#recoverAdd(p);continue}
      const {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true),mark=pos(row?.markPrice);
      // Hedge mode: a position on the other side of this coin at any check -> this trade is not settled from the
      // symbol's fund flow (its PnL and funding would be mixed in, review 2026-11-17); the fill estimate stays.
@@ -656,6 +833,7 @@ export class ScalpExecutor{
      if(this.now()>=p.deadline){p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'x'+p.exitTries);p.exitReason='TIME_STOP';if(!(r.size>0))await this.#finish(p);continue}
      if(p.tpDone[0]&&!p.breakevenMoved)await this.#breakeven(p,mark);
      if(p.status==='OPEN'&&p.tpOrderIds.some((id,i)=>!id&&p.parts[i]>0&&!p.tpDone[i]&&p.tpTries[i]<3))await this.#placeTargets(p);
+     if(p.status==='OPEN')await this.#considerAdd(p,mark);
     }catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;break}this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message})}
    }
    for(const x of this.store.closed.filter(x=>!x.realized&&!x.otherSideSeen&&(x.settleTries||0)<SETTLE_TRIES&&this.now()-x.closedAt>=SETTLE_DELAY_MS&&this.now()-x.closedAt<2*3600000))await this.#settle(x).catch(()=>{});
@@ -707,6 +885,7 @@ export class ScalpExecutor{
   const rest=Math.max(0,p.filled-out);if(rest>1e-12){const px=pos(await withTimeout(this.priceOf(p.symbol,vs),3000))??p.mark??p.stop;gross+=dir*(px-p.avg)*rest;exitNotional+=px*rest;out+=rest}
   const fee=(p.avg*p.filled+exitNotional)*(p.takerRate||SCALP_EXEC_COSTS.takerRate),r=x=>Math.round(x*1e4)/1e4;
   p.status='CLOSED';p.closedAt=this.now();p.closeReason=reason;p.tpHits=tpFilled;
+  if(p.scaleIn?.state==='WATCH')Object.assign(p.scaleIn,{state:'SKIPPED',reason:p.scaleIn.lastReason||reason});
   const row={...p,estimate:{source:'ESTIMATE',pnlUSD:r(gross),feeUSD:r(-fee),netUSD:r(gross-fee)},netUSD:r(gross-fee),netSource:p.otherSideSeen?'ESTIMATE_OTHER_SIDE':'ESTIMATE',holdMs:p.closedAt-(p.openedAt||p.createdAt)};
   // R multiple on the actual entry and the initial stop (replaced by the settled result when the journal line is written).
   {const risk=dir*(p.avg-p.initialStop)*p.filled;row.rMultiple=risk>0?r((gross-fee)/risk):null}
@@ -741,7 +920,8 @@ export class ScalpExecutor{
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.maxHoldMs/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
-    zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct},
+    zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,
+    scaleIn:c.scaleIn===true,scaleInMarginRatio:1},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,...p})=>p),closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),

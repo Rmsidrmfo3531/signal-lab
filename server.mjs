@@ -701,6 +701,8 @@ async function uploadReport(force=false){
    journal:persisted.journal,records:[...live.store.records,...(live.store.archived||[])],
    // 되돌림 단타 journal (user 2026-11-16 22:18): summary in latest.json, full trades and daily signals as files.
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange:await exchangeReport().catch(e=>({error:e.message}))});
+  report.release=appVersion.displayVersion;
+  if(report.scalp)report.scalp.runtime={mode:SCALP_EXEC.mode,armed:scalpExec.armed,scaleInEnabled:SCALP_EXEC.scaleIn};
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});
   reportsDay=day;reportsHour=hourKey;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
  }catch(e){console.error('[REPORTS]',e.message)}finally{reportsBusy=false}
