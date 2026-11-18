@@ -80,6 +80,24 @@ test('PAPER_TRADING=on turns automatic paper entries back on',{timeout:30000},as
  }finally{await app.close()}
 });
 
+test('testnet budget settings are saved and both caps follow the latest BingX testnet equity',{timeout:25000},async()=>{
+ const app=await sandbox({scenarios:{},fakeBingxTestnet:true,fakeBingxTestnetEquity:1000,env:{
+  BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'TESTNET',LIVE_VENUES:'BINGX',PAPER_TRADING:'off',SCALP_EXEC_MODE:'OFF',
+ }});
+ const edit=async body=>{const r=await fetchLocal(app.base+'/api/live/testnet-budget',{method:'POST',headers:{'content-type':'application/json',origin:app.base,'sec-fetch-site':'same-origin'},body:JSON.stringify(body)});return [r.status,await r.json()]};
+ try{
+  await app.start();
+  const getBudget=async()=>(await app.get('/api/live/overview')).testnet.budget;
+  const before=await getBudget();assert.equal(before.accountEquityUSD,1000);assert.equal(before.limitUSD,150);assert.equal(before.marginCapUSD,300);
+  const bad=await edit({dailyLossPct:12.5,marginCapPct:31});assert.equal(bad[0],400);
+  const [status,saved]=await edit({dailyLossPct:12.5,marginCapPct:25});assert.equal(status,200);
+  assert.deepEqual([saved.budget.limitUSD,saved.budget.marginCapUSD],[125,250]);
+  await app.write({fakeBingxTestnetEquity:1600});
+  const after=await until(getBudget,b=>b.accountEquityUSD===1600,{timeout:12000,label:'new testnet account equity'});
+  assert.deepEqual([after.equityUSD,after.limitUSD,after.marginCapUSD],[1600,200,400]);assert.ok(after.balanceAt>before.balanceAt);
+ }finally{await app.close()}
+});
+
 test('real-account calendar publishes recent income when older windows are empty and balance fails',async()=>{
  const at=Date.now()-60000,day=new Date(at+9*3600000).toISOString().slice(0,10);
  const row={incomeType:'REALIZED_PNL',income:'27.50',time:at,symbol:'BTC-USDT',tranId:'fixture-income'};

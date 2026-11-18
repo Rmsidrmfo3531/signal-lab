@@ -458,6 +458,8 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .copy-table td .vp-badge{margin-left:4px;vertical-align:1px}
 /* One testnet screen (user 2026-11-17 "단타랑 원래 쓰던 테스트넷이랑 합쳐서"): budget line, 신호 / 단타 badges, merged closes. */
 .tn-budget{margin:10px 18px 0}.tn-budget .tn-who{color:var(--dim);font-size:11.5px}.tn-budget-nums{overflow-wrap:anywhere}.tn-budget-nums b{font-weight:700}
+.tn-budget-edit{margin:4px 18px 0}.tn-budget-form{display:flex;align-items:end;flex-wrap:wrap;gap:8px 12px;padding:8px 0;color:var(--dim)}
+.tn-budget-form label{display:grid;gap:4px;font-size:12px}.tn-budget-form input{width:86px;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);font:inherit}
 .vp-badge.tn-signal{background:#132a3f;color:#8fc4ff;border-color:#2d5c8c}
 .vp-badge.tn-scalp{background:rgba(180,140,255,.12);color:#c9b2ff;border-color:rgba(180,140,255,.4)}
 .vp-badge.tn-scalp-zone{background:rgba(255,190,90,.12);color:#ffcf85;border-color:rgba(255,190,90,.45)}
@@ -470,6 +472,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .tn-scalp-details{padding:4px 2px 2px}.tn-scalp-details .copy-rules a{color:#9fc3ef}
 #liveScalpSection summary small{font-weight:400;color:var(--dim);margin-left:6px}
 @media(max-width:690px){.tn-budget{margin:10px 14px 0}.live-metrics .tn-split{padding:9px 12px}#liveScalpSection summary small{display:block;margin:2px 0 0}}
+@media(max-width:690px){.tn-budget-edit{margin-inline:14px}}
 .tn-scalp-card .tn-tp{font-style:normal;white-space:nowrap}
 /* Daily P&L calendar (user 2026-11-18 "캘린더 느낌으로 내가 하루에 번 돈의 기록"): left column on the desktop, after the
    stats on phones; 7 columns from Monday, fits ~340-380 px without scrolling. */

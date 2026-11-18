@@ -47,6 +47,36 @@ test('one balance basis (review L7): the smaller of the two strategies\' equity 
  assert.equal(b.snapshot(5000).equityUSD,1000);
 });
 
+test('shared BingX equity follows the latest account sample, retains a configured capital cap and expires',()=>{
+ let now=NOW;const b=new TestnetBudget({accountEquity:true,capitalCapUSD:1200,now:()=>now});
+ assert.equal(b.check({equity:9999,who:'signal'}).reason,'NO_BALANCE');
+ b.observeAccount(1000);assert.equal(b.check({equity:800,who:'signal'}).snap.equityUSD,1000);
+ now+=6000;b.observeAccount(2000);
+ assert.deepEqual([b.status().equityUSD,b.status().accountEquityUSD,b.status().limitUSD,b.status().marginCapUSD],[1200,2000,180,360]);
+ assert.equal(b.check({equity:1100,who:'signal-alt'}).snap.equityUSD,1100,'a separately funded strategy may impose a lower bound');
+ now+=6000;b.observeAccount(800);assert.equal(b.status().limitUSD,120);
+ const oldAt=b.status().balanceAt;
+ now+=31000;b.observeAccount(null);
+ assert.equal(b.status().limitUSD,null);assert.equal(b.status().balanceAt,oldAt);assert.equal(b.status().balanceError,'BALANCE_UNAVAILABLE');
+ assert.equal(b.check({equity:1000,who:'scalp'}).reason,'NO_BALANCE');
+ b.observeAccount(0);assert.equal(b.status().limitUSD,0);assert.equal(b.storedStop(),null,'a flat zero balance does not persist a day stop');
+});
+
+test('budget edits apply immediately and reload, and leave a previously reached daily stop in place',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sl-budget-edit-'));
+ try{
+  const make=()=>new TestnetBudget({directory:dir,now:()=>NOW,accountEquity:true});
+  const b=make();b.observeAccount(1000);
+  assert.throws(()=>b.configure({dailyLossPct:10,marginCapPct:30.01}),/INVALID_TESTNET_BUDGET/);
+  assert.equal(b.status().limitUSD,150);
+  b.markStopped({reason:'REALIZED',lossUSD:100,limitUSD:100});
+  const s=b.configure({dailyLossPct:12.5,marginCapPct:23});
+  assert.deepEqual([s.limitUSD,s.marginCapUSD,s.stopped],[125,230,true]);
+  const restarted=make();restarted.observeAccount(2000);
+  assert.deepEqual([restarted.status().limitUSD,restarted.status().marginCapUSD,restarted.status().stopped],[250,460,true]);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
 test('signal strategy source: KST day of the close, open risk and margin of active records (tests left out)',()=>{
  const ex=new LiveExecutor({config:liveCfg(),clients:{},now:()=>NOW});
  ex.store.records.push(
