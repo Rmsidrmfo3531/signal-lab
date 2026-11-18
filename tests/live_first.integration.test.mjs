@@ -12,7 +12,8 @@ const KEY='synthetic-testnet-key-0123456789abcdef',SECRET='synthetic-testnet-sec
 
 test('paper off by default: a final signal opens a TESTNET live position, no paper position, and the live overview shows it',{timeout:60000},async()=>{
  const app=await sandbox({scenarios:{BTCUSDT:'breakout-long'},prices:{BTCUSDT:ENTRY},emit:true,fakeBingxTestnet:true,
-  env:{PAPER_TRADING:'',LIVE_TRADING_MODE:'TESTNET',LIVE_VENUES:'BINGX',BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET}});
+  env:{PAPER_TRADING:'',LIVE_TRADING_MODE:'TESTNET',LIVE_VENUES:'BINGX',BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,
+   TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_CHAT_ID:'123456'}});
  const post=async(target,body)=>{const r=await fetchLocal(app.base+target,{method:'POST',headers:{'content-type':'application/json',origin:app.base,'sec-fetch-site':'same-origin'},body:JSON.stringify(body)});return {status:r.status,body:await r.json()}};
  try{
   await app.start();
@@ -65,6 +66,7 @@ test('paper off by default: a final signal opens a TESTNET live position, no pap
   assert.ok(orders.length>=2&&orders.every(r=>r.host==='open-api-vst.bingx.com'));
   assert.ok(orders.some(r=>r.type==='STOP_MARKET'&&Math.abs(Number(r.stopPrice)-tighter)<0.011),'the new stop was placed on the venue');
   assert.ok(!requests.some(r=>r.host==='open-api.bingx.com'&&r.method&&r.method!=='GET'),'nothing is written to the real BingX host');
+  assert.ok(!requests.some(r=>r.host==='api.telegram.org'),'testnet trade does not reach Telegram');
   for(const secret of [KEY,SECRET])assert.ok(!app.logs().includes(secret),'keys never reach the server output');
  }finally{await app.close()}
 });

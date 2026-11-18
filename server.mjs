@@ -435,7 +435,6 @@ function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
  const text=scalpEventText(e);if(!text)return;
  try{send('live-notice',{type:'SCALP_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
- void sendTradeTelegram(text);
 }
 // A copy ledger of the other mode with open positions is no longer managed: say so once at start.
 try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy-store-live.json');
@@ -466,7 +465,7 @@ function copyNotice(e){
  }
  const text=copyEventText(e);if(!text)return;
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
- void sendTradeTelegram(text);
+ if(e.mode==='LIVE')void sendTradeTelegram(text);
 }
 function confirmedRealTradeNotice(e){
  const text=realTradeText(e);if(!text)return;
@@ -479,12 +478,14 @@ const lookupScannerChannel=createTelegramNetworkRecovery((payload,options)=>tele
 let verifiedScannerChannelId=null,scannerChannelCheck=null;
 function telegramDeliveryFailure(response,body,transport){
  const retrySeconds=Number(body?.parameters?.retry_after??response.headers.get('retry-after'));
- const error=response.status===401?'BOT_AUTH_FAILED':response.status===403?'BOT_POST_FORBIDDEN':/chat not found/i.test(body?.description??'')?'SCANNER_CHAT_NOT_FOUND':response.ok?'TELEGRAM_UNCONFIRMED':`HTTP_${response.status}`;
+ const error=response.status===401?'BOT_AUTH_FAILED':response.status===403?'BOT_POST_FORBIDDEN':/chat not found/i.test(body?.description??'')?'TELEGRAM_CHAT_NOT_FOUND':response.ok?'TELEGRAM_UNCONFIRMED':`HTTP_${response.status}`;
  return {error,transport,retryMs:retrySeconds>0?retrySeconds*1000:0};
 }
-async function resolveScannerTelegramChannel(){
- if(!CONFIG.tgToken||!CONFIG.tgScannerChat)return {paused:true,error:'SCANNER_NOT_CONFIGURED'};
- if(verifiedScannerChannelId!==null)return {chatId:verifiedScannerChannelId};
+async function resolveTradeTelegramDestination(){
+ const existingChat=CONFIG.tgChat.trim();
+ if(!CONFIG.tgToken||(!CONFIG.tgScannerChat&&!existingChat))return {paused:true,error:'TELEGRAM_NOT_CONFIGURED'};
+ if(!CONFIG.tgScannerChat)return {chatId:existingChat};
+ if(verifiedScannerChannelId!==null)return {chatId:verifiedScannerChannelId,chatType:'channel'};
  if(scannerChannelCheck)return scannerChannelCheck;
  scannerChannelCheck=(async()=>{
   const {response,error,transport}=await lookupScannerChannel({chat_id:CONFIG.tgScannerChat});
@@ -494,13 +495,13 @@ async function resolveScannerTelegramChannel(){
   const {id,type}=body.result??{};
   if(type!=='channel'||!Number.isSafeInteger(id))return {error:'SCANNER_CHAT_NOT_CHANNEL',transport};
   verifiedScannerChannelId=id;
-  return {chatId:id};
+  return {chatId:id,chatType:'channel'};
  })().finally(()=>{scannerChannelCheck=null});
  return scannerChannelCheck;
 }
 async function sendTradeTelegram(text){
  if(persisted.notifySettings?.telegramLive===false)return;
- const {chatId:chat_id}=await resolveScannerTelegramChannel();
+ const {chatId:chat_id}=await resolveTradeTelegramDestination();
  if(!chat_id||persisted.notifySettings?.telegramLive===false)return;
  let {response,error}=await sendRealTradeRequest({chat_id,text});
  if(!response||response.status===429){
@@ -513,16 +514,18 @@ async function sendTradeTelegram(text){
 }
 async function sendRealTradeTelegram(e){
  const text=realTradeText(e);if(!text)return {error:'INVALID_ALERT'};
- const channel=await resolveScannerTelegramChannel();reportsDirty=true;
- if(!channel.chatId)return channel;
- const chat_id=channel.chatId;
+ const destination=await resolveTradeTelegramDestination();reportsDirty=true;
+ if(!destination.chatId)return destination;
+ const chat_id=destination.chatId;
  const delay=lastRealTradeTelegramAt+1050-Date.now();if(delay>0)await new Promise(resolve=>setTimeout(resolve,delay));
  lastRealTradeTelegramAt=Date.now();
  const {response:r,error:networkError,transport}=await sendRealTradeRequest({chat_id,text});
  if(!r)return {error:networkError,transport};
  const body=await r.json().catch(()=>null);
- if(r.ok&&body?.ok===true&&Number.isInteger(body.result?.message_id)&&body.result.chat?.type==='channel'&&body.result.chat.id===chat_id)
-  return {ok:true,transport,chatType:'channel'};
+ const chat=body?.result?.chat;
+ const matchesDestination=!destination.chatType||(chat?.type===destination.chatType&&chat.id===chat_id);
+ if(r.ok&&body?.ok===true&&Number.isInteger(body.result?.message_id)&&chat?.type&&matchesDestination)
+  return {ok:true,transport,chatType:chat.type};
  return telegramDeliveryFailure(r,body,transport);
 }
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
@@ -767,13 +770,12 @@ if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
   const r=await runGitUpdate('auto');if(r.status>=400&&r.body?.error!=='ORDER_IN_PROGRESS')autoUpdateFailedAt=c.latest}catch(e){console.warn('[UPDATE] auto check:',e.message)}
 },AUTO_UPDATE_EVERY_MS).unref?.();
 
-// Real-money readiness, measured on testnet trades under the current rules (live_readiness.mjs).
-// A short Telegram report every morning (09:00 KST) and once when every criterion is met.
+// Telegram readiness reports are limited to the real-account mode.
 const readinessFile=path.join(storage.dir,'readiness.json');
 const readiness=()=>liveReadiness([...live.store.records,...(live.store.archived||[])],{mode:LIVE.mode==='LIVE'?'LIVE':'TESTNET',
  since:Number.isFinite(Date.parse(process.env.LIVE_READINESS_SINCE||''))?Date.parse(process.env.LIVE_READINESS_SINCE):undefined,balanceUSD:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:undefined,strategyProfile:LIVE.strategyProfile||null});
 async function readinessReport(){
- if(LIVE.mode==='OFF'||!CONFIG.tgToken||!CONFIG.tgChat)return;
+ if(LIVE.mode!=='LIVE'||!CONFIG.tgToken||!CONFIG.tgChat)return;
  let saved={};try{saved=JSON.parse(fs.readFileSync(readinessFile,'utf8'))}catch{}
  const r=readiness(),kst=new Date(Date.now()+9*3600000),day=kst.toISOString().slice(0,10),hour=kst.getUTCHours();
  const daily=hour>=9&&saved.lastDay!==day,first=r.ready&&!saved.readyNotified;
@@ -836,7 +838,8 @@ async function uploadReport(force=false){
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange});
   report.release=appVersion.displayVersion;
   if(manualLedger)report.manualAlerts={...manualLedger.alertStatus(),telegram:{...manualLedger.telegramStatus(),
-    enabled:true,configured:Boolean(CONFIG.tgToken&&CONFIG.tgScannerChat),destination:'SCANNER_CHANNEL'}};
+    enabled:true,configured:Boolean(CONFIG.tgToken&&(CONFIG.tgScannerChat||CONFIG.tgChat.trim())),
+    destination:CONFIG.tgScannerChat?'SCANNER_CHANNEL':'CONFIGURED_CHAT'}};
   if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
    balanceAsset:b.balanceAsset,balanceRefreshMs:TESTNET_BALANCE_REFRESH_MS,balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();
@@ -856,7 +859,7 @@ function liveTelegramNotice(record,type,detail){
  const text=liveEventText(record,type,detail);if(!text)return;
  // Open dashboards show it as a Chrome/system notification (public/app.js 'live-notice').
  try{send('live-notice',{type,symbol:record?.symbol??null,text,at:Date.now()})}catch{}
- void sendTradeTelegram(text);
+ if(record?.mode==='LIVE'&&record.test!==true)void sendTradeTelegram(text);
 }
 async function checkSoftwareUpdate(){
  if(updateCheckPromise)return updateCheckPromise;
