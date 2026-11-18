@@ -85,7 +85,7 @@ const CONFIG={
  rotatingBatch:Math.max(5,Math.min(100,Number(process.env.SCAN_ROTATING_BATCH||18))),
  hotBatch:Math.max(5,Math.min(80,Number(process.env.SCAN_HOT_BATCH||12))),
  quoteVolume:Math.max(0,Number(process.env.MIN_DAILY_VOLUME_USDT||5000000)),
- tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',
+ tgToken:process.env.TELEGRAM_BOT_TOKEN||'',tgChat:process.env.TELEGRAM_CHAT_ID||'',tgScannerChat:(process.env.TELEGRAM_SCANNER_CHAT_ID||'').trim(),
  // Paper entries / closes to Telegram (opt-in on the paper page; needs the bot token and chat ID above).
  paperTelegram:process.env.PAPER_TELEGRAM==='true'?true:process.env.PAPER_TELEGRAM==='false'?false:null,
  // Automatic paper trading (new paper positions, 1/5/15m scalps, paper notices) is OFF by default since
@@ -664,7 +664,7 @@ async function tgNotify(s){
 }
 // The one Telegram transport. Callers: final signals (tgNotify, guarded by the final results) and
 // opt-in paper entry/close notices (paperTelegram, simulation text only).
-function scannerTelegramChat(){return String(process.env.TELEGRAM_SCANNER_CHAT_ID??'').trim()||CONFIG.tgChat.trim()}
+function scannerTelegramChat(){return CONFIG.tgScannerChat||CONFIG.tgChat.trim()}
 function telegramPost(payload){
  return fetch(`https://api.telegram.org/bot${CONFIG.tgToken}/sendMessage`,{
   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
