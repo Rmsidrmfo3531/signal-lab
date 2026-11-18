@@ -52,7 +52,7 @@ export function ledgerSummary(store,{now=Date.now(),equityUSD=null,settlementOf=
   trades:closed.slice(-100).map(x=>{const settlement=settlementOf(x);return { ...(origin?{origin}:{}),...(x.kind?{kind:x.kind}:{}),symbol:x.symbol,direction:x.direction,leverage:x.leverage??null,openedAt:x.openedAt??x.createdAt??null,closedAt:x.closedAt??null,closeReason:shortReason(x.closeReason),
    avg:num(x.avg),adds:typeof x.adds==='number'?x.adds:Array.isArray(x.adds)?x.adds.filter(a=>a?.filled).length:null,reduces:x.reduces??null,tpHits:x.tpHits??null,
    netUSD:num(x.netUSD),netSource:x.netSource??null,theirPnlUSD:num(x.theirPnlUSD),
-   ...(settlement?{settlement:{state:shortReason(settlement.state),checkedAt:num(settlement.checkedAt)}}:{}),
+   ...(settlement?{settlement:{state:shortReason(settlement.state),checkedAt:num(settlement.checkedAt),...(settlement.error?{error:shortReason(settlement.error)}:{})}}:{}),
    ...(origin?{maxSize:num(x.maxSize),estimateUSD:num(x.estimateUSD),adoptedAtStart:x.adoptedAtStart===true,mergedIntoCopy:Boolean(x.mergedIntoCopy)}:{})}}),
   open:open.filter(p=>p&&p.status!=='CLOSED').map(p=>({...(origin?{origin}:{}),symbol:p.symbol,direction:p.direction,leverage:p.leverage??null,openedAt:p.openedAt??p.createdAt??null,avg:num(p.avg),adds:typeof p.adds==='number'?p.adds:null,stop:num(p.stop)})),
   eventCounts7d:counts,

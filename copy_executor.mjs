@@ -31,7 +31,7 @@ import {readPositionMode,leverageSideFor,positionSideFor,positionRow} from './bi
 
 export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'MIN_ORDER',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
-const AUDIT_MAX_AGE=135000,CLOSE_DELAY=120000,SETTLEMENT_HISTORY=7*86400000;
+const AUDIT_MAX_AGE=135000,CLOSE_DELAY=120000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const orderOf=d=>d?.order??d;
@@ -835,38 +835,43 @@ export class CopyExecutor{
   let state;
   if(settlementSource(p))state='CONFIRMED';
   else if(!(p.openedAt>0&&p.closedAt>=p.openedAt))state='MISSING_TIMESTAMPS';
-  else if(this.now()-p.closedAt>=SETTLEMENT_HISTORY||p.closedAt-p.openedAt>=SETTLEMENT_HISTORY)state='HISTORY_WINDOW_EXPIRED';
-  else if(!p.fillOrders?.length&&!(p.entryCids?.length&&typeof this.client?.allOrders==='function'))state='NO_ORDER_IDS';
-  else if(typeof this.client?.fillOrders!=='function')state='LOOKUP_UNAVAILABLE';
+  else if(!p.fillOrders?.length&&typeof this.client?.allOrders!=='function')state='NO_ORDER_IDS';
+  else if(typeof this.client?.fillOrders!=='function'&&typeof this.client?.fillHistory!=='function')state='LOOKUP_UNAVAILABLE';
   else state=p.settlement?.state??'WAITING';
-  return {state,checkedAt};
+  return {state,checkedAt,...(p.settlement?.error?{error:p.settlement.error}:{})};
  }
- settle(){
-  if(typeof this.client?.fillOrders!=='function')return Promise.resolve();
+ settle({limit=1,recheck=false}={}){
   if(this.settling)return this.settling;
-  this.settling=this.#settleClosed().finally(()=>{this.settling=null});
+  if(recheck)this.settleAttempts.clear();
+  this.settling=this.#settleClosed(limit).finally(()=>{this.settling=null});
   return this.settling;
  }
- async #settleClosed(){
+ async #settleClosed(limit){
   const now=this.now();
-  const due=this.store.closed.filter(p=>now-p.closedAt>=15000&&!['CONFIRMED','MISSING_TIMESTAMPS','HISTORY_WINDOW_EXPIRED','NO_ORDER_IDS','LOOKUP_UNAVAILABLE'].includes(this.settlementStatus(p).state));
+  const due=this.store.closed.filter(p=>now-p.closedAt>=15000&&!['CONFIRMED','MISSING_TIMESTAMPS','NO_ORDER_IDS','LOOKUP_UNAVAILABLE'].includes(this.settlementStatus(p).state));
   const valid=new Set(due.map(p=>p.id));
   for(const key of this.settleAttempts.keys())if(!valid.has(key))this.settleAttempts.delete(key);
-  const next=due.filter(p=>!this.settleAttempts.has(p.id)||now-this.settleAttempts.get(p.id)>=5*60000)
-   .sort((a,b)=>(this.settleAttempts.get(a.id)??0)-(this.settleAttempts.get(b.id)??0)||b.closedAt-a.closedAt)[0];
-  if(next){
-   const p=next;
+  const batch=due.filter(p=>!this.settleAttempts.has(p.id)||now-this.settleAttempts.get(p.id)>=5*60000)
+   .sort((a,b)=>(this.settleAttempts.get(a.id)??0)-(this.settleAttempts.get(b.id)??0)||b.closedAt-a.closedAt).slice(0,limit);
+  for(const p of batch)await this.#settlePosition(p,now);
+ }
+ async #settlePosition(p,now){
    this.settleAttempts.set(p.id,now);
-   const mark=state=>{if(this.store.closed.includes(p)){p.settlement={state,checkedAt:this.now()};this.#save()}};
+   const mark=(state,error=null)=>{if(this.store.closed.includes(p)){p.settlement={state,checkedAt:this.now(),...(error?{error}:{})};this.#save()}};
    try{
     const window={startTs:Math.max(1,p.openedAt-60000),endTs:Math.min(now,p.closedAt+30000)};
-    const orders=p.fillTracked?new Map((p.fillOrders||[]).map(o=>[o.id,o])):await this.#legacyOrders(p,window);
+    let orders=new Map((p.fillOrders||[]).map(o=>[String(o.id),o]));
+    if(!p.fillTracked||new Set([...orders.values()].map(o=>o.side)).size<2)orders=await this.#legacyOrders(p,window);
     if(!orders.size){mark('ORDER_LINK_MISSING');return}
     if(orders.size>64){mark('ORDER_LIMIT');return}
-    const raw=[];
+    const raw=[];let history=null;
+    if(typeof this.client.fillHistory==='function')try{history=executionFills(await this.client.fillHistory({symbol:p.venueSymbol,...window}))}catch(e){if(typeof this.client.fillOrders!=='function')throw e}
     for(const [orderId,order] of orders){
-     const receipts=executionFills(await this.client.fillOrders({...window,orderId}));
-     const owned=receipts.filter(f=>f.orderId===orderId&&f.symbol===p.venueSymbol&&f.side===order.side&&f.at>=window.startTs&&f.at<=window.endTs);
+     const isOwned=f=>f.orderId===orderId&&f.symbol===p.venueSymbol&&f.side===order.side&&f.at>=window.startTs&&f.at<=window.endTs;
+     let owned=history?.filter(isOwned)??[];
+     if(!owned.length&&typeof this.client.fillOrders==='function')try{
+      const receipts=executionFills(await this.client.fillOrders({...window,orderId}));owned=receipts.filter(isOwned);
+     }catch(e){if(history===null||order.confirmed)throw e}
      if(order.confirmed&&!owned.length){mark('FILL_PENDING');return}
      raw.push(...owned);
     }
@@ -881,15 +886,15 @@ export class CopyExecutor{
     Object.assign(p,{netSource:'EXCHANGE_FILLS',netUSD:result.netUSD,pnlUSD:result.pnlUSD,feeUSD:result.feeUSD,settledAt:now});
     mark('CONFIRMED');
     this.#event('COPY_SETTLED',{symbol:p.symbol,direction:p.direction});
-   }catch(error){mark('LOOKUP_FAILED');this.log(`[COPY] fill settlement ${error?.code||error?.message||'FAILED'}`)}
-  }
+   }catch(error){mark('LOOKUP_FAILED',/^[A-Z_0-9]{1,48}$/.test(error?.code??error?.message??'')?(error.code??error.message):null);this.log(`[COPY] fill settlement ${error?.code||error?.message||'FAILED'}`)}
  }
  async #legacyOrders(p,{startTs,endTs}){
-  if(typeof this.client.allOrders!=='function')return new Map();
+  const orders=new Map((p.fillOrders||[]).map(o=>[String(o.id),o]));
+  if(typeof this.client.allOrders!=='function')return orders;
   const openSide=p.direction==='LONG'?'BUY':'SELL',closeSide=openSide==='BUY'?'SELL':'BUY';
-  const orders=new Map((p.fillOrders||[]).map(o=>[o.id,o]));
   const owned=new Set(p.entryCids||[]);
   owned.add(this.#clientId(p,'close'));
+  owned.add(this.#clientId(p,'open'));owned.add(this.#clientId(p,'add'));
   for(let sequence=1;sequence<=Math.min(128,Number(p.orderSeq)||0);sequence++)
    for(const tag of ['open','add','close','emergency'])owned.add(this.#clientId(p,`${tag}.${sequence}`));
   for(let cut=1;cut<=Math.min(64,Number(p.reduces)||0);cut++)owned.add(this.#clientId(p,'cut'+cut));

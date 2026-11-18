@@ -133,6 +133,20 @@ test('manual: positions open at start are adopted at once (adoptedAtStart); a sa
  assert.deepEqual(notices,[],'existing positions are not announced on startup');
 });
 
+test('historical manual ledger separates overlapping long and short fills by verified direction',async()=>{
+ const c=clock(),t=c.now(),events=[],m=new ManualLedger({now:c.now,onEvent:e=>events.push(e),client:{fillHistory:async()=>rows}});
+ const trade=(id,direction,openedAt,lastSeenAt,closedAt)=>({id,direction,openedAt,lastSeenAt,closedAt,firstSize:1,size:1,hedge:true,
+  status:'CLOSED',symbol:'BTCUSDT',venueSymbol:'BTC-USDT',netSource:'MIXED_WITH_MANUAL',netUSD:-9});
+ const long=trade('a','LONG',t-75000,t-30000,t-20000),short=trade('b','SHORT',t-27000,t-10000,t-1000);
+ const row=(id,side,positionSide,time,pnl=0)=>({tradeId:id,orderId:id,side,positionSide,time,realizedPnl:pnl,fee:-.01,symbol:'BTC-USDT',qty:1,price:100});
+ const rows=[row('1','BUY','LONG',t-76000),row('2','SELL','SHORT',t-28000),row('3','SELL','LONG',t-25000,3),row('4','BUY','SHORT',t-3000,-2)];
+ m.store.closed.push(long,short);await m.settle({historyLimit:10,recheck:true});
+ assert.deepEqual([long.netUSD,short.netUSD],[2.98,-2.02]);assert.ok([long,short].every(p=>p.netSource==='EXCHANGE_FILLS'));
+ assert.equal(events.length,0,'historical settlement does not replay alerts');
+ const unresolved={...long,id:'c',netSource:'ESTIMATE',netUSD:-7,size:2};delete unresolved.historyFillKeys;m.store.closed.push(unresolved);
+ await m.settle({recheck:true});assert.equal(unresolved.netUSD,-7);assert.equal(unresolved.settlement.state,'TRADE_LINK_UNVERIFIED');
+});
+
 test('manual fill fallback records flat round trips missed by the snapshots and skips overlapping copy positions',async()=>{
  const c=clock(),start=c.now(),events=[];
  const fill=(tradeId,symbol,side,time,realizedPnl=0)=>({tradeId,orderId:tradeId,symbol,side,qty:2,price:10,fee:-.1,realizedPnl,time:start+time,positionSide:'BOTH'});
@@ -227,15 +241,16 @@ test('page: copy and manual closes in one newest-first list with 수동 badges a
  assert.equal(st.all.n,10);assert.equal(st.all.net,6);assert.equal(st.all.wins,5);
  m.setCopyPage(0);let h=m.copyHTML(c);
  assert.match(h,/전체 11건<\/small>/,'the 수동 count is in the 카피 / 수동 line (user 2026-11-18: one place per fact)');assert.match(h,/1 \/ 2쪽/);
- assert.match(h,/종료<b >10건/);assert.match(h,/누적 손익<b class="paper-profit">\+\$6\.00/);assert.match(h,/승률<b >50%/);
- assert.match(h,/카피 <b class="paper-profit">\+\$4\.00<\/b> \(8건\) · 수동 <b class="paper-profit">\+\$2\.00<\/b> \(2건\) · <span class="muted">정산 중 1건/);
+ assert.match(h,/정산 확인<b >1건/);assert.match(h,/누적 손익<b class="paper-profit">\+\$5\.00/);assert.match(h,/승률<b >100%/);
+ assert.match(h,/카피 <b class="">—<\/b> \(0건\) · 수동 <b class="paper-profit">\+\$5\.00<\/b> \(1건\)/);
+ assert.match(h,/정산 미확정 10건/);
  const desk=h.slice(h.indexOf('<th>종료</th>'));
  assert.match(desk,/<tr class="vp-manual"><td class="muted">[^<]*<\/td><td><b>M0<\/b> <span class="vp-badge manual">수동<\/span>/);
  assert.match(desk,/<tr class=""><td class="muted">[^<]*<\/td><td><b>C0<\/b> <\/td>/,'copy rows keep their look');
  assert.match(h,/<li class="vp-manual"><span class="muted">[^<]*<\/span><b>M1<\/b><span class="vp-badge manual">수동<\/span>/);
- assert.match(h,/−\$3\.00 <small class="muted" title="[^"]*카피와 겹쳐[^"]*">추정<\/small>/);
+ assert.match(h,/같은 종목의 카피 거래와 정산 내역 겹침/);assert.doesNotMatch(h,/−\$3\.00|추정/);
  assert.ok(!h.includes('>M2<'),'11th row on page 2');
- m.setCopyPage(1);h=m.copyHTML(c);assert.match(h,/2 \/ 2쪽/);assert.ok(h.includes('>M2<'));assert.match(h,/정산 중<\/span>/);assert.ok(!h.includes('>C0<'));
+ m.setCopyPage(1);h=m.copyHTML(c);assert.match(h,/2 \/ 2쪽/);assert.ok(h.includes('>M2<'));assert.match(h,/정산 미확정<\/span>/);assert.ok(!h.includes('>C0<'));
  m.setCopyPage(0);
  // Testnet (no manual ledger): unchanged, no split line.
  assert.doesNotMatch(m.copyHTML({...c,manual:undefined}),/copy-split/);

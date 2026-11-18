@@ -88,7 +88,7 @@ test('real-account page: one 보유 중 list from the exchange (user 2026-11-17 
  assert.doesNotMatch(copyHTML({...base,venuePositions:[{...vp[1],symbol:'<img src=x>'}]}),/<img/,'escaped');
 });
 
-test('real copy dashboard shows exchange order checks and both P&L samples with settlement details',async()=>{
+test('real copy dashboard shows exchange order checks and confirmed P&L with settlement details',async()=>{
  const {copyHTML,setCopyPage}=await import('../public/live_control.js');setCopyPage(0);
  const now=Date.now(),closed=[{symbol:'ETHUSDT',direction:'LONG',netUSD:2,netSource:'EXCHANGE_FILLS',openedAt:now-3000,closedAt:now-2000},
   {symbol:'SOLUSDT',direction:'SHORT',netUSD:-1,netSource:'ESTIMATE_BEFORE_FEES',openedAt:now-3000,closedAt:now-1000,
@@ -96,8 +96,8 @@ test('real copy dashboard shows exchange order checks and both P&L samples with 
  const html=copyHTML({mode:'LIVE',closed,audit:{ready:true,positionAt:now,lanes:[{symbol:'BTCUSDT',direction:'LONG',expectedQty:3,venueQty:2,
   stop:'MISSING',issues:['STOP_MISSING','SIZE_MISMATCH'],checkedAt:now,blocked:true}]}});
  assert.match(html,/원장 3 · 거래소 2/);assert.match(html,/보호 손절 누락 · 수량 불일치/);assert.match(html,/신규 진입·추매 보류/);
- assert.match(html,/카피 · 거래소 확인 1건<b[^>]*>\+\$2\.00 · 승률 100%/);
- assert.match(html,/카피 · 추정 포함 2건<b[^>]*>\+\$1\.00 · 승률 50%/);
+ assert.match(html,/정산 확인<b >1건/);assert.match(html,/누적 손익<b class="paper-profit">\+\$2\.00/);assert.match(html,/승률<b >100%/);
+ assert.match(html,/data-copy-settle[^>]*>정산 다시 조회/);assert.doesNotMatch(html,/추정|−\$1\.00/);
  assert.match(html,/진입·청산 체결 수량 불일치 · [^<]+ 조회/);
 });
 

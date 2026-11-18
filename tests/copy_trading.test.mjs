@@ -147,7 +147,23 @@ test('copy settlement keeps the reason and check time, then replaces it after ma
  assert.equal(p.netSource,'ESTIMATE_BEFORE_FEES');
  closeQty=98;now+=5*60000;await ex.settle();assert.deepEqual(ex.status().closed[0].settlement,{state:'CONFIRMED',checkedAt:now});
  const old={openedAt:1e10,closedAt:1e10+1000,netSource:'UNKNOWN'};
- assert.deepEqual(ex.settlementStatus(old),{state:'HISTORY_WINDOW_EXPIRED',checkedAt:null});
+ assert.deepEqual(ex.settlementStatus(old),{state:'NO_ORDER_IDS',checkedAt:null});
+});
+
+test('historical copy settlement reconstructs saved client IDs and only counts matched orders from symbol fills',async()=>{
+ const v=venue(),ex=make(v);ex.goneRecheckMs=0;
+ await ex.handle({id:1,date:1e12,text:OPEN});await ex.handle({id:2,date:1e12,text:CLOSE});
+ const p=ex.store.closed[0],ids=p.fillOrders.map(o=>o.id),market=v.calls.filter(o=>o.type==='MARKET');
+ Object.assign(p,{fillOrders:[],entryCids:[],fillTracked:false});
+ v.client.allOrders=async()=>({orders:[...market.map((o,i)=>({orderId:ids[i],side:o.side,clientOrderId:o.clientOrderId,status:'FILLED'})),
+  {orderId:'manual',side:'BUY',status:'FILLED'}]});
+ v.client.fillOrders=async()=>{throw Error('BULK_UNAVAILABLE')};
+ v.client.fillHistory=async q=>{assert.equal(q.symbol,'TNSR-USDT');return [
+  {orderId:ids[0],tradeId:'1',symbol:q.symbol,side:'SELL',qty:98,price:.051,fee:-.02,time:1e12-500},
+  {orderId:ids[1],tradeId:'2',symbol:q.symbol,side:'BUY',qty:98,price:.05,fee:-.03,realizedPnl:1,time:1e12},
+  {orderId:'manual',tradeId:'3',symbol:q.symbol,side:'BUY',qty:98,price:.05,fee:-.01,realizedPnl:20,time:1e12}]};
+ ex.now=()=>1e12+10*86400000;await ex.settle({recheck:true});
+ assert.equal(p.netUSD,.95);assert.equal(p.netSource,'EXCHANGE_FILLS');assert.equal(p.settlement.state,'CONFIRMED');
 });
 
 test('copy: no entry right after a monitor restart, while disarmed, or on a symbol the signal strategy holds; add skipped without margin',async()=>{

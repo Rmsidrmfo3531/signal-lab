@@ -69,6 +69,26 @@ function flatTrades(rows){
  }
  return parts.length?[]:completed;
 }
+/** A complete fill cycle must agree with both the first and last observed position sizes. */
+function historicalManualCycle(rows,p){
+ const opening=p.direction==='SHORT'?'SELL':'BUY',firstAt=p.firstSeenAt??p.openedAt,lastAt=p.lastSeenAt??p.sizeSinceAt;
+ if(!(p.firstSize>0&&p.size>0&&lastAt>0)||p.adoptedAtStart||p.mergedIntoCopy)return null;
+ const sameQty=(a,b)=>Math.abs(a-b)<=qtyTolerance(b),candidates=[];
+ for(let i=0;i<rows.length;i++){
+  if(rows[i].at>firstAt+30000)break;
+  if(rows[i].side!==opening||i>0&&rows[i-1].orderId===rows[i].orderId)continue;
+  let size=0,initialSeen=false,lastSize=0;
+  for(let j=i;j<rows.length;j++){
+   const f=rows[j];size+=f.side===opening?f.qty:-f.qty;
+   if(f.at<=firstAt+30000&&sameQty(size,p.firstSize))initialSeen=true;
+   if(f.at<=lastAt)lastSize=size;
+   if(size>qtyTolerance(p.size))continue;
+   if(sameQty(size,0)&&initialSeen&&sameQty(lastSize,p.size)&&f.at>lastAt&&f.at<=p.closedAt+15000)candidates.push(rows.slice(i,j+1));
+   break;
+  }
+ }
+ return candidates.length===1?candidates[0]:null;
+}
 
 export class ManualLedger{
  /** client: read-only BingX income, fill and order queries. copyRecords(): the copy ledger's positions and closed
@@ -86,6 +106,7 @@ export class ManualLedger{
    delete row.notifySettlement;delete row.exitNote;
   }
   this.fillSides=new Map();
+  this.historyAttempts=new Map();this.lastHistoryAt=null;
   this.lastReadAt=0;this.started=false;this.candidates=new Map();this.settling=null;this.notices=[];
   this.lastFillSnapshot=null;this.fillWindows=[];this.scanningFills=null;this.lastFillScanAt=0;
  }
@@ -312,16 +333,56 @@ export class ManualLedger{
  }
 
  /** Settles closed records still PENDING (oldest first). One run at a time; never throws. */
- settle(){
+ settle({historyLimit=1,recheck=false}={}){
   if(this.settling)return this.settling;
-  this.settling=this.#settleAll().catch(e=>{this.log(`[MANUAL] settle ${e?.code||e?.message||e}`)}).finally(()=>{this.settling=null});
+  if(recheck){this.historyAttempts.clear();this.lastHistoryAt=null}
+  this.settling=this.#settleAll(historyLimit).catch(e=>{this.log(`[MANUAL] settle ${e?.code||e?.message||e}`)}).finally(()=>{this.settling=null});
   return this.settling;
  }
- async #settleAll(){
+ async #settleAll(historyLimit){
   const now=this.now(),todo=this.store.closed.filter(x=>x.netSource==='PENDING'&&now>=x.closedAt+this.settleDelayMs).sort((a,b)=>a.closedAt-b.closedAt);
   let changed=await this.#settleAlerts(now);
   for(const x of todo){if(await this.#settleOne(x,now))changed=true}
+  if(await this.#settleHistory(now,historyLimit))changed=true;
   if(changed)this.#save();
+ }
+ async #settleHistory(now,limit){
+  if(typeof this.client?.fillOrders!=='function'&&typeof this.client?.fillHistory!=='function')return false;
+  if(this.lastHistoryAt!=null&&now-this.lastHistoryAt<15000)return false;
+  const due=this.store.closed.filter(p=>!['EXCHANGE','EXCHANGE_FILLS','PENDING'].includes(p.netSource)&&p.openedAt>0&&p.closedAt>=p.openedAt);
+  const ids=new Set(due.map(p=>p.id));for(const id of this.historyAttempts.keys())if(!ids.has(id))this.historyAttempts.delete(id);
+  const batch=due.filter(p=>!this.historyAttempts.has(p.id)||now-this.historyAttempts.get(p.id)>=5*60000)
+   .sort((a,b)=>(this.historyAttempts.get(a.id)??0)-(this.historyAttempts.get(b.id)??0)||b.closedAt-a.closedAt).slice(0,limit);
+  if(!batch.length)return false;
+  this.lastHistoryAt=now;
+  const claimed=new Set(this.store.closed.flatMap(p=>p.historyFillKeys??[]));
+  for(const p of batch){
+   this.historyAttempts.set(p.id,now);
+   const mark=(state,error=null)=>{p.settlement={state,checkedAt:this.now(),...(error?{error}:{})}};
+   const startTs=Math.max(1,p.openedAt-this.preMs),endTs=Math.min(now,p.closedAt+15000);
+   const overlapping=(a,b)=>a.venueSymbol===p.venueSymbol&&(!p.hedge||!a.direction||a.direction===p.direction)&&
+    (a.openedAt??a.createdAt??0)<=endTs&&(a.closedAt??Infinity)>=startTs&&a!==b;
+   if(p.mergedIntoCopy||this.#copyList().some(c=>overlapping(c,p))){mark('MIXED_WITH_COPY');continue}
+   if(p.adoptedAtStart){mark('ENTRY_HISTORY_UNVERIFIED');continue}
+   try{
+    let fills=null;
+    if(typeof this.client.fillHistory==='function')try{fills=executionFills(await this.client.fillHistory({symbol:p.venueSymbol,startTs,endTs}))}catch(e){if(typeof this.client.fillOrders!=='function')throw e}
+    if(!fills?.length&&typeof this.client.fillOrders==='function')fills=executionFills(await this.client.fillOrders({startTs,endTs}));
+    let rows=(fills??[]).filter(f=>f.symbol===p.venueSymbol&&f.at>=startTs&&f.at<=endTs);
+    if(p.hedge){await this.#fillPositionSides(rows);if(rows.some(f=>!['LONG','SHORT'].includes(f.positionSide))){mark('POSITION_SIDE_UNVERIFIED');continue}}
+    rows=rows.filter(f=>p.hedge?f.positionSide===p.direction:!f.positionSide||f.positionSide==='BOTH'||f.positionSide===p.direction);
+    if(!rows.length){mark('FILL_PENDING');continue}
+    const cycle=historicalManualCycle(rows,p),result=cycle&&summarizeBalancedFills(cycle,p.direction);
+    const keys=cycle?.map(f=>`${f.symbol}|${f.tradeId}`)??[];
+    const overlapsTrade=cycle&&[...this.store.closed,...Object.values(this.store.positions)].some(q=>q!==p&&q.venueSymbol===p.venueSymbol&&q.direction===p.direction&&
+     q.openedAt<cycle.at(-1).at&&(q.closedAt??Infinity)>cycle[0].at);
+    if(!result||overlapsTrade||keys.some(key=>claimed.has(key))||!this.store.closed.includes(p)){mark('TRADE_LINK_UNVERIFIED');continue}
+    Object.assign(p,{netSource:'EXCHANGE_FILLS',pnlUSD:result.pnlUSD,feeUSD:result.feeUSD,netUSD:result.netUSD,settledAt:now,historyFillKeys:keys});
+    for(const key of keys)claimed.add(key);
+    mark('CONFIRMED');this.#event('MANUAL_HISTORY_SETTLED',{symbol:p.symbol,direction:p.direction});
+   }catch(e){const code=e?.code??e?.message??'';mark('LOOKUP_FAILED',/^[A-Z_0-9]{1,48}$/.test(code)?code:null)}
+  }
+  return true;
  }
  #window(x,now){
   const start=x.openedAt-this.preMs;let end=Math.min(x.closedAt+this.postMs,now);
@@ -369,7 +430,7 @@ export class ManualLedger{
  alertStatus(){return {pending:this.store.pendingAlerts.length,confirmedRecent:this.store.events.filter(e=>e.fromFills===true).length}}
  /** For the page: open records, the last 200 closes (newest first, origin manual) and totals of the settled ones. */
  status(){
-  const pub=x=>{const {claimed,missing,goneAt,notifySettlement,exitNote,...rest}=x;return {...rest,origin:'manual'}};
+  const pub=x=>{const {claimed,missing,goneAt,notifySettlement,exitNote,historyFillKeys,...rest}=x;return {...rest,origin:'manual'}};
   const closed=this.store.closed,settled=closed.filter(x=>x.netUSD!=null&&Number.isFinite(Number(x.netUSD)));
   return {open:Object.values(this.store.positions).map(pub),closed:closed.slice(-200).reverse().map(pub),closedTotal:closed.length,
    pending:closed.filter(x=>x.netSource==='PENDING').length,settled:settled.length,netUSD:r6(settled.reduce((a,x)=>a+Number(x.netUSD),0))};
