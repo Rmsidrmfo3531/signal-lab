@@ -187,7 +187,8 @@ export function venuePositionsHTML(c,copyOpen=[]){
 }
 
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
-let copyPage=0,failPage=0,lastCopy=null;
+let copyPage=0,failPage=0,failOpen=false,lastCopy=null;
+export function setFailOpen(v){failOpen=!!v}
 export const COPY_PAGE_SIZE=10;
 export function setCopyPage(p){copyPage=Math.max(0,p|0)}
 export function setCopyFailPage(p){failPage=Math.max(0,p|0)}
@@ -294,7 +295,8 @@ export function copyHTML(c){
  const done=x=>`<li class="${isMan(x)?'vp-manual':''}"><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${manBadge(x)}${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}<b class="${cls(x.netUSD)} end">${result(x)}</b></li>`;
  // Entry failures and skips under the closes (user 2026-11-17 "코인 종목 / 롱,숏 / 진입 실패 이유"), 10 per page.
  const notesAll=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY'].includes(e.type));
- const fPages=Math.max(1,Math.ceil(notesAll.length/COPY_PAGE_SIZE)),fPage=Math.min(failPage,fPages-1),notes=notesAll.slice(fPage*COPY_PAGE_SIZE,fPage*COPY_PAGE_SIZE+COPY_PAGE_SIZE);
+ // Collapsed by default, 5 per page (user 2026-11-18 "진입 실패·건너뜀 부분 너무 차지하는 비율이 크다").
+ const FP=5,fPages=Math.max(1,Math.ceil(notesAll.length/FP)),fPage=Math.min(failPage,fPages-1),notes=notesAll.slice(fPage*FP,fPage*FP+FP);
  const failPager=fPages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-copy-fail-page="-1"${fPage===0?' disabled':''}>‹ 이전</button><span class="muted">${fPage+1} / ${fPages}쪽</span><button type="button" class="outline-btn small" data-copy-fail-page="1"${fPage>=fPages-1?' disabled':''}>다음 ›</button></div>`:'';
  const why=e=>`${esc(e.type==='LATE_ENTRY'?'늦은 진입 시도 (진입 알림을 놓친 포지션의 추매)':COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when,c.events||[])}`;
  // Desktop (user 2026-11-14: the web view felt like a phone): the same data as tables with more columns;
@@ -310,7 +312,7 @@ export function copyHTML(c){
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
-  (notes.length?`<h5 class="copy-sub">진입 실패·건너뜀 <small>전체 ${notesAll.length}건</small></h5><ul class="copy-list muted only-mob">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span><b>${esc(e.symbol||'')}</b> ${e.direction?side(e.direction):''} · ${why(e)}</li>`).join('')}</ul><table class="copy-table only-desk"><thead><tr><th>시각</th><th>종목</th><th>방향</th><th>이유</th></tr></thead><tbody>${notes.map(e=>`<tr><td class="muted">${when(e.at)}</td><td><b>${esc(e.symbol||'—')}</b></td><td>${e.direction?side(e.direction):'—'}</td><td>${why(e)}</td></tr>`).join('')}</tbody></table>${failPager}`:'')+'</div>';
+  (notes.length?`<details class="fail-box"${failOpen?' open':''}><summary data-fail-toggle><b>진입 실패·건너뜀</b> <small>전체 ${notesAll.length}건 · 최근 24시간 ${notesAll.filter(e=>Date.now()-e.at<864e5).length}건</small></summary><ul class="copy-list muted only-mob">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span><b>${esc(e.symbol||'')}</b> ${e.direction?side(e.direction):''} · ${why(e)}</li>`).join('')}</ul><table class="copy-table only-desk"><thead><tr><th>시각</th><th>종목</th><th>방향</th><th>이유</th></tr></thead><tbody>${notes.map(e=>`<tr><td class="muted">${when(e.at)}</td><td><b>${esc(e.symbol||'—')}</b></td><td>${e.direction?side(e.direction):'—'}</td><td>${why(e)}</td></tr>`).join('')}</tbody></table>${failPager}</details>`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
 
@@ -483,7 +485,9 @@ function bindCopyButtons(el){
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('click',e=>{
   const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
-  const fp=e.target.closest('[data-copy-fail-page]');
+  // Keep the failure box open/closed across the 3 s re-render (the browser toggles the <details> itself).
+ if(e.target.closest('[data-fail-toggle]')){failOpen=!e.target.closest('details')?.open;}
+ const fp=e.target.closest('[data-copy-fail-page]');
  if(fp){setCopyFailPage(failPage+Number(fp.dataset.copyFailPage));const box=fp.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);return}
  const cm=e.target.closest('[data-cal-month]');
  if(cm){const grid=cm.closest('.pnl-cal')?.querySelector('[data-cal-ym]'),cur=grid?.dataset.calYm;if(cur){const next=ymShift(cur,Number(cm.dataset.calMonth));setCalMonth(next>=kstDate(Date.now()).slice(0,7)?null:next)}const box=cm.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);cm.blur?.();return}

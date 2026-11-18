@@ -496,3 +496,12 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .live-rules-fold{margin:0 18px 0}.live-rules-fold summary small{color:var(--dim);font-weight:400;margin-left:6px}.live-rules-fold .live-status-full{border:0;padding:8px 0 2px}
 @media(max-width:690px){.real-about{margin:4px 14px 14px}.live-rules-fold{margin:0 14px}.live-rules-fold summary small{display:none}}
 @media(max-width:690px){.footer>span{display:block}}
+
+/* Entry failures: collapsed, compact (user 2026-11-18). */
+.fail-box{margin-top:10px;border:1px solid var(--line,#1e2a3a);border-radius:10px;padding:6px 12px}
+.fail-box>summary{cursor:pointer;list-style:none;font-size:13px;padding:4px 0}
+.fail-box>summary::-webkit-details-marker{display:none}
+.fail-box>summary::before{content:'▸ ';color:var(--muted,#7f8ea3)}
+.fail-box[open]>summary::before{content:'▾ '}
+.fail-box .copy-table td,.fail-box .copy-table th{padding:5px 8px;font-size:12px}
+.fail-box .copy-list li{font-size:12px;padding:6px 8px}

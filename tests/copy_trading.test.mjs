@@ -493,8 +493,9 @@ test('copy page: entry failures below the closes with coin, long/short and reaso
  const m=await import('../public/live_control.js');m.setCopyFailPage(0);
  const ev=Array.from({length:14},(_,i)=>({type:'SKIPPED',at:Date.now()-i*1e5,symbol:'C'+i,direction:i%2?'SHORT':'LONG',reason:'MARGIN_SHORT'}));
  const h=m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev});
- assert.match(h,/진입 실패·건너뜀/);assert.match(h,/전체 14건/);assert.match(h,/1 \/ 2쪽/);assert.ok(h.includes('>C9<')&&!h.includes('>C10<'));assert.match(h,/<th>이유<\/th>/);
- m.setCopyFailPage(1);assert.ok(m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev}).includes('>C13<'));m.setCopyFailPage(0);
+ assert.match(h,/진입 실패·건너뜀/);assert.match(h,/전체 14건 · 최근 24시간 14건/);assert.match(h,/1 \/ 3쪽/);assert.ok(h.includes('>C4<')&&!h.includes('>C5<'),'5 per page (2026-11-18)');assert.match(h,/<th>이유<\/th>/);
+ assert.match(h,/<details class="fail-box"><summary/,'collapsed by default');m.setFailOpen(true);assert.match(m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev}),/<details class="fail-box" open>/);m.setFailOpen(false);
+ m.setCopyFailPage(2);assert.ok(m.copyHTML({mode:'LIVE',enabled:true,positions:[],closed:[],events:ev}).includes('>C13<'));m.setCopyFailPage(0);
 });
 
 // User decision 2026-11-17 ("2,3번 둘다 적용시켜줘") and the review of 080e0da (fail closed, no retry races).
