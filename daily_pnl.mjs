@@ -6,7 +6,7 @@
 // failing read never holds up a request. A failed read keeps the last good days and reports the error with them.
 // The first read (and one every hour) covers the previous and the current KST month; the ones in between re-read
 // only from yesterday (KST) and replace those days.
-import {exchangePnl} from './exchange_pnl.mjs';
+import {incomeRows,summarizeIncome} from './exchange_pnl.mjs';
 
 const DAY=86400000,KST=9*3600000,EVERY=5*60000,FULL_EVERY=60*60000,RETENTION=85*DAY; // BingX keeps income ~3 months
 const kstDay=t=>new Date(t+KST).toISOString().slice(0,10);
@@ -23,20 +23,47 @@ export function dailySince(configured,now){
 // Only short codes leave this module (a venue message could carry anything).
 const safeError=e=>{const s=String(e||'ERROR');return /^[A-Z0-9_]{1,40}$/.test(s)?s:'READ_FAILED'};
 
-/** One cache per account. read(since,now) defaults to exchangePnl(client,…); now() is injectable for tests. */
+/** One cache per account. The calendar uses only fund flow; account balance is used by the return report. */
 export function createDailyPnl({client,since,read=null,now=()=>Date.now(),every=EVERY,fullEvery=FULL_EVERY,log=()=>{}}={}){
- const doRead=read||((from,at)=>exchangePnl(client,{since:from,now:at}));
+ const doRead=read||(async(since,now)=>{
+  if(typeof client?.income!=='function')return {error:'NO_CLIENT'};
+  const rows=await incomeRows(client,{since,now});
+  return {byDay:summarizeIncome(rows,null,{since,now}).byDay};
+ });
  let byDay={},at=null,from=null,error=null,errorAt=null,lastFull=0,busy=null,timer=null;
+ async function readDays(start,end){
+  let result;
+  try{result=await doRead(start,end)}catch(e){return {error:safeError(e?.code||e?.message)}}
+  if(!result?.byDay||typeof result.byDay!=='object'||Array.isArray(result.byDay)||result.error)return {error:safeError(result?.error)};
+  const days={};
+  for(const [d,v] of Object.entries(result.byDay))if(/^\d{4}-\d{2}-\d{2}$/.test(d)&&Number.isFinite(Number(v)))days[d]=Math.round(Number(v)*1e4)/1e4;
+  return {days};
+ }
+ function replaceRecent(start,days){
+  const cut=kstDay(start),keep={};
+  for(const [day,value] of Object.entries(byDay))if(day<cut)keep[day]=value;
+  byDay={...keep,...days};
+ }
  function refresh(){
   if(busy)return busy;
   busy=(async()=>{
    const t=now(),full=at===null||t-lastFull>=fullEvery||from===null;
-   const start=full?dailySince(since,t):Math.max(from,kstMidnight(t)-DAY);
-   let r;try{r=await doRead(start,t)}catch(e){r={error:e?.code||e?.message||'ERROR'}}
-   if(!r||r.error||!r.byDay||typeof r.byDay!=='object'){error=safeError(r?.error);errorAt=t;log('[DAILY_PNL]',error);return}
-   const fresh={};for(const [d,v] of Object.entries(r.byDay))if(/^\d{4}-\d{2}-\d{2}$/.test(d)&&Number.isFinite(Number(v)))fresh[d]=Math.round(Number(v)*1e4)/1e4;
-   if(full){byDay=fresh;from=start;lastFull=t}
-   else{const cut=kstDay(start),keep={};for(const [d,v] of Object.entries(byDay))if(d<cut)keep[d]=v;byDay={...keep,...fresh}}
+   const fullStart=dailySince(since,t),recentStart=Math.max(fullStart,kstMidnight(t)-DAY);
+   const start=full?fullStart:Math.max(from,recentStart);
+   const result=await readDays(start,t);
+   if(result.error){
+    if(full&&recentStart>start&&result.error!=='NO_CLIENT'){
+     // Keep the last good history, and recover the current and previous KST day independently.
+     const recent=await readDays(recentStart,t);
+     if(recent.days){
+      replaceRecent(recentStart,recent.days);
+      from=from??recentStart;at=t;
+     }
+    }
+    error=result.error;errorAt=t;log('[DAILY_PNL]',error);return;
+   }
+   if(full){byDay=result.days;from=start;lastFull=t}
+   else replaceRecent(start,result.days);
    at=t;error=null;errorAt=null;
   })().finally(()=>{busy=null});
   return busy;

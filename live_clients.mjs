@@ -78,7 +78,10 @@ export class BingXTradeClient{
  balance(){return this.request('GET','/openApi/swap/v3/user/balance')}
  positions(symbol){return this.request('GET','/openApi/swap/v2/user/positions',symbol?{symbol}:{})}
  /** Fund flow (read only): realized PnL, trading fees and funding rows, for the closed-trade result. */
- income({symbol,startTime,endTime,limit=1000}={}){return this.request('GET','/openApi/swap/v2/user/income',Object.fromEntries(Object.entries({symbol,startTime,endTime,limit}).filter(([,v])=>v!==undefined&&v!==null&&v!=='')))}
+ async income({symbol,startTime,endTime,limit=1000}={}){
+  const rows=await this.request('GET','/openApi/swap/v2/user/income',defined({symbol,startTime,endTime,limit}));
+  return rows===null?[]:rows; // An explicit null on a successful empty window; a missing data field stays invalid.
+ }
  marginType(symbol){return this.request('GET','/openApi/swap/v2/trade/marginType',{symbol})}
  setMarginType(symbol,marginType){return this.request('POST','/openApi/swap/v2/trade/marginType',{symbol,marginType})}
  leverage(symbol){return this.request('GET','/openApi/swap/v2/trade/leverage',{symbol})}

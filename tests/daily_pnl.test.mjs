@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {createDailyPnl,dailySince,kstMidnight,kstMonthStart} from '../daily_pnl.mjs';
+import {BingXTradeClient} from '../live_clients.mjs';
 
 const DAY=86400000,K=s=>Date.parse(s+'+09:00');
 
@@ -50,10 +51,10 @@ test('daily P&L: background cache, incremental re-read, last good data kept on e
  d.status().byDay['2026-11-18']=999;assert.notEqual(d.status().byDay['2026-11-18'],999);
 });
 
-test('daily P&L: start() reads in the background; the default reader uses exchangePnl and the client income',async()=>{
+test('daily P&L: start() reads fund flow in the background without needing account balance',async()=>{
  let t=K('2026-11-18T08:30:00');const seen=[];
  const client={income:async q=>{seen.push(q);return {list:q.startTime<=K('2026-11-17T10:00:00')&&q.endTime>K('2026-11-17T10:00:00')?[{tranId:'1',incomeType:'REALIZED_PNL',income:'-3',time:K('2026-11-17T10:00:00')},{tranId:'2',incomeType:'TRADING_FEE',income:'-0.2',time:K('2026-11-17T10:00:00')},{tranId:'3',incomeType:'TRANSFER',income:'100',time:K('2026-11-17T10:00:00')}]:[]}},
-  balance:async()=>({balance:{asset:'USDT',equity:'100'}})};
+  balance:async()=>{throw Error('balance unavailable')}};
  const d=createDailyPnl({client,since:K('2026-11-14T00:00:00'),now:()=>t,every:3600000});
  d.start();d.start();await new Promise(r=>setTimeout(r,20));d.stop();
  assert.deepEqual(d.status().byDay,{'2026-11-17':-3.2},'fees in, transfers out');
@@ -101,7 +102,7 @@ test('calendar UI: weeks from Monday, month boundaries, KST today, totals, prev/
  // Error: last good data with its time; the code only in an escaped title.
  html=m.pnlCalendarHTML({at:now-10*60000,since,byDay,error:'<script>x</script>',errorAt:now},{now});
  assert.match(html,/갱신 실패 · \d{2}:\d{2} 기준/);assert.doesNotMatch(html,/<script>/);assert.match(html,/&lt;script&gt;/);assert.match(html,/−\$3\.20/);
- assert.match(m.pnlCalendarHTML({at:null,byDay:{},error:'HTTP_429'},{now}),/갱신 실패 · 불러온 기록 없음/);
+ assert.match(m.pnlCalendarHTML({at:null,byDay:{},error:'HTTP_429'},{now}),/갱신 실패 · 불러온 기록 없음 · 거래소 요청 한도 초과/);
  assert.match(m.pnlCalendarHTML({at:null,byDay:{}},{now}),/불러오는 중/);
  // Keys and values from the server are never put into the page as given.
  html=m.pnlCalendarHTML({at:now,byDay:{'2026-11-05':'<i>x</i>','<img>':3}},{now});assert.doesNotMatch(html,/<img>|<i>x/);
@@ -137,4 +138,47 @@ test('a malformed venue income response keeps the last good calendar value',asyn
  now+=5*60000;unexpected=true;
  await calendar.refresh();
  assert.deepEqual(calendar.status(),{...good,error:'BAD_INCOME_RESPONSE',errorAt:now});
+});
+
+test('BingX success with explicit null on empty windows allows later income; an omitted data field remains an error',async()=>{
+ const now=K('2026-11-18T10:00:00');
+ const income={incomeType:'REALIZED_PNL',income:'27.50',time:now-3600000,symbol:'BTC-USDT',tranId:'1'};
+ let omitData=false,emptyReads=0;
+ const client=new BingXTradeClient({apiKey:'fixture',secret:'fixture',mode:'LIVE',now:()=>now,fetcher:async(url,options)=>{
+  const u=new URL(url);
+  assert.equal(u.pathname,'/openApi/swap/v2/user/income');
+  assert.equal(options.method,'GET');
+  if(omitData)return Response.json({code:0});
+  const from=Number(u.searchParams.get('startTime')),to=Number(u.searchParams.get('endTime'));
+  if(income.time>=from&&income.time<to)return Response.json({code:0,data:[income]});
+  emptyReads++;
+  return Response.json({code:0,data:null});
+ }});
+ const calendar=createDailyPnl({client,now:()=>now});
+ await calendar.refresh();
+ assert.ok(emptyReads>0);
+ assert.deepEqual(calendar.status().byDay,{'2026-11-18':27.5});
+ omitData=true;
+ await calendar.refresh();
+ assert.deepEqual(calendar.status().byDay,{'2026-11-18':27.5});
+ assert.equal(calendar.status().error,'BAD_INCOME_RESPONSE');
+});
+
+test('older income errors still show recent KST days and a later full refresh restores history',async()=>{
+ let now=K('2026-11-18T10:00:00'),olderAvailable=false,net=27.50;
+ const recent=K('2026-11-17T00:00:00'),olderDay='2026-11-02',today='2026-11-18';
+ const calendar=createDailyPnl({now:()=>now,read:async(start)=>{
+  if(start<recent&&!olderAvailable)throw Object.assign(Error('older income not available'),{code:'HTTP_429'});
+  return {byDay:start<recent?{[olderDay]:8,[today]:net}:{[today]:net}};
+ }});
+ await calendar.refresh();
+ assert.deepEqual(calendar.status(),{at:now,since:recent,byDay:{[today]:27.50},error:'HTTP_429',errorAt:now});
+ olderAvailable=true;now+=5*60000;
+ await calendar.refresh();
+ assert.deepEqual(calendar.status().byDay,{[olderDay]:8,[today]:27.50});
+ assert.equal(calendar.status().error,null);
+ olderAvailable=false;now+=60*60000;net=31;
+ await calendar.refresh();
+ assert.deepEqual(calendar.status().byDay,{[olderDay]:8,[today]:31},'last good older data stays visible');
+ assert.equal(calendar.status().error,'HTTP_429');
 });

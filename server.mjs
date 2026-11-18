@@ -340,8 +340,8 @@ if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositi
  catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
 // Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
 // copy and manual together, read in the background at most every 5 min; the page gets the cached value (daily).
-const dailyPnl=COPY.mode==='LIVE'&&copyClient?.mode==='LIVE'&&typeof copyClient.income==='function'
- ?createDailyPnl({client:copyClient,since:Date.parse(process.env.EXCHANGE_PNL_LIVE_SINCE||'2026-11-14T00:00:00+09:00'),log:(...a)=>console.warn(...a)}):null;
+const dailyPnl=COPY.mode==='LIVE'
+ ?createDailyPnl({client:copyClient?.mode==='LIVE'?copyClient:null,since:Date.parse(process.env.EXCHANGE_PNL_LIVE_SINCE||'2026-11-14T00:00:00+09:00'),log:(...a)=>console.warn(...a)}):null;
 dailyPnl?.start();
 // 되돌림 단타 (5m dip-rebound LONG) on the BingX TESTNET only (scalp_executor.mjs, user 2026-11-14 22:29):
 // its own ledger (scalp-store.json), SCALP_EXEC_MODE=OFF|TESTNET (LIVE refused), disarmed after every start.

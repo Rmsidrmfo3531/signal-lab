@@ -246,7 +246,9 @@ export function pnlCalendarHTML(daily,{now=Date.now()}={}){
   const cls=['cal-cell',c.date===today?'cal-today':'',before||future?'cal-off':'',v>0?'cal-up':v<0?'cal-down':''].filter(Boolean).join(' ');
   const title=`${mm}월 ${c.day}일${v!==null?' '+usd(v):before?' · 기록 범위 밖':future?'':loaded?' · 거래 없음':''}`;
   return `<span class="${cls}" title="${esc(title)}"${v!==null?tint(v):''}><b>${c.day}</b>${v!==null?`<i class="${v?pnlClass(v):''}">${esc(calAmt(v))}</i>`:''}</span>`};
- const state=daily.error?`<span class="cal-err" title="${esc(daily.error)}">갱신 실패 · ${loaded?esc(hhmm(daily.at))+' 기준':'불러온 기록 없음'}</span>`
+ const errorCode=/^[A-Z0-9_]{1,40}$/.test(daily.error||'')?daily.error:null;
+ const errorLabel={NO_CLIENT:'실계좌 연결 설정 확인',HTTP_429:'거래소 요청 한도 초과',BAD_INCOME_RESPONSE:'손익 응답 형식 오류'}[errorCode]||errorCode;
+ const state=daily.error?`<span class="cal-err" title="${esc(daily.error)}">갱신 실패 · ${loaded?esc(hhmm(daily.at))+' 기준':'불러온 기록 없음'}${errorLabel?' · '+esc(errorLabel):''}</span>`
   :loaded?`<span class="muted">${esc(hhmm(daily.at))} 기준 · 5분마다 갱신</span>`:'<span class="muted">불러오는 중…</span>';
  const day=x=>x?`${Number(x.date.slice(8))}일 <b class="${pnlClass(x.value)}">${esc(usd(x.value))}</b>`:'—';
  const foot=`<div class="cal-sum"><span>월 합계 <b class="${sum.days?pnlClass(sum.net):''}">${sum.days?esc(usd(sum.net)):'—'}</b></span><span>수익일 <b class="paper-profit">${sum.wins}</b> · 손실일 <b class="paper-loss">${sum.losses}</b></span>
