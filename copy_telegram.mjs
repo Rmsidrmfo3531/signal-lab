@@ -5,9 +5,25 @@ const REASON={MARGIN_SHORT:'여유 증거금 부족',SYMBOL_HELD_BY_SIGNAL_STRAT
  MONITOR_RESTART_SNAPSHOT:'채널 모니터 재시작 직후의 기존 포지션 재알림',LIVE_DISARMED:'실매매 비활성 상태',COPY_DISARMED:'카피 비활성 상태',ENTRY_INTERRUPTED:'주문 준비 중 거래가 정지됨',UPDATING:'업데이트 중',KILL_SWITCH:'긴급 정지 중',NOT_TESTNET:'테스트넷이 아님',
  NO_BINGX_CONTRACT:'BingX에 없는 종목',TRADER_CLOSE:'트레이더 청산',STOP_OR_EXTERNAL:'보호 손절 또는 외부 청산',POSITION_GONE:'거래소에 포지션 없음',COPY_OFF:'카피 매매 꺼짐',BINGX_HEDGE_MODE:'BingX 양방향(헤지) 모드라 건너뜀 — 이전 버전 기록(지금은 헤지 모드도 지원)',BINGX_POSITION_MODE_UNKNOWN:'BingX 포지션 모드(단방향/헤지) 확인 실패',VENUE_POSITION_EXISTS:'거래소에 같은 코인 포지션이 이미 있음(수동 매매 등) — 합쳐지지 않게 건너뜀',PRICE_MISMATCH:'거래소 가격이 알림 가격과 10% 넘게 다름(다른 상품일 수 있음)',PRICE_UNVERIFIED:'거래소 가격 확인 실패(이름이 다른 종목)',ZONE_BREAK_VOLUME:'매물대 거래량 동반 이탈 손절',COPY_MAX_ADDS:'추매 최대 횟수 도달',TRADER_QUANTITY_MISSING:'트레이더 수량이 없는 알림',NO_BALANCE:'잔고 조회 실패',NO_STOP:'보호 손절을 걸지 못해 청산',LOSS_CAP_REACHED:'손실 한도 도달로 청산',COPY_LOSS_LIMIT:'카피 손실 한도',COPY_MARGIN_CAP:'카피 전체 증거금 한도',TRADER_CUT_ALL:'트레이더 전량 축소',CLOSING:'청산 중인 포지션',OUR_COPY_CLOSED:'우리가 먼저 정리한 포지션(손실 한도·보호 손절 등) — 트레이더 청산 뒤에 다시 따라감',LIQUIDATION:'강제청산',ADL:'자동 감축(ADL) 청산',EXTERNAL_UNCONFIRMED:'바깥 청산인지 확인 불가로 다시 따라가지 않음'};
 const why=r=>REASON[r]||r||'';
+function realCopyTradeText(e){
+ const action={OPENED:e.refollow?'다시 진입':e.late?'늦은 진입':'신규 진입',ADDED:'추매',REDUCED:'일부 청산',CLOSED:'전량 청산'}[e.type];
+ if(!action)return null;
+ const head=[`🔴 실계좌 | 카피 | ${action}`,[e.symbol,SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ let detail;
+ if(e.type==='OPENED')detail=[`수량 ${e.qty} · 평균 진입가 ${e.avg??'—'} USDT`,
+  e.stop?`거래소 보호 손절 ${e.stop} USDT`:null,e.stopDistPct!=null?`매물대 기준 ${e.stopDistPct}% · 거래량 동반 이탈 시`:null];
+ if(e.type==='ADDED')detail=[`${e.n}차 · 수량 +${e.qty} · 총 ${e.total}`,`평균 진입가 ${e.avg??'—'} USDT`,e.stop?`거래소 보호 손절 ${e.stop} USDT`:null];
+ if(e.type==='REDUCED')detail=[`수량 −${e.qty} · 잔여 ${e.left}`];
+ if(e.type==='CLOSED')detail=[why(e.reason),
+  e.evidence==='MANUAL_CLOSE'?'수동 청산 확인':e.evidence==='UNCONFIRMED'?'청산 경로 확인 불가':null,
+  e.netUSD==null?'손익 확인 불가':`손익 ${money(e.netUSD)} (수수료 전 추정)`,
+  `추매 ${e.adds||0}회${e.theirPnlUSD!=null?` · 트레이더 ${money(e.theirPnlUSD)}`:''}`];
+ return [...head,...detail].filter(Boolean).join('\n');
+}
 /** Text for one copy event, or null when not worth a notice. */
 export function copyEventText(e){
  if(!e)return null;
+ if(e.mode==='LIVE'){const trade=realCopyTradeText(e);if(trade)return trade}
  const head=`📋 카피${e.mode==='LIVE'?'·실계좌':''} · ${e.symbol||''}`;
  if(e.type==='ARMED'||e.type==='DISARMED')return `📋 카피 ${e.mode==='LIVE'?'실계좌 ':''}${e.type==='ARMED'?'활성화':'비활성화'}`;
  if(e.type==='OPENED')return `${head} ${SIDE[e.direction]||''} ${e.leverage}배 ${e.refollow?'다시 진입(우리 카피가 거래소에서 바깥 청산된 뒤 트레이더를 다시 따라감) ':e.late?'늦은 진입(진입 알림을 놓쳐 추매 시점에 들어감) ':'진입 '}${e.mode==='LIVE'?'(실계좌)':'(테스트넷)'}\n수량 ${e.qty} · 평균 ${e.avg??'—'}${e.stopDistPct!=null?` · 매물대 손절 기준 진입가에서 ${e.stopDistPct}% (거래량 동반 이탈 시)`:''}${e.stop?` · 거래소 보호 손절 ${e.stop}`:''}`;

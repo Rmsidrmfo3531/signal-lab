@@ -75,11 +75,11 @@ globalThis.fetch=async(input,options={})=>{
   const cfg=control(),series=marketSeries(cfg.venueOnly?.[symbol]??cfg.scenarios[symbol],cfg.marketNow??Date.now()),rows=interval==='1h'?series.h1:series.h4;
   return rows.slice(-limit).map(r=>({t:Number(r[0])/1000,o:String(r[1]),h:String(r[2]),l:String(r[3]),c:String(r[4]),v:String(Number(r[5])*100),sum:String(Number(r[5])*Number(r[4]))}))};
  if(url.hostname==='open-api.bingx.com'){
-  const liveIncome=control().fakeBingxLiveIncome;
+  const live=control(),liveIncome=live.fakeBingxLiveIncome;
   if(liveIncome&&url.pathname.startsWith('/openApi/swap/')&&url.pathname.includes('/user/')){
    if(options?.method!=='GET')throw Error('Live account fixture only permits GET');
    if(url.pathname.endsWith('/balance'))return json({code:100001,msg:'Test balance unavailable'});
-   if(url.pathname.endsWith('/positions'))return json({code:0,data:[]});
+   if(url.pathname.endsWith('/positions'))return json({code:0,data:live.fakeBingxLivePositions??[]});
    if(url.pathname.endsWith('/income')){
     const start=Number(url.searchParams.get('startTime')),end=Number(url.searchParams.get('endTime'));
     const rows=liveIncome.filter(row=>row.time>=start&&row.time<end);

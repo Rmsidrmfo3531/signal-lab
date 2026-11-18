@@ -436,7 +436,8 @@ test('real-money copy only with COPY_MODE=LIVE and the confirm phrase; its own s
  const v=venue();let ex;ex=new CopyExecutor({config:cfg,client:v.client,contractOf:async()=>contract,gate:()=>ex.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'},balance:async()=>({equity:400,available:300}),now:()=>1e12});
  assert.equal(ex.status().armed,false);await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(v.size,0);
  ex.arm();await ex.handle({id:2,date:1e12+1,text:OPEN.replace('TNSRUSDT','TNSRUSDT')});
- assert.match(copyEventText({type:'OPENED',mode:'LIVE',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:1}),/카피·실계좌 .* \(실계좌\)/);
+ assert.match(copyEventText({type:'OPENED',mode:'LIVE',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:1}),
+  /^🔴 실계좌 \| 카피 \| 신규 진입\nTNSRUSDT · 숏 · 5배/);
 });
 
 test('copy MIN_ORDER: the minimum is met at the venue price, a 101400 minimum is retried once, a refused entry leaves no ledger row',async()=>{

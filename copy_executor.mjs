@@ -596,7 +596,7 @@ export class CopyExecutor{
    await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});
    p.theirTotal=m.to; // set after our cut went through, so a retried cut uses the same from / to
    p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:cut,ratio});
-   await this.#protect(p);this.#event('REDUCED',{symbol:m.symbol,qty:cut,left:p.qty});
+   await this.#protect(p);this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:cut,left:p.qty});
   }
   return {ok:true};
  }
@@ -630,7 +630,7 @@ export class CopyExecutor{
   p.adds++;
   p.steps.push({kind:'ADD',at:this.now(),qty:fill.qty??buy,avg:fill.avg,theirQty,marginUSD});this.#save();
   await this.#protect(p);if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('ADDED',{symbol:p.symbol,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
+  this.#event('ADDED',{symbol:p.symbol,direction:p.direction,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null});
   return {ok:true};
  }
  async #close(m,reason){
@@ -656,7 +656,7 @@ export class CopyExecutor{
   p.status='CLOSED';p.closedAt=this.now();p.closeReason=reason;delete p.inflight;
   const row={...p,netUSD:now?.unrealized??null,netSource:now?.unrealized!=null?'ESTIMATE_BEFORE_FEES':'UNKNOWN',theirPnlUSD};
   this.store.closed.push(row);const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];
-  this.#event('CLOSED',{symbol:p.symbol,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds,...(p.closeEvidence?{evidence:p.closeEvidence.kind}:{})});
+  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds,...(p.closeEvidence?{evidence:p.closeEvidence.kind}:{})});
  }
  /** A position found gone on the venue without our close order: classified (#goneEvidence) and booked. An entry
   * whose answer was lost (no step) is looked up first: only when BingX says none of its orders exists is the row

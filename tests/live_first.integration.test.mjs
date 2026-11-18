@@ -100,3 +100,25 @@ test('real-account calendar publishes recent income when older windows are empty
   assert.ok(reads.length>1,'the mock served older windows before the recent income');
  }finally{await app.close()}
 });
+
+test('real manual position sends a differently formatted Telegram alert through the configured transport',async()=>{
+ const position={symbol:'BTC-USDT',positionSide:'BOTH',positionAmt:'0.01',avgPrice:'50000',markPrice:'50100',leverage:'10'};
+ const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],env:{
+  BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',
+  COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',PAPER_TRADING:'off',
+  TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_CHAT_ID:'-123456',
+ }});
+ const notices=async()=>(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.host==='api.telegram.org');
+ try{
+  await app.start();
+  const before=await until(()=>app.get('/api/copy'),c=>c.venuePositionsAt!=null);
+  assert.equal(before.manual.open.length,0);
+  await app.write({fakeBingxLivePositions:[position]});
+  await until(()=>app.get('/api/copy'),c=>c.manual?.open?.length===1,{timeout:14000,label:'manual position after two reads'});
+  const messages=await until(notices,list=>list.length===1);
+  assert.match(messages[0].text,/^🔴 실계좌 \| 수동 \| 신규 진입\nBTCUSDT · 롱 · 10배/);
+  assert.match(messages[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT/);
+  await app.get('/api/copy');
+  assert.equal((await notices()).length,1);
+ }finally{await app.close()}
+});

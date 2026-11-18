@@ -13,7 +13,7 @@ import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
 import {scalpReportFiles} from './scalp_journal.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
-import {liveEventText} from './live_telegram.mjs';
+import {liveEventText,manualTradeText} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -335,7 +335,7 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode===
 // margin limits and every copy decision stay computed from the copy ledger only (copy_executor.mjs); manual trades
 // join only the page totals and the hourly report. Polled every 15 s on its own (shared 3 s cache with the page).
 const manualLedger=venuePositionsReader?new ManualLedger({directory:storage.dir,client:copyClient,
- copyRecords:()=>[...Object.values(copyTrader.store.positions),...copyTrader.store.closed],log:(...a)=>console.log(...a)}):null;
+ copyRecords:()=>[...Object.values(copyTrader.store.positions),...copyTrader.store.closed],log:(...a)=>console.log(...a),onEvent:manualTradeNotice}):null;
 if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(Object.values(copyTrader.store.positions)));await manualLedger.settle()}
  catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
 // Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
@@ -404,6 +404,12 @@ function copyNotice(e){
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
  if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
  telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[COPY TELEGRAM] HTTP',r.status)}).catch(e2=>console.error('[COPY TELEGRAM]',e2.message));
+}
+function manualTradeNotice(e){
+ const text=manualTradeText(e);if(!text)return;
+ try{send('live-notice',{type:e.type,symbol:e.symbol,text,at:Date.now()})}catch{}
+ if(persisted.notifySettings?.telegramLive===false||!CONFIG.tgToken||!CONFIG.tgChat)return;
+ telegramPost({chat_id:CONFIG.tgChat,text}).then(r=>{if(!r.ok)console.error('[MANUAL TELEGRAM] HTTP',r.status)}).catch(()=>console.error('[MANUAL TELEGRAM] delivery unconfirmed'));
 }
 // Re-arm after a one-tap update (user request 2026-11-13): only when it was armed when the update
 // started, within 15 minutes, on TESTNET, and with no kill switch. Real-money mode (LIVE) is never

@@ -36,17 +36,25 @@ const incomeKey=x=>String(x?.tranId??x?.tradeId??[x?.incomeType,x?.symbol,x?.tim
 export class ManualLedger{
  /** client: the BingX real-account client (income() only). copyRecords(): the copy ledger's positions and closed
   * rows (read only, for the window check). */
- constructor({directory=null,fileName=MANUAL_LEDGER_FILE,client=null,copyRecords=()=>[],now=()=>Date.now(),log=()=>{},
+ constructor({directory=null,fileName=MANUAL_LEDGER_FILE,client=null,copyRecords=()=>[],now=()=>Date.now(),log=()=>{},onEvent=()=>{},
   feeRate=0.0005,openReads=2,closeReads=2,settleDelayMs=20000,settleDeadlineMs=5*60000,preMs=60000,postMs=120000,copyCloseGraceMs=30000}={}){
-  Object.assign(this,{client,copyRecords,now,log,feeRate,openReads,closeReads,settleDelayMs,settleDeadlineMs,preMs,postMs,copyCloseGraceMs});
+  Object.assign(this,{client,copyRecords,now,log,onEvent,feeRate,openReads,closeReads,settleDelayMs,settleDeadlineMs,preMs,postMs,copyCloseGraceMs});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={origin:'manual',account:'BINGX_LIVE',positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],claimed:saved?.claimed||[]};
-  this.lastReadAt=0;this.started=false;this.candidates=new Map();this.settling=null;
+  this.lastReadAt=0;this.started=false;this.candidates=new Map();this.settling=null;this.notices=[];
  }
- #save(){if(!this.file)return;this.store.closed=this.store.closed.slice(-MAX_CLOSED);this.store.events=this.store.events.slice(-MAX_EVENTS);this.store.claimed=this.store.claimed.slice(-MAX_CLAIMED);
-  fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...this.store})}
- #event(type,detail={}){const e={type,at:this.now(),...detail};this.store.events.push(e);this.log(`[MANUAL] ${type} ${detail.symbol||''}`.trim());return e}
+ #save(){
+  if(this.file){
+   this.store.closed=this.store.closed.slice(-MAX_CLOSED);this.store.events=this.store.events.slice(-MAX_EVENTS);this.store.claimed=this.store.claimed.slice(-MAX_CLAIMED);
+   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...this.store});
+  }
+  for(const event of this.notices.splice(0))try{this.onEvent(event)}catch{this.log('[MANUAL] notice failed')}
+ }
+ #event(type,detail={},notify=false){
+  const e={type,at:this.now(),...detail};this.store.events.push(e);if(notify)this.notices.push(e);
+  this.log(`[MANUAL] ${type} ${detail.symbol||''}`.trim());return e;
+ }
  #copyList(){try{const l=this.copyRecords();return Array.isArray(l)?l.filter(Boolean):[]}catch{return []}}
 
  /** One venue snapshot ({venuePositions, venuePositionsAt}, rows tagged copy / manual). A snapshot already seen (the
@@ -89,14 +97,16 @@ export class ManualLedger{
    status:'OPEN',openedAt:at,firstSeenAt:at,lastSeenAt:at,sizeSinceAt:at,size:row.size,qty:row.size,maxSize:row.size,firstSize:row.size,avg:num(row.avg),firstAvg:num(row.avg),
    leverage:num(row.leverage),marginMode:row.marginMode??null,mark:num(row.mark),unrealized:num(row.unrealized),adds:0,reduces:0,realizedEstUSD:0,tradedNotionalUSD:row.size*price,
    ...(adopted?{adoptedAtStart:true}:{})};
-  this.store.positions[key]=p;this.#event(adopted?'MANUAL_ADOPTED':'MANUAL_OPEN',{symbol:p.symbol,direction:p.direction,size:p.size,avg:p.avg,leverage:p.leverage});
+  this.store.positions[key]=p;this.#event(adopted?'MANUAL_ADOPTED':'MANUAL_OPEN',
+   {symbol:p.symbol,direction:p.direction,size:p.size,avg:p.avg,leverage:p.leverage,observedAt:at},!adopted);
  }
  #track(p,row,at){
   const dir=p.direction==='LONG'?1:-1,mark=num(row.mark)??num(row.avg)??p.mark??p.avg??0,size=row.size,diff=size-p.size;
   let changed=false;
   if(Math.abs(diff)>Math.max(1e-12,p.size*1e-9)){
-   if(diff>0){p.adds++;p.tradedNotionalUSD+=diff*mark;this.#event('MANUAL_ADD',{symbol:p.symbol,direction:p.direction,from:p.size,to:size})}
-   else{p.reduces++;p.realizedEstUSD+=dir*(mark-(p.avg??mark))*(-diff);p.tradedNotionalUSD+=(-diff)*mark;this.#event('MANUAL_REDUCE',{symbol:p.symbol,direction:p.direction,from:p.size,to:size})}
+   const detail={symbol:p.symbol,direction:p.direction,from:p.size,to:size,avg:num(row.avg)??p.avg,observedAt:at};
+   if(diff>0){p.adds++;p.tradedNotionalUSD+=diff*mark;this.#event('MANUAL_ADD',detail,true)}
+   else{p.reduces++;p.realizedEstUSD+=dir*(mark-(p.avg??mark))*(-diff);p.tradedNotionalUSD+=(-diff)*mark;this.#event('MANUAL_REDUCE',detail,true)}
    p.size=size;p.qty=size;p.maxSize=Math.max(p.maxSize,size);p.sizeSinceAt=at;changed=true;
   }
   const avg=num(row.avg);if(avg&&avg!==p.avg){p.avg=avg;changed=true}
@@ -112,7 +122,8 @@ export class ManualLedger{
  }
  #close(p,closedAt){
   delete this.store.positions[p.key];
-  const row={...p,status:'CLOSED',closedAt,exitMark:p.mark??null,closeReason:'MANUAL_OR_VENUE_CLOSE',estimateUSD:this.#estimate(p),netUSD:null,netSource:'PENDING'};
+  const row={...p,status:'CLOSED',closedAt,exitMark:p.mark??null,closeReason:'MANUAL_OR_VENUE_CLOSE',estimateUSD:this.#estimate(p),
+   netUSD:null,netSource:'PENDING',notifySettlement:!p.mergedIntoCopy};
   delete row.missing;delete row.goneAt;
   this.store.closed.push(row);
   this.#event('MANUAL_CLOSE',{symbol:p.symbol,direction:p.direction,size:p.size,estimateUSD:row.estimateUSD});
@@ -147,8 +158,12 @@ export class ManualLedger{
  }
  async #settleOne(x,now){
   const w=this.#window(x,now),mixed=this.#mixed(x,w);
-  const done=(netSource,netUSD,extra={})=>{Object.assign(x,{netSource,netUSD:netUSD==null?null:r6(netUSD),settledAt:now,...extra});
-   this.#event('MANUAL_SETTLED',{symbol:x.symbol,direction:x.direction,netSource,netUSD:x.netUSD});return true};
+  const done=(netSource,netUSD,extra={})=>{
+   Object.assign(x,{netSource,netUSD:netUSD==null?null:r6(netUSD),settledAt:now,...extra});
+   this.#event('MANUAL_SETTLED',{symbol:x.symbol,direction:x.direction,size:x.size,netSource,netUSD:x.netUSD,observedAt:x.closedAt},x.notifySettlement===true);
+   delete x.notifySettlement;
+   return true;
+  };
   if(mixed)return done(mixed,x.estimateUSD);
   const expired=now>=x.closedAt+this.settleDeadlineMs;
   if(!this.client||typeof this.client.income!=='function')return expired?done('ESTIMATE',x.estimateUSD,{incomeMissing:'NO_CLIENT'}):false;
@@ -172,7 +187,7 @@ export class ManualLedger{
 
  /** For the page: open records, the last 200 closes (newest first, origin manual) and totals of the settled ones. */
  status(){
-  const pub=x=>{const {claimed,missing,goneAt,...rest}=x;return {...rest,origin:'manual'}};
+  const pub=x=>{const {claimed,missing,goneAt,notifySettlement,...rest}=x;return {...rest,origin:'manual'}};
   const closed=this.store.closed,settled=closed.filter(x=>x.netUSD!=null&&Number.isFinite(Number(x.netUSD)));
   return {open:Object.values(this.store.positions).map(pub),closed:closed.slice(-200).reverse().map(pub),closedTotal:closed.length,
    pending:closed.filter(x=>x.netSource==='PENDING').length,settled:settled.length,netUSD:r6(settled.reduce((a,x)=>a+Number(x.netUSD),0))};
