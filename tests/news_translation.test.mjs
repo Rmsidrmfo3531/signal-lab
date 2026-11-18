@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {translateNewsArticles} from '../news_translation.mjs';
+import {createOpenAINewsTranslator,translateNewsArticles} from '../news_translation.mjs';
 
 const NOW=Date.parse('2026-11-04T07:00:00Z');
 const article=()=>({id:'public-rss-item',title:'Bitcoin trading volume rises',summary:'Source-provided summary.',detail:'The publisher provided this excerpt.',
@@ -73,4 +73,35 @@ test('Google provider: short text as GET, failures recorded for the news status 
  await googleTranslate({text:'x'.repeat(2000),fetcher:ok});assert.equal(calls[1][1],'POST');
  await assert.rejects(googleTranslate({text:'a',fetcher:async()=>new Response('no',{status:429})}),/TRANSLATION_HTTP/);
  assert.equal(googleTranslateStatus.lastError,'HTTP 429');
+});
+
+test('OpenAI provider sees the title and excerpts together, validates the output and caches it per field',async()=>{
+ const input=article(),requests=[];
+ const translations=['비트코인 거래량 증가','제공처가 작성한 요약입니다.','제공처가 제공한 기사 발췌입니다.'];
+ const translateBatch=createOpenAINewsTranslator({apiKey:'synthetic-key',fetcher:async(url,opt)=>{
+  const request=JSON.parse(opt.body);requests.push(request);
+  assert.equal(url,'https://api.openai.com/v1/responses');
+  assert.equal(opt.headers.Authorization,'Bearer synthetic-key');
+  assert.ok(opt.signal instanceof AbortSignal);
+  assert.equal(request.text.format.type,'json_schema');assert.equal(request.store,false);
+  assert.match(request.instructions,/Preserve quantities.*uncertainty/);
+  assert.deepEqual(JSON.parse(request.input),['title','summary','detail'].map(field=>({field,text:input[field]})));
+  return Response.json({status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:JSON.stringify({translations})}]}]});
+ }});
+ const options={now:NOW,providerId:'OPENAI',translateBatch};
+ const [out]=await translateNewsArticles([input],options);
+ assert.equal(requests.length,1);
+ assert.equal(out.displayTitle,translations[0]);assert.equal(out.original.summary,input.summary);
+ assert.equal(out.translation.provider,'OPENAI');assert.equal(out.translation.status,'COMPLETE');
+ await translateNewsArticles([input],{...options,now:NOW+200});
+ assert.equal(requests.length,1,'refresh uses the cached translations');
+ assert.equal(createOpenAINewsTranslator({apiKey:''}),null);
+ for(const output of [
+  [{type:'message',role:'assistant',content:[{type:'refusal',refusal:'refused'}]}],
+  [{type:'message',role:'assistant',content:[{type:'output_text',text:'{"translations":["일부 답변"]}'}]}]
+ ]){
+  const bad=createOpenAINewsTranslator({apiKey:'synthetic-key',fetcher:async()=>Response.json({status:'completed',output})});
+  const [result]=await translateNewsArticles([input],{...options,translateBatch:bad});
+  assert.equal(result.translation.status,'ERROR');assert.equal(result.displayTitle,input.title);
+ }
 });

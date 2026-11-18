@@ -11,7 +11,7 @@ test('news bootstrap and new alerts are committed before delivery and remain ret
  const polling=source.slice(source.indexOf('let newsBootstrapped=false;'),source.indexOf('function bodyJson(req)'));
  assert.ok(polling.includes('async function pollNews()'));
  const sent=[],telegram=[],now=Date.now();let fail=true,articles=[{id:'old',published:now}];
- const context=vm.createContext({Date,AbortController,setTimeout,clearTimeout,CONFIG:{translationURL:''},translateNewsArticles,googleTranslateStatus,console:{log(){}},
+ const context=vm.createContext({Date,AbortController,setTimeout,clearTimeout,NEWS_PROVIDER:{providerId:'UNCONFIGURED'},translateNewsArticles,googleTranslateStatus,console:{log(){}},
   FEEDS:[{name:'synthetic',url:'https://fixture.invalid/rss'}],
   state:{ranked:[]},tradfiState:{swaps:[]},persisted:{newsSeen:{}},
   fetch:async()=>({ok:true,text:async()=>'<rss><channel/></rss>'}),

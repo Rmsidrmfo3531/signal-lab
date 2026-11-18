@@ -26,4 +26,11 @@ test('detail is translated paragraph by paragraph; a redirect off the source is 
  assert.equal((await articleDetail({link:'https://decrypt.co/t3'},{fetcher:hop,now:1})).error,'REDIRECTED_OUTSIDE_SOURCE');assert.deepEqual(asked,['https://decrypt.co/t3']);
  const ok=async url=>url.endsWith('/t4')?{ok:false,status:301,headers:{get:()=>'/t4-final'}}:{ok:true,status:200,url,text:async()=>html};
  assert.equal((await articleDetail({link:'https://decrypt.co/t4'},{fetcher:ok,now:1})).ok,true,'a redirect within the source is followed');
+ const ai=await articleDetail({link:'https://decrypt.co/t1'},{fetcher,providerId:'OPENAI',now:1,translateBatch:async({parts,signal})=>{
+  assert.deepEqual(parts,d.paragraphs.map(text=>({field:'body',text})));
+  assert.ok(signal instanceof AbortSignal);
+  return ['비트코인은 목요일 5% 올랐습니다.','분석가들은 기관투자자의 수요 회복을 언급했습니다.'];
+ }});
+ assert.equal(ai.translationProvider,'OPENAI');
+ assert.match(ai.paragraphsKo[0],/ 5% 올랐습니다/);
 });

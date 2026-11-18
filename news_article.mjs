@@ -29,10 +29,12 @@ export function extractParagraphs(html){
 }
 
 const cache=new Map();
-/** {paragraphs, paragraphsKo, translated} for one article; cached per link for 6 hours. */
-export async function articleDetail(article,{fetcher=fetch,translate,now=Date.now(),timeoutMs=10000}={}){
+/** {paragraphs, paragraphsKo, translated} for one article. */
+export async function articleDetail(article,{fetcher=fetch,translate,translateBatch,providerId=null,now=Date.now(),timeoutMs=10000}={}){
  if(!article?.link||!articleAllowed(article.link))return {ok:false,error:'SOURCE_NOT_ALLOWED'};
- const hit=cache.get(article.link);if(hit&&now-hit.at<6*3600000)return hit.value;
+ const cacheKey=(providerId||'default')+'\0'+article.link;
+ const hit=cache.get(cacheKey),configured=typeof translateBatch==='function'||typeof translate==='function';
+ if(hit&&now-hit.at<(hit.value.translated||!configured?6*3600000:60000))return hit.value;
  let html;
  try{
   // Redirects are followed by hand so every hop stays on a source site (never an internal address).
@@ -50,7 +52,12 @@ export async function articleDetail(article,{fetcher=fetch,translate,now=Date.no
  const paragraphs=extractParagraphs(html);
  if(!paragraphs.length)return {ok:false,error:'NO_TEXT'};
  let paragraphsKo=null;
- if(typeof translate==='function'){
+ if(typeof translateBatch==='function'){
+  try{
+   const out=await translateBatch({parts:paragraphs.map(text=>({field:'body',text})),signal:AbortSignal.timeout(timeoutMs)});
+   if(Array.isArray(out)&&out.length===paragraphs.length&&out.every(s=>typeof s==='string'&&/[가-힣]/.test(s)))paragraphsKo=out;
+  }catch{}
+ }else if(typeof translate==='function'){
   try{
    // One request: paragraphs joined with a marker line, split back after translation.
    const SEP='\n|||\n',res=await translate({text:paragraphs.join(SEP),signal:AbortSignal.timeout(timeoutMs)});
@@ -59,7 +66,7 @@ export async function articleDetail(article,{fetcher=fetch,translate,now=Date.no
    paragraphsKo=/[가-힣]/.test(text)?(parts.length===paragraphs.length?parts:[text.replace(/\s*\|\|\|\s*/g,'\n\n').trim()]):null;
   }catch{paragraphsKo=null}
  }
- const value={ok:true,paragraphs,paragraphsKo,translated:Boolean(paragraphsKo),excerpt:true};
- cache.set(article.link,{at:now,value});while(cache.size>200)cache.delete(cache.keys().next().value);
+ const value={ok:true,paragraphs,paragraphsKo,translated:Boolean(paragraphsKo),translationProvider:paragraphsKo?providerId:null,excerpt:true};
+ cache.set(cacheKey,{at:now,value});while(cache.size>200)cache.delete(cache.keys().next().value);
  return value;
 }
