@@ -254,6 +254,8 @@ function paperTelegram(event,{test=false}={}){
 const venueQuotes=new VenueQuoteService();
 // ---- Live / testnet orders (OFF unless LIVE_TRADING_MODE is set; armed per start) -----
 const LIVE=liveConfig(process.env);
+LIVE.testnetSignalEntries=/^(on|true|1|yes)$/i.test(String(process.env.TESTNET_SIGNAL_ENTRIES||'').trim());
+const TESTNET_SCALP_ONLY=LIVE.mode==='TESTNET'&&!LIVE.testnetSignalEntries;
 function liveClients(){
  if(LIVE.mode==='OFF')return {};
  const mode=LIVE.mode==='LIVE'?'LIVE':'TESTNET',clients={};
@@ -536,7 +538,7 @@ async function sendRealTradeTelegram(e){
  try{
   const m=JSON.parse(fs.readFileSync(marker,'utf8'));fs.rmSync(marker,{force:true});
   const fresh=Date.now()-Number(m?.at)<15*60000&&!live.store.killSwitch;
-  if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'){live.arm();console.log('[LIVE] 업데이트 후 자동 활성화 (테스트넷)')}
+  if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY){live.arm();console.log('[LIVE] 업데이트 후 자동 활성화 (테스트넷)')}
   // Copy, real account included (user 2026-11-16 "실계좌도 알아서 켜주고"): only after the one-tap update,
   // only if it was on when the update started, same mode, copy enabled, its loss limit not hit.
   if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){copyTrader.arm();console.log(`[COPY] 업데이트 후 자동 활성화 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`)}
@@ -745,7 +747,7 @@ async function runGitUpdate(source='button'){
   // User 2026-11-16 "업데이트 후 항상 전부 켜기": after an update everything is switched on, whatever it
   // was before (the guards at start-up still apply: kill switch, loss limit, mode, 15 min). Written just
   // before the restart, so a crash or manual restart before that finds no marker (review 2026-11-16).
-  const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET',copyArmed:COPY.enabled===true,scalpArmed:!!scalpExec};
+  const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY,copyArmed:COPY.enabled===true,scalpArmed:!!scalpExec};
    if(st.signalArmed||st.copyArmed||st.scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to,source}))}catch{}};
   console.log('[UPDATE]',source,result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
   if(source==='auto')updateNotice(`🔄 자동 업데이트 적용 ${result.fromDisplayVersion||appVersion.displayVersion} → ${result.toDisplayVersion||'새 버전'}\n${(result.changes||[]).slice(0,8).map(c=>'· '+c.subject).join('\n')}\n잠시 뒤 서버가 재시작되고 카피·신호 전략·단타가 자동으로 다시 켜집니다.`);
@@ -1668,7 +1670,7 @@ const server=http.createServer(async(req,res)=>{
     hasTestnetBingx?refreshTestnetBudgetBalance():null]);
    // One testnet screen (user 2026-11-17): one switch, the shared budget, totals over both strategies. Not for LIVE.
    const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(rawBalance?.usd)>0?Math.min(Number(rawBalance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
-    return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
+    return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
    const b=testnet?.budget,balance=hasTestnetBingx&&rawBalance?.venue==='BINGX'&&b?{...rawBalance,usd:b.balanceError?null:b.accountEquityUSD,at:b.balanceAt,error:b.balanceError}:rawBalance;
    return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance,paperTrading:CONFIG.paperTrading})})}
@@ -1696,6 +1698,7 @@ const server=http.createServer(async(req,res)=>{
     // (DOGE: fine lot steps, so a small unit still splits into three targets and adds).
     if(body.confirm!=='TEST')return response(res,400,{error:'CONFIRM_REQUIRED'});
     if(LIVE.mode!=='TESTNET')return response(res,409,{error:'TEST_TESTNET_ONLY'});
+    if(TESTNET_SCALP_ONLY)return response(res,409,{error:'TESTNET_SIGNAL_DISABLED'});
     // BingX only: its demo (VST) trades on the live price feed; Gate.io's testnet prices can drift from the public book.
     const venue='BINGX';
     if(!LIVE.venues.includes(venue)||!live.credentials()[venue])return response(res,409,{error:'BINGX_CREDENTIALS_MISSING'});

@@ -36,7 +36,7 @@ test('live control: OFF by default; testnet needs an explicit arm; secrets never
   const arm=await post(off,'/api/live/arm',{confirm:'ARM'});assert.equal(arm.status,409);assert.equal((await arm.json()).error,'LIVE_MODE_OFF');
  }finally{await off.close()}
 
- const app=await boot(t,{LIVE_TRADING_MODE:'TESTNET',BINGX_API_KEY:SECRETS[0],BINGX_API_SECRET:SECRETS[1],GATEIO_API_KEY:SECRETS[2],GATEIO_API_SECRET:SECRETS[3]});
+ const app=await boot(t,{LIVE_TRADING_MODE:'TESTNET',TESTNET_SIGNAL_ENTRIES:'on',BINGX_API_KEY:SECRETS[0],BINGX_API_SECRET:SECRETS[1],GATEIO_API_KEY:SECRETS[2],GATEIO_API_SECRET:SECRETS[3]});
  try{
   const first=await app.request('/api/live'),text=await first.text(),s=JSON.parse(text);
   assert.equal(s.mode,'TESTNET');assert.deepEqual(s.credentialsConfigured,{BINGX:true,GATEIO:true});assert.equal(s.armed,false,'never armed at start');

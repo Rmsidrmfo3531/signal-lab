@@ -5,7 +5,7 @@ import {ScalpExecutor,scalpExecConfig,scalpSplits,planScalpOrder,scalpUniverse,s
 import {scalpEventText,scalpReasonKo} from '../scalp_telegram.mjs';
 import {detectScalpReversal,SCALP_TIMEFRAMES} from '../scalp_reversal.mjs';
 import {BACKTEST_COSTS} from '../backtest.mjs';
-import {scalpDetailsHTML} from '../public/live_control.js';
+import {scalpDetailsHTML,scalpPositionCardHTML} from '../public/live_control.js';
 
 const I=300000,BUCKET=Math.floor(Date.parse('2026-11-16T03:00:00Z')/I),T0=BUCKET*I+5000;
 // 50 quiet 5m candles near 100, a fast ~6.6 % drop on heavy volume, then a hammer (the candle that just closed).
@@ -97,6 +97,49 @@ test('testnet takes profit after 45 minutes only at a fee-covering price and rec
    assert.equal(ex.store.closed[0].closeReason,'EARLY_TAKE_PROFIT');
    assert.ok(ex.store.closed[0].netUSD>0);
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
+ }
+});
+
+test('the scalp card displays first fill, venue mark and PnL, margin, realized PnL and repeat adds',async()=>{
+ const v=venue(),clock={t:T0},ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:true}});
+ ex.arm();await ex.scan();
+ const [p]=ex.store.open,first=p.avg;
+ assert.ok(p.scaleIn);p.scaleIn.count=2;
+ const signed=v.client.positions;
+ v.client.positions=async()=> (await signed()).map(row=>({...row,avgPrice:'94.27',markPrice:'94.90',
+  initialMargin:'330.59',unrealizedProfit:'-10.47',realisedProfit:'-1.82'}));
+ clock.t+=15000;await ex.reconcile();
+ const [view]=(await ex.liveStatus()).positions;
+ assert.equal(view.details.firstEntryPrice,first);
+ assert.equal(view.details.averageEntryPrice,94.27);assert.equal(view.details.currentPrice,94.9);
+ assert.deepEqual(view.details.unrealized,{usd:-10.47,source:'EXCHANGE',pct:-3.17});
+ assert.deepEqual(view.details.margin,{usd:330.59,source:'EXCHANGE'});
+ assert.deepEqual(view.details.realizedOpen,{usd:-1.82,source:'EXCHANGE'});
+ assert.equal(view.details.quantity.base,p.size);
+ const html=scalpPositionCardHTML(view);
+ assert.match(html,/첫 진입가[\s\S]*평균 진입가[\s\S]*현재가<b>94\.90<\/b><small>거래소 표시가/);
+ assert.match(html,/−\$10\.47 \(-3\.17%\)[\s\S]*증거금 대비[\s\S]*증거금<b>\$330\.59[\s\S]*실현 손익[\s\S]*−\$1\.82[\s\S]*추매<b>2차 \/ 한도 내 반복/);
+});
+
+test('a reversal skipped for price drift is checked again after 25 minutes if its levels still hold',async()=>{
+ for(const invalidated of [false,true]){
+  const v=venue(),clock={t:T0};
+  let price=PX*.99;
+  const ex=make(v,{clock,price:()=>price,config:{zoneSignals:false,stopKeepPct:0}});
+  const initial=crash(),original=detectScalpReversal(initial,{symbol:'SOLUSDT',now:T0,settings:SCALP_EXEC_SETTINGS});
+  assert.equal(original.ok,true);
+  let rows=initial;
+  const previous=ex.candles;ex.candles=(symbol,interval,n)=>interval==='5m'?Promise.resolve(rows):previous(symbol,interval,n);
+  ex.arm();assert.equal((await ex.scan()).entered,0);
+  assert.equal(ex.signals(1).at(-1).reason,'PRICE_DRIFT');
+  rows=[...initial,...Array.from({length:5},(_,i)=>{
+   const t=(BUCKET+i)*I,low=invalidated&&i===0?original.evidence.extreme-.01:ENTRY-.1;
+   return [t,ENTRY,ENTRY+.15,low,ENTRY+.08,100,t+I-1,0];
+  })];
+  price=PX;clock.t=T0+25*60000;
+  const retry=await ex.scan();assert.equal(retry.entered,invalidated?0:1);
+  assert.equal(placed(v,'MARKET').length,invalidated?0:1);
+  if(!invalidated){const signal=ex.signals(1).at(-1);assert.equal(signal.barAt,original.barAt);assert.ok(signal.recheckedAt>signal.barAt)}
  }
 });
 

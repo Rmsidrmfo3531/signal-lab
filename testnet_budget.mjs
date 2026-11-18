@@ -143,7 +143,7 @@ export function armTestnet({live,scalp}){
  if(live?.config?.mode==='LIVE')throw codeErr('NOT_TESTNET');
  if(live?.store?.killSwitch)throw codeErr('KILL_SWITCH_ON');
  if(live?.updating)throw codeErr('UPDATING');
- const signal=live?.config?.mode==='TESTNET';
+ const signal=live?.config?.mode==='TESTNET'&&live.config.testnetSignalEntries!==false;
  if(signal)live.arm();
  let scalpError=null;
  if(scalp){if(scalp.config?.mode==='TESTNET'&&scalp.client){try{if(!scalp.armed)scalp.arm()}catch(e){scalpError=e?.code||e?.message}}else scalpError=scalp.config?.refused||(scalp.config?.mode!=='TESTNET'?'SCALP_MODE_OFF':'CREDENTIALS_MISSING')}
@@ -158,8 +158,9 @@ export function disarmTestnet({live,scalp,reason='MANUAL'}){
 }
 /** The switch state the page shows: armed only when every strategy that can run is on. */
 export function testnetSwitch({live,scalp,scalpError=null}){
- const signalOn=live?.config?.mode==='TESTNET',scalpOn=Boolean(scalp&&scalp.config?.mode==='TESTNET'&&scalp.client);
+ const scalpOnly=live?.config?.mode==='TESTNET'&&live.config.testnetSignalEntries===false;
+ const signalOn=live?.config?.mode==='TESTNET'&&!scalpOnly,scalpOn=Boolean(scalp&&scalp.config?.mode==='TESTNET'&&scalp.client);
  const parts=[...(signalOn?[live.armed===true]:[]),...(scalpOn?[scalp.armed===true]:[])];
  return {signal:signalOn?{armed:live.armed===true}:null,scalp:scalpOn?{armed:scalp.armed===true}:null,
-  armed:parts.length>0&&parts.every(Boolean),partial:parts.some(Boolean)&&!parts.every(Boolean),killSwitch:live?.store?.killSwitch===true,...(scalpError?{scalpError}:{})};
+  armed:parts.length>0&&parts.every(Boolean),partial:parts.some(Boolean)&&!parts.every(Boolean),killSwitch:live?.store?.killSwitch===true,...(scalpOnly?{scalpOnly:true}:{}),...(scalpError?{scalpError}:{})};
 }

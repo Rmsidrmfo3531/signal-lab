@@ -148,6 +148,9 @@ test('merged 종료된 거래: both strategies newest first, badges 신호 / 단
  assert.match(testnetClosedHTML({closed:[{...sigClosed(4),closedAt:NOW}]}),/data-live-delete="s4"/,'a deletable signal record keeps its delete button');
  assert.match(testnetClosedHTML({closed:[],scalp:{closed:[]}}),/아직 종료된 테스트넷 거래가 없습니다/);
  assert.doesNotMatch(testnetClosedHTML({closed:[sigClosed(1)]}),/copy-pager/,'one page: no pager');
+ const scalpOnly={testnet:{scalpOnly:true},closed:[sigClosed(4)],scalp:{closed:[scClosed(0)]}};
+ assert.deepEqual(testnetCloses(scalpOnly).map(trade=>trade.kind),['scalp']);
+ assert.doesNotMatch(testnetClosedHTML(scalpOnly),/S4USDT|data-live-delete/);
 });
 
 test('totals over both strategies and the 신호 / 단타 breakdown line; budget status line; badges on the open cards',()=>{
@@ -158,6 +161,7 @@ test('totals over both strategies and the 신호 / 단타 breakdown line; budget
  assert.deepEqual(st.all,{trades:5,wins:3,winRatePct:60,profitFactor:2.6,netUSD:8});
  const h=testnetSummaryHTML(st);assert.match(h,/5건/);assert.match(h,/60\.0%/);assert.match(h,/2\.60/);assert.match(h,/\+\$8\.00/);
  assert.match(h,/신호 <b class="paper-profit">\+\$6\.00<\/b> \(2건\) · 단타 <b class="paper-profit">\+\$2\.00<\/b> \(3건\)/);
+ assert.doesNotMatch(testnetSummaryHTML(st,{scalpOnly:true}),/tn-split/);
  assert.equal(testnetStats({records,mode:null}).signal.trades,0,'no signal strategy on the testnet: scalp only');
  const line=testnetBudgetHTML({armed:true,signal:{armed:true},scalp:{armed:true},budget:{dailyLossPct:15,lossUSD:12,limitUSD:1500,openRiskUSD:40.5,marginUSD:100,marginCapUSD:3000,marginCapPct:30}});
  assert.doesNotMatch(line,/활성화|테스트넷/,'on / off is the button\'s, the mode the header\'s (user 2026-11-18)');
@@ -176,7 +180,7 @@ import {scalpHTML} from '../public/live_control.js';
 const T10=Date.parse('2026-11-10T12:00:00Z');
 const rjson=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
 function mockBingX({positionAmt=()=>'0.20',maxLeverage=50}={}){
- const orders=[];let id=1000;
+ const orders=[],canceled=[];let id=1000;
  const fetcher=async(url,options)=>{
   const u=new URL(url),q=Object.fromEntries([...u.searchParams].filter(([k])=>k!=='signature'));
   if(u.pathname==='/openApi/swap/v3/user/balance')return rjson({code:0,data:[{asset:'USDT',balance:'1000',equity:'1000',availableMargin:'1000'}]});
@@ -189,12 +193,12 @@ function mockBingX({positionAmt=()=>'0.20',maxLeverage=50}={}){
    if(q.type==='MARKET'&&q.stopLoss)orders.push({orderID:String(++id),type:'STOP_MARKET'});
    return rjson({code:0,data:{order:o}})}
   if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='GET'){const o=orders.find(x=>x.clientOrderId===q.clientOrderId);return o?rjson({code:0,data:{order:o}}):rjson({code:80016,msg:'order not exist'})}
-  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE')return rjson({code:0,data:{order:{orderID:q.orderId}}});
+  if(u.pathname==='/openApi/swap/v2/trade/order'&&options.method==='DELETE'){canceled.push(q.orderId);return rjson({code:0,data:{order:{orderID:q.orderId}}})}
   if(u.pathname==='/openApi/swap/v2/trade/openOrders')return rjson({code:0,data:{orders:orders.filter(o=>o.type!=='MARKET')}});
   if(u.pathname==='/openApi/swap/v2/user/positions')return rjson({code:0,data:[{symbol:'ETH-USDT',positionAmt:positionAmt(),avgPrice:'100.02',positionSide:'LONG'}]});
   throw Error('unexpected '+u.pathname);
  };
- return {orders,client:new BingXTradeClient({apiKey:'bingx-key',secret:'bingx-test-secret-value-0123456789',mode:'TESTNET',fetcher,now:()=>T10})};
+ return {orders,canceled,client:new BingXTradeClient({apiKey:'bingx-key',secret:'bingx-test-secret-value-0123456789',mode:'TESTNET',fetcher,now:()=>T10})};
 }
 const cfg10=(extra={})=>({mode:'TESTNET',liveConfirmed:false,venues:['BINGX','GATEIO'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:1,...extra});
 const sigRow=(extra={})=>({symbol:'ETHUSDT',executionVenue:'BINGX',venueSymbol:'ETH-USDT',direction:'LONG',stop:98,targets:[105,108,112],
@@ -202,6 +206,20 @@ const sigRow=(extra={})=>({symbol:'ETHUSDT',executionVenue:'BINGX',venueSymbol:'
  targetPlan:{quantity:0.6},execution:{estimatedStopLossUSD:6},decision:{ready:true},...extra});
 const zones10=[97,94,91,88,85,82].map(p=>({priceLow:p-.3,priceHigh:p+.3}));
 const hybridSig=sigRow({entry:100,score:95,marketCap:3e8,paperAddInputs:{atr:1,takerRate:.0005,zoneSets:[{label:'15분봉 3일',zones:zones10}]}});
+
+test('an existing testnet signal keeps its stop and targets when signal entries are disabled',async()=>{
+ const m=mockBingX(),ex=new LiveExecutor({config:cfg10({testnetSignalEntries:false}),clients:{BINGX:m.client},now:()=>T10});
+ const p={signalKey:'old',clientOrderId:'old',symbol:'ETHUSDT',venueSymbol:'ETH-USDT',venue:'BINGX',mode:'TESTNET',direction:'LONG',hedge:true,
+  status:'OPEN',quantity:{total:.2},position:{size:.2,entryPrice:100.02},stop:98,stopOrderId:'9001',targetOrderIds:['9002'],
+  adds:[{orderId:'9003',qty:.2,price:95}],events:[]};
+ ex.store.records.push(p);
+ assert.throws(()=>ex.arm(),/TESTNET_SIGNAL_DISABLED/);
+ assert.deepEqual(await ex.onSignal(sigRow(),{signalKey:'new'}),{sent:false,reasons:['TESTNET_SIGNAL_DISABLED']});
+ await ex.reconcile();
+ assert.deepEqual(m.canceled,['9003']);assert.equal(p.adds[0].cancelled,true);
+ assert.equal(p.status,'OPEN');assert.equal(p.stopOrderId,'9001');assert.deepEqual(p.targetOrderIds,['9002']);
+ assert.deepEqual(m.orders,[]);
+});
 
 test('M1: a stricter signal profile (CONSERVATIVE 3 %) is never loosened to the shared 15 %',async()=>{
  assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_RISK_PROFILE:'conservative'}).dailyMaxLossPct,3);
