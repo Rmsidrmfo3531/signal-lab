@@ -48,6 +48,8 @@ export const SCALP_SCALE_IN=Object.freeze({version:1,windowBars:6,near:.5,far:.7
 export const SCALP_REPEAT_SCALE_IN=Object.freeze({version:2,stepR:.5});
 const SCREEN_CLOSED=100,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.25],MAX_CLOSED=300,MAX_EVENTS=200,MAX_SKIPS=60,MAX_KEYS=500,SETTLE_DELAY_MS=150000,SETTLE_TRIES=4;
 const EARLY_TAKE_PROFIT_MS=45*60000,EARLY_EXIT_RETRY_MS=60000;
+const PROFIT_ONLY_RETRY_MS=15000;
+export const SCALP_PROFIT_HOLD_TARGET_MIN=60;
 const REVERSAL_RECHECK_MS=30*60000;
 const RECHECK_REASONS=new Set(['PRICE_DRIFT','TP1_NET_RR_BELOW_MINIMUM']);
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
@@ -72,6 +74,12 @@ const dirOf=d=>d==='SHORT'?-1:1;
 // on the safe side (target toward the entry, break-even at or beyond the entry in the profit direction).
 const awayMode=d=>d==='SHORT'?'UP':'DOWN',towardMode=d=>d==='SHORT'?'UP':'DOWN',beMode=d=>d==='SHORT'?'DOWN':'UP';
 const openSide=d=>d==='SHORT'?'SELL':'BUY',closeSide=d=>d==='SHORT'?'BUY':'SELL';
+function profitLimit(p,lossPerUnit=0){
+ const dir=dirOf(p.direction),fee=Math.max(p.takerRate||0,SCALP_EXEC_COSTS.takerRate);
+ const reserve=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/10000+SCALP_EXEC_COSTS.fundingRate;
+ const price=(p.avg*(1+dir*(fee+reserve))+dir*lossPerUnit)/(1-dir*fee);
+ return price>0?grid(price,p.tickSize,beMode(p.direction)):null;
+}
 /** One-way position amount, signed (+ long / - short): BingX reports a short as a negative positionAmt;
  * a positionSide LONG / SHORT, when given, decides the sign. */
 export function signedAmount(row){
@@ -567,6 +575,7 @@ export class ScalpExecutor{
    tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
    avg:null,size:0,filled:0,stopOrderId:null,stopIds:[],tpOrderIds:[null,null,null],tpTries:[0,0,0],breakevenMoved:false,exitIds:[],steps:[],
    stopLossEnabled:this.config.stopLossEnabled!==false,
+   ...(this.config.stopLossEnabled===false?{profitTargetsReady:true}:{}),
    ...(plan.scaleIn?{scaleIn:plan.scaleIn}:{}),
    // Journal context (analysis only).
    atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,withTrend:this.cur?.withTrend??null,universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
@@ -941,20 +950,45 @@ export class ScalpExecutor{
   p.parts=s.parts;p.targetCount=s.targets;p.merged=s.merged;p.tpTries=[0,0,0];
   this.#addDecision(p,'FILLED');await this.#placeTargets(p);
  }
+ async #retireLegacyProfitTargets(p){
+  if(p.profitTargetsReady)return true;
+  const ids=new Set([...(p.tpOrderIds||[]),...(p.addTargets||[]).flatMap(g=>g.ids)].filter(Boolean).map(String));
+  const owned=o=>{
+   if(String(o?.type).toUpperCase()!=='TAKE_PROFIT_MARKET'||!orderOnSide(o,{hedge:p.hedge===true,direction:p.direction})||
+     o.side&&String(o.side).toUpperCase()!==closeSide(p.direction))return false;
+   const cid=String(o.clientOrderId??o.clientOrderID??'');
+   return ids.has(orderId(o))||cid.startsWith(p.id)&&/^(?:[tu][1-3]\d*|a\d+t[1-3])$/.test(cid.slice(p.id.length));
+  };
+  const legacy=(await this.#openOrders(p.venueSymbol)).filter(owned);
+  for(const order of legacy){
+   const id=orderId(order);if(!id)throw err('SCALP_TARGET_CANCEL_PENDING');
+   if(!ids.has(id)&&!p.exitIds.includes(id)){p.exitIds.push(id);this.#save()}
+   await this.client.cancelOrder(p.venueSymbol,id);
+  }
+  if(legacy.length&&(await this.#openOrders(p.venueSymbol)).some(owned))throw err('SCALP_TARGET_CANCEL_PENDING');
+  p.profitTargetsReady=true;this.#save();return true;
+ }
  async #placeTargets(p){
+  const profitOnly=this.config.stopLossEnabled===false;
+  if(profitOnly)await this.#retireLegacyProfitTargets(p);
+  const price=profitOnly?profitLimit(p):null;
+  if(profitOnly&&!price)return;
   const groups=[{parts:p.parts,ids:p.tpOrderIds,tries:p.tpTries,done:p.tpDone},...(p.addTargets||[])];
   for(const g of groups){
    for(const [i,q] of g.parts.entries()){
     if(!(q>0)||g.ids[i]||g.done?.[i]||g.tries[i]>=3)continue;
     const stable=g.key!=null||p.stopLossEnabled===false;
     const tries=++g.tries[i],tag=g.key!=null?`a${g.key}t${i+1}`:(p.scaleIn?.version===1&&p.scaleIn?.fillQty?'u':'t')+(i+1)+(!stable&&tries>1?tries:'');
-    const clientOrderId=(p.id+tag).slice(0,40);
+    const clientOrderId=(p.id+(profitOnly?'p':'')+tag).slice(0,40);
     try{
      if(stable){
       const known=await this.client.getOrder(p.venueSymbol,{clientOrderId}).catch(()=>null);
       if(orderId(known)){g.ids[i]=orderId(known);this.#save();continue}
      }
-     const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'TAKE_PROFIT_MARKET',quantity:String(q),stopPrice:grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]),
+     const target=grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]);
+     const stopPrice=profitOnly&&dirOf(p.direction)*(Number(target)-Number(price))<0?price:target;
+     const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),
+      type:profitOnly?'TAKE_PROFIT':'TAKE_PROFIT_MARKET',quantity:String(q),stopPrice,...(profitOnly?{price}:{}),
       reduceOnly:'true',workingType:'MARK_PRICE',clientOrderId},p.hedge===true));g.ids[i]=orderId(o);
      if(stable&&g.ids[i])this.#save();
     }catch(e){this.#event('TARGET_FAILED',{symbol:p.symbol,reason:`${i+1}: ${e?.code||e?.message}`})}
@@ -978,14 +1012,13 @@ export class ScalpExecutor{
   this.#save();
  }
  async #tryEarlyTakeProfit(p,mark){
-  const now=this.now(),opened=p.openedAt??p.createdAt;
-  if(this.config.mode!=='TESTNET'||!(opened>0)||now-opened<EARLY_TAKE_PROFIT_MS||now-(p.earlyTakeProfitAt??0)<EARLY_EXIT_RETRY_MS||!(mark>0&&p.avg>0&&p.size>0))return false;
-  const direction=dirOf(p.direction),fee=Math.max(p.takerRate||0,SCALP_EXEC_COSTS.takerRate);
-  const reserve=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/10000+SCALP_EXEC_COSTS.fundingRate;
-  // Round toward profit so the worst IOC fill covers the estimated fees and reserve.
-  const breakEven=p.avg*(1+direction*(fee+reserve))/(1-direction*fee);
-  const limit=grid(breakEven,p.tickSize,beMode(p.direction));
+  const now=this.now(),opened=p.openedAt??p.createdAt,profitOnly=this.config.stopLossEnabled===false;
+  const delay=profitOnly?0:EARLY_TAKE_PROFIT_MS,retry=profitOnly?PROFIT_ONLY_RETRY_MS:EARLY_EXIT_RETRY_MS;
+  if(this.config.mode!=='TESTNET'||!(opened>0)||now-opened<delay||now-(p.earlyTakeProfitAt??0)<retry||!(mark>0&&p.avg>0&&p.size>0))return false;
+  const direction=dirOf(p.direction);
   const qty=Number(grid(p.size,p.quantityStep,'DOWN'));
+  const bookedLoss=profitOnly?Math.max(0,-(num(p.exchangePosition?.realizedPnLUSD)??0)):0;
+  const limit=qty>0?profitLimit(p,bookedLoss/qty):null;
   if(!(qty>0&&Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
   const clientOrderId=createHash('sha256').update(`${p.id}|early|${now}`).digest('hex').slice(0,32);
   p.earlyTakeProfit={clientOrderId,qty};p.earlyTakeProfitAt=now;this.#save();
@@ -1070,6 +1103,7 @@ export class ScalpExecutor{
      if(p.earlyTakeProfit||p.exitReason==='EARLY_TAKE_PROFIT')continue;
      if(noStop){
       if(!await this.#retireStop(p))continue;
+      await this.#retireLegacyProfitTargets(p);
       this.#enableRepeat(p);p.riskUSD=this.#repeatRisk(p,p.avg,mark)*size;
      }else{
       if(this.now()>=p.deadline){p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'x'+p.exitTries);p.exitReason='TIME_STOP';if(!(r.size>0))await this.#finish(p);continue}
@@ -1173,7 +1207,9 @@ export class ScalpExecutor{
  status(){
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
-   settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.stopLossEnabled===false?null:c.maxHoldMs/60000,earlyTakeProfitMin:EARLY_TAKE_PROFIT_MS/60000,reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
+   settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.stopLossEnabled===false?null:c.maxHoldMs/60000,
+    earlyTakeProfitMin:c.stopLossEnabled===false?0:EARLY_TAKE_PROFIT_MS/60000,profitHoldTargetMin:c.stopLossEnabled===false?SCALP_PROFIT_HOLD_TARGET_MIN:null,
+    reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,
     scaleIn:c.scaleIn===true,scaleInMarginRatio:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
