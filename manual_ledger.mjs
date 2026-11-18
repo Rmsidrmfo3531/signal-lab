@@ -49,14 +49,16 @@ function fillActions(fills,{symbol,direction,leverage,alertOrigin='MANUAL',initi
  let size=initialSize;
  return groups.map(group=>{
   const from=size,qty=group.reduce((sum,f)=>sum+f.qty,0),opening=group[0].side===(direction==='SHORT'?'SELL':'BUY');
+  const fillPrice=group.reduce((sum,f)=>sum+f.price*f.qty,0)/qty;
   const common={symbol,direction,leverage,alertOrigin,observedAt:group.at(-1).at,fromFills:true,
-   alertKey:alertOrderKey(group[0].symbol,group[0].orderId)};
+   alertKey:alertOrderKey(group[0].symbol,group[0].orderId),fillPrice};
   if(opening){
-   const avg=group.reduce((sum,f)=>sum+f.price*f.qty,0)/qty;size+=qty;
-   return {type:from>0?'MANUAL_ADD':'MANUAL_OPEN',detail:{...common,from,to:size,size:qty,avg}};
+   size+=qty;
+   return {type:from>0?'MANUAL_ADD':'MANUAL_OPEN',detail:{...common,from,to:size,size:qty,avg:fillPrice}};
   }
   const left=from-qty;size=Math.abs(left)<=qtyTolerance(from)?0:left;
   return {type:size===0?'MANUAL_SETTLED':'MANUAL_REDUCE',detail:{...common,from,to:size,size:qty,netSource:'EXCHANGE_FILLS',
+   pnlUSD:group.reduce((sum,f)=>sum+f.pnl,0),
    netUSD:Number(group.reduce((sum,f)=>sum+f.pnl+f.fee,0).toFixed(12))}};
  });
 }
@@ -394,7 +396,8 @@ export class ManualLedger{
   if(!(observedAt>0))return null;
   if(observedAt>=1e9&&observedAt<1e11)observedAt*=1000;
   if(observedAt>now+10000)return null;
-  const detail={symbol:p.symbol??symbol.replace(/-/g,''),direction:p.direction,leverage:p.leverage,alertOrigin:'COPY',fromFills:true,alertKey:key,observedAt,size};
+  const detail={symbol:p.symbol??symbol.replace(/-/g,''),direction:p.direction,leverage:p.leverage,alertOrigin:'COPY',
+   fromFills:true,alertKey:key,observedAt,size,fillPrice:avg};
   const from=num(stage.from);
   if(opening){
    const entry=/^open(?:\.|$)/.test(stage.tag??'')||stage.kind==='OPEN';
@@ -402,7 +405,7 @@ export class ManualLedger{
   }
   if(!(from>0)||size-from>qtyTolerance(from))return null;
   const to=from-size<=qtyTolerance(from)?0:from-size;
-  return {type:to===0?'MANUAL_SETTLED':'MANUAL_REDUCE',detail:{...detail,from,to,netSource:'EXCHANGE_FILLS',netUSD:Number((pnl+fee).toFixed(12))}};
+  return {type:to===0?'MANUAL_SETTLED':'MANUAL_REDUCE',detail:{...detail,from,to,netSource:'EXCHANGE_FILLS',pnlUSD:pnl,netUSD:Number((pnl+fee).toFixed(12))}};
  }
  confirmCopyOrder(orderId){
   if(!this.copyOrderAlerts||!orderId)return Promise.resolve();

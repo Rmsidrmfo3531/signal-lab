@@ -10,16 +10,59 @@ const tradeAmount=new Intl.NumberFormat('en-US',{maximumFractionDigits:12});
 const observedTime=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
 const amount=v=>v==null||!Number.isFinite(Number(v))?'—':tradeAmount.format(Number(v));
 const MANUAL_ACTION={MANUAL_OPEN:'신규 진입',MANUAL_ADD:'추가 진입',MANUAL_REDUCE:'부분',MANUAL_SETTLED:'전량'};
-const REAL_ORIGIN={MANUAL:'수동',COPY:'카피',SIGNAL:'자동 신호'};
+const REAL_ORIGIN={MANUAL:'수동',SIGNAL:'자동 신호'};
+const RULE='━━━━━━━━━━━━━━━━';
+const tradeSide={SHORT:'🔴 Short',LONG:'🟢 Long'};
+const priceLine=v=>Number.isFinite(v)&&v>0?`${amount(v)} USDT`:'—';
+const signed=v=>v===0?'':v>0?'+':'−';
 
-/** Text for a confirmed real-account change from the manual ledger. */
-export function realTradeText(e){
+function copyTradeMessage(e,action,closing,at){
+ const lines=[],entities=[];
+ let offset=0;
+ // Telegram counts offsets in UTF-16, the same units as JavaScript string lengths.
+ const line=(before,bold='',after='')=>{
+  if(bold)entities.push({type:'bold',offset:offset+before.length,length:bold.length});
+  const text=before+bold+after;lines.push(text);offset+=text.length+1;
+ };
+ const add=e.type==='MANUAL_ADD',fill=e.fillPrice??e.avg,qty=e.size??Math.abs(Number(e.to)-Number(e.from));
+ const icon=e.netUSD>0?'🎯':e.netUSD<0?'🛑':'⚪';
+ line(closing?`${icon} `:add?'➕ ':'📌 ',closing?action:add?'포지션 추매':'포지션 진입');
+ line(RULE);
+ const side=[tradeSide[e.direction],e.leverage>0?`×${e.leverage}`:null].filter(Boolean).join('  ');
+ line('',e.symbol,side?`  ${side}`:'');
+ line(RULE);
+ if(closing){
+  // USDT perpetuals realize gross PnL on the closed quantity at the fill price.
+  // Recover its entry cost without using a later position average after another add.
+  const direction=e.direction==='LONG'?1:e.direction==='SHORT'?-1:0;
+  const entry=direction&&fill>0&&qty>0&&Number.isFinite(e.pnlUSD)?fill-direction*e.pnlUSD/qty:null;
+  const margin=entry>0&&e.leverage>0?entry*qty/e.leverage:null;
+  const roi=margin>0?e.netUSD/margin*100:null;
+  const value=Math.abs(e.netUSD),result=value>0&&value<.01?amount(value):value.toFixed(2);
+  line('진입가 ',priceLine(entry));
+  line(`청산가 ${priceLine(fill)}`);
+  line(`청산 수량 ${amount(qty)}${e.type==='MANUAL_REDUCE'&&e.to!=null?` · 잔여 ${amount(e.to)}`:''}`);
+  const percent=Number.isFinite(roi)?`${signed(roi)}${Math.abs(roi).toFixed(2)}%`:'수익률 —';
+  line('손익 ',`${signed(e.netUSD)}${result} USDT (${percent})`);
+ }else{
+  line(add?'추매가 ':'진입가 ',priceLine(fill));
+  line(`현재가 ${priceLine(fill)}`);
+  line(`수량 ${add?'+':''}${amount(qty)}${add&&e.to!=null?` · 잔여 ${amount(e.to)}`:''}`);
+ }
+ if(at>0&&Number.isFinite(at))line(`체결 ${observedTime.format(at)} KST`);
+ return {text:lines.join('\n'),entities};
+}
+
+/** Message for a confirmed real-account change from the manual ledger. */
+export function realTradeMessage(e){
  const actionBase=MANUAL_ACTION[e?.type];
  if(!actionBase||!e.symbol||e.fromFills!==true)return null;
  const closing=e.type==='MANUAL_REDUCE'||e.type==='MANUAL_SETTLED';
  const net=e.netUSD;
  if(closing&&(e.netSource!=='EXCHANGE_FILLS'||!Number.isFinite(net)))return null;
  const action=closing?`${actionBase} ${net===0?'본전':net>0?'익절':'손절'}`:actionBase;
+ const at=Number(e.observedAt??e.at);
+ if(e.alertOrigin==='COPY')return copyTradeMessage(e,action,closing,at);
  const head=[`🔴 실계좌 | ${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`,[e.symbol,SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
@@ -33,9 +76,9 @@ export function realTradeText(e){
   detail=`수량 +${amount(change)}${e.to!=null?` · 잔여 ${amount(e.to)}`:''}`;
   if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n추가 체결가 ${amount(e.avg)} USDT`;
  }
- const at=Number(e.observedAt??e.at);
- return [...head,detail,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n');
+ return {text:[...head,detail,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n')};
 }
+export function realTradeText(e){return realTradeMessage(e)?.text??null}
 export {realTradeText as manualTradeText};
 const PROBLEM={ENTRY_OUTCOME_UNKNOWN:'진입 결과를 확인하지 못했습니다',STOP_FAILED:'손절 주문 등록 실패',TARGET_FAILED:'목표 주문 등록 실패',
  EMERGENCY_CLOSED:'보호 주문 실패로 긴급 청산했습니다',LATE_ADD_CLOSE_FAILED:'청산 뒤 체결된 추매 정리 실패',EMERGENCY_CLOSE_FAILED:'긴급 청산 실패 · 즉시 확인 필요',ERROR:'주문 처리 오류 · 긴급 정지',RECOVERY_ERROR:'재시작 후 손절 보호 복구 실패',RECOVERY_MANUAL:'재시작으로 끊긴 진입 · 자동 복구 불가(Gate.io) · 긴급 정지',LATE_ADD_CLOSED:'청산 뒤 체결된 추매를 정리했습니다',TEST_CLOSE_INCOMPLETE:'시험 주문 정리 미완료',STOP_WHOLE_FAILED:'전체 손절 주문 갱신 실패',REJECTED:'주문이 거부됐습니다'};

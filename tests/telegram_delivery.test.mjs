@@ -25,7 +25,7 @@ test('confirmed real trades use the configured Telegram chat when no dedicated s
   section('function telegramPost(payload,','const SERVER_BOOT_ID');
  const requests=[];
  const sandbox={CONFIG:{tgToken:'offline-test-token',tgChat:'123456',tgScannerChat:''},
-  createTelegramNetworkRecovery,realTradeText:()=> 'confirmed trade',reportsDirty:false,AbortSignal,
+  createTelegramNetworkRecovery,realTradeMessage:()=>({text:'confirmed trade'}),reportsDirty:false,AbortSignal,
   fetch:async(url,options)=>{
    requests.push([new URL(url).pathname.split('/').at(-1),JSON.parse(options.body)]);
    return {ok:true,json:async()=>({ok:true,result:{message_id:81,chat:{id:123456,type:'private'}}})};
@@ -45,7 +45,7 @@ test('real trades stay in the queue without a destination or when the explicit s
  ]){
   const methods=[];
   const sandbox={CONFIG:{tgToken:'offline-test-token',tgChat:chat,tgScannerChat:scanner},
-   createTelegramNetworkRecovery,realTradeText:()=> 'confirmed trade',reportsDirty:false,AbortSignal,
+   createTelegramNetworkRecovery,realTradeMessage:()=>({text:'confirmed trade'}),reportsDirty:false,AbortSignal,
    fetch:async(url)=>{
     methods.push(new URL(url).pathname.split('/').at(-1));
     return {ok:true,json:async()=>({ok:true,result:{id:123456,type:'private'}})};

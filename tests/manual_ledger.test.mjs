@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {ManualLedger,MANUAL_LEDGER_FILE} from '../manual_ledger.mjs';
-import {manualTradeText} from '../live_telegram.mjs';
+import {manualTradeText,realTradeMessage} from '../live_telegram.mjs';
 import {tagOrigins} from '../venue_positions.mjs';
 import {CopyExecutor,copyConfig} from '../copy_executor.mjs';
 import {ledgerSummary} from '../reports_push.mjs';
@@ -223,7 +223,7 @@ test('real managed copy fills send all position actions, including a reduction a
  m.observe(snap(c.add(15000),[]));m.observe(snap(c.add(15000),[]));
  c.add(45000);await m.settle();await m.recoverFastTrades();await m.settle();
  const labels=events.sort((a,b)=>a.observedAt-b.observedAt).map(e=>manualTradeText(e).split('\n')[0]);
- assert.deepEqual(labels,['신규 진입','추가 진입','부분 익절','추가 진입','부분 손절','전량 본전'].map(label=>'🔴 실계좌 | 카피 | '+label));
+ assert.deepEqual(labels,['📌 포지션 진입','➕ 포지션 추매','🎯 부분 익절','➕ 포지션 추매','🛑 부분 손절','⚪ 전량 본전']);
  assert.equal(m.status().closedTotal,0);assert.deepEqual(m.alertStatus().byOrigin,{COPY:6});
 });
 
@@ -252,12 +252,13 @@ test('copy order receipts drive alerts without usable position snapshots, and re
   // It is already open by the time polling first sees it, and the next successful read is much later.
   m.observe(snap(at,[row({size:1,positionSide:'LONG'})],[owner]));
   await m.settle();await m.deliverAlerts();
-  assert.deepEqual(events.map(e=>manualTradeText(e).split('\n')[0]),['신규 진입','추가 진입','부분 익절'].map(x=>'🔴 실계좌 | 카피 | '+x));
+  assert.deepEqual(events.map(e=>manualTradeText(e).split('\n')[0]),['📌 포지션 진입','➕ 포지션 추매','🎯 부분 익절']);
+  assert.match(manualTradeText(events[2]),/진입가 9 USDT\n청산가 10 USDT\n청산 수량 1 · 잔여 1\n손익 \+0\.90 USDT \(\+100\.00%\)/);
   assert.equal(m.telegramStatus().pending,3);assert.equal(m.telegramStatus().error,'HTTP_429');assert.equal(m.telegramStatus().sent,0);
   const recovered=new ManualLedger({...options,sendTelegram:async e=>{sent.push(e);return {ok:true}}});
   c.add(61000);receipts.get('4').commission=-.1;
   await recovered.settle();await recovered.deliverAlerts();
-  assert.deepEqual(sent.map(e=>manualTradeText(e).split('\n')[0]),['신규 진입','추가 진입','부분 익절','전량 본전'].map(x=>'🔴 실계좌 | 카피 | '+x));
+  assert.deepEqual(sent.map(e=>manualTradeText(e).split('\n')[0]),['📌 포지션 진입','➕ 포지션 추매','🎯 부분 익절','⚪ 전량 본전']);
   assert.equal(events.length,4);assert.equal(recovered.telegramStatus().pending,0);assert.deepEqual(recovered.telegramStatus().byOrigin,{COPY:4});
   await recovered.settle();await recovered.deliverAlerts();assert.equal(sent.length,4);
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
@@ -272,7 +273,25 @@ test('live copy entry confirms from the signed filled reply immediately and is n
  await Promise.all([m.confirmCopyOrder(orderId),m.confirmCopyOrder(orderId)]);
  await m.settle();
  assert.equal(reads,0);assert.equal(events.length,1);assert.equal(events[0].observedAt,at);
- assert.match(manualTradeText(events[0]),/실계좌 \| 카피 \| 신규 진입/);
+ assert.match(manualTradeText(events[0]),/^📌 포지션 진입/);
+});
+
+test('copy alert cards show signed close return and Telegram bold spans without altering Chrome text',()=>{
+ const at=Date.parse('2026-11-18T08:04:28Z');
+ const trade={symbol:'MMTUSDT',direction:'SHORT',leverage:10,alertOrigin:'COPY',fromFills:true,observedAt:at};
+ const entry={...trade,type:'MANUAL_OPEN',size:90,avg:.2299};
+ const message=realTradeMessage(entry);
+ assert.equal(message.text,[
+  '📌 포지션 진입','━━━━━━━━━━━━━━━━','MMTUSDT  🔴 Short  ×10','━━━━━━━━━━━━━━━━',
+  '진입가 0.2299 USDT','현재가 0.2299 USDT','수량 90','체결 2026-11-18 17:04:28 KST',
+ ].join('\n'));
+ assert.equal(manualTradeText(entry),message.text);
+ const bold=message.entities.map(e=>{assert.equal(e.type,'bold');return message.text.slice(e.offset,e.offset+e.length)});
+ assert.deepEqual(bold,['포지션 진입','MMTUSDT','0.2299 USDT']);
+ const exit={...trade,type:'MANUAL_REDUCE',size:30,to:60,fillPrice:.22,pnlUSD:.297,netUSD:.29,netSource:'EXCHANGE_FILLS'};
+ assert.match(manualTradeText(exit),/^🎯 부분 익절[\s\S]+진입가 0\.2299 USDT\n청산가 0\.22 USDT\n청산 수량 30 · 잔여 60\n손익 \+0\.29 USDT \(\+42\.05%\)/);
+ assert.match(manualTradeText({...exit,type:'MANUAL_SETTLED',size:60,to:0,fillPrice:.24,pnlUSD:-.606,netUSD:-.62}),/^🛑 전량 손절[\s\S]+손익 −0\.62 USDT \(−44\.95%\)/);
+ assert.match(manualTradeText({...exit,fillPrice:undefined,pnlUSD:undefined}),/손익 \+0\.29 USDT \(수익률 —\)/);
 });
 
 test('copy loss limit: computed from the copy ledger only — a large manual loss on the same account changes nothing',async()=>{
