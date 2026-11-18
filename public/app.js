@@ -2,7 +2,7 @@
 // The removed 대시보드·차트 and 알림·시스템 pages' server features (scanner, Telegram notices,
 // notification settings) keep running on the server; this page no longer renders them.
 import {notifyOn} from './notify_settings.js';
-import {NEWS_PER_PAGE,paginateNews,clipNewsText,pageWindow} from "/news_pagination.js";
+import {NEWS_PER_PAGE,paginateNews,clipNewsText,pageWindow,featureNews} from "/news_pagination.js";
 const $=id=>document.getElementById(id);
 let gitUpdate=false; // set once /api/update says this server updates from GitHub
 const app={market:[],marketMap:new Map(),status:null,news:[],newsMeta:null,newsPage:1,expandedNewsId:null,stream:null,journal:[],journalSummary:null};
@@ -52,16 +52,20 @@ const newsBodies=new Map();
 function newsBodyHTML(id){
  const b=newsBodies.get(id);
  if(!b)return '<p class="news-body-wait">본문을 불러오는 중입니다…</p>';
- if(!b.ok)return `<p class="news-body-wait">본문을 가져오지 못했습니다 (${escapeHtml(b.error||'오류')}). 아래 원문 링크에서 확인해 주세요.</p>`;
+ if(!b.ok)return `<p class="news-body-wait">본문을 가져오지 못했습니다.</p><button type="button" class="outline-btn small" data-news-retry="${escapeHtml(id)}">다시 시도</button>`;
  const ko=b.paragraphsKo,en=b.paragraphs||[];
  return (ko&&b.translationProvider==='OPENAI'?'<p class="news-translation-state">한국어 AI 번역</p>':'')+(ko||en).map(p=>`<p>${escapeHtml(p)}</p>`).join('')+(ko?`<details class="news-original"><summary>영문 원문 보기</summary>${en.map(p=>`<p>${escapeHtml(p)}</p>`).join('')}</details>`:'<p class="news-body-wait">번역을 하지 못해 영문으로 표시합니다.</p>');
 }
-async function loadNewsBody(id){
- if(!id||newsBodies.has(id))return;
+async function loadNewsBody(id,{retry=false}={}){
+ const cached=newsBodies.get(id);
+ if(!id||cached===null||cached?.ok||cached&&!retry)return;
  newsBodies.set(id,null);
- let b;try{const r=await fetch('/api/news/detail?id='+encodeURIComponent(id),{cache:'no-store'});b=await r.json()}catch{b={ok:false,error:'연결 실패'}}
+ const render=()=>{const host=document.querySelector(`[data-news-body="${CSS.escape(id)}"]`);if(host)host.innerHTML=newsBodyHTML(id)};
+ render();
+ let b;try{const r=await fetch('/api/news/detail?id='+encodeURIComponent(id),{cache:'no-store',signal:AbortSignal.timeout(25000)});b=await r.json()}catch{b={ok:false,error:'연결 실패'}}
+ if(!b||typeof b!=='object')b={ok:false,error:'응답 오류'};
  newsBodies.set(id,b);while(newsBodies.size>60)newsBodies.delete(newsBodies.keys().next().value);
- const host=document.querySelector(`[data-news-body="${CSS.escape(id)}"]`);if(host)host.innerHTML=newsBodyHTML(id);
+ render();
 }
 if(typeof document!=='undefined')document.addEventListener('toggle',e=>{const d=e.target;if(d?.classList?.contains('news-entry')&&d.open)void loadNewsBody(d.dataset.newsId)},true);
 // Local manual trade journal - no exchange credentials or automatic execution.
@@ -124,9 +128,12 @@ function renderNews(){
   if(query&&!(n.title+' '+n.summary+' '+n.detail+' '+(n.displayTitle??n.titleKo??'')+' '+(n.displaySummary??n.summaryKo??'')+' '+(n.symbols||[]).join(' ')).toLowerCase().includes(query))return false;
   return true;
  });
- const p=paginateNews(rows,app.newsPage,NEWS_PER_PAGE);
+ const first=type==='all'&&!query?featureNews(rows):{items:rows,featured:new Map()};
+ const p=paginateNews(first.items,app.newsPage,NEWS_PER_PAGE);
  app.newsPage=p.page;
  $('newsList').innerHTML=p.items.length?p.items.map(n=>{
+  const sources=first.featured.get(n.id);
+  const feature=sources?`<span>주요 뉴스</span>${sources.length>1?`<span>${escapeHtml(sources.join(' · '))}</span>`:''}`:'';
   const safeLink=(()=>{try{const u=new URL(n.link);return ['https:','http:'].includes(u.protocol)?escapeHtml(u.href):''}catch{return ''}})();
   const toneLabel=n.tone==='risk'?'악재 가능성':n.tone==='opportunity'?'호재 가능성':'방향 미확정';
   const translationStatus=n.translation?.status??n.translationStatus??'UNAVAILABLE',translated=['COMPLETE','PARTIAL','TRANSLATED','translated'].includes(translationStatus),ai=n.translation?.provider==='OPENAI',translationLabel=translationStatus==='PARTIAL'?(ai?'일부 AI 번역':'일부 한국어 번역'):translated?(ai?'한국어 AI 번역':'한국어 자동번역'):translationStatus==='NOT_REQUIRED'?'원문 한국어':'원문 · 번역 '+translationStatus;
@@ -137,7 +144,7 @@ function renderNews(){
   const summaryText=short?escapeHtml(short):'제공처 요약 없음 · 기사 원문에서 상세 내용을 확인하세요.';
   const detailLink=safeLink?`<a class="news-detail-link" href="${safeLink}" target="_blank" rel="noopener noreferrer">기사 원문 전체 보기 ↗</a>`:'';
   return `<details class="news-entry" data-news-id="${escapeHtml(n.id)}" ${app.expandedNewsId===n.id?'open':''}>
-    <summary class="news-entry-head"><span class="news-main"><span class="news-title">${escapeHtml(title)}</span><span class="news-summary">${summaryText}</span><span class="news-meta"><span class="news-tag ${escapeHtml(n.tone)}">${toneLabel}</span><span>${escapeHtml(n.source)}</span>${translated&&!ai&&translationStatus!=='PARTIAL'?'':`<span class="news-translation-state">${escapeHtml(translationLabel)}</span>`}<span>${dateClock(n.published)} KST</span>${n.impact==='high'?'<span>주요 키워드</span>':''}${n.symbols?.length?`<span>${escapeHtml(n.symbols.join(', '))}</span>`:''}</span></span><span class="news-open-hint">상세 보기 <span aria-hidden="true">⌄</span></span></summary>
+    <summary class="news-entry-head"><span class="news-main"><span class="news-title">${escapeHtml(title)}</span><span class="news-summary">${summaryText}</span><span class="news-meta">${feature}<span class="news-tag ${escapeHtml(n.tone)}">${toneLabel}</span>${sources?.length>1?'':`<span>${escapeHtml(n.source)}</span>`}${translated&&!ai&&translationStatus!=='PARTIAL'?'':`<span class="news-translation-state">${escapeHtml(translationLabel)}</span>`}<span>${dateClock(n.published)} KST</span>${!sources&&n.impact==='high'?'<span>주요 키워드</span>':''}${n.symbols?.length?`<span>${escapeHtml(n.symbols.join(', '))}</span>`:''}</span></span><span class="news-open-hint">상세 보기 <span aria-hidden="true">⌄</span></span></summary>
     <div class="news-detail"><div class="news-detail-heading">기사 본문 발췌</div><div class="news-body" data-news-body="${escapeHtml(n.id)}">${newsBodyHTML(n.id)}</div><details class="news-original"><summary>RSS 요약</summary><p>${sourceText}</p></details><details class="news-original"><summary>원문 제목·요약·제공 발췌</summary><strong>${escapeHtml(n.original?.title??n.originalTitle??n.title)}</strong><p>${escapeHtml(n.original?.summary??n.originalSummary??n.summary??'')}</p><p>${escapeHtml(n.original?.detail??n.originalDetail??n.detail??'')}</p></details>${n.translation?.errorCode||n.translation?.error?`<p class="news-translation-error">번역 상태: ${escapeHtml(n.translation.errorCode??n.translation.error)}</p>`:''}<div class="news-detail-foot"><span>원문·번역은 제공처 RSS 발췌 범위만 표시합니다. 번역 오류는 원문으로 표시하며 가격 전망이나 사건 원인을 만들지 않습니다.</span>${detailLink}</div></div>
    </details>`;
  }).join(''):'<div class="empty-small" style="padding:24px">필터에 해당하는 기사가 없거나 RSS 수신이 지연되고 있습니다.</div>';
@@ -194,9 +201,10 @@ function showCompletedUpdate(info){
  }catch{}
  if(!done&&!auto)return;
  const version=appVersionText(info)||done?.toDisplayVersion,at=Number(done?.appliedAt||info?.bootId);
- const on=[done?.rearmCopy&&'카피',done?.rearm&&'신호 전략',done?.rearmScalp&&'되돌림 단타'].filter(Boolean);
+ const runtime=info?.runtime;
+ const state=runtime?[`카피 ${runtime.copy?'켜짐':'꺼짐'}`,`신호 전략 ${runtime.signal?'켜짐':'꺼짐'}`,`되돌림 단타 ${runtime.scalp?'켜짐':'꺼짐'}`].join(' · '):'';
  const versionLine=version?(done?.fromDisplayVersion&&done.fromDisplayVersion!==version?done.fromDisplayVersion+' → ':'')+version:'';
- const message=['✅ 업데이트 완료',versionLine,at>0&&Number.isFinite(at)?'서버 적용 '+updateTime.format(at)+' KST':'',on.length?on.join('·')+' 다시 켜짐':''].filter(Boolean).join(' · ');
+ const message=['✅ 업데이트 완료',versionLine,at>0&&Number.isFinite(at)?'서버 적용 '+updateTime.format(at)+' KST':'',state].filter(Boolean).join(' · ');
  toast(message);
 }
 json('/api/update').then(u=>{
@@ -298,6 +306,7 @@ $('newsPrev').addEventListener('click',()=>{app.newsPage-=1;app.expandedNewsId=n
 $('newsNext').addEventListener('click',()=>{app.newsPage+=1;app.expandedNewsId=null;renderNews()});
 $('newsPageNumbers').addEventListener('click',e=>{const btn=e.target.closest('button[data-news-page]');if(!btn)return;app.newsPage=Number(btn.dataset.newsPage);app.expandedNewsId=null;renderNews()});
 $('newsList').addEventListener('toggle',e=>{if(!e.target.matches?.('details[data-news-id]')||!e.target.isConnected)return;if(e.target.open)app.expandedNewsId=e.target.dataset.newsId;else if(app.expandedNewsId===e.target.dataset.newsId)app.expandedNewsId=null},true);
+$('newsList').addEventListener('click',e=>{const button=e.target.closest?.('[data-news-retry]');if(button)void loadNewsBody(button.dataset.newsRetry,{retry:true})});
 $('menuButton').addEventListener('click',()=>{$('sidebar').classList.toggle('open')});document.querySelectorAll('.navlink').forEach(a=>a.addEventListener('click',()=>{$('sidebar').classList.remove('open');document.querySelectorAll('.navlink').forEach(x=>x.classList.toggle('active',x===a))}));
 setInterval(()=>{$('clock').textContent=clock(Date.now())+' KST';if(app.status)setStatus(app.status)},1000);
 setInterval(loadJournal,60000);setInterval(loadNews,90000);setInterval(async()=>{try{const st=await json('/api/status');const changed=st.lastMarketListings!==app.status?.lastMarketListings;setStatus(st);if(!app.market.length||changed)applyMarket(await json('/api/market'))}catch{}},18000);

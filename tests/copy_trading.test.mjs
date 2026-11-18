@@ -55,6 +55,42 @@ test('copy: 1 $ margin at the trader leverage (capped by the venue), doubles wit
  assert.equal(new Set(v.calls.filter(c=>c.clientOrderId).map(c=>c.clientOrderId)).size,v.calls.filter(c=>c.clientOrderId).length,'every order has its own client id');
 });
 
+test('copy: a partial full-close keeps the stop and an unresolved order is looked up before another close',async()=>{
+ const v=venue(),ex=make(v,{config:{mode:'LIVE'}});ex.goneRecheckMs=0;
+ await ex.handle({id:1,date:1e12,text:OPEN});
+ const stop=ex.status().positions[0].stopOrderId,send=v.client.placeOrder;
+ let attempts=0,terminal=false;
+ v.client.getOrder=async()=>({order:{orderId:'999',status:terminal?'CANCELED':'PARTIALLYFILLED',executedQty:'49'}});
+ v.client.placeOrder=async(p,opts)=>{
+  if(p.type==='MARKET'&&p.reduceOnly&&++attempts===1){
+   v.setSize(49);return {order:{orderId:'999',status:'PARTIALLY_FILLED',executedQty:'49'}};
+  }
+  return send(p,opts);
+ };
+ assert.equal((await ex.handle({id:2,date:1e12+1000,text:CLOSE})).reason,'CLOSE_PENDING');
+ assert.equal(v.size,49);assert.equal(ex.status().positions[0].stopOrderId,stop);
+ assert.equal(ex.status().closed.length,0);assert.equal(v.calls.filter(r=>r.op==='cancel').length,0);
+ await ex.reconcile();assert.equal(attempts,1,'open close order must not be submitted a second time');
+ terminal=true;await ex.reconcile();
+ assert.equal(v.size,0);assert.equal(ex.status().closed[0].closeReason,'TRADER_CLOSE');
+ assert.equal(v.calls.filter(r=>r.op==='cancel').length,1);assert.equal(ex.status().closed[0].theirPnlUSD,1.72);
+});
+
+test('copy settlement matches exact order IDs and reports exchange fees separately',async()=>{
+ const v=venue(),ex=make(v,{config:{mode:'LIVE'}});ex.goneRecheckMs=0;
+ await ex.handle({id:1,date:1e12,text:OPEN});await ex.handle({id:2,date:1e12+1000,text:CLOSE});
+ const row=ex.store.closed[0],{id:entryId}=row.fillOrders.find(x=>x.side==='SELL'),{id:exitId}=row.fillOrders.at(-1);
+ assert.equal(row.netSource,'ESTIMATE_BEFORE_FEES');
+ const times={entry:1e12,exit:1e12+500};
+ v.client.fillOrders=async({orderId})=>[
+  ...(orderId===entryId?[{tradeId:'01',orderId,symbol:'TNSR-USDT',side:'SELL',qty:98,price:'0.051',realizedPnl:0,fee:'-.02',time:times.entry}]:[]),
+  ...(orderId===exitId?[{tradeId:'02',orderId,symbol:'TNSR-USDT',side:'BUY',qty:98,price:'0.05',realizedPnl:1,fee:'-.03',time:times.exit}]:[]),
+  {tradeId:'03',orderId:'888',symbol:'TNSR-USDT',side:'BUY',qty:10,price:'0.05',realizedPnl:10,fee:0,time:times.exit}
+ ];
+ ex.now=()=>1e12+20000;await ex.settle();
+ assert.equal(row.netSource,'EXCHANGE_FILLS');assert.equal(row.netUSD,.95);assert.equal(row.feeUSD,-.05);assert.equal(row.pnlUSD,1);
+});
+
 test('copy: no entry right after a monitor restart, while disarmed, or on a symbol the signal strategy holds; add skipped without margin',async()=>{
  let v=venue(),ex=make(v);
  await ex.handle({id:1,date:1e12,text:'Gate.io 모니터 시작'});await ex.handle({id:2,date:1e12+30000,text:OPEN});

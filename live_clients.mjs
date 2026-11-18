@@ -94,6 +94,10 @@ export class BingXTradeClient{
  // Read only (copy: why a position vanished, review 2026-11-17): liquidation / ADL orders, and the order history.
  forceOrders({symbol,autoCloseType,startTime,endTime,limit=50}={}){return this.request('GET','/openApi/swap/v2/trade/forceOrders',defined({symbol,autoCloseType,startTime,endTime,limit}))}
  allOrders({symbol,startTime,endTime,limit=500}={}){return this.request('GET','/openApi/swap/v2/trade/allOrders',defined({symbol,startTime,endTime,limit}))}
+ /** USDT fills across symbols, or for one exact order (read only). */
+ fillOrders({startTs,endTs,orderId}){
+  return this.request('GET','/openApi/swap/v2/trade/allFillOrders',defined({tradingUnit:'COIN',currency:'USDT',startTs,endTs,orderId}));
+ }
 }
 const defined=o=>Object.fromEntries(Object.entries(o).filter(([,v])=>v!==undefined&&v!==null&&v!==''));
 
@@ -134,4 +138,39 @@ export class GateTradeClient{
  cancelOrder(id){return this.request('DELETE','/futures/usdt/orders/'+encodeURIComponent(id))}
  placeTrigger(order){return this.request('POST','/futures/usdt/price_orders',{body:order})}
  cancelTrigger(id){return this.request('DELETE','/futures/usdt/price_orders/'+encodeURIComponent(id))}
+}
+
+// BingX read-only execution receipts. Missing quantity or costs never become zero.
+const number=v=>v==null||String(v).trim()===''||!Number.isFinite(Number(v))?null:Number(v);
+const id=v=>v==null||String(v).trim()===''?null:String(v);
+
+export function executionFills(response){
+ if(response===null||response?.fill_orders===null||response?.fillOrders===null)return [];
+ const rows=Array.isArray(response)?response:response?.fill_orders??response?.fillOrders;
+ if(!Array.isArray(rows))throw Error('UNEXPECTED_FILL_HISTORY');
+ const fills=new Map();
+ for(const x of rows){
+  const tradeId=id(x?.tradeId??x?.fillId),orderId=id(x?.orderId);
+  const symbol=x?.symbol,side=String(x?.side??'').toUpperCase(),positionSide=String(x?.positionSide??'').toUpperCase();
+  const qty=number(x?.qty??x?.filledQty??x?.volume),price=number(x?.price??x?.tradePrice),at=number(x?.time??x?.tradeTime);
+  if(!tradeId||!orderId||typeof symbol!=='string'||!['BUY','SELL'].includes(side)||!(qty>0)||!(price>0)||!(at>0))throw Error('UNEXPECTED_FILL_ROW');
+  fills.set(tradeId,{tradeId,orderId,symbol,side,positionSide,qty,price,at,
+   pnl: number(x.realizedPnl??x.realizedPnL??x.profit),fee:number(x.fee??x.commission)});
+ }
+ return [...fills.values()].sort((a,b)=>a.at-b.at||a.tradeId.length-b.tradeId.length||a.tradeId.localeCompare(b.tradeId));
+}
+
+export function summarizeBalancedFills(fills,direction){
+ const side=direction==='SHORT'?'SELL':'BUY';
+ let openQty=0,closeQty=0,entryValue=0,pnlUSD=0,feeUSD=0;
+ for(const fill of fills){
+  if(fill.fee===null||fill.side!==side&&fill.pnl===null)return null;
+  if(fill.side===side){openQty+=fill.qty;entryValue+=fill.qty*fill.price}
+  else{closeQty+=fill.qty}
+  if(closeQty>openQty+Math.max(1e-9,openQty*1e-8))return null;
+  pnlUSD+=fill.pnl??0;feeUSD+=fill.fee;
+ }
+ if(!(openQty>0&&closeQty>0)||Math.abs(openQty-closeQty)>Math.max(1e-9,openQty*1e-8))return null;
+ const round=x=>+x.toFixed(8);
+ return {qty:openQty,avg:entryValue/openQty,pnlUSD:round(pnlUSD),feeUSD:round(feeUSD),netUSD:round(pnlUSD+feeUSD)};
 }

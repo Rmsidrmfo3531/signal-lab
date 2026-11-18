@@ -335,8 +335,8 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode===
 // margin limits and every copy decision stay computed from the copy ledger only (copy_executor.mjs); manual trades
 // join only the page totals and the hourly report. Polled every 15 s on its own (shared 3 s cache with the page).
 const manualLedger=venuePositionsReader?new ManualLedger({directory:storage.dir,client:copyClient,
- copyRecords:()=>[...Object.values(copyTrader.store.positions),...copyTrader.store.closed],log:(...a)=>console.log(...a),onEvent:manualTradeNotice}):null;
-if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(Object.values(copyTrader.store.positions)));await manualLedger.settle()}
+ copyRecords:()=>[...Object.values(copyTrader.store.positions),...copyTrader.store.closed,...(LIVE.mode==='LIVE'?live.store.records.filter(x=>x.venue==='BINGX'):[])],log:(...a)=>console.log(...a),onEvent:manualTradeNotice}):null;
+if(manualLedger)setInterval(async()=>{try{manualLedger.observe(await venuePositionsReader.snapshot(Object.values(copyTrader.store.positions)));await Promise.all([manualLedger.settle(),manualLedger.recoverFastTrades()])}
  catch(e){console.warn('[MANUAL]',e.message)}},15000).unref?.();
 // Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
 // copy and manual together, read in the background at most every 5 min; the page gets the cached value (daily).
@@ -399,6 +399,7 @@ try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy
 // First balance / positions read soon after start (the panel shows the copy account's balance).
 if(COPY.enabled)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{})},8000).unref?.();
 if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
+if(copyClient)setInterval(()=>{void copyTrader.settle().catch(e=>console.error('[COPY SETTLE]',e.message))},60000).unref?.();
 function copyNotice(e){
  const text=copyEventText(e);if(!text)return;
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
@@ -1583,7 +1584,12 @@ const server=http.createServer(async(req,res)=>{
    const body=await bodyJson(req).catch(()=>({}));if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
    const r=await runGitUpdate('button');return response(res,r.status,r.body);
   }
-  if(pathname==='/api/update')return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,bootId:SERVER_BOOT_ID,configured:Boolean(CONFIG.updateManifestURL),...appVersion,pending:pendingInfo(__dirname)?.version||null});
+  if(pathname==='/api/update'){
+   const signal=LIVE.mode==='TESTNET'&&live.armed===true&&!live.store.killSwitch;
+   const runtime={signal,scalp:SCALP_EXEC.mode==='TESTNET'&&scalpExec?.armed===true&&!live.store.killSwitch,
+    copy:COPY.enabled&&!copyTrader.store.killed&&!live.store.killSwitch&&(COPY.mode==='LIVE'?copyTrader.armed===true:signal)};
+   return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,bootId:SERVER_BOOT_ID,configured:Boolean(CONFIG.updateManifestURL),...appVersion,runtime,pending:pendingInfo(__dirname)?.version||null});
+  }
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
   if(pathname==='/api/market-commentary'){
    try{await refreshMarketStats()}catch{}

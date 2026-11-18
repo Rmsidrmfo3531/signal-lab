@@ -202,10 +202,16 @@ export function mergedCloses(c){
 /** Totals of the closes the page counts: every copy close (as before) and every settled manual close (a manual close
  * still PENDING has no result yet). {all, copy, manual}: n, wins, net, gross, loss; plus pending manual closes. */
 export function copyStats(c){
- const one=list=>{const net=list.reduce((a,x)=>a+(Number(x.netUSD)||0),0),wins=list.filter(x=>x.netUSD>0).length;
-  return {n:list.length,wins,net,gross:list.filter(x=>x.netUSD>0).reduce((a,x)=>a+x.netUSD,0),loss:-list.filter(x=>x.netUSD<0).reduce((a,x)=>a+x.netUSD,0)}};
- const all=mergedCloses(c),copy=all.filter(x=>x.origin!=='manual'),manualAll=all.filter(x=>x.origin==='manual'),manual=manualAll.filter(x=>x.netUSD!=null&&fin(x.netUSD));
- return {all:one([...copy,...manual]),copy:one(copy),manual:one(manual),pending:manualAll.filter(x=>x.netSource==='PENDING').length};
+ const one=list=>{
+  const known=list.filter(x=>!['PENDING','UNKNOWN'].includes(x.netSource)&&x.netUSD!=null&&String(x.netUSD).trim()!==''&&fin(x.netUSD));
+  const values=known.map(x=>Number(x.netUSD)),wins=values.filter(x=>x>0),losses=values.filter(x=>x<0);
+  const sum=rows=>rows.reduce((a,x)=>a+x,0),settled=known.filter(x=>['EXCHANGE','EXCHANGE_FILLS'].includes(x.netSource)).length;
+  const pending=list.filter(x=>x.netSource==='PENDING').length;
+  return {n:known.length,wins:wins.length,net:sum(values),gross:sum(wins),loss:-sum(losses),
+   settled,estimated:known.length-settled,pending,unknown:list.length-known.length-pending};
+ };
+ const all=mergedCloses(c),copy=one(all.filter(x=>x.origin!=='manual')),manual=one(all.filter(x=>x.origin==='manual')),totals=one(all);
+ return {all:totals,copy,manual,pending:totals.pending};
 }
 // Daily P&L calendar on the 실계좌 page (user 2026-11-18 "캘린더 느낌으로 내가 하루에 번 돈의 기록"): the server's cached
 // BingX income per KST day (c.daily.byDay, copy and manual together), one month at a time, weeks from Monday.
@@ -286,14 +292,16 @@ export function copyHTML(c){
  // balance is the testnet account's, shown once in the status box above.
  const stats=`<div class="copy-stats">${isLive?stat('잔고',usd(f?.equity)):''}${stat('사용 가능',usd(f?.available))}${vpList?'':stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}
   ${stat('종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat('누적 손익',money(counted?net:null),`class="${cls(net)}"`)}</div>`+
-  (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.net)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.net)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}</p>`:'');
- const rules=`<details class="copy-rules-fold"><summary>규칙 보기</summary><p class="copy-rules">수량 ${c.sizing==='BALANCE_RATIO'?`트레이더 × 내 잔고 ÷ $${Number(c.traderBalanceUSD).toLocaleString()}`:c.sizing==='MIN_ORDER'?`첫 증거금 $${esc(c.firstMarginUSD??0)} (거래소 최소 주문보다 작으면 최소 주문), 추매는 트레이더 비율`:`첫 증거금 $${esc(c.marginUSD)}`} · 추매 최대 ${esc(c.maxAdds??10)}회 · 손절 ${c.stops?`포지션당 잔고 ${esc(c.maxLossPct)}%`:'없음(트레이더 청산만)'} · 한도 증거금 ${esc(c.maxTotalMarginPct)}%·손실 ${esc(c.ledgerLossPct)}% · 손익은 수수료 전 추정</p></details>`;
- const row=p=>`<li><b>${esc(p.symbol)}</b>${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
+  (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.n?st.copy.net:null)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.n?st.manual.net:null)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}</p>`:'')+
+  (st.all.n||st.all.unknown?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
+ const rules=`<details class="copy-rules-fold"><summary>규칙 보기</summary><p class="copy-rules">수량 ${c.sizing==='BALANCE_RATIO'?`트레이더 × 내 잔고 ÷ $${Number(c.traderBalanceUSD).toLocaleString()}`:c.sizing==='MIN_ORDER'?`첫 증거금 $${esc(c.firstMarginUSD??0)} (거래소 최소 주문보다 작으면 최소 주문), 추매는 트레이더 비율`:`첫 증거금 $${esc(c.marginUSD)}`} · 추매 최대 ${esc(c.maxAdds??10)}회 · 손절 ${c.stops?`포지션당 잔고 ${esc(c.maxLossPct)}%`:'없음(트레이더 청산만)'} · 한도 증거금 ${esc(c.maxTotalMarginPct)}%·손실 ${esc(c.ledgerLossPct)}%</p></details>`;
+ const row=p=>`<li><b>${esc(p.symbol)}</b>${p.closing?'<small>청산 중</small>':''}${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
  // Manual closes: the yellow 수동 badge; the result is BingX's own (income) unless marked 추정 / 정산 중.
  const isMan=x=>x.origin==='manual',manBadge=x=>isMan(x)?'<span class="vp-badge manual">수동</span>':'';
- const SRC={MIXED_WITH_COPY:'추정 · 같은 코인 카피와 겹쳐 거래소 내역을 나눌 수 없음',MIXED_WITH_MANUAL:'추정 · 같은 코인 수동 포지션과 겹침',ESTIMATE:'추정 · 거래소 내역 없음'};
- const result=x=>isMan(x)&&x.netSource==='PENDING'?`<span class="muted" title="거래소 손익 내역을 기다리는 중${fin(x.estimateUSD)?` · 추정 ${money(Number(x.estimateUSD))}`:''}">정산 중</span>`
-  :`${money(x.netUSD)}${isMan(x)&&SRC[x.netSource]?` <small class="muted" title="${esc(SRC[x.netSource])}">추정</small>`:''}`;
+ const SRC={MIXED_WITH_COPY:'추정 · 같은 코인 카피와 겹쳐 거래소 내역을 나눌 수 없음',MIXED_WITH_MANUAL:'추정 · 같은 코인 수동 포지션과 겹침',
+  ESTIMATE:'추정 · 거래소 내역 없음',ESTIMATE_BEFORE_FEES:'수수료 반영 전 추정',EXCHANGE_FILLS:'거래소 체결 · 수수료 포함, 펀딩 제외'};
+ const result=x=>x.netSource==='PENDING'?`<span class="muted" title="거래소 손익 내역을 기다리는 중${fin(x.estimateUSD)?` · 추정 ${money(Number(x.estimateUSD))}`:''}">정산 중</span>`
+  :x.netUSD==null?'<span class="muted">확인 불가</span>':`${money(x.netUSD)}${SRC[x.netSource]?` <small class="muted" title="${esc(SRC[x.netSource])}">${x.netSource==='EXCHANGE_FILLS'?'체결':'추정'}</small>`:''}`;
  const done=x=>`<li class="${isMan(x)?'vp-manual':''}"><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${manBadge(x)}${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}<b class="${cls(x.netUSD)} end">${result(x)}</b></li>`;
  // Entry failures and skips under the closes (user 2026-11-17 "코인 종목 / 롱,숏 / 진입 실패 이유"), 10 per page.
  const notesAll=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY'].includes(e.type));
@@ -305,7 +313,7 @@ export function copyHTML(c){
  // phones keep the compact lists. CSS shows one or the other (.only-desk / .only-mob).
  const margin=p=>p.qty>0&&p.avg>0&&p.leverage>0?p.qty*p.avg/p.leverage:null,roe=p=>{const m=margin(p);return m&&p.unrealized!=null?p.unrealized/m*100:null};
  const pctText=v=>v==null?'—':`${v>=0?'+':'−'}${Math.abs(v).toFixed(1)}%`;
- const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">추매</th><th>보유</th><th class="num">미실현</th><th class="num">수익률</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b></td><td>${side(p.direction)}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.qty)}</td><td class="num">${esc(p.avg??'—')}</td><td class="num">${esc(p.mark?+Number(p.mark).toPrecision(6):'—')}</td><td class="num">${usd(margin(p))}</td><td class="num">${esc(p.adds||0)}회</td><td class="muted">${held(p.openedAt,Date.now())}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(roe(p))}">${pctText(roe(p))}</td></tr>`).join('')}</tbody></table>`;
+ const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">추매</th><th>보유</th><th class="num">미실현</th><th class="num">수익률</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b>${p.closing?' <small>청산 중</small>':''}</td><td>${side(p.direction)}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.qty)}</td><td class="num">${esc(p.avg??'—')}</td><td class="num">${esc(p.mark?+Number(p.mark).toPrecision(6):'—')}</td><td class="num">${usd(margin(p))}</td><td class="num">${esc(p.adds||0)}회</td><td class="muted">${held(p.openedAt,Date.now())}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(roe(p))}">${pctText(roe(p))}</td></tr>`).join('')}</tbody></table>`;
  const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>종목</th><th>방향</th><th class="num">추매</th><th>보유 시간</th><th class="num">트레이더 손익</th><th class="num">내 손익</th></tr></thead><tbody>${shown.map(x=>`<tr class="${isMan(x)?'vp-manual':''}"><td class="muted">${when(x.closedAt)}</td><td><b>${esc(x.symbol)}</b> ${manBadge(x)}</td><td>${side(x.direction)}</td><td class="num">${esc(x.adds||0)}회</td><td class="muted">${held(x.openedAt,x.closedAt)}</td><td class="num">${x.theirPnlUSD!=null?money(x.theirPnlUSD):'—'}</td><td class="num"><b class="${cls(x.netUSD)}">${result(x)}</b></td></tr>`).join('')}</tbody></table>`;
  // One time stamp per panel: the real-account page's (3 s refresh); the testnet page has its header time.
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,Number(c.venuePositionsAt)||0,...fresh);
@@ -455,7 +463,8 @@ export function scalpDetailsHTML(s){
  const byKind=`<div class="copy-stats tn-kind-stats">${['MOVE_REVERSAL','ZONE_REVERSAL'].map(k=>{const b=st.byKind?.[k]||{};return stat(`${KK[k]}${k==='ZONE_REVERSAL'&&S.zoneSignals===false?' (꺼짐)':''}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${KK[k]} 손익`,tnMoney(b.trades?b.netUSD:null),`class="${tnCls(b.netUSD)}"`)}).join('')}</div>`;
  const skipBox=counts.length?`<h5 class="copy-sub">진입 안 한 이유</h5><p class="copy-rules">${counts.map(c=>`${esc(c.label)} ${esc(c.count)}회`).join(' · ')}</p><ul class="copy-list muted">${skips.map(x=>`<li><span class="muted">${tnWhen(x.at)}</span>${esc(x.symbol||'')}${x.kind==='ZONE_REVERSAL'?' <small>매물대 후보</small>':''}${x.direction?` <b class="${x.direction==='LONG'?'pos':'neg'}">${x.direction==='LONG'?'롱(급락 후 반등)':'숏(급등 후 되돌림)'}</b>`:''}${x.movePct!=null?` <small>${esc(Number(x.movePct).toFixed(1))}% 움직임</small>`:''} · ${esc(x.label||x.reason)}${skipDetail(x)}</li>`).join('')}</ul>`:'<p class="empty-small">건너뛴 신호가 없습니다.</p>';
  const journal=`<p class="copy-rules">전체 기록: <a href="/api/scalp/journal?limit=200" target="_blank" rel="noopener">단타 거래 기록</a> · <a href="/api/scalp/journal?kind=signals&amp;limit=200" target="_blank" rel="noopener">감지된 신호</a> (JSON)</p>`;
- return byKind+bySide+rules+skipBox+journal;
+ const experiment=st.scaleIn&&S.scaleIn?`<p class="copy-rules">추매 실험 종료 ${esc(st.scaleIn.closed)}건 · 추매 체결 ${esc(st.scaleIn.filled)}건</p>`:'';
+ return byKind+bySide+rules+experiment+skipBox+journal;
 }
 function bindTestnetPager(el){
  if(!el||el.dataset.tnBound)return;el.dataset.tnBound='1';

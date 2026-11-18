@@ -7,6 +7,16 @@ const html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8
 const css=fs.readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');
 const script=fs.readFileSync(new URL('../public/workspace_nav.js',import.meta.url),'utf8');
 const appJs=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+
+test('the update completion popup uses the running server state rather than the restart request',()=>{
+ const cached=new Map([['updateDone',JSON.stringify({rearmCopy:true})]]);
+ const notices=[];
+ const context=vm.createContext({Intl,toast:text=>notices.push(text),appVersionText:i=>i.displayVersion,
+  sessionStorage:{getItem:k=>cached.get(k),removeItem:k=>cached.delete(k)}});
+ vm.runInContext(appJs.slice(appJs.indexOf('const updateTime='),appJs.indexOf("json('/api/update').then")),context);
+ context.showCompletedUpdate({displayVersion:'fixture',runtime:{copy:false,signal:true,scalp:false}});
+ assert.match(notices[0],/카피 꺼짐 · 신호 전략 켜짐 · 되돌림 단타 꺼짐/);
+});
 // The dashboard shows only these four pages (user request 2026-11-17).
 const routes=['real','live','news','journal'];
 

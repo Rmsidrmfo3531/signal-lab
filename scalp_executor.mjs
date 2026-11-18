@@ -244,7 +244,7 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,SCALP_JOURNAL_FILE):null;this.signalsFile=directory?path.join(directory,SCALP_SIGNALS_FILE):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null}));
+  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
@@ -590,7 +590,7 @@ export class ScalpExecutor{
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
    x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
-   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason});
+   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn});
   }
  }
  /** The newest `limit` journal lines (oldest first). */
@@ -908,7 +908,9 @@ export class ScalpExecutor{
  /** Win rate / PF / net over all closed scalps, and per side (bySide.LONG / bySide.SHORT). */
  // Over every trade: the journal plus the closed trades not yet written to it (the store keeps only the last 300).
  stats(){const list=[...this.journalRows,...this.store.closed.filter(x=>!x.journaled)];const all=this.#stats(list);all.bySide=Object.fromEntries(SCALP_SIDES.map(d=>[d,this.#stats(list.filter(x=>(x.direction||'LONG')===d))]));
-  all.byKind=Object.fromEntries(Object.values(SCALP_KINDS).map(k=>[k,this.#stats(list.filter(x=>(x.kind||SCALP_KINDS.MOVE)===k))]));return all}
+  all.byKind=Object.fromEntries(Object.values(SCALP_KINDS).map(k=>[k,this.#stats(list.filter(x=>(x.kind||SCALP_KINDS.MOVE)===k))]));
+  const experiment=list.filter(x=>x.scaleIn?.version===SCALP_SCALE_IN.version);
+  all.scaleIn={closed:experiment.length,filled:experiment.filter(x=>x.scaleIn.fillQty>0).length};return all}
  #stats(list){
   const n=list.length,wins=list.filter(x=>x.netUSD>0),gross=wins.reduce((t,x)=>t+x.netUSD,0),loss=-list.filter(x=>x.netUSD<0).reduce((t,x)=>t+x.netUSD,0);
   const today=kstDay(this.now()),reasons={};for(const x of list)reasons[x.closeReason]=(reasons[x.closeReason]||0)+1;
