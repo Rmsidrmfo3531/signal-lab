@@ -56,4 +56,8 @@ test('copy and scalp ledgers: totals, drawdown, serious events, and no order or 
  for(const bad of ['1736012449498123737','1999000111222333444','1888000111222333444','stopOrderId','venueSymbol','"id"','A|LONG|1'])assert.equal(text.includes(bad),false,bad);
  const scalp=ledgerSummary({open:[{symbol:'EUSDT',direction:'SHORT',status:'OPEN',avg:1,stop:1.1}],closed:[{symbol:'FUSDT',direction:'LONG',closedAt:now,netUSD:0.4,tpHits:2,adds:[]}],events:[]},{now});
  assert.equal(scalp.winRatePct,100);assert.equal(scalp.open[0].stop,1.1);assert.equal(scalp.trades[0].tpHits,2);
+ const repeating=ledgerSummary({open:[{symbol:'GUSDT',stop:1.1,initialStop:1.2,stopLossEnabled:false,unrealized:-.15,scaleIn:{count:2}}],
+  closed:[{symbol:'HUSDT',closedAt:now,scaleIn:{count:3}}]},{now});
+ assert.equal(repeating.open[0].stop,null);assert.equal(repeating.open[0].riskReference,1.2);
+ assert.equal(repeating.open[0].adds,2);assert.equal(repeating.open[0].unrealizedUSD,-.15);assert.equal(repeating.trades[0].adds,3);
 });
