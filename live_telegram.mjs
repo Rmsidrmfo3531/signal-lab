@@ -12,7 +12,8 @@ const amount=v=>v==null||!Number.isFinite(Number(v))?'—':tradeAmount.format(Nu
 const MANUAL_ACTION={MANUAL_OPEN:'신규 진입',MANUAL_ADD:'추가 진입',MANUAL_REDUCE:'부분',MANUAL_SETTLED:'전량'};
 const REAL_ORIGIN={MANUAL:'수동',SIGNAL:'자동 신호'};
 const RULE='━━━━━━━━━━━━━━━━';
-const tradeSide={SHORT:'🔴 숏',LONG:'🟢 롱'};
+const tradeIcon={SHORT:'🔴',LONG:'🟢'};
+const tradeSide={SHORT:`${tradeIcon.SHORT} ${SIDE.SHORT}`,LONG:`${tradeIcon.LONG} ${SIDE.LONG}`};
 const priceLine=v=>Number.isFinite(v)&&v>0?`${amount(v)} USDT`:'—';
 const signed=v=>v===0?'':v>0?'+':'−';
 const marginAmount=new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:8});
@@ -72,7 +73,10 @@ export function realTradeMessage(e,{availableMargin=null}={}){
  const at=Number(e.observedAt??e.at);
  const available=`가용 증거금 ${Number.isFinite(availableMargin)&&availableMargin>=0?`${marginAmount.format(availableMargin)} USDT`:'조회 불가'}`;
  if(e.alertOrigin==='COPY')return copyTradeMessage(e,action,closing,at,available);
- const head=[`${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`,[e.symbol,tradeSide[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ const manual=!e.alertOrigin||e.alertOrigin==='MANUAL';
+ const symbol=manual&&tradeIcon[e.direction]?`${tradeIcon[e.direction]} ${e.symbol}`:e.symbol;
+ const direction=(manual?SIDE:tradeSide)[e.direction];
+ const head=[`${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`,[symbol,direction,e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
  else if(closing){
@@ -85,7 +89,7 @@ export function realTradeMessage(e,{availableMargin=null}={}){
   detail=`수량 +${amount(change)}${e.to!=null?` · 잔여 ${amount(e.to)}`:''}`;
   if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n추가 체결가 ${amount(e.avg)} USDT`;
  }
- const manualAdd=e.type==='MANUAL_ADD'&&(!e.alertOrigin||e.alertOrigin==='MANUAL');
+ const manualAdd=e.type==='MANUAL_ADD'&&manual;
  const margin=closing?null:fillMarginText(e.fillPrice??e.avg,e.size??(Number(e.to)-Number(e.from)),e.leverage,manualAdd?'이번 증거금':'증거금');
  const total=manualAdd?fillMarginText(e.positionAvg,e.to,e.leverage,'포지션 총 증거금'):null;
  return {text:[...head,detail,margin,total,available,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n'),
