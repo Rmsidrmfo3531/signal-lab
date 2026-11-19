@@ -205,6 +205,35 @@ test('historical copy settlement reconstructs saved client IDs and only counts m
  assert.equal(p.netUSD,.95);assert.equal(p.netSource,'EXCHANGE_FILLS');assert.equal(p.settlement.state,'CONFIRMED');
 });
 
+test('automatic copy settlement recovers separately executed manual reductions only when the lane is unambiguous',async()=>{
+ for(const ambiguity of ['none','foreign-entry','ambiguous-close','incomplete-close']){
+  const v=venue(),ex=make(v,{config:{mode:'LIVE',stops:false}});ex.goneRecheckMs=0;
+  await ex.handle({id:1,date:1e12,text:OPEN});
+  ex.now=()=>1e12+5000;
+  await ex.handle({id:2,date:1e12+5000,text:CLOSE});
+  const p=ex.store.closed[0],entry=p.fillOrders.find(x=>x.side==='SELL').id,last=p.fillOrders.find(x=>x.side==='BUY').id;
+  p.closeEvidence={kind:'MANUAL_CLOSE',orderId:last};
+  const symbol=p.venueSymbol,order=(id,side,qty,t,extra={})=>({orderId:id,side,executedQty:String(qty),updateTime:1e12+t,status:'FILLED',symbol,positionSide:'BOTH',...extra});
+  const history=[order(entry,'SELL',98,0),order(last,'BUY',30,4000),
+   order('external','BUY',ambiguity==='incomplete-close'?69:68,2000,{reduceOnly:ambiguity!=='ambiguous-close'})];
+  if(ambiguity==='foreign-entry')history.push(order('foreign','SELL',1,1000));
+  v.client.allOrders=async()=>({orders:history});
+  const fill=(id,side,qty,t,pnl)=>({orderId:id,tradeId:id,symbol,side,qty,price:.05,fee:-.01,realizedPnl:pnl,time:1e12+t});
+  const fills=[fill(entry,'SELL',98,0,0),fill(last,'BUY',30,4000,.3),fill('external','BUY',68,2000,.68)];
+  v.client.fillHistory=async()=>fills;
+  ex.now=()=>1e12+25000;
+  await ex.settle();
+  if(ambiguity==='none'){
+   assert.equal(p.netSource,'EXCHANGE_FILLS');
+   assert.equal(p.netUSD,.95);
+   assert.equal(p.settlement.state,'CONFIRMED');
+  }else{
+   assert.notEqual(p.netSource,'EXCHANGE_FILLS',ambiguity);
+   assert.equal(p.settlement.state,ambiguity==='incomplete-close'?'FILL_PENDING':'QUANTITY_MISMATCH');
+  }
+ }
+});
+
 test('copy: no entry right after a monitor restart, while disarmed, or on a symbol the signal strategy holds; add skipped without margin',async()=>{
  let v=venue(),ex=make(v);
  await ex.handle({id:1,date:1e12,text:'Gate.io 모니터 시작'});await ex.handle({id:2,date:1e12+30000,text:OPEN});

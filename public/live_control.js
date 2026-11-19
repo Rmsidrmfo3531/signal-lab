@@ -370,8 +370,7 @@ export function copyHTML(c){
  const stats=`<div class="copy-stats">${isLive?stat('잔고',usd(f?.equity)):''}${stat('사용 가능',usd(f?.available))}${vpList?'':stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}
   ${stat(isLive?'정산 확인':'종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat('누적 손익',money(counted?net:null),`class="${cls(net)}"`)}</div>`+
   (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.n?st.copy.net:null)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.n?st.manual.net:null)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}</p>`:'')+
-  (isLive?(closed.length>counted?`<p class="copy-rules muted">정산 미확정 ${closed.length-counted}건 <button type="button" class="outline-btn small" data-copy-settle${c.settlementRefreshing?' disabled':''}>${c.settlementRefreshing?'재조회 중…':'정산 다시 조회'}</button></p>`:''):
-   st.all.n||st.all.unknown?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
+  (!isLive&&(st.all.n||st.all.unknown)?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
  const rules=`<details class="copy-rules-fold"><summary>규칙 보기</summary><p class="copy-rules">수량 ${c.sizing==='BALANCE_RATIO'?`트레이더 × 내 잔고 ÷ $${Number(c.traderBalanceUSD).toLocaleString()}`:c.sizing==='MIN_ORDER'?`첫 증거금 $${esc(c.firstMarginUSD??0)} (거래소 최소 주문보다 작으면 최소 주문), 추매는 트레이더 비율`:`첫 증거금 $${esc(c.marginUSD)}`} · 추매 최대 ${esc(c.maxAdds??10)}회 · 손절 ${c.stops?`포지션당 잔고 ${esc(c.maxLossPct)}%`:'없음(트레이더 청산만)'} · 한도 증거금 ${esc(c.maxTotalMarginPct)}%·손실 ${esc(c.ledgerLossPct)}%</p></details>`;
  const row=p=>`<li><b>${esc(p.symbol)}</b>${p.closing?'<small>청산 중</small>':''}${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회 · 부분청산 ${p.reduces==null?'—':esc(p.reduces)+'회'}</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
  // Manual closes: the yellow 수동 badge; the result is BingX's own (income) unless marked 추정 / 정산 중.
@@ -593,7 +592,6 @@ function bindCopyButtons(el){
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('click',e=>{
   const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
-  const settle=e.target.closest('[data-copy-settle]');if(settle)return call(settle,'/api/copy/recheck-settlement',null,'재조회 중…');
   // Keep the failure box open/closed across the 3 s re-render (the browser toggles the <details> itself).
  if(e.target.closest('[data-fail-toggle]')){failOpen=!e.target.closest('details')?.open;}
  const fp=e.target.closest('[data-copy-fail-page]');

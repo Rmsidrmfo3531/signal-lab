@@ -157,6 +157,26 @@ test('real-account calendar starts at the reset time and excludes cash flows',as
  }finally{await app.close()}
 });
 
+test('the background scheduler settles copy fills without a manual recheck request',{timeout:25000},async()=>{
+ const now=Date.now(),openedAt=now-90000,closedAt=now-30000,venueSymbol='SNDK-USDT';
+ const trade={id:'settlement-fixture',status:'CLOSED',symbol:'SNDKUSDT',venueSymbol,direction:'LONG',openedAt,closedAt,
+  fillTracked:true,fillOrders:[{id:'901',side:'BUY',confirmed:true},{id:'902',side:'SELL',confirmed:true}],netSource:'UNKNOWN'};
+ const fill=(orderId,side,time,realizedPnl)=>({orderId,tradeId:orderId,symbol:venueSymbol,side,time,qty:1,price:50,realizedPnl,fee:-.01});
+ const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],
+  fakeBingxLiveFills:[fill('901','BUY',openedAt,0),fill('902','SELL',closedAt,1)],env:{
+   BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',
+   COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',PAPER_TRADING:'off',
+  }});
+ try{
+  await fs.writeFile(app.data+'/copy-store-live.json',JSON.stringify({closed:[trade]}));
+  await app.start();
+  const copy=await until(()=>app.get('/api/copy'),s=>s.closed?.[0]?.settlement?.state==='CONFIRMED',
+   {timeout:19000,label:'automatic close settlement'});
+  assert.equal(copy.closed[0].netSource,'EXCHANGE_FILLS');
+  assert.equal(copy.closed[0].netUSD,.98);
+ }finally{await app.close()}
+});
+
 test('real manual entry and add reach Telegram only after matching exchange fills',{timeout:30000},async()=>{
  const position={symbol:'BTC-USDT',positionSide:'BOTH',positionAmt:'0.01',avgPrice:'50000',markPrice:'50100',leverage:'10'};
  const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],fakeBingxLiveFills:[],env:{
