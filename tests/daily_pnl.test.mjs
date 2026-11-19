@@ -4,22 +4,26 @@ import {BingXTradeClient} from '../live_clients.mjs';
 
 const DAY=86400000,K=s=>Date.parse(s+'+09:00');
 
-test('daily P&L covers exactly 30 KST dates including today',()=>{
- const now=K('2026-11-18T08:30:00');
- assert.equal(kstMidnight(now),K('2026-11-18T00:00:00'));
- assert.equal(dailySince(now),K('2026-10-20T00:00:00'));
- assert.equal(dailySince(Date.parse('2026-11-30T15:00:00Z')),K('2026-11-02T00:00:00'));
- assert.equal(dailySince(K('2027-01-01T00:00:00')),K('2026-12-03T00:00:00'));
+test('monthly P&L keeps the exact KST reset time and clamps older history to venue coverage',()=>{
+ const now=K('2026-11-20T08:30:00'),reset=K('2026-11-19T11:43:24');
+ assert.equal(kstMidnight(now),K('2026-11-20T00:00:00'));
+ assert.equal(dailySince(now),K('2026-10-01T00:00:00'));
+ assert.equal(dailySince(now,reset),reset);
+ assert.equal(dailySince(K('2027-01-01T03:00:00')),K('2026-12-01T00:00:00'));
+ assert.equal(dailySince(K('2027-06-01T12:00:00'),reset),kstMidnight(K('2027-06-01T12:00:00'))-84*DAY);
 });
 
-test('daily P&L excludes day 31 and advances the range at KST midnight even before refresh',async()=>{
- let now=K('2026-11-18T23:59:00');
- const calendar=createDailyPnl({now:()=>now,read:async()=>({byDay:{'2026-10-19':123,'2026-10-20':3,'2026-11-18':1,'2026-11-19':9}})});
+test('calendar reset excludes earlier income from the same day and ignores money flows',async()=>{
+ const resetAt=K('2026-11-19T11:43:24'),now=resetAt+60000,requests=[];
+ const rows=[
+  ['REALIZED_PNL',100,resetAt-1],['REALIZED_PNL',5,resetAt],['TRADING_FEE',-1,resetAt+100],
+  ['FUNDING_FEE',.2,resetAt+200],['DEPOSIT',300,resetAt+300],['WITHDRAW',-40,resetAt+400],
+  ['WITHDRAWAL',-80,resetAt+500],['TRANSFER_IN',150,resetAt+600],['REALIZED_PNL',999,now+1]
+ ].map(([incomeType,income,time],i)=>({incomeType,income,time,tranId:String(i)}));
+ const calendar=createDailyPnl({resetAt,now:()=>now,client:{income:async q=>{requests.push(q);return rows}}});
  await calendar.refresh();
- assert.deepEqual(calendar.status().byDay,{'2026-10-20':3,'2026-11-18':1});
- now+=60000;
- assert.equal(calendar.status().since,K('2026-10-21T00:00:00'));
- assert.deepEqual(calendar.status().byDay,{'2026-11-18':1});
+ assert.equal(requests[0].startTime,resetAt);
+ assert.deepEqual(calendar.status(),{at:now,since:resetAt,byDay:{'2026-11-19':4.2},error:null,errorAt:null,resetAt,availableSince:resetAt});
 });
 
 test('daily P&L: background cache, incremental re-read, last good data kept on errors, never throws',async()=>{
@@ -30,8 +34,8 @@ test('daily P&L: background cache, incremental re-read, last good data kept on e
  const d=createDailyPnl({read,now:()=>t});
  assert.deepEqual(d.status(),{at:null,since:null,byDay:{},error:null,errorAt:null},'nothing before the first read');
  await d.refresh();
- assert.equal(calls[0].since,K('2026-10-20T00:00:00'),'full read starts 29 dates before today');
- assert.deepEqual(d.status().byDay,days);assert.equal(d.status().at,t);assert.equal(d.status().since,K('2026-10-20T00:00:00'));
+ assert.equal(calls[0].since,K('2026-10-01T00:00:00'),'full read starts at the previous month');
+ assert.deepEqual(d.status().byDay,days);assert.equal(d.status().at,t);assert.equal(d.status().since,K('2026-10-01T00:00:00'));
  // 5 minutes later: only from yesterday (KST), the older days kept.
  t+=5*60000;days['2026-11-18']=2.5;delete days['2026-11-15'];
  await d.refresh();
@@ -46,7 +50,7 @@ test('daily P&L: background cache, incremental re-read, last good data kept on e
  fail='<img src=x onerror=alert(1)>';await d.refresh();assert.equal(d.status().error,'READ_FAILED');
  // Recovery clears the error; an hour after the full read it reads the full range again.
  fail=null;t+=60*60000;await d.refresh();
- assert.equal(d.status().error,null);assert.equal(calls.at(-1).since,K('2026-10-20T00:00:00'));
+ assert.equal(d.status().error,null);assert.equal(calls.at(-1).since,K('2026-10-01T00:00:00'));
  assert.deepEqual(d.status().byDay,days,'a full read replaces the days');
  // Bad keys / values from a read are dropped.
  const d2=createDailyPnl({read:async()=>({byDay:{'2026-11-18':'1.5','x':3,'2026-11-17':'abc'}}),now:()=>t});await d2.refresh();assert.deepEqual(d2.status().byDay,{'2026-11-18':1.5});
@@ -64,39 +68,39 @@ test('daily P&L: start() reads fund flow in the background without needing accou
  const d=createDailyPnl({client,now:()=>t,every:3600000});
  d.start();d.start();await new Promise(r=>setTimeout(r,20));d.stop();
  assert.deepEqual(d.status().byDay,{'2026-11-17':-3.2},'fees in, transfers out');
- assert.ok(seen.every(q=>q.startTime>=K('2026-10-20T00:00:00')));
+ assert.ok(seen.every(q=>q.startTime>=K('2026-10-01T00:00:00')));
  const bad=createDailyPnl({client:null,now:()=>t});await bad.refresh();assert.equal(bad.status().error,'NO_CLIENT');
 });
 
-test('calendar and curve share 30 KST days, including the previous month and excluding future values',async()=>{
+test('calendar shows one month at a time and its curve uses only that month',async()=>{
  const m=await import('../public/live_control.js');
- const now=K('2026-11-18T08:30:00'),since=K('2026-10-20T00:00:00');
- const byDay={'2026-10-19':777,'2026-10-20':2,'2026-10-31':9,'2026-11-15':-0.45,'2026-11-16':0,
-  '2026-11-17':-3.2,'2026-11-18':1.23,'2026-11-19':888};
- const w=m.calendarWeeks(byDay,now),dateCells=w.flat().filter(Boolean);
- assert.equal(w[0][0],null,'Monday padding when the range starts on Tuesday');
- assert.ok(w.every(week=>week.length===7));
- assert.equal(dateCells.length,30);
- assert.deepEqual(dateCells[0],{date:'2026-10-20',day:20,value:2});
- assert.deepEqual(dateCells.at(-1),{date:'2026-11-18',day:18,value:1.23});
+ const now=K('2026-12-02T08:30:00'),resetAt=K('2026-11-19T11:43:24');
+ const daily={at:now,since:resetAt,resetAt,availableSince:resetAt,
+  byDay:{'2026-11-18':777,'2026-11-19':2,'2026-11-30':-1,'2026-12-01':-.45,'2026-12-02':3.2,'2026-12-03':888}};
+ const weeks=m.calendarWeeks(daily.byDay,'2026-11');
+ assert.equal(weeks[0].slice(0,6).every(c=>c===null),true);
+ assert.equal(weeks.flat().filter(Boolean).length,30);
+ assert.equal(weeks.flat().filter(Boolean)[0].date,'2026-11-01');
+ assert.equal(m.calendarWeeks({},'2027-02').length,4);
  assert.equal(m.kstDate(Date.parse('2026-11-17T15:30:00Z')),'2026-11-18');
- assert.equal(m.kstDate(Date.parse('2026-11-17T14:59:00Z')),'2026-11-17');
- const html=m.pnlCalendarHTML({at:now-60000,since,byDay,error:null},{now});
- assert.match(html,/2026-10-20 ~ 2026-11-18 <span>KST/);
- assert.match(html,/class="cal-cell cal-today cal-up"[^>]*><b>18<\/b><i class="paper-profit">\+\$1\.23<\/i>/);
- assert.match(html,/<b>17<\/b><i class="paper-loss">−\$3\.20<\/i>/);
- assert.match(html,/rgba\(66,206,172,0\.55\)/);
- assert.match(html,/최근 30일 누적 PNL<\/span><strong class="paper-profit">\+\$8\.58<\/strong>/);
- assert.match(html,/수익일 <b class="paper-profit">3<\/b>/);
- assert.match(html,/손실일 <b class="paper-loss">2<\/b>/);
- assert.match(html,/최고 10\/31/);assert.match(html,/최저 11\/17/);
- assert.equal((html.match(/class="cal-cell[^"]*"/g)||[]).length,35);
- assert.equal((html.match(/class="cal-dow/g)||[]).length,7);
- assert.match(html,/>월<\/span><span class="cal-dow">화/);
- assert.equal((html.match(/class="cal-chart-point"/g)||[]).length,30);
- assert.match(html,/2026-11-18 · 일별 \+\$1\.23 · 누적 \+\$8\.58/);
- assert.match(html,/class="cal-chart-line" d="M [^"]+ C /);
- assert.doesNotMatch(html,/2026-10-19|2026-11-19|777\.00|888\.00/);
+ try{
+  m.setCalMonth(null);
+  let html=m.pnlCalendarHTML(daily,{now});
+  assert.match(html,/2026년 12월/);
+  assert.match(html,/12월 누적 PNL<\/span><strong class="paper-profit">\+\$2\.75<\/strong>/);
+  assert.match(html,/title="2026-12-31"/);
+  assert.match(html,/data-cal-month="1" aria-label="다음 달" disabled/);
+  assert.equal((html.match(/class="cal-chart-point"/g)||[]).length,2);
+  assert.doesNotMatch(html,/888\.00|2026-11-30/);
+  m.setCalMonth('2026-11');html=m.pnlCalendarHTML(daily,{now});
+  assert.match(html,/2026년 11월/);assert.match(html,/11월 누적 PNL<\/span><strong class="paper-profit">\+\$1\.00<\/strong>/);
+  assert.match(html,/2026-11-18 · 초기화 이전/);assert.doesNotMatch(html,/777\.00|2026-12-01/);
+  assert.match(html,/집계 시작 2026-11-19 11:43 KST/);
+  assert.match(html,/data-cal-month="-1" aria-label="이전 달" disabled/);
+  assert.equal((html.match(/class="cal-chart-point"/g)||[]).length,12);
+  assert.match(html,/class="cal-chart-line" d="M [^"]+ C /);
+  m.setCalMonth('2026-10');assert.match(m.pnlCalendarHTML(daily,{now}),/2026년 11월/);
+ }finally{m.setCalMonth(null)}
 });
 
 test('calendar keeps the available curve on a partial read and escapes venue error text',async()=>{
