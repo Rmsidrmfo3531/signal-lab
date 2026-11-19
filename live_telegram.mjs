@@ -74,9 +74,10 @@ export function realTradeMessage(e,{availableMargin=null}={}){
  const available=`가용 증거금 ${Number.isFinite(availableMargin)&&availableMargin>=0?`${marginAmount.format(availableMargin)} USDT`:'조회 불가'}`;
  if(e.alertOrigin==='COPY')return copyTradeMessage(e,action,closing,at,available);
  const manual=!e.alertOrigin||e.alertOrigin==='MANUAL';
- const symbol=manual&&tradeIcon[e.direction]?`${tradeIcon[e.direction]} ${e.symbol}`:e.symbol;
+ const icon=manual?tradeIcon[e.direction]:null;
+ const title=`${icon?icon+' ':''}${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`;
  const direction=(manual?SIDE:tradeSide)[e.direction];
- const head=[`${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`,[symbol,direction,e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ const head=[title,[e.symbol,direction,e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
  else if(closing){
