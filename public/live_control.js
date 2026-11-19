@@ -189,7 +189,26 @@ export function venuePositionsHTML(c,copyOpen=[]){
  if(!list.length&&!copyOpen.length)return head+'<p class="empty-small">보유 중인 포지션이 없습니다. 채널에 새 진입 알림이 오면 따라 들어갑니다.</p>';
  const totals=`<p class="copy-stamp vp-total">미실현 합계 <b class="${cls(sum(list))}">${money(sum(list))}</b> · 수동만 <b class="${cls(sum(manual))}">${manual.length?money(sum(manual)):'—'}</b></p>`;
  const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}"><b>${esc(p.symbol)}</b>${badge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b></li>`};
- const table=`<table class="copy-table vp-table only-desk"><thead><tr><th>종목</th><th>구분</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">추매</th><th>보유</th><th class="num">미실현</th><th class="num">수익률</th><th class="num">청산가</th></tr></thead><tbody>${list.map(p=>{const r=info(p);return `<tr class="${p.origin==='copy'?'':'vp-manual'}"><td><b>${esc(p.symbol)}</b></td><td>${badge(p)}</td><td>${side(p.direction)}</td><td>${esc(p.leverage??'—')}배 <small class="muted">${mm(p)}</small></td><td class="num">${esc(qtyFmt(p.size))}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td><td class="num">${usdv(p.margin)}</td><td class="num">${r?esc(r.adds||0)+'회':'—'}</td><td class="muted">${r?heldTxt(r):'—'}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(p.roePct)}">${pct(p.roePct)}</td><td class="num">${px(p.liquidation)}</td></tr>`}).join('')}</tbody></table>`;
+
+ const table=`<table class="copy-table vp-table vp-two-row only-desk">
+  <colgroup><col style="width:27%"><col style="width:10%"><col style="width:13%"><col style="width:16%"><col style="width:17%"><col style="width:17%"></colgroup>
+  <thead><tr><th>종목·구분</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th></tr></thead>
+  <tbody>${list.map(p=>{
+   const r=info(p),manual=p.origin==='copy'?'':' vp-manual';
+   const detail=(name,value,valueClass='')=>`<span><small>${name}</small><b class="${valueClass}">${value}</b></span>`;
+   return `<tr class="vp-primary${manual}">
+    <td><b class="vp-symbol">${esc(p.symbol)}</b> ${badge(p)}</td>
+    <td>${side(p.direction)}</td><td>${esc(p.leverage??'—')}배 <small class="muted">${mm(p)}</small></td>
+    <td class="num">${esc(qtyFmt(p.size))}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td>
+   </tr><tr class="vp-secondary${manual}"><td colspan="6"><div class="vp-detail-grid">
+    ${detail('증거금',usdv(p.margin))}
+    ${detail('추매',r?esc(r.adds||0)+'회':'—')}
+    ${detail('보유',r?heldTxt(r):'—')}
+    ${detail('미실현',money(p.unrealized),cls(p.unrealized))}
+    ${detail('수익률',pct(p.roePct),cls(p.roePct))}
+    ${detail('청산가',px(p.liquidation))}
+   </div></td></tr>`;
+  }).join('')}</tbody></table>`;
  const body=`<ul class="copy-list only-mob">${list.map(row).join('')}</ul>`+scrollCopyTable(table,'실계좌 보유 포지션'); // fills `seen`
  const pending=copyOpen.filter(r=>!seen.has(r));
  const pend=pending.length?`<p class="copy-stamp">거래소 확인 중인 카피 기록 ${pending.length}개: ${pending.map(r=>`<b>${esc(r.symbol)}</b> ${side(r.direction)}`).join(' · ')}</p>`:'';
