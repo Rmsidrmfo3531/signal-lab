@@ -821,3 +821,27 @@ test('BingX checks the entry guard after its queue and again before an HTTP 429 
  await assert.rejects(client.placeOrder(params,guarded),{code:'ENTRY_NOT_SENT',reason:'NOT_ARMED'});
  assert.equal(calls,1,'the known refusal is never resent after disarm');
 });
+
+test('BingX pacing uses monotonic time so a backward wall-clock jump cannot stall requests',async()=>{
+ const realDateNow=Date.now,prevGap=process.env.BINGX_MIN_INTERVAL_MS;
+ let offset=0,calls=0;
+ Date.now=()=>realDateNow()+offset;
+ process.env.BINGX_MIN_INTERVAL_MS='5';
+ try{
+  const client=new BingXTradeClient({apiKey:'mock',secret:'mock',fetcher:async()=>{
+   calls++;
+   return new Response(JSON.stringify({code:0,data:[]}),{status:200});
+  }});
+  await client.positions();
+  offset=-3_600_000; // simulate 1-hour backward NTP/clock jump
+  const start=performance.now();
+  await client.positions();
+  assert.equal(calls,2);
+  assert.ok(performance.now()-start<1000,'backward wall clock must not stall the rate-limit queue');
+ }finally{
+  Date.now=realDateNow;
+  if(prevGap===undefined)delete process.env.BINGX_MIN_INTERVAL_MS;
+  else process.env.BINGX_MIN_INTERVAL_MS=prevGap;
+ }
+});
+

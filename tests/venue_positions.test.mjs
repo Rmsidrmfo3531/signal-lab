@@ -74,10 +74,11 @@ test('real-account page: one 보유 중 list from the exchange (user 2026-11-17 
  assert.doesNotMatch(h,/보유<b/,'the count is the list heading\'s only (user 2026-11-18)');assert.doesNotMatch(h,/미실현<b/,'the 미실현 합계 line has the total');assert.doesNotMatch(h,/거래소 전체 포지션/,'one list only');
  assert.equal((h.match(/class="copy-sub">보유 중/g)||[]).length,1);
  assert.match(h,/vp-badge copy">카피/);assert.match(h,/vp-badge manual">수동/);
- assert.match(h,/추매 3회 · 1시간 30분/);assert.match(h,/>3회<\/td>/);
+ assert.match(h,/추매 3회 · 부분청산 — · 1시간 30분/);assert.match(h,/>3회 · —<\/b><\/td>/);
  assert.match(h,/거래소 확인 중인 카피 기록 1개: <b>SOLUSDT<\/b>/);
  assert.match(h,/미실현 합계 <b class="paper-profit">\+\$52\.00<\/b> · 수동만 <b class="paper-profit">\+\$50\.00/);
- for(const th of ['종목','구분','방향','배율','수량','평단','현재가','증거금','추매','보유','미실현','수익률','청산가'])assert.ok(h.includes(`>${th}</th>`),th);
+ for(const th of ['종목·구분','방향','배율','수량','평단','현재가'])assert.ok(h.includes(`>${th}</th>`),th);
+ for(const label of ['증거금','추매 · 부분청산','보유','미실현 · 수익률','청산가'])assert.match(h,new RegExp('<small(?:\\s+title="[^"]*")?>'+label+'</small>'),label);
  assert.ok(h.indexOf('보유 중')<h.indexOf('최근 종료'));assert.match(h,/copy-list only-mob/);assert.match(h,/격리/);
  const empty=copyHTML({...base,venuePositions:[],venuePositionsAt:Date.now()});assert.match(empty,/보유 중인 포지션이 없습니다/);assert.match(empty,/0개 · 카피 0개 · 수동 0개/);
  const failed=venuePositionsHTML({...base,venuePositions:vp,venuePositionsAt:Date.now()-5000,venuePositionsError:'HTTP_429'});assert.match(failed,/갱신 실패/);assert.match(failed,/BTCUSDT/);
@@ -88,14 +89,14 @@ test('real-account page: one 보유 중 list from the exchange (user 2026-11-17 
  assert.doesNotMatch(copyHTML({...base,venuePositions:[{...vp[1],symbol:'<img src=x>'}]}),/<img/,'escaped');
 });
 
-test('real copy dashboard shows exchange order checks and confirmed P&L with settlement details',async()=>{
+test('real copy dashboard shows confirmed P&L with settlement details and omits verbose exchange audit rows',async()=>{
  const {copyHTML,setCopyPage}=await import('../public/live_control.js');setCopyPage(0);
  const now=Date.now(),closed=[{symbol:'ETHUSDT',direction:'LONG',netUSD:2,netSource:'EXCHANGE_FILLS',openedAt:now-3000,closedAt:now-2000},
   {symbol:'SOLUSDT',direction:'SHORT',netUSD:-1,netSource:'ESTIMATE_BEFORE_FEES',openedAt:now-3000,closedAt:now-1000,
    settlement:{state:'QUANTITY_MISMATCH',checkedAt:now}}];
  const html=copyHTML({mode:'LIVE',closed,audit:{ready:true,positionAt:now,lanes:[{symbol:'BTCUSDT',direction:'LONG',expectedQty:3,venueQty:2,
   stop:'MISSING',issues:['STOP_MISSING','SIZE_MISMATCH'],checkedAt:now,blocked:true}]}});
- assert.match(html,/원장 3 · 거래소 2/);assert.match(html,/보호 손절 누락 · 수량 불일치/);assert.match(html,/신규 진입·추매 보류/);
+ assert.doesNotMatch(html,/원장 3 · 거래소 2|보호 손절 누락 · 수량 불일치|신규 진입·추매 보류/);
  assert.match(html,/정산 확인<b >1건/);assert.match(html,/누적 손익<b class="paper-profit">\+\$2\.00/);assert.match(html,/승률<b >100%/);
  assert.match(html,/data-copy-settle[^>]*>정산 다시 조회/);assert.doesNotMatch(html,/추정|−\$1\.00/);
  assert.match(html,/진입·청산 체결 수량 불일치 · [^<]+ 조회/);
