@@ -167,6 +167,9 @@ function notCopiedWhy(e,when,all=[]){
 // Real account (user 2026-11-17 23:19 "보유중과 거래소 전체 포지션을 합쳐줘"): one "보유 중" list from the exchange's
 // own positions; copy rows also show the copy record's adds and holding time, manual rows the 수동 badge. Copy records
 // the exchange doesn't show (yet) are listed under it as "거래소 확인 중".
+// Only the table scrolls horizontally; controls, headings and totals stay fixed.
+// tabindex makes the overflow region keyboard-scrollable on desktop.
+const scrollCopyTable=(table,label)=>`<div class="copy-table-scroll" role="region" aria-label="${esc(label)}" tabindex="0">${table}</div>`;
 export function venuePositionsHTML(c,copyOpen=[]){
  if(!c||c.mode!=='LIVE'||!('venuePositions' in c||c.venuePositionsError))return '';
  const list=Array.isArray(c.venuePositions)?c.venuePositions:null,manual=(list||[]).filter(p=>p.origin!=='copy');
@@ -187,7 +190,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
  const totals=`<p class="copy-stamp vp-total">미실현 합계 <b class="${cls(sum(list))}">${money(sum(list))}</b> · 수동만 <b class="${cls(sum(manual))}">${manual.length?money(sum(manual)):'—'}</b></p>`;
  const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}"><b>${esc(p.symbol)}</b>${badge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b></li>`};
  const table=`<table class="copy-table vp-table only-desk"><thead><tr><th>종목</th><th>구분</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th><th class="num">증거금</th><th class="num">추매</th><th>보유</th><th class="num">미실현</th><th class="num">수익률</th><th class="num">청산가</th></tr></thead><tbody>${list.map(p=>{const r=info(p);return `<tr class="${p.origin==='copy'?'':'vp-manual'}"><td><b>${esc(p.symbol)}</b></td><td>${badge(p)}</td><td>${side(p.direction)}</td><td>${esc(p.leverage??'—')}배 <small class="muted">${mm(p)}</small></td><td class="num">${esc(qtyFmt(p.size))}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td><td class="num">${usdv(p.margin)}</td><td class="num">${r?esc(r.adds||0)+'회':'—'}</td><td class="muted">${r?heldTxt(r):'—'}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td><td class="num ${cls(p.roePct)}">${pct(p.roePct)}</td><td class="num">${px(p.liquidation)}</td></tr>`}).join('')}</tbody></table>`;
- const body=`<ul class="copy-list only-mob">${list.map(row).join('')}</ul>`+table; // fills `seen`
+ const body=`<ul class="copy-list only-mob">${list.map(row).join('')}</ul>`+scrollCopyTable(table,'실계좌 보유 포지션'); // fills `seen`
  const pending=copyOpen.filter(r=>!seen.has(r));
  const pend=pending.length?`<p class="copy-stamp">거래소 확인 중인 카피 기록 ${pending.length}개: ${pending.map(r=>`<b>${esc(r.symbol)}</b> ${side(r.direction)}`).join(' · ')}</p>`:'';
  return head+(list.length?totals:'')+body+pend;
@@ -359,9 +362,9 @@ export function copyHTML(c){
  const stamp=isLive&&updated>0?`<p class="copy-stamp">${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
- const main=`<div class="copy-main">${copyAuditHTML(c.audit)}`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
-  (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${closedTable}${pager}`:'')+
-  (notes.length?`<details class="fail-box"${failOpen?' open':''}><summary data-fail-toggle><b>진입 실패·건너뜀</b> <small>전체 ${notesAll.length}건 · 최근 24시간 ${notesAll.filter(e=>Date.now()-e.at<864e5).length}건</small></summary><ul class="copy-list muted only-mob">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span><b>${esc(e.symbol||'')}</b> ${e.direction?side(e.direction):''} · ${why(e)}</li>`).join('')}</ul><table class="copy-table only-desk"><thead><tr><th>시각</th><th>종목</th><th>방향</th><th>이유</th></tr></thead><tbody>${notes.map(e=>`<tr><td class="muted">${when(e.at)}</td><td><b>${esc(e.symbol||'—')}</b></td><td>${e.direction?side(e.direction):'—'}</td><td>${why(e)}</td></tr>`).join('')}</tbody></table>${failPager}</details>`:'')+'</div>';
+ const main=`<div class="copy-main">${copyAuditHTML(c.audit)}`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
+  (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}${pager}`:'')+
+  (notes.length?`<details class="fail-box"${failOpen?' open':''}><summary data-fail-toggle><b>진입 실패·건너뜀</b> <small>전체 ${notesAll.length}건 · 최근 24시간 ${notesAll.filter(e=>Date.now()-e.at<864e5).length}건</small></summary><ul class="copy-list muted only-mob">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span><b>${esc(e.symbol||'')}</b> ${e.direction?side(e.direction):''} · ${why(e)}</li>`).join('')}</ul><div class="copy-table-scroll" role="region" aria-label="진입 실패 및 건너뜀" tabindex="0"><table class="copy-table only-desk"><thead><tr><th>시각</th><th>종목</th><th>방향</th><th>이유</th></tr></thead><tbody>${notes.map(e=>`<tr><td class="muted">${when(e.at)}</td><td><b>${esc(e.symbol||'—')}</b></td><td>${e.direction?side(e.direction):'—'}</td><td>${why(e)}</td></tr>`).join('')}</tbody></table></div>${failPager}</details>`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
 
@@ -396,8 +399,8 @@ export function scalpHTML(s){
  const counts=(s.skipCounts||[]).slice(0,8),skips=(s.skips||[]).slice(0,10);
  const skipBox=counts.length?`<h5 class="copy-sub">진입 안 한 이유</h5><p class="copy-rules">${counts.map(c=>`${esc(c.label)} ${esc(c.count)}회`).join(' · ')}</p><ul class="copy-list muted">${skips.map(x=>`<li><span class="muted">${when(x.at)}</span>${esc(x.symbol||'')}${x.direction?` <b class="${x.direction==='LONG'?'pos':'neg'}">${x.direction==='LONG'?'롱(급락 후 반등)':'숏(급등 후 되돌림)'}</b>`:''}${x.movePct!=null?` <small>${esc(Number(x.movePct).toFixed(1))}% 움직임</small>`:''} · ${esc(x.label||x.reason)}${skipDetail(x)}</li>`).join('')}</ul>`:'';
  const side_=`<div class="copy-side">${modeLine}${stats}${bySide}${rules}</div>`;
- const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${openTable}`:`<p class="empty-small">보유 중인 단타가 없습니다.${s.armed?' 5분봉 마감마다 급락 후 반등·급등 후 되돌림을 찾습니다.':''}</p>`)+
-  (closed.length?`<h5 class="copy-sub">최근 종료 <small>최근 ${Math.min(20,closed.length)}건 · 전체 기록은 단타 기록 파일</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${closedTable}`:'')+skipBox+'</div>';
+ const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">보유 중인 단타가 없습니다.${s.armed?' 5분봉 마감마다 급락 후 반등·급등 후 되돌림을 찾습니다.':''}</p>`)+
+  (closed.length?`<h5 class="copy-sub">최근 종료 <small>최근 ${Math.min(20,closed.length)}건 · 전체 기록은 단타 기록 파일</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}`:'')+skipBox+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
 function bindScalpButtons(el){
@@ -481,7 +484,7 @@ export function testnetClosedHTML(o){
  const tag=x=>`${x.kind==='scalp'?scalpBadge(x.scalpKind):TN_BADGE[x.kind]}${x.test?' <small class="muted">시험(합계 제외)</small>':''}`;
  const li=x=>`<li class="tn-${x.kind}"><span class="muted">${tnWhen(x.closedAt)}</span><b>${esc(x.symbol)}</b>${tag(x)}${side(x.direction)}<span>${esc(x.reason||'')}</span><span class="muted">${tnHeld(x.openedAt,x.closedAt)}</span><b class="${tnCls(x.netUSD)} end">${tnResult(x)}</b>${del(x)}</li>`;
  const table=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>구분</th><th>종목</th><th>방향</th><th>보유</th><th>사유</th><th class="num">손익</th></tr></thead><tbody>${shown.map(x=>`<tr class="tn-${x.kind}"><td class="muted">${tnWhen(x.closedAt)}</td><td>${tag(x)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="muted">${tnHeld(x.openedAt,x.closedAt)}</td><td class="tn-reason">${esc(x.reason||'')}</td><td class="num"><b class="${tnCls(x.netUSD)}">${tnResult(x)}</b>${del(x)}</td></tr>`).join('')}</tbody></table>`;
- return `<ul class="copy-list only-mob">${shown.map(li).join('')}</ul>${table}${pager}`;
+ return `<ul class="copy-list only-mob">${shown.map(li).join('')}</ul>${scrollCopyTable(table,'테스트넷 종료 거래')}${pager}`;
 }
 /** Totals over both strategies (server testnetStats) and the 신호 / 단타 breakdown line. */
 export function testnetSummaryHTML(st,{scalpOnly=false}={}){
