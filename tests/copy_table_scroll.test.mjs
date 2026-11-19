@@ -7,7 +7,7 @@ const NOW=Date.parse('2026-11-18T14:00:00Z');
 const venue={symbol:'NCSKSNDK2USDT',origin:'manual',direction:'LONG',leverage:18,marginMode:'CROSSED',
  size:1.39189,avg:769,mark:782.96,margin:59.46,unrealized:19.43,roePct:32.67,liquidation:700};
 
-test('real account uses two rows per position: compact prices above, all labelled metrics below',()=>{
+test('real account merges only the symbol column across two compact metric rows',()=>{
  const copy={...venue,symbol:'ETHUSDT',origin:'copy',direction:'SHORT',liquidation:900};
  const open=[{symbol:'ETHUSDT',direction:'SHORT',openedAt:NOW-3600000,adds:3}];
  const html=venuePositionsHTML({mode:'LIVE',venuePositions:[venue,copy]},open);
@@ -15,15 +15,15 @@ test('real account uses two rows per position: compact prices above, all labelle
  assert.match(html,/<table class="copy-table vp-table vp-two-row only-desk">/);
  assert.equal((html.match(/<tr class="vp-primary/g)||[]).length,2);
  assert.equal((html.match(/<tr class="vp-secondary/g)||[]).length,2);
+ assert.equal((html.match(/class="vp-symbol-cell" rowspan="2"/g)||[]).length,2,'only symbol cells span both rows');
+ assert.doesNotMatch(html,/colspan="6"/,'second row has real table cells aligned to the columns');
  assert.match(html,/NCSKSNDK2USDT/);
- assert.match(html,/<th>종목·구분<\/th>/);
- assert.match(html,/<td colspan="6"><div class="vp-detail-grid">/);
- for(const field of ['증거금','추매','보유','미실현','수익률','청산가'])
-  assert.match(html,new RegExp('<small>'+field+'<\\/small>'),'every second-row field has its own label');
- assert.match(html,/19\.43/);
- assert.match(html,/32\.7%/);
- assert.match(html,/3회/,'copy additional buys are retained');
- assert.match(html,/<ul class="copy-list only-mob">/,'compact mobile list is retained');
+ for(const field of ['증거금','추매','보유','미실현 · 수익률','청산가'])
+  assert.match(html,new RegExp('<small>'+field+'<\\/small>'),'each second-row field has its own cell');
+ assert.match(html,/19\\.43/);
+ assert.match(html,/32\\.7%/);
+ assert.match(html,/3회/,'copy additional buys remain visible');
+ assert.match(html,/<ul class="copy-list only-mob">/,'mobile list remains unchanged');
 });
 
 test('copy and scalp positions and closed trades scroll independently from their controls',()=>{
@@ -46,6 +46,8 @@ test('testnet closed trades use the same wrapper; CSS scrolls only wide desktop 
  assert.match(css,/\.copy-table-scroll\{display:block;width:100%;overflow-x:auto/,'desktop scrolls each table');
  assert.match(css,/\.copy-table-scroll \.copy-table\{width:max-content;min-width:100%/);
  assert.match(css,/\.copy-main\{min-width:0;overflow-x:visible\}/,'the entire panel does not horizontally scroll');
- assert.match(css,/\.copy-table-scroll \.vp-two-row\{width:100%;min-width:0;max-width:100%;table-layout:fixed\}/);
- assert.match(css,/\.vp-detail-grid\{display:grid;grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
+ assert.match(css,/\\.copy-table-scroll \\.vp-two-row\\{width:100%;min-width:0;max-width:100%;table-layout:fixed\\}/);
+ assert.match(css,/\\.copy-side \\.pnl-cal\\{width:100%;max-width:320px\\}/,'calendar is compact');
+ assert.match(css,/grid-template-columns:minmax\\(260px,320px\\) minmax\\(0,1fr\\)/,'desktop uses narrow sidebar again');
+ assert.doesNotMatch(css,/\\.vp-detail-grid\\{display:grid/,'no full-width detail grid');
 });
