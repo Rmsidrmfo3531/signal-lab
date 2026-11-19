@@ -472,6 +472,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .vp-two-row .vp-secondary td>b{display:block;font-size:12px;line-height:1.45;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .vp-two-row .vp-secondary td .vp-roe{font-size:10.5px;white-space:normal}
 .vp-two-row .vp-primary.vp-manual .vp-symbol-cell{box-shadow:inset 2px 0 rgba(242,196,109,.55)}
+.vp-two-row .vp-secondary.vp-manual td:first-child{box-shadow:none}
 /* Preserve a compact calendar at every desktop width, instead of stretching it to the full panel. */
 .copy-side .pnl-cal{width:100%;max-width:320px}
 @media(min-width:1100px){
