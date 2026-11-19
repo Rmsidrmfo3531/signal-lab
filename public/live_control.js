@@ -293,9 +293,6 @@ export function pnlCalendarHTML(daily,{now=Date.now()}={}){
  <div class="cal-head"><button type="button" class="outline-btn small" data-cal-month="-1" aria-label="이전 달"${ym<=floor?' disabled':''}>‹</button><strong>${yy}년 ${mm}월</strong><button type="button" class="outline-btn small" data-cal-month="1" aria-label="다음 달"${ym>=thisMonth?' disabled':''}>›</button></div>
  <div class="cal-grid" data-cal-ym="${esc(ym)}">${'월화수목금토일'.split('').map((d,i)=>`<span class="cal-dow${i>4?' cal-we':''}">${d}</span>`).join('')}${calendarWeeks(byDay,ym).flat().map(cell).join('')}</div>${foot}<p class="cal-state">${state}</p></section>`;
 }
-const AUDIT_ISSUES={POSITION_MISSING:'포지션 미확인',SIZE_MISMATCH:'수량 불일치',POSITION_SIDE_MISMATCH:'방향 불일치',STOP_MISSING:'보호 손절 누락',
- STOP_MISMATCH:'보호 손절 조건 불일치',CLOSE_DELAYED:'청산 지연',UNEXPECTED_OPEN_ORDER:'추가 진입 미체결 주문 확인',
- ORDERS_UNREADABLE:'미체결 주문 조회 실패',POSITIONS_UNREADABLE:'포지션 조회 실패'};
 const SETTLEMENT_STATES={CONFIRMED:'정산 확인',WAITING:'체결 내역 대기',NO_ORDER_IDS:'연결할 주문 ID 없음',ORDER_LINK_MISSING:'주문 ID 연결 실패',
  MIXED_WITH_COPY:'같은 종목의 카피 거래와 정산 내역 겹침',MIXED_WITH_MANUAL:'같은 종목의 수동 거래와 정산 내역 겹침',
  ENTRY_HISTORY_UNVERIFIED:'시작 전 진입 체결 확인 필요',POSITION_SIDE_UNVERIFIED:'체결의 롱·숏 방향 확인 필요',TRADE_LINK_UNVERIFIED:'체결 내역과 해당 거래를 연결하지 못함',
@@ -303,22 +300,6 @@ const SETTLEMENT_STATES={CONFIRMED:'정산 확인',WAITING:'체결 내역 대기
  HISTORY_WINDOW_EXPIRED:'정산 조회 기간 경과',LOOKUP_UNAVAILABLE:'체결 조회 미설정',LOOKUP_FAILED:'거래소 정산 조회 실패',
  MISSING_TIMESTAMPS:'거래 시각 기록 부족',ORDER_LIMIT:'자동 정산 주문 수 한도 초과'};
 const auditTime=t=>t?new Date(t).toLocaleTimeString('ko-KR',{timeZone:'Asia/Seoul',hour12:false}):'';
-
-function copyAuditHTML(a){
- if(!a)return '';
- const lanes=a.lanes||[],blocked=lanes.filter(p=>p.blocked);
- const state=!a.ready?'신규 진입·추매 보류':a.error?'최근 포지션 조회 실패':blocked.length?`${blocked.length}개 포지션 진입·추매 보류`:
-  lanes.some(p=>!p.checkedAt||p.issues.length)?'거래소 대조 확인 중':'대조 완료';
- const stamped=a.positionAt?` · ${auditTime(a.positionAt)} KST 포지션 조회`:'';
- const stopNames={OK:'보호 손절 확인',MISSING:'보호 손절 누락',MISMATCH:'보호 손절 조건 불일치',OFF:'보호 손절 미설정',UNKNOWN:'보호 손절 확인 중'};
- const rows=lanes.map(p=>{
-  const issues=p.issues.filter(code=>!['STOP_MISSING','STOP_MISMATCH'].includes(code)).map(code=>AUDIT_ISSUES[code]||code);
-  if(p.stale&&p.checkedAt)issues.push('확인 정보 오래됨');
-  const quantities=`원장 ${esc(qtyFmt(p.expectedQty))} · 거래소 ${esc(qtyFmt(p.venueQty))}`;
-  return `<li><b>${esc(p.symbol)}</b>${side(p.direction)}<span>${quantities}</span><span>${esc([stopNames[p.stop],...issues].filter(Boolean).join(' · '))}</span>${p.blocked?'<b class="live-warn-text">신규 진입·추매 보류</b>':''}</li>`;
- }).join('');
- return `<section aria-label="거래소 대조" class="copy-audit"><h5 class="copy-sub">거래소 대조 <small class="${!a.ready||blocked.length||a.error?'live-warn-text':''}">${esc(state+stamped)}</small></h5>${rows?`<ul class="copy-list">${rows}</ul>`:''}</section>`;
-}
 
 export function copyHTML(c){
  lastCopy=c;
@@ -380,7 +361,7 @@ export function copyHTML(c){
  const stamp=isLive&&updated>0?`<p class="copy-stamp">${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
  const side_=`<div class="copy-side">${modeLine}${kill}${stats}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
- const main=`<div class="copy-main">${copyAuditHTML(c.audit)}`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
+ const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}${pager}`:'')+
   (notes.length?`<details class="fail-box"${failOpen?' open':''}><summary data-fail-toggle><b>진입 실패·건너뜀</b> <small>전체 ${notesAll.length}건 · 최근 24시간 ${notesAll.filter(e=>Date.now()-e.at<864e5).length}건</small></summary><ul class="copy-list muted only-mob">${notes.map(e=>`<li><span class="muted">${when(e.at)}</span><b>${esc(e.symbol||'')}</b> ${e.direction?side(e.direction):''} · ${why(e)}</li>`).join('')}</ul><div class="copy-table-scroll" role="region" aria-label="진입 실패 및 건너뜀" tabindex="0"><table class="copy-table only-desk"><thead><tr><th>시각</th><th>종목</th><th>방향</th><th>이유</th></tr></thead><tbody>${notes.map(e=>`<tr><td class="muted">${when(e.at)}</td><td><b>${esc(e.symbol||'—')}</b></td><td>${e.direction?side(e.direction):'—'}</td><td>${why(e)}</td></tr>`).join('')}</tbody></table></div>${failPager}</details>`:'')+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
