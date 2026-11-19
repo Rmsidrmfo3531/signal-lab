@@ -8,8 +8,8 @@
 const ema=(values,n)=>{const out=new Array(values.length).fill(null);if(values.length<n)return out;let e=values.slice(0,n).reduce((a,b)=>a+b,0)/n;out[n-1]=e;const k=2/(n+1);for(let i=n;i<values.length;i++){e=(values[i]-e)*k+e;out[i]=e}return out};
 const sma=(values,n)=>values.map((_,i)=>i<n-1?null:values.slice(i-n+1,i+1).reduce((a,b)=>a+b,0)/n);
 function rsiSeries(closes,n=14){const out=new Array(closes.length).fill(null);let g=0,l=0;for(let i=1;i<=n&&i<closes.length;i++){const d=closes[i]-closes[i-1];g+=Math.max(d,0);l+=Math.max(-d,0)}
- if(closes.length<=n)return out;g/=n;l/=n;out[n]=l===0?100:100-100/(1+g/l);
- for(let i=n+1;i<closes.length;i++){const d=closes[i]-closes[i-1];g=(g*(n-1)+Math.max(d,0))/n;l=(l*(n-1)+Math.max(-d,0))/n;out[i]=l===0?100:100-100/(1+g/l)}return out}
+ if(closes.length<=n)return out;g/=n;l/=n;out[n]=l===0?(g===0?50:100):100-100/(1+g/l);
+ for(let i=n+1;i<closes.length;i++){const d=closes[i]-closes[i-1];g=(g*(n-1)+Math.max(d,0))/n;l=(l*(n-1)+Math.max(-d,0))/n;out[i]=l===0?(g===0?50:100):100-100/(1+g/l)}return out}
 function atrSeries(c,n=14){const tr=c.map((x,i)=>i?Math.max(x.h-x.l,Math.abs(x.h-c[i-1].c),Math.abs(x.l-c[i-1].c)):x.h-x.l);const out=new Array(c.length).fill(null);let a=0;
  for(let i=0;i<c.length;i++){if(i<n){a+=tr[i];if(i===n-1){a/=n;out[i]=a}}else{a=(a*(n-1)+tr[i])/n;out[i]=a}}return out}
 
@@ -31,12 +31,12 @@ export const DETECTORS={
  // RSI divergence: price lower low, RSI higher low (first low oversold), then a bullish close above the previous high.
  'RSI 상승 다이버전스'(p,j){const c=p.c,last=c[j],prev=c[j-1],a=p.atr[j];if(!a||!bull(last)||last.c<=prev.h)return null;
   const lows=[];for(let i=j-3;i>=j-45&&i>=3;i--)if(pivotLow(c,i))lows.push(i);if(lows.length<2)return null;
-  const [b,f]=[lows[0],lows[1]];if(j-b>8||b-f<5)return null;
+  const [b,f]=[lows[0],lows[1]];if(j-b>8||b-f<5||p.rsi[b]==null||p.rsi[f]==null)return null;
   if(!(c[b].l<c[f].l&&p.rsi[b]>p.rsi[f]&&p.rsi[f]<35))return null;
   return {direction:'LONG',entry:last.c,stop:Math.min(c[b].l,last.l)-a*.2}},
  'RSI 하락 다이버전스'(p,j){const c=p.c,last=c[j],prev=c[j-1],a=p.atr[j];if(!a||!bear(last)||last.c>=prev.l)return null;
   const highs=[];for(let i=j-3;i>=j-45&&i>=3;i--)if(pivotHigh(c,i))highs.push(i);if(highs.length<2)return null;
-  const [b,f]=[highs[0],highs[1]];if(j-b>8||b-f<5)return null;
+  const [b,f]=[highs[0],highs[1]];if(j-b>8||b-f<5||p.rsi[b]==null||p.rsi[f]==null)return null;
   if(!(c[b].h>c[f].h&&p.rsi[b]<p.rsi[f]&&p.rsi[f]>65))return null;
   return {direction:'SHORT',entry:last.c,stop:Math.max(c[b].h,last.h)+a*.2}},
  // MACD: signal-line cross below zero (LONG) / above zero (SHORT), with the 200 EMA side as trend.
@@ -106,11 +106,11 @@ export function volumeLevels(p,j,{look=200,top=5}={}){
 }
 function supportsBelow(p,j){const lv=volumeLevels(p,j),m200=smaAt(p.close,200,j),m300=smaAt(p.close,300,j);return [...lv,...[m200,m300].filter(x=>x!=null)]}
 function rsiRecently(p,j,test,bars=12){for(let i=j;i>=j-bars&&i>=0;i--)if(p.rsi[i]!=null&&test(p.rsi[i]))return true;return false}
-function hasDivergence(p,j,dir){const c=p.c,piv=[];for(let i=j-1;i>=j-40&&i>=3;i--)if(dir===1?pivotLow(c,i,2):pivotHigh(c,i,2))piv.push(i);
- if(piv.length<2)return false;const [b,f]=piv;return dir===1?c[b].l<c[f].l&&p.rsi[b]>p.rsi[f]:c[b].h>c[f].h&&p.rsi[b]<p.rsi[f]}
+function hasDivergence(p,j,dir){const c=p.c,piv=[];for(let i=j-2;i>=j-40&&i>=2;i--)if(dir===1?pivotLow(c,i,2):pivotHigh(c,i,2))piv.push(i);
+ if(piv.length<2)return false;const [b,f]=piv;if(p.rsi[b]==null||p.rsi[f]==null)return false;return dir===1?c[b].l<c[f].l&&p.rsi[b]>p.rsi[f]:c[b].h>c[f].h&&p.rsi[b]<p.rsi[f]}
 /** RSI-prepared reversal at a volume level or long MA (the video's RSI set-up). */
 function leeRsiZone(p,j,dir,{divergence=false}={}){
- const c=p.c,x=c[j],a=p.atr[j];if(!a||j<210)return null;
+ const c=p.c,x=c[j],a=p.atr[j];if(!a||j<210||p.rsi[j]==null||p.rsi[j-1]==null)return null;
  if(!rsiRecently(p,j,dir===1?r=>r<30:r=>r>70))return null;               // prepared
  if(!(dir===1?p.rsi[j]>p.rsi[j-1]&&bull(x):p.rsi[j]<p.rsi[j-1]&&bear(x)))return null; // RSI hook + candle
  if(divergence&&!hasDivergence(p,j,dir))return null;
@@ -173,7 +173,7 @@ Object.assign(DETECTORS,LEE_DETECTORS);
  * then two candles of the opposite colour close -> enter. Stop: the piercing candle's wick. */
 export function bollingerTwoCandles(p,j,dir,{stopBufferPct=.0015}={}){
  const c=p.c,k=j-2;if(k<21||p.bbLo[k]==null)return null;const x=c[k],a=c[j-1],b=c[j];
- const pierced=dir===1?x.l<p.bbLo[k]&&bear(x)&&(p.rsi[k]<=30||p.rsi[k-1]<=30):x.h>p.bbUp[k]&&bull(x)&&(p.rsi[k]>=70||p.rsi[k-1]>=70);
+ const pierced=dir===1?x.l<p.bbLo[k]&&bear(x)&&(p.rsi[k]!=null&&p.rsi[k]<=30||p.rsi[k-1]!=null&&p.rsi[k-1]<=30):x.h>p.bbUp[k]&&bull(x)&&(p.rsi[k]!=null&&p.rsi[k]>=70||p.rsi[k-1]!=null&&p.rsi[k-1]>=70);
  if(!pierced||!(dir===1?bull(a)&&bull(b):bear(a)&&bear(b)))return null;
  const wick=dir===1?Math.min(x.l,a.l,b.l):Math.max(x.h,a.h,b.h);
  return {direction:dir===1?'LONG':'SHORT',entry:b.c,stop:dir===1?wick*(1-stopBufferPct):wick*(1+stopBufferPct)};
@@ -183,14 +183,14 @@ export function macdCrossDivergence(p,j,dir){
  const c=p.c,m=p.macd,s=p.sig,at=p.atr[j];if(!at||j<60)return null;
  let crossed=false;for(let i=j;i>j-3;i--)if(m[i]!=null&&s[i]!=null&&m[i-1]!=null&&s[i-1]!=null&&(dir===-1?m[i-1]>=s[i-1]&&m[i]<s[i]:m[i-1]<=s[i-1]&&m[i]>s[i]))crossed=true;
  if(!crossed)return null;const piv=[];for(let i=j-3;i>=j-50&&i>=3;i--)if(dir===-1?pivotHigh(c,i):pivotLow(c,i))piv.push(i);if(piv.length<2)return null;
- const [b,f]=piv;if(j-b>12||b-f<5||b-f>40)return null;
+ const [b,f]=piv;if(j-b>12||b-f<5||b-f>40||m[b]==null||m[f]==null)return null;
  const div=dir===-1?c[b].h>c[f].h&&m[b]<m[f]:c[b].l<c[f].l&&m[b]>m[f];if(!div)return null;
  return {direction:dir===1?'LONG':'SHORT',entry:c[j].c,stop:dir===-1?Math.max(c[b].h,c[j].h)+at*.2:Math.min(c[b].l,c[j].l)-at*.2};
 }
 /** RSI hidden divergence (convergence): price higher low + RSI lower low (LONG), mirror for SHORT; lows close together. */
 export function rsiHiddenDivergence(p,j,dir){
  const c=p.c,at=p.atr[j],x=c[j];if(!at)return null;const piv=[];for(let i=j-3;i>=j-35&&i>=3;i--)if(dir===1?pivotLow(c,i):pivotHigh(c,i))piv.push(i);if(piv.length<2)return null;
- const [b,f]=piv;if(j-b>8||b-f<5||b-f>30)return null;
+ const [b,f]=piv;if(j-b>8||b-f<5||b-f>30||p.rsi[b]==null||p.rsi[f]==null)return null;
  const ok=dir===1?c[b].l>c[f].l&&p.rsi[b]<p.rsi[f]&&bull(x)&&x.c>c[j-1].h:c[b].h<c[f].h&&p.rsi[b]>p.rsi[f]&&bear(x)&&x.c<c[j-1].l;
  if(!ok)return null;return {direction:dir===1?'LONG':'SHORT',entry:x.c,stop:dir===1?c[b].l-at*.2:c[b].h+at*.2};
 }

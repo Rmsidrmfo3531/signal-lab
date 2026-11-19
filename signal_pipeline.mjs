@@ -35,7 +35,8 @@ export function evaluateBinanceSignal(row,{market,book,verified=false,venueConne
   execution.reasons.push('현재 호가 기준 매물대 계획 수량이 최대 손실 허용 수량 초과');
  if(Number.isFinite(execution.entryBasis)&&Array.isArray(plan?.targets)&&costs&&
   ['takerRate','spreadBps','slippageBps','fundingRate'].every(key=>Number.isFinite(costs[key]))){
-  currentNetRR=netRewardRisk({direction:row.direction,entry:execution.entryBasis,stop:row.stop,target:plan.targets[0],costs});
+  const liveCosts=Number.isFinite(execution.spreadBps)?{...costs,spreadBps:Math.max(costs.spreadBps,execution.spreadBps)}:costs;
+  currentNetRR=netRewardRisk({direction:row.direction,entry:execution.entryBasis,stop:row.stop,target:plan.targets[0],costs:liveCosts});
  }
  if(!Number.isFinite(currentNetRR)||currentNetRR<1.8)execution.reasons.push('매물대 TP1 현재 비용 가정 반영 손익비 1.8 미만/평가 불가');
  execution.estimatedNetRR=currentNetRR;

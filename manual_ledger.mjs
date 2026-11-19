@@ -35,7 +35,8 @@ const num=v=>v===null||v===undefined||v===''?null:Number.isFinite(Number(v))?Num
 const r6=x=>x==null?null:Math.round(x*1e6)/1e6;
 const keyOf=(venueSymbol,direction)=>`${venueSymbol}|${direction}`;
 const ownerOf=p=>p?.alertOrigin&&p.alertOwnerId?`${p.alertOrigin}|${p.alertOwnerId}`:null;
-const incomeKey=x=>String(x?.tranId??x?.tradeId??[x?.incomeType,x?.symbol,x?.time,x?.income].join('|'));
+const nonEmpty=v=>v!==null&&v!==undefined&&String(v).trim()!==''?String(v).trim():null;
+const incomeKey=x=>nonEmpty(x?.tranId)??nonEmpty(x?.tradeId)??[x?.incomeType,x?.symbol,x?.time,x?.income].join('|');
 const FILL_DELAY_MS=1500;
 const qtyTolerance=qty=>Math.max(1e-12,Math.abs(qty)*1e-8);
 const alertOrderKey=(symbol,orderId)=>createHash('sha256').update(`${symbol}|${orderId}`).digest('hex').slice(0,32);
@@ -500,7 +501,7 @@ export class ManualLedger{
    }
    const groups=new Map();
    for(const f of fills){
-    if(f.at<=w.from||f.at>=w.to||w.blocked.has(f.symbol))continue;
+    if(f.at<=w.from||f.at>w.to||w.blocked.has(f.symbol))continue;
     const dir=['LONG','SHORT'].includes(f.positionSide)?f.positionSide:f.positionSide==='BOTH'||oneWay?'BOTH':null;
     const rows=groups.get(f.symbol)||[];rows.push({...f,dir});groups.set(f.symbol,rows);
    }
@@ -594,10 +595,17 @@ export class ManualLedger{
   return true;
  }
  #window(x,now){
-  const start=x.openedAt-this.preMs;let end=Math.min(x.closedAt+this.postMs,now);
+  let start=x.openedAt-this.preMs,end=Math.min(x.closedAt+this.postMs,now);
   // A later position on the same symbol (copy or manual) starts its own income: the window ends before it.
-  for(const c of this.#copyList())if(c.venueSymbol===x.venueSymbol&&num(c.openedAt)>x.closedAt)end=Math.min(end,c.openedAt-1);
-  for(const m of [...this.store.closed,...Object.values(this.store.positions)])if(m!==x&&m.venueSymbol===x.venueSymbol&&m.openedAt>x.closedAt)end=Math.min(end,Math.max(x.closedAt,m.openedAt-20000));
+  // An earlier closed position on the same symbol has its own income before its close: clamp start after it.
+  for(const c of this.#copyList()){
+   if(c.venueSymbol===x.venueSymbol&&num(c.openedAt)>x.closedAt)end=Math.min(end,c.openedAt-1);
+   if(c.venueSymbol===x.venueSymbol&&num(c.closedAt)!=null&&num(c.closedAt)<x.openedAt)start=Math.max(start,Math.min(x.openedAt,num(c.closedAt)+1));
+  }
+  for(const m of [...this.store.closed,...Object.values(this.store.positions)])if(m!==x&&m.venueSymbol===x.venueSymbol){
+   if(m.openedAt>x.closedAt)end=Math.min(end,Math.max(x.closedAt,m.openedAt-20000));
+   if(num(m.closedAt)!=null&&m.closedAt<x.openedAt)start=Math.max(start,Math.min(x.openedAt,m.closedAt+1));
+  }
   return {start,end};
  }
  #mixed(x,{start}){

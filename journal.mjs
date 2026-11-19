@@ -28,13 +28,14 @@ export function closeTrade(trade,{exit,fees,funding,now=Date.now()}={}){
 export function journalSummary(entries=[],now=Date.now()){
  const closed=entries.filter(x=>x.status==='CLOSED'&&Number.isFinite(x.realizedPnLUSD));
  const shift=9*3600000;
- const kstDate=t=>new Date(t+shift).toISOString().slice(0,10);
- const today=kstDate(now);
- const day=new Date(now+shift);const monday=new Date(Date.UTC(day.getUTCFullYear(),day.getUTCMonth(),day.getUTCDate()-(day.getUTCDay()+6)%7));
+ const toMs=t=>typeof t==='number'&&Number.isFinite(t)?t:typeof t==='string'&&t.trim()!==''&&Number.isFinite(Number(t))?Number(t):typeof t==='string'&&Number.isFinite(Date.parse(t))?Date.parse(t):null;
+ const kstDate=t=>{const ms=toMs(t);if(ms===null)return null;const d=new Date(ms+shift);return Number.isNaN(d.getTime())?null:d.toISOString().slice(0,10)};
+ const nowMs=toMs(now)??Date.now(),today=kstDate(nowMs);
+ const day=new Date(nowMs+shift);const monday=new Date(Date.UTC(day.getUTCFullYear(),day.getUTCMonth(),day.getUTCDate()-(day.getUTCDay()+6)%7));
  const weekStart=monday.toISOString().slice(0,10);
  const p=arr=>arr.reduce((s,t)=>s+t.realizedPnLUSD,0);
- const currentWeek=closed.filter(x=>kstDate(x.closedAt)>=weekStart);
- const currentDay=closed.filter(x=>kstDate(x.closedAt)===today);
+ const currentWeek=closed.filter(x=>{const d=kstDate(x.closedAt??x.createdAt);return d!==null&&d>=weekStart});
+ const currentDay=closed.filter(x=>kstDate(x.closedAt??x.createdAt)===today);
  return {count:entries.length,open:entries.filter(x=>x.status==='OPEN').length,closed:closed.length,winRate:closed.length?closed.filter(x=>x.realizedPnLUSD>0).length/closed.length:null,totalPnL:p(closed),todayPnL:p(currentDay),weekPnL:p(currentWeek),lossLimitDay:null,lossLimitWeek:null,dayExceeded:false,weekExceeded:false,stopRiskOpen:entries.filter(x=>x.status==='OPEN').reduce((s,x)=>s+(Number(x.stopRiskUSD)||0),0),manualOnly:true};
 }
 export function exportTradesCSV(entries){

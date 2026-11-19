@@ -58,8 +58,8 @@ function atr(candles){
 function rsiSeries(closes,period=14){
  const out=new Array(closes.length).fill(null);if(closes.length<=period)return out;
  let gain=0,loss=0;for(let i=1;i<=period;i++){const d=closes[i]-closes[i-1];if(d>0)gain+=d;else loss-=d}
- gain/=period;loss/=period;out[period]=loss===0?100:100-100/(1+gain/loss);
- for(let i=period+1;i<closes.length;i++){const d=closes[i]-closes[i-1];gain=(gain*(period-1)+Math.max(d,0))/period;loss=(loss*(period-1)+Math.max(-d,0))/period;out[i]=loss===0?100:100-100/(1+gain/loss)}
+ gain/=period;loss/=period;out[period]=loss===0?(gain===0?50:100):100-100/(1+gain/loss);
+ for(let i=period+1;i<closes.length;i++){const d=closes[i]-closes[i-1];gain=(gain*(period-1)+Math.max(d,0))/period;loss=(loss*(period-1)+Math.max(-d,0))/period;out[i]=loss===0?(gain===0?50:100):100-100/(1+gain/loss)}
  return out;
 }
 
@@ -131,7 +131,7 @@ export function buildScalpPlan({signal,estimate,costs,minNetRR=SCALP_DEFAULTS.mi
  try{parts=[.4,.35].map(f=>Number(roundDecimalToStep(quantity*f*(1+1e-9),step,'DOWN')));parts.push(Number(roundDecimalToStep(quantity-parts[0]-parts[1]+step*1e-6,step,'DOWN')))}catch{return {ok:false,reasons:['QUANTITY_GRID_INVALID']}}
  if(Math.abs(parts.reduce((a,b)=>a+b,0)-quantity)>step/2)reasons.push('QUANTITY_SPLIT_INVALID');
  if(parts.some(p=>!(p>0)||p<(estimate.minQuantity||0)))reasons.push('QUANTITY_SPLIT_BELOW_MINIMUM');
- const roundTrip=entry*(2*costs.takerRate+2*costs.slippageBps/10000+(costs.fundingRate||0)),risk=Math.abs(entry-signal.stop);
+ const roundTrip=entry*(2*costs.takerRate+(2*costs.slippageBps+Math.max(0,costs.spreadBps||0))/10000+Math.abs(costs.fundingRate||0)),risk=Math.abs(entry-signal.stop);
  const netRR=(dir*(targets[0]-entry)-roundTrip)/(risk+roundTrip);
  if(!(netRR>=minNetRR))reasons.push('TP1_NET_RR_BELOW_MINIMUM');
  if(reasons.length)return {ok:false,reasons,estimatedNetRR:Number.isFinite(netRR)?netRR:null};

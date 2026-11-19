@@ -49,19 +49,21 @@ export function simulateTrade({direction,m5,startIdx,entryRef,stop,targets,quant
   const c=m5[i];
   if(beArmed&&breakeven){if(dir*(avg-curStop)>0)curStop=avg;beArmed=false}
   if(maxHoldMs&&c.t-open.t>=maxHoldMs){exit(c.o,qty);exitReason='TIME_STOP';exitAt=c.t;break}
+  if(dir*(c.o-curStop)<=0){exit(c.o,qty);exitReason=tpDone[0]?'BREAKEVEN_STOP':'STOP';exitAt=c.t;break}
   // Zone adds (only before TP1), nearest first.
+  let addedNow=false;
   if(!tpDone[0])for(const a of pending){
    if(a.filled)continue;
    const touched=dir===1?c.l<=a.price:c.h>=a.price;if(!touched)break;
    if(dir*(a.price-curStop)<=0)break;
    const ref=dir===1?Math.min(a.price,c.o):Math.max(a.price,c.o),fill=buy(ref);
-   avg=(avg*qty+fill*a.quantity)/(qty+a.quantity);qty+=a.quantity;fees+=a.quantity*fill*fee;a.filled=true;addsFilled++;
+   avg=(avg*qty+fill*a.quantity)/(qty+a.quantity);qty+=a.quantity;fees+=a.quantity*fill*fee;a.filled=true;addedNow=true;addsFilled++;
    const total=quantity+pending.filter(x=>x.filled).reduce((s,x)=>s+x.quantity,0);tpQty=FRACTIONS.map(f=>total*f);
   }
   const adverse=dir*((dir===1?c.l:c.h)-avg)*qty;worst=Math.min(worst,adverse+realized-fees);
   const stopHit=dir===1?c.l<=curStop:c.h>=curStop;
   if(stopHit){const ref=dir===1?Math.min(curStop,c.o):Math.max(curStop,c.o);exit(ref,qty);exitReason=tpDone[0]?'BREAKEVEN_STOP':'STOP';exitAt=c.t;break}
-  for(let k=0;k<3;k++){
+  if(!addedNow)for(let k=0;k<3;k++){
    if(tpDone[k])continue;
    const hit=dir===1?c.h>=targets[k]:c.l<=targets[k];if(!hit)break;
    const q=k===2?qty:Math.min(tpQty[k],qty);exit(targets[k],q);tpDone[k]=true;if(k===0)beArmed=true;
