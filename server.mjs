@@ -6,7 +6,7 @@ import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
 import {exchangePnl} from './exchange_pnl.mjs';
-import {createDailyPnl} from './daily_pnl.mjs';
+import {createDailyPnl,PNL_CALENDAR_RESET_AT} from './daily_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig,SCALP_PROFIT_HOLD_TARGET_MIN} from './scalp_executor.mjs';
@@ -366,7 +366,7 @@ if(manualLedger){setInterval(refreshRealTradeNotices,3000).unref?.();
 // Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
 // copy and manual together, read in the background at most every 5 min; the page gets the cached value (daily).
 const dailyPnl=COPY.mode==='LIVE'
- ?createDailyPnl({client:copyClient?.mode==='LIVE'?copyClient:null,log:(...a)=>console.warn(...a)}):null;
+ ?createDailyPnl({client:copyClient?.mode==='LIVE'?copyClient:null,resetAt:PNL_CALENDAR_RESET_AT,log:(...a)=>console.warn(...a)}):null;
 dailyPnl?.start();
 // 되돌림 단타 (5m dip-rebound LONG) on the BingX TESTNET only (scalp_executor.mjs, user 2026-11-14 22:29):
 // its own ledger (scalp-store.json), SCALP_EXEC_MODE=OFF|TESTNET (LIVE refused), disarmed after every start.
