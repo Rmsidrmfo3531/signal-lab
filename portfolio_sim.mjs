@@ -36,15 +36,15 @@ export function openPosition({id,symbol,direction,entryRef,stop,targets=[],quant
  const fill=entryRef*(1+dir*slip);
  if(targetsFromAveragePct?.length){targets=targetsFromAveragePct.map(x=>fill*(1+dir*x/100));fractions=targetsFromAveragePct.length===1?[1]:fractions}
  return {id,symbol,direction,dir,stop,targets:[...targets],tpFromAvg:targetsFromAveragePct?.length?[...targetsFromAveragePct]:null,fractions:[...fractions],breakeven,maxHoldMs,openAt,meta,costs,
-  qty:quantity,avg:fill,firstQty:quantity,peakQty:quantity,cost:quantity*fill,
+  qty:quantity,avg:fill,lastClose:fill,firstQty:quantity,peakQty:quantity,cost:quantity*fill,
   pending:adds.map(a=>({price:a.price,quantity:a.quantity,filled:false})),addsFilled:0,
   tpDone:targets.map(()=>false),tpQty:fractions.map(f=>quantity*f),beArmed:false,
   realized:0,fees:quantity*fill*costs.takerRate,funding:0,worstUnrealized:0,
   status:'OPEN',exitReason:null,exitAt:null,lastFundingSlot:Math.floor(openAt/FUNDING_MS),events:[{type:'ENTRY',at:openAt,price:fill,qty:quantity}]};
 }
 
-const exitFill=(p,price)=>price*(1-p.dir*p.costs.slippageBps/10000);
-const addFill=(p,price)=>price*(1+p.dir*p.costs.slippageBps/10000);
+const exitFill=(p,price)=>Math.max(1e-12,price*(1-p.dir*p.costs.slippageBps/10000));
+const addFill=(p,price)=>Math.max(1e-12,price*(1+p.dir*p.costs.slippageBps/10000));
 function close(p,price,q,at,type){
  const f=exitFill(p,price);p.realized+=p.dir*(f-p.avg)*q;p.fees+=q*f*p.costs.takerRate;p.qty-=q;
  p.events.push({type,at,price:f,qty:q});
@@ -60,6 +60,7 @@ export const worstPrice=(p,c)=>p.dir===1?c.l:c.h;
 /** Advance one position by one candle c ({t,o,h,l,c}) of barMs (default 5m). Returns the position (mutated). */
 export function stepPosition(p,c,barMs=M5){
  if(p.status!=='OPEN')return p;
+ p.lastClose=c.c;
  const dir=p.dir;
  if(p.beArmed&&p.breakeven){if(dir*(p.avg-p.stop)>0)p.stop=p.avg;p.beArmed=false}
  // 1. Time stop.
@@ -123,12 +124,14 @@ export function runPortfolio({candles,signals,plan,startBalance=1000,limits={},c
   for(let k=open.length-1;k>=0;k--){const p=open[k];if(p.status==='CLOSED'){const net=positionNet(p);cash+=net;const d=dayOf(p.exitAt);dayNet[d]=(dayNet[d]||0)+net;closed.push(p);open.splice(k,1)}}
   // Account at the worst price of this candle (cross margin).
   let worstUnreal=0,maint=0,markUnreal=0;
-  for(const p of open){const i=bySymbolIndex[p.symbol].get(t);const c=i===undefined?null:candles[p.symbol][i];if(!c)continue;
-   worstUnreal+=unrealizedAt(p,worstPrice(p,c))-p.fees-p.funding+p.realized;markUnreal+=unrealizedAt(p,c.c)-p.fees-p.funding+p.realized;maint+=p.qty*c.c*costs.maintenanceRate}
+  for(const p of open){const i=bySymbolIndex[p.symbol].get(t);const c=i===undefined?null:candles[p.symbol][i],ref=c?c.c:p.lastClose,wp=c?worstPrice(p,c):p.lastClose;
+   worstUnreal+=unrealizedAt(p,wp)-p.fees-p.funding+p.realized;markUnreal+=unrealizedAt(p,ref)-p.fees-p.funding+p.realized;maint+=p.qty*ref*costs.maintenanceRate}
   const worstEq=cash+worstUnreal;worstEquity=Math.min(worstEquity,worstEq);
   if(open.length&&worstEq<=maint){
-   for(const p of open){const i=bySymbolIndex[p.symbol].get(t),c=candles[p.symbol][i];close(p,c?worstPrice(p,c):p.avg,p.qty,t,'LIQUIDATION');p.exitReason='LIQUIDATION';cash+=positionNet(p);closed.push(p)}
-   open.length=0;liquidated={at:t,equity:Math.max(0,cash)};cash=Math.max(0,cash);break;
+   for(const p of open){const i=bySymbolIndex[p.symbol].get(t),c=candles[p.symbol][i];close(p,c?worstPrice(p,c):p.lastClose,p.qty,t,'LIQUIDATION');p.exitReason='LIQUIDATION';cash+=positionNet(p);closed.push(p)}
+   open.length=0;liquidated={at:t,equity:Math.max(0,cash)};cash=Math.max(0,cash);
+   const dd=peakEquity-cash;if(dd>maxDD){maxDD=dd;maxDDPct=peakEquity>0?dd/peakEquity*100:0}
+   break;
   }
   var eq=cash+markUnreal;peakEquity=Math.max(peakEquity,eq);const dd=peakEquity-Math.min(eq,worstEq);if(dd>maxDD){maxDD=dd;maxDDPct=dd/peakEquity*100}
   // New entries whose entry candle opens at t.

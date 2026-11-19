@@ -32,10 +32,12 @@ export function nextSizeScale(store){
 function scalePlanQuantity(plan,scale){
  const step=Number(plan?.quantityStep),total0=Number(plan?.quantity);
  if(!(step>0)||!(total0>0)||!Array.isArray(plan?.parts)||plan.parts.length!==3)return null;
- const down=x=>Number((Math.floor(x/step+1e-9)*step).toFixed(12));
- const total=down(total0*scale),a=down(total*.4),b=down(total*.35),c=Number((total-a-b).toFixed(12));
+ const down=x=>{if(!(x>0))return 0;try{return quantizeVolumeStep(x,step,'DOWN')}catch{return 0}};
+ const total=down(total0*scale);if(!(total>0))return null;
+ let a=down(total*.4+step*1e-9),b=down(total*.35+step*1e-9),c=down(total-a-b+step*1e-6);
+ if(c-total*.25>step*(1+1e-9)){if(total*.4-a>=total*.35-b)a=down(a+step*(1+1e-6));else b=down(b+step*(1+1e-6));c=down(total-a-b+step*1e-6)}
  const min=Number(plan.minQuantity)||0,minNotional=Number(plan.minNotional)||0,qs=[a,b,c];
- if(!(total>0)||qs.some((q,i)=>!(q>0)||q<min||q*Number(plan.targets?.[i])<minNotional))return null;
+ if(qs.some((q,i)=>!(q>0)||q<min||q*Number(plan.targets?.[i])<minNotional))return null;
  return {...plan,quantity:total,parts:plan.parts.map((p,i)=>({...p,quantity:qs[i]})),sizeScale:scale};
 }
 /** The same profile plan for another total quantity (parts 40/35/rest on the lot step), or null. */
@@ -222,7 +224,6 @@ export class PaperEngine {
   if(profile&&breakevenMode==='COST_COVERED'&&(costs.spreadBps/2+costs.slippageBps)/10000>=1)
    return this.reject(key,'BREAKEVEN_COST_MODEL_UNVERIFIED',{remember:false});
   if(targets.some(p=>!validPrice(p))||targets.some((p,i)=>direction==='LONG'?p<=entry||(i>0&&p<=targets[i-1]):p>=entry||(i>0&&p>=targets[i-1])))return this.reject(key,'목표가 데이터 불일치',{remember:false});
-  this.store.seen={...this.store.seen,[key]:now};
   // Optional per-signal limits (scalp mode): a shorter entry window and a time stop.
   const entryTimeoutMs=Number.isFinite(signal.entryTimeoutMs)&&signal.entryTimeoutMs>=60000?Math.min(signal.entryTimeoutMs,settings.entryTimeoutMs):settings.entryTimeoutMs;
   const maxHoldMs=Number.isFinite(signal.maxHoldMs)&&signal.maxHoldMs>=5*60000&&signal.maxHoldMs<=7*86400000?signal.maxHoldMs:null;
@@ -235,6 +236,7 @@ export class PaperEngine {
    if(!valid)return this.reject(key,'DCA_PLAN_INVALID',{remember:false});
    dca={...structuredClone(d),adds:adds.map(a=>({...structuredClone(a),filled:false})),filledAdds:0};
   }
+  this.store.seen={...this.store.seen,[key]:now};
   // Kept for the performance breakdown: which chart judged it, and the score it had.
   const chartVenue=['BINANCE','GATEIO','BINGX'].includes(signal.analysisVenue)?signal.analysisVenue:null,score=Number(signal.score);
   this.store.pending.push({key,market,symbol,direction,pattern,barAt,signalPrice:entry,stop,targets,sizeScale,atr:Number(signal?.atr)||0,signalAt:now,expiresAt:now+entryTimeoutMs,

@@ -82,10 +82,10 @@ export class TestnetBudget{
   return vals.length?Math.min(...vals):null;
  }
  /** The stored shared stop of today (null when none). */
- storedStop(){const s=this.state.stop;return s&&s.day===kstDay(this.now())?s:null}
+ storedStop(day=kstDay(this.now())){const s=this.state.stop;return s&&s.day===day?s:null}
  /** Writes today's shared stop once (first time reached). Returns true when newly written. */
- markStopped(detail={}){
-  const day=kstDay(this.now());if(this.state.stop?.day===day)return false;
+ markStopped(detail={},day=kstDay(this.now())){
+  if(this.state.stop?.day===day)return false;
   this.state.stop={day,at:this.now(),...detail};
   try{this.#save(this.state)}catch(e){this.log('[TESTNET BUDGET] save',e.message)}
   return true;
@@ -93,21 +93,22 @@ export class TestnetBudget{
  /** Today's numbers. A getter that throws makes the snapshot unusable (ok:false): no entry is allowed on it. */
  snapshot(equity=null,{who=null}={}){
   const day=kstDay(this.now()),by={};let ok=true,realized=0,loss=0,lossOpen=0,open=0,margin=0,unreal=0,stopped=false,provisional=false;
+  const checkNum=(v,def=0)=>{if(v===undefined||v===null)return def;const n=Number(v);if(!Number.isFinite(n))throw Error('INVALID_BUDGET_METRIC');return n};
   for(const [name,g] of this.sources){
    try{
-    const s={realizedNetUSD:Number(g.realizedToday?.(day))||0,openRiskUSD:Math.max(0,Number(g.openRisk?.())||0),marginUSD:Math.max(0,Number(g.usedMargin?.())||0),
-     unrealizedUSD:Number(g.unrealized?.())||0,stopped:g.stoppedToday?.(day)===true,provisional:g.provisionalToday?.(day)===true};
+    const s={realizedNetUSD:checkNum(g.realizedToday?.(day)),openRiskUSD:Math.max(0,checkNum(g.openRisk?.())),marginUSD:Math.max(0,checkNum(g.usedMargin?.())),
+     unrealizedUSD:checkNum(g.unrealized?.()),stopped:g.stoppedToday?.(day)===true,provisional:g.provisionalToday?.(day)===true};
     // Each strategy's loss on its own (no offset between strategies); inside one strategy its net result.
     s.lossUSD=Math.max(0,-s.realizedNetUSD);s.lossWithOpenUSD=Math.max(0,-(s.realizedNetUSD+s.unrealizedUSD));
     by[name]=s;realized+=s.realizedNetUSD;loss+=s.lossUSD;lossOpen+=s.lossWithOpenUSD;open+=s.openRiskUSD;margin+=s.marginUSD;unreal+=s.unrealizedUSD;stopped||=s.stopped;provisional||=s.provisional;
    }catch(e){ok=false;by[name]={error:e?.code||e?.message||'READ_FAILED'}}
   }
-  const eq=this.basis(equity,who),limit=eq!==null?eq*this.dailyLossPct/100:null,stored=this.storedStop();
+  const eq=this.basis(equity,who),limit=eq!==null?eq*this.dailyLossPct/100:null,stored=this.storedStop(day);
   if(stored)stopped=true;
-  // Reached from final values: written once for the rest of the KST day. From a placeholder: blocks now, not written.
-  if(ok&&limit!==null&&loss>0&&loss>=limit){stopped=true;if(!provisional&&!stored)this.markStopped({lossUSD:+loss.toFixed(2),limitUSD:+limit.toFixed(2),reason:'REALIZED'})}
+  // Reached from final values: written once for the rest of the KST day. From a placeholder or open unrealized loss: blocks now, not written.
+  if(ok&&limit!==null&&limit>0&&(loss>=limit||lossOpen>=limit)){stopped=true;if(!provisional&&!stored&&loss>=limit)this.markStopped({lossUSD:+loss.toFixed(2),limitUSD:+limit.toFixed(2),reason:'REALIZED'},day)}
   return {ok,day,equityUSD:eq,dailyLossPct:this.dailyLossPct,limitUSD:limit,realizedNetUSD:realized,lossUSD:loss,lossWithOpenUSD:lossOpen,openRiskUSD:open,usedUSD:loss+open,
-   unrealizedUSD:unreal,marginUSD:margin,marginCapPct:this.marginCapPct,marginCapUSD:eq!==null?eq*this.marginCapPct/100:null,stopped,provisional,storedStop:this.storedStop(),by};
+   unrealizedUSD:unreal,marginUSD:margin,marginCapPct:this.marginCapPct,marginCapUSD:eq!==null?eq*this.marginCapPct/100:null,stopped,provisional,storedStop:this.storedStop(day),by};
  }
  /** Today's day stop (stored, the shared loss reached, or the scalp's shared realized + unrealized stop). */
  stopped(equity=null){const s=this.snapshot(equity);return s.ok&&s.stopped}

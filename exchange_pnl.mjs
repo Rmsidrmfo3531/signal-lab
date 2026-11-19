@@ -9,7 +9,7 @@ const r2=x=>Math.round(x*100)/100,r4=x=>Math.round(x*1e4)/1e4;
 /** USDT (or the testnet VST) balance row of a BingX v3 balance answer: {equity, balance, unrealized, available}. */
 export function balanceOf(data){
  const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>['USDT','VST'].includes(x?.asset))??list[0];
- if(!u)return null;const num=k=>Number.isFinite(Number(u[k]))?Number(u[k]):null;
+ if(!u)return null;const num=k=>u[k]!==null&&u[k]!==undefined&&String(u[k]).trim()!==''&&Number.isFinite(Number(u[k]))?Number(u[k]):null;
  return {asset:u.asset??null,equity:num('equity'),balance:num('balance'),unrealized:num('unrealizedProfit'),available:num('availableMargin')};
 }
 
@@ -24,9 +24,10 @@ export async function incomeRows(client,{since,now=Date.now(),limit=1000}={}){
   const rows=Array.isArray(res)?res:Array.isArray(res?.list)?res.list:Array.isArray(res?.data)?res.data:null;
   if(!rows)throw badIncome();
   // A full page may hide rows: read the window again in halves (down to ~10 minutes).
-  if(rows.length>=limit){if(depth>=10)throw Object.assign(new Error('INCOME_PAGE_FULL'),{code:'INCOME_PAGE_FULL',from,to});
-   const mid=Math.floor((from+to)/2);await read(from,mid,depth+1);await read(mid,to,depth+1);return}
+  if(rows.length>=limit){const mid=Math.floor((from+to)/2);if(depth>=10||mid<=from||mid>=to)throw Object.assign(new Error('INCOME_PAGE_FULL'),{code:'INCOME_PAGE_FULL',from,to});
+   await read(from,mid,depth+1);await read(mid,to,depth+1);return}
   for(const x of rows){if(!number(x?.time)||!number(x?.income))throw badIncome();
+   const t=Number(x.time);if(t<since||t>now)continue;
    const key=[x.tranId??x.tradeId??'',x.incomeType,x.symbol,x.time,x.income].join('|');out.set(key,x)}
  };
  for(let from=since;from<now;from+=WINDOW)await read(from,Math.min(now,from+WINDOW));

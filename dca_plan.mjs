@@ -59,13 +59,14 @@ export function planZoneDca({direction,entry,atr,zones=[],balanceUSD,leverage=DC
  const addCap=Math.min(units.length-1,clampMaxAdds(s.maxAdds));
  // With 0 adds one zone is still picked: the stop goes beyond it.
  for(const z of against){if(picked.length>=Math.max(1,addCap))break;if(picked.length&&dir*(edge(picked.at(-1))-edge(z))<spacing)continue;picked.push(z)}
- const round=(p,mode)=>Number(roundDecimalToStep(p,tickSize,mode));
+ const round=(p,mode)=>{if(!positive(p))return 0;try{return Number(roundDecimalToStep(p,tickSize,mode))}catch{return 0}};
  const build=count=>{
   const levels=picked.slice(0,count).map((z,i)=>({price:round(edge(z),dir===1?'DOWN':'UP'),units:units[i+1],quantity:Number((units[i+1]*unitQty).toFixed(12)),zone:{priceLow:z.priceLow,priceHigh:z.priceHigh,volume:z.peakVolume??z.volume}}));
   // Stop: beyond the last zone used (or beyond the first zone if there is no add yet).
   const stopZone=count?picked[count-1]:picked[0];
   if(!stopZone)return null;
   const stop=round(far(stopZone)-dir*s.stopAtr*atr,dir===1?'DOWN':'UP');
+  if(!positive(stop)||dir*(entry-stop)<=0||levels.some((l,i)=>!positive(l.price)||dir*(entry-l.price)<=0||(i>0&&dir*(levels[i-1].price-l.price)<=0)||dir*(l.price-stop)<=0))return null;
   const fills=[{price:entry,quantity:unitQty},...levels];
   const quantity=fills.reduce((a,f)=>a+f.quantity,0),cost=fills.reduce((a,f)=>a+f.quantity*f.price,0);
   const margin=fills.reduce((a,f)=>a+f.quantity*f.price/leverage,0);
@@ -132,7 +133,7 @@ export function planProfile({profile='HYBRID',direction,entry,atr,zones=[],signa
  const dir=direction==='LONG'?1:-1;
  if(!['LONG','SHORT'].includes(direction)||!positive(entry)||!positive(atr)||!positive(balanceUSD)||!positive(tickSize)||!positive(quantityStep))return {ok:false,reasons:['PROFILE_INPUT_INVALID']};
  const roundQty=q=>{try{return Number(roundDecimalToStep(q,quantityStep,'DOWN'))}catch{return 0}};
- const roundPx=(p,mode)=>Number(roundDecimalToStep(p,tickSize,mode));
+ const roundPx=(p,mode)=>{if(!positive(p))return 0;try{return Number(roundDecimalToStep(p,tickSize,mode))}catch{return 0}};
  const tooSmall=q=>!positive(q)||q<minQuantity||q*entry<minNotional;
  if(profile==='CURRENT'){
   const d=planZoneDca({direction,entry,atr,zones,balanceUSD,leverage,unitPct,tickSize,quantityStep,minQuantity,minNotional,takerRate,settings:{maxLossPct,maxAdds}});
@@ -142,7 +143,7 @@ export function planProfile({profile='HYBRID',direction,entry,atr,zones=[],signa
  if(profile==='TRADER_REPLICA'){
   const A=TRADER_REPLICA_ASSUMPTIONS,units=SIZE_SCHEDULES.DOUBLE;
   const unitQty=roundQty(balanceUSD*A.firstMarginPct/100*A.leverage/entry);if(tooSmall(unitQty))return {ok:false,reasons:['PROFILE_UNIT_BELOW_MINIMUM_ORDER']};
-  const adds=A.spacingFromEntryPct.slice(0,Math.max(0,maxAdds)).map((pct,i)=>({price:roundPx(entry*(1-dir*pct/100),dir===1?'DOWN':'UP'),quantity:roundQty(units[i+1]*unitQty)}));
+  const adds=A.spacingFromEntryPct.slice(0,Math.max(0,maxAdds)).map((pct,i)=>({price:roundPx(entry*(1-dir*pct/100),dir===1?'DOWN':'UP'),quantity:roundQty(units[i+1]*unitQty)})).filter(a=>positive(a.price)&&positive(a.quantity));
   // No stop: a price far beyond any add (the engine's account liquidation ends it first).
   const stop=dir===1?roundPx(entry*.01,'DOWN')||tickSize:roundPx(entry*100,'UP');
   const qty=unitQty+adds.reduce((s,a)=>s+a.quantity,0),cost=unitQty*entry+adds.reduce((s,a)=>s+a.quantity*a.price,0);
@@ -158,6 +159,7 @@ export function planProfile({profile='HYBRID',direction,entry,atr,zones=[],signa
  else{const last=prices.at(-1),beyond=last.farEdge??last.price;stop=roundPx(beyond-dir*stopAtr*atr,dir===1?'DOWN':'UP')}
  if(!positive(stop)||dir*(entry-stop)<=0)return {ok:false,reasons:['PROFILE_STOP_INVALID']};
  const levels=prices.map((p,i)=>({price:roundPx(p.price,dir===1?'DOWN':'UP'),units:units[i+1]}));
+ if(levels.some((l,i)=>!positive(l.price)||dir*(entry-l.price)<=0||(i>0&&dir*(levels[i-1].price-l.price)<=0)||dir*(l.price-stop)<=0))return {ok:false,reasons:['PROFILE_STOP_INVALID']};
  // Loss per one unit of quantity with everything filled, fees at entry and stop included.
  const fills=[{price:entry,units:units[0]},...levels];
  const perUnit=fills.reduce((s,f)=>s+f.units*(dir*(f.price-stop)+(f.price+stop)*takerRate),0);
