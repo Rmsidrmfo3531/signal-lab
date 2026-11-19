@@ -188,7 +188,7 @@ test('manual notifications require confirmed trade data and label exact zero as 
  assert.equal(manualTradeText({...base,type:'MANUAL_REDUCE',netUSD:null}),null);
  assert.equal(manualTradeText({...base,type:'MANUAL_SETTLED',netUSD:-2,netSource:'ESTIMATE'}),null);
  assert.equal(manualTradeText({...base,type:'MANUAL_OPEN',fromFills:false,size:1,avg:10}),null);
- assert.match(manualTradeText({...base,type:'MANUAL_REDUCE',netUSD:0}),/부분 본전[\s\S]*순손익 \$0\.00/);
+ assert.match(manualTradeText({...base,type:'MANUAL_REDUCE',netUSD:0}),/^수동 \| 부분 본전\n🔴 BTCUSDT · 숏\n[\s\S]*순손익 \$0\.00/);
  assert.match(manualTradeText({...base,type:'MANUAL_SETTLED',size:1,netUSD:0}),/전량 본전[\s\S]*순손익 \$0\.00/);
  assert.match(manualTradeText({...base,type:'MANUAL_SETTLED',size:1,netUSD:-.004}),/전량 손절[\s\S]*−\$0\.004/);
 });
