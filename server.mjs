@@ -13,7 +13,7 @@ import {ScalpExecutor,scalpExecConfig,SCALP_PROFIT_HOLD_TARGET_MIN} from './scal
 import {scalpEventText} from './scalp_telegram.mjs';
 import {scalpReportFiles} from './scalp_journal.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
-import {liveEventText,realTradeMessage,realTradeText} from './live_telegram.mjs';
+import {liveEventText,realTradeMessage} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
 import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
@@ -470,10 +470,28 @@ function copyNotice(e){
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
  if(e.mode==='LIVE')void sendTradeTelegram(text);
 }
+const realTradeMessages=new WeakMap();
+function prepareRealTradeMessage(e){
+ if(!e?.fromFills)return Promise.resolve(null);
+ const pending=realTradeMessages.get(e);if(pending)return pending;
+ const read=realBingxClient.balance().then(data=>{
+  const usdt=Array.isArray(data)?data.find(row=>row?.asset==='USDT'):data?.balance??data;
+  if(usdt?.asset!=='USDT'||!['number','string'].includes(typeof usdt.availableMargin))return null;
+  return bingxFunds(usdt,{requireAvailable:true}).available;
+ }).catch(()=>null);
+ // Both transports use one post-confirmation snapshot. A slow wallet read cannot hold an alert indefinitely.
+ let timer;
+ const deadline=new Promise(resolve=>{timer=setTimeout(resolve,1500,null);timer.unref()});
+ const message=Promise.race([read,deadline]).then(availableMargin=>realTradeMessage(e,{availableMargin}))
+  .finally(()=>clearTimeout(timer));
+ realTradeMessages.set(e,message);
+ return message;
+}
 function confirmedRealTradeNotice(e){
- const text=realTradeText(e);if(!text)return;
  reportsDirty=true;
- try{send('live-notice',{type:e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
+ void prepareRealTradeMessage(e).then(message=>{
+  if(message)send('live-notice',{type:e.type,symbol:e.symbol??null,text:message.text,at:Date.now()});
+ }).catch(()=>{});
 }
 let lastRealTradeTelegramAt=0;
 const sendRealTradeRequest=createTelegramNetworkRecovery(telegramPost);
@@ -516,7 +534,7 @@ async function sendTradeTelegram(text){
  if(!response?.ok)console.warn('[TRADE TELEGRAM]',error??`HTTP_${response?.status}`);
 }
 async function sendRealTradeTelegram(e){
- const message=realTradeMessage(e);if(!message)return {error:'INVALID_ALERT'};
+ const message=await prepareRealTradeMessage(e);if(!message)return {error:'INVALID_ALERT'};
  const destination=await resolveTradeTelegramDestination();reportsDirty=true;
  if(!destination.chatId)return destination;
  const chat_id=destination.chatId;

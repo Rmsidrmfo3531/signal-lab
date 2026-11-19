@@ -280,19 +280,23 @@ test('copy alert cards show signed close return and Telegram bold spans without 
  const at=Date.parse('2026-11-18T08:04:28Z');
  const trade={symbol:'MMTUSDT',direction:'SHORT',leverage:10,alertOrigin:'COPY',fromFills:true,observedAt:at};
  const entry={...trade,type:'MANUAL_OPEN',size:90,avg:.2299};
- const message=realTradeMessage(entry);
+ const message=realTradeMessage(entry,{availableMargin:137.25});
  assert.equal(message.text,[
   '📌 포지션 진입','━━━━━━━━━━━━━━━━','MMTUSDT  🔴 숏  ×10','━━━━━━━━━━━━━━━━',
-  '진입가 0.2299 USDT','현재가 0.2299 USDT','수량 90','증거금 약 2.0691 USDT','체결 2026-11-18 17:04:28 KST',
+  '진입가 0.2299 USDT','현재가 0.2299 USDT','수량 90','증거금 약 2.0691 USDT','가용 증거금 137.25 USDT','체결 2026-11-18 17:04:28 KST',
  ].join('\n'));
- assert.equal(manualTradeText(entry),message.text);
+ assert.equal(manualTradeText(entry),message.text.replace('가용 증거금 137.25 USDT','가용 증거금 조회 불가'));
  const bold=message.entities.map(e=>{assert.equal(e.type,'bold');return message.text.slice(e.offset,e.offset+e.length)});
- assert.deepEqual(bold,['포지션 진입','MMTUSDT','0.2299 USDT']);
+ assert.deepEqual(bold,['📌 포지션 진입','MMTUSDT','0.2299 USDT']);
+ assert.equal(message.entities[0].offset,0);
  const add={...trade,direction:'LONG',type:'MANUAL_ADD',fillPrice:.23,size:30,to:120};
  assert.match(manualTradeText(add),/^➕ 포지션 추매[\s\S]+MMTUSDT  🟢 롱  ×10[\s\S]+수량 \+30 · 잔여 120\n증거금 약 0\.69 USDT/);
  assert.match(manualTradeText({...add,leverage:undefined}),/증거금 —/);
  const exit={...trade,type:'MANUAL_REDUCE',size:30,to:60,fillPrice:.22,pnlUSD:.297,netUSD:.29,netSource:'EXCHANGE_FILLS'};
  assert.match(manualTradeText(exit),/^🎯 부분 익절[\s\S]+진입가 0\.2299 USDT\n청산가 0\.22 USDT\n청산 수량 30 · 잔여 60\n손익 \+0\.29 USDT \(\+42\.05%\)/);
+ const closed=realTradeMessage(exit,{availableMargin:0});
+ assert.match(closed.text,/\n가용 증거금 0\.00 USDT\n/);
+ assert.equal(closed.text.slice(0,closed.entities[0].length),'🎯 부분 익절');
  assert.match(manualTradeText({...exit,type:'MANUAL_SETTLED',size:60,to:0,fillPrice:.24,pnlUSD:-.606,netUSD:-.62}),/^🛑 전량 손절[\s\S]+손익 −0\.62 USDT \(−44\.95%\)/);
  assert.match(manualTradeText({...exit,fillPrice:undefined,pnlUSD:undefined}),/손익 \+0\.29 USDT \(수익률 —\)/);
 });
