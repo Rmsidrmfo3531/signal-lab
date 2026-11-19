@@ -20,8 +20,9 @@ export function venueSizingInputs(contract,book){
  const toBase=contract.quantityUnit==='CONTRACT'?size=>size*Number(contract.contractSizeBase):size=>size;
  const levels=rows=>rows.map(([price,size])=>[String(price),String(toBase(size))]);
  // Gate.io has no minimum order value; its minimum is order_size_min contracts.
+ const refPrice=Math.max(positive(book.ask)?book.ask:0,positive(book.bid)?book.bid:0,positive(book.mid)?book.mid:0);
  const minNotional=positive(contract.minNotionalUSDT)?contract.minNotionalUSDT:
-  positive(Number(contract.minQuantityBase))&&positive(book.ask)?Number(contract.minQuantityBase)*book.ask:NaN;
+  positive(Number(contract.minQuantityBase))&&positive(refPrice)?Number(contract.minQuantityBase)*refPrice:NaN;
  return {
   market:{symbol:contract.symbol,status:contract.tradable?'TRADING':'BREAK',contractType:'PERPETUAL',quoteAsset:'USDT',
    filters:{PRICE_FILTER:{tickSize:contract.tickSize},LOT_SIZE:{stepSize:contract.quantityStep,minQty:contract.minQuantityBase},
