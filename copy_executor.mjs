@@ -167,7 +167,7 @@ export class CopyExecutor{
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...this.store})}
  #event(type,detail={}){const cur=this.curMsg,e={type,at:this.now(),mode:this.config.mode,...(detail.symbol&&cur?.symbol===detail.symbol&&cur.direction?{direction:cur.direction}:{}),...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
  /** Symbols the copy ledger holds (the signal strategy skips them). */
- heldSymbols(){return new Set([...Object.values(this.store.positions).filter(p=>p.status==='OPEN').map(p=>p.symbol),...this.reserved])}
+ heldSymbols(){const s=new Set(this.reserved);for(const sym of this.reserved)if(sym.endsWith('USDT')&&!sym.includes('-'))s.add(sym.replace(/USDT$/,'-USDT'));for(const p of Object.values(this.store.positions))if(p.status==='OPEN'){s.add(p.symbol);if(p.venueSymbol)s.add(p.venueSymbol);if(p.venueAlias)s.add(p.venueAlias)}return s}
  status(){const closed=this.store.closed.filter(p=>!p.archivedFromHistory);
   return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:closed.slice(-200).reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
@@ -199,6 +199,7 @@ export class CopyExecutor{
   this.store.seen.push(key);
   if(!m){this.#save();return {ok:true,ignored:true}}
   this.curMsg=m; // events of this message carry its direction (copy page failure list)
+  try{
   const at=num(date)??this.now();
   if(m.kind==='MONITOR_START'){this.store.monitorStartAt=at;this.#event('MONITOR_START');this.#save();return {ok:true}}
   // Messages are retried for minutes when the server restarts, so they can arrive out of order: one older
@@ -226,6 +227,7 @@ export class CopyExecutor{
    // A close or a cut that failed (e.g. rate limit) is tried again by the routine check; a late entry or add is not.
    const job=error.retryAs??m;if(job.kind==='CLOSE'||job.kind==='CHANGE'&&job.to<job.from)this.store.pending.push({m:job,at,tries:0,pid:this.store.positions[this.#key(job)]?.id??null});
    this.#save();return {ok:false,reason:error.code||error.message}}
+  }finally{this.curMsg=null}
  }
  #key(m){return `${m.symbol}|${m.direction}`}
  async #contract(symbol){const c=await this.contractOf(symbol);if(!c||c.tradable===false)throw Object.assign(Error('NO_BINGX_CONTRACT'),{code:'NO_BINGX_CONTRACT'});return c}
@@ -628,7 +630,7 @@ export class CopyExecutor{
    if(!(venuePrice>0)){if(c.alias){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}}
    else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
   let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.config.maxLeverage));
-  this.step='레버리지 조회';try{const info=await this.client.leverage(venueSymbol),maxL=Number(info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
+  this.step='레버리지 조회';try{const info=await this.client.leverage(venueSymbol),maxL=Number((m.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
   // The account's position mode (one-way: positionSide BOTH; hedge: LONG / SHORT, user 2026-11-17), read
   // before every entry and kept on the position. Not readable or not stated: skipped before any setting or
   // order (never guessed: the wrong mode is refused by BingX with 109400, user 2026-11-14 AKEUSDT).
@@ -775,8 +777,9 @@ export class CopyExecutor{
    if(cut>=p.qty)return this.#close(m,'TRADER_CUT_ALL');
    await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});
    p.theirTotal=m.to; // set after our cut went through, so a retried cut uses the same from / to
-   p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:cut,ratio});
-   await this.#protect(p,{ownFill:true});this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:cut,left:p.qty});
+   p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:cut,ratio});this.#save();
+   try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}
+   this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:cut,left:p.qty});
   }
   return {ok:true};
  }
@@ -798,6 +801,7 @@ export class CopyExecutor{
    if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason,...(detail?{detail}:{})});return {ok:false,reason}}
   }
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
+  if(!(price>0)){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
   const byFirst=p.scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
   const marginUSD=p.scale==null&&byFirst==null&&p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
@@ -918,6 +922,7 @@ export class CopyExecutor{
    try{
     const window={startTs:Math.max(1,p.openedAt-60000),endTs:Math.min(now,p.closedAt+30000)};
     let orders=new Map((p.fillOrders||[]).map(o=>[String(o.id),o]));
+    if(p.closeEvidence?.orderId){const cid=String(p.closeEvidence.orderId);if(!orders.has(cid))orders.set(cid,{id:cid,side:p.direction==='LONG'?'SELL':'BUY',confirmed:false})}
     if(!p.fillTracked||new Set([...orders.values()].map(o=>o.side)).size<2)orders=await this.#legacyOrders(p,window);
     if(!orders.size){mark('ORDER_LINK_MISSING');return}
     if(orders.size>64){mark('ORDER_LIMIT');return}
@@ -948,6 +953,7 @@ export class CopyExecutor{
  }
  async #legacyOrders(p,{startTs,endTs}){
   const orders=new Map((p.fillOrders||[]).map(o=>[String(o.id),o]));
+  if(p.closeEvidence?.orderId){const cid=String(p.closeEvidence.orderId);if(!orders.has(cid))orders.set(cid,{id:cid,side:p.direction==='LONG'?'SELL':'BUY',confirmed:false})}
   if(typeof this.client.allOrders!=='function')return orders;
   const openSide=p.direction==='LONG'?'BUY':'SELL',closeSide=openSide==='BUY'?'SELL':'BUY';
   const owned=new Set(p.entryCids||[]);
@@ -982,7 +988,7 @@ export class CopyExecutor{
   * window starts a minute before the last time the position was seen on the venue. */
  async #goneEvidence(p){
   if(p.stopOrderId||Number(p.stop)>0)return {kind:'HAD_STOP'};
-  const c=this.client,to=this.now(),from=Math.max(0,(p.seenAt??p.openedAt??to)-60000);
+  const c=this.client,to=this.now(),from=Math.max(0,p.openedAt?p.openedAt-1000:0,(p.seenAt??p.openedAt??to)-60000);
   if(typeof c.forceOrders!=='function'||typeof c.allOrders!=='function')return {kind:'UNCONFIRMED',why:'NO_HISTORY_API',from,to};
   try{
    for(const type of ['LIQUIDATION','ADL']){const rows=rowsOf(await c.forceOrders({symbol:p.venueSymbol,autoCloseType:type,startTime:from,endTime:to}));

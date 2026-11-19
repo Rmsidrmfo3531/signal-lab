@@ -48,9 +48,9 @@ export function candleShape(row,direction){
  return {open:o,high:h,low:l,close:c,volume:Number(row?.[5])||0,wickShare:r4(wick/range),bodyShare:r4(Math.abs(c-o)/range)};
 }
 
-/** Excursion of a mark from the average entry: % of the price and R (initial risk per unit). */
+/** Excursion of a mark from the initial entry: % of the price and R (initial risk per unit). */
 export function excursion(p,mark){
- const dir=p.direction==='SHORT'?-1:1,avg=Number(p.avg),risk=dir*(avg-Number(p.initialStop??p.stop));
+ const dir=p.direction==='SHORT'?-1:1,avg=Number(p.firstEntryPrice??p.scaleIn?.initialEntry??p.avg),risk=dir*(avg-Number(p.initialStop??p.stop));
  if(!(mark>0)||!(avg>0))return null;
  const move=dir*(mark-avg);return {pct:move/avg*100,r:risk>0?move/risk:null};
 }
@@ -64,8 +64,10 @@ export function trackExcursion(p,mark,at){
 /** One journal line for a finished trade (the closed ledger row). */
 export function journalLine(x){
  const dir=x.direction==='SHORT'?-1:1,avg=Number(x.avg),plan=Number(x.checkedPrice??x.entry),signal=Number(x.plannedEntry);
+ const firstAvg=Number(x.firstEntryPrice??x.scaleIn?.initialEntry??x.avg)||avg,firstQty=Number(x.initialQty??x.scaleIn?.initialQty??x.filled??x.qty);
+ const firstRiskUSD=Number(x.initialRiskUSD??x.scaleIn?.initialRiskUSD??x.riskUSD),firstMarginUSD=Number(x.initialMarginUSD??x.scaleIn?.initialMarginUSD??x.marginUSD);
  const repeat=x.scaleIn?.version===2;
- const riskUnit=dir*((repeat?x.scaleIn.initialEntry:avg)-Number(x.initialStop)),riskActual=riskUnit>0?riskUnit*Number(repeat?x.scaleIn.initialQty:x.filled||x.qty):null;
+ const riskUnit=dir*(firstAvg-Number(x.initialStop)),riskActual=riskUnit>0?riskUnit*firstQty:null;
  const realized=x.realized??null,net=realized?.netUSD??x.netUSD??null;
  const a=x.scaleIn,scaleIn=a?{version:a.version,state:a.state,reason:a.reason??null,riskPct:a.riskPct,budgetUSD:r4(a.budgetUSD),
   touchedAt:a.touchedAt??null,recoveredAt:a.recoveredAt??null,attemptedAt:a.attemptedAt??null,requestedQty:a.requestedQty??null,
@@ -79,9 +81,9 @@ export function journalLine(x){
   barAt:x.barAt,detectedAt:x.detectedAt??null,evidence:x.evidence??null,candle:x.candle??null,atr:x.atr??null,trend4h:x.trend4h??null,withTrend:x.withTrend??null,
   plan:{signalClose:signal||null,checkedPrice:plan||null,entry:x.entry,stop:x.stopLossEnabled===false?null:x.initialStop,
    ...(x.stopLossEnabled===false?{riskReference:x.initialStop}:{}),targets:x.targets,parts:x.parts,targetCount:x.targetCount??null,merged:x.merged===true,
-   tp1NetR:r4(Number(x.netRR)),riskUSD:r4(Number(x.riskUSD)),marginUSD:r4(Number(x.marginUSD)),driftPct:x.driftPct??null},
-  entry:{at:x.openedAt??null,price:avg||null,qty:x.filled??x.qty,leverage:x.leverage,delayMs:x.openedAt&&x.barAt?x.openedAt-x.barAt:null,
-   slippageBpsVsPlan:bps(avg,plan),slippageBpsVsSignal:bps(avg,signal)},
+   tp1NetR:r4(Number(x.netRR)),riskUSD:r4(firstRiskUSD),marginUSD:r4(firstMarginUSD),driftPct:x.driftPct??null},
+  entry:{at:x.openedAt??null,price:firstAvg||null,qty:firstQty||x.filled||x.qty,leverage:x.leverage,delayMs:x.openedAt&&x.barAt?x.openedAt-x.barAt:null,
+   slippageBpsVsPlan:bps(firstAvg,plan),slippageBpsVsSignal:bps(firstAvg,signal)},
   universe:x.universe??null,scan:x.scan??null,btc:x.btc??null,
   tpFills:(x.tpFills||[]).map((f,i)=>f?{tp:i+1,at:f.at??null,price:f.price??null,qty:f.qty??null}:null).filter(Boolean),tpHits:x.tpHits??0,
   breakeven:{moved:x.breakevenMoved===true,at:x.breakevenAt??null,price:x.breakevenMoved?x.stop:null},

@@ -195,7 +195,7 @@ export class LiveExecutor{
   if(this.store.records.some(r=>r.clientOrderId===clientOrderId))return {sent:false,reasons:['DUPLICATE_SIGNAL']};
   const leverage=Number(row?.leverage)>0?Math.round(Number(row.leverage)):leverageForScore(row?.score,row?.marketCap)??10;
   let qty=null,split=null,config=this.config,extra=[],budgetEquity=null,budgetMargin=null;
-  try{if(this.externalHeld?.()?.has?.(row.symbol))extra.push('SYMBOL_HELD_BY_COPY')}catch{}
+  try{const held=this.externalHeld?.();if(held?.has?.(row.symbol)||held?.has?.(row.venueSymbol))extra.push('SYMBOL_HELD_BY_COPY')}catch{}
   // Read the balance only when an order could actually be sent.
   const gateOpen=this.config.mode!=='OFF'&&this.armed&&!this.store.killSwitch&&this.config.venues.includes(venue)&&this.credentials()[venue]&&contract;
   if(this.config.sizing==='BALANCE'){
@@ -250,7 +250,7 @@ export class LiveExecutor{
   const blocked=this.#entryBlock(revision);if(blocked)return {sent:false,reasons:[blocked]};
   if(this.busy.has(row.symbol))return {sent:false,reasons:['SYMBOL_BUSY']};
   // Checked again after the balance read: copy trading may have reserved the symbol meanwhile.
-  try{if(this.externalHeld?.()?.has?.(row.symbol))return {sent:false,reasons:['SYMBOL_HELD_BY_COPY']}}catch{}
+  try{const held=this.externalHeld?.();if(held?.has?.(row.symbol)||held?.has?.(row.venueSymbol))return {sent:false,reasons:['SYMBOL_HELD_BY_COPY']}}catch{}
   this.busy.add(row.symbol);
   // hedge: null until the account's mode is read (BingX): a record cut off before that sent nothing (#recover).
   const record={clientOrderId,signalKey,venue,mode:this.config.mode,...(venue==='BINGX'?{hedge:null}:{}),symbol:row.symbol,venueSymbol:row.venueSymbol,venueContract:row.venueContract,direction:row.direction,
@@ -303,26 +303,28 @@ export class LiveExecutor{
   }catch(error){record.status='FAILED';this.#event(record,'REJECTED',{reason:'MARGIN_SETUP_FAILED:'+(error.code||error.message)});return}
   const beforeSend=()=>this.#orderBlock(record,guard),blocked=beforeSend();if(blocked)return blocked;
   let entry;
+  const uncertainEntry=e=>['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET','HTTP_429'].includes(e?.code)||/^HTTP_5\d\d$/.test(e?.code||'')||['AbortError','TimeoutError'].includes(e?.name);
   try{entry=await client.placeOrder(plan.entry,{beforeSend})}
   catch(error){
    if(error.code==='ENTRY_NOT_SENT')return error.reason;
    // Outcome unknown (timeout/network) or rejected: look the client id up before anything else.
    let found=null;try{found=await client.getOrder(record.venueSymbol,{clientOrderId:record.clientOrderId})}catch{}
    if(!found||!bingxOrderId(found)){
-    if(error.code==='NETWORK_UNREACHABLE'){record.status='UNKNOWN';this.#event(record,'ENTRY_OUTCOME_UNKNOWN',{reason:error.code});this.kill('UNRESOLVED_BINGX');return}
+    if(uncertainEntry(error)){record.status='UNKNOWN';this.#event(record,'ENTRY_OUTCOME_UNKNOWN',{reason:error.code||error.name});this.kill('UNRESOLVED_BINGX');return}
     record.status='FAILED';this.#event(record,'ENTRY_REJECTED',{reason:error.code||'REJECTED'});return;
    }
    entry=found;
   }
   record.entryOrderId=bingxOrderId(entry);record.status='OPEN';this.#event(record,'ENTRY_SENT',{orderId:record.entryOrderId});
   {const avg=posNum(pick(orderOf(entry),'avgPrice'));if(avg)record.firstEntryPrice=avg} // else read from the first position check
+  this.#save();
   // Confirm the attached stop exists; otherwise place one; otherwise close at market.
   // A failed read is "not checked", not "no stop": it is read once more before a second stop is sent.
   const open=await client.openOrders(record.venueSymbol).catch(()=>null)??await client.openOrders(record.venueSymbol).catch(()=>null);
   const side={hedge:record.hedge===true,direction:record.direction},stopOrder=(open?.orders??(Array.isArray(open)?open:[])).find(o=>String(o.type).startsWith('STOP')&&orderOnSide(o,side));
-  if(stopOrder){record.stopOrderId=bingxOrderId(stopOrder);this.#event(record,'STOP_CONFIRMED',{orderId:record.stopOrderId})}
+  if(stopOrder){record.stopOrderId=bingxOrderId(stopOrder);this.#event(record,'STOP_CONFIRMED',{orderId:record.stopOrderId});this.#save()}
   else{
-   try{const s=await client.placeOrder(plan.stop(record.quantity.total));record.stopOrderId=bingxOrderId(s);this.#event(record,'STOP_PLACED',{orderId:record.stopOrderId})}
+   try{const s=await client.placeOrder(plan.stop(record.quantity.total));record.stopOrderId=bingxOrderId(s);this.#event(record,'STOP_PLACED',{orderId:record.stopOrderId});this.#save()}
    catch(error){
     this.#event(record,'STOP_FAILED',{reason:error.code||error.message});
     try{await client.placeOrder(plan.emergencyClose(record.quantity.total));record.status='CLOSED';record.closedAt=this.now();record.closeReason='EMERGENCY_NO_STOP';this.#event(record,'EMERGENCY_CLOSED')}
@@ -335,14 +337,16 @@ export class LiveExecutor{
    try{const t=await client.placeOrder(params);record.targetOrderIds[i]=bingxOrderId(t)}
    catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})} // the stop still protects the position
   }
-  this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});
+  this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});this.#save();
   if(record.adds?.length)await this.#placeAdds(record,guard);
  }
 
  async #openGate(record,guard){
   const client=this.clients.GATEIO,contract=record.venueSymbol;
   const plan=gateOrders({contract,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
-  const account=await client.account();
+  let account;
+  try{account=await client.account()}
+  catch(error){record.status='FAILED';this.#event(record,'REJECTED',{reason:'ACCOUNT_CHECK_FAILED:'+(error.code||error.message)});return}
   if(account?.in_dual_mode===true){record.status='FAILED';this.#event(record,'REJECTED',{reason:'GATEIO_DUAL_MODE_UNSUPPORTED'});return}
   try{
    const pos=await client.setCrossLeverage(contract,record.leverage);
@@ -354,12 +358,13 @@ export class LiveExecutor{
   }catch(error){record.status='FAILED';this.#event(record,'REJECTED',{reason:'MARGIN_SETUP_FAILED:'+(error.code||error.message)});return}
   const beforeSend=()=>this.#orderBlock(record,guard),blocked=beforeSend();if(blocked)return blocked;
   let entry;
+  const uncertainEntry=e=>['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET','HTTP_429'].includes(e?.code)||/^HTTP_5\d\d$/.test(e?.code||'')||['AbortError','TimeoutError'].includes(e?.name);
   try{entry=await client.placeOrder(plan.entry,{beforeSend})}
   catch(error){
    if(error.code==='ENTRY_NOT_SENT')return error.reason;
    let found=null;try{found=await client.getOrder(plan.entry.text)}catch{}
    if(!found?.id){
-    if(error.code==='NETWORK_UNREACHABLE'){record.status='UNKNOWN';this.#event(record,'ENTRY_OUTCOME_UNKNOWN',{reason:error.code});this.kill('UNRESOLVED_GATEIO');return}
+    if(uncertainEntry(error)){record.status='UNKNOWN';this.#event(record,'ENTRY_OUTCOME_UNKNOWN',{reason:error.code||error.name});this.kill('UNRESOLVED_GATEIO');return}
     record.status='FAILED';this.#event(record,'ENTRY_REJECTED',{reason:error.code||'REJECTED'});return;
    }
    entry=found;
@@ -368,7 +373,8 @@ export class LiveExecutor{
   const filled=Math.abs(Number(entry.size))-Math.abs(Number(entry.left??0));
   if(!(filled>0)){record.status='FAILED';this.#event(record,'ENTRY_NOT_FILLED',{reason:entry.finish_as||'ioc'});return}
   record.status='OPEN';record.filledContracts=filled;if(posNum(entry.fill_price))record.firstEntryPrice=posNum(entry.fill_price);this.#event(record,'ENTRY_FILLED',{orderId:record.entryOrderId,contracts:filled,price:entry.fill_price});
-  try{const s=await client.placeTrigger(plan.stop());record.stopOrderId=String(s.id);this.#event(record,'STOP_PLACED',{orderId:record.stopOrderId})}
+  this.#save();
+  try{const s=await client.placeTrigger(plan.stop());record.stopOrderId=String(s.id);this.#event(record,'STOP_PLACED',{orderId:record.stopOrderId});this.#save()}
   catch(error){
    this.#event(record,'STOP_FAILED',{reason:error.code||error.message});
    try{await client.placeOrder(plan.emergencyClose());record.status='CLOSED';record.closedAt=this.now();record.closeReason='EMERGENCY_NO_STOP';this.#event(record,'EMERGENCY_CLOSED')}
@@ -384,7 +390,7 @@ export class LiveExecutor{
    try{const o=await client.placeTrigger(t);record.targetOrderIds[i]=String(o.id)}
    catch(error){record.targetOrderIds[i]=null;this.#event(record,'TARGET_FAILED',{reason:error.code||error.message})}
   }
-  this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});
+  this.#event(record,'PROTECTED',{targets:record.targetOrderIds.filter(Boolean).length});this.#save();
   if(record.adds?.length){if(filled!==record.quantity.total)record.peakSize=filled;await this.#placeAdds(record,guard)}
  }
 
@@ -394,7 +400,7 @@ export class LiveExecutor{
  async #placeAdds(record,guard){
   const skipRemaining=(from,reason)=>{
    for(const add of record.adds.slice(from))add.skipped=true;
-   this.#event(record,'ADDS_SKIPPED',{reason});
+   this.#event(record,'ADDS_SKIPPED',{reason});this.#save();
   };
   const beforeSend=()=>this.#orderBlock(record,guard),blocked=beforeSend();
   if(blocked){skipRemaining(0,blocked);return}
@@ -402,20 +408,20 @@ export class LiveExecutor{
   if(record.venue==='BINGX'){
    const plan=this.#plan(record);
    try{const s=await client.placeOrder(plan.wholeStop(record.stop,Number(full.toFixed(12))));const old=record.stopOrderId;record.stopOrderId=bingxOrderId(s);
-    if(old&&old!==record.stopOrderId)await this.#cancel(record,old);this.#event(record,'STOP_WHOLE_POSITION',{orderId:record.stopOrderId})}
-   catch(error){this.#event(record,'STOP_WHOLE_FAILED',{reason:error.code||error.message});this.#event(record,'ADDS_SKIPPED',{reason:'NO_WHOLE_POSITION_STOP'});record.adds.forEach(a=>a.skipped=true);return}
+    if(old&&old!==record.stopOrderId)await this.#cancel(record,old);this.#event(record,'STOP_WHOLE_POSITION',{orderId:record.stopOrderId});this.#save()}
+   catch(error){this.#event(record,'STOP_WHOLE_FAILED',{reason:error.code||error.message});this.#event(record,'ADDS_SKIPPED',{reason:'NO_WHOLE_POSITION_STOP'});record.adds.forEach(a=>a.skipped=true);this.#save();return}
   }
   const plan=this.#plan(record);
   for(const [i,a] of record.adds.entries()){
    const blocked=beforeSend();
    if(blocked){skipRemaining(i,blocked);break}
    const id=record.venue==='BINGX'?record.clientOrderId+'a'+String.fromCharCode(97+i):record.clientOrderId.slice(0,24)+'a'+String.fromCharCode(97+i);
-   try{const o=await client.placeOrder(plan.add(a.price,a.qty,id),{beforeSend});a.orderId=record.venue==='BINGX'?bingxOrderId(o):String(o.id)}
+   try{const o=await client.placeOrder(plan.add(a.price,a.qty,id),{beforeSend});a.orderId=record.venue==='BINGX'?bingxOrderId(o):String(o.id);this.#save()}
    catch(error){
     if(error.code==='ENTRY_NOT_SENT'){skipRemaining(i,error.reason);break}
     a.orderId=null;a.skipped=true;this.#event(record,'ADD_FAILED',{reason:`${i+1}: `+(error.code||error.message)})}
   }
-  this.#event(record,'ADDS_PLACED',{reason:`${record.adds.filter(a=>a.orderId).length}/${record.adds.length}`});
+  this.#event(record,'ADDS_PLACED',{reason:`${record.adds.filter(a=>a.orderId).length}/${record.adds.length}`});this.#save();
  }
  #plan(record){
   return record.venue==='BINGX'?bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId,hedge:record.hedge===true})
@@ -576,7 +582,7 @@ export class LiveExecutor{
   let limited=false;
   // Each round starts one position further on, so a round cut short by a 429 does not always
   // leave the same positions unchecked.
-  const open=this.store.records.filter(r=>r.status==='OPEN'),start=open.length?(this.roundStart=((this.roundStart||0)+1)%open.length):0;
+  const open=this.store.records.filter(r=>r.status==='OPEN'&&!this.busy.has(r.symbol)&&!this.closing.has(r.signalKey)),start=open.length?(this.roundStart=((this.roundStart||0)+1)%open.length):0;
   for(const record of [...open.slice(start),...open.slice(0,start)]){
    try{
     const pos=await this.#position(record,{cached:true}),{size,entryPrice}=pos;
@@ -619,14 +625,15 @@ export class LiveExecutor{
     const lockedIn=entryPrice>0&&(record.direction==='LONG'?record.stop>=entryPrice:record.stop<=entryPrice);
     if(!record.breakevenMoved&&lockedIn&&tp1Done){record.breakevenMoved=true;this.#event(record,'BREAKEVEN_SKIPPED_STOP_ALREADY_BETTER',{stop:record.stop})}
     if(!record.breakevenMoved&&tp1Done&&entryPrice>0){
+     const tick=record.venueContract?.tickSize,bePrice=posNum(tick)?Number(roundDecimalToStep(entryPrice,String(tick),record.direction==='LONG'?'UP':'DOWN')):entryPrice;
      const client=this.clients[record.venue];let placed;
      if(record.venue==='BINGX'){const plan=bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId,hedge:record.hedge===true});
-      placed=bingxOrderId(await client.placeOrder(plan.breakeven(entryPrice,size)))}
+      placed=bingxOrderId(await client.placeOrder(plan.breakeven(bePrice,size)))}
      else{const plan=gateOrders({contract:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
-      placed=String((await client.placeTrigger(plan.breakeven(entryPrice))).id)}
-     const old=record.stopOrderId;record.stopOrderId=placed;record.breakevenMoved=true;record.breakevenPrice=entryPrice;record.stop=entryPrice;
+      placed=String((await client.placeTrigger(plan.breakeven(bePrice))).id)}
+     const old=record.stopOrderId;record.stopOrderId=placed;record.breakevenMoved=true;record.breakevenPrice=bePrice;record.stop=bePrice;
      if(old)await this.#cancel(record,old);
-     this.#event(record,'STOP_TO_BREAKEVEN',{price:entryPrice,orderId:placed});
+     this.#event(record,'STOP_TO_BREAKEVEN',{price:bePrice,orderId:placed});
     }
     // A retired testnet signal position keeps its exits but cannot increase exposure.
     const retired=record.mode==='TESTNET'&&this.testnetSignalDisabled;
@@ -771,8 +778,8 @@ export class LiveExecutor{
    const row=positionRow(list,record.venueSymbol,{hedge:record.hedge===true,direction:record.direction});
    return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
     marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit),
-    // Side only when the venue states it (positionSide LONG/SHORT); an unsigned amount is not guessed.
-    side:row&&['LONG','SHORT'].includes(row.positionSide)?row.positionSide:null,
+    // Side only when the venue states it (positionSide LONG/SHORT or a signed negative amount); an unsigned amount is not guessed.
+    side:row?(['LONG','SHORT'].includes(row.positionSide)?row.positionSide:Number(row.positionAmt)<0?'SHORT':null):null,
     otherSide:record.hedge===true?otherSideAmount(list,record.venueSymbol,record.direction):0};
   }
   const p=await client.position(record.venueSymbol);

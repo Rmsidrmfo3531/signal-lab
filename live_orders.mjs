@@ -92,10 +92,12 @@ export function liveQuantity({quantity,estimatedStopLossUSD,maxRiskUSD,contract}
  if(!(base>0)||base<Number(contract.minQuantityBase||0))return null;
  const parts=FRACTIONS.map(f=>Number(roundDecimalToStep(base*f+Number(step)*1e-6,step,'DOWN')));
  parts[2]=Number((base-parts[0]-parts[1]).toFixed(12));
+ if(parts.some(p=>!(p>0)))return null;
  const riskUSD=Math.min(estimatedStopLossUSD*base/quantity,maxRiskUSD);
  if(contract.quantityUnit==='CONTRACT'){
-  const size=Number(contract.contractSizeBase),contracts=Math.round(base/size);
-  return {base,riskUSD,unit:'CONTRACT',total:contracts,parts:parts.map(p=>Math.round(p/size))};
+  const size=Number(contract.contractSizeBase),contracts=Math.round(base/size),cParts=parts.map(p=>Math.round(p/size));
+  if(cParts.some(p=>!(p>0)))return null;
+  return {base,riskUSD,unit:'CONTRACT',total:contracts,parts:cParts};
  }
  return {base,riskUSD,unit:'BASE_ASSET',total:base,parts};
 }
@@ -118,7 +120,7 @@ const venueQty=(base,c)=>{const g=venueGrid(c);return g.contract?Math.round(base
 export function liveSplitPlan({row,balanceUSD,leverage,sizeScale=1,config}){
  const c=row?.venueContract,inp=row?.paperAddInputs,entry=Number(row?.entry);
  if(!c||!positive(balanceUSD)||!positive(entry)||!positive(leverage))return null;
- const g=venueGrid(c),tick=Number(c.tickSize),minBase=Number(c.minQuantityBase)||0;
+ const g=venueGrid(c),tick=Number(c.tickSize),minBase=Number(c.minQuantityBase)||0,minNotional=Number(c.minNotionalUSDT)||0;
  if(!positive(g.step)||!positive(tick))return null;
  // Unit margin = balance × unitPct × sizeScale, never below the margin floor (user, 2026-11-13).
  // The per-trade worst-loss cap below and the open-risk cap in the executor still bound it.
@@ -127,19 +129,19 @@ export function liveSplitPlan({row,balanceUSD,leverage,sizeScale=1,config}){
  if(config.strategyProfile==='HYBRID')return hybridSplitPlan({row,c,g,tick,minBase,entry,inp,balanceUSD,leverage,sizeScale,config});
  for(const set of inp?.zoneSets||[]){
   const d=planZoneDca({direction:row.direction,entry,atr:inp.atr,zones:set.zones,balanceUSD,leverage,unitPct,tickSize:tick,quantityStep:g.step,
-   minQuantity:minBase,minNotional:Number(c.minNotionalUSDT)||0,takerRate:inp.takerRate,settings:{maxLossPct:config.maxLossPct,maxAdds:config.maxAdds}});
+   minQuantity:minBase,minNotional,takerRate:inp.takerRate,settings:{maxLossPct:config.maxLossPct,maxAdds:config.maxAdds}});
   if(!d.ok||!d.adds.length)continue;
-  const total=venueQty(d.unitQty,c);if(!(total>0))continue;
+  const total=venueQty(d.unitQty,c),parts=splitParts(total,c);if(!(total>0)||parts.some(p=>!(p>0)))continue;
   return {stop:d.stop,zoneSource:set.label,riskUSD:d.full.maxLossUSD,leverage,
-   qty:{base:d.unitQty,riskUSD:d.full.maxLossUSD,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts:splitParts(total,c)},
+   qty:{base:d.unitQty,riskUSD:d.full.maxLossUSD,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts},
    adds:d.adds.map(a=>({price:a.price,units:a.units,qty:venueQty(a.quantity??a.units*d.unitQty,c),orderId:null,filled:false}))};
  }
  // No zone fits: one unit, pattern stop.
  let base;try{base=Number(roundDecimalToStep(balanceUSD*unitPct/100*leverage/entry,g.step,'DOWN'))}catch{return null}
- const stop=Number(row.stop);if(!(base>0)||base<minBase||!positive(stop))return null;
- const total=venueQty(base,c),risk=base*Math.abs(entry-stop);
- if(!(total>0)||risk>balanceUSD*config.maxLossPct/100)return null;
- return {stop,zoneSource:null,riskUSD:risk,leverage,qty:{base,riskUSD:risk,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts:splitParts(total,c)},adds:[]};
+ const stop=Number(row.stop);if(!(base>0)||base<minBase||(minNotional>0&&base*entry<minNotional)||!positive(stop))return null;
+ const total=venueQty(base,c),parts=splitParts(total,c),risk=base*Math.abs(entry-stop);
+ if(!(total>0)||parts.some(p=>!(p>0))||risk>balanceUSD*config.maxLossPct/100)return null;
+ return {stop,zoneSource:null,riskUSD:risk,leverage,qty:{base,riskUSD:risk,unit:g.contract?'CONTRACT':'BASE_ASSET',total,parts},adds:[]};
 }
 
 /** HYBRID: the risk limit sets the size (see planProfile); adds 1·1·2·4… at the first zone set that

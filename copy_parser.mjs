@@ -5,7 +5,7 @@
 //   ✅ 포지션 청산 / 🪙 TNSRUSDT  🔴 Short / 진입가 0.05296 USDT / 최종손익 🟢 +1.72 USDT
 //   포지션 진입 / 코인: BTWUSDT / 방향: Long  레버리지: 6X / 진입가: … / 수량: 200  마진: 2.61 USDT
 //   Gate.io 모니터 시작 …   (the monitor restarted: the next 진입 cards re-announce open positions)
-const num=s=>{if(s==null)return null;const v=Number(String(s).replace(/,/g,''));return Number.isFinite(v)?v:null};
+const num=s=>{if(s==null)return null;const clean=String(s).replace(/,/g,'').trim();if(!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(clean))return null;const v=Number(clean);return Number.isFinite(v)?v:null};
 const pick=(text,re)=>{const m=re.exec(text);return m?m[1]:null};
 
 /** One message -> {kind:'OPEN'|'CHANGE'|'CLOSE'|'MONITOR_START', symbol, direction, ...} or null. */
@@ -19,18 +19,19 @@ export function parseCopyMessage(text){
  const direction=/\bLong\b/i.test(t)?'LONG':/\bShort\b/i.test(t)?'SHORT':null;
  if(!symbol||!direction)return null;
  const out={kind,symbol,direction};
- const lev=pick(t,/×\s*(\d+)/)??pick(t,/레버리지[:\s]*(\d+)\s*X/i);if(lev)out.leverage=Number(lev);
- const entry=num(pick(t,/진입가[\s:\u3000]*([\d,.]+)/));if(entry)out.entry=entry;
- const price=num(pick(t,/현재가[\s:\u3000]*([\d,.]+)/));if(price)out.price=price;
+ const lev=num(pick(t,/×\s*(\d+(?:\.\d+)?)/)??pick(t,/레버리지[:\s]*(\d+(?:\.\d+)?)\s*X/i));if(lev>0)out.leverage=lev;
+ const entry=num(pick(t,/진입가[\s:\u3000]*([\d,.]+)/));if(entry>0)out.entry=entry;
+ const price=num(pick(t,/현재가[\s:\u3000]*([\d,.]+)/));if(price>0)out.price=price;
  if(kind==='CHANGE'){
   // '-' stands for no position: '0.07 → -' is a full close, '- → 0.07' a fresh position.
   const m=/수량[\s:\u3000]*([\d,.]+|-)\s*(?:→|->)\s*([\d,.]+|-)/.exec(t);if(!m)return null;
-  out.from=m[1]==='-'?0:num(m[1]);out.to=m[2]==='-'?0:num(m[2]);if(!(out.from>=0)||!(out.to>=0)||out.from===out.to)return null;
+  out.from=m[1]==='-'?0:num(m[1]);out.to=m[2]==='-'?0:num(m[2]);
+  if(typeof out.from!=='number'||typeof out.to!=='number'||!(out.from>=0)||!(out.to>=0)||out.from===out.to)return null;
  }else{
-  const q=num(pick(t,/수량[\s:\u3000]*([\d,.]+)/));if(q)out.quantity=q;
-  const margin=num(pick(t,/마진[\s:\u3000]*([\d,.]+)/));if(margin)out.marginUSD=margin;
+  const q=num(pick(t,/수량[\s:\u3000]*([\d,.]+)/));if(q>0)out.quantity=q;
+  const margin=num(pick(t,/마진[\s:\u3000]*([\d,.]+)/));if(margin>0)out.marginUSD=margin;
  }
- if(kind==='CLOSE'){const p=pick(t,/(?:최종손익|미실현손익)[\s:\u3000]*[🟢🔴]?\s*([+-]?[\d,.]+)/u);if(p!=null)out.theirPnlUSD=num(p)}
+ if(kind==='CLOSE'){const p=pick(t,/(?:최종손익|미실현손익)[\s:\u3000]*[🟢🔴]?\s*([+−-]?\s*\$?\s*[\d,.]+)/u);if(p!=null){const v=num(p.replace(/[$\s]/g,'').replace(/−/g,'-'));if(v!==null)out.theirPnlUSD=v}}
  if(kind==='OPEN'&&!(out.entry>0))return null;
  return out;
 }
