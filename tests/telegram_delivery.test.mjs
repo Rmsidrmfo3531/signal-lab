@@ -58,6 +58,25 @@ test('real trades stay in the queue without a destination or when the explicit s
   assert.deepEqual(methods,expectedMethods);
  }
 });
+test('prepareRealTradeMessage does not cache a failed balance lookup across Telegram retries',async()=>{
+ const prepCode=section('const realTradeMessages=new WeakMap();','function confirmedRealTradeNotice(');
+ let calls=0;
+ const sandbox={
+  realBingxClient:{balance:async()=>{calls++;if(calls===1)throw Error('TIMEOUT');return [{asset:'USDT',availableMargin:'123.45'}]}},
+  bingxFunds:u=>({available:Number(u.availableMargin)}),
+  realTradeMessage:(_e,{availableMargin})=>({text:availableMargin==null?'조회 불가':`가용 ${availableMargin}`}),
+  setTimeout,clearTimeout
+ };
+ vm.createContext(sandbox);vm.runInContext(prepCode,sandbox);
+ const event={fromFills:true,type:'MANUAL_SETTLED',symbol:'BTCUSDT'};
+ const first=await sandbox.prepareRealTradeMessage(event);
+ assert.equal(first.text,'조회 불가');
+ const second=await sandbox.prepareRealTradeMessage(event);
+ assert.equal(second.text,'가용 123.45');
+ const third=await sandbox.prepareRealTradeMessage(event);
+ assert.equal(third.text,'가용 123.45');
+ assert.equal(calls,2,'retried once after failure, then reused the successful snapshot');
+});
 function harness(){
  const now=Date.now(),{row,context:marketContext}=syntheticFinalSignalContext(now);
  Object.assign(row,{scoreVersion:'ISSUE6-100-V1',risk:{leverage:20},executionVenue:'BINGX'});

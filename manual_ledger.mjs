@@ -452,11 +452,14 @@ export class ManualLedger{
     this.store.telegramLastAt=this.now();this.store.telegramChatType=['channel','supergroup','group','private'].includes(outcome.chatType)?outcome.chatType:null;this.store.telegramError=null;
    }else{
     item.attempts=(item.attempts??0)+1;
-    item.nextAt=this.now()+Math.max(outcome?.retryMs??0,Math.min(15*60000,15000*2**Math.min(item.attempts-1,6)));
+    item.nextAt=this.now()+Math.max(outcome?.retryMs??0,Math.min(60000,5000*2**Math.min(item.attempts-1,4)));
     this.store.telegramError=outcome?.error??'DELIVERY_UNCONFIRMED';
+    if(outcome?.error!=='INVALID_ALERT'){
+     for(const queued of this.store.telegramQueue)if(queued!==item&&queued.nextAt<item.nextAt)queued.nextAt=item.nextAt;
+     this.#save();return;
+    }
    }
    this.#save();
-   if(outcome?.retryMs>0)return;
   }
  }
  /** Recover trades opened and closed entirely between successful position reads. */

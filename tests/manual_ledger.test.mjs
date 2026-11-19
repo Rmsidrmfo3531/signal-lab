@@ -373,3 +373,34 @@ test('page: copy and manual closes in one newest-first list with 수동 badges a
  // Testnet (no manual ledger): unchanged, no split line.
  assert.doesNotMatch(m.copyHTML({...c,manual:undefined}),/copy-split/);
 });
+
+test('Telegram delivery caps retry backoff at 60 s and keeps queued alerts in FIFO order on transient failures',async()=>{
+ const c=clock(),sent=[];
+ let fail=true;
+ const m=new ManualLedger({now:c.now,sendTelegram:async e=>{
+  if(fail)return {error:'IPV4_ABORT_ERR',transport:'IPV4'};
+  sent.push(e.type);return {ok:true,transport:'IPV4',chatType:'private'};
+ }});
+ m.store.telegramQueue.push(
+  {event:{type:'MANUAL_OPEN',symbol:'BTCUSDT',alertOrigin:'MANUAL'},nextAt:c.now()},
+  {event:{type:'MANUAL_SETTLED',symbol:'BTCUSDT',alertOrigin:'MANUAL'},nextAt:c.now()}
+ );
+ const expectedBackoffs=[5000,10000,20000,40000,60000,60000];
+ for(const wait of expectedBackoffs){
+  const before=c.now();
+  await m.deliverAlerts();
+  assert.equal(m.store.telegramQueue[0].nextAt,before+wait);
+  assert.equal(m.store.telegramQueue[1].nextAt,before+wait,'second alert waits behind the first to preserve FIFO order');
+  assert.equal(m.store.telegramQueue[1].attempts,undefined,'second alert is not attempted while network is failing');
+  c.add(wait-1000);
+  await m.deliverAlerts();
+  assert.equal(sent.length,0);
+  c.add(1000);
+ }
+ fail=false;
+ await m.deliverAlerts();
+ assert.deepEqual(sent,['MANUAL_OPEN','MANUAL_SETTLED']);
+ assert.equal(m.telegramStatus().pending,0);
+ assert.equal(m.telegramStatus().error,null);
+});
+

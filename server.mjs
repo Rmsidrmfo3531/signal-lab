@@ -493,8 +493,10 @@ function prepareRealTradeMessage(e){
  // Both transports use one post-confirmation snapshot. A slow wallet read cannot hold an alert indefinitely.
  let timer;
  const deadline=new Promise(resolve=>{timer=setTimeout(resolve,1500,null);timer.unref()});
- const message=Promise.race([read,deadline]).then(availableMargin=>realTradeMessage(e,{availableMargin}))
-  .finally(()=>clearTimeout(timer));
+ const message=Promise.race([read,deadline]).then(availableMargin=>{
+  if(availableMargin===null)realTradeMessages.delete(e);
+  return realTradeMessage(e,{availableMargin});
+ }).finally(()=>clearTimeout(timer));
  realTradeMessages.set(e,message);
  return message;
 }
