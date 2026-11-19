@@ -38,6 +38,15 @@ test('copy and scalp positions and closed trades scroll independently from their
  assert.match(scalp,/aria-label="최근 종료 거래"/);
 });
 
+test('copy page omits the verbose exchange audit rows while preserving positions',()=>{
+ const copy={mode:'LIVE',enabled:true,armed:true,positions:[{symbol:'ETHUSDT',direction:'LONG',leverage:80,qty:0.01,avg:1739.87,mark:1772.29,openedAt:NOW,unrealized:0.32}],closed:[],funds:{equity:100,available:90},
+  audit:{ready:true,lanes:[{symbol:'ETHUSDT',direction:'LONG',expectedQty:0.01,venueQty:0.01,stop:'OFF',stale:true,blocked:true,issues:['ORDERS_UNREADABLE']}]} };
+ const html=copyHTML(copy);
+ assert.match(html,/ETHUSDT/,'open position is still shown');
+ assert.doesNotMatch(html,/거래소 대조|원장 0\\.01|확인 정보 오래됨|보호 손절 미설정|신규 진입·추매 보류/,'audit-only rows are not rendered');
+ assert.doesNotMatch(html,/class="copy-audit"/);
+});
+
 test('testnet closed trades use the same wrapper; CSS scrolls only wide desktop tables',()=>{
  const html=testnetClosedHTML({closed:[],scalp:{closed:[{symbol:'BTCUSDT',kind:'MOVE_REVERSAL',direction:'LONG',openedAt:NOW,closedAt:NOW+600000,netUSD:1,netSource:'EXCHANGE'}]}});
  assert.match(html,/aria-label="테스트넷 종료 거래"/);
