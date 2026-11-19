@@ -19,9 +19,9 @@ test('real account merges only the symbol column across two compact metric rows'
  assert.doesNotMatch(html,/colspan="6"/,'second row has real table cells aligned to the columns');
  assert.match(html,/NCSKSNDK2USDT/);
  for(const field of ['증거금','추매','보유','미실현 · 수익률','청산가'])
-  assert.match(html,new RegExp('<small>'+field+'<\\/small>'),'each second-row field has its own cell');
- assert.match(html,/19\\.43/);
- assert.match(html,/32\\.7%/);
+  assert.match(html,new RegExp('<small>'+field+'</small>'),'each second-row field has its own cell');
+ assert.match(html,/19\.43/);
+ assert.match(html,/32\.7%/);
  assert.match(html,/3회/,'copy additional buys remain visible');
  assert.match(html,/<ul class="copy-list only-mob">/,'mobile list remains unchanged');
 });
@@ -46,8 +46,8 @@ test('testnet closed trades use the same wrapper; CSS scrolls only wide desktop 
  assert.match(css,/\.copy-table-scroll\{display:block;width:100%;overflow-x:auto/,'desktop scrolls each table');
  assert.match(css,/\.copy-table-scroll \.copy-table\{width:max-content;min-width:100%/);
  assert.match(css,/\.copy-main\{min-width:0;overflow-x:visible\}/,'the entire panel does not horizontally scroll');
- assert.match(css,/\\.copy-table-scroll \\.vp-two-row\\{width:100%;min-width:0;max-width:100%;table-layout:fixed\\}/);
- assert.match(css,/\\.copy-side \\.pnl-cal\\{width:100%;max-width:320px\\}/,'calendar is compact');
- assert.match(css,/grid-template-columns:minmax\\(260px,320px\\) minmax\\(0,1fr\\)/,'desktop uses narrow sidebar again');
- assert.doesNotMatch(css,/\\.vp-detail-grid\\{display:grid/,'no full-width detail grid');
+ assert.match(css,/\.copy-table-scroll \.vp-two-row\{width:100%;min-width:0;max-width:100%;table-layout:fixed\}/);
+ assert.match(css,/\.copy-side \.pnl-cal\{width:100%;max-width:320px\}/,'calendar is compact');
+ assert.match(css,/grid-template-columns:minmax\(260px,320px\) minmax\(0,1fr\)/,'desktop uses narrow sidebar again');
+ assert.doesNotMatch(css,/\.vp-detail-grid\{display:grid/,'no full-width detail grid');
 });
