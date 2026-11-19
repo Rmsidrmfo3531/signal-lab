@@ -359,7 +359,7 @@ test('page: copy and manual closes in one newest-first list with 수동 badges a
  assert.match(h,/전체 11건<\/small>/,'the 수동 count is in the 카피 / 수동 line (user 2026-11-18: one place per fact)');assert.match(h,/1 \/ 2쪽/);
  assert.match(h,/정산 확인<b >1건/);assert.match(h,/누적 손익<b class="paper-profit">\+\$5\.00/);assert.match(h,/승률<b >100%/);
  assert.match(h,/카피 <b class="">—<\/b> \(0건\) · 수동 <b class="paper-profit">\+\$5\.00<\/b> \(1건\)/);
- assert.match(h,/정산 미확정 10건/);
+ assert.doesNotMatch(h,/정산 미확정 10건|정산 다시 조회|data-copy-settle/);
  const desk=h.slice(h.indexOf('<th>종료</th>'));
  assert.match(desk,/<tr class="vp-manual"><td class="muted">[^<]*<\/td><td><b>M0<\/b> <span class="vp-badge manual">수동<\/span>/);
  assert.match(desk,/<b class="paper-profit">\+\$5\.00<\/b><\/td><td><small class="muted">정산 확인<\/small>/);

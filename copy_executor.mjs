@@ -926,23 +926,44 @@ export class CopyExecutor{
     if(!p.fillTracked||new Set([...orders.values()].map(o=>o.side)).size<2)orders=await this.#legacyOrders(p,window);
     if(!orders.size){mark('ORDER_LINK_MISSING');return}
     if(orders.size>64){mark('ORDER_LIMIT');return}
-    const raw=[];let history=null;
-    if(typeof this.client.fillHistory==='function')try{history=await confirmedBingxFills(this.client,await this.client.fillHistory({symbol:p.venueSymbol,...window}),{symbol:p.venueSymbol,orders})}catch(e){if(typeof this.client.fillOrders!=='function')throw e}
-    for(const [orderId,order] of orders){
-     const isOwned=f=>f.orderId===orderId&&f.symbol===p.venueSymbol&&f.side===order.side&&f.at>=window.startTs&&f.at<=window.endTs;
-     let owned=history?.filter(isOwned)??[];
-     if(!owned.length&&typeof this.client.fillOrders==='function')try{
-      const receipts=await confirmedBingxFills(this.client,await this.client.fillOrders({...window,orderId}),{symbol:p.venueSymbol,orders:new Map([[orderId,order]])});
-      owned=receipts.filter(isOwned);
-     }catch(e){if(history===null||order.confirmed)throw e}
-     if(order.confirmed&&!owned.length){mark('FILL_PENDING');return}
-     raw.push(...owned);
+    const raw=[];
+    let historyLoaded=false,historyRows=null,historyError;
+    const collect=async batch=>{
+     if(!historyLoaded&&typeof this.client.fillHistory==='function'){
+      historyLoaded=true;
+      try{historyRows=await this.client.fillHistory({symbol:p.venueSymbol,...window})}catch(e){historyError=e}
+     }
+     let history=null;
+     if(historyLoaded)try{
+      if(historyError)throw historyError;
+      history=await confirmedBingxFills(this.client,historyRows,{symbol:p.venueSymbol,orders:batch});
+     }catch(e){if(typeof this.client.fillOrders!=='function')throw e}
+     for(const [orderId,order] of batch){
+      const isOwned=f=>f.orderId===orderId&&f.symbol===p.venueSymbol&&f.side===order.side&&f.at>=window.startTs&&f.at<=window.endTs;
+      let owned=history?.filter(isOwned)??[];
+      if(!owned.length&&typeof this.client.fillOrders==='function')try{
+       const receipts=await confirmedBingxFills(this.client,await this.client.fillOrders({...window,orderId}),{symbol:p.venueSymbol,orders:new Map([[orderId,order]])});
+       owned=receipts.filter(isOwned);
+      }catch(e){if(history===null||order.confirmed)throw e}
+      if(order.confirmed&&!owned.length||order.verifiedQty&&!sameSize(owned.reduce((total,f)=>total+f.qty,0),order.verifiedQty))return false;
+      raw.push(...owned);
+     }
+     return true;
+    };
+    if(!await collect(orders)){mark('FILL_PENDING');return}
+    const balanced=()=>{
+     const totals={BUY:0,SELL:0};for(const f of raw)totals[f.side]+=f.qty;
+     return totals.BUY>0&&totals.SELL>0&&sameSize(totals.BUY,totals.SELL);
+    };
+    if(raw.length&&!balanced()&&typeof this.client.allOrders==='function'){
+     const recovered=await this.#legacyOrders(p,window,{externalClose:true});
+     const additional=new Map([...recovered].filter(([id])=>!orders.has(id)));
+     if(orders.size+additional.size>64){mark('ORDER_LIMIT');return}
+     if(additional.size&&!await collect(additional)){mark('FILL_PENDING');return}
     }
     const fills=raw.sort((a,b)=>a.at-b.at||a.tradeId.length-b.tradeId.length||a.tradeId.localeCompare(b.tradeId));
     if(!fills.length){mark('FILL_PENDING');return}
-    const openSide=p.direction==='SHORT'?'SELL':'BUY';
-    const totals={BUY:0,SELL:0};for(const f of fills)totals[f.side]+=f.qty;
-    if(!(totals[openSide]>0)||!(totals.BUY>0&&totals.SELL>0)||!sameSize(totals.BUY,totals.SELL)){mark('QUANTITY_MISMATCH');return}
+    if(!balanced()){mark('QUANTITY_MISMATCH');return}
     const result=summarizeBalancedFills(fills,p.direction);
     if(!result){mark('INCOMPLETE_FILLS');return}
     if(!this.store.closed.includes(p))return;
@@ -951,7 +972,7 @@ export class CopyExecutor{
     this.#event('COPY_SETTLED',{symbol:p.symbol,direction:p.direction});
    }catch(error){mark('LOOKUP_FAILED',/^[A-Z_0-9]{1,48}$/.test(error?.code??error?.message??'')?(error.code??error.message):null);this.log(`[COPY] fill settlement ${error?.code||error?.message||'FAILED'}`)}
  }
- async #legacyOrders(p,{startTs,endTs}){
+ async #legacyOrders(p,{startTs,endTs},{externalClose=false}={}){
   const orders=new Map((p.fillOrders||[]).map(o=>[String(o.id),o]));
   if(p.closeEvidence?.orderId){const cid=String(p.closeEvidence.orderId);if(!orders.has(cid))orders.set(cid,{id:cid,side:p.direction==='LONG'?'SELL':'BUY',confirmed:false})}
   if(typeof this.client.allOrders!=='function')return orders;
@@ -962,12 +983,28 @@ export class CopyExecutor{
   for(let sequence=1;sequence<=Math.min(128,Number(p.orderSeq)||0);sequence++)
    for(const tag of ['open','add','close','emergency'])owned.add(this.#clientId(p,`${tag}.${sequence}`));
   for(let cut=1;cut<=Math.min(64,Number(p.reduces)||0);cut++)owned.add(this.#clientId(p,'cut'+cut));
-  for(const row of rowsOf(await this.client.allOrders({symbol:p.venueSymbol,startTime:startTs,endTime:endTs,limit:500}))){
+  const rows=rowsOf(await this.client.allOrders({symbol:p.venueSymbol,startTime:startTs,endTime:endTs,limit:500}));
+  for(const row of rows){
    const id=row?.orderId==null?null:String(row.orderId),side=String(row?.side).toUpperCase();
    if(id&&(owned.has(String(row.clientOrderId).toLowerCase())||id===String(p.stopOrderId))&&[openSide,closeSide].includes(side)){
     orders.set(id,{id,side,confirmed:Number(row.executedQty)>0||String(row.status).toUpperCase()==='FILLED',order:{...row,symbol:row.symbol??p.venueSymbol}});
    }
   }
+  // A manual full close can consist of several reductions between position polls. Only recover
+  // additional orders if the complete history identifies the recorded exit and every opening belongs to this copy.
+  const evidence=p.closeEvidence;
+  if(!externalClose||evidence?.kind!=='MANUAL_CLOSE'||!evidence.orderId||rows.length>=500)return orders;
+  const executed=rows.filter(row=>pos(row?.executedQty)||String(row?.status).toUpperCase()==='FILLED');
+  const lane=p.hedge===true?p.direction:'BOTH',positionSide=row=>String(row.positionSide??'').toUpperCase();
+  if(executed.some(row=>row.symbol!==p.venueSymbol||!['BOTH','LONG','SHORT'].includes(positionSide(row))||
+   (p.hedge===true?positionSide(row)==='BOTH':positionSide(row)!=='BOTH')))return orders;
+  const ownLane=executed.filter(row=>positionSide(row)===lane);
+  if(!ownLane.some(row=>String(row.orderId)===String(evidence.orderId)&&String(row.side).toUpperCase()===closeSide))return orders;
+  const extra=ownLane.filter(row=>!orders.has(String(row.orderId)));
+  if(extra.some(row=>!row.orderId||!pos(row.executedQty)||String(row.side).toUpperCase()!==closeSide||
+   !(p.hedge===true||String(row.reduceOnly).toLowerCase()==='true'||String(row.closePosition).toLowerCase()==='true')||
+   !(Number(row.updateTime??row.time)>=p.openedAt&&Number(row.updateTime??row.time)<=p.closedAt)))return orders;
+  for(const row of extra){const id=String(row.orderId);orders.set(id,{id,side:closeSide,confirmed:true,verifiedQty:Number(row.executedQty),order:row})}
   return orders;
  }
  /** A position found gone on the venue without our close order: classified (#goneEvidence) and booked. An entry
