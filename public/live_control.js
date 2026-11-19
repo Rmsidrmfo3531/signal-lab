@@ -503,7 +503,7 @@ export function scalpDetailsHTML(s){
  const mode=s.mode!=='TESTNET'?(s.refused==='LIVE_REFUSED'?'실계좌 모드는 거부됨 — 테스트넷 전용':'SCALP_EXEC_MODE=OFF'):!s.credentials?'BingX API 키 없음':s.armed&&s.blocked?`지금 진입 안 함: ${esc(s.blockedKo||s.blocked)}`:''; // on / off: the testnet switch
  const bySide=`<div class="copy-stats">${['LONG','SHORT'].map(d=>{const b=st.bySide?.[d]||{};return stat(`${SK[d]}${sides.includes(d)?'':' (꺼짐)'}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${SK[d]} 손익`,tnMoney(b.trades?b.netUSD:null),`class="${tnCls(b.netUSD)}"`)}).join('')}</div>`;
  const noStop=S.stopLossEnabled===false;
- const protection=noStop?`자동 손절·시간 만료 청산 없음${S.repeatedScaleIn?' · 최초 진입과 같은 증거금으로 반복 추매(5분봉당 최대 1회, 첫 청산 전까지)':''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유`;
+ const protection=noStop?`자동 손절·시간 만료 청산 없음${S.repeatedScaleIn?' · 현재 보유 수량까지 반복 추매(가용 증거금·한도 내, 5분봉당 최대 1회, 첫 청산 전까지)':''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유`;
  const exitRule=protection+(S.profitHoldTargetMin?` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 진입 후 첫 점검부터 예상 비용을 넘기는 가격에 지정가 익절`:
   S.earlyTakeProfitMin?` · ${esc(S.earlyTakeProfitMin)}분 경과 후 예상 비용을 충당하는 가격에 지정가 익절`:'');
  const recheck=S.reversalRecheckMin?` · 가격·손익비로 건너뛴 반전은 ${esc(S.reversalRecheckMin)}분 동안 재확인`:'';

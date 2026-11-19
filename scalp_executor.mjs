@@ -482,10 +482,12 @@ export class ScalpExecutor{
  },0)}
  #usedMargin(){return this.store.open.reduce((t,p)=>t+(p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1)
   +(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedMarginUSD||0):0),0)}
- async #funds(){
+ async #funds({requireAvailable=false}={}){
   const b=await this.balance().catch(()=>null),eq=pos(b?.equity);if(!eq)return null;
-  const cap=this.config.balanceCapUSD>0?this.config.balanceCapUSD:Infinity,equity=Math.min(eq,cap),used=Math.max(0,eq-(num(b.available)??eq));
-  this.funds={equity,available:Math.max(0,Math.min(num(b.available)??equity,equity-used)),at:this.now()};return this.funds;
+  const raw=b.available,available=num(raw);
+  if(requireAvailable&&(!['number','string'].includes(typeof raw)||String(raw).trim()===''||available===null))return null;
+  const cap=this.config.balanceCapUSD>0?this.config.balanceCapUSD:Infinity,equity=Math.min(eq,cap),used=Math.max(0,eq-(available??eq));
+  this.funds={equity,available:Math.max(0,Math.min(available??equity,equity-used)),at:this.now()};return this.funds;
  }
  async #consider(u,det,revision){
   const key=scalpClientId(u.symbol,det.barAt,det.direction),skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
@@ -717,7 +719,7 @@ export class ScalpExecutor{
   if(!(trigger>0)||dir*(mark-trigger)>1e-12)return;
   a.checkedBucket=bucket;
   const revision=this.entryRevision,vs=p.venueSymbol,hedge=p.hedge===true;
-  const [price,funds,fresh]=await Promise.all([withTimeout(this.priceOf(p.symbol,vs),3000),this.#funds(),this.#position(vs,p.direction,hedge)]);
+  const [price,funds,fresh]=await Promise.all([withTimeout(this.priceOf(p.symbol,vs),3000),this.#funds({requireAvailable:true}),this.#position(vs,p.direction,hedge)]);
   if(!funds){a.lastReason='NO_BALANCE';return}
   if(!fresh.avg||Math.abs(fresh.size-p.size)>step/2||Math.abs(fresh.avg-p.avg)>Number(p.tickSize)/2){a.lastReason='POSITION_CHANGED';return}
   if(!pos(price)||!fresh.mark||dir*(price-trigger)>1e-12||dir*(fresh.mark-trigger)>1e-12){a.lastReason='PRICE_OUTSIDE_BAND';return}
@@ -726,12 +728,16 @@ export class ScalpExecutor{
   // A marketable limit capped at one tick through the checked quote, and never past the adverse trigger.
   const bound=Number(grid(price+dir*Number(p.tickSize),p.tickSize,awayMode(p.direction)));
   const orderPrice=dir>0?Math.min(limit,bound):Math.max(limit,bound);
-  const initialNotional=a.initialMarginUSD*p.leverage,quantity=Number(grid(initialNotional/orderPrice,p.quantityStep,'DOWN'));
-  if(!(quantity>0&&quantity>=a.minPart&&quantity*orderPrice>=a.minNotional)){a.lastReason='MIN_QUANTITY';return}
-  const margin=quantity*orderPrice/p.leverage,risk=this.#repeatRisk(p,orderPrice,fresh.mark)*quantity;
-  const cap=Math.min(funds.available*.9,funds.equity*this.config.maxMarginPct/100-fresh.size*fresh.avg/p.leverage);
-  if(margin>cap+1e-9){a.lastReason='RISK_OR_MARGIN_CAP';return}
-  if(!this.#scaleBudget(funds.equity,risk,margin)){a.lastReason='TESTNET_BUDGET';return}
+  if(!(fresh.size>=a.minPart&&fresh.size*orderPrice>=a.minNotional)){a.lastReason='MIN_QUANTITY';return}
+  const room=this.#scaleBudgetRoom(funds.equity);
+  if(!room){a.lastReason='TESTNET_BUDGET';return}
+  const marginUnit=orderPrice/p.leverage,riskUnit=this.#repeatRisk(p,orderPrice,fresh.mark);
+  const cap=Math.min(funds.available*.9,funds.equity*this.config.maxMarginPct/100-fresh.size*fresh.avg/p.leverage,room.margin);
+  // Scale from the exchange-confirmed holding. Use a smaller order when funds or risk are tight.
+  const maxQty=Math.min(fresh.size,cap/marginUnit,riskUnit>0?room.risk/riskUnit:Infinity);
+  const quantity=Number(grid(Math.max(0,maxQty),p.quantityStep,'DOWN'));
+  if(!(quantity>0&&quantity>=a.minPart&&quantity*orderPrice>=a.minNotional)){a.lastReason='RISK_OR_MARGIN_CAP';return}
+  const margin=quantity*marginUnit,risk=quantity*riskUnit;
   const guard=()=>this.#blocked(p.id)||(revision!==this.entryRevision?'NOT_ARMED':null)
    ||(Math.floor(this.now()/I5)!==bucket?'WINDOW_EXPIRED':null)||(!this.#scaleBudget(funds.equity)?'TESTNET_BUDGET':null);
   if(guard())return;
@@ -888,9 +894,17 @@ export class ScalpExecutor{
  }
  #scaleBudget(equity,risk=0,margin=0){
   if(this.budget)return this.budget.check({equity,newRiskUSD:risk,newMarginUSD:margin,who:'scalp'}).ok;
-  const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((sum,x)=>sum+(Number(x.netUSD)||0),0);
-  return Math.max(0,-realized)+this.budgetSource().openRisk()+risk<=equity*this.config.dailyLossPct/100+1e-9
-   &&this.budgetSource().usedMargin()+margin<=equity*this.config.maxTotalMarginPct/100+1e-9;
+  const room=this.#scaleBudgetRoom(equity);
+  return risk<=room.risk+1e-9&&margin<=room.margin+1e-9;
+ }
+ #scaleBudgetRoom(equity){
+  if(this.budget){
+   const {ok,snap}=this.budget.check({equity,who:'scalp'});
+   return ok?{risk:snap.limitUSD-snap.usedUSD,margin:snap.marginCapUSD-snap.marginUSD}:null;
+  }
+  const source=this.budgetSource(),realized=source.realizedToday(kstDay(this.now()));
+  return {risk:equity*this.config.dailyLossPct/100-Math.max(0,-realized)-source.openRisk(),
+   margin:equity*this.config.maxTotalMarginPct/100-source.usedMargin()};
  }
  async #recoverAdd(p,order=null){
   if(this.config.stopLossEnabled===false)return this.#recoverRepeat(p,order);
@@ -1212,7 +1226,7 @@ export class ScalpExecutor{
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,
-    scaleIn:c.scaleIn===true,scaleInMarginRatio:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
+    scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,exchangePosition,...p})=>({...p,details:scalpPositionDetails({...p,steps,exchangePosition},this.now())})),
    closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,exchangePosition,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),

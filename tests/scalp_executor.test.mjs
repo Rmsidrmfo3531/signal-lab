@@ -246,23 +246,26 @@ test('scale-in uses equal entry margin after a closed retest on either side, res
  }
 });
 
-test('unprotected testnet scalps repeat equal-first-margin adds at progressively adverse prices on both sides',async()=>{
+test('unprotected testnet scalps use the current holding for each adverse add on both sides',async()=>{
  for(const direction of ['LONG','SHORT']){
   const sign=direction==='LONG'?1:-1,entry=sign===1?PX:PX_S,v=venue({fillAt:entry}),clock={t:T0};
   let price=entry;
-  const ex=make(v,{clock,price:()=>price,trend:sign===1?up4h:down4h,rows:sign===1?crash:rise,config:{stopLossEnabled:false,scaleIn:true}});
+  const ex=make(v,{clock,price:()=>price,trend:sign===1?up4h:down4h,rows:sign===1?crash:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
   ex.arm();assert.equal((await ex.scan()).entered,1);
-  const p=ex.store.open[0],a=p.scaleIn,first=a.initialMarginUSD,dist=Math.abs(a.initialEntry-p.initialStop)*.5;
+  const p=ex.store.open[0],a=p.scaleIn,first=p.size,dist=Math.abs(a.initialEntry-p.initialStop)*.5;
   assert.equal(placed(v,'MARKET')[0].stopLoss,undefined);
   const moves=async value=>{price=value;v.mark=value;await ex.reconcile()};
   clock.t+=I;await moves(a.anchor-sign*(dist+.03));
   assert.equal(a.count,1);assert.equal(a.state,'WATCH');
-  const afterFirst=a.anchor;
+  const afterFirst=a.anchor,afterFirstSize=p.size;
+  assert.equal(a.orders[0].qty,first);
+  assert.equal(afterFirstSize,first*2);
   await moves(afterFirst-sign*(dist+.06));assert.equal(a.count,1,'at most one attempt in a candle');
   clock.t+=I;await moves(afterFirst-sign*(dist-.03));assert.equal(a.count,1,'a new adverse level must be reached');
   await moves(afterFirst-sign*(dist+.03));assert.equal(a.count,2);
   const adds=placed(v,'LIMIT');assert.equal(new Set(adds.map(o=>o.clientOrderId)).size,2);
-  for(const o of a.orders)assert.ok(Math.abs(o.marginUSD-first)<=o.price*Number(p.quantityStep)/p.leverage+1e-8);
+  assert.equal(a.orders[1].qty,afterFirstSize);
+  assert.equal(p.size,afterFirstSize*2);
   const active=[...v.orders.values()].filter(o=>o.type==='TAKE_PROFIT'&&o.status==='NEW');
   assert.ok(Math.abs(active.reduce((n,o)=>n+Number(o.quantity),0)-p.filled)<1e-8);
   assert.ok(active.every(o=>sign*(Number(o.price)-p.avg)>0),'the conditional exits also enforce a profitable limit');
@@ -275,6 +278,29 @@ test('unprotected testnet scalps repeat equal-first-margin adds at progressively
   assert.equal(ex.store.closed[0].closeReason,'ALL_TARGETS');assert.equal(ex.stats().repeatedScaleIn.adds,2);
   assert.equal(ex.journal()[0].scaleIn.count,2);
  }
+});
+
+test('repeated testnet adds trim size to confirmed available funds and shared margin',async()=>{
+ const {TestnetBudget}=await import('../testnet_budget.mjs');
+ const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:15,marginCapPct:30,now:()=>clock.t});
+ let price=PX,available=9000,otherMargin=0;
+ const ex=make(v,{clock,budget,price:()=>price,funds:()=>({equity:10000,available}),config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+ budget.register('signal',{usedMargin:()=>otherMargin}).register('scalp',ex.budgetSource());
+ ex.arm();assert.equal((await ex.scan()).entered,1);
+ const p=ex.store.open[0],a=p.scaleIn,first=p.size,dist=Math.abs(a.initialEntry-p.initialStop)*.5;
+ const next=async()=>{clock.t+=I;price=a.anchor-dist-.03;v.mark=price;await ex.reconcile()};
+ available=undefined;await next();
+ assert.equal(a.lastReason,'NO_BALANCE');assert.equal(placed(v,'LIMIT').length,0);
+ available=10;await next();
+ assert.equal(a.count,1);
+ assert.ok(a.orders[0].qty<first);
+ assert.ok(a.orders[0].marginUSD<=9&&a.orders[0].marginUSD>8.9);
+ available=9000;
+ otherMargin=budget.snapshot(10000).marginCapUSD-ex.budgetSource().usedMargin()-5;
+ await next();
+ assert.equal(a.count,2);
+ assert.ok(a.orders[1].marginUSD<=5&&a.orders[1].marginUSD>4.9);
+ assert.ok(budget.snapshot(10000).marginUSD<=3000+1e-9);
 });
 
 test('switching an open scalp to profit-only retires its market stop and targets while preserving external orders',async()=>{

@@ -175,7 +175,8 @@ test('real manual entry and add reach Telegram only after matching exchange fill
   assert.match(added[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT\n증거금 약 50\.00 USDT/);
   assert.match(added[0].text,/\n가용 증거금 조회 불가\n/);
   assert.deepEqual(added[0].entities,[{type:'bold',offset:0,length:'수동 | 신규 진입'.length}]);
-  assert.match(added[1].text,/^수동 \| 추가 진입[\s\S]*수량 \+0\.01 · 잔여 0\.02[\s\S]+증거금 약 50\.10 USDT/);
+  assert.match(added[1].text,/^수동 \| 추가 진입[\s\S]*수량 \+0\.01 · 잔여 0\.02[\s\S]+이번 증거금 약 50\.10 USDT\n포지션 총 증거금 약 100\.10 USDT/);
+  assert.deepEqual(added[1].entities,[{type:'bold',offset:0,length:'수동 | 추가 진입'.length}]);
  }finally{await app.close()}
 });
 
