@@ -173,6 +173,8 @@ test('real manual entry and add reach Telegram only after matching exchange fill
   const added=await until(async()=>{await app.get('/api/copy');return notices()},list=>list.length===2,{timeout:16000,label:'confirmed Telegram notices'});
   assert.match(added[0].text,/^수동 \| 신규 진입\nBTCUSDT · 🟢 롱 · 10배/);
   assert.match(added[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT\n증거금 약 50\.00 USDT/);
+  assert.match(added[0].text,/\n가용 증거금 조회 불가\n/);
+  assert.deepEqual(added[0].entities,[{type:'bold',offset:0,length:'수동 | 신규 진입'.length}]);
   assert.match(added[1].text,/^수동 \| 추가 진입[\s\S]*수량 \+0\.01 · 잔여 0\.02[\s\S]+증거금 약 50\.10 USDT/);
  }finally{await app.close()}
 });
@@ -184,7 +186,8 @@ test('Chrome and the scanner channel receive the same confirmed copy trade even 
  const lateAt=at-60000,lateOrder={...exchangeOrder,symbol:'ETH-USDT',orderId:'5070',updateTime:lateAt};
  const late={...position,id:'late-copy',symbol:'ETHUSDT',venueSymbol:'ETH-USDT',openedAt:lateAt,closedAt:lateAt+300,
   steps:[{kind:'OPEN',at:lateAt,qty:.02}],fillOrders:[{id:lateOrder.orderId,side:'BUY',confirmed:true}]};
- const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],fakeBingxLivePositions:[],fakeBingxLiveOrders:[exchangeOrder,lateOrder],env:{
+ const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],fakeBingxLivePositions:[],fakeBingxLiveOrders:[exchangeOrder,lateOrder],
+  fakeBingxLiveBalances:[{asset:'USDC',availableMargin:'5000'},{asset:'USDT',equity:'200',availableMargin:'137.25'}],env:{
   BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',
   TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_CHAT_ID:'-123456',TELEGRAM_SCANNER_CHAT_ID:'@scanner_fixture',PAPER_TRADING:'off',
  }});
@@ -207,8 +210,8 @@ test('Chrome and the scanner channel receive the same confirmed copy trade even 
   assert.ok(notices.every(n=>n.chatId===-1001234567890));
   const lookups=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.path==='/getChat');
   assert.deepEqual(lookups.map(r=>r.chatId),['@scanner_fixture']);
-  assert.match(notice.text,/^📌 포지션 진입\n━+\nBTCUSDT  🟢 롱  ×10\n━+\n진입가 50,000 USDT\n현재가 50,000 USDT\n수량 0\.02\n증거금 약 100\.00 USDT/);
-  assert.deepEqual(notice.entities.map(e=>notice.text.slice(e.offset,e.offset+e.length)),['포지션 진입','BTCUSDT','50,000 USDT']);
+  assert.match(notice.text,/^📌 포지션 진입\n━+\nBTCUSDT  🟢 롱  ×10\n━+\n진입가 50,000 USDT\n현재가 50,000 USDT\n수량 0\.02\n증거금 약 100\.00 USDT\n가용 증거금 137\.25 USDT/);
+  assert.deepEqual(notice.entities.map(e=>notice.text.slice(e.offset,e.offset+e.length)),['📌 포지션 진입','BTCUSDT','50,000 USDT']);
   assert.equal((await app.get('/api/copy')).manual.open.length,0);
   const file=async()=>JSON.parse(await fs.readFile(`${app.data}/manual-trades-live.json`,'utf8'));
   const ledger=await until(file,x=>x.telegramSent===2);assert.equal(ledger.telegramByOrigin.COPY,2);assert.equal(ledger.telegramChatType,'channel');assert.deepEqual(ledger.telegramQueue,[]);

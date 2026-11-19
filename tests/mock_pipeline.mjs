@@ -92,7 +92,8 @@ globalThis.fetch=async(input,options={})=>{
   }
   if(liveIncome&&url.pathname.startsWith('/openApi/swap/')&&url.pathname.includes('/user/')){
    if(options?.method!=='GET')throw Error('Live account fixture only permits GET');
-   if(url.pathname.endsWith('/balance'))return json({code:100001,msg:'Test balance unavailable'});
+   if(url.pathname.endsWith('/balance'))return live.fakeBingxLiveBalances
+    ?json({code:0,data:live.fakeBingxLiveBalances}):json({code:100001,msg:'Test balance unavailable'});
    if(url.pathname.endsWith('/positions'))return json({code:0,data:live.fakeBingxLivePositions??[]});
    if(url.pathname.endsWith('/income')){
     const start=Number(url.searchParams.get('startTime')),end=Number(url.searchParams.get('endTime'));

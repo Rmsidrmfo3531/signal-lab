@@ -22,7 +22,7 @@ function fillMarginText(fill,qty,leverage){
  return `증거금 약 ${marginAmount.format(price*size/multiple)} USDT`;
 }
 
-function copyTradeMessage(e,action,closing,at){
+function copyTradeMessage(e,action,closing,at,available){
  const lines=[],entities=[];
  let offset=0;
  // Telegram counts offsets in UTF-16, the same units as JavaScript string lengths.
@@ -32,7 +32,7 @@ function copyTradeMessage(e,action,closing,at){
  };
  const add=e.type==='MANUAL_ADD',fill=e.fillPrice??e.avg,qty=e.size??Math.abs(Number(e.to)-Number(e.from));
  const icon=e.netUSD>0?'🎯':e.netUSD<0?'🛑':'⚪';
- line(closing?`${icon} `:add?'➕ ':'📌 ',closing?action:add?'포지션 추매':'포지션 진입');
+ line('',closing?`${icon} ${action}`:add?'➕ 포지션 추매':'📌 포지션 진입');
  line(RULE);
  const side=[tradeSide[e.direction],e.leverage>0?`×${e.leverage}`:null].filter(Boolean).join('  ');
  line('',e.symbol,side?`  ${side}`:'');
@@ -56,12 +56,13 @@ function copyTradeMessage(e,action,closing,at){
   line(`수량 ${add?'+':''}${amount(qty)}${add&&e.to!=null?` · 잔여 ${amount(e.to)}`:''}`);
   line(fillMarginText(fill,qty,e.leverage));
  }
+ line(available);
  if(at>0&&Number.isFinite(at))line(`체결 ${observedTime.format(at)} KST`);
  return {text:lines.join('\n'),entities};
 }
 
 /** Message for a confirmed real-account change from the manual ledger. */
-export function realTradeMessage(e){
+export function realTradeMessage(e,{availableMargin=null}={}){
  const actionBase=MANUAL_ACTION[e?.type];
  if(!actionBase||!e.symbol||e.fromFills!==true)return null;
  const closing=e.type==='MANUAL_REDUCE'||e.type==='MANUAL_SETTLED';
@@ -69,7 +70,8 @@ export function realTradeMessage(e){
  if(closing&&(e.netSource!=='EXCHANGE_FILLS'||!Number.isFinite(net)))return null;
  const action=closing?`${actionBase} ${net===0?'본전':net>0?'익절':'손절'}`:actionBase;
  const at=Number(e.observedAt??e.at);
- if(e.alertOrigin==='COPY')return copyTradeMessage(e,action,closing,at);
+ const available=`가용 증거금 ${Number.isFinite(availableMargin)&&availableMargin>=0?`${marginAmount.format(availableMargin)} USDT`:'조회 불가'}`;
+ if(e.alertOrigin==='COPY')return copyTradeMessage(e,action,closing,at,available);
  const head=[`${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`,[e.symbol,tradeSide[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
@@ -84,7 +86,8 @@ export function realTradeMessage(e){
   if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n추가 체결가 ${amount(e.avg)} USDT`;
  }
  const margin=closing?null:fillMarginText(e.fillPrice??e.avg,e.size??(Number(e.to)-Number(e.from)),e.leverage);
- return {text:[...head,detail,margin,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n')};
+ return {text:[...head,detail,margin,available,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n'),
+  entities:[{type:'bold',offset:0,length:head[0].length}]};
 }
 export function realTradeText(e){return realTradeMessage(e)?.text??null}
 export {realTradeText as manualTradeText};
