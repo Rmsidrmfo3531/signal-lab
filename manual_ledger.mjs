@@ -39,22 +39,24 @@ const incomeKey=x=>String(x?.tranId??x?.tradeId??[x?.incomeType,x?.symbol,x?.tim
 const FILL_DELAY_MS=1500;
 const qtyTolerance=qty=>Math.max(1e-12,Math.abs(qty)*1e-8);
 const alertOrderKey=(symbol,orderId)=>createHash('sha256').update(`${symbol}|${orderId}`).digest('hex').slice(0,32);
-function fillActions(fills,{symbol,direction,leverage,alertOrigin='MANUAL',initialSize=0}){
+function fillActions(fills,{symbol,direction,leverage,alertOrigin='MANUAL',initialSize=0,initialAvg=null,finalAvg=null}){
  const groups=[];
  for(const fill of fills){
   const last=groups.at(-1);
   if(last?.[0].orderId===fill.orderId&&last[0].side===fill.side)last.push(fill);
   else groups.push([fill]);
  }
- let size=initialSize;
- return groups.map(group=>{
+ let size=initialSize,positionAvg=num(initialAvg);
+ return groups.map((group,index)=>{
   const from=size,qty=group.reduce((sum,f)=>sum+f.qty,0),opening=group[0].side===(direction==='SHORT'?'SELL':'BUY');
   const fillPrice=group.reduce((sum,f)=>sum+f.price*f.qty,0)/qty;
   const common={symbol,direction,leverage,alertOrigin,observedAt:group.at(-1).at,fromFills:true,
    alertKey:alertOrderKey(group[0].symbol,group[0].orderId),fillPrice};
   if(opening){
    size+=qty;
-   return {type:from>0?'MANUAL_ADD':'MANUAL_OPEN',detail:{...common,from,to:size,size:qty,avg:fillPrice}};
+   positionAvg=from===0?fillPrice:positionAvg>0?(from*positionAvg+qty*fillPrice)/size:null;
+   if(index===groups.length-1&&num(finalAvg)>0)positionAvg=num(finalAvg);
+   return {type:from>0?'MANUAL_ADD':'MANUAL_OPEN',detail:{...common,from,to:size,size:qty,avg:fillPrice,positionAvg}};
   }
   const left=from-qty;size=Math.abs(left)<=qtyTolerance(from)?0:left;
   return {type:size===0?'MANUAL_SETTLED':'MANUAL_REDUCE',detail:{...common,from,to:size,size:qty,netSource:'EXCHANGE_FILLS',
@@ -166,7 +168,7 @@ export class ManualLedger{
    const key=keyOf(p.venueSymbol,p.direction),row=byKey.get(key);
    if(!row||!priorKeys.has(key)||p.mergedIntoCopy||Math.abs(row.size-p.size)>qtyTolerance(p.size))continue;
    if(owners.has(key)&&ownerOf(owners.get(key))!==ownerOf(p))continue;
-   window.unchanged.push({...p,from:p.size,to:row.size,fromAt:window.from,observedAt:window.to});
+   window.unchanged.push({...p,from:p.size,to:row.size,fromAvg:p.avg,toAvg:row.avg,leverage:row.leverage??p.leverage,fromAt:window.from,observedAt:window.to});
   }
   changed=this.#observeManaged(byKey,owners,at,priorAt,priorKeys,first)||changed;
   for(const [key,p] of Object.entries(this.store.positions)){
@@ -239,8 +241,8 @@ export class ManualLedger{
   const dir=p.direction==='LONG'?1:-1,mark=num(row.mark)??num(row.avg)??p.mark??p.avg??0,size=row.size,diff=size-p.size;
   let changed=false;
   if(Math.abs(diff)>Math.max(1e-12,p.size*1e-9)){
-   const detail={symbol:p.symbol,direction:p.direction,leverage:p.leverage,from:p.size,to:size,avg:num(row.avg)??p.avg,observedAt:at};
-   this.#queueAlert(p,detail,fromAt);
+   const detail={symbol:p.symbol,direction:p.direction,leverage:num(row.leverage)??p.leverage,from:p.size,to:size,avg:num(row.avg)??p.avg,observedAt:at};
+   this.#queueAlert(p,{...detail,toAvg:num(row.avg)},fromAt);
    if(diff>0){p.adds++;p.tradedNotionalUSD+=diff*mark;this.#event('MANUAL_ADD',detail)}
    else{
     p.reduces++;p.realizedEstUSD+=dir*(mark-(p.avg??mark))*(-diff);p.tradedNotionalUSD+=(-diff)*mark;
@@ -268,10 +270,10 @@ export class ManualLedger{
   this.store.closed.push(row);
   this.#event('MANUAL_CLOSE',{symbol:p.symbol,direction:p.direction,size:p.size,estimateUSD:row.estimateUSD});
  }
- #queueAlert(p,{from,to,observedAt},fromAt){
+ #queueAlert(p,{from,to,toAvg=null,leverage=p.leverage,observedAt},fromAt){
   if(!(fromAt>0&&observedAt>fromAt&&from>=0&&to>=0&&from!==to)||!p?.venueSymbol)return;
   this.store.pendingAlerts.push({symbol:p.symbol,venueSymbol:p.venueSymbol,direction:p.direction,hedge:p.hedge===true,
-   leverage:p.leverage,alertOrigin:p.alertOrigin??'MANUAL',alertOwnerId:p.alertOwnerId,from,to,fromAt,observedAt,nextAt:observedAt+FILL_DELAY_MS});
+   leverage,alertOrigin:p.alertOrigin??'MANUAL',alertOwnerId:p.alertOwnerId,from,to,fromAvg:p.avg??null,toAvg,fromAt,observedAt,nextAt:observedAt+FILL_DELAY_MS});
  }
  #unmixedAlert(note){
   // A hedge lane can still be matched by direction when another owner trades the opposite lane.
@@ -310,7 +312,7 @@ export class ManualLedger{
    if(Math.abs(balance)<=tolerance)balance=0;
   }
   if(!rows.length||Math.abs(balance-note.to)>tolerance||!completeBingxOrders(rows)||!this.#unmixedAlert(note))return null;
-  return fillActions(rows,{...note,initialSize:note.from});
+  return fillActions(rows,{...note,initialSize:note.from,initialAvg:note.fromAvg,finalAvg:note.toAvg});
  }
  async #settleAlerts(now){
   const ready=this.store.pendingAlerts.filter(p=>now>=p.nextAt).sort((a,b)=>a.nextAt-b.nextAt),first=ready[0];

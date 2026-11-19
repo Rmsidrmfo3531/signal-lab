@@ -16,10 +16,10 @@ const tradeSide={SHORT:'🔴 숏',LONG:'🟢 롱'};
 const priceLine=v=>Number.isFinite(v)&&v>0?`${amount(v)} USDT`:'—';
 const signed=v=>v===0?'':v>0?'+':'−';
 const marginAmount=new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:8});
-function fillMarginText(fill,qty,leverage){
+function fillMarginText(fill,qty,leverage,label='증거금'){
  const [price,size,multiple]=[fill,qty,leverage].map(Number);
- if(![price,size,multiple].every(v=>Number.isFinite(v)&&v>0))return '증거금 —';
- return `증거금 약 ${marginAmount.format(price*size/multiple)} USDT`;
+ if(![price,size,multiple].every(v=>Number.isFinite(v)&&v>0))return `${label} —`;
+ return `${label} 약 ${marginAmount.format(price*size/multiple)} USDT`;
 }
 
 function copyTradeMessage(e,action,closing,at,available){
@@ -85,8 +85,10 @@ export function realTradeMessage(e,{availableMargin=null}={}){
   detail=`수량 +${amount(change)}${e.to!=null?` · 잔여 ${amount(e.to)}`:''}`;
   if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n추가 체결가 ${amount(e.avg)} USDT`;
  }
- const margin=closing?null:fillMarginText(e.fillPrice??e.avg,e.size??(Number(e.to)-Number(e.from)),e.leverage);
- return {text:[...head,detail,margin,available,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n'),
+ const manualAdd=e.type==='MANUAL_ADD'&&(!e.alertOrigin||e.alertOrigin==='MANUAL');
+ const margin=closing?null:fillMarginText(e.fillPrice??e.avg,e.size??(Number(e.to)-Number(e.from)),e.leverage,manualAdd?'이번 증거금':'증거금');
+ const total=manualAdd?fillMarginText(e.positionAvg,e.to,e.leverage,'포지션 총 증거금'):null;
+ return {text:[...head,detail,margin,total,available,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n'),
   entities:[{type:'bold',offset:0,length:head[0].length}]};
 }
 export function realTradeText(e){return realTradeMessage(e)?.text??null}
