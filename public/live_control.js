@@ -441,16 +441,19 @@ export function scalpHTML(s){
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>최근 ${Math.min(20,closed.length)}건 · 전체 기록은 단타 기록 파일</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}`:'')+skipBox+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
+let scalpActionBusy=false;
 function bindScalpButtons(el){
  if(!el||el.dataset.bound)return;el.dataset.bound='1';
  el.addEventListener('click',async e=>{
-  const arm=e.target.closest('[data-scalp-arm]'),disarm=e.target.closest('[data-scalp-disarm]'),btn=arm||disarm;if(!btn)return;
+  const arm=e.target.closest('[data-scalp-arm]'),disarm=e.target.closest('[data-scalp-disarm]'),btn=arm||disarm;if(!btn||scalpActionBusy)return;
   if(arm&&!window.confirm('되돌림 단타(테스트넷)를 켭니다. 5분봉이 마감될 때마다 급락 후 반등 롱·급등 후 되돌림 숏을 BingX 테스트넷에 주문합니다. 켤까요?'))return;
+  scalpActionBusy=true;
   const msg=el.querySelector('[data-scalp-msg]');btn.disabled=true;btn.textContent=arm?'켜는 중…':'끄는 중…';
-  const KO={KILL_SWITCH_ON:'긴급 정지 중',DAILY_LOSS_LIMIT:'오늘 하루 손실 한도에 닿음',CREDENTIALS_MISSING:'BingX API 키 없음',SCALP_MODE_OFF:'꺼짐 설정',LIVE_REFUSED:'테스트넷 전용',UPDATING:'업데이트 중'};
+  const KO={KILL_SWITCH_ON:'긴급 정지 중',DAILY_LOSS_LIMIT:'오늘 하루 손실 한도에 닿음',CREDENTIALS_MISSING:'BingX API 키 없음',SCALP_MODE_OFF:'꺼짐 설정',LIVE_REFUSED:'테스트넷 전용',UPDATING:'업데이트 중',UPDATE_IN_PROGRESS:'업데이트 중'};
   try{const r=await fetch(arm?'/api/scalp/arm':'/api/scalp/disarm',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(arm?{confirm:'SCALP_ARM'}:{})}),d=await r.json().catch(()=>({}));
    if(!r.ok)throw Error(KO[d.error]||d.error||'HTTP '+r.status);if(msg)msg.textContent=d.armed?'✓ 켜졌습니다':'✓ 꺼졌습니다'}
   catch(err){if(msg){msg.textContent='실패: '+err.message;msg.classList.add('err')}}
+  finally{scalpActionBusy=false}
   document.getElementById('liveRefresh')?.click()})}
 
 // ---- One testnet screen (user 2026-11-17 "단타랑 원래 쓰던 테스트넷이랑 합쳐서 진행하자 따로 보는 게 더 복잡"): the signal
@@ -573,14 +576,20 @@ export function readinessHTML(r,positions){
  ${r.serious?.length?`<p class="live-warn-text">주문 문제: ${r.serious.map(s=>esc(s.symbol+' '+(SERIOUS_KO[s.type]||s.type))).join(', ')}</p>`:''}`;
 }
 
+let copyActionBusy=false,liveActionBusy=false,liveTestBusy=false;
+const liveLevelsBusy=new Set(),liveDeleteBusy=new Set();
+
 function bindCopyButtons(el){
  if(!el||el.dataset.bound)return;el.dataset.bound='1';
  const call=async(btn,path,body,busy)=>{
+  if(copyActionBusy)return;
+  copyActionBusy=true;
   const msg=el.querySelector('[data-copy-msg]');btn.disabled=true;btn.textContent=busy;
   try{const r=await fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}),d=await r.json().catch(()=>({}));
    if(!r.ok)throw Error(d.error||'HTTP '+r.status);
    if(msg)msg.textContent=d.armed===true?'✓ 활성화됐습니다':d.armed===false?'✓ 비활성화됐습니다':'✓ 완료'}
   catch(e){if(msg){msg.textContent='실패: '+e.message;msg.classList.add('err')}}
+  finally{copyActionBusy=false}
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('click',e=>{
   const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
@@ -627,14 +636,16 @@ function render(o){
  // Account facts stay visible; the rules sit behind "규칙 보기".
  if(status){status.replaceChildren(...rows.filter(([k])=>!LIVE_RULE_KEYS.includes(k)).map(kv));status.classList.toggle('warn',Boolean(o.killSwitch||o.mode==='LIVE'))}
  if($('liveRules'))$('liveRules').replaceChildren(...rows.filter(([k])=>LIVE_RULE_KEYS.includes(k)).map(kv));
- if($('liveTest'))$('liveTest').hidden=o.mode!=='TESTNET'||scalpOnly;
+ if($('liveTest')){$('liveTest').hidden=o.mode!=='TESTNET'||scalpOnly;$('liveTest').disabled=liveTestBusy}
  if($('liveSignalDescription'))$('liveSignalDescription').hidden=scalpOnly;
  // The button for the current state is shown as selected and cannot be pressed again.
- if($('liveArm')){$('liveArm').disabled=on||!canArm;$('liveArm').textContent=on?'● 활성화됨':'활성화';$('liveArm').classList.toggle('is-current',on)}
- if($('liveDisarm')){$('liveDisarm').disabled=!some;$('liveDisarm').textContent=some?'비활성화':'○ 비활성';$('liveDisarm').classList.toggle('is-current',!some)}
+ if($('liveArm')){$('liveArm').disabled=liveActionBusy||on||!canArm;$('liveArm').textContent=on?'● 활성화됨':'활성화';$('liveArm').classList.toggle('is-current',on)}
+ if($('liveDisarm')){$('liveDisarm').disabled=liveActionBusy||!some;$('liveDisarm').textContent=some?'비활성화':'○ 비활성';$('liveDisarm').classList.toggle('is-current',!some)}
+ if($('liveKill'))$('liveKill').disabled=liveActionBusy;
+ if($('liveResetKill'))$('liveResetKill').disabled=liveActionBusy;
  if($('livePaperNote'))$('livePaperNote').hidden=!o.paperTrading;
  const box=$('livePositions');
- if(box){
+ if(box&&!liveLevelsBusy.size){
   // Keep an open stop/TP editor (and what was typed) across the periodic refresh.
   const drafts=new Map();box.querySelectorAll('[data-live-levels-key]').forEach(d=>{if(d.open){const v={};d.querySelectorAll('input').forEach(i=>{v[i.name]=i.value});drafts.set(d.dataset.liveLevelsKey,v)}});
   // Testnet: the signal strategy's cards (badge 신호, stop/TP editor) and the scalp's (badge 단타) in one list.
@@ -649,17 +660,17 @@ function render(o){
  // Real-money copy has its own page (실계좌); the testnet page keeps only testnet copies.
  const copy=o.copy,real=copy?.mode==='LIVE';
  for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));
- if($('liveCopySection')){$('liveCopySection').hidden=!copy||real||scalpOnly;if(copy&&!real&&!scalpOnly&&$('liveCopy'))$('liveCopy').innerHTML=copyHTML({...copy,followArmed:Boolean(o.armed&&!o.killSwitch)})}
- if($('realCopy'))$('realCopy').innerHTML=real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>';
+ if($('liveCopySection')){$('liveCopySection').hidden=!copy||real||scalpOnly;if(copy&&!real&&!scalpOnly&&$('liveCopy')&&!copyActionBusy)$('liveCopy').innerHTML=copyHTML({...copy,followArmed:Boolean(o.armed&&!o.killSwitch)})}
+ if($('realCopy')&&!copyActionBusy)$('realCopy').innerHTML=real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>';
  // The sidebar ON / OFF is a navigation hint; the page itself shows the state once, next to its button.
  if($('navRealMode'))$('navRealMode').textContent=!real?'—':copy.armed&&!copy.killed?'ON':'OFF';
  // Testnet: the scalp's own details (rules, skips, journal), collapsed; its switch is the one testnet switch above.
  // Signal strategy not on the testnet (LIVE): the scalp keeps its own panel and buttons as before (review M3).
  if($('liveScalpSection')){$('liveScalpSection').hidden=!(tn&&o.scalp);if(tn&&o.scalp&&$('liveScalp'))$('liveScalp').innerHTML=scalpDetailsHTML(o.scalp)}
  bindScalpButtons($('liveScalpOwn'));
- if($('liveScalpPanel')){$('liveScalpPanel').hidden=Boolean(tn)||!o.scalp;if(!tn&&o.scalp&&$('liveScalpOwn'))$('liveScalpOwn').innerHTML=scalpHTML(o.scalp)}
+ if($('liveScalpPanel')){$('liveScalpPanel').hidden=Boolean(tn)||!o.scalp;if(!tn&&o.scalp&&$('liveScalpOwn')&&!scalpActionBusy)$('liveScalpOwn').innerHTML=scalpHTML(o.scalp)}
  const closedBox=$('liveClosed');
- if(closedBox){closedBox.classList.toggle('tn-closed',Boolean(tn));
+ if(closedBox&&!liveDeleteBusy.size){closedBox.classList.toggle('tn-closed',Boolean(tn));
   if(tn){bindTestnetPager(closedBox);closedBox.innerHTML=testnetClosedHTML(o)}
   else closedBox.innerHTML=o.closed?.length?o.closed.map(closedCardHTML).join(''):'<p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p>'}
  for(const [id,markup] of [['liveSkipped',()=>skippedHTML(o.skipped)],['liveRecords',()=>recordsRows(o.records)]]){
@@ -671,54 +682,80 @@ function render(o){
 
 if(typeof document!=='undefined'&&document.getElementById('liveControl')){
  const $=id=>document.getElementById(id);
- let mode='OFF';
+ let mode='OFF',loadPending=null;
  const fail=e=>{const s=$('liveError');if(s){s.hidden=false;s.textContent='실매매 요청 실패: '+e.message}};
- const load=async()=>{const r=await fetch('/api/live/overview',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.error||'HTTP '+r.status);mode=d.mode;if($('liveError'))$('liveError').hidden=true;render(d);return d};
- const post=async(path,body)=>{const r=await fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}),d=await r.json();if(!r.ok)throw Error(d.error||(d.reasons||[]).join(', ')||'HTTP '+r.status);await load();return d};
+ const load=()=>{
+  if(loadPending)return loadPending;
+  loadPending=(async()=>{
+   const r=await fetch('/api/live/overview',{cache:'no-store',signal:AbortSignal.timeout(15000)}),d=await r.json().catch(()=>({}));
+   if(!r.ok)throw Error(d.error||'HTTP '+r.status);
+   mode=d.mode;if($('liveError'))$('liveError').hidden=true;render(d);return d;
+  })().finally(()=>{loadPending=null});
+  return loadPending;
+ };
+ const setLiveButtonsBusy=busy=>{for(const id of ['liveArm','liveDisarm','liveKill','liveResetKill']){const b=$(id);if(b)b.disabled=busy}};
+ const post=async(path,body,{lockLive=true}={})=>{
+  if(lockLive){if(liveActionBusy)return;liveActionBusy=true;setLiveButtonsBusy(true)}
+  try{
+   const r=await fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}),d=await r.json().catch(()=>({}));
+   if(!r.ok)throw Error(d.error||(d.reasons||[]).join(', ')||'HTTP '+r.status);
+   if(lockLive)liveActionBusy=false;
+   await load();return d;
+  }finally{if(lockLive){liveActionBusy=false;load().catch(()=>{})}}
+ };
  $('liveRefresh')?.addEventListener('click',()=>load().catch(fail));
  $('liveArm')?.addEventListener('click',()=>{
+  if(liveActionBusy)return;
   const text=mode==='LIVE'?'실거래(실제 돈)를 활성화합니다. 다음 최종 신호부터 거래소에 실제 돈으로 주문이 나갑니다. 계속할까요?':'테스트넷(모의 자금)의 신호 전략과 되돌림 단타를 함께 활성화합니다. 다음 최종 신호·5분봉 단타 신호부터 BingX 테스트넷에 주문이 나갑니다(하루 손실 한도는 둘이 공동). 계속할까요?';
   if(confirm(text))post('/api/live/arm',{confirm:'ARM'}).catch(fail)});
- $('liveDisarm')?.addEventListener('click',()=>post('/api/live/disarm').catch(fail));
+ $('liveDisarm')?.addEventListener('click',()=>{if(!liveActionBusy)post('/api/live/disarm').catch(fail)});
  $('testnetBudgetForm')?.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.currentTarget,btn=form.querySelector('button'),msg=$('testnetBudgetMessage');
+  if(btn.disabled)return;
   btn.disabled=true;msg.textContent='저장 중…';
   try{
-   const {budget}=await post('/api/live/testnet-budget',{dailyLossPct:form.elements.namedItem('dailyLossPct').valueAsNumber,marginCapPct:form.elements.namedItem('marginCapPct').valueAsNumber});
+   const {budget}=await post('/api/live/testnet-budget',{dailyLossPct:form.elements.namedItem('dailyLossPct').valueAsNumber,marginCapPct:form.elements.namedItem('marginCapPct').valueAsNumber},{lockLive:false});
    msg.textContent=budget.stopped?'저장됨 · 오늘 거래 정지 상태':'저장됨';
   }catch(err){msg.textContent=err.message==='INVALID_TESTNET_BUDGET'?'하루 손실 1~50%, 증거금 1~30%를 입력하세요.':'공동 한도 변경 결과를 확인하지 못했습니다.'}
   finally{btn.disabled=false}
  });
- $('liveKill')?.addEventListener('click',()=>post('/api/live/kill').catch(fail));
- $('liveResetKill')?.addEventListener('click',()=>{if(confirm('긴급 정지를 해제합니다. 거래소 계정 상태를 먼저 확인하셨나요?'))post('/api/live/reset-kill',{confirm:'RESET'}).catch(fail)});
+ $('liveKill')?.addEventListener('click',()=>{if(!liveActionBusy)post('/api/live/kill').catch(fail)});
+ $('liveResetKill')?.addEventListener('click',()=>{if(!liveActionBusy&&confirm('긴급 정지를 해제합니다. 거래소 계정 상태를 먼저 확인하셨나요?'))post('/api/live/reset-kill',{confirm:'RESET'}).catch(fail)});
  $('liveTest')?.addEventListener('click',async()=>{
+  if(liveTestBusy)return;
   if(!confirm('BingX 테스트넷에서 DOGE 소액 롱(잔고 최대 $400 기준, 10배)을 실제 신호와 같은 순서로 주문하고 5초 뒤 청산합니다. 먼저 "활성화"가 되어 있어야 합니다. 진행할까요?'))return;
-  const s=$('liveTestResult');if(!s)return;s.hidden=false;s.textContent='시험 주문 진행 중… (10~20초)';
-  try{const r=await fetch('/api/live/test-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'TEST'})}),d=await r.json();
-   await load().catch(()=>{});
+  const s=$('liveTestResult'),btn=$('liveTest');if(!s)return;
+  liveTestBusy=true;if(btn)btn.disabled=true;
+  s.hidden=false;s.textContent='시험 주문 진행 중… (10~20초)';
+  try{const r=await fetch('/api/live/test-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'TEST'})}),d=await r.json().catch(()=>({}));
    if(!r.ok){s.textContent='시험 주문 불가: '+(d.error||'HTTP '+r.status);return}
    const head=d.ok?'시험 주문 성공: 진입 → 보호 주문 → 청산까지 정상':'시험 주문 결과: '+(d.status||'')+' '+(d.reasons||[]).join(', ');
    s.replaceChildren(Object.assign(document.createElement('b'),{textContent:head}),...(d.events||[]).map(e=>Object.assign(document.createElement('div'),{textContent:`· ${e.type}${e.reason?' — '+e.reason:''}`})));
   }catch(e){s.textContent='시험 주문 요청 실패: '+e.message}
+  finally{liveTestBusy=false;if(btn)btn.disabled=false;await load().catch(()=>{})}
  });
 const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 삭제할 수 없습니다',TODAY_COUNTS_FOR_DAILY_RISK:'오늘 종료된 거래는 하루 손실 한도 계산에 쓰여 내일부터 삭제할 수 있습니다',NOT_FOUND:'이미 삭제된 기록입니다',SAFETY_RECORD:'긴급 정지를 일으킨 기록이라 남겨 둡니다'};
  document.addEventListener('click',async e=>{
   const b=e.target.closest?.('[data-live-delete]');if(!b)return;
+  const key=b.dataset.liveDelete;if(!key||liveDeleteBusy.has(key))return;
   if(!confirm('이 기록을 삭제합니다. 되돌릴 수 없습니다. 계속할까요?'))return;
-  try{const r=await fetch('/api/live/delete',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:b.dataset.liveDelete})}),d=await r.json();
-   if(!r.ok)throw Error(DELETE_REASONS[d.reason]||d.reason||'HTTP '+r.status);await load()}catch(err){fail(err)}
+  liveDeleteBusy.add(key);b.disabled=true;
+  try{const r=await fetch('/api/live/delete',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}),d=await r.json().catch(()=>({}));
+   if(!r.ok)throw Error(DELETE_REASONS[d.reason]||d.reason||'HTTP '+r.status)}catch(err){fail(err)}
+  finally{liveDeleteBusy.delete(key);await load().catch(()=>{})}
  });
  document.addEventListener('submit',async e=>{
   const form=e.target.closest?.('form[data-live-levels]');if(!form)return;e.preventDefault();
+  const key=form.dataset.liveLevels;if(!key||liveLevelsBusy.has(key))return;
   const msg=form.querySelector('[data-levels-msg]'),button=form.querySelector('button'),val=n=>{const i=form.querySelector(`input[name="${n}"]`);return i&&!i.disabled&&i.value.trim()!==''?Number(i.value.trim()):null};
   if(!confirm('거래소의 손절·목표 주문을 바꿉니다. 계속할까요?'))return;
-  button.disabled=true;msg.textContent='거래소 주문 변경 중…';
-  try{const r=await fetch('/api/live/levels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:form.dataset.liveLevels,stop:val('stop'),targets:[val('tp0'),val('tp1'),val('tp2')]})}),d=await r.json();
+  liveLevelsBusy.add(key);button.disabled=true;msg.textContent='거래소 주문 변경 중…';
+  try{const r=await fetch('/api/live/levels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,stop:val('stop'),targets:[val('tp0'),val('tp1'),val('tp2')]})}),d=await r.json().catch(()=>({}));
    if(!r.ok||d.ok===false){msg.textContent='변경 안 됨: '+(d.reasons||[d.error]).filter(Boolean).map(levelReason).join(' · ');return}
    msg.textContent=d.changed===false?'바뀐 값이 없습니다':'적용됨'+(d.errors?.length?' (일부 실패: '+d.errors.join(', ')+')':'');
-   form.closest('details').open=false;await load();
+   form.closest('details').open=false;
   }catch(err){msg.textContent='요청 실패: '+err.message}
-  finally{button.disabled=false}
+  finally{liveLevelsBusy.delete(key);button.disabled=false;await load().catch(()=>{})}
  });
  // The 실계좌 page (#real) shows the same data (user 2026-11-16: its positions did not refresh, only #live counted).
  const visible=()=>['live','real'].some(id=>$(id)&&!$(id).hidden);
@@ -735,6 +772,6 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
  document.addEventListener('visibilitychange',refreshBudget);
  // 실계좌 page: the copy panel alone every 3 s (prices cached 3 s on the server, balance 15 s), while visible.
  let fastBusy=false;
- setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy)return;fastBusy=true;
-  try{const r=await fetch('/api/copy',{cache:'no-store'});if(r.ok){const c=await r.json();if(c?.mode==='LIVE'&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}catch{}finally{fastBusy=false}},3000);window.addEventListener('hashchange',()=>setTimeout(()=>{tick();void refreshBudget()},60));
+ setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy||copyActionBusy)return;fastBusy=true;
+  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'&&!copyActionBusy&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}catch{}finally{fastBusy=false}},3000);window.addEventListener('hashchange',()=>setTimeout(()=>{tick();void refreshBudget()},60));
 }

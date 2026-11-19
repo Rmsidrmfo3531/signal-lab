@@ -104,4 +104,10 @@ test('OpenAI provider sees the title and excerpts together, validates the output
   const [result]=await translateNewsArticles([input],{...options,translateBatch:bad});
   assert.equal(result.translation.status,'ERROR');assert.equal(result.displayTitle,input.title);
  }
+ const partialBatch=createOpenAINewsTranslator({apiKey:'synthetic-key',fetcher:async()=>Response.json({status:'completed',output:[{type:'message',role:'assistant',content:[{type:'output_text',text:JSON.stringify({translations:['비트코인 거래량 증가','BTC ETF','제공처 발췌 번역입니다.']})}]}]})});
+ const [partialOut]=await translateNewsArticles([input],{now:NOW+500,providerId:'OPENAI_PARTIAL',translateBatch:partialBatch});
+ assert.equal(partialOut.translation.status,'PARTIAL');
+ assert.equal(partialOut.displayTitle,'비트코인 거래량 증가');
+ assert.equal(partialOut.displaySummary,input.summary);
 });
+

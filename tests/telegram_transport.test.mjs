@@ -28,4 +28,16 @@ test('an ambiguous timeout changes route on the next retry, and HTTP responses a
  assert.deepEqual(observed,[false,true]);
  assert.equal(telegramNetworkCode(offline('CERT_HAS_EXPIRED')),'CERT_HAS_EXPIRED');
  assert.equal(telegramNetworkCode(Error('unrecognized path with secret')),'NETWORK_FAILED');
+ assert.equal(telegramNetworkCode(new TypeError('fetch failed',{cause:new DOMException('timed out','TimeoutError')})),'TIMEOUT');
+ const flips=[];
+ const bi=createTelegramNetworkRecovery(async(_,{ipv4})=>{
+  flips.push(ipv4);
+  if(flips.length===1)throw offline('ENETUNREACH');
+  if(flips.length===3)throw offline('EHOSTUNREACH');
+  return {status:200};
+ });
+ assert.deepEqual(await bi(payload),{response:{status:200},transport:'IPV4'});
+ assert.deepEqual(await bi(payload),{response:{status:200},transport:'FETCH'});
+ assert.deepEqual(flips,[false,true,true,false]);
 });
+

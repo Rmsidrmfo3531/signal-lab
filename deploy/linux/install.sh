@@ -50,6 +50,7 @@ if [ -d $APP/.git ]; then sudo -u signallab git -C $APP pull --ff-only; else sud
 
 say "5/6 설정 파일(.env)"
 if [ ! -f $DATA/.env ]; then
+  install -o signallab -g signallab -m 600 /dev/null $DATA/.env
   cat > $DATA/.env <<'ENV'
 # Signal Lab 설정 (이 파일은 이 서버에만 있습니다. 채팅·GitHub에 올리지 마세요)
 # PC의 %LOCALAPPDATA%\SignalLab\.env 에 있는 값을 그대로 옮겨 적으면 됩니다.
@@ -74,6 +75,7 @@ After=network-online.target
 Wants=network-online.target
 [Service]
 User=signallab
+UMask=0077
 WorkingDirectory=$APP
 Environment=SIGNAL_LAB_DATA_DIR=$DATA
 Environment=HOST=127.0.0.1

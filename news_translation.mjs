@@ -56,7 +56,7 @@ export function createOpenAINewsTranslator({apiKey,model=DEFAULT_NEWS_MODEL,fetc
    .flatMap(x=>Array.isArray(x.content)?x.content:[]).filter(x=>x?.type==='output_text').map(x=>x.text).join('');
   const translations=JSON.parse(output).translations;
   if(!Array.isArray(translations)||translations.length!==parts.length)throw Error('TRANSLATION_PART_COUNT');
-  return translations.map(translatedText);
+  return translations.map(item=>typeof item==='string'?item.replace(/\s+/g,' ').trim():'');
  };
 }
 

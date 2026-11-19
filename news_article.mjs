@@ -22,10 +22,34 @@ export function extractParagraphs(html){
  for(const m of scope.matchAll(/<p[\s>][\s\S]*?<\/p>/gi)){
   const text=decode(m[0].replace(/<[^>]+>/g,' ')).replace(/\s+/g,' ').trim();
   if(text.length<60||BOILER.test(text)||out.includes(text))continue;
-  out.push(text);total+=text.length;
+  if(out.length&&total+text.length>MAX_CHARS)break;
+  const clipped=text.length>MAX_CHARS?text.slice(0,MAX_CHARS).trim():text;
+  out.push(clipped);total+=clipped.length;
   if(out.length>=MAX_PARAGRAPHS||total>=MAX_CHARS)break;
  }
  return out;
+}
+
+const MAX_HTML_BYTES=3_000_000;
+async function readBoundedText(response,maxBytes=MAX_HTML_BYTES){
+ if(response?.body&&typeof response.body.getReader==='function'){
+  const reader=response.body.getReader(),decoder=new TextDecoder('utf-8');
+  let bytes=0,out='';
+  try{
+   while(true){
+    const {done,value}=await reader.read();
+    if(done)break;
+    const remain=maxBytes-bytes;
+    if(remain<=0){await reader.cancel().catch(()=>{});break}
+    const slice=value.byteLength>remain?value.subarray(0,remain):value;
+    bytes+=slice.byteLength;
+    out+=decoder.decode(slice,{stream:true});
+    if(bytes>=maxBytes){await reader.cancel().catch(()=>{});break}
+   }
+   return out+decoder.decode();
+  }finally{reader.releaseLock?.()}
+ }
+ return (await response.text()).slice(0,maxBytes);
 }
 
 const cache=new Map();
@@ -39,15 +63,18 @@ export async function articleDetail(article,{fetcher=fetch,translate,translateBa
  try{
   // Redirects are followed by hand so every hop stays on a source site (never an internal address).
   let link=article.link,r;
+  const deadline=Date.now()+timeoutMs;
   for(let hop=0;;hop++){
-   r=await fetcher(link,{headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36','Accept':'text/html'},redirect:'manual',signal:AbortSignal.timeout(timeoutMs)});
+   const remain=deadline-Date.now();
+   if(remain<=0)return {ok:false,error:'TIMEOUT'};
+   r=await fetcher(link,{headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36','Accept':'text/html'},redirect:'manual',signal:AbortSignal.timeout(remain)});
    const st=r.status??(r.ok?200:0);if(!(st>=300&&st<400))break;
    const next=r.headers?.get?.('location');if(!next||hop>=3)return {ok:false,error:'TOO_MANY_REDIRECTS'};
    link=new URL(next,link).href;if(!articleAllowed(link))return {ok:false,error:'REDIRECTED_OUTSIDE_SOURCE'};
   }
   if(!r.ok)return {ok:false,error:'HTTP_'+r.status};
   if(r.url&&!articleAllowed(r.url))return {ok:false,error:'REDIRECTED_OUTSIDE_SOURCE'};
-  html=(await r.text()).slice(0,3_000_000);
+  html=await readBoundedText(r,MAX_HTML_BYTES);
  }catch(e){return {ok:false,error:e?.name==='TimeoutError'?'TIMEOUT':'FETCH_FAILED'}}
  const paragraphs=extractParagraphs(html);
  if(!paragraphs.length)return {ok:false,error:'NO_TEXT'};

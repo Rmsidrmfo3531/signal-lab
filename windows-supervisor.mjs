@@ -8,19 +8,21 @@ import {resolveDataDir,resolveEnvPath,readStore,backupStore,isLocked} from './pe
 import {compareVersions} from './updater.mjs';
 import {github,readAutoStatus,writeAutoStatus,stageCandidate,swapCandidate,restoreCode} from './windows-update-source.mjs';
 const root=path.dirname(fileURLToPath(import.meta.url)),dataDir=resolveDataDir(),secret=randomBytes(32).toString('hex');
-let proc,interval,closing=false,updating=false,failures=0;
+let proc,interval,startupTimer,closing=false,updating=false,failures=0;
 const active=()=>proc&&proc.exitCode===null&&proc.signalCode===null;
 const getPort=()=>{let port=process.env.PORT||'3000';const envPath=resolveEnvPath();
  if(!process.env.PORT&&fs.existsSync(envPath)){const m=fs.readFileSync(envPath,'utf8').match(/^\s*PORT\s*=\s*(\d+)\s*$/m);if(m)port=m[1]}
  const n=Number(port);if(!Number.isSafeInteger(n)||n<1||n>65535)throw Error('PORT 설정 오류');return n};
 const url=()=>`http://127.0.0.1:${getPort()}`;
 function launch(openBrowser){
+ const startedAt=Date.now();
  const p=spawn(process.execPath,['server.mjs'],{cwd:root,env:{...process.env,SIGNAL_LAB_SUPERVISOR_TOKEN:secret,SIGNAL_LAB_OPEN_BROWSER:openBrowser?'1':'0',AUTO_UPDATE:'false'},stdio:'inherit'});proc=p;
  p.closed=new Promise(resolve=>p.once('close',(code,signal)=>resolve({code,signal})));
  p.on('error',e=>console.error('[AUTO] Node 서버 시작 실패:',e.message));
  p.closed.then(({code})=>{if(proc!==p||updating||closing)return;
-  if(code===0){console.log('[AUTO] 서버 종료');clearInterval(interval);return}
-  if(++failures>3){console.error('[AUTO] 3회 재실행 실패. 수동 확인 필요');clearInterval(interval);return}
+  if(code===0){console.log('[AUTO] 서버 종료');clearInterval(interval);clearTimeout(startupTimer);return}
+  if(Date.now()-startedAt>60000)failures=0;
+  if(++failures>3){console.error('[AUTO] 3회 재실행 실패. 수동 확인 필요');clearInterval(interval);clearTimeout(startupTimer);return}
   setTimeout(()=>{if(!closing&&!updating)launch(false)},5000);
  });
 }
@@ -47,7 +49,7 @@ function localTests(folder){
   if(tests.length<10)return reject(Error('다운로드 테스트 집합이 불완전함'));
   const temp=fs.mkdtempSync(path.join(folder,'paper-testing-'));
   let stderr='';
-  const job=spawn(process.execPath,['--test',...tests],{cwd:folder,env:{...process.env,SIGNAL_LAB_DATA_DIR:temp,AUTO_UPDATE:'false',UPDATE_MANIFEST_URL:'',SIGNAL_LAB_OPEN_BROWSER:'0',HOST:'127.0.0.1',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TWELVE_DATA_API_KEY:''},windowsHide:true,stdio:['ignore','ignore','pipe']});
+  const job=spawn(process.execPath,['--test',...tests],{cwd:folder,env:{...process.env,SIGNAL_LAB_DATA_DIR:temp,AUTO_UPDATE:'false',UPDATE_MANIFEST_URL:'',SIGNAL_LAB_OPEN_BROWSER:'0',HOST:'127.0.0.1',TELEGRAM_BOT_TOKEN:'',TELEGRAM_CHAT_ID:'',TELEGRAM_SCANNER_CHAT_ID:'',TWELVE_DATA_API_KEY:'',BINGX_API_KEY:'',BINGX_API_SECRET:'',BINGX_TESTNET_API_KEY:'',BINGX_TESTNET_API_SECRET:'',GATEIO_API_KEY:'',GATEIO_API_SECRET:'',OPENAI_API_KEY:'',NEWS_OPENAI_API_KEY:'',COPY_LISTENER_TOKEN:'',MOBILE_ACCESS_PASSWORD:''},windowsHide:true,stdio:['ignore','ignore','pipe']});
   job.stderr.on('data',b=>stderr=(stderr+b).slice(-2000));
   const timer=setTimeout(()=>job.kill(),180000);
   job.once('error',e=>{clearTimeout(timer);reject(e)});
@@ -100,9 +102,9 @@ async function main(){
   const candidate=await approvedHead(github());if(!candidate)throw Error('main의 Windows/Linux 4개 CI 통과 전에는 활성화할 수 없습니다');
   writeAutoStatus(root,{...readAutoStatus(root),enabled:true});console.log('[AUTO] 자동 업데이트 활성화됨');return
  }
- for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>{closing=true;clearInterval(interval);if(active())void stop().catch(e=>console.error('[AUTO] 안전 종료:',e.message))});
+ for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>{closing=true;clearInterval(interval);clearTimeout(startupTimer);if(active())void stop().catch(e=>console.error('[AUTO] 안전 종료:',e.message))});
  console.log('[AUTO] Windows PC 감독자 시작');launch(true);
  interval=setInterval(()=>void update(),15*60*1000);
- setTimeout(()=>void update(),120000);
+ startupTimer=setTimeout(()=>void update(),120000);
 }
 main().catch(e=>{console.error('[AUTO]',e.message);process.exitCode=1});

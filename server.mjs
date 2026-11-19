@@ -15,7 +15,7 @@ import {scalpReportFiles} from './scalp_journal.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
 import {liveEventText,realTradeMessage} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
-import {authorizedRequest,localIPv4Addresses} from './mobile_access.mjs';
+import {authorizedRequest,localIPv4Addresses,createAuthRateLimiter,isProxiedRequest} from './mobile_access.mjs';
 import {evaluateRequest,allowedHostNames,SECURITY_HEADERS} from './request_guard.mjs';
 import {stageUpdate,pendingInfo} from './updater.mjs';
 import {normalizeTrade,closeTrade,journalSummary,exportTradesCSV} from './journal.mjs';
@@ -159,7 +159,11 @@ const CONFIG={
 // LAN mode is opt-in. A fresh access password is generated on each start unless
 // MOBILE_ACCESS_PASSWORD is explicitly set. Local localhost requests need no login.
 const lanMode=!['127.0.0.1','::1','localhost'].includes(CONFIG.host);
-const lanPassword=lanMode?(process.env.MOBILE_ACCESS_PASSWORD||randomBytes(6).toString('hex')):'';
+const lanPassword=lanMode?(process.env.MOBILE_ACCESS_PASSWORD||randomBytes(16).toString('hex')):'';
+const proxyPassword=process.env.MOBILE_ACCESS_PASSWORD||'';
+const allowedTailscaleUsers=new Set(String(process.env.ALLOWED_TAILSCALE_USERS||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean));
+const authLimiter=createAuthRateLimiter();
+const safeTokenEqual=(a,b)=>{const ba=Buffer.from(String(a||'')),bb=Buffer.from(String(b||''));return ba.length>0&&ba.length===bb.length&&timingSafeEqual(ba,bb)};
 // Loopback peers skip the password, so every request is first checked for a
 // foreign Host name (DNS rebinding) and for cross-site browser origins.
 const allowedHosts=allowedHostNames();
@@ -174,14 +178,16 @@ const historical=readStore(dataPath);
 if(historical)persisted={...persisted,...historical};
 // Atomic writes protect the latest persisted simulation from a partial save.
 const storageHealth={healthy:true,lastSavedAt:0,error:''};
-let committed=structuredClone(persisted);
+let committed=structuredClone(persisted),paperRef=null;
 function save(candidate=persisted){
  try{
   atomicWriteStore(dataPath,candidate);
   committed=structuredClone(candidate);persisted=candidate;
+  if(paperRef&&candidate.paper&&paperRef.store!==candidate.paper)paperRef.store=candidate.paper;
   Object.assign(storageHealth,{healthy:true,lastSavedAt:Date.now(),error:''});
  }catch(e){
   persisted=structuredClone(committed);
+  if(paperRef&&persisted.paper)paperRef.store=persisted.paper;
   Object.assign(storageHealth,{healthy:false,error:'기록 저장 실패. 디스크 공간·권한을 확인하세요.'});
   console.error('[CRITICAL STORE ERROR]',e.message);
   const error=Error(storageHealth.error);error.code='STORE_WRITE_FAILED';throw error;
@@ -229,7 +235,12 @@ function recentStructures(){return [...structureBySymbol.values()].flat().filter
 function recentHistory(){return [...historyBySymbol.values()].flat().filter(x=>Date.now()-x.confirmedAt<24*3600000).sort((a,b)=>b.confirmedAt-a.confirmedAt).slice(0,100)}
 const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.svg':'image/svg+xml','.ico':'image/x-icon','.json':'application/json; charset=utf-8'};
 function response(res,status,body,extraHeaders={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS,...extraHeaders});res.end(JSON.stringify(body))}
-function send(event,obj){const msg=`event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;for(const client of state.clients){try{client.write(msg)}catch{state.clients.delete(client)}}}
+function dropSseClient(client){
+ if(!state.clients.delete(client))return;
+ try{client._sseCleanup?.()}catch{}
+ try{if(!client.destroyed)client.destroy()}catch{}
+}
+function send(event,obj){const msg=`event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;for(const client of [...state.clients]){if(client.destroyed||client.writableEnded||client.writableLength>512_000){dropSseClient(client);continue}try{client.write(msg)}catch{dropSseClient(client)}}}
 function emitPaperNotice(event,{test=false}={}){
   const item={...event,id:randomUUID(),recordedAt:Date.now(),test};
   const pref=persisted.paperNotify;
@@ -464,7 +475,7 @@ function copyNotice(e){
  if(e?.type==='COPY_SETTLED')reportsDirty=true;
  if(e?.mode==='LIVE'&&e.type==='ORDER_RECEIPT'){void manualLedger?.confirmCopyOrder(e.orderId);return}
  if(e?.mode==='LIVE'&&manualLedger&&['OPENED','ADDED','REDUCED','CLOSED'].includes(e.type)){
-  reportsDirty=true;void manualLedger.settle();return;
+  reportsDirty=true;if(!/LIQUIDATION|NO_STOP|LOSS_LIMIT|EMERGENCY/.test(e.reason)){void manualLedger.settle();return;}void manualLedger.settle();
  }
  const text=copyEventText(e);if(!text)return;
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
@@ -522,12 +533,17 @@ async function resolveTradeTelegramDestination(){
 }
 async function sendTradeTelegram(text){
  if(persisted.notifySettings?.telegramLive===false)return;
- const {chatId:chat_id}=await resolveTradeTelegramDestination();
- if(!chat_id||persisted.notifySettings?.telegramLive===false)return;
+ const {chatId:chat_id,paused,error:destErr}=await resolveTradeTelegramDestination();
+ if(!chat_id||persisted.notifySettings?.telegramLive===false){if(!chat_id&&!paused)console.warn('[TRADE TELEGRAM]',destErr);return}
  let {response,error}=await sendRealTradeRequest({chat_id,text});
  if(!response||response.status===429){
-  const retrySeconds=Number(response?.headers.get('retry-after'));
-  await new Promise(resolve=>setTimeout(resolve,Math.max(3000,(retrySeconds||0)*1000)));
+  let retrySeconds=Number(response?.headers?.get?.('retry-after'));
+  if(response?.status===429&&!(retrySeconds>0)){
+   const body=await response.json().catch(()=>null);
+   retrySeconds=Number(body?.parameters?.retry_after);
+  }
+  const waitMs=Math.min(60000,Math.max(3000,(Number.isFinite(retrySeconds)&&retrySeconds>0?retrySeconds:0)*1000));
+  await new Promise(resolve=>setTimeout(resolve,waitMs));
   if(persisted.notifySettings?.telegramLive===false)return;
   ({response,error}=await sendRealTradeRequest({chat_id,text}));
  }
@@ -585,6 +601,7 @@ async function liveBalanceSnapshot(){
  return {venue:liveBalance.venue,usd:liveBalance.usd,at:liveBalance.at||null,error:liveBalance.error||null,capUSD:LIVE.balanceCapUSD||null};
 }
 const paper=new PaperEngine(persisted.paper,{settings:{...(persisted.paperSettings||{}),maxRiskUSD:CONFIG.maxRiskUSD,maxPositions:CONFIG.paperMaxPositions,maxPerDirection:CONFIG.paperMaxPositions/2,requireExecutionVenue:true,TP1_MOVE_STOP_TO_BREAKEVEN:persisted.paperSettings?.TP1_MOVE_STOP_TO_BREAKEVEN??process.env.TP1_MOVE_STOP_TO_BREAKEVEN!=='false',TP1_BREAKEVEN_MODE:persisted.paperSettings?.TP1_BREAKEVEN_MODE??process.env.TP1_BREAKEVEN_MODE??'ENTRY_FILL'},onChange:store=>{save({...persisted,paper:store});send('paper',{event:'updated',at:Date.now()});},onEvent:event=>{if(CONFIG.paperTrading)emitPaperNotice(event)}});
+paperRef=paper;
 
 // ---- Execution venue books (BingX / Gate.io) -------------------------------------
 // Latest validated book per venue+symbol. Refreshed for technically qualified setups
@@ -604,7 +621,9 @@ async function refreshVenueBook(venue,symbol,{maxAgeMs=0}={}){
   const client=venueQuotes.clients[venue];
   try{
    const contracts=await (client.contractsFor?client.contractsFor(symbol):client.loadContracts());if(!contracts.has(symbol))return null;
-   const book=await client.book(symbol);venueBooks.set(key,book);return book;
+   const book=await client.book(symbol);venueBooks.set(key,book);
+   if(venueBooks.size>1000){const oldest=venueBooks.keys().next().value;if(oldest&&oldest!==key)venueBooks.delete(oldest)}
+   return book;
   }catch(error){state.venueError=`${venue} ${symbol}: ${error.code||error.message}`;return null}
  })();
  venueBookPending.set(key,task);
@@ -672,7 +691,7 @@ async function binance(url,ttl=30000){
  })();
  apiCache.set(url,{data:cache?.data,until:0,pending:task});
  if(apiCache.size>1200){for(const [key,value]of apiCache){if(!value.pending&&value.until<Date.now())apiCache.delete(key);if(apiCache.size<=1000)break}}
- try{return await task;}catch(e){apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
+ try{return await task;}catch(e){if(apiCache.get(url)?.pending===task)apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
 }
 // No validated replacement market/contract feed is configured for TradFi.
 // Keep historical records intact; never mark stale positions as freshly tracked.
@@ -732,10 +751,11 @@ async function tgNotify(s){
 }
 // Shared Bot API transport for chat verification and posting notices.
 function telegramPost(payload,{ipv4=false,method='sendMessage'}={}){
+ const body=typeof payload?.text==='string'&&payload.text.length>4096?{...payload,text:payload.text.slice(0,4090)+'…'}:payload;
  const url=`https://api.telegram.org/bot${CONFIG.tgToken}/${method}`;
- if(ipv4)return postTelegramIPv4(url,payload);
+ if(ipv4)return postTelegramIPv4(url,body);
  return fetch(url,{
-  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
+  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(10000)});
 }
 
 
@@ -910,7 +930,8 @@ async function venueKlines(symbol,interval,limit){
  if(hit&&hit.until>Date.now())return hit.pending??hit.rows;
  const ttl=interval==='4h'?170000:interval==='1h'?54000:20000;
  const pending=venueQuotes.clients[venue].klines(symbol,interval,limit);venueKlineCache.set(key,{pending,until:Date.now()+ttl});
- try{const rows=await pending;venueKlineCache.set(key,{rows,until:Date.now()+ttl});return rows}catch(e){venueKlineCache.delete(key);throw e}
+ if(venueKlineCache.size>600){const now=Date.now();for(const [k,v]of venueKlineCache){if(!v.pending&&v.until<now)venueKlineCache.delete(k);if(venueKlineCache.size<=500)break}while(venueKlineCache.size>600){const oldest=venueKlineCache.keys().next().value;if(!oldest||oldest===key)break;venueKlineCache.delete(oldest)}}
+ try{const rows=await pending;venueKlineCache.set(key,{rows,until:Date.now()+ttl});return rows}catch(e){if(venueKlineCache.get(key)?.pending===pending)venueKlineCache.delete(key);throw e}
 }
 function invalidateVenueCandles(symbol){for(const key of venueKlineCache.keys())if(key.split(':')[1]===symbol)venueKlineCache.delete(key)}
 // Same profile rules as Binance; the collector's Binance-style URL is answered from the venue.
@@ -1144,7 +1165,15 @@ function publishCryptoSignal(row,decision,now=Date.now()){
  const key=`${symbol}:${direction}:${pattern}:${row.time}`;
  if(persisted.seen[key])return;
  const item={...row,decision,execution:decision.execution,qualified:true,status:'signal',id:key};
- save({...persisted,seen:{...persisted.seen,[key]:now},alerts:[item,...persisted.alerts]});
+ const nextSeen={...persisted.seen,[key]:now};
+ const seenKeys=Object.keys(nextSeen);
+ if(seenKeys.length>5000){
+  const cutoff=now-14*86400000;
+  for(const k of seenKeys)if(k!==key&&!(Number(nextSeen[k])>cutoff))delete nextSeen[k];
+  const remaining=Object.keys(nextSeen);
+  if(remaining.length>5000){remaining.sort((a,b)=>(Number(nextSeen[a])||0)-(Number(nextSeen[b])||0));for(const k of remaining.slice(0,remaining.length-5000))if(k!==key)delete nextSeen[k]}
+ }
+ save({...persisted,seen:nextSeen,alerts:[item,...persisted.alerts].slice(0,200)});
  send('alert',item);void tgNotify(item);
  console.log('[SIGNAL]',symbol,direction,pattern,row.score);
 }
@@ -1174,7 +1203,7 @@ function zoneScaleInPlan(row,sizeScale){
 // per-symbol 1H + 4H kline close streams trigger re-analysis at candle completion.
 // Historical candles remain REST snapshots, not tick-perfect.
 const liveQueue=[];const queued=new Set();const lastTrigger=new Map();let liveWorkers=0;
-const liveSockets=[];let liveSubscriptionKey='';let streamRequestId=1;
+const liveSockets=[];let liveSubscriptionKey='';let streamRequestId=1;let liveSocketsStartedAt=0;
 // BTC 4H (the long filter and score context) must not come from a cache taken before the last 4H
 // close: drop it once the newest cached bar has closed, so the closed bar is read again.
 function invalidateBtc4hIfStale(now=Date.now()){const key='/fapi/v1/klines?symbol=BTCUSDT&interval=4h&limit=301',rows=apiCache.get(key)?.data;
@@ -1221,10 +1250,10 @@ function priceLevelTrigger(symbol,prev,price){
 }
 function refreshLiveSubscriptions(){
  const monitored=state.activeSymbols;
- if(!monitored.length){for(const ws of liveSockets){try{ws.close()}catch{}}liveSockets.length=0;liveSubscriptionKey='';state.liveWS='offline';state.liveWatched=0;return}
+ if(!monitored.length){for(const ws of liveSockets){try{ws.close()}catch{}}liveSockets.length=0;liveSubscriptionKey='';liveSocketsStartedAt=0;state.liveWS='offline';state.liveWatched=0;return}
  const streams=[...monitored.map(s=>s.toLowerCase()+'@kline_1h'),...monitored.map(s=>s.toLowerCase()+'@kline_4h')];
  const key=streams.join('|');if(key===liveSubscriptionKey&&liveSockets.some(ws=>ws.readyState===WebSocket.OPEN))return;
- liveSubscriptionKey=key;for(const ws of liveSockets){try{ws.close()}catch{}}liveSockets.length=0;
+ liveSubscriptionKey=key;for(const ws of liveSockets){try{ws.close()}catch{}}liveSockets.length=0;liveSocketsStartedAt=Date.now();
  state.liveWS='connecting';state.liveWatched=streams.length;state.liveSubscribeAcks=0;state.liveSubscribeErrors=0;state.lastLiveDataAt=0;
  const groups=[];for(let i=0;i<streams.length;i+=450)groups.push(streams.slice(i,i+450));
  for(const group of groups){
@@ -1257,9 +1286,13 @@ function refreshLiveSubscriptions(){
   ws.addEventListener('error',()=>{state.liveWS='offline';send('status',getStatus())});
  }
 }
-// A connected socket alone is not proof of live candle events; recover a silent feed.
+// A connected socket alone is not proof of live candle events; recover a silent or stuck-connecting feed.
 setInterval(()=>{
- if(!state.activeSet.size&&!state.researchSet.size||!liveSockets.some(ws=>ws.readyState===WebSocket.OPEN))return;
+ if(!state.activeSet.size&&!state.researchSet.size)return;
+ if(liveSockets.length&&liveSockets.every(ws=>ws.readyState===WebSocket.CONNECTING)&&liveSocketsStartedAt&&Date.now()-liveSocketsStartedAt>30000){
+  state.liveWS='offline';state.liveLastError='봉 스트림 연결 지연(30초 초과) · 재구독';console.warn('[LIVE] Stuck CONNECTING socket, resubscribing');recoverLive();send('status',getStatus());return;
+ }
+ if(!liveSockets.some(ws=>ws.readyState===WebSocket.OPEN))return;
  const last=state.lastLiveDataAt||state.lastMarketListings;
  if(last&&Date.now()-last>90000){state.liveWS='offline';state.liveLastError='봉 데이터 90초 이상 미수신 · 재구독';console.warn('[LIVE] No candle data received, resubscribing');recoverLive();send('status',getStatus())}
 },30000);
@@ -1267,7 +1300,7 @@ setInterval(()=>{
 const _refreshSubscriptions=refreshLiveSubscriptions;
 function recoverLive(){if(state.activeSet.size||state.researchSet.size){liveSubscriptionKey='';_refreshSubscriptions()}}
 
-let marketWs, retryMs=1500; const changed=new Map();
+let marketWs, marketWsStartedAt=0, retryMs=1500; const changed=new Map();
 function cryptoEntryAllowed(symbol,now=Date.now()){
  if(!storageHealth.healthy||!scannedSymbol(symbol)||state.rest!=='connected')return false;
  // A scalp entry is approved by its own 5m detection; it lives until its short expiry.
@@ -1374,7 +1407,7 @@ function connectWS(){
  function start(){
   if(retryTimer){clearTimeout(retryTimer);retryTimer=null}
   if(marketWs){const previous=marketWs;marketWs=null;try{previous.close()}catch{}}
-  state.ws='connecting';send('status',getStatus());
+  state.ws='connecting';marketWsStartedAt=Date.now();send('status',getStatus());
   let ws;
   try{ws=new WebSocket(urls[endpoint]);marketWs=ws}
   catch(e){state.ws='offline';state.error=e.message;retryTimer=setTimeout(start,Math.min(retryMs*=1.5,30000));return}
@@ -1410,6 +1443,11 @@ setInterval(()=>{if(changed.size){send('quotes',{t:Date.now(),data:[...changed.v
 // A live TCP/WebSocket connection can remain open while its market feed has stalled.
 // Reconnect rather than continuing to mark an idle feed as real-time.
 setInterval(()=>{
+ if(marketWs&&marketWs.readyState===WebSocket.CONNECTING&&marketWsStartedAt&&Date.now()-marketWsStartedAt>30000){
+  state.ws='offline';state.error='WebSocket 연결 지연(30초 초과) · 재연결';
+  console.warn('[WEBSOCKET] Stuck CONNECTING socket; forcing reconnect');
+  try{marketWs.close()}catch{};send('status',getStatus());return;
+ }
  const tracking=paper.store.open.some(x=>x.market==='CRYPTO')||paper.store.pending.some(x=>x.market==='CRYPTO');
  if(!state.activeSet.size&&!state.researchSet.size&&!tracking||!marketWs||marketWs.readyState!==WebSocket.OPEN)return;
  if((state.lastTickerAt && Date.now()-state.lastTickerAt>90000)||(!state.lastTickerAt && marketWs.readyState===WebSocket.OPEN && (state.activeSymbols.length||state.researchSymbols.length||tracking) && Date.now()-state.lastMarket>90000)){
@@ -1510,7 +1548,7 @@ async function runScan(){
 }
 async function translateArticle({text,signal}){
  const endpoint=new URL(CONFIG.translationURL);if(!['https:','http:'].includes(endpoint.protocol)||endpoint.username||endpoint.password)throw Error('TRANSLATION_ENDPOINT_INVALID');
- const r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'ko',format:'text'}),signal});
+ const r=await fetch(endpoint,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:text,source:'auto',target:'ko',format:'text'}),signal});
  if(!r.ok)throw Error('TRANSLATION_HTTP');const result=await r.json();return {translatedText:result.translatedText};
 }
 const aiTranslateNews=CONFIG.newsTranslation?createOpenAINewsTranslator({
@@ -1520,11 +1558,24 @@ const aiTranslateNews=CONFIG.newsTranslation?createOpenAINewsTranslator({
 const NEWS_PROVIDER=!CONFIG.newsTranslation?{providerId:'UNCONFIGURED'}:aiTranslateNews?{translateBatch:aiTranslateNews,providerId:'OPENAI'}
  :CONFIG.translationURL?{translate:translateArticle,providerId:'CONFIGURED_LIBRETRANSLATE'}:{translate:googleTranslate,providerId:'GOOGLE_PUBLIC'};
 let newsBootstrapped=false;
+async function readLimitedBody(res,maxBytes){
+ if(!res?.body?.getReader){const text=await res.text();if(text.length>maxBytes)throw Error('Invalid or oversized XML');return text}
+ const reader=res.body.getReader(),chunks=[];let total=0;
+ try{
+  while(true){
+   const {done,value}=await reader.read();if(done)break;
+   const buf=Buffer.from(value);total+=buf.length;
+   if(total>maxBytes){try{await reader.cancel()}catch{}throw Error('Invalid or oversized XML')}
+   chunks.push(buf);
+  }
+ }finally{try{reader.releaseLock?.()}catch{}}
+ return Buffer.concat(chunks,total).toString('utf8');
+}
 async function pollNews(){
  const settled=await Promise.allSettled(FEEDS.map(async feed=>{
   const controller=new AbortController();const t=setTimeout(()=>controller.abort(),11000);
   try{const res=await fetch(feed.url,{headers:{'Accept':'application/rss+xml, application/xml, text/xml','User-Agent':'Mozilla/5.0 SignalLabRSS/4.0'},signal:controller.signal});
-   if(!res.ok)throw Error('HTTP '+res.status);const body=await res.text();if(body.length>1800000||!/<(?:rss|feed|item)\b/i.test(body))throw Error('Invalid or oversized XML');
+   if(!res.ok)throw Error('HTTP '+res.status);const body=await readLimitedBody(res,1800000);if(body.length>1800000||!/<(?:rss|feed|item)\b/i.test(body))throw Error('Invalid or oversized XML');
    return {name:feed.name,body};
   }finally{clearTimeout(t)}
  }));
@@ -1559,11 +1610,13 @@ async function pollNews(){
 // (400/413). 502 stays reserved for failures of an upstream data source.
 const clientError=(message,httpStatus)=>Object.assign(Error(message),{httpStatus});
 function bodyJson(req){return new Promise((resolve,reject)=>{
- let buf='',settled=false;
- const settle=(fn,value)=>{if(settled)return;settled=true;fn(value)};
- req.on('data',chunk=>{if(settled)return;buf+=chunk;if(buf.length>30000){req.pause();settle(reject,clientError('Body too large',413))}});
+ const chunks=[];let totalBytes=0,settled=false;
+ const timer=setTimeout(()=>{req.pause();settle(reject,clientError('Request body timeout',408))},15000);
+ timer.unref?.();
+ const settle=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);fn(value)};
+ req.on('data',chunk=>{if(settled)return;const buf=Buffer.isBuffer(chunk)?chunk:Buffer.from(String(chunk));totalBytes+=buf.length;if(totalBytes>32768){req.pause();settle(reject,clientError('Body too large',413));return}chunks.push(buf)});
  req.on('end',()=>{
-  let value;try{value=JSON.parse(buf)}catch{return settle(reject,clientError('Invalid JSON',400))}
+  let value;try{value=JSON.parse(Buffer.concat(chunks,totalBytes).toString('utf8'))}catch{return settle(reject,clientError('Invalid JSON',400))}
   if(value===null||typeof value!=='object'||Array.isArray(value))return settle(reject,clientError('JSON object required',400));
   settle(resolve,value);
  });
@@ -1578,19 +1631,38 @@ const server=http.createServer(async(req,res)=>{
   const pathname=url.pathname;
   const guard=evaluateRequest({method:req.method,path:pathname,headers:req.headers},{hostNames:allowedHosts});
   if(!guard.ok)return response(res,guard.status,{error:guard.code,message:guard.message});
-  if(lanMode && !authorizedRequest(req.socket.remoteAddress,req.headers.authorization,lanPassword)){
-   res.writeHead(401,{'WWW-Authenticate':'Basic realm="Signal Lab mobile - username signal", charset="UTF-8"','Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS});
-   res.end('Signal Lab: 모바일 접속 인증이 필요합니다. PC 실행 창에 표시된 사용자명(signal)과 접속 암호를 입력하세요.');return;
+  const proxied=isProxiedRequest(req.headers);
+  const requireProxyAuth=proxied&&(allowedTailscaleUsers.size>0||Boolean(proxyPassword));
+  if(lanMode||requireProxyAuth){
+   const authKey=String(req.headers['x-forwarded-for']||'').split(',')[0].trim()||req.socket.remoteAddress||'unknown';
+   const lock=authLimiter.isBlocked(authKey);
+   if(lock.blocked){
+    res.writeHead(429,{'Retry-After':String(Math.max(1,Math.ceil(lock.retryAfterMs/1000))),'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS});
+    res.end(JSON.stringify({error:'AUTH_RATE_LIMITED',retryAfterMs:lock.retryAfterMs}));return;
+   }
+   const activePassword=lanMode?lanPassword:proxyPassword;
+   const ok=authorizedRequest(req.socket.remoteAddress,req.headers.authorization,activePassword,{headers:req.headers,allowedTailscaleUsers,requireProxyAuth});
+   if(!ok){
+    authLimiter.recordFailure(authKey);
+    res.writeHead(401,{'WWW-Authenticate':'Basic realm="Signal Lab mobile - username signal", charset="UTF-8"','Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS});
+    res.end('Signal Lab: 모바일 접속 인증이 필요합니다. PC 실행 창에 표시된 사용자명(signal)과 접속 암호를 입력하세요.');return;
+   }
+   authLimiter.recordSuccess(authKey);
   }
   if(pathname==='/events'){
+   if(state.clients.size>=64)return response(res,503,{error:'TOO_MANY_SSE_CLIENTS'});
    res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive','X-Accel-Buffering':'no',...SECURITY_HEADERS});
-   state.clients.add(res);res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);
-   const pulse=setInterval(()=>{try{res.write(': heartbeat\n\n')}catch{}},20000);
-   req.on('close',()=>{clearInterval(pulse);state.clients.delete(res)});return;
+   const pulse=setInterval(()=>{if(res.destroyed||res.writableEnded||res.writableLength>512_000){dropSseClient(res);return}try{res.write(': heartbeat\n\n')}catch{dropSseClient(res)}},20000);
+   pulse.unref?.();
+   res._sseCleanup=()=>clearInterval(pulse);
+   state.clients.add(res);
+   try{res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`)}catch{dropSseClient(res);return}
+   const onClose=()=>dropSseClient(res);
+   req.on('close',onClose);res.on('close',onClose);res.on('error',onClose);return;
   }
   if(pathname.startsWith('/api/internal/supervisor/')){
    const loopback=['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
-   if(!loopback||!process.env.SIGNAL_LAB_SUPERVISOR_TOKEN||req.headers['x-signal-lab-supervisor']!==process.env.SIGNAL_LAB_SUPERVISOR_TOKEN)return response(res,403,{error:'supervisor authentication required'});
+   if(!loopback||!process.env.SIGNAL_LAB_SUPERVISOR_TOKEN||!safeTokenEqual(req.headers['x-signal-lab-supervisor'],process.env.SIGNAL_LAB_SUPERVISOR_TOKEN))return response(res,403,{error:'supervisor authentication required'});
    if(pathname==='/api/internal/supervisor/ping'&&req.method==='GET')return response(res,200,{ok:true,storageHealthy:storageHealth.healthy});
    if(pathname==='/api/internal/supervisor/shutdown'&&req.method==='POST'){
     try{save()}catch(e){return response(res,503,{error:'저장 실패로 안전 종료 거부'})}
@@ -1660,6 +1732,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/scalp/journal'&&req.method==='GET'){const n=Math.max(1,Math.min(2000,Math.floor(Number(url.searchParams.get('limit')))||200));
    const kind=url.searchParams.get('kind')==='signals'?'signals':'trades',lines=kind==='signals'?scalpExec.signals(n):scalpExec.journal(n);return response(res,200,{kind,limit:n,count:lines.length,lines})}
   if(pathname==='/api/scalp/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='SCALP_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
+   if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});
    try{return response(res,200,scalpExec.arm())}catch(e){return response(res,e.httpStatus||409,{error:e.code||e.message})}}
   if(pathname==='/api/scalp/disarm'&&req.method==='POST')return response(res,200,scalpExec.disarm());
   if(pathname==='/api/copy'&&req.method==='GET')return response(res,200,await copyLiveStatus());
@@ -1668,12 +1741,12 @@ const server=http.createServer(async(req,res)=>{
    const running=Boolean(historyRefresh);void refreshTradeHistory({recheck:true});return response(res,202,{running:true,started:!running});
   }
   if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
-  if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});return response(res,200,copyTrader.arm())}
+  if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});return response(res,200,copyTrader.arm())}
   if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
   // From the local channel listener only: a shared token (COPY_LISTENER_TOKEN in .env), compared in constant time.
   if(pathname==='/api/copy/message'&&req.method==='POST'){
    const token=String(req.headers['x-copy-token']||''),want=String(process.env.COPY_LISTENER_TOKEN||'');
-   const ok=want.length>=24&&token.length===want.length&&timingSafeEqual(Buffer.from(token),Buffer.from(want));
+   const ok=want.length>=24&&safeTokenEqual(token,want);
    if(!ok)return response(res,403,{error:'FORBIDDEN'});
    const body=await bodyJson(req);
    if(typeof body?.text!=='string'||body.text.length>4000)return response(res,400,{error:'TEXT_REQUIRED'});
@@ -1703,6 +1776,7 @@ const server=http.createServer(async(req,res)=>{
     catch(e){return response(res,e.httpStatus||500,{error:e.code==='INVALID_TESTNET_BUDGET'?e.code:'TESTNET_BUDGET_SAVE_FAILED'})}
    }
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
+    if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});
     // TESTNET / OFF: one switch for the signal strategy and the reversal scalp (user 2026-11-17). LIVE: unchanged.
     let status;
     if(LIVE.mode==='LIVE')status=live.arm();
@@ -1718,6 +1792,7 @@ const server=http.createServer(async(req,res)=>{
     // TESTNET only: a small DOGE long through the real order path, closed after a few seconds
     // (DOGE: fine lot steps, so a small unit still splits into three targets and adds).
     if(body.confirm!=='TEST')return response(res,400,{error:'CONFIRM_REQUIRED'});
+    if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});
     if(LIVE.mode!=='TESTNET')return response(res,409,{error:'TEST_TESTNET_ONLY'});
     if(TESTNET_SCALP_ONLY)return response(res,409,{error:'TESTNET_SIGNAL_DISABLED'});
     // BingX only: its demo (VST) trades on the live price feed; Gate.io's testnet prices can drift from the public book.
@@ -1756,7 +1831,7 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/update/git/progress'&&req.method==='GET')return response(res,200,{...updateJob,...appVersion,bootId:SERVER_BOOT_ID});
   if(pathname==='/api/update/git'&&req.method==='POST'){
    if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});
-   const body=await bodyJson(req).catch(()=>({}));if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
+   const body=await bodyJson(req);if(body?.confirm!=='UPDATE')return response(res,400,{error:'CONFIRM_REQUIRED'});
    const r=await runGitUpdate('button');return response(res,r.status,r.body);
   }
   if(pathname==='/api/update'){

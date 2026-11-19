@@ -156,7 +156,8 @@ function renderNews(){
  $('newsPageNumbers').innerHTML=pageWindow(p.page,p.pages).map(num=>`<button type="button" data-news-page="${num}" class="${num===p.page?'active':''}" aria-label="뉴스 ${num}페이지" ${num===p.page?'aria-current="page"':''}>${num}</button>`).join('');
 }
 function applyNews(data){app.news=Array.isArray(data.articles)?data.articles:[];app.newsMeta=data;renderNews()}
-async function loadNews(){try{applyNews(await json('/api/news'))}catch(e){app.newsMeta={status:'offline',error:e.message};renderNews()}}
+let newsLoading=false;
+async function loadNews(){if(newsLoading)return;newsLoading=true;try{applyNews(await json('/api/news'))}catch(e){app.newsMeta={status:'offline',error:e.message};renderNews()}finally{newsLoading=false}}
 // Live (testnet) trade notices as Chrome / system notifications and an on-page toast.
 function liveNotice(n){
  if(!n?.text||!notifyOn('liveScreen'))return;

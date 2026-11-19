@@ -33,4 +33,14 @@ test('detail is translated paragraph by paragraph; a redirect off the source is 
  }});
  assert.equal(ai.translationProvider,'OPENAI');
  assert.match(ai.paragraphsKo[0],/ 5% 올랐습니다/);
+ const bigChunk=new Uint8Array(2_000_000).fill(65);
+ let cancelled=false;
+ const oversized=async url=>({ok:true,url,body:{getReader(){let n=0;return {async read(){return n++<2?{done:false,value:bigChunk}:{done:true,value:undefined}},async cancel(){cancelled=true},releaseLock(){}}}}});
+ assert.equal((await articleDetail({link:'https://decrypt.co/big'},{fetcher:oversized,now:1})).error,'NO_TEXT');
+ assert.equal(cancelled,true);
+ const longHtml='<article>'+Array.from({length:12},(_,i)=>`<p>${'A'.repeat(1200)} paragraph ${i}</p>`).join('')+'</article>';
+ const capped=extractParagraphs(longHtml);
+ assert.ok(capped.reduce((s,x)=>s+x.length,0)<=2200);
 });
+
+
