@@ -171,9 +171,9 @@ test('real manual entry and add reach Telegram only after matching exchange fill
   await until(()=>app.get('/api/copy'),c=>c.manual?.open?.[0]?.size===0.02,{timeout:12000,label:'updated manual position size'});
   await app.write({clockOffsetMs:60000});
   const added=await until(async()=>{await app.get('/api/copy');return notices()},list=>list.length===2,{timeout:16000,label:'confirmed Telegram notices'});
-  assert.match(added[0].text,/^🔴 실계좌 \| 수동 \| 신규 진입\nBTCUSDT · 롱 · 10배/);
-  assert.match(added[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT/);
-  assert.match(added[1].text,/^🔴 실계좌 \| 수동 \| 추가 진입[\s\S]*수량 \+0\.01 · 잔여 0\.02/);
+  assert.match(added[0].text,/^수동 \| 신규 진입\nBTCUSDT · 🟢 롱 · 10배/);
+  assert.match(added[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT\n증거금 약 50\.00 USDT/);
+  assert.match(added[1].text,/^수동 \| 추가 진입[\s\S]*수량 \+0\.01 · 잔여 0\.02[\s\S]+증거금 약 50\.10 USDT/);
  }finally{await app.close()}
 });
 
@@ -207,7 +207,7 @@ test('Chrome and the scanner channel receive the same confirmed copy trade even 
   assert.ok(notices.every(n=>n.chatId===-1001234567890));
   const lookups=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.path==='/getChat');
   assert.deepEqual(lookups.map(r=>r.chatId),['@scanner_fixture']);
-  assert.match(notice.text,/^📌 포지션 진입\n━+\nBTCUSDT  🟢 Long  ×10\n━+\n진입가 50,000 USDT\n현재가 50,000 USDT\n수량 0\.02/);
+  assert.match(notice.text,/^📌 포지션 진입\n━+\nBTCUSDT  🟢 롱  ×10\n━+\n진입가 50,000 USDT\n현재가 50,000 USDT\n수량 0\.02\n증거금 약 100\.00 USDT/);
   assert.deepEqual(notice.entities.map(e=>notice.text.slice(e.offset,e.offset+e.length)),['포지션 진입','BTCUSDT','50,000 USDT']);
   assert.equal((await app.get('/api/copy')).manual.open.length,0);
   const file=async()=>JSON.parse(await fs.readFile(`${app.data}/manual-trades-live.json`,'utf8'));

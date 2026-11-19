@@ -88,7 +88,7 @@ export class BingXTradeClient{
  setLeverage(symbol,side,leverage){return this.request('POST','/openApi/swap/v2/trade/leverage',{symbol,side,leverage})}
  placeOrder(params,{beforeSend}={}){return this.request('POST','/openApi/swap/v2/trade/order',params,false,beforeSend)}
  testOrder(params){return this.request('POST','/openApi/swap/v2/trade/order/test',params)}
- openOrders(symbol){return this.request('GET','/openApi/swap/v2/trade/openOrders',{symbol})}
+ openOrders(symbol){return this.request('GET','/openApi/swap/v2/trade/openOrders',symbol?{symbol}:{})}
  getOrder(symbol,{orderId,clientOrderId}){return this.request('GET','/openApi/swap/v2/trade/order',{symbol,...(orderId?{orderId}:{clientOrderId})})}
  cancelOrder(symbol,orderId){return this.request('DELETE','/openApi/swap/v2/trade/order',{symbol,orderId})}
  // Read only (copy: why a position vanished, review 2026-11-17): liquidation / ADL orders, and the order history.

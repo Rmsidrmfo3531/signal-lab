@@ -3,7 +3,7 @@ import {tradeHorizon,holdTier} from './trade_horizon.mjs';
 // break-even, the settled close with its result, and order problems. Text only: symbol, side,
 // prices and results — never keys, order ids or account numbers.
 const SIDE={LONG:'롱',SHORT:'숏'};
-const MODE={TESTNET:'테스트넷',LIVE:'🔴 실계좌 | 신호 전략'};
+const MODE={TESTNET:'테스트넷',LIVE:'신호 전략'};
 const fmt=v=>{const x=Number(v);if(!Number.isFinite(x))return '—';const a=Math.abs(x);return a>=1000?x.toLocaleString('en-US',{maximumFractionDigits:2}):a>=1?String(+x.toFixed(4)):String(+x.toPrecision(4))};
 const usd=v=>{const x=Number(v);return Number.isFinite(x)?(x>=0?'+':'−')+'$'+Math.abs(x).toFixed(2):'—'};
 const tradeAmount=new Intl.NumberFormat('en-US',{maximumFractionDigits:12});
@@ -12,9 +12,15 @@ const amount=v=>v==null||!Number.isFinite(Number(v))?'—':tradeAmount.format(Nu
 const MANUAL_ACTION={MANUAL_OPEN:'신규 진입',MANUAL_ADD:'추가 진입',MANUAL_REDUCE:'부분',MANUAL_SETTLED:'전량'};
 const REAL_ORIGIN={MANUAL:'수동',SIGNAL:'자동 신호'};
 const RULE='━━━━━━━━━━━━━━━━';
-const tradeSide={SHORT:'🔴 Short',LONG:'🟢 Long'};
+const tradeSide={SHORT:'🔴 숏',LONG:'🟢 롱'};
 const priceLine=v=>Number.isFinite(v)&&v>0?`${amount(v)} USDT`:'—';
 const signed=v=>v===0?'':v>0?'+':'−';
+const marginAmount=new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:8});
+function fillMarginText(fill,qty,leverage){
+ const [price,size,multiple]=[fill,qty,leverage].map(Number);
+ if(![price,size,multiple].every(v=>Number.isFinite(v)&&v>0))return '증거금 —';
+ return `증거금 약 ${marginAmount.format(price*size/multiple)} USDT`;
+}
 
 function copyTradeMessage(e,action,closing,at){
  const lines=[],entities=[];
@@ -48,6 +54,7 @@ function copyTradeMessage(e,action,closing,at){
   line(add?'추매가 ':'진입가 ',priceLine(fill));
   line(`현재가 ${priceLine(fill)}`);
   line(`수량 ${add?'+':''}${amount(qty)}${add&&e.to!=null?` · 잔여 ${amount(e.to)}`:''}`);
+  line(fillMarginText(fill,qty,e.leverage));
  }
  if(at>0&&Number.isFinite(at))line(`체결 ${observedTime.format(at)} KST`);
  return {text:lines.join('\n'),entities};
@@ -63,7 +70,7 @@ export function realTradeMessage(e){
  const action=closing?`${actionBase} ${net===0?'본전':net>0?'익절':'손절'}`:actionBase;
  const at=Number(e.observedAt??e.at);
  if(e.alertOrigin==='COPY')return copyTradeMessage(e,action,closing,at);
- const head=[`🔴 실계좌 | ${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`,[e.symbol,SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ const head=[`${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`,[e.symbol,tradeSide[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
  else if(closing){
@@ -76,7 +83,8 @@ export function realTradeMessage(e){
   detail=`수량 +${amount(change)}${e.to!=null?` · 잔여 ${amount(e.to)}`:''}`;
   if(e.type==='MANUAL_ADD'&&e.avg!=null)detail+=`\n추가 체결가 ${amount(e.avg)} USDT`;
  }
- return {text:[...head,detail,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n')};
+ const margin=closing?null:fillMarginText(e.fillPrice??e.avg,e.size??(Number(e.to)-Number(e.from)),e.leverage);
+ return {text:[...head,detail,margin,at>0&&Number.isFinite(at)?`체결 ${observedTime.format(at)} KST`:null].filter(Boolean).join('\n')};
 }
 export function realTradeText(e){return realTradeMessage(e)?.text??null}
 export {realTradeText as manualTradeText};
@@ -87,7 +95,8 @@ const PROBLEM={ENTRY_OUTCOME_UNKNOWN:'진입 결과를 확인하지 못했습니
 export function liveEventText(r,type,detail={}){
  if(!r)return null;
  if(type==='KILL_SWITCH')return `⛔ 긴급 정지 · ${MODE[r.mode]||r.mode||''}\n새 주문을 멈췄습니다 (${detail.reason||'수동'}). 실매매 화면에서 확인 후 해제하세요.`;
- const head=`${r.symbol} ${SIDE[r.direction]||r.direction||''}${tradeHorizon(r.signal?.pattern)?' ['+tradeHorizon(r.signal?.pattern).label+']':''} ${r.leverage?r.leverage+'배':''} · ${MODE[r.mode]||r.mode||''}`.replace(/\s+/g,' ').trim();
+ const side=(r.mode==='LIVE'?tradeSide:SIDE)[r.direction]||r.direction||'';
+ const head=`${r.symbol} ${side}${tradeHorizon(r.signal?.pattern)?' ['+tradeHorizon(r.signal?.pattern).label+']':''} ${r.leverage?r.leverage+'배':''} · ${MODE[r.mode]||r.mode||''}`.replace(/\s+/g,' ').trim();
  const hz=tradeHorizon(r.signal?.pattern),pattern=r.signal?.pattern?`\n패턴: ${r.signal.pattern}${r.signal.score!=null?` (${r.signal.score}점)`:''}${hz?` · ${hz.label} 예상 (${hz.hint})`:''}`:'';
  // Test orders (signalKey TEST:…, marked test after the fill): problems only.
  if(r.test===true||String(r.signalKey||'').startsWith('TEST:'))return PROBLEM[type]?`⚠️ 시험 주문 문제 · ${head}\n${PROBLEM[type]}${detail.reason?` (${detail.reason})`:''}`:null;
