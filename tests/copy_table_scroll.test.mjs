@@ -9,7 +9,7 @@ const venue={symbol:'NCSKSNDK2USDT',origin:'manual',direction:'LONG',leverage:18
 
 test('real account merges only the symbol column across two compact metric rows',()=>{
  const copy={...venue,symbol:'ETHUSDT',origin:'copy',direction:'SHORT',liquidation:900};
- const open=[{symbol:'ETHUSDT',direction:'SHORT',openedAt:NOW-3600000,adds:3}];
+ const open=[{symbol:'ETHUSDT',direction:'SHORT',openedAt:NOW-3600000,adds:3,reduces:2}];
  const html=venuePositionsHTML({mode:'LIVE',venuePositions:[venue,copy]},open);
  assert.match(html,/<div class="copy-table-scroll" role="region" aria-label="실계좌 보유 포지션" tabindex="0">/);
  assert.match(html,/<table class="copy-table vp-table vp-two-row only-desk">/);
@@ -23,6 +23,11 @@ test('real account merges only the symbol column across two compact metric rows'
  assert.match(html,/19\.43/);
  assert.match(html,/32\.7%/);
  assert.match(html,/3회/,'copy additional buys remain visible');
+ assert.match(html,/추매 · 부분청산/,'both counts share the same compact column');
+ assert.match(html,/3회 · 2회/,'copy adds and partial reductions have different counters');
+ assert.match(html,/부분청산 2회/,'mobile copy row shows its partial reductions');
+ assert.doesNotMatch(html,/부분익절 2회/,'a reduction is not automatically a profitable take-profit');
+
  assert.match(html,/<ul class="copy-list only-mob">/,'mobile list remains unchanged');
 });
 
@@ -37,6 +42,20 @@ test('copy and scalp positions and closed trades scroll independently from their
  assert.match(scalp,/aria-label="보유 포지션"/);
  assert.match(scalp,/aria-label="최근 종료 거래"/);
 });
+
+test('missing partial close count is unknown, not a fabricated zero',()=>{
+ const copy={...venue,symbol:'ETHUSDT',origin:'copy'};
+ const html=venuePositionsHTML({mode:'LIVE',venuePositions:[copy]},[{symbol:'ETHUSDT',direction:'LONG',adds:1,openedAt:NOW}]);
+ assert.match(html,/1회 · —/);
+});
+
+test('copy fallback still shows partial reduction count without venue positions',()=>{
+ const position={symbol:'ETHUSDT',direction:'LONG',leverage:10,qty:1,avg:100,mark:101,unrealized:1,openedAt:NOW,adds:3,reduces:2};
+ const html=copyHTML({mode:'LIVE',enabled:true,armed:true,positions:[position],closed:[],funds:{equity:100,available:90}});
+ assert.match(html,/추매 3회 · 부분청산 2회/);
+ assert.match(html,/추매 \/ 부분청산/);
+});
+
 
 test('copy page omits the verbose exchange audit rows while preserving positions',()=>{
  const copy={mode:'LIVE',enabled:true,armed:true,positions:[{symbol:'ETHUSDT',direction:'LONG',leverage:80,qty:0.01,avg:1739.87,mark:1772.29,openedAt:NOW,unrealized:0.32}],closed:[],funds:{equity:100,available:90},
