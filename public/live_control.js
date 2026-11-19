@@ -244,55 +244,83 @@ export function copyStats(c,{confirmedOnly=false}={}){
  const all=mergedCloses(c),copy=one(all.filter(x=>x.origin!=='manual')),manual=one(all.filter(x=>x.origin==='manual')),totals=one(all);
  return {all:totals,copy,manual,pending:totals.pending};
 }
-// Daily P&L calendar on the 실계좌 page (user 2026-11-18 "캘린더 느낌으로 내가 하루에 번 돈의 기록"): the server's cached
-// BingX income per KST day (c.daily.byDay, copy and manual together), one month at a time, weeks from Monday.
-const KST_MS=9*3600000;
+// Rolling BingX daily P&L in KST, across month boundaries, with Monday-first weeks.
+const KST_MS=9*3600000,CAL_DAY=86400000,CAL_DAYS=30;
 export const kstDate=t=>new Date(t+KST_MS).toISOString().slice(0,10);
-const ymShift=(ym,d)=>{const [y,m]=ym.split('-').map(Number),t=new Date(Date.UTC(y,m-1+d,1));return t.toISOString().slice(0,7)};
-let calMonth=null; // 'YYYY-MM' shown, null = the current KST month
-export function setCalMonth(ym){calMonth=typeof ym==='string'&&/^\d{4}-\d{2}$/.test(ym)?ym:null}
-export const getCalMonth=()=>calMonth;
-/** Weeks (Monday first) of the month ym ('YYYY-MM'): 7 cells each, null outside the month, else {date, day, value}
- * (value = the day's net USD, null when the venue has no rows that day). */
-export function calendarWeeks(byDay,ym){
- const [y,m]=ym.split('-').map(Number),first=new Date(Date.UTC(y,m-1,1)),days=new Date(Date.UTC(y,m,0)).getUTCDate(),lead=(first.getUTCDay()+6)%7;
- const cells=[...Array(lead).fill(null)];
- for(let d=1;d<=days;d++){const date=`${ym}-${String(d).padStart(2,'0')}`,v=byDay?.[date];cells.push({date,day:d,value:fin(v)?Number(v):null})}
+const shortDay=date=>`${Number(date.slice(5,7))}/${Number(date.slice(8))}`;
+/** The latest 30 KST dates and the padding for complete calendar weeks. */
+export function calendarWeeks(byDay,now){
+ const first=now-(CAL_DAYS-1)*CAL_DAY,lead=(new Date(first+KST_MS).getUTCDay()+6)%7;
+ const cells=Array(lead).fill(null);
+ for(let i=0;i<CAL_DAYS;i++){
+  const date=kstDate(first+i*CAL_DAY),value=byDay?.[date];
+  cells.push({date,day:Number(date.slice(8)),value:fin(value)?Number(value):null});
+ }
  while(cells.length%7)cells.push(null);
  return Array.from({length:cells.length/7},(_,i)=>cells.slice(i*7,i*7+7));
 }
-/** Month totals: net, profit / loss day counts, best and worst day, the largest absolute day (for the tint). */
-export function monthSummary(byDay,ym){
- const rows=Object.entries(byDay||{}).filter(([d,v])=>d.startsWith(ym+'-')&&fin(v)).map(([date,v])=>({date,value:Number(v)})).sort((a,b)=>a.date<b.date?-1:1);
- const net=rows.reduce((a,x)=>a+x.value,0),best=rows.reduce((a,x)=>!a||x.value>a.value?x:a,null),worst=rows.reduce((a,x)=>!a||x.value<a.value?x:a,null);
- return {days:rows.length,net,wins:rows.filter(x=>x.value>0).length,losses:rows.filter(x=>x.value<0).length,best:best&&best.value>0?best:null,worst:worst&&worst.value<0?worst:null,maxAbs:rows.reduce((a,x)=>Math.max(a,Math.abs(x.value)),0)};
-}
-// Cell amounts fit a ~40 px phone cell: cents under $10, one decimal under $100, whole dollars under $1000, then k
-// (the exact amount is in the cell's title).
+// Compact amounts for a phone cell. The full amount goes in the cell title.
 const calAmt=v=>{const a=Math.abs(v),s=v>0?'+':v<0?'−':'';return s+'$'+(a<9.995?a.toFixed(2):a<99.95?a.toFixed(1):a<999.5?Math.round(a).toString():(a/1000).toFixed(1)+'k')};
 const hhmm=t=>new Date(Number(t)+KST_MS).toISOString().slice(11,16);
+function pnlCurve(points,complete){
+ const net=points.at(-1)?.total;
+ const figureStart=`<figure class="cal-chart"><figcaption><span>${complete?'최근 30일 누적 PNL':'조회된 기간 누적 PNL'}</span><strong class="${fin(net)?pnlClass(net):''}">${fin(net)?esc(usd(net)):'—'}</strong></figcaption>`;
+ if(!points.length)return figureStart+'</figure>';
+ const values=[0,...points.map(p=>p.total)],low=Math.min(...values),high=Math.max(...values);
+ const left=52,right=296,top=10,bottom=78;
+ const y=v=>high===low?(top+bottom)/2:bottom-(v-low)/(high-low)*(bottom-top);
+ const coords=values.map((v,i)=>({x:left+(right-left)*i/points.length,y:y(v)}));
+ const fmt=x=>x.toFixed(2);
+ let curve=`M ${left},${fmt(y(0))}`;
+ for(let i=1;i<coords.length;i++){
+  const a=coords[i-1],b=coords[i],third=(b.x-a.x)/3;
+  // Horizontal tangents at the observed dates keep the curve between consecutive values.
+  curve+=` C ${fmt(a.x+third)},${fmt(a.y)} ${fmt(b.x-third)},${fmt(b.y)} ${fmt(b.x)},${fmt(b.y)}`;
+ }
+ const labels=high===low?[0]:[high,low];
+ const last=coords.at(-1);
+ return figureStart+`<svg viewBox="0 0 300 100" role="img" aria-label="날짜별 누적 손익 곡선" data-pnl-chart>
+ <line x1="${left}" y1="${fmt(y(0))}" x2="${right}" y2="${fmt(y(0))}" class="cal-chart-zero"/>
+ ${labels.map(v=>`<text x="48" y="${fmt(y(v)+3)}" text-anchor="end">${esc(calAmt(v))}</text>`).join('')}
+ <path class="cal-chart-line" d="${curve}"/>
+ <circle class="cal-chart-last" cx="${fmt(last.x)}" cy="${fmt(last.y)}" r="2.6"/>
+ ${points.map((p,i)=>`<circle class="cal-chart-point" cx="${fmt(coords[i+1].x)}" cy="${fmt(coords[i+1].y)}" r="5"><title>${p.date} · 일별 ${esc(usd(p.value??0))} · 누적 ${esc(usd(p.total))}</title></circle>`).join('')}
+ <text x="${left}" y="97">${shortDay(points[0].date)}</text><text x="${right}" y="97" text-anchor="end">${shortDay(points.at(-1).date)}</text>
+ </svg></figure>`;
+}
 export function pnlCalendarHTML(daily,{now=Date.now()}={}){
  if(!daily||typeof daily!=='object')return '';
- const today=kstDate(now),thisMonth=today.slice(0,7),sinceDay=fin(daily.since)?kstDate(Number(daily.since)):null;
- const floor=sinceDay?sinceDay.slice(0,7):ymShift(thisMonth,-12);
- const ym=calMonth&&calMonth<thisMonth?(calMonth<floor?floor:calMonth):thisMonth;
- const byDay=daily.byDay&&typeof daily.byDay==='object'?daily.byDay:{},sum=monthSummary(byDay,ym),[yy,mm]=ym.split('-').map(Number);
- const loaded=fin(daily.at),tint=v=>{if(!(v!==0&&sum.maxAbs>0))return '';const a=(0.1+0.45*Math.min(1,Math.abs(v)/sum.maxAbs)).toFixed(2);return ` style="background:rgba(${v>0?'66,206,172':'241,113,134'},${a})"`};
- const cell=c=>{if(!c)return '<span class="cal-cell cal-pad"></span>';
-  const before=sinceDay&&c.date<sinceDay,future=c.date>today,v=c.value;
-  const cls=['cal-cell',c.date===today?'cal-today':'',before||future?'cal-off':'',v>0?'cal-up':v<0?'cal-down':''].filter(Boolean).join(' ');
-  const title=`${mm}월 ${c.day}일${v!==null?' '+usd(v):before?' · 기록 범위 밖':future?'':loaded?' · 거래 없음':''}`;
-  return `<span class="${cls}" title="${esc(title)}"${v!==null?tint(v):''}><b>${c.day}</b>${v!==null?`<i class="${v?pnlClass(v):''}">${esc(calAmt(v))}</i>`:''}</span>`};
+ const today=kstDate(now),first=kstDate(now-(CAL_DAYS-1)*CAL_DAY);
+ const loaded=fin(daily.at),sinceDay=fin(daily.since)?kstDate(Number(daily.since)):null,lastDay=loaded?kstDate(Number(daily.at)):null;
+ const covered=date=>loaded&&(!sinceDay||date>=sinceDay)&&date<=lastDay;
+ const complete=covered(first)&&covered(today);
+ const byDay=daily.byDay&&typeof daily.byDay==='object'?daily.byDay:{};
+ const weeks=calendarWeeks(byDay,now),dates=weeks.flat().filter(Boolean).filter(c=>covered(c.date));
+ const values=dates.filter(c=>c.value!==null);
+ const wins=values.filter(c=>c.value>0).length,losses=values.filter(c=>c.value<0).length;
+ const best=values.reduce((a,c)=>c.value>0&&(!a||c.value>a.value)?c:a,null);
+ const worst=values.reduce((a,c)=>c.value<0&&(!a||c.value<a.value)?c:a,null);
+ const maxAbs=Math.max(best?.value??0,Math.abs(worst?.value??0));
+ let total=0;
+ const points=dates.map(c=>({...c,total:total=Math.round((total+(c.value??0))*1e4)/1e4}));
+ const tint=v=>!v||!maxAbs?'':` style="background:rgba(${v>0?'66,206,172':'241,113,134'},${(0.1+0.45*Math.abs(v)/maxAbs).toFixed(2)})"`;
+ const cell=c=>{
+  if(!c)return '<span class="cal-cell cal-pad"></span>';
+  const known=covered(c.date),v=known?c.value:null;
+  const cls=['cal-cell',c.date===today?'cal-today':'',known?'':'cal-off',v>0?'cal-up':v<0?'cal-down':''].filter(Boolean).join(' ');
+  const title=`${c.date}${v!==null?' '+usd(v):known?' · 거래 없음':' · 조회 전'}`;
+  return `<span class="${cls}" title="${esc(title)}"${tint(v)}><b>${c.day===1?shortDay(c.date):c.day}</b>${v!==null?`<i class="${v?pnlClass(v):''}">${esc(calAmt(v))}</i>`:''}</span>`;
+ };
  const errorCode=/^[A-Z0-9_]{1,40}$/.test(daily.error||'')?daily.error:null;
  const errorLabel={NO_CLIENT:'실계좌 연결 설정 확인',HTTP_429:'거래소 요청 한도 초과',BAD_INCOME_RESPONSE:'손익 응답 형식 오류'}[errorCode]||errorCode;
  const state=daily.error?`<span class="cal-err" title="${esc(daily.error)}">갱신 실패 · ${loaded?esc(hhmm(daily.at))+' 기준':'불러온 기록 없음'}${errorLabel?' · '+esc(errorLabel):''}</span>`
   :loaded?`<span class="muted">${esc(hhmm(daily.at))} 기준 · 5분마다 갱신</span>`:'<span class="muted">불러오는 중…</span>';
- const day=x=>x?`${Number(x.date.slice(8))}일 <b class="${pnlClass(x.value)}">${esc(usd(x.value))}</b>`:'—';
- const foot=`<div class="cal-sum"><span>월 합계 <b class="${sum.days?pnlClass(sum.net):''}">${sum.days?esc(usd(sum.net)):'—'}</b></span><span>수익일 <b class="paper-profit">${sum.wins}</b> · 손실일 <b class="paper-loss">${sum.losses}</b></span>
-  <span>최고 ${day(sum.best)}</span><span>최저 ${day(sum.worst)}</span></div>`+(sinceDay&&sinceDay>`${ym}-01`&&sinceDay.slice(0,7)===ym?`<p class="cal-note">거래소 기록 ${esc(sinceDay)}부터</p>`:'');
- return `<section class="pnl-cal" aria-label="일별 손익"><h5 class="copy-sub">일별 손익 <small>거래소 기준 · 카피+수동</small></h5>
- <div class="cal-head"><button type="button" class="outline-btn small" data-cal-month="-1" aria-label="이전 달"${ym<=floor?' disabled':''}>‹</button><strong>${yy}년 ${mm}월</strong><button type="button" class="outline-btn small" data-cal-month="1" aria-label="다음 달"${ym>=thisMonth?' disabled':''}>›</button></div>
- <div class="cal-grid" data-cal-ym="${esc(ym)}">${'월화수목금토일'.split('').map((d,i)=>`<span class="cal-dow${i>4?' cal-we':''}">${d}</span>`).join('')}${calendarWeeks(byDay,ym).flat().map(cell).join('')}</div>${foot}<p class="cal-state">${state}</p></section>`;
+ const day=x=>x?`${shortDay(x.date)} <b class="${pnlClass(x.value)}">${esc(usd(x.value))}</b>`:'—';
+ const foot=`<div class="cal-sum"><span>수익일 <b class="paper-profit">${wins}</b></span><span>손실일 <b class="paper-loss">${losses}</b></span>
+ <span>최고 ${day(best)}</span><span>최저 ${day(worst)}</span></div>`+(loaded&&!complete&&points.length?`<p class="cal-note">조회된 기간 ${points[0].date} ~ ${points.at(-1).date}</p>`:'');
+ return `<section class="pnl-cal" aria-label="최근 30일 일별 손익"><h5 class="copy-sub">일별 손익 <small>거래소 기준 · 카피+수동</small></h5>
+ <div class="cal-head">${first} ~ ${today} <span>KST</span></div>
+ <div class="cal-grid">${'월화수목금토일'.split('').map((d,i)=>`<span class="cal-dow${i>4?' cal-we':''}">${d}</span>`).join('')}${weeks.flat().map(cell).join('')}</div>${foot}${pnlCurve(points,complete)}<p class="cal-state">${state}</p></section>`;
 }
 const SETTLEMENT_STATES={CONFIRMED:'정산 확인',WAITING:'체결 내역 대기',NO_ORDER_IDS:'연결할 주문 ID 없음',ORDER_LINK_MISSING:'주문 ID 연결 실패',
  MIXED_WITH_COPY:'같은 종목의 카피 거래와 정산 내역 겹침',MIXED_WITH_MANUAL:'같은 종목의 수동 거래와 정산 내역 겹침',
@@ -551,8 +579,6 @@ function bindCopyButtons(el){
  if(e.target.closest('[data-fail-toggle]')){failOpen=!e.target.closest('details')?.open;}
  const fp=e.target.closest('[data-copy-fail-page]');
  if(fp){setCopyFailPage(failPage+Number(fp.dataset.copyFailPage));const box=fp.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);return}
- const cm=e.target.closest('[data-cal-month]');
- if(cm){const grid=cm.closest('.pnl-cal')?.querySelector('[data-cal-ym]'),cur=grid?.dataset.calYm;if(cur){const next=ymShift(cur,Number(cm.dataset.calMonth));setCalMonth(next>=kstDate(Date.now()).slice(0,7)?null:next)}const box=cm.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);cm.blur?.();return}
  const pg=e.target.closest('[data-copy-page]');
  if(pg){setCopyPage(copyPage+Number(pg.dataset.copyPage));const box=pg.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);pg.blur?.();return}
  if(resume)return call(resume,'/api/copy/resume',{confirm:'COPY_RESUME'},'다시 시작하는 중…');
