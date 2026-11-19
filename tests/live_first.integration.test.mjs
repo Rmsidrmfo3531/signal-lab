@@ -127,10 +127,14 @@ test('testnet budget settings are saved and both caps follow the latest BingX te
  }finally{await app.close()}
 });
 
-test('real-account calendar publishes recent income when older windows are empty and balance fails',async()=>{
+test('real-account calendar reads only 30 KST dates and works without the balance API',async()=>{
  const at=Date.now()-60000,day=new Date(at+9*3600000).toISOString().slice(0,10);
  const row={incomeType:'REALIZED_PNL',income:'27.50',time:at,symbol:'BTC-USDT',tranId:'fixture-income'};
- const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[row],env:{
+ const today=new Date(Date.now()+9*3600000).toISOString().slice(0,10),since=Date.parse(today+'T00:00:00+09:00')-29*86400000;
+ const firstDay=new Date(since+9*3600000).toISOString().slice(0,10);
+ const first={...row,income:'2.50',time:since,tranId:'first-day'};
+ const older={...row,income:'97',time:since-1,tranId:'day-31'};
+ const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[older,first,row],env:{
   BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',
   COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',PAPER_TRADING:'off',
  }});
@@ -138,15 +142,16 @@ test('real-account calendar publishes recent income when older windows are empty
   await app.start();
   const copy=await until(()=>app.get('/api/copy'),c=>c.daily?.at!=null);
   assert.equal(copy.mode,'LIVE');
-  assert.deepEqual(copy.daily.byDay,{[day]:27.5});
+  assert.equal(copy.daily.since,since);
+  assert.deepEqual(copy.daily.byDay,{[firstDay]:2.5,[day]:27.5});
   assert.equal(copy.daily.error,null);
   const overview=await app.get('/api/live/overview');
-  assert.deepEqual(overview.copy.daily.byDay,{[day]:27.5});
+  assert.deepEqual(overview.copy.daily.byDay,{[firstDay]:2.5,[day]:27.5});
   const audited=await until(()=>app.get('/api/copy'),c=>c.audit?.ready,{timeout:15000,label:'real copy startup position audit'});
   assert.ok(audited.audit.positionAt>0);assert.deepEqual(audited.audit.lanes,[]);
   const requests=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
   const reads=requests.filter(r=>r.host==='open-api.bingx.com'&&r.path==='/openApi/swap/v2/user/income');
-  assert.ok(reads.length>1,'the mock served older windows before the recent income');
+  assert.ok(reads.length>1,'the calendar read the window in multiple requests');
  }finally{await app.close()}
 });
 
