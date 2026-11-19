@@ -7,12 +7,22 @@ const NOW=Date.parse('2026-11-18T14:00:00Z');
 const venue={symbol:'NCSKSNDK2USDT',origin:'manual',direction:'LONG',leverage:18,marginMode:'CROSSED',
  size:1.39189,avg:769,mark:782.96,margin:59.46,unrealized:19.43,roePct:32.67,liquidation:700};
 
-test('real account venue table has a keyboard-scrollable region, preserving the long symbol and all columns',()=>{
- const html=venuePositionsHTML({mode:'LIVE',venuePositions:[venue]},[]);
+test('real account uses two rows per position: compact prices above, all labelled metrics below',()=>{
+ const copy={...venue,symbol:'ETHUSDT',origin:'copy',direction:'SHORT',liquidation:900};
+ const open=[{symbol:'ETHUSDT',direction:'SHORT',openedAt:NOW-3600000,adds:3}];
+ const html=venuePositionsHTML({mode:'LIVE',venuePositions:[venue,copy]},open);
  assert.match(html,/<div class="copy-table-scroll" role="region" aria-label="실계좌 보유 포지션" tabindex="0">/);
- assert.match(html,/<table class="copy-table vp-table only-desk">/);
+ assert.match(html,/<table class="copy-table vp-table vp-two-row only-desk">/);
+ assert.equal((html.match(/<tr class="vp-primary/g)||[]).length,2);
+ assert.equal((html.match(/<tr class="vp-secondary/g)||[]).length,2);
  assert.match(html,/NCSKSNDK2USDT/);
- assert.match(html,/<th class="num">수익률<\/th><th class="num">청산가<\/th>/);
+ assert.match(html,/<th>종목·구분<\/th>/);
+ assert.match(html,/<td colspan="6"><div class="vp-detail-grid">/);
+ for(const field of ['증거금','추매','보유','미실현','수익률','청산가'])
+  assert.match(html,new RegExp('<small>'+field+'<\\/small>'),'every second-row field has its own label');
+ assert.match(html,/19\.43/);
+ assert.match(html,/32\.7%/);
+ assert.match(html,/3회/,'copy additional buys are retained');
  assert.match(html,/<ul class="copy-list only-mob">/,'compact mobile list is retained');
 });
 
@@ -36,4 +46,6 @@ test('testnet closed trades use the same wrapper; CSS scrolls only wide desktop 
  assert.match(css,/\.copy-table-scroll\{display:block;width:100%;overflow-x:auto/,'desktop scrolls each table');
  assert.match(css,/\.copy-table-scroll \.copy-table\{width:max-content;min-width:100%/);
  assert.match(css,/\.copy-main\{min-width:0;overflow-x:visible\}/,'the entire panel does not horizontally scroll');
+ assert.match(css,/\.copy-table-scroll \.vp-two-row\{width:100%;min-width:0;max-width:100%;table-layout:fixed\}/);
+ assert.match(css,/\.vp-detail-grid\{display:grid;grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
 });
