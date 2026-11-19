@@ -191,23 +191,22 @@ export function venuePositionsHTML(c,copyOpen=[]){
  const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}"><b>${esc(p.symbol)}</b>${badge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b></li>`};
 
  const table=`<table class="copy-table vp-table vp-two-row only-desk">
-  <colgroup><col style="width:27%"><col style="width:10%"><col style="width:13%"><col style="width:16%"><col style="width:17%"><col style="width:17%"></colgroup>
+  <colgroup><col style="width:26%"><col style="width:12%"><col style="width:12%"><col style="width:17%"><col style="width:18%"><col style="width:15%"></colgroup>
   <thead><tr><th>종목·구분</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th></tr></thead>
   <tbody>${list.map(p=>{
    const r=info(p),manual=p.origin==='copy'?'':' vp-manual';
-   const detail=(name,value,valueClass='')=>`<span><small>${name}</small><b class="${valueClass}">${value}</b></span>`;
    return `<tr class="vp-primary${manual}">
-    <td><b class="vp-symbol">${esc(p.symbol)}</b> ${badge(p)}</td>
-    <td>${side(p.direction)}</td><td>${esc(p.leverage??'—')}배 <small class="muted">${mm(p)}</small></td>
+    <td class="vp-symbol-cell" rowspan="2"><b class="vp-symbol">${esc(p.symbol)}</b> ${badge(p)}</td>
+    <td>${side(p.direction)}</td>
+    <td>${esc(p.leverage??'—')}배 <small class="muted">${mm(p)}</small></td>
     <td class="num">${esc(qtyFmt(p.size))}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td>
-   </tr><tr class="vp-secondary${manual}"><td colspan="6"><div class="vp-detail-grid">
-    ${detail('증거금',usdv(p.margin))}
-    ${detail('추매',r?esc(r.adds||0)+'회':'—')}
-    ${detail('보유',r?heldTxt(r):'—')}
-    ${detail('미실현',money(p.unrealized),cls(p.unrealized))}
-    ${detail('수익률',pct(p.roePct),cls(p.roePct))}
-    ${detail('청산가',px(p.liquidation))}
-   </div></td></tr>`;
+   </tr><tr class="vp-secondary${manual}">
+    <td><small>증거금</small><b>${usdv(p.margin)}</b></td>
+    <td><small>추매</small><b>${r?esc(r.adds||0)+'회':'—'}</b></td>
+    <td class="num"><small>보유</small><b>${r?heldTxt(r):'—'}</b></td>
+    <td class="num"><small>미실현 · 수익률</small><b class="${cls(p.unrealized)}">${money(p.unrealized)} <span class="vp-roe ${cls(p.roePct)}">(${pct(p.roePct)})</span></b></td>
+    <td class="num"><small>청산가</small><b>${px(p.liquidation)}</b></td>
+   </tr>`;
   }).join('')}</tbody></table>`;
  const body=`<ul class="copy-list only-mob">${list.map(row).join('')}</ul>`+scrollCopyTable(table,'실계좌 보유 포지션'); // fills `seen`
  const pending=copyOpen.filter(r=>!seen.has(r));
