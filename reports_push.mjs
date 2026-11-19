@@ -64,6 +64,13 @@ export function ledgerSummary(store,{now=Date.now(),equityUSD=null,settlementOf=
   serious:events.filter(e=>SERIOUS_EVENTS.has(e.type)).slice(-30).map(e=>({type:e.type,at:e.at,symbol:e.symbol??null,reason:shortReason(e.reason??e.code)}))};
 }
 
+const SECRET_VALUE=/(-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|bot\d{6,}:[A-Za-z0-9_-]{20,}|(?:api[_-]?key|secret|token|password|passphrase|signature)\s*[:=]\s*[^\s"',}{]{8,})/i;
+const shellQuote=v=>`'${String(v).replace(/'/g,"'\\''")}'`;
+function assertNoSecrets(text,label){
+ for(const key of text.matchAll(/"([^"]+)":/g))if(SECRET.test(key[1]))throw Error('REPORT_SECRET_FIELD '+key[1]);
+ if(SECRET_VALUE.test(text))throw Error('REPORT_SECRET_VALUE '+label);
+}
+
 /** The report object (also used by tests to prove nothing secret is included). */
 // scalp: the 되돌림 단타 journal summary (scalp_journal.mjs summarizeJournal), when given.
 export function buildReport({readiness,insights,journal=[],records=[],scalp=null,ledgers={},exchange=null,now=Date.now()}){
@@ -75,8 +82,7 @@ export function buildReport({readiness,insights,journal=[],records=[],scalp=null
   // copyLive = real-money copy (copy-store-live.json), manualLive = manual trades on that account
   // (manual-trades-live.json), copyTestnet, scalp (testnet only).
   ledgers:Object.fromEntries(Object.entries(ledgers).map(([k,v])=>[k,v?ledgerSummary(v.store,{now,equityUSD:v.equityUSD,settlementOf:v.settlementOf}):null]))};
- const text=JSON.stringify(report);
- for(const key of text.matchAll(/"([^"]+)":/g))if(SECRET.test(key[1]))throw Error('REPORT_SECRET_FIELD '+key[1]);
+ assertNoSecrets(JSON.stringify(report),'report');
  return report;
 }
 
@@ -86,17 +92,27 @@ export const REPORT_FILE_MAX_BYTES=50*1024*1024;
  * REPORT_FILE_MAX_BYTES, is not written. */
 export async function pushReport(dir,report,{keyFile,git=run,now=Date.now(),files={}}={}){
  if(!dir||!fs.existsSync(path.join(dir,'.git')))return {pushed:false,reason:'REPORTS_REPO_NOT_SET_UP'};
- const env=keyFile?{GIT_SSH_COMMAND:`ssh -i ${keyFile} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes`}:{};
+ if(keyFile&&/[\0\r\n]/.test(String(keyFile)))throw Error('REPORT_KEYFILE_INVALID');
+ const env=keyFile?{GIT_SSH_COMMAND:`ssh -i ${shellQuote(keyFile)} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes`}:{};
  const day=new Date(now+9*3600000).toISOString().slice(0,10);
  await git(dir,['pull','--ff-only','--quiet'],env).catch(()=>{});
  fs.mkdirSync(path.join(dir,'days'),{recursive:true});
  const body=JSON.stringify(report,null,1)+'\n';
+ assertNoSecrets(body,'latest.json');
  fs.writeFileSync(path.join(dir,'latest.json'),body);fs.writeFileSync(path.join(dir,'days',day+'.json'),body);
+ const rootDir=path.resolve(dir);
  const extra=[];
  for(const [rel,text] of Object.entries(files||{})){
-  if(typeof text!=='string'||!/^[a-z0-9][a-z0-9_\-/.]*$/i.test(rel)||rel.includes('..')||Buffer.byteLength(text)>REPORT_FILE_MAX_BYTES)continue;
-  const SECRET_KEY=/"[^"]*(api[_-]?key|secret|token|password|passphrase|signature)[^"]*":/i;if(SECRET_KEY.test(text))throw Error('REPORT_SECRET_FIELD '+rel);
-  fs.mkdirSync(path.dirname(path.join(dir,rel)),{recursive:true});fs.writeFileSync(path.join(dir,rel),text);extra.push(rel);
+  if(typeof text!=='string'||!/^[a-z0-9][a-z0-9_\-/.]*$/i.test(rel)||rel.includes('..')||rel==='latest.json'||rel.startsWith('days/')||rel.startsWith('.git/')||Buffer.byteLength(text)>REPORT_FILE_MAX_BYTES)continue;
+  const target=path.resolve(rootDir,rel);
+  if(!target.startsWith(rootDir+path.sep))continue;
+  let symlink=false;
+  for(let cur=target;cur!==rootDir&&cur.startsWith(rootDir+path.sep);cur=path.dirname(cur)){
+   try{if(fs.lstatSync(cur).isSymbolicLink()){symlink=true;break}}catch{}
+  }
+  if(symlink)continue;
+  assertNoSecrets(text,rel);
+  fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,text);extra.push(rel);
  }
  await git(dir,['add','latest.json','days/'+day+'.json',...extra],env);
  const changed=await git(dir,['status','--porcelain'],env);

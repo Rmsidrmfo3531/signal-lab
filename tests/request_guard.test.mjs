@@ -34,6 +34,10 @@ test('cross-site browser writes are refused, same-origin writes are allowed',()=
  assert.equal(check({host,'sec-fetch-site':'cross-site'},'POST','/api/scan').ok,false,'browser marker without Origin');
  assert.equal(check({host,'sec-fetch-site':'same-site'},'POST','/api/scan').ok,false,'sibling site');
  assert.equal(check({host,origin:'http://127.0.0.1:3000','sec-fetch-site':'same-origin'},'POST','/api/journal').ok,true);
+ assert.equal(check({host,origin:'https://127.0.0.1:3000'},'POST','/api/journal').ok,false,'scheme mismatch on plain HTTP host');
+ assert.equal(check({host:'my-pc','x-forwarded-proto':'https',origin:'http://my-pc'},'POST','/api/journal').ok,false,'HTTP origin against HTTPS proxy');
+ assert.equal(check({host:'my-pc','x-forwarded-proto':'https',origin:'https://my-pc','sec-fetch-site':'same-origin'},'POST','/api/journal').ok,true,'HTTPS origin behind HTTPS proxy');
+ assert.equal(check({host,origin:'http://127.0.0.1:3000','sec-fetch-site':'cross-site'},'POST','/api/journal').ok,false,'sec-fetch-site cross-site overrides matching Origin');
  assert.equal(check({host:'192.168.0.12:3000',origin:'http://192.168.0.12:3000'},'POST','/api/journal').ok,true,'mobile LAN page');
  assert.equal(check({host:'localhost',origin:'http://localhost'},'POST','/api/journal').ok,true,'default port');
  assert.equal(check({host},'POST','/api/scan').ok,true,'non-browser client (supervisor, CLI) sends no Origin');

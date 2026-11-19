@@ -60,4 +60,19 @@ test('copy and scalp ledgers: totals, drawdown, serious events, and no order or 
   closed:[{symbol:'HUSDT',closedAt:now,scaleIn:{count:3}}]},{now});
  assert.equal(repeating.open[0].stop,null);assert.equal(repeating.open[0].riskReference,1.2);
  assert.equal(repeating.open[0].adds,2);assert.equal(repeating.open[0].unrealizedUSD,-.15);assert.equal(repeating.trades[0].adds,3);
+ assert.throws(()=>buildReport({readiness:{note:'-----BEGIN OPENSSH PRIVATE KEY-----'},records:[]}),/REPORT_SECRET_VALUE/);
+ assert.throws(()=>buildReport({readiness:{note:'token ghp_1234567890abcdefghijklmnopqrstuvwx'},records:[]}),/REPORT_SECRET_VALUE/);
 });
+
+test('pushReport rejects unsafe keyFile characters, ignores reserved paths, and blocks secret values in extra files',async()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'rp-sec-')),bare=path.join(root,'remote.git'),work=path.join(root,'reports');
+ execFileSync('git',['init','-q','--bare',bare]);execFileSync('git',['clone','-q',bare,work],{stdio:'ignore'});
+ const now=Date.parse('2026-11-13T01:00:00Z'),report=buildReport({readiness:{ready:false},records:[rec],now});
+ await assert.rejects(()=>pushReport(work,report,{keyFile:'/tmp/bad\nkey'}),/REPORT_KEYFILE_INVALID/);
+ await assert.rejects(()=>pushReport(work,report,{files:{'scalp/leak.json':'{"msg":"sk-1234567890abcdefghijklmnopqrstuv"}'}}),/REPORT_SECRET_VALUE/);
+ const r=await pushReport(work,report,{now,files:{'latest.json':'{"tampered":true}','days/2026-11-13.json':'{"tampered":true}','.git/config':'bad'}});
+ assert.equal(r.pushed,true);
+ assert.equal(JSON.parse(fs.readFileSync(path.join(work,'latest.json'),'utf8')).tampered,undefined);
+});
+
+

@@ -4,11 +4,23 @@
 # What it does: Python + Telethon in its own folder, your Telegram login (phone + code, typed here
 # on the server, never sent to anyone else), a background listener service, and a restart.
 set -euo pipefail
+umask 077
 BASE=/opt/signallab; APP=$BASE/app; DATA=$BASE/data; VENV=$BASE/copy-venv; ENVF=$DATA/.env
-CHANNEL_DEFAULT=-1003995199859
+CHANNEL_DEFAULT="${COPY_CHANNEL_ID:--1003995199859}"
 say(){ printf '\n== %s\n' "$*"; }
-setenv(){ # key value: replace or add one line in .env
-  if grep -q "^$1=" "$ENVF"; then sed -i "s|^$1=.*|$1=$2|" "$ENVF"; else printf '%s=%s\n' "$1" "$2" >> "$ENVF"; fi; }
+setenv(){ # key value: replace or add one line in .env safely without sed metacharacter expansion
+  [ -f "$ENVF" ] || install -o signallab -g signallab -m 600 /dev/null "$ENVF"
+  local tmp; tmp=$(mktemp "$DATA/.env.tmp.XXXXXX")
+  ENV_KEY="$1" ENV_VAL="$2" awk '
+    BEGIN { k=ENVIRON["ENV_KEY"]; v=ENVIRON["ENV_VAL"]; found=0 }
+    index($0, k "=") == 1 { print k "=" v; found=1; next }
+    { print }
+    END { if (!found) print k "=" v }
+  ' "$ENVF" > "$tmp"
+  chown signallab:signallab "$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$ENVF"
+}
 
 say "1/5 Python · Telethon 설치"
 apt-get install -y -qq python3-venv >/dev/null
@@ -17,6 +29,7 @@ $VENV/bin/pip install -q --upgrade pip telethon
 chown -R signallab:signallab $VENV
 
 say "2/5 텔레그램 API 키 (https://my.telegram.org → API development tools 에서 만든 값)"
+[ -f "$ENVF" ] || install -o signallab -g signallab -m 600 /dev/null "$ENVF"
 if ! grep -qE '^TELEGRAM_API_ID=[0-9]+' "$ENVF"; then
   read -r -p "api_id (숫자): " APIID; read -r -s -p "api_hash (입력은 화면에 보이지 않습니다): " APIHASH; echo
   setenv TELEGRAM_API_ID "$APIID"; setenv TELEGRAM_API_HASH "$APIHASH"
@@ -27,7 +40,7 @@ chown signallab:signallab "$ENVF"; chmod 600 "$ENVF"
 
 say "3/5 텔레그램 로그인 (휴대폰 번호 → 텔레그램 앱으로 온 코드 → 2단계 비밀번호가 있으면 입력)"
 sudo -u signallab env SIGNAL_LAB_DATA_DIR=$DATA $VENV/bin/python $APP/deploy/linux/copy_listener.py --login
-chmod 600 $DATA/copy.session 2>/dev/null || true
+chmod 600 "$DATA"/copy.session* 2>/dev/null || true
 
 say "4/5 수신 서비스 등록"
 cat > /etc/systemd/system/signal-lab-copy.service <<UNIT
@@ -37,6 +50,7 @@ After=network-online.target signal-lab.service
 Wants=network-online.target
 [Service]
 User=signallab
+UMask=0077
 WorkingDirectory=$APP
 Environment=SIGNAL_LAB_DATA_DIR=$DATA
 ExecStart=$VENV/bin/python $APP/deploy/linux/copy_listener.py

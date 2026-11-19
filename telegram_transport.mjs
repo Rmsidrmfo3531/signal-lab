@@ -7,7 +7,10 @@ const OTHER_ERRORS=new Set(['ECONNRESET','ETIMEDOUT','UND_ERR_SOCKET','UND_ERR_H
 export function telegramNetworkCode(error){
  const causes=[error,error?.cause,...(Array.isArray(error?.cause?.errors)?error.cause.errors:[])];
  const code=causes.map(e=>e?.code).find(x=>CONNECT_ERRORS.has(x))??causes.map(e=>e?.code).find(x=>OTHER_ERRORS.has(x));
- return code??(error?.name==='TimeoutError'?'TIMEOUT':error?.name==='AbortError'?'ABORT_ERR':'NETWORK_FAILED');
+ if(code)return code;
+ if(causes.some(e=>e?.name==='TimeoutError'))return 'TIMEOUT';
+ if(causes.some(e=>e?.name==='AbortError'))return 'ABORT_ERR';
+ return 'NETWORK_FAILED';
 }
 
 // A separate, IPv4-only HTTPS client for a remote host with a broken default route. DNS and TLS hostname
@@ -40,11 +43,12 @@ export function createTelegramNetworkRecovery(post){
   try{return {response:await post(payload,{ipv4:first}),transport:first?'IPV4':'FETCH'}}
   catch(error){
    const code=telegramNetworkCode(error);
-   if(!first&&CONNECT_ERRORS.has(code)){
+   if(CONNECT_ERRORS.has(code)){
+    const alt=!first;
     try{
-     const response=await post(payload,{ipv4:true});preferIPv4=true;
-     return {response,transport:'IPV4'};
-    }catch(fallback){return {error:`IPV4_${telegramNetworkCode(fallback)}`,transport:'IPV4'}}
+     const response=await post(payload,{ipv4:alt});preferIPv4=alt;
+     return {response,transport:alt?'IPV4':'FETCH'};
+    }catch(fallback){return {error:`${alt?'IPV4':'FETCH'}_${telegramNetworkCode(fallback)}`,transport:alt?'IPV4':'FETCH'}}
    }
    // For an ambiguous timeout, leave the message in the outbox. Change route only on its scheduled retry.
    if(['TIMEOUT','ETIMEDOUT','ABORT_ERR','NETWORK_FAILED','ECONNRESET','UND_ERR_SOCKET','UND_ERR_HEADERS_TIMEOUT'].includes(code))preferIPv4=!first;

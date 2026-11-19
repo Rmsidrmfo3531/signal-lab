@@ -57,11 +57,19 @@ export function allowedHostNames({env=process.env,hostname=os.hostname()}={}){
  return names;
 }
 
-function sameOrigin(origin,host){
+function expectedProtocol(host,headers){
+ const fwd=text(headers?.['x-forwarded-proto']).split(',')[0].trim();
+ if(fwd==='https'||fwd==='http')return fwd+':';
+ return host.port==='443'?'https:':'http:';
+}
+
+function sameOrigin(origin,host,headers){
  let url;
  try{url=new URL(origin)}catch{return false}
  if(!['http:','https:'].includes(url.protocol))return false;
- const fallback=url.protocol==='https:'?'443':'80';
+ const wantProto=expectedProtocol(host,headers);
+ if(url.protocol!==wantProto)return false;
+ const fallback=wantProto==='https:'?'443':'80';
  const originHost=url.hostname.replace(/^\[|\]$/g,'').replace(/\.$/,'').toLowerCase();
  return originHost===host.hostname&&(url.port||fallback)===(host.port||fallback);
 }
@@ -75,7 +83,7 @@ export function evaluateRequest({method='GET',path='/',headers={}}={},{hostNames
  if(!host||!(host.ipLiteral||hostNames.has(host.hostname)))
   return refuse('HOST_NOT_ALLOWED','허용되지 않은 접속 주소입니다. PC는 http://127.0.0.1 주소로, 휴대폰은 실행 창에 표시된 IP 주소로 접속하세요. 별도 도메인 이름을 쓰려면 .env의 ALLOWED_HOSTS에 추가해야 합니다.');
  const verb=String(method||'GET').toUpperCase(),origin=headers.origin,site=text(headers['sec-fetch-site']);
- const crossSite=origin!==undefined?!sameOrigin(String(origin),host):site!==''&&!SAME_SITE_VALUES.has(site);
+ const crossSite=(origin!==undefined&&!sameOrigin(String(origin),host,headers))||(site!==''&&!SAME_SITE_VALUES.has(site));
  const protectedPath=typeof path==='string'&&(path==='/events'||path==='/api'||path.startsWith('/api/'));
  if(crossSite&&(UNSAFE_METHODS.has(verb)||protectedPath))
   return refuse('CROSS_SITE_REQUEST_BLOCKED','다른 웹사이트에서 보낸 요청은 차단됩니다. Signal Lab 화면에서 직접 실행하세요.');

@@ -10,8 +10,11 @@ passes each new message to the local Signal Lab server, which copies it on the B
   SIGNAL_LAB_PORT                        default 3000 (the server's PORT)
 The login session file (copy.session) stays in the data folder, readable only by signallab.
 """
-import asyncio, json, os, sys, urllib.request
+import asyncio, json, os, sys, urllib.error, urllib.request
 from telethon import TelegramClient, events
+
+# Ensure SQLite session files (-wal/-shm/-journal) are created 0600 only.
+os.umask(0o077)
 
 def env(path):
     out = {}
@@ -40,13 +43,10 @@ def post(payload):
         return r.read().decode()[:300]
 
 client = TelegramClient(os.path.join(DATA, 'copy'), API_ID, API_HASH)
+delivery_queue = None
 
-@client.on(events.NewMessage(chats=CHANNEL))
-async def on_message(event):
-    msg = event.message
-    payload = {'id': msg.id, 'date': int(msg.date.timestamp() * 1000), 'text': msg.message or ''}
-    if not payload['text']:
-        return
+async def deliver(payload):
+    msg_id = payload['id']
     # The server may be restarting (an update takes up to about a minute): retry for about 3 minutes.
     # The server ignores a message id it has already handled, so a retry never trades twice.
     for wait in (0, 3, 5, 10, 15, 20, 30, 30, 30, 30):
@@ -54,18 +54,60 @@ async def on_message(event):
             await asyncio.sleep(wait)
         try:
             res = await asyncio.get_running_loop().run_in_executor(None, post, payload)
-            print(f"[COPY] {msg.id} -> {res}" + (f" (재시도, {wait}초 대기 후)" if wait else ''), flush=True)
+            print(f"[COPY] {msg_id} -> {res}" + (f" (재시도, {wait}초 대기 후)" if wait else ''), flush=True)
             return
+        except urllib.error.HTTPError as e:
+            detail = ''
+            try:
+                detail = e.read().decode('utf-8', errors='replace')[:200]
+            except Exception:
+                pass
+            if 400 <= e.code < 500 and e.code != 429:
+                print(f"[COPY] {msg_id} 영구 오류 HTTP {e.code} (재시도 중단): {detail}", flush=True)
+                return
+            print(f"[COPY] {msg_id} 전달 실패 HTTP {e.code}: {detail}", flush=True)
         except Exception as e:
-            print(f"[COPY] {msg.id} 전달 실패: {e}", flush=True)
-    print(f"[COPY] {msg.id} 최종 전달 실패 (약 3분 재시도)", flush=True)
+            print(f"[COPY] {msg_id} 전달 실패: {e}", flush=True)
+    print(f"[COPY] {msg_id} 최종 전달 실패 (약 3분 재시도)", flush=True)
+
+async def delivery_worker():
+    while True:
+        payload = await delivery_queue.get()
+        try:
+            await deliver(payload)
+        finally:
+            delivery_queue.task_done()
+
+@client.on(events.NewMessage(chats=CHANNEL))
+async def on_message(event):
+    msg = event.message
+    text = (msg.message or '')[:4000]
+    if not text:
+        return
+    payload = {'id': msg.id, 'date': int(msg.date.timestamp() * 1000), 'text': text}
+    if delivery_queue is not None:
+        await delivery_queue.put(payload)
+    else:
+        await deliver(payload)
 
 async def main():
-    await client.start()  # first run (copy.sh): asks for the phone number and the login code
-    if len(sys.argv) > 1 and sys.argv[1] == '--login':
+    global delivery_queue
+    login_mode = len(sys.argv) > 1 and sys.argv[1] == '--login'
+    if login_mode or sys.stdin.isatty():
+        await client.start()  # first run (copy.sh): asks for the phone number and the login code
+    else:
+        await client.connect()
+        if not await client.is_user_authorized():
+            sys.exit('[COPY] 텔레그램 세션이 만료되었거나 로그인되지 않았습니다. copy.sh로 다시 로그인하세요.')
+    if login_mode:
         ent = await client.get_entity(CHANNEL)
         print('로그인 완료 · 채널 확인:', getattr(ent, 'title', CHANNEL)); return
+    delivery_queue = asyncio.Queue()
+    worker = asyncio.create_task(delivery_worker())
     print('[COPY] 채널 수신 대기 중', flush=True)
-    await client.run_until_disconnected()
+    try:
+        await client.run_until_disconnected()
+    finally:
+        worker.cancel()
 
 asyncio.run(main())
