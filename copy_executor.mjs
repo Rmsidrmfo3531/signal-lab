@@ -36,6 +36,7 @@ const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const orderOf=d=>d?.order??d;
 const venueSymbolOf=s=>s.replace(/USDT$/,'-USDT');
+const orderReadCode=e=>/^(?:HTTP_\d{3}|VENUE_ERROR_\d{1,12}|NETWORK_UNREACHABLE|TIMEOUT|ETIMEDOUT|ECONNRESET|UNEXPECTED_OPEN_ORDERS(?:_SHAPE)?)$/.test(e?.code)?e.code:'LOOKUP_FAILED';
 
 // Closes that were not ours (user decision 2026-11-17 "2,3번 둘다 적용시켜줘", fail-closed after review): only a
 // close CONFIRMED as manual lets the trader's next add (late entry) or entry card be followed again. Every
@@ -245,7 +246,7 @@ export class CopyExecutor{
    const blocked=Boolean(observed?.blocked||observed&&stale);
    return {symbol:p.symbol,direction:p.direction,expectedQty:p.auditQty??p.qty??null,venueQty:observed?.venueQty??null,
     stop:observed?.stop??'UNKNOWN',checkedAt:observed?.checkedAt??null,verifiedAt:observed?.verifiedAt??null,
-    issues:observed?.issues??[],blocked,stale};
+    issues:observed?.issues??[],blocked,stale,...(observed?.ordersError?{ordersError:observed.ordersError}:{})};
   });
   const ready=a.positionAt!=null&&now-a.positionAt<=AUDIT_MAX_AGE;
   return {checkedAt:a.checkedAt,positionAt:a.positionAt,ready,error:a.error,lanes};
@@ -261,10 +262,28 @@ export class CopyExecutor{
   }
   return null;
  }
- async #auditOpenOrders(symbol){
-  const orders=rowsOf(await this.client.openOrders(symbol));
-  if(orders.some(o=>o?.symbol!==symbol||o?.orderId==null||String(o.orderId).trim()===''))throw Error('UNEXPECTED_OPEN_ORDERS');
+ async #readOpenOrders(symbol){
+  const data=await this.client.openOrders(symbol);
+  let orders;
+  try{orders=rowsOf(data)}catch{throw Object.assign(Error('UNEXPECTED_OPEN_ORDERS_SHAPE'),{code:'UNEXPECTED_OPEN_ORDERS_SHAPE'})}
+  if(orders.some(o=>typeof o?.symbol!=='string'||!o.symbol||/\s/.test(o.symbol)||symbol&&o.symbol!==symbol||
+   !(typeof o.orderId==='string'&&o.orderId.trim()||Number.isSafeInteger(o.orderId)&&o.orderId>0)))
+   throw Object.assign(Error('UNEXPECTED_OPEN_ORDERS'),{code:'UNEXPECTED_OPEN_ORDERS'});
   return orders;
+ }
+ async #auditOpenOrders(symbol,allOrders=()=>this.#readOpenOrders()){
+  try{return {orders:await this.#readOpenOrders(symbol)}}
+  catch(e){
+   const scoped=orderReadCode(e);
+   // The signed client already backs off and retries HTTP 429.
+   if(scoped==='HTTP_429')return {orders:null,detail:`종목 조회 ${scoped}`};
+   try{
+    const orders=await allOrders();
+    return {orders:orders.filter(o=>o.symbol===symbol)};
+   }catch(fallback){
+    return {orders:null,detail:`종목 조회 ${scoped} · 계좌 조회 ${orderReadCode(fallback)}`};
+   }
+  }
  }
  #compareLane(p,qty,orders){
   const issues=[],expected=p.auditQty??pos(p.qty);
@@ -303,7 +322,9 @@ export class CopyExecutor{
   try{rows=checkedPositions(await this.client.positions());a.positionAt=this.now();a.error=null}
   catch{a.error='POSITIONS_UNREADABLE';return}
   const symbols=[...new Set(open.map(({p})=>p.venueSymbol))];
-  const orders=new Map(await Promise.all(symbols.map(async symbol=>[symbol,await this.#auditOpenOrders(symbol).catch(()=>null)])));
+  let allOrdersRead;
+  const allOrders=()=>allOrdersRead??=this.#readOpenOrders();
+  const reads=new Map(await Promise.all(symbols.map(async symbol=>[symbol,await this.#auditOpenOrders(symbol,allOrders)])));
   for(const {p,qty,seq,stop,reduces,closing} of open){
    if(p.status!=='OPEN'||this.store.positions[this.#key(p)]!==p||p.inflight||p.auditQty!==qty||p.orderSeq!==seq||
     p.stopOrderId!==stop||p.reduces!==reduces||p.closing!==closing)continue;
@@ -312,7 +333,9 @@ export class CopyExecutor{
    try{
     const row=positionRow(rows,p.venueSymbol,{hedge:p.hedge===true,direction:p.direction});
     const qty=row?Math.abs(Number(row.positionAmt)):0;
-    result=this.#compareLane(p,qty,orders.get(p.venueSymbol));
+    const {orders,detail}=reads.get(p.venueSymbol);
+    result=this.#compareLane(p,qty,orders);
+    if(detail)result.ordersError=detail;
     if(qty>0&&directionOf(row)!==p.direction)result.issues.push('POSITION_SIDE_MISMATCH');
    }catch{result={issues:['POSITIONS_UNREADABLE'],stop:'UNKNOWN',venueQty:null}}
    const count=Object.fromEntries(result.issues.map(code=>[code,(prior?.count[code]??0)+1]));
@@ -620,11 +643,11 @@ export class CopyExecutor{
   {const list=checkedPositions(await this.client.positions(venueSymbol),venueSymbol),row=positionRow(list,venueSymbol,{hedge,direction:m.direction}),size=row?Math.abs(Number(row.positionAmt)):0;
    if(size>0){this.#event('SKIPPED',{symbol:m.symbol,reason:'VENUE_POSITION_EXISTS',detail:`거래소에 이미 ${size} 보유`});return {ok:false,reason:'VENUE_POSITION_EXISTS'}}}
   if(this.audit){
-   const orders=await this.#auditOpenOrders(venueSymbol).catch(()=>null);
+   const {orders,detail}=await this.#auditOpenOrders(venueSymbol);
    const expected=positionSideFor({hedge,direction:m.direction});
    const reason=this.#auditBlock(m.symbol,venueSymbol)??(!orders?'COPY_ORDERS_UNREADABLE':
     orders.some(o=>!hedge||!o.positionSide||String(o.positionSide).toUpperCase()===expected||String(o.positionSide).toUpperCase()==='BOTH')?'COPY_OPEN_ORDERS_EXIST':null);
-   if(reason){this.#event('SKIPPED',{symbol:m.symbol,reason});return {ok:false,reason}}
+   if(reason){this.#event('SKIPPED',{symbol:m.symbol,reason,...(detail?{detail}:{})});return {ok:false,reason}}
   }
   this.step='증거금 모드 설정';
   try{await this.client.setMarginType(venueSymbol,'CROSSED')}catch{}
@@ -765,13 +788,14 @@ export class CopyExecutor{
   // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
   const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   if(this.audit){
-   let reason=this.#auditBlock(p.symbol,p.venueSymbol);
+   let reason=this.#auditBlock(p.symbol,p.venueSymbol),detail;
    if(!reason){
-    const orders=await this.#auditOpenOrders(p.venueSymbol).catch(()=>null);
-    const {issues}=this.#compareLane(p,now.size,orders);
-    if(issues.length||!p.steps?.length||now.direction!==p.direction)reason=orders?'COPY_AUDIT_BLOCKED':'COPY_ORDERS_UNREADABLE';
+    const checked=await this.#auditOpenOrders(p.venueSymbol);
+    detail=checked.detail;
+    const {issues}=this.#compareLane(p,now.size,checked.orders);
+    if(issues.length||!p.steps?.length||now.direction!==p.direction)reason=checked.orders?'COPY_AUDIT_BLOCKED':'COPY_ORDERS_UNREADABLE';
    }
-   if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason});return {ok:false,reason}}
+   if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason,...(detail?{detail}:{})});return {ok:false,reason}}
   }
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).

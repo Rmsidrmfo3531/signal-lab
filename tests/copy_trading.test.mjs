@@ -74,6 +74,45 @@ test('real copy audit checks startup and orders, locks repeated mismatches and l
  assert.equal(ex.auditStatus().lanes.length,0,'a concurrent close cannot leave behind a stale open audit result');
 });
 
+test('real copy falls back to account open orders and still blocks a matching order or an unreadable list',async()=>{
+ const v=venue(),ex=make(v,{config:{mode:'LIVE',stops:false},auditOrders:true});
+ const queries=[],other={symbol:'ETH-USDT',orderId:'123',side:'SELL',positionSide:'BOTH'};
+ const matching={...other,symbol:'TNSR-USDT',orderId:'456'};
+ let account={orders:[other,matching]},scopedError='VENUE_ERROR_109400';
+ v.client.openOrders=async symbol=>{
+  queries.push(symbol);
+  if(symbol)throw Object.assign(Error('scoped query rejected'),{code:scopedError});
+  return account;
+ };
+ const msg=(id,text)=>ex.handle({id,date:1e12,text});
+ await ex.reconcile();
+ assert.equal((await msg(1,OPEN)).reason,'COPY_OPEN_ORDERS_EXIST');
+ account={orders:[{...matching,symbol:'TNSR-USDT '}]};
+ assert.equal((await msg(2,OPEN)).reason,'COPY_ORDERS_UNREADABLE');
+ assert.equal(ex.status().events[0].detail,'종목 조회 VENUE_ERROR_109400 · 계좌 조회 UNEXPECTED_OPEN_ORDERS');
+ account={};
+ assert.equal((await msg(3,OPEN)).reason,'COPY_ORDERS_UNREADABLE');
+ assert.equal(ex.status().events[0].detail,'종목 조회 VENUE_ERROR_109400 · 계좌 조회 UNEXPECTED_OPEN_ORDERS_SHAPE');
+ assert.equal(v.calls.length,0,'a failed verification must not set leverage or place an order');
+ scopedError='HTTP_429';queries.length=0;
+ assert.equal((await msg(4,OPEN)).reason,'COPY_ORDERS_UNREADABLE');
+ assert.deepEqual(queries,['TNSR-USDT'],'the HTTP client already retried rate-limited reads');
+ scopedError='NETWORK_UNREACHABLE';queries.length=0;account={orders:[other]};
+ assert.equal((await msg(5,OPEN)).ok,true);
+ assert.deepEqual(queries,['TNSR-USDT',undefined]);
+ await ex.reconcile();
+ assert.deepEqual(ex.auditStatus().lanes[0].issues,[]);
+ account={orders:[matching]};
+ assert.equal((await msg(6,CHANGE(880,1760))).reason,'COPY_AUDIT_BLOCKED');
+ account={orders:null};
+ assert.equal((await msg(7,CHANGE(1760,2640))).ok,true);
+ assert.equal(v.calls.filter(c=>c.type==='MARKET').length,2);
+ account=null;
+ await ex.reconcile();
+ assert.deepEqual(ex.auditStatus().lanes[0].issues,['ORDERS_UNREADABLE']);
+ assert.equal(ex.auditStatus().lanes[0].ordersError,'종목 조회 NETWORK_UNREACHABLE · 계좌 조회 UNEXPECTED_OPEN_ORDERS_SHAPE');
+});
+
 test('copy: 1 $ margin at the trader leverage (capped by the venue), doubles with the trader, cuts in proportion, closes, protective stop each time',async()=>{
  const v=venue(),ex=make(v);
  await ex.handle({id:1,date:1e12,text:OPEN});
@@ -539,7 +578,7 @@ test('copy stops off by default (user 2026-11-13, testnet): no exchange stop, no
  v.unreal='-210';await ex.reconcile();assert.equal(v.size,0,'ledger loss limit still closes');
 });
 
-test('real-money copy only with COPY_MODE=LIVE and the confirm phrase; its own switch, off at start; notices say 실계좌',async()=>{
+test('real-money copy only with COPY_MODE=LIVE and the confirm phrase; notices use the direction marker',async()=>{
  const {COPY_LIVE_PHRASE}=await import('../copy_executor.mjs');
  assert.equal(copyConfig({COPY_MODE:'LIVE'},'TESTNET').mode,'TESTNET','no phrase: stays testnet');
  assert.equal(copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'yes'},'OFF').enabled,false);
@@ -548,7 +587,8 @@ test('real-money copy only with COPY_MODE=LIVE and the confirm phrase; its own s
  assert.equal(ex.status().armed,false);await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(v.size,0);
  ex.arm();await ex.handle({id:2,date:1e12+1,text:OPEN.replace('TNSRUSDT','TNSRUSDT')});
  assert.match(copyEventText({type:'OPENED',mode:'LIVE',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:1}),
-  /^🔴 실계좌 \| 카피 \| 신규 진입\nTNSRUSDT · 숏 · 5배/);
+  /^카피 \| 신규 진입\nTNSRUSDT · 🔴 숏 · 5배/);
+ assert.doesNotMatch(copyEventText({type:'ARMED',mode:'LIVE'}),/실계좌/);
 });
 
 test('copy MIN_ORDER: the minimum is met at the venue price, a 101400 minimum is retried once, a refused entry leaves no ledger row',async()=>{
@@ -829,12 +869,16 @@ test('copy review R4, R8, R10, R11: our close intent is saved, one empty read is
   fs.rmSync(dir,{recursive:true,force:true})}
 });
 
-test('BingX client: liquidation / ADL orders and the order history are read-only GET calls',async()=>{
+test('BingX client: open orders, liquidation / ADL orders and order history are read-only GET calls',async()=>{
  const {BingXTradeClient}=await import('../live_clients.mjs');const seen=[];
  const c=new BingXTradeClient({apiKey:'k',secret:'s',mode:'TESTNET',fetcher:async(url,o)=>{seen.push([o.method,new URL(url)]);return new Response(JSON.stringify({code:0,data:{orders:[]}}),{status:200})}});
  await c.forceOrders({symbol:'BTC-USDT',autoCloseType:'ADL',startTime:1,endTime:2});await c.allOrders({symbol:'BTC-USDT',startTime:1,endTime:2});
- assert.deepEqual(seen.map(([m,u])=>[m,u.pathname]),[['GET','/openApi/swap/v2/trade/forceOrders'],['GET','/openApi/swap/v2/trade/allOrders']]);
+ await c.openOrders('IRYS-USDT');await c.openOrders();
+ assert.deepEqual(seen.map(([m,u])=>[m,u.pathname]),[['GET','/openApi/swap/v2/trade/forceOrders'],['GET','/openApi/swap/v2/trade/allOrders'],
+  ['GET','/openApi/swap/v2/trade/openOrders'],['GET','/openApi/swap/v2/trade/openOrders']]);
  assert.equal(seen[0][1].searchParams.get('autoCloseType'),'ADL');assert.equal(seen[1][1].searchParams.get('limit'),'500');
+ assert.equal(seen[2][1].searchParams.get('symbol'),'IRYS-USDT');
+ assert.equal(seen[3][1].searchParams.has('symbol'),false);
 });
 
 // Second review of 4ebc7aa (N1-N4, adopt).
