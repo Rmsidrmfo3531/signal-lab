@@ -40,16 +40,17 @@ export class BingXTradeClient{
   // BingX limits request rates per key: signed calls go out one at a time with a small gap, and an
   // HTTP 429 pauses every call for the time the venue asks (Retry-After, else 10 s). A read (GET)
   // is tried once more after the pause; an order refused with 429 (not taken) is sent again up to twice.
-  let chain=Promise.resolve(),last=0,cooldownUntil=0;
+  let chain=Promise.resolve(),last=-Infinity,cooldownUntil=-Infinity;
+  const mono=()=>performance.now();
   // Gap between signed calls: BINGX_MIN_INTERVAL_MS, else 250 ms (0 with an injected test transport).
   const envGap=process.env.BINGX_MIN_INTERVAL_MS,gapMs=envGap!==undefined&&envGap!==''&&Number(envGap)>=0?Number(envGap):fetcher===globalThis.fetch?250:0;
   const sleep=ms=>ms>0?new Promise(r=>setTimeout(r,ms)):Promise.resolve();
   // A read (GET) waits out a 429 pause before it joins the queue, so it never holds the queue;
   // an order (POST) inside the queue waits at most 3 s of a pause, so a stop or an emergency close
   // is not held back. If the venue still refuses, the caller sees HTTP_429 and handles it.
-  const slot=maxPause=>{const p=chain.then(async()=>{await sleep(Math.max(Math.min(cooldownUntil-Date.now(),maxPause),last+gapMs-Date.now()));last=Date.now()});chain=p.catch(()=>{});return p};
+  const slot=maxPause=>{const p=chain.then(async()=>{await sleep(Math.max(Math.min(cooldownUntil-mono(),maxPause),last+gapMs-mono()));last=mono()});chain=p.catch(()=>{});return p};
   this.request=async(method,path,params={},retried=false,beforeSend)=>{
-   if(method==='GET')while(cooldownUntil>Date.now())await sleep(cooldownUntil-Date.now());
+   if(method==='GET')while(cooldownUntil>mono())await sleep(cooldownUntil-mono());
    await slot(method==='GET'?0:3000);
    checkOrderDispatch(beforeSend);
    const signed={...params,recvWindow,timestamp:now()};
@@ -58,12 +59,12 @@ export class BingXTradeClient{
    try{response=await fetcher(url,{method,redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{'X-BX-APIKEY':apiKey,Accept:'application/json'}})}
    catch(error){throw new VenueHttpError('NETWORK_UNREACHABLE',clean(error?.message))}
    if(response.status===429){ // checked before the body: a 429 page is often not JSON
-    const after=Number(response.headers?.get?.('retry-after'));cooldownUntil=Date.now()+(after>0&&after<120?after*1000:10000);
+    const after=Number(response.headers?.get?.('retry-after'));cooldownUntil=mono()+(after>0&&after<120?after*1000:10000);
     if(method==='GET'&&!retried)return this.request(method,path,params,true);
     // A 429 means the venue did not take the order, so an order (often a stop or an emergency
     // close) is sent again up to twice, each time after the pause (at most 10 s of it).
     const tries=Number(retried)||0;
-    if(method!=='GET'&&tries<2){await sleep(Math.min(cooldownUntil-Date.now(),10000));return this.request(method,path,params,tries+1,beforeSend)}
+    if(method!=='GET'&&tries<2){await sleep(Math.min(cooldownUntil-mono(),10000));return this.request(method,path,params,tries+1,beforeSend)}
     let msg='';try{msg=(await readLimitedJSON(response,200_000))?.msg}catch{}
     throw new VenueHttpError('HTTP_429',clean(msg));
    }

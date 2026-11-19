@@ -18,8 +18,8 @@ test('real account merges only the symbol column across two compact metric rows'
  assert.equal((html.match(/class="vp-symbol-cell" rowspan="2"/g)||[]).length,2,'only symbol cells span both rows');
  assert.doesNotMatch(html,/colspan="6"/,'second row has real table cells aligned to the columns');
  assert.match(html,/NCSKSNDK2USDT/);
- for(const field of ['증거금','추매','보유','미실현 · 수익률','청산가'])
-  assert.match(html,new RegExp('<small>'+field+'</small>'),'each second-row field has its own cell');
+ for(const field of ['증거금','추매 · 부분청산','보유','미실현 · 수익률','청산가'])
+  assert.match(html,new RegExp('<small(?:\\s+title="[^"]*")?>'+field+'</small>'),'each second-row field has its own cell');
  assert.match(html,/19\.43/);
  assert.match(html,/32\.7%/);
  assert.match(html,/3회/,'copy additional buys remain visible');
