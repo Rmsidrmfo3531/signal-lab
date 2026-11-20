@@ -525,6 +525,7 @@ function prepareRealTradeMessage(e){
   if(snapshot)return realTradeMessage(e,{availableMargin:snapshot.available});
   const at=Date.now(),last=realWallet.last,recent=last&&at>=last.at&&at-last.at<=REAL_WALLET_MAX_AGE_MS;
   realWallet.lastAlertIssue={at,reason:snapshot===undefined?'BALANCE_READ_TIMEOUT':realWallet.error??'BALANCE_READ_FAILED',usedRecent:Boolean(recent)};
+  if(!recent)realTradeMessages.delete(e);
   return realTradeMessage(e,recent?{availableMargin:last.available,availableMarginAt:last.at}:{});
  }).finally(()=>clearTimeout(timer));
  realTradeMessages.set(e,message);
