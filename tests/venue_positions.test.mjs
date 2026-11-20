@@ -98,7 +98,7 @@ test('real copy dashboard shows confirmed P&L with settlement details and omits 
   stop:'MISSING',issues:['STOP_MISSING','SIZE_MISMATCH'],checkedAt:now,blocked:true}]}});
  assert.doesNotMatch(html,/원장 3 · 거래소 2|보호 손절 누락 · 수량 불일치|신규 진입·추매 보류/);
  assert.match(html,/정산 확인<b >1건/);assert.match(html,/누적 손익<b class="paper-profit">\+\$2\.00/);assert.match(html,/승률<b >100%/);
- assert.match(html,/data-copy-settle[^>]*>정산 다시 조회/);assert.doesNotMatch(html,/추정|−\$1\.00/);
+ assert.doesNotMatch(html,/data-copy-settle|정산 다시 조회|추정|−\$1\.00/);
  assert.match(html,/진입·청산 체결 수량 불일치 · [^<]+ 조회/);
 });
 

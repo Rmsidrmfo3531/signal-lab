@@ -98,10 +98,11 @@ test('the testnet screen serves a three-reading, GET-only observation for a supp
     const shift = lastClosed - rows.at(-1)[0];
     return rows.map(row => [row[0] + shift, ...row.slice(1, 6), row[6] + shift, row[7]]);
   };
-  const app = await sandbox({scenarios:{BTCUSDT:'range'}, env:{PAPER_TRADING:'off'},
+  const app = await sandbox({scenarios:{BTCUSDT:'range'}, env:{PAPER_TRADING:'off', LIVE_TRADING_MODE:'TESTNET'},
     observationKlines:{BTCUSDT:{'1d':align(sample.daily, DAY), '4h':align(sample.fourHour, H4)}}});
   try {
     await app.start();
+    assert.equal((await app.get('/api/status')).live.mode, 'TESTNET');
     const response = await fetchLocal(app.base);
     assert.match(await response.text(), /id="wyckoffResearch"/);
     const script = await fetchLocal(app.base + '/wyckoff.js');
@@ -114,6 +115,7 @@ test('the testnet screen serves a three-reading, GET-only observation for a supp
     assert.equal(observation.vsa.status, 'OK');
     assert.equal((await fetchLocal(app.base + '/api/wyckoff?symbol=DOESNOTEXIST')).status, 404);
     assert.equal((await fetchLocal(app.base + '/api/wyckoff', {method:'POST'})).status, 405);
+    assert.equal((await app.get('/api/status')).live.armed, false);
   } finally {
     await app.close();
   }
