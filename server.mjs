@@ -344,10 +344,18 @@ function readRealWallet(){
  if(realWallet.pending)return realWallet.pending;
  realWallet.pending=realBingxClient.balance().then(data=>{
   const usdt=bingxBalanceRows(data).find(row=>row?.asset==='USDT'),raw=usdt?.availableMargin;
-  const available=['number','string'].includes(typeof raw)?bingxFunds(usdt,{requireAvailable:true}).available:null;
+  const parsed=['number','string'].includes(typeof raw)?bingxFunds(usdt,{requireAvailable:true}):null;
+  const available=parsed?.available??null;
   const snapshot=available===null?null:{available,at:Date.now()};
   realWallet.error=snapshot?null:'AVAILABLE_MARGIN_MISSING';
-  if(snapshot)realWallet.last=snapshot;
+  if(snapshot){
+   realWallet.last=snapshot;
+   if(COPY.mode==='LIVE'&&copyTrader&&parsed?.equity>0){
+    const prevEq=Number(copyTrader.funds?.equity)||0;
+    copyTrader.funds={equity:parsed.equity,available,at:snapshot.at};
+    if(prevEq>0&&Math.abs(parsed.equity-prevEq)/prevEq>=0.05)reportsDirty=true;
+   }
+  }
   return snapshot;
  }).catch(e=>{
   const code=e?.code??'';
@@ -1022,7 +1030,11 @@ async function uploadReport(force=false){
     destination:CONFIG.tgScannerChat?'SCANNER_CHANNEL':'CONFIGURED_CHAT'}};
   if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
    balanceAsset:b.balanceAsset,balanceRefreshMs:TESTNET_BALANCE_REFRESH_MS,balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
-  if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();
+  if(COPY.mode==='LIVE'){
+   report.copyAudit=copyTrader.auditStatus();
+   const cs=copyTrader.status();
+   report.copySettings={sizing:cs.sizing,traderBalanceUSD:cs.traderBalanceUSD,equityUSD:cs.funds?.equity??null,ratioPct:cs.effectiveRatio!=null?+(cs.effectiveRatio*100).toFixed(2):null};
+  }
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime=scalpExec.runtimeSummary();
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});

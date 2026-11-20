@@ -38,10 +38,10 @@ import {zoneBook,zoneTouches,zoneTagFields,zoneSpanMs,ZONE_PROFILES,ZONE_TOUCH_P
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
 export const SCALP_EXEC_MODES=Object.freeze(['OFF','TESTNET']);
-// User 2026-11-14 22:29: move = 2 x the 5m default (2.5 -> 5 %), targets 38.2 / 50 / 61.8 %, stop 0.25 ATR, climax 3x.
-export const SCALP_EXEC_SETTINGS=Object.freeze({minMovePct:SCALP_TIMEFRAMES['5m'].minMovePct*2,retracements:Object.freeze([.382,.5,.618]),stopAtr:.25,climaxVolume:3});
+// User 2026-11-20: move = 3.5 % (lowered from 5 % to capture 4~5+ daily climax setups while keeping 4x ATR, 3x volume, RSI 25/75, 50% wick).
+export const SCALP_EXEC_SETTINGS=Object.freeze({minMovePct:3.5,retracements:Object.freeze([.382,.5,.618]),stopAtr:.25,climaxVolume:3});
 // The backtest's cost assumptions (backtest.mjs BACKTEST_COSTS), the venue's taker fee when higher.
-// Signal kinds (journal, screen badge, report): the 5 % move rule, and candidate B at a 4H / 1D volume zone.
+// Signal kinds (journal, screen badge, report): the 3.5 % move rule, and candidate B at a 4H / 1D volume zone.
 export const SCALP_KINDS=Object.freeze({MOVE:'MOVE_REVERSAL',ZONE:'ZONE_REVERSAL'});
 // Candidate B as in backtestScalp: zoneMinMovePct = the 5m default (2.5 %), touch within ZONE_TOUCH_PCT (0.3 %).
 export const SCALP_ZONE_MIN_MOVE_PCT=SCALP_TIMEFRAMES['5m'].minMovePct;
@@ -51,8 +51,9 @@ export const SCALP_SCALE_IN=Object.freeze({version:1,windowBars:6,near:.5,far:.7
 export const SCALP_REPEAT_SCALE_IN=Object.freeze({version:2,stepR:.5});
 const SCREEN_CLOSED=100,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.25],MAX_CLOSED=300,MAX_EVENTS=200,MAX_SKIPS=60,MAX_KEYS=500,SETTLE_DELAY_MS=150000,SETTLE_TRIES=4;
 const EARLY_TAKE_PROFIT_MS=45*60000,EARLY_EXIT_RETRY_MS=60000;
-const PROFIT_ONLY_RETRY_MS=15000;
+const PROFIT_ONLY_RETRY_MS=5000;
 export const SCALP_PROFIT_HOLD_TARGET_MIN=60;
+export const SCALP_MIN_PROFIT_ROE_PCT=10;
 const REVERSAL_RECHECK_MS=30*60000;
 const WYCKOFF_SCAN_BUDGET_MS=12_000;
 const RECHECK_REASONS=new Set(['PRICE_DRIFT','TP1_NET_RR_BELOW_MINIMUM']);
@@ -78,10 +79,12 @@ const dirOf=d=>d==='SHORT'?-1:1;
 // on the safe side (target toward the entry, break-even at or beyond the entry in the profit direction).
 const awayMode=d=>d==='SHORT'?'UP':'DOWN',towardMode=d=>d==='SHORT'?'UP':'DOWN',beMode=d=>d==='SHORT'?'DOWN':'UP';
 const openSide=d=>d==='SHORT'?'SELL':'BUY',closeSide=d=>d==='SHORT'?'BUY':'SELL';
-function profitLimit(p,lossPerUnit=0){
+function profitLimit(p,lossPerUnit=0,{minNetRoePct=0}={}){
  const dir=dirOf(p.direction),fee=Math.max(p.takerRate||0,SCALP_EXEC_COSTS.takerRate);
  const reserve=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/10000+SCALP_EXEC_COSTS.fundingRate;
- const price=(p.avg*(1+dir*(fee+reserve))+dir*lossPerUnit)/(1-dir*fee);
+ const lev=Math.max(1,Number(p.leverage)||10);
+ const netTarget=minNetRoePct>0?(minNetRoePct/100)/lev:0;
+ const price=(p.avg*(1+dir*(fee+reserve+netTarget))+dir*lossPerUnit)/(1-dir*fee);
  return price>0?grid(price,p.tickSize,beMode(p.direction)):null;
 }
 /** One-way position amount, signed (+ long / - short): BingX reports a short as a negative positionAmt;
@@ -102,8 +105,10 @@ export function scalpExecConfig(env=process.env){
  // SCALP_EXEC_MODE: OFF | TESTNET (default; still disarmed until the dashboard button). Anything else,
  // LIVE included, is refused and leaves the scalps OFF.
  const raw=String(env.SCALP_EXEC_MODE??'').trim().toUpperCase(),known=raw===''||SCALP_EXEC_MODES.includes(raw);
+ const minMovePct=n('SCALP_MIN_MOVE_PCT',SCALP_EXEC_SETTINGS.minMovePct,2.5,15);
  return {mode:known?(raw||'TESTNET'):'OFF',refused:known?null:raw==='LIVE'?'LIVE_REFUSED':'MODE_INVALID',interval:'5m',sides:scalpSides(env.SCALP_EXEC_SIDES),
-  settings:{...SCALP_EXEC_SETTINGS,retracements:[...SCALP_EXEC_SETTINGS.retracements]},// TP1 net RR floor (was 0.7 on the testnet, user 2026-11-17 "해결 방법 찾아봐 테스트넷인데": ICP/ARIA skipped at RR 0.78-0.83);
+  settings:{...SCALP_EXEC_SETTINGS,minMovePct,retracements:[...SCALP_EXEC_SETTINGS.retracements]},
+  minProfitRoePct:n('SCALP_MIN_PROFIT_ROE_PCT',SCALP_MIN_PROFIT_ROE_PCT,0,100),// TP1 net RR floor (was 0.7 on the testnet, user 2026-11-17 "해결 방법 찾아봐 테스트넷인데": ICP/ARIA skipped at RR 0.78-0.83);
   // the backtest default is SCALP_DEFAULTS.minNetRR (1). Each trade keeps plan.netRR, so the 0.7-1 band is judged apart.
   minNetRR:n('SCALP_MIN_NET_RR',1,.3,3), /* back to 1 (2026-11-17 12:18 backtest: RR<1 band 29 trades PF 0.84 -$16.7, RR>=1 54 trades PF 1.17 +$39.3) */maxHoldMs:SCALP_TIMEFRAMES['5m'].maxHoldMs,
   // The testnet comparison defaults to 'record': measure 4H trend and let the other entry checks run.
@@ -331,7 +336,7 @@ export class ScalpExecutor{
   if(this.armed&&this.lastScanBucket!==bucket&&this.prefetch?.bucket!==bucket&&(this.tickersFresh||this.tickers))
    this.prefetch={bucket,rows:withTimeout((this.tickersFresh||this.tickers)(),8000)};
   if(this.armed&&!this.scanning&&this.lastScanBucket!==bucket&&now-bucket*I5>=this.config.scanDelayMs)await this.scan(now);
-  const every=this.store.open.length?15000:60000;
+  const every=this.store.open.length?(this.config.stopLossEnabled===false?5000:15000):60000;
   if(!this.reconciling&&this.client&&now-this.lastReconcileAt>=every&&(this.store.open.length||this.armed||this.store.closed.some(x=>!x.journaled)))await this.reconcile();
  }
  async #refreshUniverse(now){
@@ -1090,6 +1095,8 @@ export class ScalpExecutor{
   const dir=dirOf(p.direction);
   let price=profitOnly?profitLimit(p):null;
   if(profitOnly&&!price)return;
+  const minRoe=profitOnly&&!(p.scaleIn?.count>0)?(this.config.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):0;
+  let triggerFloor=profitOnly?(profitLimit(p,0,{minNetRoePct:minRoe})??price):null;
   const groups=[{parts:p.parts,ids:p.tpOrderIds,tries:p.tpTries,done:p.tpDone},...(p.addTargets||[])];
   for(const g of groups){
    for(const [i,q] of g.parts.entries()){
@@ -1112,7 +1119,7 @@ export class ScalpExecutor{
       if(orderId(known)&&!['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st)){g.ids[i]=orderId(known);this.#save();continue}
      }
      const target=grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]);
-     let stopPrice=profitOnly&&dir*(Number(target)-Number(price))<0?price:target;
+     let stopPrice=profitOnly&&dir*(Number(target)-Number(triggerFloor))<0?triggerFloor:target;
      const tick=pos(p.tickSize)||0,mark=pos(p.mark),orderType=profitOnly?'TAKE_PROFIT':'TAKE_PROFIT_MARKET';
      if(mark&&tick>0&&dir*(Number(stopPrice)-mark)<=0){
       const bumped=grid(mark+dir*tick,p.tickSize,beMode(p.direction));
@@ -1134,9 +1141,9 @@ export class ScalpExecutor{
       if(!(Number(freshQty)>0))throw e;
       const freshTick=pos(p.tickSize)||0;
       const freshLimit=profitOnly?profitLimit(p):null;
-      if(profitOnly&&freshLimit)price=freshLimit;
+      if(profitOnly&&freshLimit){price=freshLimit;triggerFloor=profitLimit(p,0,{minNetRoePct:minRoe})??freshLimit}
       const freshTarget=grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]);
-      let retryStop=profitOnly&&freshLimit&&dir*(Number(freshTarget)-Number(freshLimit))<0?freshLimit:freshTarget;
+      let retryStop=profitOnly&&triggerFloor&&dir*(Number(freshTarget)-Number(triggerFloor))<0?triggerFloor:freshTarget;
       const retryCid=(p.id+(profitOnly?'p':'')+tag+'r'+tries).slice(0,39);
       let recovered=null,how='';
       const profitFloor=freshLimit?Number(freshLimit):p.avg;
@@ -1191,7 +1198,9 @@ export class ScalpExecutor{
   const direction=dirOf(p.direction);
   const qty=Number(grid(p.size,p.quantityStep,'DOWN'));
   const bookedLoss=profitOnly?Math.max(0,-(num(p.exchangePosition?.realizedPnLUSD)??0)):0;
-  const limit=qty>0?profitLimit(p,bookedLoss/qty):null;
+  const recoveryMode=bookedLoss>0||(p.scaleIn?.count||0)>0||now-opened>=EARLY_TAKE_PROFIT_MS;
+  const minNetRoePct=profitOnly&&!recoveryMode?(this.config.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):0;
+  const limit=qty>0?profitLimit(p,bookedLoss/qty,{minNetRoePct}):null;
   if(!(qty>0&&Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
   const clientOrderId=createHash('sha256').update(`${p.id}|early|${now}`).digest('hex').slice(0,32);
   p.earlyTakeProfit={clientOrderId,qty};p.earlyTakeProfitAt=now;this.#save();
@@ -1380,7 +1389,7 @@ export class ScalpExecutor{
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,scanning:this.scanning===true,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.stopLossEnabled===false?null:c.maxHoldMs/60000,
-    earlyTakeProfitMin:c.stopLossEnabled===false?0:EARLY_TAKE_PROFIT_MS/60000,profitHoldTargetMin:c.stopLossEnabled===false?SCALP_PROFIT_HOLD_TARGET_MIN:null,
+    earlyTakeProfitMin:c.stopLossEnabled===false?0:EARLY_TAKE_PROFIT_MS/60000,profitHoldTargetMin:c.stopLossEnabled===false?SCALP_PROFIT_HOLD_TARGET_MIN:null,minProfitRoePct:c.stopLossEnabled===false?(c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):null,
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,
@@ -1400,7 +1409,7 @@ export class ScalpExecutor{
    mode:c.mode,armed:this.armed,blocked:this.#blocked(),scanning:this.scanning===true,
    trendMode:c.trendMode,aiLensRecord:c.mode==='TESTNET'&&c.wyckoffRecord===true&&Boolean(this.signalsFile),scaleInEnabled:c.scaleIn,stopLossEnabled:c.stopLossEnabled,
    repeatedScaleIn:c.scaleIn&&!c.stopLossEnabled,open:this.store.open.length,
-   ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0}:{}),
+   ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0,minProfitRoePct:c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT,minMovePct:c.settings?.minMovePct??null}:{}),
    stopRetirementPending:this.store.open.filter(p=>p.stopRetirementError).length,
    openAdds:this.store.open.reduce((n,p)=>n+(p.scaleIn?.count||0),0),
    universeCount:this.universe.length,universeRefreshedAt:this.universeAt||null,

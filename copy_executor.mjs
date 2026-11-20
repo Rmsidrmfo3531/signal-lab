@@ -163,8 +163,14 @@ export class CopyExecutor{
    }
   }
  }
+ #effectiveSizing(){return this.controls?.effectiveSizing?.(this.config.sizing)??this.config.sizing}
  #effectiveTraderBalanceUSD(){return this.controls?this.controls.effectiveTraderBalanceUSD(this.config.traderBalanceUSD):this.config.traderBalanceUSD}
  #effectiveMaxLeverage(){return this.controls?this.controls.effectiveMaxLeverage(this.config.maxLeverage):this.config.maxLeverage}
+ async #readFunds({cache=false}={}){
+  const b=await this.balance().catch(()=>null);
+  if(b&&pos(b.equity))this.funds={equity:num(b.equity),available:num(b.available),at:cache?this.now():(this.funds?.at??0)};
+  return b;
+ }
  #checkCooldown(){
   if(!this.controls)return;
   const r=this.controls.evaluateCooldown({closedTrades:this.store.closed,equityUSD:this.funds?.equity??null,now:this.now()});
@@ -178,7 +184,9 @@ export class CopyExecutor{
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){const s=new Set(this.reserved);for(const sym of this.reserved)if(sym.endsWith('USDT')&&!sym.includes('-'))s.add(sym.replace(/USDT$/,'-USDT'));for(const p of Object.values(this.store.positions))if(p.status==='OPEN'){s.add(p.symbol);if(p.venueSymbol)s.add(p.venueSymbol);if(p.venueAlias)s.add(p.venueAlias)}return s}
  status(){const closed=this.store.closed.filter(p=>!p.archivedFromHistory);
-  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.#effectiveTraderBalanceUSD(),maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,deferredEntries:this.store.deferredEntries.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+  const sizing=this.#effectiveSizing(),traderBalanceUSD=this.#effectiveTraderBalanceUSD();
+  const effectiveRatio=sizing==='BALANCE_RATIO'&&this.funds?.equity>0&&traderBalanceUSD>0?+(this.funds.equity/traderBalanceUSD).toFixed(4):null;
+  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing,traderBalanceUSD,effectiveRatio,maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,deferredEntries:this.store.deferredEntries.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:closed.slice(-200).reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
   ...(this.controls?{controls:this.controls.status(this.now())}:{}),
   ...(this.audit?{audit:this.auditStatus()}:{})}}
@@ -190,7 +198,7 @@ export class CopyExecutor{
   const open=Object.values(this.store.positions).filter(p=>p.status==='OPEN'&&p.qty>0&&p.avg>0);
   await Promise.all(open.map(async p=>{try{const m=Number(await Promise.race([this.markOf(p.venueSymbol),new Promise(r=>setTimeout(()=>r(null),3000).unref?.())]));
    if(m>0){p.mark=m;p.unrealized=(p.direction==='LONG'?1:-1)*(m-p.avg)*p.qty;p.markAt=this.now()}}catch{}}));
-  if(!this.funds||!(this.now()-(this.funds.at||0)<15000)){try{const b=await this.balance();if(b)this.funds={equity:num(b.equity),available:num(b.available),at:this.now()}}catch{}}
+  if(!this.funds||!(this.now()-(this.funds.at||0)<15000))await this.#readFunds({cache:true});
   return this.status();
  }
  /** One channel message ({id, date (ms), text}); processed one at a time, each id once. */
@@ -496,7 +504,7 @@ export class CopyExecutor{
  /** Both account values must be present for the margin checks before an entry, add, or resend. */
  async #orderMargin(need,symbol=null){
   if(!Number.isFinite(need)||need<=0)return {reason:'PRICE_UNVERIFIED'};
-  let funds;try{funds=await this.balance()}catch{}
+  const funds=await this.#readFunds();
   const equity=pos(funds?.equity),raw=funds?.available;
   const free=raw==null||String(raw).trim()===''?null:num(raw);
   if(!equity||free===null)return {reason:'NO_BALANCE'};
@@ -546,7 +554,7 @@ export class CopyExecutor{
   if(!this.config.stops){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}p.stopOrderId=null;p.stop=null;p.stopStale=false;p.stopSource='NONE';
    return}
   if(!(p.qty>0))return;
-  const bal=await this.balance().catch(()=>null),equity=pos(bal?.equity);
+  const bal=await this.#readFunds(),equity=pos(bal?.equity);
   const dir=p.direction==='LONG'?1:-1,avg=p.avg||now.mark;
   if(!avg){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:'NO_PRICE'});return}
   // The exchange stop is a backstop (it works even if this server is down); the volume zone is the
@@ -736,14 +744,15 @@ export class CopyExecutor{
   await this.client.setLeverage(venueSymbol,leverageSideFor({hedge,direction:m.direction}),leverage);
   // unitMultiplier: venue contract of 1000 coins (1000PEPE) -> quantities / 1000, prices x 1000.
   const mult=Number(c.unitMultiplier)||1,price=(pos(m.price)??pos(m.entry))*mult;
-  // BALANCE_RATIO: scale = our equity / the trader's balance, fixed for the position (its later buys use it too).
+  // BALANCE_RATIO: scale = live equity / trader's baseline, refreshed automatically from the exchange.
+  const sizing=this.#effectiveSizing();
   let scale=null;
-  if(this.config.sizing==='BALANCE_RATIO'){
+  if(sizing==='BALANCE_RATIO'){
    if(!(m.quantity>0))throw Object.assign(Error('TRADER_QUANTITY_MISSING'),{code:'TRADER_QUANTITY_MISSING'});
-   const eq=pos((await this.balance().catch(()=>null))?.equity);if(!eq)throw Object.assign(Error('NO_BALANCE'),{code:'NO_BALANCE'});
+   const eq=pos((await this.#readFunds())?.equity);if(!eq)throw Object.assign(Error('NO_BALANCE'),{code:'NO_BALANCE'});
    scale=eq/this.#effectiveTraderBalanceUSD();
   }
-  const minOnly=this.config.sizing==='MIN_ORDER';
+  const minOnly=sizing==='MIN_ORDER';
   let qty=scale!=null?this.#qty(c,m.quantity*scale/mult):minOnly?this.#qty(c,this.config.firstMarginUSD*leverage/price):this.#qty(c,this.config.marginUSD*leverage/price);
   const minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
   // Below the venue minimum: the smallest valid order instead (flagged: larger than the ratio asks).
@@ -762,7 +771,7 @@ export class CopyExecutor{
   if(minOrder&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
   const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,hedge,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
-   scale,mult,sizing:this.config.sizing,firstQty:qty,venueAlias:c.alias??null,minOrder,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[],fillTracked:true};
+   scale,mult,sizing,firstQty:qty,venueAlias:c.alias??null,minOrder,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[],fillTracked:true};
   // At most 3 s for the zones (the message queue must not wait on a slow profile); then the cap stop.
   try{const zones=await Promise.race([this.zonesOf(m.symbol,{tickSize:c.tickSize}),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
@@ -887,14 +896,20 @@ export class CopyExecutor{
   }
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
   if(!(price>0)){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}
+  // BALANCE_RATIO adds refresh the live equity ratio so new deposits or baseline changes apply immediately.
+  let activeScale=p.scale;
+  if(this.#effectiveSizing()==='BALANCE_RATIO'&&p.scale!=null){
+   const eq=pos((await this.#readFunds())?.equity);
+   if(eq){activeScale=eq/this.#effectiveTraderBalanceUSD();p.scale=activeScale}
+  }
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
-  const byFirst=p.scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
-  const marginUSD=p.scale==null&&byFirst==null&&p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
-  const add=p.scale!=null?this.#qty(c,theirQty*p.scale/(p.mult||1)):byFirst!=null?this.#qty(c,byFirst):marginUSD!=null?this.#qty(c,marginUSD*p.leverage/price):this.#qty(c,p.qty*((ratio??((p.theirTotal+theirQty)/p.theirTotal))-1));
+  const byFirst=activeScale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
+  const marginUSD=activeScale==null&&byFirst==null&&p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
+  const add=activeScale!=null?this.#qty(c,theirQty*activeScale/(p.mult||1)):byFirst!=null?this.#qty(c,byFirst):marginUSD!=null?this.#qty(c,marginUSD*p.leverage/price):this.#qty(c,p.qty*((ratio??((p.theirTotal+theirQty)/p.theirTotal))-1));
   // Adds below the venue minimum are carried until they add up to a valid order (no drift from the trader).
   let buy=add;
   // Both sizings: adds below the venue minimum are carried until they add up to a valid order.
-  if(p.scale!=null||byFirst!=null||marginUSD!=null){const raw=(p.scale!=null?theirQty*p.scale/(p.mult||1):byFirst!=null?byFirst:marginUSD*p.leverage/price)+(p.addCarry||0),minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
+  if(activeScale!=null||byFirst!=null||marginUSD!=null){const raw=(activeScale!=null?theirQty*activeScale/(p.mult||1):byFirst!=null?byFirst:marginUSD*p.leverage/price)+(p.addCarry||0),minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
    buy=this.#qty(c,raw);if(!(buy>0)||buy<minQ||buy*price<minN){p.addCarry=raw;this.#event('ADD_CARRIED',{symbol:p.symbol,carry:+raw.toPrecision(6)});return {ok:true,carried:true}}
    p.addCarry=Math.max(0,raw-buy)}
   else if(!(add>0))return {ok:true,tooSmall:true};

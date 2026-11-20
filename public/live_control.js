@@ -430,12 +430,19 @@ export function copyHTML(c){
  const cooldownBanner=ctrl?.cooldownActive?`<p class="live-warn-text">⏸ 자동 쿨다운 중 (${esc(ctrl.cooldownReason||'손실 제한')} · ${esc(ctrl.cooldownLeftMin)}분 남음) <button type="button" class="outline-btn small" data-copy-clear-cooldown>쿨다운 해제</button></p>`:'';
  const controlsPanel=isLive&&ctrl?(()=>{
   const tb=Number(c.traderBalanceUSD)||20000;
+  const curSizing=c.sizing||'BALANCE_RATIO';
+  const eq=Number(c.funds?.equity);
+  const ratioPct=curSizing==='BALANCE_RATIO'&&eq>0&&tb>0?(eq/tb*100).toFixed(1):null;
+  const sizingModes=[['BALANCE_RATIO','잔고 비례 (자동)'],['MIN_ORDER','최소 주문'],['FIRST_1USD','$1 고정']];
+  const sizingBtns=sizingModes.map(([m,lbl])=>`<button type="button" class="outline-btn small${curSizing===m?' is-current':''}" data-copy-sizing="${m}">${lbl}</button>`).join('');
+  const sizingSummary=curSizing==='BALANCE_RATIO'?(ratioPct?`잔고 비례 ${ratioPct}% (기준 $${Number(tb).toLocaleString()})`:`잔고 비례 · 기준 $${Number(tb).toLocaleString()}`):curSizing==='MIN_ORDER'?'최소 주문':'$1 고정';
   const presets=[[40000,'0.5배 ($40k)'],[20000,'1배 ($20k)'],[13333,'1.5배 ($13.3k)'],[10000,'2배 ($10k)']];
   const presetBtns=presets.map(([v,lbl])=>`<button type="button" class="outline-btn small${Math.abs(tb-v)<=5?' is-current':''}" data-copy-tb="${v}">${lbl}</button>`).join('');
   const isAllow=ctrl.filterMode==='ALLOWLIST',symList=isAllow?(ctrl.allowedSymbols||[]):(ctrl.blockedSymbols||[]);
   const chips=symList.length?symList.map(s=>`<span class="ctrl-chip">${esc(symText(s))}<button type="button" data-copy-sym-remove="${esc(s)}" data-copy-sym-kind="${isAllow?'allowed':'blocked'}" aria-label="${esc(symText(s))} 제거">×</button></span>`).join(''):`<span class="muted">${isAllow?'등록된 허용 종목 없음 (전체 차단)':'제외된 종목 없음'}</span>`;
-  return `<details class="copy-controls-fold"${controlsOpen?' open':''}><summary data-controls-toggle>카피 비중 · 위험 제어 <small>기준 $${Number(tb).toLocaleString()}${ctrl.maxSymbolMarginPct>0?` · 종목한도 ${ctrl.maxSymbolMarginPct}%`:''}${ctrl.maxLeverage?` · 최대 ${ctrl.maxLeverage}배`:''}</small></summary>
+  return `<details class="copy-controls-fold"${controlsOpen?' open':''}><summary data-controls-toggle>카피 비중 · 위험 제어 <small>${sizingSummary}${ctrl.maxSymbolMarginPct>0?` · 종목한도 ${ctrl.maxSymbolMarginPct}%`:''}${ctrl.maxLeverage?` · 최대 ${ctrl.maxLeverage}배`:''}</small></summary>
    <div class="copy-ctrl-body">
+    <div class="ctrl-row"><span class="ctrl-label">수량 방식</span><div class="ctrl-presets">${sizingBtns}</div></div>
     <div class="ctrl-row"><span class="ctrl-label">비중 프리셋</span><div class="ctrl-presets">${presetBtns}</div></div>
     <form class="ctrl-form" data-copy-controls-form>
      <label>기준 잔고 ($) <input name="traderBalanceUSD" type="number" min="1000" max="1000000" step="1000" value="${esc(tb)}"></label>
@@ -486,7 +493,8 @@ export function copyHTML(c){
  const vpList=c.mode==='LIVE'&&Array.isArray(c.venuePositions)?c.venuePositions:null,vpUnreal=(vpList||[]).reduce((t,p)=>t+(Number(p.unrealized)||0),0);
  // 보유 N개 is the list heading's; with the exchange list its 미실현 합계 line has the unrealized total; a testnet copy's
  // balance is the testnet account's, shown once in the status box above.
- const stats=`<div class="copy-stats">${isLive?stat('잔고',usd(f?.equity)):''}${stat('사용 가능',usd(f?.available))}${vpList?'':stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}
+ const liveRatioVal=isLive&&c.sizing==='BALANCE_RATIO'&&f?.equity>0&&Number(c.traderBalanceUSD)>0?`${(Number(f.equity)/Number(c.traderBalanceUSD)*100).toFixed(1)}%`:null;
+ const stats=`<div class="copy-stats">${isLive?stat('잔고',usd(f?.equity)):''}${stat('사용 가능',usd(f?.available))}${liveRatioVal?stat('카피 비율',liveRatioVal):''}${vpList?'':stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}
   ${stat(isLive?'정산 확인':'종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat('누적 손익',money(counted?net:null),`class="${cls(net)}"`)}</div>`+
   (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.n?st.copy.net:null)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.n?st.manual.net:null)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}</p>`:'')+
   (!isLive&&(st.all.n||st.all.unknown)?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
@@ -726,7 +734,8 @@ export function scalpDetailsHTML(s){
  const bySide=`<div class="copy-stats">${['LONG','SHORT'].map(d=>{const b=st.bySide?.[d]||{};return stat(`${SK[d]}${sides.includes(d)?'':' (꺼짐)'}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${SK[d]} 손익`,tnMoney(b.trades?b.netUSD:null),`class="${tnCls(b.netUSD)}"`)}).join('')}</div>`;
  const noStop=S.stopLossEnabled===false;
  const protection=noStop?`자동 손절·시간 만료 청산 없음${S.repeatedScaleIn?' · 현재 보유 수량까지 반복 추매(가용 증거금·한도 내, 5분봉당 최대 1회, 첫 청산 전까지)':''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유`;
- const exitRule=protection+(S.profitHoldTargetMin?` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 진입 후 첫 점검부터 예상 비용을 넘기는 가격에 지정가 익절`:
+ const roeNote=Number(S.minProfitRoePct)>0?`수수료 제외 순수익률(ROE) +${esc(S.minProfitRoePct)}% 이상(추매·45분 경과 시 예상 비용 충당)`:'예상 비용을 넘기는';
+ const exitRule=protection+(S.profitHoldTargetMin?` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 진입 후 첫 점검(5초 주기)부터 ${roeNote} 가격에 지정가 익절`:
   S.earlyTakeProfitMin?` · ${esc(S.earlyTakeProfitMin)}분 경과 후 예상 비용을 충당하는 가격에 지정가 익절`:'');
  const recheck=S.reversalRecheckMin?` · 가격·손익비로 건너뛴 반전은 ${esc(S.reversalRecheckMin)}분 동안 재확인`:'';
  const rules=`<p class="copy-rules">${mode?`상태 ${mode} · `:''}거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''} · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입 · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · ${exitRule} · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · ${noStop?'진입 규모 계산 위험':'거래당 위험'} 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%${S.sharedBudget?'(신호 전략과 공동)':''}에서 새 주문 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 ${noStop?'기준':'손절'} 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${tnWhen(s.lastScan.at)} (${esc(s.lastScan.checked)}종목${s.lastScan.failed>0?`, 실패 ${esc(s.lastScan.failed)}`:''}${s.lastScan.error?`, 오류 ${esc(s.lastScan.error)}`:''})`:''}</p>`;
@@ -858,8 +867,10 @@ function bindCopyButtons(el){
   if(sendRep)return call(sendRep,'/api/account/alerts/daily-report',{},'발송 중…','[data-account-alerts-msg]');
   const clearCd=e.target.closest('[data-copy-clear-cooldown]');
   if(clearCd)return call(clearCd,'/api/copy/controls',{clearCooldown:true},'해제 중…');
+  const szBtn=e.target.closest('[data-copy-sizing]');
+  if(szBtn)return call(szBtn,'/api/copy/controls',{sizing:szBtn.dataset.copySizing},'적용 중…','[data-copy-ctrl-msg]');
   const tbBtn=e.target.closest('[data-copy-tb]');
-  if(tbBtn)return call(tbBtn,'/api/copy/controls',{traderBalanceUSD:Number(tbBtn.dataset.copyTb)},'적용 중…','[data-copy-ctrl-msg]');
+  if(tbBtn)return call(tbBtn,'/api/copy/controls',{sizing:'BALANCE_RATIO',traderBalanceUSD:Number(tbBtn.dataset.copyTb)},'적용 중…','[data-copy-ctrl-msg]');
   const fmBtn=e.target.closest('[data-copy-filter-mode]');
   if(fmBtn)return call(fmBtn,'/api/copy/controls',{filterMode:fmBtn.dataset.copyFilterMode},'변경 중…','[data-copy-ctrl-msg]');
   const rmBtn=e.target.closest('[data-copy-sym-remove]');
