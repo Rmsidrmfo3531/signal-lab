@@ -21,7 +21,7 @@ export const ACCOUNT_ALERTS_DEFAULTS=Object.freeze({
  profitRoiPcts:[50,100,200],
  lossRoiPcts:[30,50,75],
  positionSummaryAlerts:true,
- positionSummaryIntervalMin:30,
+ positionSummaryIntervalMin:5,
  skipAlerts:true,
  remoteCommands:true,
 });
@@ -166,7 +166,13 @@ export class AccountAlerts{
    profitRoiPcts:Array.isArray(saved?.profitRoiPcts)?saved.profitRoiPcts:[...ACCOUNT_ALERTS_DEFAULTS.profitRoiPcts],
    lossRoiPcts:Array.isArray(saved?.lossRoiPcts)?saved.lossRoiPcts:[...ACCOUNT_ALERTS_DEFAULTS.lossRoiPcts],
    positionSummaryAlerts:saved?.positionSummaryAlerts!==false,
-   positionSummaryIntervalMin:Number.isFinite(Number(saved?.positionSummaryIntervalMin))&&Number(saved.positionSummaryIntervalMin)>=5&&Number(saved.positionSummaryIntervalMin)<=1440?Math.round(Number(saved.positionSummaryIntervalMin)):ACCOUNT_ALERTS_DEFAULTS.positionSummaryIntervalMin,
+   positionSummaryIntervalCustom:saved?.positionSummaryIntervalCustom===true,
+   positionSummaryIntervalMin:(()=>{
+    const n=Math.round(Number(saved?.positionSummaryIntervalMin));
+    if(!Number.isFinite(n)||n<1||n>1440)return ACCOUNT_ALERTS_DEFAULTS.positionSummaryIntervalMin;
+    if(saved?.positionSummaryIntervalCustom!==true&&n===30)return ACCOUNT_ALERTS_DEFAULTS.positionSummaryIntervalMin;
+    return n;
+   })(),
    skipAlerts:saved?.skipAlerts!==false,
    remoteCommands:saved?.remoteCommands!==false,
    lastDailyReportDay:typeof saved?.lastDailyReportDay==='string'?saved.lastDailyReportDay:null,
@@ -202,8 +208,9 @@ export class AccountAlerts{
   }
   if(Object.hasOwn(patch,'positionSummaryIntervalMin')){
    const n=Math.round(Number(patch.positionSummaryIntervalMin));
-   if(!Number.isFinite(n)||n<5||n>1440)throw err('positionSummaryIntervalMin must be 5..1440');
+   if(!Number.isFinite(n)||n<1||n>1440)throw err('positionSummaryIntervalMin must be 1..1440');
    next.positionSummaryIntervalMin=n;
+   next.positionSummaryIntervalCustom=true;
   }
   if(Object.hasOwn(patch,'marginWarnPcts'))next.marginWarnPcts=parseTierList(patch.marginWarnPcts,10,95,'marginWarnPcts');
   if(Object.hasOwn(patch,'lossWarnPcts'))next.lossWarnPcts=parseTierList(patch.lossWarnPcts,2,80,'lossWarnPcts');
@@ -374,7 +381,7 @@ export class AccountAlerts{
    return [
     '🤖 Signal Lab 원격 명령어',
     '/status — 실계좌 잔고·증거금·보유 포지션',
-    '/pos — 진행 중 포지션 손익 한 줄 요약',
+    '/pos [분] — 진행 중 포지션 손익 요약 (숫자 입력 시 알림 주기 변경)',
     '/scalp — 테스트넷 단타 5분 스캔 상태',
     '/report — 오늘 KST 손익 중간 리포트',
     '/size [금액|0.5x|1x|2x] — 카피 기준 잔고 조회·변경',
@@ -387,6 +394,13 @@ export class AccountAlerts{
   }
 
   if(cmd==='/pos'||cmd==='/포지션'){
+   const arg=String(parts[1]||'').trim().replace(/분$/,'');
+   if(arg){
+    const mins=Math.round(Number(arg));
+    if(!Number.isFinite(mins)||mins<1||mins>1440)return '⚠️ 알림 주기는 1 ~ 1440분 사이 숫자로 입력하세요. (예: /pos 5 또는 /pos 1)';
+    this.configure({positionSummaryAlerts:true,positionSummaryIntervalMin:mins});
+    return `✅ 진행 중 포지션 알림 주기를 ${mins}분으로 변경했습니다.`;
+   }
    const snap=await this.getSnapshot();
    if(!snap)return '⚠️ 현재 포지션을 조회하지 못했습니다.';
    return formatPositionsSummary(snap.positions||[]);
