@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {analyze} from './engine.mjs';
+import {wyckoffObservation} from './wyckoff_observation.mjs';
 import {configureSignalScorePolicy,getSignalScorePolicy,TREND_GATE_PATTERNS,DEFAULT_TRADE_PATTERNS,DISABLED_PATTERNS} from './signal_policy.mjs';
 import {structureObservations,historicalPatternObservations} from './observation.mjs';
 import {describeScanFunnel} from './scan_diagnostics.mjs';
@@ -678,8 +679,9 @@ async function refreshVenueExecution(){
 }
 setInterval(()=>{void refreshVenueExecution()},CONFIG.venueRefreshMs).unref?.();
 
-async function binance(url,ttl=30000){
- const cache=apiCache.get(url);
+async function binance(url,ttl=30000,{observation=false}={}){
+ const key=observation?'observation:'+url:url;
+ const cache=apiCache.get(key);
  if(cache && cache.until>Date.now())return cache.data;
  if(cache?.pending)return cache.pending;
  const task=(async()=>{
@@ -688,12 +690,12 @@ async function binance(url,ttl=30000){
   try {
    const r=await fetch('https://fapi.binance.com'+url,{signal:ctrl.signal,headers:{'User-Agent':'SignalLab/1.0','Accept':'application/json'}});
    if(!r.ok){publicReadBudget.rateLimited(r.status,r.headers?.get?.('retry-after'));throw Error(`Binance HTTP ${r.status}: 공개 조회 일시 보류`);}
-   const data=await r.json();apiCache.set(url,{data,until:Date.now()+ttl});state.rest='connected';return data;
+   const data=await r.json();apiCache.set(key,{data,until:Date.now()+ttl});if(!observation)state.rest='connected';return data;
   } finally{clearTimeout(timeout)}
  })();
- apiCache.set(url,{data:cache?.data,until:0,pending:task});
+ apiCache.set(key,{data:cache?.data,until:0,pending:task});
  if(apiCache.size>1200){for(const [key,value]of apiCache){if(!value.pending&&value.until<Date.now())apiCache.delete(key);if(apiCache.size<=1000)break}}
- try{return await task;}catch(e){if(apiCache.get(url)?.pending===task)apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
+ try{return await task;}catch(e){if(apiCache.get(key)?.pending===task)apiCache.delete(key);if(!observation){state.rest='offline';state.error=e.message}throw e}
 }
 // No validated replacement market/contract feed is configured for TradFi.
 // Keep historical records intact; never mark stale positions as freshly tracked.
@@ -1896,6 +1898,21 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/market')return response(res,200,{at:state.lastMarket,markets:state.ranked.map(x=>({...x,...state.quotes.get(x.symbol)})),research:state.researchRanked.filter(x=>!state.activeSet.has(x.symbol)),watchlist:persisted.watchlist,analysisVenue:'BINANCE'});
   if(pathname==='/api/results')return response(res,200,{scorePolicy:getSignalScorePolicy(),structures:[],history:[],signals:relevantSignals(),patterns:[],watch:[],alerts:persisted.alerts.filter(x=>state.activeSet.has(x.symbol)).slice(0,35).map(x=>({...x,lifecycle:signalLifecycle(x,{price:state.quotes.get(x.symbol)?.price,priceAt:state.quotes.get(x.symbol)?.priceAt})})),recent:recentAnalyses()});
+  if(pathname==='/api/wyckoff'){
+   if(req.method!=='GET')return response(res,405,{error:'조회 전용입니다.'},{Allow:'GET'});
+   const symbol=(url.searchParams.get('symbol')||'BTCUSDT').trim().toUpperCase();
+   if(!/^[A-Z0-9]{3,25}$/.test(symbol))return response(res,400,{error:'종목 코드를 확인하세요.'});
+   if(!state.activeSet.has(symbol))return response(res,404,{error:'Binance USDT 무기한 선물 상장을 확인할 수 없습니다.'});
+   const now=Date.now();
+   const bars=(interval,limit,period)=>binance(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+     Math.min(300000,period-now%period),{observation:true});
+   const [daily,fourHour]=await Promise.allSettled([bars('1d',240,86400000),bars('4h',301,14400000)]);
+   const existing=state.analyses.get(symbol);
+   const patternAt=existing?.patternConfirmedAt;
+   const pattern=existing?.patternConfirmed&&Number.isFinite(patternAt)&&patternAt<=now&&now-patternAt<7200000
+     ? {direction:existing.direction,confirmedAt:patternAt} : null;
+   return response(res,200,{symbol,...wyckoffObservation({daily:daily.value,fourHour:fourHour.value,now}),pattern});
+  }
   if(pathname==='/api/klines'){
    const symbol=(url.searchParams.get('symbol')||'').toUpperCase();const interval=url.searchParams.get('interval')||'1h';
    if(!/^[A-Z0-9]{3,25}$/.test(symbol)||!['1h','4h','1d'].includes(interval))return response(res,400,{error:'Invalid symbol or interval'});

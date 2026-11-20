@@ -57,6 +57,17 @@
           <div class="paper-section"><h4>종료된 거래 <small>시험 주문 제외</small></h4><div class="paper-metrics live-metrics" id="liveSummary"></div><div id="liveClosed" class="paper-grid live-grid live-closed-list"><p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p></div></div>
           <div class="paper-section" id="liveScalpPanel" hidden><h4>되돌림 단타 (테스트넷) <small>5분봉 급락 후 반등 롱 · 급등 후 되돌림 숏 · BingX 테스트넷 전용 · 별도 원장</small></h4><div id="liveScalpOwn"></div></div>
           <details class="venues-details" id="liveScalpSection" hidden><summary>단타 신호·건너뜀 <small>유형·방향별 결과 · 규칙 · 건너뛴 이유</small></summary><div id="liveScalp" class="tn-scalp-details"></div></details>
+          <details class="venues-details" id="wyckoffResearch">
+            <summary>와이코프 관찰 <small>일봉 박스 · 4시간봉 거래량</small></summary>
+            <form id="wyckoffForm" class="tn-budget-form">
+              <label>종목 <input id="wyckoffSymbol" value="BTCUSDT" maxlength="25" autocomplete="off" spellcheck="false" required></label>
+              <button type="submit" class="outline-btn small">조회</button>
+            </form>
+            <p id="wyckoffStatus" class="section-note" role="status">Binance USDT 무기한 선물 · 공개 설명 기반 관찰값</p>
+            <div class="table-scroll" id="wyckoffResults" hidden>
+              <table class="venues-table"><thead><tr><th scope="col">지표</th><th scope="col">상태</th><th scope="col">근거</th></tr></thead><tbody id="wyckoffRows"></tbody></table>
+            </div>
+          </details>
           <details class="venues-details"><summary>최근 진입 제외 사유</summary><ul id="liveSkipped" class="live-skipped"><li>없음</li></ul></details>
           <details class="venues-details"><summary>전체 주문 기록 (최근 30건)</summary><div class="table-scroll"><table class="venues-table"><thead><tr><th>시각</th><th>거래소</th><th>종목</th><th>방향</th><th>수량</th><th>계획 위험</th><th>상태</th><th>최근 이벤트</th></tr></thead><tbody id="liveRecords"><tr><td colspan="8">주문 기록 없음</td></tr></tbody></table></div></details>
           <details class="paper-settings-fold"><summary>설명 · 안전 장치</summary>
@@ -115,6 +126,7 @@
 <script type="module" src="/workspace_nav.js"></script>
 <script type="module" src="/app.js"></script>
 <script type="module" src="/live_control.js"></script>
+<script type="module" src="/wyckoff.js"></script>
 <nav class="mobile-bottom-nav" aria-label="모바일 빠른 이동">
 <a href="#real"><span>●</span>실계좌</a><a href="#live"><span>◉</span>테스트넷</a><a href="#news"><span>◈</span>뉴스</a><a href="#journal"><span>▦</span>일지</a>
 </nav>

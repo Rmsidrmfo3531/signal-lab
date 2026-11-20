@@ -552,3 +552,6 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .fail-box[open]>summary::before{content:'▾ '}
 .fail-box .copy-table td,.fail-box .copy-table th{padding:5px 8px;font-size:12px}
 .fail-box .copy-list li{font-size:12px;padding:6px 8px}
+
+#wyckoffResearch input{width:10rem;max-width:100%}
+#wyckoffResults td{white-space:normal;overflow-wrap:anywhere}

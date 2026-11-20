@@ -64,6 +64,8 @@ globalThis.fetch=async(input,options={})=>{
    const symbol=url.searchParams.get('symbol'),interval=url.searchParams.get('interval');
    if(!['1h','4h','1d'].includes(interval))throw Error('Test transport forbids sub-hour/unknown candles');
    const cfg=control();
+   const fixture=cfg.observationKlines?.[symbol]?.[interval];
+   if(fixture)return json(fixture);
    const series=marketSeries(cfg.scenarios[symbol],cfg.marketNow??Date.now());
    return json(interval==='1h'?series.h1:interval==='4h'?series.h4:[]);
   }
