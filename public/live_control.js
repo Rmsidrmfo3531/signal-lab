@@ -478,7 +478,7 @@ export function copyHTML(c){
     <label class="ctrl-check"><input name="dailyReport" type="checkbox"${al.dailyReport?' checked':''}> 일일 마감 리포트 (00:00 KST)</label>
     <label class="ctrl-check"><input name="skipAlerts" type="checkbox"${al.skipAlerts?' checked':''}> 카피 진입 실패·스킵 알림</label>
     <label class="ctrl-check"><input name="remoteCommands" type="checkbox"${al.remoteCommands?' checked':''}> 봇 원격 명령 (/status /pos /pause /close)</label>
-    <label>포지션 알림 주기 (분) <input name="positionSummaryIntervalMin" type="number" min="5" max="1440" step="5" value="${esc(al.positionSummaryIntervalMin??30)}"></label>
+    <label>포지션 알림 주기 (분) <input name="positionSummaryIntervalMin" type="number" min="1" max="1440" step="1" value="${esc(al.positionSummaryIntervalMin??5)}"></label>
     <label>증거금 경보 (%, 쉼표) <input name="marginWarnPcts" type="text" value="${esc((al.marginWarnPcts||[]).join(', '))}"></label>
     <label>합산 손실 경보 (%, 쉼표) <input name="lossWarnPcts" type="text" value="${esc((al.lossWarnPcts||[]).join(', '))}"></label>
     <label>수익률 알림 (%, 쉼표) <input name="profitRoiPcts" type="text" value="${esc((al.profitRoiPcts||[]).join(', '))}"></label>
@@ -827,7 +827,7 @@ function bindCopyButtons(el){
    const body={
     riskAlerts:ck('riskAlerts'),roiAlerts:ck('roiAlerts'),positionSummaryAlerts:ck('positionSummaryAlerts'),
     dailyReport:ck('dailyReport'),skipAlerts:ck('skipAlerts'),remoteCommands:ck('remoteCommands'),
-    positionSummaryIntervalMin:Number(alertsForm.elements.namedItem('positionSummaryIntervalMin')?.value)||30,
+    positionSummaryIntervalMin:Number(alertsForm.elements.namedItem('positionSummaryIntervalMin')?.value)||5,
     marginWarnPcts:list('marginWarnPcts'),lossWarnPcts:list('lossWarnPcts'),
     profitRoiPcts:list('profitRoiPcts'),lossRoiPcts:list('lossRoiPcts'),
    };

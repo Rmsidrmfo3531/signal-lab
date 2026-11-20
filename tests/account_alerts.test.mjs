@@ -200,21 +200,29 @@ test('open-position PnL summary sends clean readable Telegram list (no code bloc
   });
   // No positions -> silent
   assert.equal((await alerts.checkPositionSummary({positions:[],now})).sent,false);
-  // First periodic check with open positions -> sends
+  // First periodic check with open positions -> sends (default 5m interval)
+  assert.equal(alerts.status().positionSummaryIntervalMin,5);
   const r1=await alerts.checkPositionSummary({positions,now});
   assert.equal(r1.sent,true);assert.equal(r1.count,2);
   assert.equal(sent.length,1);
   assert.equal(sent[0],summary);
-  // Within 30m cooldown -> suppressed
-  now+=10*60000;
+  // Within 5m cooldown -> suppressed
+  now+=3*60000;
   assert.equal((await alerts.checkPositionSummary({positions,now})).reason,'COOLDOWN');
-  // After 30m cooldown -> sends again
-  now+=21*60000;
+  // After 5m cooldown -> sends again
+  now+=3*60000;
   assert.equal((await alerts.checkPositionSummary({positions,now})).sent,true);
   assert.equal(sent.length,2);
-  // /pos command returns exact aligned table immediately
+  // /pos command returns clean list immediately, and /pos 3 updates interval to 3 min
   const reply=await alerts.handleCommand('/pos','123456',now);
   assert.equal(reply,summary);
+  const setRes=await alerts.handleCommand('/pos 3','123456',now);
+  assert.match(setRes,/3분/);
+  assert.equal(alerts.status().positionSummaryIntervalMin,3);
+  // Legacy uncustomized 30m store auto-migrates to 5m on reload
+  fs.writeFileSync(path.join(dir,'legacy-alerts.json'),JSON.stringify({version:1,positionSummaryAlerts:true,positionSummaryIntervalMin:30}));
+  const migrated=new AccountAlerts({directory:dir,fileName:'legacy-alerts.json',now:()=>now});
+  assert.equal(migrated.status().positionSummaryIntervalMin,5);
   // Toggle off suppresses periodic sends (force still works)
   alerts.configure({positionSummaryAlerts:false,positionSummaryIntervalMin:15});
   now+=20*60000;
