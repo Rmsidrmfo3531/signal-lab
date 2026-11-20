@@ -705,6 +705,31 @@ export class ScalpExecutor{
  journal(limit=200){const n=Math.max(1,Math.min(2000,Math.floor(Number(limit))||200));return this.journalFile?tailJsonl(this.journalFile,n):this.journalMem.slice(-n)}
  signals(limit=200){if(!this.signalsFile)return (this.signalsMem||[]).slice(-limit);const now=this.now(),today=tailJsonl(signalsPath(this.signalsFile,now),limit);
   return today.length>=limit?today:[...tailJsonl(signalsPath(this.signalsFile,now-86400000),limit-today.length),...today]}
+ /** Logged scalp signals over the last N KST days (oldest first, capped at 5000). */
+ recentSignals(days=7){
+  const n=Math.max(1,Math.min(30,Math.floor(Number(days))||7)),now=this.now(),since=now-n*86400000;
+  if(!this.signalsFile)return (this.signalsMem||[]).filter(x=>(Number(x?.at)||Number(x?.barAt)||0)>=since).slice(-5000);
+  const out=[];
+  for(let d=n-1;d>=0;d--){
+   const f=signalsPath(this.signalsFile,now-d*86400000);
+   const rotated=f.replace(/\.jsonl$/,'')+'.1.jsonl';
+   for(const row of [...readJsonl(rotated),...readJsonl(f)]){
+    if((Number(row?.at)||Number(row?.barAt)||0)>=since)out.push(row);
+   }
+  }
+  return out.slice(-5000);
+ }
+ /** Journaled plus unjournaled closed scalp trades over the last N days. */
+ recentTrades(days=7){
+  const n=Math.max(1,Math.min(30,Math.floor(Number(days))||7)),since=this.now()-n*86400000;
+  const rows=this.journal(2000).filter(x=>(Number(x?.exit?.at)||Number(x?.barAt)||0)>=since);
+  const seen=new Set(rows.map(x=>x?.id).filter(Boolean));
+  for(const x of this.store.closed){
+   if(x.journaled||x.id&&seen.has(x.id)||(Number(x.closedAt)||0)<since)continue;
+   try{rows.push(journalLine(x))}catch{}
+  }
+  return rows;
+ }
  /** The venue position of this symbol: `size` is the quantity on our side (a position on the other side
   * counts as 0 for us and is never closed by us), `any` any position at all. */
  async #position(vs,direction,hedge=false){return positionOf(await this.client.positions(vs),vs,direction,hedge)}
@@ -1048,25 +1073,82 @@ export class ScalpExecutor{
  async #placeTargets(p){
   const profitOnly=this.config.stopLossEnabled===false;
   if(profitOnly)await this.#retireLegacyProfitTargets(p);
-  const price=profitOnly?profitLimit(p):null;
+  const dir=dirOf(p.direction);
+  let price=profitOnly?profitLimit(p):null;
   if(profitOnly&&!price)return;
   const groups=[{parts:p.parts,ids:p.tpOrderIds,tries:p.tpTries,done:p.tpDone},...(p.addTargets||[])];
   for(const g of groups){
    for(const [i,q] of g.parts.entries()){
     if(!(q>0)||g.ids[i]||g.done?.[i]||g.tries[i]>=3)continue;
+    const qtyStr=grid(q,p.quantityStep,'DOWN')??String(q);
+    if(!(Number(qtyStr)>0))continue;
     const stable=g.key!=null||p.stopLossEnabled===false;
     const tries=++g.tries[i],tag=g.key!=null?`a${g.key}t${i+1}`:(p.scaleIn?.version===1&&p.scaleIn?.fillQty?'u':'t')+(i+1)+(!stable&&tries>1?tries:'');
     const clientOrderId=(p.id+(profitOnly?'p':'')+tag).slice(0,40);
+    const buildParams=({stopPrice,limitPrice,type,cid,qty})=>forMode({
+     symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),
+     type,quantity:qty,
+     ...(stopPrice!=null?{stopPrice,workingType:'MARK_PRICE'}:{}),
+     ...(limitPrice!=null?{price:limitPrice}:{}),
+     reduceOnly:'true',clientOrderId:cid,
+    },p.hedge===true);
     try{
      if(stable){
       const known=await this.client.getOrder(p.venueSymbol,{clientOrderId}).catch(()=>null),st=String(orderOf(known)?.status||'').toUpperCase();
       if(orderId(known)&&!['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st)){g.ids[i]=orderId(known);this.#save();continue}
      }
      const target=grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]);
-     const stopPrice=profitOnly&&dirOf(p.direction)*(Number(target)-Number(price))<0?price:target;
-     const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),
-      type:profitOnly?'TAKE_PROFIT':'TAKE_PROFIT_MARKET',quantity:String(q),stopPrice,...(profitOnly?{price}:{}),
-      reduceOnly:'true',workingType:'MARK_PRICE',clientOrderId},p.hedge===true));g.ids[i]=orderId(o);
+     let stopPrice=profitOnly&&dir*(Number(target)-Number(price))<0?price:target;
+     const tick=pos(p.tickSize)||0,mark=pos(p.mark),orderType=profitOnly?'TAKE_PROFIT':'TAKE_PROFIT_MARKET';
+     if(mark&&tick>0&&dir*(Number(stopPrice)-mark)<=0){
+      const bumped=grid(mark+dir*tick,p.tickSize,beMode(p.direction));
+      if(bumped&&dir*(Number(bumped)-mark)>0)stopPrice=bumped;
+     }
+     let o;
+     try{
+      o=await this.client.placeOrder(buildParams({stopPrice,limitPrice:profitOnly?price:null,type:orderType,cid:clientOrderId,qty:qtyStr}));
+     }catch(e){
+      const is110401=e?.code==='VENUE_ERROR_110401'||/\b110401\b/.test(String(e?.message||''));
+      if(!is110401)throw e;
+      let c=null;
+      try{const cmap=await withTimeout(this.contracts(p.symbol),3000);c=cmap?.get?.(p.symbol)||null}catch{}
+      if(c?.tickSize&&pos(c.tickSize))p.tickSize=c.tickSize;
+      if(c?.quantityStep&&pos(c.quantityStep))p.quantityStep=c.quantityStep;
+      const freshMark=pos(await withTimeout(this.priceOf(p.symbol,p.venueSymbol),3000))??pos(await withTimeout(this.markOf(p.venueSymbol),3000))??pos(p.mark);
+      if(freshMark)p.mark=freshMark;
+      const freshQty=grid(q,p.quantityStep,'DOWN')??qtyStr;
+      if(!(Number(freshQty)>0))throw e;
+      const freshTick=pos(p.tickSize)||0;
+      const freshLimit=profitOnly?profitLimit(p):null;
+      if(profitOnly&&freshLimit)price=freshLimit;
+      const freshTarget=grid(p.targets[i],p.tickSize,towardMode(p.direction))??String(p.targets[i]);
+      let retryStop=profitOnly&&freshLimit&&dir*(Number(freshTarget)-Number(freshLimit))<0?freshLimit:freshTarget;
+      const retryCid=(p.id+(profitOnly?'p':'')+tag+'r'+tries).slice(0,39);
+      let recovered=null,how='';
+      const profitFloor=freshLimit?Number(freshLimit):p.avg;
+      if(profitOnly&&freshLimit&&freshMark&&dir*(freshMark-Number(freshLimit))>=0){
+       const limPx=grid(dir>0?Math.max(Number(freshTarget),Number(freshLimit)):Math.min(Number(freshTarget),Number(freshLimit)),p.tickSize,beMode(p.direction))??freshLimit;
+       try{recovered=await this.client.placeOrder(buildParams({stopPrice:null,limitPrice:limPx,type:'LIMIT',cid:retryCid,qty:freshQty}));how=`LIMIT@${limPx}`}catch{}
+      }
+      if(!recovered){
+       if(freshMark&&freshTick>0&&dir*(Number(retryStop)-freshMark)<=0){
+        const bumped=grid(freshMark+dir*freshTick*2,p.tickSize,beMode(p.direction));
+        if(bumped&&dir*(Number(bumped)-freshMark)>0)retryStop=bumped;
+       }
+       try{
+        recovered=await this.client.placeOrder(buildParams({stopPrice:retryStop,limitPrice:profitOnly?(freshLimit??price):null,type:orderType,cid:(retryCid+'a').slice(0,40),qty:freshQty}));
+        how=`${orderType}@${retryStop}`;
+       }catch(e2){
+        if(profitOnly&&dir*(Number(retryStop)-profitFloor)>=0){
+         recovered=await this.client.placeOrder(buildParams({stopPrice:null,limitPrice:retryStop,type:'LIMIT',cid:(retryCid+'b').slice(0,40),qty:freshQty}));
+         how=`LIMIT@${retryStop}`;
+        }else throw e2;
+       }
+      }
+      o=recovered;
+      this.#event('TARGET_RECOVERED',{symbol:p.symbol,direction:p.direction,target:i+1,detail:`110401 자동 복구 (${how} · 수량 ${freshQty})`});
+     }
+     g.ids[i]=orderId(o);
      if(stable&&g.ids[i])this.#save();
     }catch(e){if(e?.code==='HTTP_429')g.tries[i]=Math.max(0,g.tries[i]-1);this.#event('TARGET_FAILED',{symbol:p.symbol,reason:`${i+1}: ${e?.code||e?.message}`})}
    }
