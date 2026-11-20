@@ -940,11 +940,11 @@ const AUTO_UPDATE=!/^(off|0|false|no)$/i.test(String(process.env.AUTO_UPDATE||'o
 const AUTO_UPDATE_EVERY_MS=Math.max(1,Math.min(60,Number(process.env.AUTO_UPDATE_EVERY_MIN)||2))*60000;
 let autoUpdateFailedAt=null,pendingRestart=null;
 if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
- try{if(updateJob.active||!allIdle())return;
+ try{if(updateJob.active||!allIdle()||scalpExec?.scanning)return;
   // A restart postponed earlier (never idle for 10 minutes): the new code is on disk; restart now when idle.
   if(pendingRestart){const was=live.armed;live.updating=true;live.disarm();live.paused=true;if(allIdle()){console.log('[UPDATE] postponed restart',pendingRestart.from,'→',pendingRestart.to);pendingRestart.writeMarker();process.kill(process.pid,'SIGTERM');return}live.paused=false;live.updating=false;if(was)live.arm();return}
   const c=await gitCheck(__dirname);if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
-  const r=await runGitUpdate('auto');if(r.status>=400&&r.body?.error!=='ORDER_IN_PROGRESS')autoUpdateFailedAt=c.latest}catch(e){console.warn('[UPDATE] auto check:',e.message)}
+  const r=await runGitUpdate('auto');if(r.status>=400&&(r.body?.state==='rolled-back'||r.body?.state==='diverged'))autoUpdateFailedAt=c.latest}catch(e){console.warn('[UPDATE] auto check:',e.message)}
 },AUTO_UPDATE_EVERY_MS).unref?.();
 
 // Telegram readiness reports are limited to the real-account mode.
