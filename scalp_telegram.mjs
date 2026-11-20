@@ -8,7 +8,7 @@ export const SCALP_REASON_KO=Object.freeze({SIDE_OFF:'꺼 둔 방향의 신호 (
  TP1_NET_RR_BELOW_MINIMUM:'1차 목표 손익비(비용 차감) 1 미만',TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY:'목표가가 진입가 반대쪽',TARGET_GRID_INVALID:'목표가 단위 오류',
  NO_BALANCE:'잔고 조회 실패',MARGIN_CAP:'증거금 한도',OPEN_RISK_LIMIT:'오늘 손실 + 열린 포지션 손절 손실 합계가 하루 손실 한도에 닿음',TESTNET_MARGIN_CAP:'테스트넷 공동 증거금 한도',TESTNET_BUDGET_UNAVAILABLE:'공동 위험 한도 계산 실패',QUANTITY_BELOW_MINIMUM:'수량이 거래소 최소 주문 미만',BINGX_HEDGE_MODE:'BingX 양방향(헤지) 모드라 건너뜀 — 이전 버전 기록(지금은 헤지 모드도 지원)',BINGX_POSITION_MODE_UNKNOWN:'BingX 포지션 모드(단방향/헤지) 확인 실패',
  ZONE_NOT_TOUCHED:'매물대 반전 후보(2.5% 급변) — 극값이 4H/1D 매물대 ±0.3% 밖',ZONE_DATA_UNAVAILABLE:'매물대 반전 후보 — 4H/1D 캔들이 없어 매물대 확인 불가',
- VENUE_POSITION_EXISTS:'거래소에 같은 코인 포지션이 이미 있음',MARGIN_SETUP_FAILED:'교차 증거금·레버리지 설정 실패',ENTRY_REJECTED:'진입 주문 거부',ENTRY_SETUP_FAILED:'진입 준비 중 오류',HTTP_429:'요청 과다(잠시 쉼)',
+ VENUE_POSITION_EXISTS:'거래소에 같은 코인 포지션이 이미 있음',VENUE_POSITION_LIMIT:'BingX 포지션 한도',MARGIN_SETUP_FAILED:'교차 증거금·레버리지 설정 실패',ENTRY_REJECTED:'진입 주문 거부',ENTRY_SETUP_FAILED:'진입 준비 중 오류',HTTP_429:'요청 과다(잠시 쉼)',
  NOT_ARMED:'비활성',SCALP_MODE_OFF:'꺼짐 (SCALP_EXEC_MODE=OFF)',LIVE_REFUSED:'실계좌 모드는 거부됨 — 테스트넷 전용',MODE_INVALID:'알 수 없는 모드 — 꺼짐',CREDENTIALS_MISSING:'BingX API 키 없음',
  SCALP_TESTNET_ONLY:'테스트넷 전용',KILL_SWITCH:'긴급 정지 중',KILL_SWITCH_ON:'긴급 정지 중',UPDATING:'업데이트 중',DAILY_LOSS_LIMIT:'하루 손실 한도 도달',UNRESOLVED_ORDER_STATE:'확인 안 된 주문이 있음',RATE_LIMIT_COOLDOWN:'요청 과다로 잠시 쉼',
  // Close reasons
