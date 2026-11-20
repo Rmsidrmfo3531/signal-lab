@@ -63,7 +63,7 @@ function copyTradeMessage(e,action,closing,at,available){
 }
 
 /** Message for a confirmed real-account change from the manual ledger. */
-export function realTradeMessage(e,{availableMargin=null}={}){
+export function realTradeMessage(e,{availableMargin=null,availableMarginAt=null}={}){
  const actionBase=MANUAL_ACTION[e?.type];
  if(!actionBase||!e.symbol||e.fromFills!==true)return null;
  const closing=e.type==='MANUAL_REDUCE'||e.type==='MANUAL_SETTLED';
@@ -71,7 +71,7 @@ export function realTradeMessage(e,{availableMargin=null}={}){
  if(closing&&(e.netSource!=='EXCHANGE_FILLS'||!Number.isFinite(net)))return null;
  const action=closing?`${actionBase} ${net===0?'본전':net>0?'익절':'손절'}`:actionBase;
  const at=Number(e.observedAt??e.at);
- const available=`가용 증거금 ${Number.isFinite(availableMargin)&&availableMargin>=0?`${marginAmount.format(availableMargin)} USDT`:'조회 불가'}`;
+ const available=`가용 증거금 ${Number.isFinite(availableMargin)&&availableMargin>=0?`${marginAmount.format(availableMargin)} USDT${availableMarginAt>0?` · 최근 조회 ${observedTime.format(availableMarginAt)} KST`:''}`:'조회 불가'}`;
  if(e.alertOrigin==='COPY')return copyTradeMessage(e,action,closing,at,available);
  const manual=!e.alertOrigin||e.alertOrigin==='MANUAL';
  const icon=manual?tradeIcon[e.direction]:null;
@@ -79,7 +79,11 @@ export function realTradeMessage(e,{availableMargin=null}={}){
  const direction=(manual?SIDE:tradeSide)[e.direction];
  const head=[title,[e.symbol,direction,e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
- if(e.type==='MANUAL_OPEN')detail=`수량 ${amount(e.size)} · 평균 진입가 ${amount(e.avg)} USDT`;
+ if(e.type==='MANUAL_OPEN'){
+  const fill=amount(e.fillPrice??e.avg),average=amount(e.positionAvg);
+  detail=`수량 ${amount(e.size)} · ${manual?'진입 체결가':'평균 진입가'} ${fill} USDT`;
+  if(manual&&e.positionAvg>0&&average!==fill)detail+=`\n포지션 평균 진입가 ${average} USDT`;
+ }
  else if(closing){
   const size=e.size??(Number(e.from)-Number(e.to));
   const result=net===0?'$0.00':Math.abs(net)<.01?`${net>0?'+':'−'}$${amount(Math.abs(net))}`:usd(net);

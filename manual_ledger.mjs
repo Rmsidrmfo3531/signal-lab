@@ -195,7 +195,7 @@ export class ManualLedger{
    const c=this.candidates.get(key)||{seen:0,firstAt:at,fromAt:priorAt};c.seen++;this.candidates.set(key,c);
    if(c.seen>=this.openReads){
     this.candidates.delete(key);this.#open(row,c.firstAt,false);const p=this.store.positions[key];p.lastSeenAt=at;
-    this.#queueAlert(p,{from:0,to:p.size,observedAt:at},c.fromAt);changed=true;
+    this.#queueAlert(p,{from:0,to:p.size,toAvg:p.avg,observedAt:at},c.fromAt);changed=true;
    }
   }
   for(const key of [...this.candidates.keys()])if(!byKey.has(key)||byKey.get(key).origin==='copy')this.candidates.delete(key);

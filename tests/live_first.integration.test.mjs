@@ -199,11 +199,32 @@ test('real manual entry and add reach Telegram only after matching exchange fill
   await app.write({clockOffsetMs:60000});
   const added=await until(async()=>{await app.get('/api/copy');return notices()},list=>list.length===2,{timeout:16000,label:'confirmed Telegram notices'});
   assert.match(added[0].text,/^🟢 수동 \| 신규 진입\nBTCUSDT · 롱 · 10배/);
-  assert.match(added[0].text,/수량 0\.01 · 평균 진입가 50,000 USDT\n증거금 약 50\.00 USDT/);
+  assert.match(added[0].text,/수량 0\.01 · 진입 체결가 50,000 USDT\n증거금 약 50\.00 USDT/);
   assert.match(added[0].text,/\n가용 증거금 조회 불가\n/);
   assert.deepEqual(added[0].entities,[{type:'bold',offset:0,length:'🟢 수동 | 신규 진입'.length}]);
   assert.match(added[1].text,/^🟢 수동 \| 추가 진입\nBTCUSDT · 롱 · 10배\n수량 \+0\.01 · 잔여 0\.02[\s\S]+이번 증거금 약 50\.10 USDT\n포지션 총 증거금 약 100\.10 USDT/);
   assert.deepEqual(added[1].entities,[{type:'bold',offset:0,length:'🟢 수동 | 추가 진입'.length}]);
+ }finally{await app.close()}
+});
+
+test('manual entry displays the last verified USDT margin with its timestamp when the wallet read fails',{timeout:25000},async()=>{
+ const symbol='EVAA-USDT',wallet={asset:'USDT',balance:'200',equity:'200',availableMargin:'137.25'};
+ const app=await sandbox({scenarios:{},fakeBingxLiveIncome:[],fakeBingxLiveFills:[],fakeBingxLiveBalances:wallet,env:{
+  BINGX_API_KEY:KEY,BINGX_API_SECRET:SECRET,LIVE_TRADING_MODE:'OFF',SCALP_EXEC_MODE:'OFF',
+  COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',PAPER_TRADING:'off',
+  TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_SCANNER_CHAT_ID:'@scanner_fixture',
+ }});
+ try{
+  await app.start();
+  await until(()=>app.get('/api/copy'),c=>c.funds?.available===137.25&&c.venuePositionsAt!=null,{timeout:7000,label:'flat balance and position snapshot'});
+  const position={symbol,positionSide:'BOTH',positionAmt:'-1',avgPrice:'5.2604',markPrice:'5.20',leverage:'5'};
+  const fill={symbol,side:'SELL',positionSide:'BOTH',tradeId:'919',orderId:'919',qty:1,price:5.2606,time:Date.now()+1};
+  await app.write({fakeBingxLiveBalances:null,fakeBingxLivePositions:[position],fakeBingxLiveFills:[fill]});
+  const sent=await until(async()=>{await app.get('/api/copy');return (await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse)
+   .find(x=>x.path==='/sendMessage'&&x.text?.startsWith('🔴 수동 | 신규 진입'))},Boolean,{timeout:16000,label:'manual entry with last available margin'});
+  assert.match(sent.text,/EVAAUSDT · 숏 · 5배\n수량 1 · 진입 체결가 5\.2606 USDT/);
+  assert.match(sent.text,/\n포지션 평균 진입가 5\.2604 USDT\n/);
+  assert.match(sent.text,/\n가용 증거금 137\.25 USDT · 최근 조회 [\d-]+ [\d:]+ KST\n/);
  }finally{await app.close()}
 });
 

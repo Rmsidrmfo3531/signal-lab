@@ -1,6 +1,12 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {exchangePnl,summarizeIncome,balanceOf,incomeRows} from '../exchange_pnl.mjs';
 const T0=Date.parse('2026-11-14T00:00:00+09:00'),D=86400000;
+test('BingX balance row with a scalar balance retains its USDT available margin',()=>{
+ const row={asset:'USDT',balance:'200',equity:'201',availableMargin:'137.25'};
+ for(const data of [row,[row],{balance:row},{balance:[row]}]){
+  assert.deepEqual(balanceOf(data),{asset:'USDT',equity:201,balance:200,unrealized:null,available:137.25});
+ }
+});
 const rows=[
  {symbol:'AKE-USDT',incomeType:'REALIZED_PNL',income:'3.00',time:T0+D,tranId:'1'},
  {symbol:'AKE-USDT',incomeType:'TRADING_FEE',income:'-0.20',time:T0+D,tranId:'2'},
