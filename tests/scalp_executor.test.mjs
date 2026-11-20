@@ -899,14 +899,15 @@ test('report push: scalp ledger trades carry kind',async()=>{
  assert.equal(s.trades[0].kind,'ZONE_REVERSAL');assert.equal('kind' in s.trades[1],false,'copy / older rows: no kind field');
 });
 
-test('Wyckoff records 15m context after testnet entries and preserves orders on read failure',async()=>{
+test('Map and VSA use one 15m read after testnet entries and preserve orders on read failure',async()=>{
  const interval=15*60000;
  for(const readFails of [false,true]){
   const dir=tmp(),v=venue(),ex=make(v,{dir});
   const candles=ex.candles;
-  let entryAlreadySent=false;
+  let entryAlreadySent=false,structureReads=0;
   ex.candles=async(symbol,tf,limit)=>{
    if(tf!=='15m')return candles(symbol,tf,limit);
+   structureReads++;
    entryAlreadySent=placed(v,'MARKET').length===1;
    if(readFails)throw Error('public candles unavailable');
    const closeAt=Math.floor(T0/interval)*interval;
@@ -921,9 +922,12 @@ test('Wyckoff records 15m context after testnet entries and preserves orders on 
    assert.equal(scan.entered,1);
    assert.equal(scan.error,null);
    assert.equal(entryAlreadySent,true);
+   assert.equal(structureReads,1);
    assert.equal(ex.signals().length,1);
    assert.equal(ex.signals()[0].entered,true);
    assert.equal(ex.signals()[0].wyckoff.status,readFails?'READ_FAILED':'NO_RANGE');
+   assert.equal(ex.signals()[0].vsa.status,readFails?'READ_FAILED':'NO_MAP_BOX');
+   if(!readFails)assert.equal(ex.signals()[0].vsa.volumeZ,0);
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
  }
 });
