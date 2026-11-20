@@ -1,4 +1,5 @@
 import {tradeHorizon,holdTier} from './trade_horizon.mjs';
+import {displaySymbol} from './public/symbol_display.js';
 // Telegram notices for live (testnet) trades: entry with protection, add fills, first target and
 // break-even, the settled close with its result, and order problems. Text only: symbol, side,
 // prices and results — never keys, order ids or account numbers.
@@ -36,7 +37,7 @@ function copyTradeMessage(e,action,closing,at,available){
  line('',closing?`${icon} ${action}`:add?'➕ 포지션 추매':'📌 포지션 진입');
  line(RULE);
  const side=[tradeSide[e.direction],e.leverage>0?`×${e.leverage}`:null].filter(Boolean).join('  ');
- line('',e.symbol,side?`  ${side}`:'');
+ line('',displaySymbol(e.symbol),side?`  ${side}`:'');
  line(RULE);
  if(closing){
   // USDT perpetuals realize gross PnL on the closed quantity at the fill price.
@@ -77,7 +78,7 @@ export function realTradeMessage(e,{availableMargin=null,availableMarginAt=null}
  const icon=manual?tradeIcon[e.direction]:null;
  const title=`${icon?icon+' ':''}${REAL_ORIGIN[e.alertOrigin]??REAL_ORIGIN.MANUAL} | ${action}`;
  const direction=(manual?SIDE:tradeSide)[e.direction];
- const head=[title,[e.symbol,direction,e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ const head=[title,[displaySymbol(e.symbol),direction,e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='MANUAL_OPEN'){
   const fill=amount(e.fillPrice??e.avg),average=amount(e.positionAvg);
@@ -110,7 +111,7 @@ export function liveEventText(r,type,detail={}){
  if(!r)return null;
  if(type==='KILL_SWITCH')return `⛔ 긴급 정지 · ${MODE[r.mode]||r.mode||''}\n새 주문을 멈췄습니다 (${detail.reason||'수동'}). 실매매 화면에서 확인 후 해제하세요.`;
  const side=(r.mode==='LIVE'?tradeSide:SIDE)[r.direction]||r.direction||'';
- const head=`${r.symbol} ${side}${tradeHorizon(r.signal?.pattern)?' ['+tradeHorizon(r.signal?.pattern).label+']':''} ${r.leverage?r.leverage+'배':''} · ${MODE[r.mode]||r.mode||''}`.replace(/\s+/g,' ').trim();
+ const head=`${displaySymbol(r.symbol)} ${side}${tradeHorizon(r.signal?.pattern)?' ['+tradeHorizon(r.signal?.pattern).label+']':''} ${r.leverage?r.leverage+'배':''} · ${MODE[r.mode]||r.mode||''}`.replace(/\s+/g,' ').trim();
  const hz=tradeHorizon(r.signal?.pattern),pattern=r.signal?.pattern?`\n패턴: ${r.signal.pattern}${r.signal.score!=null?` (${r.signal.score}점)`:''}${hz?` · ${hz.label} 예상 (${hz.hint})`:''}`:'';
  // Test orders (signalKey TEST:…, marked test after the fill): problems only.
  if(r.test===true||String(r.signalKey||'').startsWith('TEST:'))return PROBLEM[type]?`⚠️ 시험 주문 문제 · ${head}\n${PROBLEM[type]}${detail.reason?` (${detail.reason})`:''}`:null;
