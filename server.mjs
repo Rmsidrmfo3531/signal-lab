@@ -8,6 +8,7 @@ import {buildReport,pushReport} from './reports_push.mjs';
 import {exchangePnl,bingxBalanceRows,balanceOf} from './exchange_pnl.mjs';
 import {createDailyPnl,PNL_CALENDAR_RESET_AT} from './daily_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
+import {lookupRealTradeSymbol,executeRealManualOrder,listRealOpenOrders,cancelRealOpenOrder} from './real_manual_trade.mjs';
 import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
@@ -1988,6 +1989,71 @@ const server=http.createServer(async(req,res)=>{
     if(r.ok)reportsDirty=true;
     return response(res,r.ok?200:(r.status||409),r);
    }catch(e){return response(res,502,{ok:false,error:e.code||'POSITION_ACTION_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/real/trade/info'&&req.method==='GET'){
+   if(COPY.mode!=='LIVE'||!realBingxClient)return response(res,409,{error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'});
+   const rawSymbol=url.searchParams.get('symbol')||'';
+   try{
+    const markOf=async vs=>{
+     if(!copyTickers.at||Date.now()-copyTickers.at>3000){
+      copyTickers.pending??=venueQuotes.clients.BINGX.tickers().then(rows=>{copyTickers={at:Date.now(),rows}},()=>{copyTickers.pending=null});
+      await copyTickers.pending;
+     }
+     return Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null;
+    };
+    const info=await lookupRealTradeSymbol({
+     rawSymbol,client:realBingxClient,
+     contractsFor:sym=>venueQuotes.clients.BINGX.contractsFor(sym),
+     markOf,availableUSD:copyTrader.funds?.available??realWallet.last?.available??null,
+     copyPositions:Object.values(copyTrader.store.positions||{}),
+    });
+    return response(res,200,info);
+   }catch(e){return response(res,e.httpStatus||502,{error:e.code||'TRADE_INFO_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/real/trade/open-orders'&&req.method==='GET'){
+   if(COPY.mode!=='LIVE'||!realBingxClient)return response(res,409,{error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'});
+   try{
+    const orders=await listRealOpenOrders({client:realBingxClient,symbol:url.searchParams.get('symbol')||null});
+    return response(res,200,{orders});
+   }catch(e){return response(res,e.httpStatus||502,{error:e.code||'OPEN_ORDERS_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/real/trade/order'&&req.method==='POST'){
+   if(COPY.mode!=='LIVE'||!realBingxClient)return response(res,409,{error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'});
+   const body=await bodyJson(req);
+   try{
+    const markOf=async vs=>{
+     if(!copyTickers.at||Date.now()-copyTickers.at>3000){
+      copyTickers.pending??=venueQuotes.clients.BINGX.tickers().then(rows=>{copyTickers={at:Date.now(),rows}},()=>{copyTickers.pending=null});
+      await copyTickers.pending;
+     }
+     return Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null;
+    };
+    const r=await executeRealManualOrder({
+     confirm:body?.confirm,symbol:body?.symbol,side:body?.side,
+     orderType:body?.orderType,amountMode:body?.amountMode,amount:body?.amount,
+     price:body?.price,leverage:body?.leverage,marginMode:body?.marginMode,
+     tpPrice:body?.tpPrice,slPrice:body?.slPrice,
+     client:realBingxClient,
+     contractsFor:sym=>venueQuotes.clients.BINGX.contractsFor(sym),
+     markOf,
+    });
+    reportsDirty=true;
+    void refreshRealTradeNotices();
+    void readRealWallet().catch(()=>{});
+    return response(res,200,r);
+   }catch(e){return response(res,e.httpStatus||502,{ok:false,error:e.code||'MANUAL_ORDER_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/real/trade/cancel-order'&&req.method==='POST'){
+   if(COPY.mode!=='LIVE'||!realBingxClient)return response(res,409,{error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'});
+   const body=await bodyJson(req);
+   try{
+    const r=await cancelRealOpenOrder({
+     confirm:body?.confirm,symbol:body?.symbol,orderId:body?.orderId,
+     client:realBingxClient,
+     contractsFor:sym=>venueQuotes.clients.BINGX.contractsFor(sym),
+    });
+    return response(res,200,r);
+   }catch(e){return response(res,e.httpStatus||502,{ok:false,error:e.code||'CANCEL_ORDER_FAILED',message:e.message})}
   }
   if(pathname==='/api/manual/note'&&req.method==='POST'){
    if(!manualLedger)return response(res,404,{error:'MANUAL_LEDGER_UNAVAILABLE',message:'수동 거래 원장이 활성화되어 있지 않습니다'});

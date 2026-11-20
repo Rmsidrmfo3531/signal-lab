@@ -2,6 +2,7 @@
 // sent or shown here. Orders change only on an explicit click (activate, kill, stop/TP edit).
 import {priceFmt} from './price_format.js';
 import {displaySymbol} from './symbol_display.js';
+import {createRealTradeController} from './real_trade.js';
 
 const LABEL={BINGX:'BingX',GATEIO:'Gate.io'};
 const MODE={OFF:{badge:'OFF',text:'주문 없음',title:'실매매 (꺼짐)',cls:'off'},TESTNET:{badge:'TESTNET',text:'모의 자금',title:'실매매 (테스트넷)',cls:'testnet'},
@@ -193,8 +194,8 @@ export function venuePositionsHTML(c,copyOpen=[]){
  if(!list.length&&!copyOpen.length)return head+'<p class="empty-small">보유 중인 포지션이 없습니다. 채널에 새 진입 알림이 오면 따라 들어갑니다.</p>';
  const totals=`<p class="copy-stamp vp-total">미실현 합계 <b class="${cls(sum(list))}">${money(sum(list))}</b> · 수동만 <b class="${cls(sum(manual))}">${manual.length?money(sum(manual)):'—'}</b></p>`;
  const posActions=p=>{
-  const inProfit=fin(p.unrealized)&&Number(p.unrealized)>0,sym=esc(p.symbol),dir=esc(p.direction),sz=esc(qtyFmt(p.size));
-  return `<div class="vp-actions"><button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button></div>`;
+  const inProfit=fin(p.unrealized)&&Number(p.unrealized)>0,sym=esc(p.symbol),dir=esc(p.direction),sz=esc(qtyFmt(p.size)),lev=esc(p.leverage||''),mmMode=esc(p.marginMode||'CROSSED');
+  return `<div class="vp-actions"><button type="button" class="vp-act-btn trade" data-trade-fill data-pos-symbol="${sym}" data-pos-lev="${lev}" data-pos-mm="${mmMode}" title="이 종목을 수동 주문 패널에 불러오기">주문/추매</button><button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button></div>`;
  };
  const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}">${symTag(p.symbol)}${badge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · 부분청산 ${partialCount(r)} · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b>${posActions(p)}</li>`};
 
@@ -223,7 +224,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
 }
 
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
-let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,analyticsOpen=false,analyticsTab='symbol',lastCopy=null;
+let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,analyticsOpen=false,analyticsTab='symbol',lastCopy=null,realTradeCtrl=null;
 export function setFailOpen(v){failOpen=!!v}
 export function setControlsOpen(v){controlsOpen=!!v}
 export function setAlertsOpen(v){alertsOpen=!!v}
@@ -860,6 +861,11 @@ function bindCopyButtons(el){
    const box=anTab.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);
    return;
   }
+  const tradeFill=e.target.closest('[data-trade-fill]');
+  if(tradeFill){
+   realTradeCtrl?.prefill({symbol:tradeFill.dataset.posSymbol,leverage:tradeFill.dataset.posLev,marginMode:tradeFill.dataset.posMm});
+   return;
+  }
   const posAct=e.target.closest('[data-pos-action]');
   if(posAct){
    const action=posAct.dataset.posAction,symbol=posAct.dataset.posSymbol,direction=posAct.dataset.posDir,size=posAct.dataset.posSize||'';
@@ -968,6 +974,8 @@ function render(o){
  // Real-money copy has its own page (실계좌); the testnet page keeps only testnet copies.
  const copy=o.copy,real=copy?.mode==='LIVE';
  for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));
+ if(!realTradeCtrl&&$('realTradePanel'))realTradeCtrl=createRealTradeController($('realTradePanel'),{onOrderDone:()=>$('liveRefresh')?.click()});
+ realTradeCtrl?.syncContext({visible:real,availableUSD:copy?.funds?.available??null,heldPositions:copy?.venuePositions??[]});
  if($('liveCopySection')){$('liveCopySection').hidden=!copy||real||scalpOnly;if(copy&&!real&&!scalpOnly&&$('liveCopy')&&!copyActionBusy)$('liveCopy').innerHTML=copyHTML({...copy,followArmed:Boolean(o.armed&&!o.killSwitch)})}
  if($('realCopy')&&!copyActionBusy)$('realCopy').innerHTML=real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>';
  // The sidebar ON / OFF is a navigation hint; the page itself shows the state once, next to its button.
@@ -1101,5 +1109,5 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
  // 실계좌 page: the copy panel alone every 3 s (prices cached 3 s on the server, balance 15 s), while visible.
  let fastBusy=false;
  setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy||copyActionBusy)return;fastBusy=true;
-  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'&&!copyActionBusy&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}catch{}finally{fastBusy=false}},3000);window.addEventListener('hashchange',()=>setTimeout(()=>{tick();void refreshBudget()},60));
+  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'){realTradeCtrl?.syncContext({visible:true,availableUSD:c.funds?.available??null,heldPositions:c.venuePositions??[]});if(!copyActionBusy&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}}catch{}finally{fastBusy=false}},3000);window.addEventListener('hashchange',()=>setTimeout(()=>{tick();void refreshBudget()},60));
 }
