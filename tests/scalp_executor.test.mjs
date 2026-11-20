@@ -71,6 +71,65 @@ const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
 const short=(opt={})=>{const v=venue({fillAt:PX_S,...opt.venue}),clock=opt.clock||{t:T0};return {v,clock,ex:make(v,{clock,price:PX_S,trend:down4h,rows:rise,...opt})}};
 
+test('scalp caps entries with the directional BingX quantity after setting leverage',async()=>{
+ for(const direction of ['LONG','SHORT']){
+  const isShort=direction==='SHORT',price=isShort?PX_S:PX;
+  const v=venue({fillAt:price});
+  let leverageSet=false;
+  const setLeverage=v.client.setLeverage;
+  v.client.setLeverage=async(...args)=>{leverageSet=true;return setLeverage(...args)};
+  const sideField=isShort?'availableShortVol':'availableLongVol';
+  const otherField=isShort?'availableLongVol':'availableShortVol';
+  v.client.leverage=async()=>({maxLongLeverage:20,maxShortLeverage:20,
+   [sideField]:leverageSet?'1.239':'0',[otherField]:'0'});
+  const {TestnetBudget}=await import('../testnet_budget.mjs');
+  const budget=new TestnetBudget({dailyLossPct:15,now:()=>T0});
+  const ex=make(v,{price,trend:isShort?down4h:up4h,rows:isShort?rise:crash,budget});
+  budget.register('signal',{openRisk:()=>1490}).register('scalp',ex.budgetSource());
+  ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,1);
+  assert.equal(placed(v,'MARKET')[0].quantity,'1.23');
+  const [p]=ex.store.open,[record]=ex.signals();
+  assert.equal(p.direction,direction);
+  assert.ok(Math.abs(p.parts.reduce((sum,x)=>sum+x,0)-1.23)<1e-9);
+  assert.equal(record.plan.venueAvailableQty,1.239);
+  assert.ok(record.plan.requestedQty>1.239);
+  assert.equal(record.plan.qty,1.23);
+  assert.ok(record.plan.riskUSD<10);
+  assert.ok(budget.snapshot(10000).usedUSD<=1500);
+ }
+});
+
+test('scalp skips an exhausted BingX position limit or a capped quantity below the venue minimum',async()=>{
+ for(const room of ['0','0.019']){
+  const v=venue();
+  v.client.leverage=async()=>({maxLongLeverage:20,availableLongVol:room});
+  const ex=make(v);ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0);
+  assert.equal(ex.store.sent.length,0);
+  const [record]=ex.signals();
+  assert.equal(record.reason,'VENUE_POSITION_LIMIT');
+  assert.equal(record.plan.venueAvailableQty,Number(room));
+ }
+});
+
+test('scalp reports a BingX position-limit rejection after lookup without resending',async()=>{
+ const v=venue();
+ v.client.leverage=async()=>({maxLongLeverage:20,availableLongVol:''});
+ let attempts=0,lookups=0;
+ v.client.placeOrder=async()=>{attempts++;throw Object.assign(Error('position limit'),{code:'VENUE_ERROR_101429'})};
+ v.client.getOrder=async()=>{lookups++;return {order:null}};
+ const ex=make(v);ex.arm();await ex.scan();await ex.scan();
+ assert.equal(attempts,1);
+ assert.equal(lookups,1);
+ assert.equal(ex.store.open.length,0);
+ assert.equal(ex.store.sent.length,1);
+ const [record]=ex.signals();
+ assert.equal(record.reason,'VENUE_POSITION_LIMIT');
+ assert.match(record.detail,/VENUE_ERROR_101429/);
+ assert.equal(record.plan.venueAvailableQty,null);
+});
+
 test('profit-only fallback waits 15 minutes, covers fees and booked loss, and recovers a lost reply',async()=>{
  for(const direction of ['LONG','SHORT']){
   const dir=tmp(),clock={t:T0},shortSide=direction==='SHORT',sign=shortSide?-1:1;

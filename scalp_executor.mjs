@@ -75,6 +75,7 @@ const grid=(v,step,mode)=>{try{return roundDecimalToStep(v,step,mode)}catch{retu
 const withTimeout=(p,ms,fallback=null)=>Promise.race([Promise.resolve(p).catch(()=>fallback),new Promise(r=>setTimeout(()=>r(fallback),ms).unref?.())]);
 const err=(code,status=409)=>Object.assign(Error(code),{code,httpStatus:status});
 const dirOf=d=>d==='SHORT'?-1:1;
+const POSITION_LIMIT_ERROR='VENUE_ERROR_101429';
 // Tick rounding by side: a stop away from the entry (LONG down / SHORT up), a target or a break-even stop
 // on the safe side (target toward the entry, break-even at or beyond the entry in the profit direction).
 const awayMode=d=>d==='SHORT'?'UP':'DOWN',towardMode=d=>d==='SHORT'?'UP':'DOWN',beMode=d=>d==='SHORT'?'DOWN':'UP';
@@ -577,20 +578,9 @@ export class ScalpExecutor{
     usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:this.config});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
-   // No count cap on testnet (user 2026-11-16), so the daily loss limit caps the risk up front: today's realized loss
-   // + loss to the open stops + this trade must stay within it (review 2026-11-16, as OPEN_RISK_LIMIT for the signals).
-   if(this.budget){
-    // Shared TESTNET budget (testnet_budget.mjs): today's loss of both strategies + every open stop risk of both
-    // + this trade within TESTNET_DAILY_LOSS_PCT of the equity; per-trade risk stays 0.5 %.
-    const b=this.budget.check({equity:funds.equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'});
-    if(this.cur?.plan&&b.snap?.ok)this.cur.plan.openRiskUSD=+(b.snap.usedUSD+(Number(plan.riskUSD)||0)).toFixed(2);
-    if(!b.ok)return skip(b.reason,b.detail);
-   }else{const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
-    const risk=Math.max(0,-realized)+this.#openRisk()+(Number(plan.riskUSD)||0),limit=funds.equity*this.config.dailyLossPct/100;
-    if(this.cur?.plan)this.cur.plan.openRiskUSD=+risk.toFixed(2);
-    if(risk>limit)return skip('OPEN_RISK_LIMIT',`$${risk.toFixed(2)} > $${limit.toFixed(2)}`)}
-   // Held for the shared budget until the position is in the ledger (the signal strategy checks in between).
-   this.reservedRisk.set(u.symbol,{riskUSD:Number(plan.riskUSD)||0,marginUSD:Number(plan.marginUSD)||0});
+   // Reserve a plan that fits the shared budget while the venue setup runs. A larger plan may still fit after the cap.
+   if(this.budget?.check({equity:funds.equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'}).ok)
+    this.reservedRisk.set(u.symbol,{riskUSD:plan.riskUSD,marginUSD:plan.marginUSD});
    return await this.#enter(u,det,c,plan,key,{revision,equity:funds.equity});
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
   finally{this.reserved.delete(u.symbol);this.reservedRisk.delete(u.symbol)}
@@ -614,8 +604,9 @@ export class ScalpExecutor{
    openRisk:()=>this.#openRisk()+reserved('riskUSD'),usedMargin:()=>this.#usedMargin()+reserved('marginUSD'),
    unrealized:()=>this.store.open.reduce((t,p)=>t+(Number(p.unrealized)||0),0),stoppedToday:day=>this.store.dailyStop?.day===day&&this.store.dailyStop.shared===true};
  }
- async #enter(u,det,c,plan,id,{revision,equity}){
+ async #enter(u,det,c,initialPlan,id,{revision,equity}){
   const cl=this.client,vs=u.venueSymbol,d=det.direction,skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
+  let plan=initialPlan;
   // The account's position mode (one-way or hedge, user 2026-11-17), read before every entry and kept on the
   // position: its stop, targets, breakeven and closes use the mode it was opened under. Never guessed.
   const mode=await readPositionMode(cl);if(!mode.ok)return skip(mode.reason,mode.detail);
@@ -628,10 +619,38 @@ export class ScalpExecutor{
    const set=await cl.setLeverage(vs,leverageSideFor({hedge,direction:d}),plan.leverage);
    if(set?.leverage!==undefined&&Number(set.leverage)!==plan.leverage)throw err('LEVERAGE_NOT_CONFIRMED');
   }catch(e){return skip('MARGIN_SETUP_FAILED',e?.code||e?.message)}
+  // BingX reports the remaining opening quantity per side. Read it after setting cross margin and leverage.
+  const leverage=await withTimeout(cl.leverage(vs),3000);
+  const rawRoom=d==='SHORT'?leverage?.availableShortVol:leverage?.availableLongVol;
+  const room=typeof rawRoom==='number'||(typeof rawRoom==='string'&&rawRoom.trim()!=='')?num(rawRoom):null;
+  const venueAvailableQty=room!==null&&room>=0?room:null;
+  const requestedQty=plan.qty;
+  if(this.cur?.plan)Object.assign(this.cur.plan,{requestedQty,venueAvailableQty});
+  if(venueAvailableQty!==null&&venueAvailableQty<requestedQty){
+   const qty=Number(grid(venueAvailableQty,c.quantityStep,'DOWN'))||0;
+   const split=scalpSplits(qty,c.quantityStep,plan.minPart);
+   if(!split)return skip('VENUE_POSITION_LIMIT',`가용 ${venueAvailableQty}개 · 최소 ${plan.minPart}개`);
+   const ratio=qty/requestedQty;
+   plan={...plan,qty,parts:split.parts,targetCount:split.targets,merged:split.merged,
+    riskUSD:plan.riskUSD*ratio,marginUSD:plan.marginUSD*ratio};
+   if(this.cur?.plan)Object.assign(this.cur.plan,{qty,riskUSD:plan.riskUSD});
+  }
+  // Check the final size and save it in the ledger before yielding to order dispatch.
+  this.reservedRisk.delete(u.symbol);
+  if(this.budget){
+   const b=this.budget.check({equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'});
+   if(this.cur?.plan&&b.snap?.ok)this.cur.plan.openRiskUSD=+(b.snap.usedUSD+plan.riskUSD).toFixed(2);
+   if(!b.ok)return skip(b.reason,b.detail);
+  }else{
+   const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
+   const risk=Math.max(0,-realized)+this.#openRisk()+plan.riskUSD,limit=equity*this.config.dailyLossPct/100;
+   if(this.cur?.plan)this.cur.plan.openRiskUSD=+risk.toFixed(2);
+   if(risk>limit)return skip('OPEN_RISK_LIMIT',`$${risk.toFixed(2)} > $${limit.toFixed(2)}`);
+  }
   const beforeSend=()=>{
    const blocked=this.#blocked()||(revision!==this.entryRevision?'NOT_ARMED':null);
    if(blocked)return blocked;
-   // Our reservation is included, either in reservedRisk or in the ledger once it has been saved.
+   // The pending entry is included in the ledger by the time the order reaches dispatch.
    const shared=this.budget?.check({equity,who:'scalp'});
    return shared&&!shared.ok?shared.reason:null;
   };
@@ -649,8 +668,6 @@ export class ScalpExecutor{
    // Journal context (analysis only).
    atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,withTrend:this.cur?.withTrend??null,universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
   this.store.open.push(p);this.store.sent.push(id);this.#save();
-  // In the ledger now (counted by #openRisk): the reservation is dropped so the risk is never counted twice (review L4).
-  this.reservedRisk.delete(u.symbol);
   let fill;
   try{fill=await cl.placeOrder({symbol:vs,side:openSide(d),positionSide:positionSideFor({hedge,direction:d}),type:'MARKET',quantity:String(plan.qty),clientOrderId:id,
    ...(p.stopLossEnabled?{stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:Number(px(plan.stop)),workingType:'MARK_PRICE'})}:{})},{beforeSend})}
@@ -663,7 +680,9 @@ export class ScalpExecutor{
    let found=null;try{found=await cl.getOrder(vs,{clientOrderId:id})}catch{}
    if(!orderId(found)){
     if(e?.code==='NETWORK_UNREACHABLE'||e?.code==='HTTP_429'){p.status='UNKNOWN';this.#event('ENTRY_OUTCOME_UNKNOWN',{symbol:p.symbol,reason:e.code});this.#save();return {entered:false,reason:'UNKNOWN'}}
-    this.store.open=this.store.open.filter(x=>x!==p);this.#save();return skip('ENTRY_REJECTED',e?.code||e?.message)}
+    this.store.open=this.store.open.filter(x=>x!==p);this.#save();
+    if(e?.code===POSITION_LIMIT_ERROR)return skip('VENUE_POSITION_LIMIT',`${e.code} · 주문 ${plan.qty}개 · 가용 ${venueAvailableQty??'미확인'}`);
+    return skip('ENTRY_REJECTED',e?.code||e?.message)}
    fill=found;
   }
   p.entryOrderId=orderId(fill);p.status='OPEN';p.openedAt=this.now();
