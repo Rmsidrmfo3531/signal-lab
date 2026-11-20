@@ -375,9 +375,40 @@ test('copy BALANCE_RATIO: the trader quantity x our equity / 20,000 $, no 1 $ fl
  assert.equal(v.size,50);
  const cuts=v.calls.filter(c=>c.reduceOnly==='true').map(c=>c.clientOrderId);assert.equal(cuts.length,2);assert.notEqual(cuts[0],cuts[1]);
  assert.equal(ex.status().positions[0].reduces,2);
- // Tiny trader order: below the venue minimum -> the minimum, flagged.
+ // Small trader order where ratio falls below venue minimum -> matches trader's 1x quantity on entry and all adds.
  const v2=venue();const ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_MAX_TOTAL_MARGIN_PCT:'30'},'TESTNET'),client:v2.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
- await ex2.handle({id:1,date:1e12,text:card(100,'0.05000')});assert.equal(ex2.status().positions[0].minOrder,true);
+ await ex2.handle({id:1,date:1e12,text:card(100,'0.05000')});
+ assert.equal(v2.size,100,'ratio 2 < min -> matched trader 1x qty (100)');
+ assert.equal(ex2.status().positions[0].matchTraderQty,true);
+ assert.equal(ex2.status().positions[0].scale,1);
+ assert.equal(ex2.status().positions[0].minOrder,false);
+ // Even 1x below venue minimum (10 coins = $0.50 < $2) -> snaps to venue minimum and flags minOrder while keeping 1x adds.
+ const v3=venue();const ex3=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_MAX_TOTAL_MARGIN_PCT:'30'},'TESTNET'),client:v3.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ await ex3.handle({id:1,date:1e12,text:card(10,'0.05000')});
+ assert.equal(ex3.status().positions[0].minOrder,true);
+ assert.equal(ex3.status().positions[0].matchTraderQty,true);
+});
+
+test('live BALANCE_RATIO falls back to 1x trader quantity when scaled entry is below venue minimum and keeps 1x across adds and restarts',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'copy-live-1x-'));
+ try{
+  const openSmall=`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×7\n━━━━━━━━━━━━━━━━\n진입가 0.05100 USDT\n현재가 0.05100 USDT\n수량 200`;
+  const v=venue(),config=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'});
+  const makeEx=()=>new CopyExecutor({config,client:v.client,contractOf:async()=>contract,directory:dir,
+   balance:async()=>({equity:3081,available:2921}),now:()=>1e12});
+  // 200 * (2921 / 20000) = 29 coins = $1.48 < $2 venue min -> enters exact 1x trader qty (200) instead of venue minimum.
+  let ex=makeEx();
+  assert.equal((await ex.handle({id:1,date:1e12,text:openSmall})).ok,true);
+  assert.equal(v.size,200,'entered exact 1x trader quantity');
+  assert.equal(ex.status().positions[0].matchTraderQty,true);
+  assert.equal(ex.status().positions[0].scale,1);
+  // Reload from disk and verify subsequent adds stay 1x (not scaled back down to 14.6%).
+  ex=makeEx();
+  assert.equal((await ex.handle({id:2,date:1e12+1000,text:CHANGE(200,500)})).ok,true);
+  assert.equal(v.size,500,'added exact 1x (+300) matching trader total');
+  assert.equal((await ex.handle({id:3,date:1e12+2000,text:CHANGE(500,700)})).ok,true);
+  assert.equal(v.size,700,'added exact 1x (+200) again');
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
 test('copy: a card whose quantity does not match its margin x leverage is not traded; first entries respect the total margin cap; small adds are carried',async()=>{
@@ -698,7 +729,7 @@ test('copy: a "- → q" entry refused twice still explains the next change card;
  const e=ex.status().events.find(x=>x.reason==='NOT_COPIED'||x.type==='LATE_ENTRY');assert.equal(e.cause,'VENUE_ERROR_101400');
  // Cap 1 % of 100 = 1 $: the first 42 coins fit, the 149-coin retry (1.5 $) does not.
  v=venue();let n=0;const place=v.client.placeOrder;v.client.placeOrder=async p=>{if(p.type==='MARKET'&&!p.reduceOnly&&n++===0)throw Object.assign(Error('The minimum order amount is 149 TNSR.'),{code:'VENUE_ERROR_101400'});return place(p)};
- ex=new CopyExecutor({config:copyConfig({COPY_MAX_TOTAL_MARGIN_PCT:'1'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.051,balance:async()=>({equity:100,available:90}),now:()=>1e12});
+ ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'MIN_ORDER',COPY_MAX_TOTAL_MARGIN_PCT:'1'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.051,balance:async()=>({equity:100,available:90}),now:()=>1e12});
  await ex.handle({id:1,date:1e12,text:OPEN});assert.equal(n,1);assert.equal(v.size,0);assert.equal(ex.status().positions.length,0);
 });
 
