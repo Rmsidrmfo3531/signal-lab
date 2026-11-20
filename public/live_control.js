@@ -216,9 +216,10 @@ export function venuePositionsHTML(c,copyOpen=[]){
 }
 
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
-let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,lastCopy=null;
+let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,lastCopy=null;
 export function setFailOpen(v){failOpen=!!v}
 export function setControlsOpen(v){controlsOpen=!!v}
+export function setAlertsOpen(v){alertsOpen=!!v}
 export const COPY_PAGE_SIZE=10;
 export function setCopyPage(p){copyPage=Math.max(0,p|0)}
 export function setCopyFailPage(p){failPage=Math.max(0,p|0)}
@@ -398,6 +399,26 @@ export function copyHTML(c){
     <span class="copy-msg" data-copy-ctrl-msg></span>
    </div></details>`;
  })():'';
+ const al=c.accountAlerts||null;
+ const alertsPanel=isLive&&al?`<details class="copy-controls-fold"${alertsOpen?' open':''}><summary data-alerts-toggle>텔레그램 알림 · 위험 경보 <small>${al.riskAlerts?'위험ON':'위험OFF'} · ${al.remoteCommands?'명령어ON':'명령어OFF'}</small></summary>
+  <div class="copy-ctrl-body">
+   <form class="ctrl-form" data-account-alerts-form>
+    <label class="ctrl-check"><input name="riskAlerts" type="checkbox"${al.riskAlerts?' checked':''}> 통합 위험 경보 (카피+수동)</label>
+    <label class="ctrl-check"><input name="roiAlerts" type="checkbox"${al.roiAlerts?' checked':''}> 포지션 수익률/손실률 도달</label>
+    <label class="ctrl-check"><input name="dailyReport" type="checkbox"${al.dailyReport?' checked':''}> 일일 마감 리포트 (00:00 KST)</label>
+    <label class="ctrl-check"><input name="skipAlerts" type="checkbox"${al.skipAlerts?' checked':''}> 카피 진입 실패·스킵 알림</label>
+    <label class="ctrl-check"><input name="remoteCommands" type="checkbox"${al.remoteCommands?' checked':''}> 봇 원격 명령 (/status /pause /close)</label>
+    <label>증거금 경보 (%, 쉼표) <input name="marginWarnPcts" type="text" value="${esc((al.marginWarnPcts||[]).join(', '))}"></label>
+    <label>합산 손실 경보 (%, 쉼표) <input name="lossWarnPcts" type="text" value="${esc((al.lossWarnPcts||[]).join(', '))}"></label>
+    <label>수익률 알림 (%, 쉼표) <input name="profitRoiPcts" type="text" value="${esc((al.profitRoiPcts||[]).join(', '))}"></label>
+    <label>손실률 알림 (%, 쉼표) <input name="lossRoiPcts" type="text" value="${esc((al.lossRoiPcts||[]).join(', '))}"></label>
+    <div class="ctrl-btn-row">
+     <button type="submit" class="outline-btn small">알림 저장</button>
+     <button type="button" class="outline-btn small" data-send-daily-report>지금 리포트 발송</button>
+    </div>
+   </form>
+   <span class="copy-msg" data-account-alerts-msg></span>
+  </div></details>`:'';
  const f=c.funds,stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
  // With the exchange list (real account), 보유 / 미실현 count every position, copy and manual alike.
  const vpList=c.mode==='LIVE'&&Array.isArray(c.venuePositions)?c.venuePositions:null,vpUnreal=(vpList||[]).reduce((t,p)=>t+(Number(p.unrealized)||0),0);
@@ -433,7 +454,7 @@ export function copyHTML(c){
  // One time stamp per panel: the real-account page's (3 s refresh); the testnet page has its header time.
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,Number(c.venuePositionsAt)||0,...fresh);
  const stamp=isLive&&updated>0?`<p class="copy-stamp">${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
- const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${stats}${controlsPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
+ const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${stats}${controlsPanel}${alertsPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}${pager}`:'')+
@@ -629,6 +650,19 @@ function bindCopyButtons(el){
   finally{copyActionBusy=false;if(btn&&origText!=null){btn.disabled=false;btn.textContent=origText}}
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('submit',e=>{
+  const alertsForm=e.target.closest('[data-account-alerts-form]');
+  if(alertsForm){
+   e.preventDefault();
+   const ck=n=>Boolean(alertsForm.elements.namedItem(n)?.checked);
+   const list=n=>String(alertsForm.elements.namedItem(n)?.value||'').split(/[,\s]+/).map(Number).filter(Number.isFinite);
+   const body={
+    riskAlerts:ck('riskAlerts'),roiAlerts:ck('roiAlerts'),dailyReport:ck('dailyReport'),
+    skipAlerts:ck('skipAlerts'),remoteCommands:ck('remoteCommands'),
+    marginWarnPcts:list('marginWarnPcts'),lossWarnPcts:list('lossWarnPcts'),
+    profitRoiPcts:list('profitRoiPcts'),lossRoiPcts:list('lossRoiPcts'),
+   };
+   return call(alertsForm.querySelector('button[type="submit"]'),'/api/account/alerts',body,'저장 중…','[data-account-alerts-msg]');
+  }
   const form=e.target.closest('[data-copy-controls-form]');
   if(!form)return;
   e.preventDefault();
@@ -648,6 +682,9 @@ function bindCopyButtons(el){
   // Keep the failure box / controls panel open/closed across the 3 s re-render.
   if(e.target.closest('[data-fail-toggle]')){failOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-controls-toggle]')){controlsOpen=!e.target.closest('details')?.open;}
+  if(e.target.closest('[data-alerts-toggle]')){alertsOpen=!e.target.closest('details')?.open;}
+  const sendRep=e.target.closest('[data-send-daily-report]');
+  if(sendRep)return call(sendRep,'/api/account/alerts/daily-report',{},'발송 중…','[data-account-alerts-msg]');
   const clearCd=e.target.closest('[data-copy-clear-cooldown]');
   if(clearCd)return call(clearCd,'/api/copy/controls',{clearCooldown:true},'해제 중…');
   const tbBtn=e.target.closest('[data-copy-tb]');

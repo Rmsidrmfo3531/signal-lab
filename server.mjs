@@ -56,9 +56,11 @@ import {paperTelegramText} from './paper_telegram.mjs';
 import {liveOverview,checkLiveLevels,testnetStats} from './live_overview.mjs';
 import {TestnetBudget,TESTNET_BALANCE_REFRESH_MS,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch} from './testnet_budget.mjs';
 import {resetTestnetHistory,withTestnetResetRisk} from './testnet_history_reset.mjs';
-import {createVenuePositionsReader} from './venue_positions.mjs';
+import {createVenuePositionsReader,venueRows,normalizeVenuePosition} from './venue_positions.mjs';
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
+import {AccountAlerts} from './account_alerts.mjs';
+import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
 
@@ -315,10 +317,13 @@ const venuePositionsReader=realBingxClient?.mode==='LIVE'
  ?createVenuePositionsReader({read:()=>realBingxClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
-async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;if(!venuePositionsReader)return s;
- const v=await venuePositionsReader.snapshot(realCopyPositions());if(!manualLedger)return {...s,...v};
+let accountAlerts=null;
+async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;
+ const extra=accountAlerts?{accountAlerts:accountAlerts.status()}:{};
+ if(!venuePositionsReader)return {...s,...extra};
+ const v=await venuePositionsReader.snapshot(realCopyPositions());if(!manualLedger)return {...s,...v,...extra};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
- return {...s,...v,manual:manualLedger.status()}}
+ return {...s,...v,manual:manualLedger.status(),...extra}}
 const bingxFunds=(data,{requireAvailable=false,testnet=false}={})=>{
  const list=bingxBalanceRows(data);
  const usdt=list.find(x=>x?.asset==='USDT');
@@ -502,6 +507,7 @@ function copyNotice(e){
  }
  const text=copyEventText(e);if(!text)return;
  try{send('live-notice',{type:'COPY_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
+ if(e.mode==='LIVE'&&['SKIPPED','ADD_SKIPPED'].includes(e.type)&&accountAlerts&&!accountAlerts.shouldSendSkip(e))return;
  if(e.mode==='LIVE')void sendTradeTelegram(text);
 }
 const realTradeMessages=new WeakMap();
@@ -602,6 +608,110 @@ async function sendRealTradeTelegram(e){
   if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){copyTrader.arm();console.log(`[COPY] 업데이트 후 자동 활성화 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`)}
   if(fresh&&m.scalpArmed===true){try{scalpExec.arm();console.log('[SCALP] 업데이트 후 자동 활성화 (테스트넷)')}catch(e){console.warn('[SCALP] 복원 안 함:',e.message)}}
  }catch{}
+}
+// Shared real-account position operator (used by Telegram /close+#confirm and dashboard one-click actions).
+async function executeRealPositionAction({symbol,direction=null,action}={}){
+ if(COPY.mode!=='LIVE'||!realBingxClient)return {ok:false,status:409,error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'};
+ if(!['CLOSE_ALL','CLOSE_HALF','BREAKEVEN_STOP'].includes(action))return {ok:false,status:400,error:'INVALID_ACTION',message:'지원하지 않는 포지션 작업입니다'};
+ const mode=await readPositionMode(realBingxClient);
+ if(!mode.ok)return {ok:false,status:502,error:mode.reason,message:'포지션 모드(단방향/헤지)를 확인하지 못했습니다'};
+ const hedge=mode.hedge;
+ const raw=venueRows(await realBingxClient.positions());
+ if(!raw)return {ok:false,status:502,error:'POSITIONS_UNREADABLE',message:'거래소 포지션을 조회하지 못했습니다'};
+ const markOf=vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null;
+ const open=raw.map(r=>normalizeVenuePosition(r,{markOf})).filter(Boolean);
+ const normSym=String(symbol||'').trim().toUpperCase().replace(/[-_]/g,'');
+ const targets=normSym==='ALL'
+  ?(action==='CLOSE_ALL'?open:[])
+  :open.filter(p=>p.symbol===normSym&&(!direction||p.direction===direction));
+ if(!targets.length)return {ok:false,status:404,error:'POSITION_NOT_FOUND',message:'해당 조건의 보유 포지션이 없습니다'};
+ if(action==='BREAKEVEN_STOP'){
+  if(targets.length!==1)return {ok:false,status:400,error:'SINGLE_POSITION_REQUIRED',message:'본전 스탑은 방향을 지정한 단일 포지션에만 적용됩니다'};
+  const p=targets[0],dir=p.direction==='LONG'?1:-1;
+  const mark=p.mark||markOf(p.venueSymbol);
+  if(!(p.avg>0)||!(mark>0)||!(dir*(mark-p.avg)>0))return {ok:false,status:409,error:'NOT_IN_PROFIT',message:'현재가가 평균 진입가보다 수익 구간에 있을 때만 본전 스탑을 걸 수 있습니다'};
+  const contracts=await venueQuotes.clients.BINGX.contractsFor(p.symbol).catch(()=>new Map());
+  const c=resolveCopyContract(contracts,p.symbol)||contracts?.get?.(p.symbol)||[...(contracts?.values?.()||[])].find(x=>x?.venueSymbol===p.venueSymbol);
+  const stopPrice=c?.tickSize?roundDecimalToStep(p.avg,c.tickSize,p.direction==='LONG'?'UP':'DOWN'):String(p.avg);
+  const cid=('opbe'+Date.now().toString(36)).slice(0,32);
+  await realBingxClient.placeOrder({
+   symbol:p.venueSymbol,side:p.direction==='LONG'?'SELL':'BUY',
+   positionSide:positionSideFor({hedge,direction:p.direction}),
+   type:'STOP_MARKET',quantity:String(p.size),stopPrice:String(stopPrice),
+   closePosition:'true',workingType:'MARK_PRICE',clientOrderId:cid,
+  });
+  return {ok:true,action,symbol:p.symbol,direction:p.direction,stopPrice:Number(stopPrice),summary:`${p.symbol} ${p.direction==='LONG'?'롱':'숏'} 본전 스탑 설정 (${stopPrice} USDT)`};
+ }
+ const results=[];
+ for(const p of targets){
+  let qty=p.size;
+  if(action==='CLOSE_HALF'){
+   const contracts=await venueQuotes.clients.BINGX.contractsFor(p.symbol).catch(()=>new Map());
+   const c=resolveCopyContract(contracts,p.symbol)||contracts?.get?.(p.symbol)||[...(contracts?.values?.()||[])].find(x=>x?.venueSymbol===p.venueSymbol);
+   const step=c?.quantityStep,minQ=Number(c?.minQuantityBase)||0;
+   qty=step?Number(roundDecimalToStep(p.size/2,step,'DOWN')):p.size/2;
+   if(!(qty>0)||qty<minQ||qty>=p.size)return {ok:false,status:409,error:'HALF_QTY_TOO_SMALL',message:`50% 분할 수량(${qty})이 최소 주문 단위 미만입니다`};
+  }
+  const cid=('opcl'+Date.now().toString(36)+results.length).slice(0,32);
+  await realBingxClient.placeOrder({
+   symbol:p.venueSymbol,side:p.direction==='LONG'?'SELL':'BUY',
+   ...sideParams({hedge,direction:p.direction,closing:true}),
+   type:'MARKET',quantity:String(qty),clientOrderId:cid,
+  });
+  results.push(`${p.symbol} ${p.direction==='LONG'?'롱':'숏'} ${qty}`);
+ }
+ void refreshRealTradeNotices();
+ return {ok:true,action,closed:results,summary:`${action==='CLOSE_HALF'?'50% 부분 청산':'전량 청산'}: ${results.join(', ')}`};
+}
+if(COPY.mode==='LIVE'){
+ accountAlerts=new AccountAlerts({
+  directory:storage.dir,
+  allowedChatId:CONFIG.tgChat,
+  post:CONFIG.tgToken?telegramPost:null,
+  sendText:text=>sendTradeTelegram(text),
+  log:(...a)=>console.log(...a),
+  getSnapshot:async()=>{
+   const st=await copyLiveStatus();
+   return {
+    equityUSD:st.funds?.equity??null,availableUSD:st.funds?.available??null,
+    positions:st.venuePositions??[],copy:st,
+    copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],
+    dailyByDay:dailyPnl?.status()?.byDay??null,
+   };
+  },
+  onPause:()=>copyTrader.disarm(),
+  onResume:()=>{
+   if(copyTrader.store.killed)copyTrader.resume();
+   if(copyControls.status().cooldownActive)copyControls.configure({clearCooldown:true});
+   return copyTrader.arm();
+  },
+  onClose:({symbol,direction})=>executeRealPositionAction({symbol,direction,action:'CLOSE_ALL'}),
+ });
+ const checkRiskAndRoi=async()=>{
+  if(!venuePositionsReader||!accountAlerts)return;
+  try{
+   const v=await venuePositionsReader.snapshot(realCopyPositions());
+   const positions=Array.isArray(v?.venuePositions)?v.venuePositions:[];
+   const eq=copyTrader.funds?.equity??null;
+   await accountAlerts.checkRisk({equityUSD:eq,positions});
+   await accountAlerts.checkPositions({positions});
+  }catch(e){console.warn('[ALERTS]',e.message)}
+ };
+ const checkDaily=async()=>{
+  if(!accountAlerts)return;
+  try{
+   const v=venuePositionsReader?await venuePositionsReader.snapshot(realCopyPositions()):null;
+   await accountAlerts.checkDailyReport({
+    copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],
+    dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:copyTrader.funds?.equity??null,
+    openCount:Array.isArray(v?.venuePositions)?v.venuePositions.length:0,
+   });
+  }catch(e){console.warn('[ALERTS DAILY]',e.message)}
+ };
+ setInterval(()=>{void checkRiskAndRoi()},15000).unref?.();
+ setInterval(()=>{void checkDaily()},60000).unref?.();
+ setTimeout(()=>{void checkDaily()},25000).unref?.();
+ if(CONFIG.tgToken&&CONFIG.tgChat)setInterval(()=>{void accountAlerts.pollCommands()},10000).unref?.();
 }
 // The venue's public mid price for a live record (screen and exit estimates only; never an order input).
 function livePublicPrice(record){const book=venueBooks.get(record.venue+':'+record.symbol);return book?.ok&&Number.isFinite(book.mid)&&Date.now()-book.receivedAt<60000?book.mid:null}
@@ -1773,6 +1883,28 @@ const server=http.createServer(async(req,res)=>{
    const body=await bodyJson(req);
    try{const controls=copyControls.configure(body);reportsDirty=true;return response(res,200,{controls,traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD),maxLeverage:copyControls.effectiveMaxLeverage(COPY.maxLeverage)})}
    catch(e){return response(res,e.httpStatus||500,{error:e.code||'COPY_CONTROLS_SAVE_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/account/alerts'&&req.method==='GET'){
+   if(!accountAlerts)return response(res,404,{error:'ACCOUNT_ALERTS_UNAVAILABLE'});
+   return response(res,200,{alerts:accountAlerts.status()});
+  }
+  if(pathname==='/api/account/alerts'&&req.method==='POST'){
+   if(!accountAlerts)return response(res,404,{error:'ACCOUNT_ALERTS_UNAVAILABLE'});
+   const body=await bodyJson(req);
+   try{return response(res,200,{alerts:accountAlerts.configure(body)})}
+   catch(e){return response(res,e.httpStatus||500,{error:e.code||'ACCOUNT_ALERTS_SAVE_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/account/alerts/daily-report'&&req.method==='POST'){
+   if(!accountAlerts)return response(res,404,{error:'ACCOUNT_ALERTS_UNAVAILABLE'});
+   try{
+    const st=await copyLiveStatus();
+    const resReport=await accountAlerts.checkDailyReport({
+     copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],
+     dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:st.funds?.equity??null,
+     openCount:Array.isArray(st.venuePositions)?st.venuePositions.length:0,force:true,
+    });
+    return response(res,200,{ok:true,...resReport});
+   }catch(e){return response(res,500,{error:e.code||'DAILY_REPORT_FAILED',message:e.message})}
   }
   // From the local channel listener only: a shared token (COPY_LISTENER_TOKEN in .env), compared in constant time.
   if(pathname==='/api/copy/message'&&req.method==='POST'){
