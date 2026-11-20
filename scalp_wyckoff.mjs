@@ -1,6 +1,7 @@
 // Independent Wyckoff structure observation using the shared Map inputs.
 // The protected Pine engine was not available. Keep this out of order decisions.
 import {observeVsa} from './scalp_vsa.mjs';
+import {observeAiLens} from './scalp_ai_lens.mjs';
 
 export const WYCKOFF_INTERVAL_MS = 15 * 60_000;
 export const WYCKOFF_CANDLES = 1250;
@@ -11,22 +12,22 @@ const EXTREME_LOOKBACK = 30;
 const ATR_PERIOD = 14;
 const VOLUME_PERIOD = 20;
 
-function closedBars(rows, asOf) {
+export function closedScalpBars(rows, asOf, intervalMs = I) {
   const byTime = new Map();
-  for (const row of rows ?? []) {
+  for (const row of Array.isArray(rows) ? rows : []) {
     if (!Array.isArray(row)) continue;
     const [openAt, open, high, low, close, volume, end] = row.map(Number);
     if (![openAt, open, high, low, close, volume, end].every(Number.isFinite)) continue;
-    if (openAt % I !== 0 || end !== openAt + I - 1 || end >= asOf) continue;
+    if (openAt % intervalMs !== 0 || end !== openAt + intervalMs - 1 || end >= asOf) continue;
     if (low <= 0 || high < Math.max(open, close) || low > Math.min(open, close) || volume < 0) continue;
     byTime.set(openAt, {openAt, at: end + 1, high, low, close, volume, spread: high - low});
   }
   const bars = [...byTime.values()].sort((a, b) => a.at - b.at);
-  const latest = Math.floor(asOf / I) * I;
+  const latest = Math.floor(asOf / intervalMs) * intervalMs;
   if (bars.at(-1)?.at !== latest) return [];
   // A missing candle breaks the sequence used for pivots and consecutive closes.
   let start = bars.length - 1;
-  while (start > 0 && bars[start].at - bars[start - 1].at === I) start--;
+  while (start > 0 && bars[start].at - bars[start - 1].at === intervalMs) start--;
   return bars.slice(start);
 }
 
@@ -224,9 +225,9 @@ function analyzeMap(bars) {
 }
 
 export function observeScalpStructure(rows, {asOf} = {}) {
-  const bars = Array.isArray(rows) && Number.isSafeInteger(asOf) ? closedBars(rows, asOf) : [];
+  const bars = Number.isSafeInteger(asOf) ? closedScalpBars(rows, asOf) : [];
   const {map, box} = analyzeMap(bars);
-  return {map, vsa: observeVsa(bars, box, PIVOT_BARS)};
+  return {map, vsa: observeVsa(bars, box, PIVOT_BARS), aiLens: observeAiLens(bars)};
 }
 
 export function observeWyckoff(rows, options) {

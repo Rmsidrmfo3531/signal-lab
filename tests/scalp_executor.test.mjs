@@ -902,20 +902,23 @@ test('report push: scalp ledger trades carry kind',async()=>{
  assert.equal(s.trades[0].kind,'ZONE_REVERSAL');assert.equal('kind' in s.trades[1],false,'copy / older rows: no kind field');
 });
 
-test('Map and VSA use one 15m read after testnet entries and preserve orders on read failure',async()=>{
+test('Map, VSA and AI Lens share one 15m read after testnet entries and preserve orders on read failure',async()=>{
  const interval=15*60000;
+ const h4=4*3600000,closed4h=Math.floor(T0/h4)*h4;
+ const trend=()=>up4h(closed4h+1000);
  for(const readFails of [false,true]){
-  const dir=tmp(),v=venue(),ex=make(v,{dir});
+  const dir=tmp(),v=venue(),ex=make(v,{dir,trend});
   const candles=ex.candles;
-  let entryAlreadySent=false,structureReads=0;
+  let entryAlreadySent=false,structureReads=0,trendReads=0;
   ex.candles=async(symbol,tf,limit)=>{
+   if(tf==='4h')trendReads++;
    if(tf!=='15m')return candles(symbol,tf,limit);
    structureReads++;
    entryAlreadySent=placed(v,'MARKET').length===1;
    if(readFails)throw Error('public candles unavailable');
    const closeAt=Math.floor(T0/interval)*interval;
-   return Array.from({length:100},(_,i)=>{
-    const at=closeAt-(100-i)*interval;
+   return Array.from({length:210},(_,i)=>{
+    const at=closeAt-(210-i)*interval;
     return [at,100,101,99,100,100,at+interval-1,10000];
    });
   };
@@ -926,11 +929,22 @@ test('Map and VSA use one 15m read after testnet entries and preserve orders on 
    assert.equal(scan.error,null);
    assert.equal(entryAlreadySent,true);
    assert.equal(structureReads,1);
+   assert.equal(trendReads,1);
    assert.equal(ex.signals().length,1);
    assert.equal(ex.signals()[0].entered,true);
    assert.equal(ex.signals()[0].wyckoff.status,readFails?'READ_FAILED':'NO_RANGE');
    assert.equal(ex.signals()[0].vsa.status,readFails?'READ_FAILED':'NO_MAP_BOX');
-   if(!readFails)assert.equal(ex.signals()[0].vsa.volumeZ,0);
+   const lens=ex.signals()[0].aiLens;
+   assert.equal(lens.status,readFails?'READ_FAILED':'OK');
+   assert.equal(ex.runtimeSummary().aiLensRecord,true);
+   if(!readFails){
+    assert.equal(ex.signals()[0].vsa.volumeZ,0);
+    assert.equal(lens.ema200,100);
+    assert.equal(lens.higher4h.closedCandleAt,closed4h);
+    assert.ok(Math.abs(lens.higher4h.ema50-77.55)<1e-9);
+    assert.equal(lens.riskMap.referenceEntry,ENTRY);
+    assert.equal(lens.riskMap.stop,ENTRY-3);
+   }
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
  }
 });
