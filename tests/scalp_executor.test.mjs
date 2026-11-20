@@ -182,8 +182,10 @@ test('detection on synthetic closed 5m candles -> plan: 38.2/50/61.8 % targets, 
  assert.equal(plan.ok,true,JSON.stringify(plan));assert.ok(plan.stop<extreme&&plan.entry>plan.stop&&plan.targets[0]>plan.entry);
  assert.ok(Math.abs(plan.riskUSD-50)<.2,'0.5 % of 10,000 at the stop');assert.ok(plan.netRR>=1);
  assert.ok(Math.abs(plan.parts.reduce((a,b)=>a+b,0)-plan.qty)<1e-9);assert.equal(plan.parts[0],Number((Math.floor(plan.qty*100*.4)/100).toFixed(2)));
- assert.deepEqual(planScalpOrder({det,price:det.entry*.994,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['PRICE_DRIFT'],'0.6 % toward the stop: skipped');
- assert.deepEqual(planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:{...cfg,minNetRR:50}}).reasons,['TP1_NET_RR_BELOW_MINIMUM']);
+ assert.deepEqual(planScalpOrder({det,price:det.entry*.994,contract:SOL,equity:10000,leverage:10,config:{...cfg,stopLossEnabled:true}}).reasons,['PRICE_DRIFT'],'0.6 % toward the stop with stop-loss on: skipped');
+ assert.equal(planScalpOrder({det,price:det.entry*.994,contract:SOL,equity:10000,leverage:10,config:cfg}).ok,true,'stop-loss off: better price above extreme is allowed');
+ assert.deepEqual(planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:{...cfg,stopLossEnabled:true,minNetRR:50}}).reasons,['TP1_NET_RR_BELOW_MINIMUM']);
+ assert.equal(planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:{...cfg,minNetRR:50}}).ok,true,'stop-loss off: virtual-stop minNetRR is skipped when TP1 clears costs');
  // Margin cap: 1 % of equity per position cuts the quantity (and the risk).
  const capped=planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:{...cfg,maxMarginPct:1}});
  assert.equal(capped.capped,true);assert.ok(capped.marginUSD<=100+1e-9&&capped.riskUSD<50);
@@ -659,7 +661,7 @@ test('hedge mode: a non-zero row without LONG / SHORT is an error, not "flat" �
 });
 
 test('better price (toward the stop) is taken while half the stop distance is left (user 2026-11-17)',()=>{
- const cfg=scalpExecConfig({}),det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ const cfg=scalpExecConfig({SCALP_STOP_LOSS:'on'}),det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
  assert.equal(cfg.stopKeepPct,50);
  const planned=det.entry-det.stop,base=planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg});assert.ok(base.ok);
  const better=planScalpOrder({det,price:det.entry-planned*.4,contract:SOL,equity:10000,leverage:10,config:cfg});
@@ -678,6 +680,24 @@ test('better price (toward the stop) is taken while half the stop distance is le
  const ds=detectScalpReversal(rise(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings}),ps=ds.stop-ds.entry;
  const sb=planScalpOrder({det:ds,price:ds.entry+ps*.3,contract:SOL,equity:10000,leverage:10,config:cfg});
  assert.ok(sb.ok||sb.reasons[0]!=='PRICE_DRIFT'||sb.beyondExtreme,'SHORT: a better (higher) price with 70 % left is not a plain drift skip');
+});
+
+test('testnet scalp without stop-loss skips virtual-stop RR and stopKeepPct (user 2026-11-20)',()=>{
+ const cfg=scalpExecConfig({});
+ assert.equal(cfg.stopLossEnabled,false);
+ const det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ assert.equal(det.ok,true);
+ // 1) Virtual-stop minNetRR is skipped, but TP1 must still cover round-trip costs.
+ const wideStop={...det,stop:det.entry-20};
+ assert.equal(planScalpOrder({det:wideStop,price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg}).ok,true);
+ const tinyTp1={...det,targets:[det.entry*1.0005,det.targets[1],det.targets[2]]};
+ assert.deepEqual(planScalpOrder({det:tinyTp1,price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['TP1_NET_RR_BELOW_MINIMUM']);
+ // 2) Better price toward virtual stop skips stopKeepPct, while still rejecting beyond the signal extreme.
+ const planned=det.entry-det.stop;
+ const deepBetter=planScalpOrder({det,price:det.entry-planned*.6,contract:SOL,equity:10000,leverage:10,config:cfg});
+ assert.equal(deepBetter.ok,true);
+ const pastExtreme=planScalpOrder({det:{...det,evidence:{...det.evidence,extreme:det.entry-planned*.3}},price:det.entry-planned*.4,contract:SOL,equity:10000,leverage:10,config:cfg});
+ assert.equal(pastExtreme.beyondExtreme,true);
 });
 
 // ---- Shared TESTNET budget with the signal strategy (user 2026-11-17 "한도까지 하나로", "하루 손실을 늘리면 되지") ----

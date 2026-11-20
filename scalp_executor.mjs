@@ -177,11 +177,15 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  if(!(planned>0))return fail('ENTRY_AT_OR_BEYOND_STOP'); // a stop on the wrong side (or missing) never plans
  const rt=price*(2*Math.max(costs.takerRate,pos(c?.takerFeeRate)??0)+2*costs.slippageBps/1e4+(costs.fundingRate||0));
  if(!away&&config.stopKeepPct>0&&driftPct>0){
-  // Never more than the planned distance; a planned stop already under 3 costs takes no move toward it.
   // The signal extreme (low / high) must still hold.
-  const need=Math.min(planned,Math.max(planned*config.stopKeepPct/100,3*rt)),ext=Number(det.evidence?.extreme);
+  const ext=Number(det.evidence?.extreme);
   if(Number.isFinite(ext)&&ext>0&&!(dirOf(det.direction)*(price-ext)>0))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),toward:'STOP',beyondExtreme:true});
-  if(!(left>=need))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),toward:'STOP',stopLeftPct:planned>0?+(left/planned*100).toFixed(1):null,allowedPct:planned>0?+((planned-need)/det.entry*100).toFixed(3):null});
+  // stopKeepPct only applies when a protective stop is active (user 2026-11-20).
+  if(config.stopLossEnabled!==false){
+   // Never more than the planned distance; a planned stop already under 3 costs takes no move toward it.
+   const need=Math.min(planned,Math.max(planned*config.stopKeepPct/100,3*rt));
+   if(!(left>=need))return fail('PRICE_DRIFT',{driftPct:+driftPct.toFixed(3),toward:'STOP',stopLeftPct:planned>0?+(left/planned*100).toFixed(1):null,allowedPct:planned>0?+((planned-need)/det.entry*100).toFixed(3):null});
+  }
  }else{
   const allowed=away?Math.max(config.maxDriftPct,(Number(det.evidence?.movePct)||0)*(config.driftMovePct||0)/100):config.maxDriftPct;
   // The ATR cap stays for ordinary moves; a drift within the move-scaled allowance is not held to it.
@@ -193,8 +197,10 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  const down=Number(grid(price,tick,'DOWN')),up=Number(grid(price,tick,'UP')),entry=price-down<=up-price?down:up,stop=Number(grid(det.stop,tick,awayMode(det.direction)));
  if(!(dir*(entry-stop)>0))return fail('ENTRY_AT_OR_BEYOND_STOP');
  const cost={...costs,takerRate:Math.max(costs.takerRate,pos(c.takerFeeRate)??0)};
+ // When stop-loss is disabled, skip the virtual-stop RR floor and only require TP1 to cover round-trip costs (user 2026-11-20).
+ const minNetRR=config.stopLossEnabled===false?0:config.minNetRR;
  // Targets and the TP1 net RR do not depend on the quantity: checked on a 20-lot sample.
- const q=buildScalpPlan({signal:{...det,stop},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR:config.minNetRR});
+ const q=buildScalpPlan({signal:{...det,stop},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR});
  if(!q.ok)return fail(q.reasons[0],{netRR:q.estimatedNetRR??null});
  if(!pos(equity))return fail('NO_BALANCE');
  const riskUSD=equity*config.riskPct/100,lev=pos(leverage)??1,scaleIn=config.scaleIn===true;
