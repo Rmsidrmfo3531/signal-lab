@@ -474,15 +474,18 @@ export function copyHTML(c){
    <form class="ctrl-form" data-account-alerts-form>
     <label class="ctrl-check"><input name="riskAlerts" type="checkbox"${al.riskAlerts?' checked':''}> 통합 위험 경보 (카피+수동)</label>
     <label class="ctrl-check"><input name="roiAlerts" type="checkbox"${al.roiAlerts?' checked':''}> 포지션 수익률/손실률 도달</label>
+    <label class="ctrl-check"><input name="positionSummaryAlerts" type="checkbox"${al.positionSummaryAlerts!==false?' checked':''}> 진행 중 포지션 손익 정기 알림</label>
     <label class="ctrl-check"><input name="dailyReport" type="checkbox"${al.dailyReport?' checked':''}> 일일 마감 리포트 (00:00 KST)</label>
     <label class="ctrl-check"><input name="skipAlerts" type="checkbox"${al.skipAlerts?' checked':''}> 카피 진입 실패·스킵 알림</label>
-    <label class="ctrl-check"><input name="remoteCommands" type="checkbox"${al.remoteCommands?' checked':''}> 봇 원격 명령 (/status /pause /close)</label>
+    <label class="ctrl-check"><input name="remoteCommands" type="checkbox"${al.remoteCommands?' checked':''}> 봇 원격 명령 (/status /pos /pause /close)</label>
+    <label>포지션 알림 주기 (분) <input name="positionSummaryIntervalMin" type="number" min="5" max="1440" step="5" value="${esc(al.positionSummaryIntervalMin??30)}"></label>
     <label>증거금 경보 (%, 쉼표) <input name="marginWarnPcts" type="text" value="${esc((al.marginWarnPcts||[]).join(', '))}"></label>
     <label>합산 손실 경보 (%, 쉼표) <input name="lossWarnPcts" type="text" value="${esc((al.lossWarnPcts||[]).join(', '))}"></label>
     <label>수익률 알림 (%, 쉼표) <input name="profitRoiPcts" type="text" value="${esc((al.profitRoiPcts||[]).join(', '))}"></label>
     <label>손실률 알림 (%, 쉼표) <input name="lossRoiPcts" type="text" value="${esc((al.lossRoiPcts||[]).join(', '))}"></label>
     <div class="ctrl-btn-row">
      <button type="submit" class="outline-btn small">알림 저장</button>
+     <button type="button" class="outline-btn small" data-send-position-summary>지금 포지션 알림 발송</button>
      <button type="button" class="outline-btn small" data-send-daily-report>지금 리포트 발송</button>
     </div>
    </form>
@@ -822,8 +825,9 @@ function bindCopyButtons(el){
    const ck=n=>Boolean(alertsForm.elements.namedItem(n)?.checked);
    const list=n=>String(alertsForm.elements.namedItem(n)?.value||'').split(/[,\s]+/).map(Number).filter(Number.isFinite);
    const body={
-    riskAlerts:ck('riskAlerts'),roiAlerts:ck('roiAlerts'),dailyReport:ck('dailyReport'),
-    skipAlerts:ck('skipAlerts'),remoteCommands:ck('remoteCommands'),
+    riskAlerts:ck('riskAlerts'),roiAlerts:ck('roiAlerts'),positionSummaryAlerts:ck('positionSummaryAlerts'),
+    dailyReport:ck('dailyReport'),skipAlerts:ck('skipAlerts'),remoteCommands:ck('remoteCommands'),
+    positionSummaryIntervalMin:Number(alertsForm.elements.namedItem('positionSummaryIntervalMin')?.value)||30,
     marginWarnPcts:list('marginWarnPcts'),lossWarnPcts:list('lossWarnPcts'),
     profitRoiPcts:list('profitRoiPcts'),lossRoiPcts:list('lossRoiPcts'),
    };
@@ -874,6 +878,8 @@ function bindCopyButtons(el){
    const tags=nextTags.split(/[,#\s]+/).map(s=>s.trim()).filter(Boolean);
    return call(noteBtn,'/api/manual/note',{id,note:nextNote,tags},'저장 중…');
   }
+  const sendPos=e.target.closest('[data-send-position-summary]');
+  if(sendPos)return call(sendPos,'/api/account/alerts/position-summary',{},'발송 중…','[data-account-alerts-msg]');
   const sendRep=e.target.closest('[data-send-daily-report]');
   if(sendRep)return call(sendRep,'/api/account/alerts/daily-report',{},'발송 중…','[data-account-alerts-msg]');
   const clearCd=e.target.closest('[data-copy-clear-cooldown]');

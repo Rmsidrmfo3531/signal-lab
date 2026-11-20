@@ -721,6 +721,7 @@ if(COPY.mode==='LIVE'){
    const eq=copyTrader.funds?.equity??null;
    await accountAlerts.checkRisk({equityUSD:eq,positions});
    await accountAlerts.checkPositions({positions});
+   await accountAlerts.checkPositionSummary({positions});
   }catch(e){console.warn('[ALERTS]',e.message)}
  };
  const checkDaily=async()=>{
@@ -1941,6 +1942,16 @@ const server=http.createServer(async(req,res)=>{
     });
     return response(res,200,{ok:true,...resReport});
    }catch(e){return response(res,500,{error:e.code||'DAILY_REPORT_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/account/alerts/position-summary'&&req.method==='POST'){
+   if(!accountAlerts)return response(res,404,{error:'ACCOUNT_ALERTS_UNAVAILABLE'});
+   try{
+    const st=await copyLiveStatus();
+    const resSum=await accountAlerts.checkPositionSummary({
+     positions:Array.isArray(st.venuePositions)?st.venuePositions:[],force:true,
+    });
+    return response(res,200,{ok:true,...resSum,message:resSum.sent?`포지션 ${resSum.count}건 알림 발송 완료`:'보유 중인 포지션이 없습니다'});
+   }catch(e){return response(res,500,{error:e.code||'POSITION_SUMMARY_FAILED',message:e.message})}
   }
   if(pathname==='/api/copy/analytics'&&req.method==='GET'){
    return response(res,200,buildCopyAnalytics({
