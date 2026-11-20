@@ -165,10 +165,59 @@ test('copyHTML renders accountAlerts panel on LIVE',()=>{
  const html=copyHTML({
   mode:'LIVE',enabled:true,armed:true,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,
   maxAdds:100,maxTotalMarginPct:100,ledgerLossPct:50,positions:[],closed:[],events:[],
-  accountAlerts:{riskAlerts:true,marginWarnPcts:[50,70],lossWarnPcts:[10,20],dailyReport:true,roiAlerts:true,profitRoiPcts:[50,100],lossRoiPcts:[30,50],skipAlerts:true,remoteCommands:true},
+  accountAlerts:{riskAlerts:true,marginWarnPcts:[50,70],lossWarnPcts:[10,20],dailyReport:true,roiAlerts:true,profitRoiPcts:[50,100],lossRoiPcts:[30,50],positionSummaryAlerts:true,positionSummaryIntervalMin:30,skipAlerts:true,remoteCommands:true},
  });
  assert.match(html,/텔레그램 알림 · 위험 경보/);
  assert.match(html,/data-account-alerts-form/);
+ assert.match(html,/data-send-position-summary/);
  assert.match(html,/data-send-daily-report/);
  assert.equal(typeof formatDailyReport,'function');
+});
+
+test('open-position PnL summary sends concise one-line-per-position Telegram alert, respects interval cooldown, and supports /pos command',async()=>{
+ const {formatPositionPnlLine,formatPositionsSummary}=await import('../account_alerts.mjs');
+ const positions=[
+  {symbol:'BTCUSDT',direction:'LONG',unrealized:100.11,roePct:12.5},
+  {symbol:'NCSKSNDK2USDUSDT',direction:'SHORT',unrealized:-45.2,margin:544.58},
+ ];
+ assert.equal(formatPositionPnlLine(positions[0]),'BTCUSDT / +100.11(12.5%)');
+ assert.equal(formatPositionPnlLine(positions[1]),'SNDKUSDT / -45.20(-8.3%)');
+ assert.equal(
+  formatPositionsSummary(positions),
+  '📈 진행 중 포지션 (2개)\nBTCUSDT / +100.11(12.5%)\nSNDKUSDT / -45.20(-8.3%)'
+ );
+
+ const dir=tmp();
+ try{
+  let now=1795000000000;
+  const sent=[];
+  const alerts=new AccountAlerts({
+   directory:dir,now:()=>now,allowedChatId:'123456',
+   sendText:async t=>{sent.push(t);return {ok:true}},
+   getSnapshot:async()=>({equityUSD:5000,availableUSD:4200,positions,copy:{enabled:true,armed:true,traderBalanceUSD:20000}}),
+  });
+  // No positions -> silent
+  assert.equal((await alerts.checkPositionSummary({positions:[],now})).sent,false);
+  // First periodic check with open positions -> sends
+  const r1=await alerts.checkPositionSummary({positions,now});
+  assert.equal(r1.sent,true);assert.equal(r1.count,2);
+  assert.equal(sent.length,1);
+  assert.match(sent[0],/BTCUSDT \/ \+100\.11\(12\.5%\)/);
+  assert.match(sent[0],/SNDKUSDT \/ -45\.20\(-8\.3%\)/);
+  // Within 30m cooldown -> suppressed
+  now+=10*60000;
+  assert.equal((await alerts.checkPositionSummary({positions,now})).reason,'COOLDOWN');
+  // After 30m cooldown -> sends again
+  now+=21*60000;
+  assert.equal((await alerts.checkPositionSummary({positions,now})).sent,true);
+  assert.equal(sent.length,2);
+  // /pos command returns exact one-line list immediately
+  const reply=await alerts.handleCommand('/pos','123456',now);
+  assert.equal(reply,'📈 진행 중 포지션 (2개)\nBTCUSDT / +100.11(12.5%)\nSNDKUSDT / -45.20(-8.3%)');
+  // Toggle off suppresses periodic sends (force still works)
+  alerts.configure({positionSummaryAlerts:false,positionSummaryIntervalMin:15});
+  now+=20*60000;
+  assert.equal((await alerts.checkPositionSummary({positions,now})).reason,'DISABLED');
+  assert.equal((await alerts.checkPositionSummary({positions,now,force:true})).sent,true);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });

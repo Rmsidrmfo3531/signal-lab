@@ -20,6 +20,8 @@ export const ACCOUNT_ALERTS_DEFAULTS=Object.freeze({
  roiAlerts:true,
  profitRoiPcts:[50,100,200],
  lossRoiPcts:[30,50,75],
+ positionSummaryAlerts:true,
+ positionSummaryIntervalMin:30,
  skipAlerts:true,
  remoteCommands:true,
 });
@@ -37,6 +39,22 @@ const px=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?String(+n.toPrecis
 const sideKo=d=>d==='LONG'?'🟢 롱':d==='SHORT'?'🔴 숏':String(d||'');
 const originKo=o=>o==='copy'?'카피':'수동';
 const err=msg=>Object.assign(Error(msg),{code:'INVALID_ACCOUNT_ALERTS',httpStatus:400});
+
+export function formatPositionPnlLine(p){
+ const sym=displaySymbol(p?.symbol||p?.venueSymbol||'');
+ const u=Number(p?.unrealized);
+ const pnlText=p?.unrealized!=null&&Number.isFinite(u)?`${u>=0?'+':'-'}${Math.abs(u).toFixed(2)}`:'—';
+ let roe=Number(p?.roePct);
+ if((p?.roePct==null||!Number.isFinite(roe))&&Number.isFinite(u)&&Number(p?.margin)>0)roe=u/Number(p.margin)*100;
+ const roeText=Number.isFinite(roe)?`(${roe<0?'-':''}${Math.abs(roe).toFixed(1)}%)`:'';
+ return `${sym} / ${pnlText}${roeText}`;
+}
+
+export function formatPositionsSummary(positions=[]){
+ const list=Array.isArray(positions)?positions:[];
+ if(!list.length)return '보유 중인 포지션이 없습니다.';
+ return [`📈 진행 중 포지션 (${list.length}개)`,...list.map(formatPositionPnlLine)].join('\n');
+}
 
 function parseTierList(raw,lo,hi,field){
  if(!Array.isArray(raw))throw err(`${field} must be an array`);
@@ -81,10 +99,7 @@ export function formatStatusReply({equityUSD,availableUSD,positions=[],copy}){
  if(!list.length)lines.push('보유 포지션 없음');
  else{
   lines.push(`보유 포지션 (${list.length}개):`);
-  for(const p of list.slice(0,12)){
-   const roe=Number.isFinite(Number(p.roePct))?` (${Number(p.roePct)>=0?'+':'−'}${Math.abs(Number(p.roePct)).toFixed(1)}%)`:'';
-   lines.push(`· [${originKo(p.origin)}] ${displaySymbol(p.symbol)} ${sideKo(p.direction)} ${p.leverage??'—'}배 · ${money(p.unrealized)}${roe}`);
-  }
+  for(const p of list.slice(0,20))lines.push(formatPositionPnlLine(p));
  }
  return lines.join('\n');
 }
@@ -130,9 +145,12 @@ export class AccountAlerts{
    roiAlerts:saved?.roiAlerts!==false,
    profitRoiPcts:Array.isArray(saved?.profitRoiPcts)?saved.profitRoiPcts:[...ACCOUNT_ALERTS_DEFAULTS.profitRoiPcts],
    lossRoiPcts:Array.isArray(saved?.lossRoiPcts)?saved.lossRoiPcts:[...ACCOUNT_ALERTS_DEFAULTS.lossRoiPcts],
+   positionSummaryAlerts:saved?.positionSummaryAlerts!==false,
+   positionSummaryIntervalMin:Number.isFinite(Number(saved?.positionSummaryIntervalMin))&&Number(saved.positionSummaryIntervalMin)>=5&&Number(saved.positionSummaryIntervalMin)<=1440?Math.round(Number(saved.positionSummaryIntervalMin)):ACCOUNT_ALERTS_DEFAULTS.positionSummaryIntervalMin,
    skipAlerts:saved?.skipAlerts!==false,
    remoteCommands:saved?.remoteCommands!==false,
    lastDailyReportDay:typeof saved?.lastDailyReportDay==='string'?saved.lastDailyReportDay:null,
+   lastPositionSummaryAt:Number.isFinite(Number(saved?.lastPositionSummaryAt))?Number(saved.lastPositionSummaryAt):null,
    lastUpdateId:Number.isSafeInteger(saved?.lastUpdateId)?saved.lastUpdateId:null,
   };
   this.bootAt=this.now();
@@ -156,11 +174,16 @@ export class AccountAlerts{
  configure(patch={}){
   if(!patch||typeof patch!=='object'||Array.isArray(patch))throw err('JSON object required');
   const next={...this.store};
-  for(const k of ['riskAlerts','dailyReport','roiAlerts','skipAlerts','remoteCommands']){
+  for(const k of ['riskAlerts','dailyReport','roiAlerts','positionSummaryAlerts','skipAlerts','remoteCommands']){
    if(Object.hasOwn(patch,k)){
     if(typeof patch[k]!=='boolean')throw err(`${k} must be a boolean`);
     next[k]=patch[k];
    }
+  }
+  if(Object.hasOwn(patch,'positionSummaryIntervalMin')){
+   const n=Math.round(Number(patch.positionSummaryIntervalMin));
+   if(!Number.isFinite(n)||n<5||n>1440)throw err('positionSummaryIntervalMin must be 5..1440');
+   next.positionSummaryIntervalMin=n;
   }
   if(Object.hasOwn(patch,'marginWarnPcts'))next.marginWarnPcts=parseTierList(patch.marginWarnPcts,10,95,'marginWarnPcts');
   if(Object.hasOwn(patch,'lossWarnPcts'))next.lossWarnPcts=parseTierList(patch.lossWarnPcts,2,80,'lossWarnPcts');
@@ -180,9 +203,12 @@ export class AccountAlerts{
    roiAlerts:this.store.roiAlerts,
    profitRoiPcts:[...this.store.profitRoiPcts],
    lossRoiPcts:[...this.store.lossRoiPcts],
+   positionSummaryAlerts:this.store.positionSummaryAlerts,
+   positionSummaryIntervalMin:this.store.positionSummaryIntervalMin,
    skipAlerts:this.store.skipAlerts,
    remoteCommands:this.store.remoteCommands,
    lastDailyReportDay:this.store.lastDailyReportDay,
+   lastPositionSummaryAt:this.store.lastPositionSummaryAt,
   };
  }
 
@@ -300,6 +326,21 @@ export class AccountAlerts{
   return {sent:true,day:targetDay,text};
  }
 
+ /** Periodic open-position PnL summary alert (one compact line per open position). */
+ async checkPositionSummary({positions=[],now=this.now(),force=false}={}){
+  if(!force&&!this.store.positionSummaryAlerts)return {sent:false,reason:'DISABLED'};
+  const list=Array.isArray(positions)?positions:[];
+  if(!list.length)return {sent:false,reason:'NO_POSITIONS'};
+  const intervalMs=(this.store.positionSummaryIntervalMin||ACCOUNT_ALERTS_DEFAULTS.positionSummaryIntervalMin)*60000;
+  if(!force&&this.store.lastPositionSummaryAt!=null&&now-this.store.lastPositionSummaryAt<intervalMs)
+   return {sent:false,reason:'COOLDOWN'};
+  const text=formatPositionsSummary(list);
+  await this.sendText(text);
+  this.store.lastPositionSummaryAt=now;
+  this.#save();
+  return {sent:true,count:list.length,text};
+ }
+
  /** #6 Execute a single authorized Telegram command and return reply text. */
  async handleCommand(rawText,chatId,now=this.now()){
   if(!this.store.remoteCommands)return null;
@@ -313,6 +354,7 @@ export class AccountAlerts{
    return [
     '🤖 Signal Lab 원격 명령어',
     '/status — 실계좌 잔고·증거금·보유 포지션',
+    '/pos — 진행 중 포지션 손익 한 줄 요약',
     '/scalp — 테스트넷 단타 5분 스캔 상태',
     '/report — 오늘 KST 손익 중간 리포트',
     '/size [금액|0.5x|1x|2x] — 카피 기준 잔고 조회·변경',
@@ -322,6 +364,12 @@ export class AccountAlerts{
     '/close 종목 [LONG|SHORT] 또는 /close ALL — 청산 (2단계 확인)',
     '/confirm 코드 — 청산 실행 확인',
    ].join('\n');
+  }
+
+  if(cmd==='/pos'||cmd==='/포지션'){
+   const snap=await this.getSnapshot();
+   if(!snap)return '⚠️ 현재 포지션을 조회하지 못했습니다.';
+   return formatPositionsSummary(snap.positions||[]);
   }
 
   if(cmd==='/status'||cmd==='/상태'){
