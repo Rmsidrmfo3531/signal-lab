@@ -87,7 +87,8 @@ export function marketDropdownRowsHTML(st){
   query:st.marketQuery,tab:st.marketTab,sortBy:st.marketSortBy,sortDir:st.marketSortDir,favorites:st.favorites,
  });
  if(!rows.length){
-  return `<p class="empty-small rt-dd-empty">${st.loadingMarkets?'BingX 전 종목을 불러오는 중…':'조건에 맞는 종목이 없습니다.'}</p>`;
+  const msg=st.loadingMarkets?'BingX 전 종목을 불러오는 중…':st.marketsError?`종목 목록 조회 실패: ${st.marketsError}`:'조건에 맞는 종목이 없습니다.';
+  return `<p class="empty-small rt-dd-empty">${esc(msg)}</p>`;
  }
  const curDisp=displaySymbol(st.symbol);
  return rows.slice(0,250).map(m=>{
@@ -121,7 +122,7 @@ function marketDropdownHTML(st){
    <button type="button" class="num" data-rt-dd-sort="change">24h 변동%${arrow('change')}</button>
   </div>
   <div class="rt-dd-list" data-rt-dd-list>${marketDropdownRowsHTML(st)}</div>
-  <div class="rt-dd-foot"><span>BingX 무기한 선물 전체 ${esc(st.markets?.length||0)}종목</span><button type="button" class="rt-link-btn" data-rt-refresh-markets>↻ 시세 새로고침</button></div>
+  <div class="rt-dd-foot"><span data-rt-dd-count>BingX 무기한 선물 전체 ${esc(st.markets?.length||0)}종목</span><button type="button" class="rt-link-btn" data-rt-refresh-markets>↻ 시세 새로고침</button></div>
  </div>`;
 }
 
@@ -308,6 +309,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   // BingX full market dropdown
   markets:[],
   loadingMarkets:false,
+  marketsError:'',
   dropdownOpen:false,
   marketQuery:'',
   marketTab:'ALL',
@@ -414,17 +416,22 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
 
  const fetchMarkets=async()=>{
   if(state.loadingMarkets)return;
-  state.loadingMarkets=true;
+  state.loadingMarkets=true;state.marketsError='';
   try{
    const r=await fetch('/api/real/trade/markets',{cache:'no-store'});
    const d=await r.json().catch(()=>({}));
-   if(r.ok&&Array.isArray(d.markets)){
-    state.markets=d.markets;
-    const ddList=mountEl.querySelector('[data-rt-dd-list]');
-    if(ddList)ddList.innerHTML=marketDropdownRowsHTML(state);
-    else if(state.open&&!mountEl.contains(document.activeElement))render();
-   }
-  }catch{}finally{state.loadingMarkets=false}
+   if(!r.ok)throw Error(d.message||d.error||`HTTP ${r.status}`);
+   if(Array.isArray(d.markets))state.markets=d.markets;
+  }catch(e){
+   state.marketsError=e.message;
+  }finally{
+   state.loadingMarkets=false;
+   const ddList=mountEl.querySelector('[data-rt-dd-list]');
+   const ddCount=mountEl.querySelector('[data-rt-dd-count]');
+   if(ddList)ddList.innerHTML=marketDropdownRowsHTML(state);
+   if(ddCount)ddCount.textContent=`BingX 무기한 선물 전체 ${state.markets.length}종목`;
+   if(!ddList&&state.open&&!mountEl.contains(document.activeElement))render();
+  }
  };
 
  const fetchKlines=async({silent=false}={})=>{
@@ -574,30 +581,34 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
    return;
   }
   if(e.target.closest('[data-rt-dd-toggle]')){
+   e.stopPropagation();
    state.dropdownOpen=!state.dropdownOpen;
    if(state.dropdownOpen&&!state.markets.length)void fetchMarkets();
    render();
    if(state.dropdownOpen)mountEl.querySelector('[data-rt-dd-search]')?.focus();
    return;
   }
-  if(e.target.closest('[data-rt-dd-close]')){state.dropdownOpen=false;render();return}
+  if(e.target.closest('[data-rt-dd-close]')){e.stopPropagation();state.dropdownOpen=false;render();return}
   const ddTab=e.target.closest('[data-rt-dd-tab]');
-  if(ddTab){state.marketTab=ddTab.dataset.rtDdTab;render();return}
+  if(ddTab){e.stopPropagation();state.marketTab=ddTab.dataset.rtDdTab;render();return}
   const ddSort=e.target.closest('[data-rt-dd-sort]');
   if(ddSort){
+   e.stopPropagation();
    const k=ddSort.dataset.rtDdSort;
    if(state.marketSortBy===k)state.marketSortDir=state.marketSortDir==='desc'?'asc':'desc';
    else{state.marketSortBy=k;state.marketSortDir=k==='name'?'asc':'desc'}
    render();return;
   }
-  if(e.target.closest('[data-rt-refresh-markets]')){void fetchMarkets();return}
+  if(e.target.closest('[data-rt-refresh-markets]')){e.stopPropagation();void fetchMarkets();return}
   const pick=e.target.closest('[data-rt-pick-sym]');
   if(pick){
+   e.stopPropagation();
    state.dropdownOpen=false;
    state.limitPrice='';state.selectedPrice=null;state.candles=[];
    void fetchInfo(pick.dataset.rtPickSym);
    return;
   }
+  if(e.target.closest('[data-rt-dropdown]')){e.stopPropagation();return}
   // Chart controls
   const tfBtn=e.target.closest('[data-rt-tf]');
   if(tfBtn){
@@ -676,12 +687,17 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   }
  });
 
- // Close market dropdown on outside click
+ // Close market dropdown on genuine outside click (ignore nodes detached by render()) or Escape key
  document.addEventListener('click',e=>{
-  if(state.dropdownOpen&&!mountEl.querySelector('.rt-pair-anchor')?.contains(e.target)){
+  if(!state.dropdownOpen)return;
+  if(e.target&&e.target.isConnected===false)return;
+  if(!mountEl.querySelector('.rt-pair-anchor')?.contains(e.target)){
    state.dropdownOpen=false;
    render();
   }
+ });
+ document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&state.dropdownOpen){state.dropdownOpen=false;render()}
  });
 
  return {
