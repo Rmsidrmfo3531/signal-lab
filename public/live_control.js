@@ -538,7 +538,7 @@ export function scalpHTML(s){
  // Per side (user 2026-11-16: shorts added): trades, win rate, PF, net for 롱 and 숏 apart.
  const sides=S.sides||['LONG','SHORT'],SK={LONG:'롱',SHORT:'숏'};
  const bySide=`<div class="copy-stats">${['LONG','SHORT'].map(d=>{const b=st.bySide?.[d]||{};return stat(`${SK[d]}${sides.includes(d)?'':' (꺼짐)'}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${SK[d]} 손익`,money(b.trades?b.netUSD:null),`class="${cls(b.netUSD)}"`)}).join('')}</div>`;
- const rules=`<p class="copy-rules">거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''} · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입 · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · 손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유 · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · 거래당 위험 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%에서 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 손절 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${when(s.lastScan.at)} (${esc(s.lastScan.checked)}종목)`:''}</p>`;
+ const rules=`<p class="copy-rules">거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''} · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입 · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · 손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유 · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · 거래당 위험 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%에서 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 손절 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${when(s.lastScan.at)} (${esc(s.lastScan.checked)}종목${s.lastScan.failed>0?`, 실패 ${esc(s.lastScan.failed)}`:''}${s.lastScan.error?`, 오류 ${esc(s.lastScan.error)}`:''})`:''}</p>`;
  const row=p=>`<li><b>${esc(p.symbol)}</b>${scalpBadge(p.kind)}${side(p.direction||'LONG')}<span>${esc(p.leverage)}배</span><span>진입 ${px(p.avg)} · 손절 ${px(p.stop)}${p.breakevenMoved?' (본전)':''}</span><span class="muted">${held(p.openedAt||p.createdAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
  // Closed trades (the newest 20; the stats above cover every trade): side, entry / exit time, hold, reason, R, PnL, MFE / MAE.
  const rTxt=v=>fin(v)?`${Number(v)>=0?'+':'−'}${Math.abs(Number(v)).toFixed(2)}R`:'—',ex=x=>fin(x.mfeR)||fin(x.maeR)?`${rTxt(x.mfeR)} / ${rTxt(x.maeR)}`:'—';
@@ -592,6 +592,39 @@ export function testnetBudgetHTML(t){
  const balance=fin(b.equityUSD)?`${fin(b.accountEquityUSD)?`BingX 순자산 ${tnUsd(b.accountEquityUSD)}`:`기준 순자산 ${tnUsd(b.equityUSD)}`}${capped?` · 한도 기준 ${tnUsd(b.equityUSD)}`:''}${b.balanceAt?` · ${esc(auditTime(b.balanceAt))} KST`:''}`:'';
  const budgetError=b.balanceError==='BALANCE_STALE'?'현재 순자산 갱신 지연':b.balanceError?'현재 순자산 조회 실패':'';
  return `${state}${who?`<span class="tn-who">${esc(who)}</span>`:''}<span class="tn-budget-nums">공동 한도 · 오늘 손실 <b class="${Number(b.lossUSD)>0?'paper-loss':''}">${loss}</b> / 한도 <b>${fin(b.limitUSD)?tnUsd(b.limitUSD):'잔고 확인 중'}</b> (${esc(b.dailyLossPct??'—')}%) · 열린 위험 <b>${tnUsd(b.openRiskUSD)}</b>${fin(b.marginUSD)?` · 증거금 ${tnUsd(b.marginUSD)} / ${fin(b.marginCapUSD)?tnUsd(b.marginCapUSD):'—'} (${esc(b.marginCapPct??'—')}%)`:''}</span>${balance?`<small class="tn-who">${balance}</small>`:''}${budgetError?`<small class="live-warn-text">${budgetError}</small>`:''}${t.scalpError?`<small class="muted">단타 켜지 않음: ${esc(t.scalpError)}</small>`:''}`;
+}
+
+/** Always-visible 5m scalp scan heartbeat bar on the testnet screen so the operator can verify scan health at a glance. */
+export function scalpScanStatusHTML(s,{now=Date.now()}={}){
+ if(!s||s.mode!=='TESTNET'||!s.credentials)return '';
+ const ls=s.lastScan,total=Number(s.universe?.count)||0;
+ const scanSummary=()=>{
+  if(!ls?.at)return '';
+  const ageMin=Math.max(0,Math.floor((now-Number(ls.at))/60000));
+  const ageTxt=ageMin===0?'방금':ageMin<60?`${ageMin}분 전`:`${Math.floor(ageMin/60)}시간 ${ageMin%60}분 전`;
+  const checked=Number(ls.checked)||0,denom=total||checked;
+  const detected=(Number(ls.signals)||0)+(Number(ls.zoneSignals)||0),entered=Number(ls.entered)||0;
+  const failPart=ls.failed>0?` · <span class="live-warn-text">조회 실패 ${esc(ls.failed)}건${ls.lastFailure?` (${esc(ls.lastFailure)})`:''}</span>`:'';
+  const errPart=ls.error?` · <span class="live-warn-text">오류: ${esc(ls.error)}</span>`:'';
+  const rlPart=ls.rateLimited>0?` · <small class="muted">속도제한 재시도 ${esc(ls.rateLimited)}회</small>`:'';
+  return `<span class="tn-budget-nums">마지막 스캔 <b>${esc(tnWhen(ls.at))}</b> (${esc(ageTxt)}) · 검사 <b>${esc(checked)}${denom?`/${esc(denom)}`:''}종목</b> · 감지 ${esc(detected)}건 · 진입 ${esc(entered)}건${failPart}${errPart}${rlPart}</span>`;
+ };
+ if(!s.armed){
+  return `<b class="copy-state off">○ 단타 5분 스캔 꺼짐</b>${ls?.at?scanSummary():'<span class="tn-who">활성화하면 5분봉 마감마다 자동 검사합니다</span>'}`;
+ }
+ if(s.scanning){
+  return `<b class="copy-state on">● 5분봉 스캔 진행 중…</b>${total?`<span class="tn-who">대상 ${esc(total)}종목</span>`:''}${scanSummary()}`;
+ }
+ if(s.blocked){
+  return `<b class="copy-state kill">■ 단타 진입 중지 (${esc(s.blockedKo||s.blocked)})</b>${scanSummary()}`;
+ }
+ if(!ls?.at){
+  return `<b class="copy-state on">● 5분봉 스캔 대기 중</b><span class="tn-who">다음 5분봉 마감 직후 첫 검사를 실행합니다</span>`;
+ }
+ const ageMin=Math.max(0,Math.floor((now-Number(ls.at))/60000));
+ const stale=ageMin>=8,hasErr=Boolean(ls.error)||(ls.failed>0&&!(ls.checked>0));
+ const badge=hasErr?'<b class="copy-state kill">⚠ 단타 스캔 오류</b>':stale?`<b class="copy-state kill">⚠ 단타 스캔 지연 (${esc(ageMin)}분 전)</b>`:'<b class="copy-state on">● 5분봉 정상 감시 중</b>';
+ return `${badge}${scanSummary()}`;
 }
 
 /** One open scalp position as a card next to the signal cards (badge 단타). */
@@ -679,7 +712,7 @@ export function scalpDetailsHTML(s){
  const exitRule=protection+(S.profitHoldTargetMin?` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 진입 후 첫 점검부터 예상 비용을 넘기는 가격에 지정가 익절`:
   S.earlyTakeProfitMin?` · ${esc(S.earlyTakeProfitMin)}분 경과 후 예상 비용을 충당하는 가격에 지정가 익절`:'');
  const recheck=S.reversalRecheckMin?` · 가격·손익비로 건너뛴 반전은 ${esc(S.reversalRecheckMin)}분 동안 재확인`:'';
- const rules=`<p class="copy-rules">${mode?`상태 ${mode} · `:''}거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''} · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입 · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · ${exitRule} · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · ${noStop?'진입 규모 계산 위험':'거래당 위험'} 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%${S.sharedBudget?'(신호 전략과 공동)':''}에서 새 주문 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 ${noStop?'기준':'손절'} 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${tnWhen(s.lastScan.at)} (${esc(s.lastScan.checked)}종목)`:''}</p>`;
+ const rules=`<p class="copy-rules">${mode?`상태 ${mode} · `:''}거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''} · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입 · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · ${exitRule} · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · ${noStop?'진입 규모 계산 위험':'거래당 위험'} 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%${S.sharedBudget?'(신호 전략과 공동)':''}에서 새 주문 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 ${noStop?'기준':'손절'} 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${tnWhen(s.lastScan.at)} (${esc(s.lastScan.checked)}종목${s.lastScan.failed>0?`, 실패 ${esc(s.lastScan.failed)}`:''}${s.lastScan.error?`, 오류 ${esc(s.lastScan.error)}`:''})`:''}</p>`;
  const counts=(s.skipCounts||[]).slice(0,8),skips=(s.skips||[]).slice(0,10);
  const KK={MOVE_REVERSAL:'급변 5%',ZONE_REVERSAL:'매물대 반전'};
  const byKind=`<div class="copy-stats tn-kind-stats">${['MOVE_REVERSAL','ZONE_REVERSAL'].map(k=>{const b=st.byKind?.[k]||{};return stat(`${KK[k]}${k==='ZONE_REVERSAL'&&S.zoneSignals===false?' (꺼짐)':''}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${KK[k]} 손익`,tnMoney(b.trades?b.netUSD:null),`class="${tnCls(b.netUSD)}"`)}).join('')}</div>`;
@@ -852,6 +885,8 @@ function render(o){
   budgetEdit.hidden=!tn?.budget||!canArm;
   if(tn?.budget&&!budgetEdit.open){for(const key of ['dailyLossPct','marginCapPct'])budgetForm.elements.namedItem(key).value=tn.budget[key]??''}
  }
+ const scanEl=$('scalpScanStatus');
+ if(scanEl){const scanHtml=tn&&o.scalp?scalpScanStatusHTML(o.scalp):'';scanEl.hidden=!scanHtml;if(scanHtml)scanEl.innerHTML=scanHtml}
  const status=$('liveStatus'),rows=liveRows(o),kv=([k,v])=>{const row=document.createElement('div'),dt=document.createElement('span'),dd=document.createElement('b');
   row.className='kv-row';dt.textContent=k;dd.textContent=v;row.append(dt,dd);return row};
  // Account facts stay visible; the rules sit behind "규칙 보기".

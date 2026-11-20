@@ -1364,7 +1364,7 @@ export class ScalpExecutor{
  }
  status(){
   const c=this.config,g=this.#gate();
-  return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
+  return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,scanning:this.scanning===true,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
    settings:{interval:c.interval,sides:c.sides,...c.settings,trendFilter:c.trendMode==='on',trendMode:c.trendMode,minNetRR:c.minNetRR,maxHoldMin:c.stopLossEnabled===false?null:c.maxHoldMs/60000,
     earlyTakeProfitMin:c.stopLossEnabled===false?0:EARLY_TAKE_PROFIT_MS/60000,profitHoldTargetMin:c.stopLossEnabled===false?SCALP_PROFIT_HOLD_TARGET_MIN:null,
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
@@ -1376,6 +1376,25 @@ export class ScalpExecutor{
    closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,exchangePosition,...x})=>({...x,closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),
    skips:this.store.skips.slice(-20).reverse().map(x=>({...x,label:scalpReasonKo(x.reason)})),events:this.store.events.slice(-30).reverse()};
+ }
+ /** Compact whitelisted runtime and 5m scan heartbeat for reports (no secrets or order ids). */
+ runtimeSummary(){
+  const c=this.config,ls=this.lastScan;
+  const short=v=>v==null?null:String(v).replace(/\d{9,}/g,'#').slice(0,80);
+  const skipCounts=Object.fromEntries(Object.entries(this.store.skipCounts||{}).filter(([,v])=>Number.isFinite(Number(v))&&Number(v)>0).slice(0,30));
+  return {
+   mode:c.mode,armed:this.armed,blocked:this.#blocked(),scanning:this.scanning===true,
+   trendMode:c.trendMode,scaleInEnabled:c.scaleIn,stopLossEnabled:c.stopLossEnabled,
+   repeatedScaleIn:c.scaleIn&&!c.stopLossEnabled,open:this.store.open.length,
+   ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0}:{}),
+   stopRetirementPending:this.store.open.filter(p=>p.stopRetirementError).length,
+   openAdds:this.store.open.reduce((n,p)=>n+(p.scaleIn?.count||0),0),
+   universeCount:this.universe.length,universeRefreshedAt:this.universeAt||null,
+   lastScan:ls?{at:ls.at??null,bucket:ls.bucket??null,checked:ls.checked??0,failed:ls.failed??0,
+    lastFailure:short(ls.lastFailure),rateLimited:ls.rateLimited??0,signals:ls.signals??0,
+    zoneSignals:ls.zoneSignals??0,rechecked:ls.rechecked??0,entered:ls.entered??0,error:short(ls.error)}:null,
+   skipCounts,
+  };
  }
  /** status() with fresh marks for open positions (public BingX price, cached) and a recent balance. */
  async liveStatus(){
