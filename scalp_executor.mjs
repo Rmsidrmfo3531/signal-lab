@@ -105,12 +105,10 @@ export function scalpExecConfig(env=process.env){
   settings:{...SCALP_EXEC_SETTINGS,retracements:[...SCALP_EXEC_SETTINGS.retracements]},// TP1 net RR floor (was 0.7 on the testnet, user 2026-11-17 "해결 방법 찾아봐 테스트넷인데": ICP/ARIA skipped at RR 0.78-0.83);
   // the backtest default is SCALP_DEFAULTS.minNetRR (1). Each trade keeps plan.netRR, so the 0.7-1 band is judged apart.
   minNetRR:n('SCALP_MIN_NET_RR',1,.3,3), /* back to 1 (2026-11-17 12:18 backtest: RR<1 band 29 trades PF 0.84 -$16.7, RR>=1 54 trades PF 1.17 +$39.3) */maxHoldMs:SCALP_TIMEFRAMES['5m'].maxHoldMs,
-  // 4H trend: 'on' (default since 2026-11-17, user "수익을 극대화하는 방향으로": 30-day BingX backtest, against-trend
-  // 23 trades -$76 of the -$101 total, PF 0.32) blocks against-trend signals and still logs trend4h/withTrend;
-  // 'record' (2026-11-16 to 11-17, user: the followed trader shorted BLESSUSDT in a 4H uptrend that
-  // the filter skipped) = measured and logged with every signal and trade, never blocks; 'on' blocks against-trend
-  // signals as in the backtest; 'off' skips the measurement.
-  trendMode:(m=>['on','true','1','yes'].includes(m)?'on':['off','false','0','no'].includes(m)?'off':['record','log'].includes(m)?'record':'on')(String(env.SCALP_EXEC_TREND_FILTER||'').trim().toLowerCase()),
+  // The testnet comparison defaults to 'record': measure 4H trend and let the other entry checks run.
+  // 'on' blocks against-trend signals (30-day BingX backtest: 23 such trades, -$76, PF 0.32).
+  // 'off' skips the measurement. An unrecognized explicit value keeps the blocking filter.
+  trendMode:(m=>['off','false','0','no'].includes(m)?'off':['record','log'].includes(m)?'record':'on')(String(env.SCALP_EXEC_TREND_FILTER??'').trim().toLowerCase()||'record'),
   wyckoffRecord:!['off','false','0','no'].includes(String(env.SCALP_WYCKOFF_RECORD??'').trim().toLowerCase()),
   riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',0,0,200),leverage:n('SCALP_LEVERAGE',10,1,20),
   scaleIn:!['off','false','0','no'].includes(String(env.SCALP_SCALE_IN??'').trim().toLowerCase()),

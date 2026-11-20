@@ -152,7 +152,7 @@ test('config: TESTNET or OFF only — LIVE is refused; settings as the user set 
  assert.equal(c.stopLossEnabled,false);
  assert.equal(c.settings.minMovePct,5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,SCALP_TIMEFRAMES['5m'].minMovePct*2);
  assert.deepEqual(c.settings.retracements,[.382,.5,.618]);assert.equal(c.settings.stopAtr,.25);assert.equal(c.settings.climaxVolume,3);
- assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,0);assert.equal(scalpExecConfig({SCALP_MAX_OPEN:'5'}).maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'record'}).trendMode,'record');
+ assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,0);assert.equal(scalpExecConfig({SCALP_MAX_OPEN:'5'}).maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'record'}).trendMode,'record');
  assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:' On '}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'true'}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'off'}).trendMode,'off');
  for(const k of ['takerRate','slippageBps','fundingRate'])assert.equal(SCALP_EXEC_COSTS[k],BACKTEST_COSTS[k]);
  const live=scalpExecConfig({SCALP_EXEC_MODE:'LIVE'});assert.equal(live.mode,'OFF');assert.equal(live.refused,'LIVE_REFUSED');
@@ -440,7 +440,7 @@ test('restart: the ledger comes back, scalps start disarmed, an unfinished entry
 });
 
 test('testnet page: the scalp details (collapsed "단타 신호·건너뜀") — rules, state, skip reasons in Korean, no own switch',async()=>{
- const v=venue(),ex=make(v);let h=scalpDetailsHTML(ex.status());assert.match(h,/4시간 추세 반대 제외/);
+ const v=venue(),ex=make(v);let h=scalpDetailsHTML(ex.status());assert.match(h,/4시간 추세 기록만/);
  assert.doesNotMatch(h,/상태 (꺼짐|켜짐)/,'on / off is the testnet switch\'s (user 2026-11-18: one place per fact)');assert.doesNotMatch(h,/data-scalp-arm|data-scalp-disarm/,'one testnet switch: the scalp has no button of its own');
  ex.arm();await ex.scan();ex.store.skips.push({at:T0,symbol:'XUSDT',reason:'PRICE_DRIFT'});ex.store.skipCounts.PRICE_DRIFT=1;
  h=scalpDetailsHTML(ex.status());assert.doesNotMatch(h,/상태 켜짐/);assert.match(h,/XUSDT/);
@@ -517,7 +517,8 @@ test('side switch and trend: a side turned off or against the 4H trend is skippe
  {const {v,ex}=short({config:{sides:['LONG']}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'SIDE_OFF');assert.equal(v.calls.length,0)}
  {const v=venue(),ex=make(v,{config:{sides:['SHORT']}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'SIDE_OFF');assert.equal(v.calls.length,0)}
  {const {v,ex}=short({trend:up4h,config:{trendMode:'on'}});ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'AGAINST_4H_TREND');assert.equal(placed(v,'MARKET').length,0)}
- {const {v,ex}=short({trend:up4h,config:{trendMode:'record'}});ex.arm();await ex.scan();assert.equal(placed(v,'MARKET').length,1,'record mode enters against the 4H trend');assert.equal(ex.store.open[0].withTrend,false);assert.ok(ex.store.open[0].trend4h)}
+ {const {v,ex}=short({trend:up4h});ex.arm();await ex.scan();assert.equal(placed(v,'MARKET').length,1,'default record mode allows a short in a 4H uptrend');assert.equal(ex.store.open[0].withTrend,false);assert.equal(ex.signals(1).at(-1).trend4h,'up')}
+ {const v=venue(),ex=make(v,{trend:down4h});ex.arm();await ex.scan();assert.equal(placed(v,'MARKET').length,1,'default record mode allows a long in a 4H downtrend');assert.equal(ex.store.open[0].withTrend,false);assert.equal(ex.signals(1).at(-1).trend4h,'down')}
  {const v=venue();v.size=-1;const ex=make(v);ex.arm();await ex.scan();assert.equal(ex.store.skips.at(-1).reason,'VENUE_POSITION_EXISTS');assert.equal(placed(v,'MARKET').length,0)}
  assert.notEqual(scalpReasonKo('SIDE_OFF'),'SIDE_OFF');
 });
@@ -818,8 +819,10 @@ test('매물대 반전: missing 4H / 1D candles are never a touch (ZONE_DATA_UNA
 });
 
 test('매물대 반전: the 4H against-trend block and the shared testnet budget apply as to the 5 % scalp',async()=>{
- {const v=venue({fillAt:PX_Z}),ex=zoneMake(v,{trend:down4h});ex.arm();await ex.scan();
+ {const v=venue({fillAt:PX_Z}),ex=zoneMake(v,{trend:down4h,config:{trendMode:'on'}});ex.arm();await ex.scan();
   assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.store.skips.at(-1).reason,'AGAINST_4H_TREND');assert.equal(ex.signals(5).at(-1).trend4h,'down')}
+ {const v=venue({fillAt:PX_Z}),ex=zoneMake(v,{trend:down4h});ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,1);assert.equal(ex.signals(1).at(-1).withTrend,false)}
  const {TestnetBudget}=await import('../testnet_budget.mjs');
  const run=async open=>{const v=venue({fillAt:PX_Z}),clock={t:T0},budget=new TestnetBudget({dailyLossPct:15,marginCapPct:30,now:()=>clock.t});
   const ex=zoneMake(v,{clock,budget});budget.register('signal',{realizedToday:()=>0,openRisk:()=>open,usedMargin:()=>0}).register('scalp',ex.budgetSource());ex.arm();await ex.scan();return {v,ex}};
@@ -880,7 +883,7 @@ test('매물대 반전 (review L2): a kill switch or disarm during the zone read
 });
 
 test('매물대 반전 (review L3): trend block, other strategy, position cap and a held coin stop the candidate before any zone read, with the same reasons',async()=>{
- const cases=[[{trend:down4h},'AGAINST_4H_TREND'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{config:{maxOpen:1},held:'ETHUSDT'},'MAX_OPEN_POSITIONS'],[{held:'SOLUSDT'},'SYMBOL_ALREADY_HELD']];
+ const cases=[[{trend:down4h,config:{trendMode:'on'}},'AGAINST_4H_TREND'],[{isBusy:()=>true},'SYMBOL_HELD_BY_OTHER_STRATEGY'],[{config:{maxOpen:1},held:'ETHUSDT'},'MAX_OPEN_POSITIONS'],[{held:'SOLUSDT'},'SYMBOL_ALREADY_HELD']];
  for(const [opt,reason] of cases){
   const z=zoneFeed(),v=venue({fillAt:PX_Z}),ex=zoneMake(v,{...opt,zone:z});
   if(opt.held)ex.store.open.push({symbol:opt.held,venueSymbol:opt.held.replace('USDT','-USDT'),status:'OPEN',direction:'LONG',size:0});

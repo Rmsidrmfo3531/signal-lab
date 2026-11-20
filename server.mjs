@@ -909,7 +909,7 @@ async function uploadReport(force=false){
    balanceAsset:b.balanceAsset,balanceRefreshMs:TESTNET_BALANCE_REFRESH_MS,balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE')report.copyAudit=copyTrader.auditStatus();
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
-  if(report.scalp)report.scalp.runtime={mode:SCALP_EXEC.mode,armed:scalpExec.armed,scaleInEnabled:SCALP_EXEC.scaleIn,stopLossEnabled:SCALP_EXEC.stopLossEnabled,
+  if(report.scalp)report.scalp.runtime={mode:SCALP_EXEC.mode,armed:scalpExec.armed,trendMode:SCALP_EXEC.trendMode,scaleInEnabled:SCALP_EXEC.scaleIn,stopLossEnabled:SCALP_EXEC.stopLossEnabled,
    repeatedScaleIn:SCALP_EXEC.scaleIn&&!SCALP_EXEC.stopLossEnabled,open:scalpExec.store.open.length,
    ...(SCALP_EXEC.mode==='TESTNET'&&!SCALP_EXEC.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0}:{}),
    stopRetirementPending:scalpExec.store.open.filter(p=>p.stopRetirementError).length,
