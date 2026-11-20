@@ -1,5 +1,7 @@
 // Independent Wyckoff structure observation using the shared Map inputs.
 // The protected Pine engine was not available. Keep this out of order decisions.
+import {observeVsa} from './scalp_vsa.mjs';
+
 export const WYCKOFF_INTERVAL_MS = 15 * 60_000;
 export const WYCKOFF_CANDLES = 1250;
 const I = WYCKOFF_INTERVAL_MS;
@@ -81,7 +83,7 @@ function advanceCandidate(candidate, bars, i) {
     const height = level - near;
     if (arIndex === i || height < Math.max(3 * atr, .2 * candidate.run)
       || level - close < Math.max(atr, .3 * height)) return candidate;
-    candidate.ar = {level, i: arIndex};
+    candidate.ar = {level, i: arIndex, confirmedIndex: Math.max(i, candidate.i + PIVOT_BARS)};
     candidate.inside = bars.slice(arIndex + 1, i).filter(b => b.close * direction >= near && b.close * direction <= level).length;
   }
   const far = candidate.ar.level;
@@ -95,8 +97,7 @@ function advanceCandidate(candidate, bars, i) {
   const stOrTimeout = candidate.st !== null || age >= 20;
   if (age >= minimumAge && stOrTimeout && candidate.inside / age >= .7) {
     return {
-      phase: 'B', confirmedAt: bar.at, startedAt: stop.at, startIndex: candidate.i, arIndex: candidate.ar.i,
-      low: direction === 1 ? near : -far, high: direction === 1 ? far : -near,
+      phase: 'B', confirmedAt: bar.at, startedAt: stop.at, ...candidateBox(candidate),
       stopEvent: direction === 1 ? (candidate.climax ? 'SC' : 'PS') : (candidate.climax ? 'BC' : 'PSY'),
       verdict: null, lastEvent: candidate.st === null ? 'RANGE_CONFIRMED' : 'ST',
       eventAt: candidate.st === null ? bar.at : bars[candidate.st].at, eventConfirmedAt: bar.at,
@@ -104,6 +105,13 @@ function advanceCandidate(candidate, bars, i) {
     };
   }
   return candidate;
+}
+
+function candidateBox({direction, near, i, ar}) {
+  return {
+    direction, startIndex: i, arIndex: ar.i, arConfirmedIndex: ar.confirmedIndex,
+    low: direction === 1 ? near : -ar.level, high: direction === 1 ? ar.level : -near,
+  };
 }
 
 function advanceRange(range, bars, i) {
@@ -172,11 +180,11 @@ function advanceRange(range, bars, i) {
   }
 }
 
-export function observeWyckoff(rows, {asOf} = {}) {
+function analyzeMap(bars) {
   const result = {version: 1, model: 'WYCKOFF_STRUCTURE_OBSERVATION', timeframe: '15m'};
-  if (!Array.isArray(rows) || !Number.isSafeInteger(asOf)) return {...result, status: 'INSUFFICIENT_CANDLES'};
-  const bars = closedBars(rows, asOf);
-  if (bars.length < TREND_WINDOW + PIVOT_BARS + 1) return {...result, status: 'INSUFFICIENT_CANDLES'};
+  if (bars.length < TREND_WINDOW + PIVOT_BARS + 1) {
+    return {map: {...result, status: 'INSUFFICIENT_CANDLES'}, box: null};
+  }
   addMetrics(bars);
   let candidate = null;
   let range = null;
@@ -200,11 +208,27 @@ export function observeWyckoff(rows, {asOf} = {}) {
       candidate = null;
     }
   }
-  if (candidate && (!range || range.closedAt)) return {...result, status: 'CANDIDATE', phase: 'A', closedCandleAt: bars.at(-1).at};
-  if (!range) return {...result, status: 'NO_RANGE', closedCandleAt: bars.at(-1).at};
+  const closedCandleAt = bars.at(-1).at;
+  if (candidate && (!range || range.closedAt)) {
+    return {map: {...result, status: 'CANDIDATE', phase: 'A', closedCandleAt}, box: candidate.ar ? candidateBox(candidate) : null};
+  }
+  if (!range) return {map: {...result, status: 'NO_RANGE', closedCandleAt}, box: null};
   const {phase, low, high, stopEvent, startedAt, confirmedAt, verdict, lastEvent, eventAt, eventConfirmedAt, closedAt, exitDirection, failedVerdict} = range;
   const active = !closedAt;
-  return {...result, status: active ? 'CONFIRMED_RANGE' : 'ENDED_RANGE', phase, low, high, stopEvent, startedAt, confirmedAt,
-    verdict, lastEvent, eventAt, eventConfirmedAt, closedAt: closedAt ?? null, exitDirection: exitDirection ?? null, failedVerdict: failedVerdict ?? null,
-    closedCandleAt: bars.at(-1).at};
+  return {
+    map: {...result, status: active ? 'CONFIRMED_RANGE' : 'ENDED_RANGE', phase, low, high, stopEvent, startedAt, confirmedAt,
+      verdict, lastEvent, eventAt, eventConfirmedAt, closedAt: closedAt ?? null, exitDirection: exitDirection ?? null,
+      failedVerdict: failedVerdict ?? null, closedCandleAt},
+    box: range,
+  };
+}
+
+export function observeScalpStructure(rows, {asOf} = {}) {
+  const bars = Array.isArray(rows) && Number.isSafeInteger(asOf) ? closedBars(rows, asOf) : [];
+  const {map, box} = analyzeMap(bars);
+  return {map, vsa: observeVsa(bars, box, PIVOT_BARS)};
+}
+
+export function observeWyckoff(rows, options) {
+  return observeScalpStructure(rows, options).map;
 }

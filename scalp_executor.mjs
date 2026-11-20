@@ -31,7 +31,8 @@ import {livePositionView} from './live_overview.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
-import {observeWyckoff,WYCKOFF_CANDLES,WYCKOFF_INTERVAL_MS} from './scalp_wyckoff.mjs';
+import {observeScalpStructure,WYCKOFF_CANDLES,WYCKOFF_INTERVAL_MS} from './scalp_wyckoff.mjs';
+import {vsaStatus} from './scalp_vsa.mjs';
 import {zoneBook,zoneTouches,zoneTagFields,zoneSpanMs,ZONE_PROFILES,ZONE_TOUCH_PCT} from './backtest.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
@@ -438,18 +439,21 @@ export class ScalpExecutor{
     const rows=await withTimeout(Promise.resolve().then(()=>this.candles(ctx.symbol,'15m',WYCKOFF_CANDLES)),Math.min(timeLeft,5000));
     if(Array.isArray(rows)){
      // Use the actual observation candle, including for a recheck of an older 5m candidate.
-     cached={bucket,observation:observeWyckoff(rows,{asOf:st.bucket*I5})};
-     if(cached.observation.status!=='INSUFFICIENT_CANDLES')this.wyckoffCache.set(ctx.symbol,cached);
+     const {map,vsa}=observeScalpStructure(rows,{asOf:st.bucket*I5});
+     cached={bucket,map,vsa};
+     if(vsa.status!=='INSUFFICIENT_CANDLES')this.wyckoffCache.set(ctx.symbol,cached);
     }else{
      ctx.wyckoff=status('READ_FAILED');
      canRead=false;
     }
    }
    if(cached){
-    const o=cached.observation;
+    const o=cached.map;
     const alignment=o.status==='CONFIRMED_RANGE'&&o.verdict?(o.verdict===ctx.direction?'ALIGNED':'OPPOSED'):null;
     ctx.wyckoff={...o,alignment};
+    ctx.vsa=cached.vsa;
    }else ctx.wyckoff??=status('READ_DEFERRED');
+   ctx.vsa??=vsaStatus(ctx.wyckoff.status);
    this.#logSignal(ctx,result);
   }
  }
@@ -680,7 +684,7 @@ export class ScalpExecutor{
  #logSignal(ctx,r){
   const line={v:1,at:ctx.at,symbol:ctx.symbol,venueSymbol:ctx.venueSymbol,kind:ctx.kind||SCALP_KINDS.MOVE,...(ctx.zone?{zone:ctx.zone}:{}),direction:ctx.direction,barAt:ctx.barAt,entered:r?.entered===true,reason:r?.entered?null:ctx.reason||r?.reason||null,
    detail:ctx.detail,evidence:ctx.evidence,candle:ctx.candle,atr:ctx.atr,trend4h:ctx.trend4h??null,withTrend:ctx.withTrend??null,plan:ctx.plan??null,universe:ctx.universe,scan:ctx.scan,
-   ...(ctx.recheckedAt?{recheckedAt:ctx.recheckedAt}:{}),...(ctx.wyckoff?{wyckoff:ctx.wyckoff}:{})};
+   ...(ctx.recheckedAt?{recheckedAt:ctx.recheckedAt}:{}),...(ctx.wyckoff?{wyckoff:ctx.wyckoff,vsa:ctx.vsa}:{})};
   if(this.signalsFile)appendJsonl(signalsPath(this.signalsFile,ctx.at||this.now()),line,{maxBytes:SIGNALS_MAX_BYTES});else this.signalsMem=[...(this.signalsMem||[]),line].slice(-500);
  }
  /** Closed trades whose result is final (settled by the venue, or no more settle tries) go to the journal. */
