@@ -147,7 +147,7 @@ function skipDetail(x){if(!x.detail)return '';const d=String(x.detail);return ` 
 const COPY_WHY={BINGX_HEDGE_MODE:'BingX 양방향(헤지) 모드라 건너뜀 — 이전 버전 기록(지금은 헤지 모드도 지원)',BINGX_POSITION_MODE_UNKNOWN:'BingX 포지션 모드(단방향/헤지) 확인 실패',VENUE_POSITION_EXISTS:'거래소에 같은 코인 포지션이 이미 있음(수동 매매 등) — 합쳐지지 않게 건너뜀',MARGIN_SHORT:'여유 증거금 부족',SYMBOL_BUSY:'같은 종목 보유 중',SYMBOL_HELD_BY_SIGNAL_STRATEGY:'신호 전략이 같은 종목 보유 중',OPPOSITE_COPY_OPEN:'반대 방향 보유 중',
  COPY_AUDIT_UNAVAILABLE:'최신 거래소 포지션 조회가 없어 신규 주문 보류',COPY_AUDIT_BLOCKED:'거래소 대조 확인 필요 · 진입·추매 보류',COPY_ORDERS_UNREADABLE:'거래소 미체결 주문 조회 실패',COPY_OPEN_ORDERS_EXIST:'거래소에 같은 종목의 미체결 주문이 있음',
  MONITOR_RESTART_SNAPSHOT:'채널 재시작 직후 기존 포지션 재알림',LIVE_DISARMED:'실매매 비활성',COPY_DISARMED:'카피 비활성',ENTRY_INTERRUPTED:'주문 준비 중 거래가 정지됨',UPDATING:'업데이트 중',KILL_SWITCH:'긴급 정지 중',NOT_TESTNET:'테스트넷 아님',NO_BINGX_CONTRACT:'BingX에 없는 종목',
- NOT_COPIED:'따라 들어가지 않은 포지션',OUR_COPY_CLOSED:'우리가 먼저 정리한 포지션 (손실 한도·보호 손절 등, 트레이더 청산 전까지 다시 안 들어감)',COPY_CLOSED_EXTERNALLY:'거래소에서 수동 청산이 확인된 포지션 — 트레이더 추매·진입은 다시 따라감',EXTERNAL_UNCONFIRMED:'바깥 청산인지 확인 불가로 다시 따라가지 않음',CLOSING:'청산 중인 포지션(추매 안 함)',LIQUIDATION:'강제청산 — 다시 따라가지 않음',ADL:'자동 감축(ADL) 청산 — 다시 따라가지 않음',STOP_OR_EXTERNAL:'거래소에서 사라짐(외부 청산 또는 보호 손절)',POSITION_GONE:'거래소에 포지션 없음',STALE_MESSAGE:'순서가 늦게 도착한 옛 메시지',QUANTITY_INVALID:'수량 계산 불가',NO_BALANCE:'잔고 조회 실패',HTTP_429:'요청 과다(잠시 후 재시도)',COPY_MARGIN_CAP:'카피 전체 증거금 한도',MIN_ORDER_TOO_LARGE:'거래소 최소 주문이 증거금 5달러 초과',PRICE_MISMATCH:'거래소 가격 불일치',PRICE_UNVERIFIED:'거래소 가격 확인 실패',VENUE_ERROR_101400:'거래소 주문 조건 미달(최소 주문 수량·금액 등)',QUANTITY_UNIT_UNCLEAR:'알림 수량 단위 불명',COPY_LOSS_LIMIT:'카피 손실 한도로 정지',LOSS_CAP_REACHED:'손실 한도 도달',NO_STOP:'보호 손절 실패로 청산'};
+ NOT_COPIED:'따라 들어가지 않은 포지션',OUR_COPY_CLOSED:'우리가 먼저 정리한 포지션 (손실 한도·보호 손절 등, 트레이더 청산 전까지 다시 안 들어감)',COPY_CLOSED_EXTERNALLY:'거래소에서 수동 청산이 확인된 포지션 — 트레이더 추매·진입은 다시 따라감',EXTERNAL_UNCONFIRMED:'바깥 청산인지 확인 불가로 다시 따라가지 않음',CLOSING:'청산 중인 포지션(추매 안 함)',LIQUIDATION:'강제청산 — 다시 따라가지 않음',ADL:'자동 감축(ADL) 청산 — 다시 따라가지 않음',STOP_OR_EXTERNAL:'거래소에서 사라짐(외부 청산 또는 보호 손절)',POSITION_GONE:'거래소에 포지션 없음',STALE_MESSAGE:'순서가 늦게 도착한 옛 메시지',QUANTITY_INVALID:'수량 계산 불가',NO_BALANCE:'잔고 조회 실패',HTTP_429:'요청 과다(잠시 후 재시도)',COPY_MARGIN_CAP:'카피 전체 증거금 한도',MIN_ORDER_TOO_LARGE:'거래소 최소 주문이 증거금 5달러 초과',PRICE_MISMATCH:'거래소 가격 불일치',PRICE_UNVERIFIED:'거래소 가격 확인 실패',VENUE_ERROR_101400:'거래소 주문 조건 미달(최소 주문 수량·금액 등)',QUANTITY_UNIT_UNCLEAR:'알림 수량 단위 불명',COPY_LOSS_LIMIT:'카피 손실 한도로 정지',LOSS_CAP_REACHED:'손실 한도 도달',NO_STOP:'보호 손절 실패로 청산',SYMBOL_BLOCKED:'제외 목록(블랙리스트) 종목',SYMBOL_NOT_ALLOWED:'허용 목록(화이트리스트) 외 종목',SYMBOL_MARGIN_CAP:'종목당 최대 증거금 한도 초과',COPY_COOLDOWN:'자동 쿨다운(휴식) 중'};
 // The cause behind "따라 들어가지 않은 포지션" (user 2026-11-14): the skipped entry, our earlier close, or no entry card.
 function notCopiedWhy(e,when,all=[]){
  if(e.reason!=='NOT_COPIED'&&e.type!=='LATE_ENTRY')return '';
@@ -216,8 +216,9 @@ export function venuePositionsHTML(c,copyOpen=[]){
 }
 
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
-let copyPage=0,failPage=0,failOpen=false,lastCopy=null;
+let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,lastCopy=null;
 export function setFailOpen(v){failOpen=!!v}
+export function setControlsOpen(v){controlsOpen=!!v}
 export const COPY_PAGE_SIZE=10;
 export function setCopyPage(p){copyPage=Math.max(0,p|0)}
 export function setCopyFailPage(p){failPage=Math.max(0,p|0)}
@@ -362,6 +363,41 @@ export function copyHTML(c){
   ${c.enabled&&!c.killed?(c.armed?'<button type="button" class="outline-btn small" data-copy-disarm>비활성화하기</button>':'<button type="button" class="outline-btn small danger-btn" data-copy-arm>활성화하기</button>'):''}<span class="copy-msg" data-copy-msg></span></div>`
   :!c.enabled?`<div class="copy-mode">${state}</div>`:'';
  const kill=c.killed?`<p class="live-warn-text">카피 손실 한도(잔고 ${esc(c.ledgerLossPct)}%)에 닿아 모두 청산하고 멈췄습니다. <button type="button" class="outline-btn small" data-copy-resume>카피 다시 시작</button></p>`:'';
+ const ctrl=c.controls||null;
+ const cooldownBanner=ctrl?.cooldownActive?`<p class="live-warn-text">⏸ 자동 쿨다운 중 (${esc(ctrl.cooldownReason||'손실 제한')} · ${esc(ctrl.cooldownLeftMin)}분 남음) <button type="button" class="outline-btn small" data-copy-clear-cooldown>쿨다운 해제</button></p>`:'';
+ const controlsPanel=isLive&&ctrl?(()=>{
+  const tb=Number(c.traderBalanceUSD)||20000;
+  const presets=[[40000,'0.5배 ($40k)'],[20000,'1배 ($20k)'],[13333,'1.5배 ($13.3k)'],[10000,'2배 ($10k)']];
+  const presetBtns=presets.map(([v,lbl])=>`<button type="button" class="outline-btn small${Math.abs(tb-v)<=5?' is-current':''}" data-copy-tb="${v}">${lbl}</button>`).join('');
+  const isAllow=ctrl.filterMode==='ALLOWLIST',symList=isAllow?(ctrl.allowedSymbols||[]):(ctrl.blockedSymbols||[]);
+  const chips=symList.length?symList.map(s=>`<span class="ctrl-chip">${esc(s)}<button type="button" data-copy-sym-remove="${esc(s)}" data-copy-sym-kind="${isAllow?'allowed':'blocked'}" aria-label="${esc(s)} 제거">×</button></span>`).join(''):`<span class="muted">${isAllow?'등록된 허용 종목 없음 (전체 차단)':'제외된 종목 없음'}</span>`;
+  return `<details class="copy-controls-fold"${controlsOpen?' open':''}><summary data-controls-toggle>카피 비중 · 위험 제어 <small>기준 $${Number(tb).toLocaleString()}${ctrl.maxSymbolMarginPct>0?` · 종목한도 ${ctrl.maxSymbolMarginPct}%`:''}${ctrl.maxLeverage?` · 최대 ${ctrl.maxLeverage}배`:''}</small></summary>
+   <div class="copy-ctrl-body">
+    <div class="ctrl-row"><span class="ctrl-label">비중 프리셋</span><div class="ctrl-presets">${presetBtns}</div></div>
+    <form class="ctrl-form" data-copy-controls-form>
+     <label>기준 잔고 ($) <input name="traderBalanceUSD" type="number" min="1000" max="1000000" step="1000" value="${esc(tb)}"></label>
+     <label>종목당 최대 증거금 (%) <input name="maxSymbolMarginPct" type="number" min="0" max="100" step="1" value="${esc(ctrl.maxSymbolMarginPct??0)}" title="0 = 제한 없음"></label>
+     <label>최대 레버리지 (배) <input name="maxLeverage" type="number" min="0" max="125" step="1" value="${esc(ctrl.maxLeverage??0)}" title="0 = 기본(125배)"></label>
+     <label>연속 손실 쿨다운 (회) <input name="cooldownLosses" type="number" min="0" max="20" step="1" value="${esc(ctrl.cooldownLosses??0)}" title="0 = 꺼짐"></label>
+     <label>당일 손실 쿨다운 (%) <input name="cooldownDailyLossPct" type="number" min="0" max="50" step="0.5" value="${esc(ctrl.cooldownDailyLossPct??0)}" title="0 = 꺼짐"></label>
+     <label>쿨다운 시간 (분) <input name="cooldownMinutes" type="number" min="5" max="1440" step="5" value="${esc(ctrl.cooldownMinutes??120)}"></label>
+     <button type="submit" class="outline-btn small">설정 저장</button>
+    </form>
+    <div class="ctrl-filter">
+     <div class="ctrl-filter-head">
+      <span class="ctrl-label">종목 필터</span>
+      <button type="button" class="outline-btn small${!isAllow?' is-current':''}" data-copy-filter-mode="BLOCKLIST">제외 목록</button>
+      <button type="button" class="outline-btn small${isAllow?' is-current':''}" data-copy-filter-mode="ALLOWLIST">허용 목록</button>
+     </div>
+     <div class="ctrl-chips">${chips}</div>
+     <div class="ctrl-sym-add">
+      <input type="text" data-copy-sym-input placeholder="예: SNDK 또는 BTCUSDT" maxlength="30" aria-label="종목 입력">
+      <button type="button" class="outline-btn small" data-copy-sym-add="${isAllow?'allowed':'blocked'}">${isAllow?'허용 추가':'제외 추가'}</button>
+     </div>
+    </div>
+    <span class="copy-msg" data-copy-ctrl-msg></span>
+   </div></details>`;
+ })():'';
  const f=c.funds,stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
  // With the exchange list (real account), 보유 / 미실현 count every position, copy and manual alike.
  const vpList=c.mode==='LIVE'&&Array.isArray(c.venuePositions)?c.venuePositions:null,vpUnreal=(vpList||[]).reduce((t,p)=>t+(Number(p.unrealized)||0),0);
@@ -397,7 +433,7 @@ export function copyHTML(c){
  // One time stamp per panel: the real-account page's (3 s refresh); the testnet page has its header time.
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,Number(c.venuePositionsAt)||0,...fresh);
  const stamp=isLive&&updated>0?`<p class="copy-stamp">${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
- const side_=`<div class="copy-side">${modeLine}${kill}${stats}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
+ const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${stats}${controlsPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>전체 ${esc(closedTotal)}건</small></h5><ul class="copy-list only-mob">${shown.map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}${pager}`:'')+
@@ -580,32 +616,68 @@ const liveLevelsBusy=new Set(),liveDeleteBusy=new Set();
 
 function bindCopyButtons(el){
  if(!el||el.dataset.bound)return;el.dataset.bound='1';
- const call=async(btn,path,body,busy)=>{
+ const call=async(btn,path,body,busy,msgSel='[data-copy-msg]')=>{
   if(copyActionBusy)return;
   copyActionBusy=true;
-  const msg=el.querySelector('[data-copy-msg]');btn.disabled=true;btn.textContent=busy;
+  const msg=el.querySelector(msgSel)||el.querySelector('[data-copy-msg]');
+  const origText=btn?.textContent;
+  if(btn){btn.disabled=true;if(busy)btn.textContent=busy}
   try{const r=await fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}),d=await r.json().catch(()=>({}));
-   if(!r.ok)throw Error(d.error||'HTTP '+r.status);
-   if(msg)msg.textContent=d.armed===true?'✓ 활성화됐습니다':d.armed===false?'✓ 비활성화됐습니다':'✓ 완료'}
+   if(!r.ok)throw Error(d.message||d.error||'HTTP '+r.status);
+   if(msg){msg.classList.remove('err');msg.textContent=d.armed===true?'✓ 활성화됐습니다':d.armed===false?'✓ 비활성화됐습니다':'✓ 저장됨'}}
   catch(e){if(msg){msg.textContent='실패: '+e.message;msg.classList.add('err')}}
-  finally{copyActionBusy=false}
+  finally{copyActionBusy=false;if(btn&&origText!=null){btn.disabled=false;btn.textContent=origText}}
   document.getElementById('liveRefresh')?.click()};
+ el.addEventListener('submit',e=>{
+  const form=e.target.closest('[data-copy-controls-form]');
+  if(!form)return;
+  e.preventDefault();
+  const val=n=>form.elements.namedItem(n)?.value;
+  const body={
+   traderBalanceUSD:Number(val('traderBalanceUSD')),
+   maxSymbolMarginPct:Number(val('maxSymbolMarginPct')),
+   maxLeverage:Number(val('maxLeverage'))||null,
+   cooldownLosses:Number(val('cooldownLosses')),
+   cooldownDailyLossPct:Number(val('cooldownDailyLossPct')),
+   cooldownMinutes:Number(val('cooldownMinutes')),
+  };
+  return call(form.querySelector('button[type="submit"]'),'/api/copy/controls',body,'저장 중…','[data-copy-ctrl-msg]');
+ });
  el.addEventListener('click',e=>{
   const resume=e.target.closest('[data-copy-resume]'),disarm=e.target.closest('[data-copy-disarm]'),arm=e.target.closest('[data-copy-arm]');
-  // Keep the failure box open/closed across the 3 s re-render (the browser toggles the <details> itself).
- if(e.target.closest('[data-fail-toggle]')){failOpen=!e.target.closest('details')?.open;}
- const fp=e.target.closest('[data-copy-fail-page]');
- if(fp){setCopyFailPage(failPage+Number(fp.dataset.copyFailPage));const box=fp.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);return}
- const cm=e.target.closest('[data-cal-month]');
- if(cm){
-  const cur=cm.closest('.pnl-cal')?.querySelector('[data-cal-ym]')?.dataset.calYm;
-  if(cur){const next=ymShift(cur,Number(cm.dataset.calMonth));setCalMonth(next>=kstDate(Date.now()).slice(0,7)?null:next)}
-  const box=cm.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);
-  return;
- }
- const pg=e.target.closest('[data-copy-page]');
- if(pg){setCopyPage(copyPage+Number(pg.dataset.copyPage));const box=pg.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);pg.blur?.();return}
- if(resume)return call(resume,'/api/copy/resume',{confirm:'COPY_RESUME'},'다시 시작하는 중…');
+  // Keep the failure box / controls panel open/closed across the 3 s re-render.
+  if(e.target.closest('[data-fail-toggle]')){failOpen=!e.target.closest('details')?.open;}
+  if(e.target.closest('[data-controls-toggle]')){controlsOpen=!e.target.closest('details')?.open;}
+  const clearCd=e.target.closest('[data-copy-clear-cooldown]');
+  if(clearCd)return call(clearCd,'/api/copy/controls',{clearCooldown:true},'해제 중…');
+  const tbBtn=e.target.closest('[data-copy-tb]');
+  if(tbBtn)return call(tbBtn,'/api/copy/controls',{traderBalanceUSD:Number(tbBtn.dataset.copyTb)},'적용 중…','[data-copy-ctrl-msg]');
+  const fmBtn=e.target.closest('[data-copy-filter-mode]');
+  if(fmBtn)return call(fmBtn,'/api/copy/controls',{filterMode:fmBtn.dataset.copyFilterMode},'변경 중…','[data-copy-ctrl-msg]');
+  const rmBtn=e.target.closest('[data-copy-sym-remove]');
+  if(rmBtn){
+   const key=rmBtn.dataset.copySymKind==='allowed'?'removeAllowed':'removeBlocked';
+   return call(rmBtn,'/api/copy/controls',{[key]:rmBtn.dataset.copySymRemove},'…','[data-copy-ctrl-msg]');
+  }
+  const addBtn=e.target.closest('[data-copy-sym-add]');
+  if(addBtn){
+   const input=el.querySelector('[data-copy-sym-input]');
+   const raw=input?.value?.trim();if(!raw)return;
+   const key=addBtn.dataset.copySymAdd==='allowed'?'addAllowed':'addBlocked';
+   return call(addBtn,'/api/copy/controls',{[key]:raw},'추가 중…','[data-copy-ctrl-msg]');
+  }
+  const fp=e.target.closest('[data-copy-fail-page]');
+  if(fp){setCopyFailPage(failPage+Number(fp.dataset.copyFailPage));const box=fp.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);return}
+  const cm=e.target.closest('[data-cal-month]');
+  if(cm){
+   const cur=cm.closest('.pnl-cal')?.querySelector('[data-cal-ym]')?.dataset.calYm;
+   if(cur){const next=ymShift(cur,Number(cm.dataset.calMonth));setCalMonth(next>=kstDate(Date.now()).slice(0,7)?null:next)}
+   const box=cm.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);
+   return;
+  }
+  const pg=e.target.closest('[data-copy-page]');
+  if(pg){setCopyPage(copyPage+Number(pg.dataset.copyPage));const box=pg.closest('#realCopy,#liveCopy');if(box&&lastCopy)box.innerHTML=copyHTML(lastCopy);pg.blur?.();return}
+  if(resume)return call(resume,'/api/copy/resume',{confirm:'COPY_RESUME'},'다시 시작하는 중…');
   if(disarm)return call(disarm,'/api/copy/disarm',null,'끄는 중…');
   if(arm&&window.confirm('실계좌(실제 돈)로 카피 매매를 켭니다. 손절 없이 트레이더 청산만 따라가며, 카피 전체 손실이 잔고의 50%에 닿으면 모두 청산합니다. 켤까요?'))return call(arm,'/api/copy/arm',{confirm:'COPY_ARM'},'켜는 중…')})}
 

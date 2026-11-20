@@ -552,3 +552,27 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .fail-box[open]>summary::before{content:'▾ '}
 .fail-box .copy-table td,.fail-box .copy-table th{padding:5px 8px;font-size:12px}
 .fail-box .copy-list li{font-size:12px;padding:6px 8px}
+
+/* Stage 1 copy runtime controls panel */
+.copy-controls-fold{margin:8px 0 10px;border:1px solid var(--line);border-radius:10px;background:#0e1b2a;padding:6px 10px}
+.copy-controls-fold>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:700;color:var(--text);padding:3px 0}
+.copy-controls-fold>summary::-webkit-details-marker{display:none}
+.copy-controls-fold>summary::before{content:'▸ ';color:var(--muted)}
+.copy-controls-fold[open]>summary::before{content:'▾ '}
+.copy-controls-fold>summary small{font-weight:400;color:var(--dim);margin-left:4px;font-size:10.5px}
+.copy-ctrl-body{display:grid;gap:10px;margin-top:8px;padding-top:8px;border-top:1px solid #1a2a3d}
+.ctrl-row{display:grid;gap:6px}.ctrl-label{font-size:11px;color:var(--muted);font-weight:600}
+.ctrl-presets{display:flex;flex-wrap:wrap;gap:5px}
+.ctrl-presets button.is-current,.ctrl-filter-head button.is-current{background:#1b3b5c;border-color:#5a9cff;color:#eef6ff}
+.ctrl-form{display:grid;grid-template-columns:1fr 1fr;gap:6px 8px;align-items:end}
+.ctrl-form label{display:grid;gap:3px;font-size:10.5px;color:var(--muted)}
+.ctrl-form input,.ctrl-sym-add input{width:100%;min-width:0;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:#0a1522;color:var(--text);font-size:11.5px}
+.ctrl-form button[type="submit"]{grid-column:1/-1;justify-self:start;margin-top:2px}
+.ctrl-filter{display:grid;gap:6px;padding-top:6px;border-top:1px solid #1a2a3d}
+.ctrl-filter-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ctrl-chips{display:flex;flex-wrap:wrap;gap:5px;min-height:22px;align-items:center}
+.ctrl-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:999px;background:#182a3f;border:1px solid #2e4866;font-size:11px;color:#d6e6f7}
+.ctrl-chip button{border:0;background:none;color:#ff9bad;font-weight:700;padding:0 2px;line-height:1}
+.ctrl-sym-add{display:flex;gap:6px}
+.ctrl-sym-add input{flex:1}
+
