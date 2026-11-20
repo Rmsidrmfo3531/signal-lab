@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {observeWyckoff, WYCKOFF_INTERVAL_MS as I} from '../scalp_wyckoff.mjs';
+import {observeWyckoff, observeScalpStructure, WYCKOFF_INTERVAL_MS as I} from '../scalp_wyckoff.mjs';
 
 function candles() {
   const rows = [];
@@ -73,4 +73,18 @@ test('mirrors price structure for the short side and treats a gap as unavailable
   assert.equal(upthrust.verdict, 'SHORT');
   assert.equal(observe(rows.slice(0, -1), rows.length * I).status, 'INSUFFICIENT_CANDLES');
   assert.equal(observe(rows.filter((_, i) => i !== 70), rows.length * I).status, 'INSUFFICIENT_CANDLES');
+});
+
+test('VSA marks the relaxed retest of the Map box on closed candles only', () => {
+  const {rows, add} = candles();
+  add(100, 101, 98, 99.8, 20);
+  for (let i = 0; i < 3; i++) add(100.5, 101.1, 100, 100.5, 80);
+  const before = observeScalpStructure(rows, {asOf: rows.length * I - 1});
+  assert.equal(before.vsa.status, 'WAITING_FOR_ST');
+  const {map, vsa} = observeScalpStructure(rows, {asOf: rows.length * I});
+  assert.equal(vsa.status, 'ST_CONFIRMED');
+  assert.equal(vsa.st.type, 'RELAXED');
+  assert.equal(vsa.st.confirmedAt, rows.length * I);
+  assert.equal(vsa.boxLow, map.low);
+  assert.equal(vsa.boxHigh, map.high);
 });
