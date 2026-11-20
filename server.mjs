@@ -60,6 +60,7 @@ import {createVenuePositionsReader,venueRows,normalizeVenuePosition} from './ven
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
+import {buildCopyAnalytics} from './copy_analytics.mjs';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
@@ -319,7 +320,8 @@ const venuePositionsReader=realBingxClient?.mode==='LIVE'
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
 let accountAlerts=null;
 async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;
- const extra=accountAlerts?{accountAlerts:accountAlerts.status()}:{};
+ const analytics=buildCopyAnalytics({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:s0.funds?.equity??null,confirmedOnly:COPY.mode==='LIVE'});
+ const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{})};
  if(!venuePositionsReader)return {...s,...extra};
  const v=await venuePositionsReader.snapshot(realCopyPositions());if(!manualLedger)return {...s,...v,...extra};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
@@ -605,7 +607,10 @@ async function sendRealTradeTelegram(e){
   if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY){live.arm();console.log('[LIVE] 업데이트 후 자동 활성화 (테스트넷)')}
   // Copy, real account included (user 2026-11-16 "실계좌도 알아서 켜주고"): only after the one-tap update,
   // only if it was on when the update started, same mode, copy enabled, its loss limit not hit.
-  if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){copyTrader.arm();console.log(`[COPY] 업데이트 후 자동 활성화 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`)}
+  if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){
+   copyTrader.arm();console.log(`[COPY] 업데이트 후 자동 활성화 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`);
+   if(copyTrader.store.deferredEntries.length)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{}).then(()=>copyTrader.replayDeferred()).catch(e=>console.warn('[COPY REPLAY]',e.message))},2000).unref?.();
+  }
   if(fresh&&m.scalpArmed===true){try{scalpExec.arm();console.log('[SCALP] 업데이트 후 자동 활성화 (테스트넷)')}catch(e){console.warn('[SCALP] 복원 안 함:',e.message)}}
  }catch{}
 }
@@ -1905,6 +1910,38 @@ const server=http.createServer(async(req,res)=>{
     });
     return response(res,200,{ok:true,...resReport});
    }catch(e){return response(res,500,{error:e.code||'DAILY_REPORT_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/copy/analytics'&&req.method==='GET'){
+   return response(res,200,buildCopyAnalytics({
+    copyClosed:copyTrader.store.closed,
+    manualClosed:manualLedger?.store.closed??[],
+    dailyByDay:dailyPnl?.status()?.byDay??null,
+    equityUSD:copyTrader.funds?.equity??null,
+    confirmedOnly:COPY.mode==='LIVE',
+   }));
+  }
+  if(pathname==='/api/real/position-action'&&req.method==='POST'){
+   const body=await bodyJson(req);
+   if(body?.confirm!=='REAL_POSITION_ACTION')return response(res,400,{error:'CONFIRM_REQUIRED',message:'확인 코드가 필요합니다'});
+   const action=String(body?.action||'').toUpperCase();
+   if(!['CLOSE_HALF','CLOSE_ALL','BREAKEVEN_STOP'].includes(action))return response(res,400,{error:'INVALID_ACTION',message:'지원하지 않는 포지션 작업입니다'});
+   const symbol=String(body?.symbol||'').trim().toUpperCase();
+   const direction=['LONG','SHORT'].includes(String(body?.direction||'').toUpperCase())?String(body.direction).toUpperCase():null;
+   if(!symbol||symbol==='ALL'||!direction)return response(res,400,{error:'POSITION_SPEC_REQUIRED',message:'종목과 방향(LONG/SHORT)을 지정해 주세요'});
+   try{
+    const r=await executeRealPositionAction({symbol,direction,action});
+    if(r.ok)reportsDirty=true;
+    return response(res,r.ok?200:(r.status||409),r);
+   }catch(e){return response(res,502,{ok:false,error:e.code||'POSITION_ACTION_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/manual/note'&&req.method==='POST'){
+   if(!manualLedger)return response(res,404,{error:'MANUAL_LEDGER_UNAVAILABLE',message:'수동 거래 원장이 활성화되어 있지 않습니다'});
+   const body=await bodyJson(req);
+   try{
+    const r=manualLedger.setTradeNote(body?.id,{note:body?.note,tags:body?.tags});
+    reportsDirty=true;
+    return response(res,200,r);
+   }catch(e){return response(res,e.httpStatus||400,{error:e.code||'MANUAL_NOTE_FAILED',message:e.message})}
   }
   // From the local channel listener only: a shared token (COPY_LISTENER_TOKEN in .env), compared in constant time.
   if(pathname==='/api/copy/message'&&req.method==='POST'){

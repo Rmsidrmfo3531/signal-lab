@@ -647,6 +647,23 @@ export class ManualLedger{
   return done('EXCHANGE',pnl+fee+funding,{pnlUSD:r6(pnl),feeUSD:r6(fee),fundingUSD:r6(funding),incomeRows:mine.length});
  }
 
+ setTradeNote(id,{note='',tags=[]}={}){
+  const target=this.store.closed.find(x=>x.id===String(id||''));
+  if(!target)throw Object.assign(Error('수동 거래 기록을 찾지 못했습니다'),{code:'MANUAL_TRADE_NOT_FOUND',httpStatus:404});
+  const cleanNote=typeof note==='string'?note.trim().slice(0,200):'';
+  const rawTags=Array.isArray(tags)?tags:typeof tags==='string'?tags.split(/[,#\s]+/):[];
+  const cleanTags=[];
+  for(const t of rawTags){
+   const s=String(t||'').trim().replace(/^#+/,'').slice(0,24);
+   if(s&&!cleanTags.includes(s)&&cleanTags.length<5)cleanTags.push(s);
+  }
+  target.note=cleanNote||null;
+  target.tags=cleanTags;
+  target.noteAt=this.now();
+  this.#save();
+  return {ok:true,id:target.id,note:target.note,tags:target.tags};
+ }
+
  alertStatus(){
   const confirmed=this.store.events.filter(e=>e.fromFills===true),byOrigin={};
   for(const e of confirmed){const key=e.alertOrigin??'MANUAL';byOrigin[key]=(byOrigin[key]??0)+1}

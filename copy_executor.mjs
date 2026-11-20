@@ -149,7 +149,7 @@ export class CopyExecutor{
   Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,entryGateRevision,isBusy,balance,controls,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
-  this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
+  this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],deferredEntries:Array.isArray(saved?.deferredEntries)?saved.deferredEntries:[],killed:saved?.killed||false};
   // An order in flight does not survive a restart.
   for(const p of Object.values(this.store.positions))delete p.inflight;
   this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;this.entryRevision=0;this.settling=null;this.settleAttempts=new Map();
@@ -178,7 +178,7 @@ export class CopyExecutor{
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){const s=new Set(this.reserved);for(const sym of this.reserved)if(sym.endsWith('USDT')&&!sym.includes('-'))s.add(sym.replace(/USDT$/,'-USDT'));for(const p of Object.values(this.store.positions))if(p.status==='OPEN'){s.add(p.symbol);if(p.venueSymbol)s.add(p.venueSymbol);if(p.venueAlias)s.add(p.venueAlias)}return s}
  status(){const closed=this.store.closed.filter(p=>!p.archivedFromHistory);
-  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.#effectiveTraderBalanceUSD(),maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.#effectiveTraderBalanceUSD(),maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,deferredEntries:this.store.deferredEntries.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:closed.slice(-200).reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
   ...(this.controls?{controls:this.controls.status(this.now())}:{}),
   ...(this.audit?{audit:this.auditStatus()}:{})}}
@@ -209,14 +209,17 @@ export class CopyExecutor{
   this.store.seen.push(key);
   if(!m){this.#save();return {ok:true,ignored:true}}
   this.curMsg=m; // events of this message carry its direction (copy page failure list)
-  try{
   const at=num(date)??this.now();
+  this.curRaw={id:key,date:at,text};
+  let lastMsgKey=null,prevLastMsgAt;
+  try{
   if(m.kind==='MONITOR_START'){this.store.monitorStartAt=at;this.#event('MONITOR_START');this.#save();return {ok:true}}
   // Messages are retried for minutes when the server restarts, so they can arrive out of order: one older
   // than the last handled for the same coin and side is history (an old entry must not reopen a position the
   // trader has closed, an old close must not close a newer one).
   {const k=this.#key(m),last=this.store.lastMsgAt[k]||0;
    if(at<last){this.#event('SKIPPED',{symbol:m.symbol,reason:'STALE_MESSAGE',detail:`${Math.round((last-at)/1000)}초 앞선 메시지가 먼저 처리됨`});this.#save();return {ok:false,reason:'STALE_MESSAGE'}}
+   lastMsgKey=k;prevLastMsgAt=this.store.lastMsgAt[k];
    this.store.lastMsgAt[k]=at;
    // The trader's closes (server time, like our closedAt): after our own close we follow again only once
    // the trader has closed that position too (an entry card can also be the trader adding to it).
@@ -226,6 +229,10 @@ export class CopyExecutor{
   this.step=null;
   try{
    const r=m.kind==='OPEN'?await this.#open(m,at,entry):m.kind==='CHANGE'?await this.#change(m,at,entry):await this.#close(m,'TRADER_CLOSE');
+   if(r?.deferred===true){
+    const idx=this.store.seen.lastIndexOf(key);if(idx>=0)this.store.seen.splice(idx,1);
+    if(lastMsgKey!==null){if(prevLastMsgAt===undefined)delete this.store.lastMsgAt[lastMsgKey];else this.store.lastMsgAt[lastMsgKey]=prevLastMsgAt}
+   }
    // Our ledger may close this position just now (found gone on the venue): the trader's close comes after it.
    if(m.kind==='CLOSE'||(m.kind==='CHANGE'&&m.to===0))this.store.lastTraderCloseAt[this.#key(m)]=this.now();
    this.#save();return r;
@@ -237,7 +244,54 @@ export class CopyExecutor{
    // A close or a cut that failed (e.g. rate limit) is tried again by the routine check; a late entry or add is not.
    const job=error.retryAs??m;if(job.kind==='CLOSE'||job.kind==='CHANGE'&&job.to<job.from)this.store.pending.push({m:job,at,tries:0,pid:this.store.positions[this.#key(job)]?.id??null});
    this.#save();return {ok:false,reason:error.code||error.message}}
-  }finally{this.curMsg=null}
+  }finally{this.curMsg=null;this.curRaw=null}
+ }
+ #deferForUpdate(m){
+  if(!this.curRaw)return false;
+  const raw=this.curRaw,list=this.store.deferredEntries;
+  if(!list.some(x=>x.id===raw.id)){
+   list.push({id:raw.id,date:raw.date,text:raw.text,symbol:m.symbol,direction:m.direction,cardPrice:pos(m.price)??pos(m.entry)??null,queuedAt:this.now()});
+   if(list.length>10)list.splice(0,list.length-10);
+  }
+  this.#event('DEFERRED_FOR_UPDATE',{symbol:m.symbol,direction:m.direction});
+  return true;
+ }
+ /** Replay entry/add messages queued while an auto-update was in progress, checking age and price drift first. */
+ async replayDeferred({maxAgeMs=120000,maxDriftPct=1.5}={}){
+  const items=this.store.deferredEntries.splice(0);
+  if(!items.length)return {replayed:0,skipped:0,results:[]};
+  this.#save();
+  let replayed=0,skipped=0;const results=[];
+  for(const item of items){
+   const age=this.now()-(Number(item.queuedAt)||0);
+   if(age>maxAgeMs){
+    this.#event('SKIPPED',{symbol:item.symbol,direction:item.direction,reason:'UPDATE_DEFERRED_EXPIRED',detail:`업데이트 대기 ${Math.round(age/1000)}초 경과 (한도 ${Math.round(maxAgeMs/1000)}초)`});
+    skipped++;results.push({id:item.id,ok:false,reason:'UPDATE_DEFERRED_EXPIRED'});
+    continue;
+   }
+   if(item.cardPrice>0){
+    let venuePrice=null,mult=1;
+    try{
+     const c=await this.#contract(item.symbol);
+     mult=Number(c?.unitMultiplier)||1;
+     const vs=c?.venueSymbol||venueSymbolOf(item.symbol);
+     venuePrice=await Promise.race([this.markOf(vs),new Promise(r=>setTimeout(()=>r(null),3000).unref?.())]).catch(()=>null);
+    }catch{}
+    if(venuePrice>0){
+     const expected=item.cardPrice*mult;
+     const driftPct=Math.abs(venuePrice-expected)/expected*100;
+     if(driftPct>maxDriftPct){
+      this.#event('SKIPPED',{symbol:item.symbol,direction:item.direction,reason:'UPDATE_DEFERRED_DRIFT',detail:`카드 ${expected} → 현재 ${venuePrice} (${driftPct.toFixed(2)}% 이탈, 한도 ${maxDriftPct}%)`});
+      skipped++;results.push({id:item.id,ok:false,reason:'UPDATE_DEFERRED_DRIFT'});
+      continue;
+     }
+    }
+   }
+   const r=await this.handle({id:item.id,date:item.date,text:item.text});
+   replayed++;results.push({id:item.id,...r});
+  }
+  this.#save();
+  return {replayed,skipped,results};
  }
  #key(m){return `${m.symbol}|${m.direction}`}
  async #contract(symbol){const c=await this.contractOf(symbol);if(!c||c.tradable===false)throw Object.assign(Error('NO_BINGX_CONTRACT'),{code:'NO_BINGX_CONTRACT'});return c}
@@ -613,13 +667,16 @@ export class CopyExecutor{
    if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs)return {ok:true,snapshot:true};
    if(prev.lastTheirEntry===m.entry&&prev.lastTheirQty===m.quantity&&at-(prev.lastTheirAt||0)<180000)return {ok:true,already:true};
    if(!(m.quantity>0))return {ok:true,already:true};
+   const prevSnap={e:prev.lastTheirEntry,q:prev.lastTheirQty,a:prev.lastTheirAt,t:prev.theirTotal};
    prev.lastTheirEntry=m.entry;prev.lastTheirQty=m.quantity;prev.lastTheirAt=at;
    // The trader's total follows the trader, whether or not our buy goes through.
    if(prev.theirTotal>0)prev.theirTotal+=m.quantity;
-   return this.#buyMore(prev,m,m.quantity,{price:pos(m.price)??pos(m.entry),entry});
+   const res=await this.#buyMore(prev,m,m.quantity,{price:pos(m.price)??pos(m.entry),entry});
+   if(res?.deferred){prev.lastTheirEntry=prevSnap.e;prev.lastTheirQty=prevSnap.q;prev.lastTheirAt=prevSnap.a;prev.theirTotal=prevSnap.t}
+   return res;
   }
   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs){this.#event('SKIPPED',{symbol:m.symbol,reason:'MONITOR_RESTART_SNAPSHOT'});return {ok:false,reason:'SNAPSHOT'}}
-  const g=this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  const g=this.gate();if(!g.ok){if(g.reason==='UPDATING'&&this.#deferForUpdate(m))return {ok:false,reason:'UPDATING',deferred:true};this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   const symBlock=this.controls?.checkSymbol(m.symbol);if(symBlock){this.#event('SKIPPED',{symbol:m.symbol,...symBlock});return {ok:false,reason:symBlock.reason}}
   const cooldown=this.controls?.checkCooldown(this.now());if(cooldown){this.#event('SKIPPED',{symbol:m.symbol,...cooldown});return {ok:false,reason:cooldown.reason}}
   const audit=this.#auditBlock(m.symbol);if(audit){this.#event('SKIPPED',{symbol:m.symbol,reason:audit});return {ok:false,reason:audit}}
@@ -787,7 +844,11 @@ export class CopyExecutor{
   const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#recheck(p,await this.#position(p));p.qty=now.size;
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   if(ratio>1){
-   p.theirTotal=m.to;return this.#buyMore(p,m,m.to-m.from,{price:pos(m.price),ratio,c,now,entry});
+   const prevTotal=p.theirTotal;
+   p.theirTotal=m.to;
+   const res=await this.#buyMore(p,m,m.to-m.from,{price:pos(m.price),ratio,c,now,entry});
+   if(res?.deferred)p.theirTotal=prevTotal;
+   return res;
   }else{
    const down=this.#qty(c,p.qty*(1-ratio)),up=this.#qty(c,p.qty*(1-ratio),'UP'),want=p.qty*(1-ratio);
    const cut=Math.min(p.qty,want-down<=up-want?down:up);if(!(cut>0))return {ok:true,tooSmall:true};
@@ -806,7 +867,8 @@ export class CopyExecutor{
   c??=await this.#contract(p.symbol);now??=await this.#recheck(p,await this.#position(p));p.qty=now.size;
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
-  const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();
+  if(!g.ok){if(g.reason==='UPDATING'&&this.#deferForUpdate({...m,symbol:p.symbol,direction:p.direction}))return {ok:false,reason:'UPDATING',deferred:true};this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   const symBlock=this.controls?.checkSymbol(p.symbol);if(symBlock){this.#event('ADD_SKIPPED',{symbol:p.symbol,...symBlock});return {ok:false,reason:symBlock.reason}}
   if(this.audit){
    let reason=this.#auditBlock(p.symbol,p.venueSymbol),detail;
