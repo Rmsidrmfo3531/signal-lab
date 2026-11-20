@@ -686,7 +686,7 @@ async function executeRealPositionAction({symbol,direction=null,action}={}){
 }
 if(COPY.mode==='LIVE'){
  const sendAccountAlertTelegram=async text=>{
-  if(!/<pre>[\s\S]*<\/pre>/.test(String(text||'')))return sendTradeTelegram(text);
+  if(!/<(?:b|pre)>[\s\S]*<\/(?:b|pre)>/.test(String(text||'')))return sendTradeTelegram(text);
   if(persisted.notifySettings?.telegramLive===false)return;
   const {chatId:chat_id,paused,error:destErr}=await resolveTradeTelegramDestination();
   if(!chat_id||persisted.notifySettings?.telegramLive===false){if(!chat_id&&!paused)console.warn('[TRADE TELEGRAM]',destErr);return}

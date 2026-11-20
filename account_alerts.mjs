@@ -41,56 +41,38 @@ const originKo=o=>o==='copy'?'카피':'수동';
 const err=msg=>Object.assign(Error(msg),{code:'INVALID_ACCOUNT_ALERTS',httpStatus:400});
 
 const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-const charWidth=ch=>/[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/.test(ch)?2:1;
-const displayWidth=s=>[...String(s??'')].reduce((w,ch)=>w+charWidth(ch),0);
-const padEndW=(s,w)=>String(s??'')+' '.repeat(Math.max(0,w-displayWidth(s)));
-const padStartW=(s,w)=>' '.repeat(Math.max(0,w-displayWidth(s)))+String(s??'');
+const isHtmlMessage=s=>/<(?:b|i|u|s|a|pre|code)\b[^>]*>[\s\S]*<\/(?:b|i|u|s|a|pre|code)>/.test(String(s||''));
 
 function positionRowParts(p){
  const sym=displaySymbol(p?.symbol||p?.venueSymbol||'');
  const u=Number(p?.unrealized);
- const pnl=p?.unrealized!=null&&Number.isFinite(u)?`${u>=0?'+':'-'}${Math.abs(u).toFixed(2)}`:'—';
+ const hasU=p?.unrealized!=null&&Number.isFinite(u);
+ const pnl=hasU?`${u>=0?'+':'-'}$${Math.abs(u).toFixed(2)}`:'—';
  let roeNum=Number(p?.roePct);
- if((p?.roePct==null||!Number.isFinite(roeNum))&&Number.isFinite(u)&&Number(p?.margin)>0)roeNum=u/Number(p.margin)*100;
- const roe=Number.isFinite(roeNum)?`${roeNum>=0?'+':'-'}${Math.abs(roeNum).toFixed(1)}%`:'—';
- return {sym,u:Number.isFinite(u)?u:null,pnl,roe};
+ if((p?.roePct==null||!Number.isFinite(roeNum))&&hasU&&Number(p?.margin)>0)roeNum=u/Number(p.margin)*100;
+ const roe=Number.isFinite(roeNum)?`${roeNum>=0?'+':'-'}${Math.abs(roeNum).toFixed(1)}%`:null;
+ const dot=!hasU?'⚪':u>0?'🟢':u<0?'🔴':'⚪';
+ return {sym,u:hasU?u:null,pnl,roe,dot};
 }
 
 export function formatPositionPnlLine(p){
  const r=positionRowParts(p);
- const roe=r.roe==='—'?'':`(${r.roe.replace(/^\+/,'')})`;
- return `${r.sym} / ${r.pnl}${roe}`;
-}
-
-export function formatPositionsTable(positions=[]){
- const list=Array.isArray(positions)?positions:[];
- if(!list.length)return '';
- const rows=list.map(positionRowParts);
- const hasTotal=rows.length>1&&rows.some(r=>r.u!=null);
- const totalVal=hasTotal?rows.reduce((s,r)=>s+(r.u||0),0):null;
- const totalPnl=hasTotal?`${totalVal>=0?'+':'-'}${Math.abs(totalVal).toFixed(2)}`:'';
- const symW=Math.max(8,...rows.map(r=>displayWidth(r.sym)));
- const pnlW=Math.max(8,...rows.map(r=>displayWidth(r.pnl)),displayWidth(totalPnl));
- const roeW=Math.max(7,...rows.map(r=>displayWidth(r.roe)));
- const gap='   ';
- const line=(a,b,c)=>`${padEndW(a,symW)}${gap}${padStartW(b,pnlW)}${gap}${padStartW(c,roeW)}`.trimEnd();
- const rule='─'.repeat(symW+gap.length+pnlW+gap.length+roeW);
- const out=[
-  line('종목','손익($)','수익률'),
-  rule,
-  ...rows.map(r=>line(r.sym,r.pnl,r.roe)),
- ];
- if(hasTotal){
-  out.push(rule);
-  out.push(line('합계',totalPnl,''));
- }
- return `<pre>${escHtml(out.join('\n'))}</pre>`;
+ const roe=r.roe?` (${r.roe})`:'';
+ return `${r.dot} <b>${escHtml(r.sym)}</b>   ${r.pnl}${roe}`;
 }
 
 export function formatPositionsSummary(positions=[]){
  const list=Array.isArray(positions)?positions:[];
  if(!list.length)return '보유 중인 포지션이 없습니다.';
- return `📈 진행 중 포지션 (${list.length}개)\n${formatPositionsTable(list)}`;
+ const sorted=[...list].sort((a,b)=>(Number(b?.unrealized)||0)-(Number(a?.unrealized)||0));
+ const hasTotal=sorted.some(p=>p?.unrealized!=null&&Number.isFinite(Number(p.unrealized)));
+ const totalVal=hasTotal?sorted.reduce((s,p)=>s+(Number(p?.unrealized)||0),0):null;
+ const totalText=hasTotal?` · 합계 <b>${totalVal>=0?'+':'-'}$${Math.abs(totalVal).toFixed(2)}</b>`:'';
+ return [
+  `📊 <b>진행 중 포지션 (${sorted.length}개)</b>${totalText}`,
+  '',
+  ...sorted.map(formatPositionPnlLine),
+ ].join('\n');
 }
 
 function parseTierList(raw,lo,hi,field){
@@ -128,15 +110,16 @@ export function formatStatusReply({equityUSD,availableUSD,positions=[],copy}){
  const marginPct=equityUSD>0?totalMargin/equityUSD*100:null;
  const copyState=copy?.killed?'⛔ 손실 한도 정지':!copy?.enabled?'○ 카피 꺼짐':copy?.controls?.cooldownActive?`⏸ 쿨다운 (${copy.controls.cooldownLeftMin}분 남음)`:copy?.armed?'● 활성화':'○ 비활성';
  const lines=[
-  `📋 실계좌 현황`,
+  `📋 <b>실계좌 현황</b>`,
   `순자산 ${usd(equityUSD)} · 가용 ${usd(availableUSD)}`,
   `증거금 ${usd(totalMargin)}${marginPct!=null?` (${marginPct.toFixed(1)}%)`:''} · 미실현 ${money(totalUnreal)}`,
   `카피 상태: ${copyState}${copy?.traderBalanceUSD?` · 기준 $${Number(copy.traderBalanceUSD).toLocaleString()}`:''}`,
  ];
  if(!list.length)lines.push('보유 포지션 없음');
  else{
-  lines.push(`보유 포지션 (${list.length}개):`);
-  lines.push(formatPositionsTable(list.slice(0,20)));
+  const sorted=[...list].sort((a,b)=>(Number(b?.unrealized)||0)-(Number(a?.unrealized)||0));
+  lines.push('',`보유 포지션 (${sorted.length}개)`);
+  for(const p of sorted.slice(0,20))lines.push(formatPositionPnlLine(p));
  }
  return lines.join('\n');
 }
@@ -551,7 +534,7 @@ export class AccountAlerts{
     if(initial&&Number.isFinite(msgAt)&&msgAt<this.bootAt-60000)continue;
     const reply=await this.handleCommand(msg.text,msg.chat?.id,this.now());
     if(reply){
-     const isHtml=/<pre>[\s\S]*<\/pre>/.test(reply);
+     const isHtml=isHtmlMessage(reply);
      if(this.replyRequest)await this.replyRequest({chat_id:this.allowedChatId,text:reply,...(isHtml?{parse_mode:'HTML'}:{})}).catch(()=>{});
      else await this.sendText(reply).catch(()=>{});
     }

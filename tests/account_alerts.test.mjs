@@ -174,20 +174,20 @@ test('copyHTML renders accountAlerts panel on LIVE',()=>{
  assert.equal(typeof formatDailyReport,'function');
 });
 
-test('open-position PnL summary sends aligned Excel-style <pre> table Telegram alert, respects interval cooldown, and supports /pos command',async()=>{
+test('open-position PnL summary sends clean readable Telegram list (no code block), respects interval cooldown, and supports /pos command',async()=>{
  const {formatPositionPnlLine,formatPositionsSummary}=await import('../account_alerts.mjs');
  const positions=[
-  {symbol:'BTCUSDT',direction:'LONG',unrealized:100.11,roePct:12.5},
   {symbol:'NCSKSNDK2USDUSDT',direction:'SHORT',unrealized:-45.2,margin:544.58},
+  {symbol:'BTCUSDT',direction:'LONG',unrealized:100.11,roePct:12.5},
  ];
- assert.equal(formatPositionPnlLine(positions[0]),'BTCUSDT / +100.11(12.5%)');
- assert.equal(formatPositionPnlLine(positions[1]),'SNDKUSDT / -45.20(-8.3%)');
+ assert.equal(formatPositionPnlLine(positions[1]),'🟢 <b>BTCUSDT</b>   +$100.11 (+12.5%)');
+ assert.equal(formatPositionPnlLine(positions[0]),'🔴 <b>SNDKUSDT</b>   -$45.20 (-8.3%)');
  const summary=formatPositionsSummary(positions);
- assert.match(summary,/^📈 진행 중 포지션 \(2개\)\n<pre>[\s\S]+<\/pre>$/);
- assert.match(summary,/종목\s+손익\(\$\)\s+수익률/);
- assert.match(summary,/BTCUSDT\s+\+100\.11\s+\+12\.5%/);
- assert.match(summary,/SNDKUSDT\s+-45\.20\s+-8\.3%/);
- assert.match(summary,/합계\s+\+54\.91/);
+ assert.doesNotMatch(summary,/<pre>|<code>/);
+ assert.equal(
+  summary,
+  '📊 <b>진행 중 포지션 (2개)</b> · 합계 <b>+$54.91</b>\n\n🟢 <b>BTCUSDT</b>   +$100.11 (+12.5%)\n🔴 <b>SNDKUSDT</b>   -$45.20 (-8.3%)'
+ );
 
  const dir=tmp();
  try{
