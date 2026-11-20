@@ -29,7 +29,7 @@ test('disk failure returns HTTP 503, rolls back settings, exposes unhealthy stor
   await fs.mkdir(path.join(app,'tests','fixtures'),{recursive:true});await fs.mkdir(path.join(app,'public'));await fs.mkdir(dataDir);
   const sources=(await fs.readdir(project)).filter(name=>name.endsWith('.mjs')||name==='package.json');
   await Promise.all(sources.map(name=>fs.copyFile(path.join(project,name),path.join(app,name))));
-  await fs.copyFile(path.join(project,'public','trade_plan.js'),path.join(app,'public','trade_plan.js'));
+  for(const name of ['trade_plan.js','symbol_display.js'])await fs.copyFile(path.join(project,'public',name),path.join(app,'public',name));
   for(const name of ['mock_pipeline.mjs','mock_storage_failure.mjs'])await fs.copyFile(path.join(project,'tests',name),path.join(app,'tests',name));
   await fs.copyFile(path.join(project,'tests','fixtures','pipeline_market.mjs'),path.join(app,'tests','fixtures','pipeline_market.mjs'));
   const oldTrade={key:'historical-pnl-must-survive',realizedPnLUSD:12.5,feesUSD:.5,closedAt:Date.now()-86400000};

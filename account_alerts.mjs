@@ -10,6 +10,7 @@ import path from 'node:path';
 import {randomInt} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {createTelegramNetworkRecovery} from './telegram_transport.mjs';
+import {displaySymbol} from './public/symbol_display.js';
 
 export const ACCOUNT_ALERTS_DEFAULTS=Object.freeze({
  riskAlerts:true,
@@ -82,7 +83,7 @@ export function formatStatusReply({equityUSD,availableUSD,positions=[],copy}){
   lines.push(`보유 포지션 (${list.length}개):`);
   for(const p of list.slice(0,12)){
    const roe=Number.isFinite(Number(p.roePct))?` (${Number(p.roePct)>=0?'+':'−'}${Math.abs(Number(p.roePct)).toFixed(1)}%)`:'';
-   lines.push(`· [${originKo(p.origin)}] ${p.symbol} ${sideKo(p.direction)} ${p.leverage??'—'}배 · ${money(p.unrealized)}${roe}`);
+   lines.push(`· [${originKo(p.origin)}] ${displaySymbol(p.symbol)} ${sideKo(p.direction)} ${p.leverage??'—'}배 · ${money(p.unrealized)}${roe}`);
   }
  }
  return lines.join('\n');
@@ -235,7 +236,7 @@ export class AccountAlerts{
     if(hit){
      prev.profit=hit;
      this.positionTiers.set(key,prev);
-     const text=`🎯 포지션 수익 도달 · ${originKo(p.origin)} ${p.symbol} ${sideKo(p.direction)}\n수익률 +${roe.toFixed(1)}% (${money(p.unrealized)}) · 기준 +${hit}%\n평단 ${px(p.avg)} · 현재 ${px(p.mark)} · 증거금 ${usd(p.margin)}`;
+     const text=`🎯 포지션 수익 도달 · ${originKo(p.origin)} ${displaySymbol(p.symbol)} ${sideKo(p.direction)}\n수익률 +${roe.toFixed(1)}% (${money(p.unrealized)}) · 기준 +${hit}%\n평단 ${px(p.avg)} · 현재 ${px(p.mark)} · 증거금 ${usd(p.margin)}`;
      try{await this.sendText(text);delivered.push({key,kind:'profit',tier:hit,text})}catch{}
     }
    }else if(roe<0){
@@ -244,7 +245,7 @@ export class AccountAlerts{
     if(hit){
      prev.loss=hit;
      this.positionTiers.set(key,prev);
-     const text=`🔻 포지션 손실 경고 · ${originKo(p.origin)} ${p.symbol} ${sideKo(p.direction)}\n수익률 −${mag.toFixed(1)}% (${money(p.unrealized)}) · 기준 −${hit}%\n평단 ${px(p.avg)} · 현재 ${px(p.mark)} · 증거금 ${usd(p.margin)}`;
+     const text=`🔻 포지션 손실 경고 · ${originKo(p.origin)} ${displaySymbol(p.symbol)} ${sideKo(p.direction)}\n수익률 −${mag.toFixed(1)}% (${money(p.unrealized)}) · 기준 −${hit}%\n평단 ${px(p.avg)} · 현재 ${px(p.mark)} · 증거금 ${usd(p.margin)}`;
      try{await this.sendText(text);delivered.push({key,kind:'loss',tier:hit,text})}catch{}
     }
    }
@@ -330,7 +331,7 @@ export class AccountAlerts{
    if(!rawSym)return '사용법: /close BTCUSDT [LONG|SHORT] 또는 /close ALL';
    const dirRaw=String(parts[2]||'').trim().toUpperCase();
    const direction=['LONG','SHORT'].includes(dirRaw)?dirRaw:null;
-   const target=rawSym==='ALL'?'ALL':(rawSym.endsWith('USDT')?rawSym:`${rawSym}USDT`);
+   const target=rawSym==='ALL'?'ALL':displaySymbol(rawSym.endsWith('USDT')?rawSym:`${rawSym}USDT`);
    if(target!=='ALL'&&!/^[A-Z0-9]{4,30}$/.test(target))return '⚠️ 종목 형식이 올바르지 않습니다.';
    const code=String(randomInt(1000,10000));
    this.pendingClose={code,symbol:target,direction,expiresAt:now+CONFIRM_TTL_MS};

@@ -1,4 +1,5 @@
 // Telegram / screen notices for the copy-trading ledger (copy_executor.mjs events).
+import {displaySymbol} from './public/symbol_display.js';
 const SIDE={LONG:'롱',SHORT:'숏'};
 const LIVE_SIDE={LONG:'🟢 롱',SHORT:'🔴 숏'};
 const money=v=>{const n=Number(v);return v==null||!Number.isFinite(n)?'—':`${n>=0?'+':'−'}$${Math.abs(n).toFixed(2)}`};
@@ -11,7 +12,8 @@ const why=r=>REASON[r]||r||'';
 function realCopyTradeText(e){
  const action={OPENED:e.refollow?'다시 진입':e.late?'늦은 진입':'신규 진입',ADDED:'추매',REDUCED:'일부 청산',CLOSED:'전량 청산'}[e.type];
  if(!action)return null;
- const head=[`카피 | ${action}`,[e.symbol,LIVE_SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ const sym=displaySymbol(e.symbol);
+ const head=[`카피 | ${action}`,[sym,LIVE_SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='OPENED')detail=[`수량 ${e.qty} · 평균 진입가 ${e.avg??'—'} USDT`,
   e.stop?`거래소 보호 손절 ${e.stop} USDT`:null,e.stopDistPct!=null?`매물대 기준 ${e.stopDistPct}% · 거래량 동반 이탈 시`:null];
@@ -27,7 +29,7 @@ function realCopyTradeText(e){
 export function copyEventText(e){
  if(!e)return null;
  if(e.mode==='LIVE'){const trade=realCopyTradeText(e);if(trade)return trade}
- const head=['📋 카피',e.symbol,e.mode==='LIVE'?LIVE_SIDE[e.direction]:null].filter(Boolean).join(' · ');
+ const head=['📋 카피',displaySymbol(e.symbol),e.mode==='LIVE'?LIVE_SIDE[e.direction]:null].filter(Boolean).join(' · ');
  if(e.type==='ARMED'||e.type==='DISARMED')return `📋 카피 ${e.type==='ARMED'?'활성화':'비활성화'}`;
  if(e.type==='COPY_COOLDOWN_TRIGGERED')return `⏸ 카피 자동 쿨다운 시작${e.mode==='LIVE'?'':' (테스트넷)'}\n${e.detail||e.reason||''}\n기존 포지션 청산·축소는 그대로 유지되며, 신규 진입만 일시 중지합니다.`;
  if(e.type==='DEFERRED_FOR_UPDATE')return `⏳ ${head} 업데이트 중 신호 대기열 저장 — 재시작 직후 가격 확인 후 이어서 처리합니다.`;

@@ -3,6 +3,8 @@
 //  - #13 Performance breakdown by symbol, KST time-of-day bucket, and leverage tier
 // Pure functions, zero network / I/O.
 
+import {displaySymbol} from './public/symbol_display.js';
+
 const KST_MS=9*3600000;
 const r2=v=>Math.round(Number(v)*100)/100;
 const kstDay=t=>new Date(Number(t)+KST_MS).toISOString().slice(0,10);
@@ -48,7 +50,7 @@ export function buildCopyAnalytics({copyClosed=[],manualClosed=[],dailyByDay=nul
 
  const trades=[
   ...(Array.isArray(copyClosed)?copyClosed:[]).filter(ok).map(x=>({
-   symbol:String(x.symbol||'').toUpperCase(),
+   symbol:displaySymbol(x.symbol).toUpperCase(),
    origin:'copy',
    direction:x.direction||null,
    leverage:Number(x.leverage)>0?Number(x.leverage):null,
@@ -57,7 +59,7 @@ export function buildCopyAnalytics({copyClosed=[],manualClosed=[],dailyByDay=nul
    netUSD:Number(x.netUSD),
   })),
   ...(Array.isArray(manualClosed)?manualClosed:[]).filter(ok).map(x=>({
-   symbol:String(x.symbol||'').toUpperCase(),
+   symbol:displaySymbol(x.symbol).toUpperCase(),
    origin:'manual',
    direction:x.direction||null,
    leverage:Number(x.leverage)>0?Number(x.leverage):null,

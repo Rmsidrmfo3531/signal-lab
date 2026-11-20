@@ -62,6 +62,7 @@ import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
 import {buildCopyAnalytics} from './copy_analytics.mjs';
+import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
@@ -484,7 +485,7 @@ function scalpNotice(e){
 // A copy ledger of the other mode with open positions is no longer managed: say so once at start.
 try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy-store-live.json');
  if(fs.existsSync(other)){const o=JSON.parse(fs.readFileSync(other,'utf8'));const n=Object.values(o.positions||{}).filter(x=>x.status==='OPEN');
-  if(n.length){const text=`⚠️ 카피 모드가 ${COPY.mode==='LIVE'?'실계좌':'테스트넷'}로 바뀌었습니다. ${COPY.mode==='LIVE'?'테스트넷':'실계좌'} 카피 포지션 ${n.length}개(${n.map(x=>x.symbol).join(', ')})는 더 이상 따라가지 않습니다. 거래소에서 직접 정리해 주세요.`;
+  if(n.length){const text=`⚠️ 카피 모드가 ${COPY.mode==='LIVE'?'실계좌':'테스트넷'}로 바뀌었습니다. ${COPY.mode==='LIVE'?'테스트넷':'실계좌'} 카피 포지션 ${n.length}개(${n.map(x=>displaySymbol(x.symbol)).join(', ')})는 더 이상 따라가지 않습니다. 거래소에서 직접 정리해 주세요.`;
    console.warn('[COPY]',text);setTimeout(()=>{try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text}).catch(()=>{})}catch{}},5000)}}}catch{}
 // First balance / positions read soon after start (the panel shows the copy account's balance).
 if(COPY.enabled)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{})},8000).unref?.();
@@ -628,9 +629,10 @@ async function executeRealPositionAction({symbol,direction=null,action}={}){
  const markOf=vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null;
  const open=raw.map(r=>normalizeVenuePosition(r,{markOf})).filter(Boolean);
  const normSym=String(symbol||'').trim().toUpperCase().replace(/[-_]/g,'');
+ const normDisp=displaySymbol(normSym);
  const targets=normSym==='ALL'
   ?(action==='CLOSE_ALL'?open:[])
-  :open.filter(p=>p.symbol===normSym&&(!direction||p.direction===direction));
+  :open.filter(p=>(p.symbol===normSym||displaySymbol(p.symbol)===normDisp)&&(!direction||p.direction===direction));
  if(!targets.length)return {ok:false,status:404,error:'POSITION_NOT_FOUND',message:'해당 조건의 보유 포지션이 없습니다'};
  if(action==='BREAKEVEN_STOP'){
   if(targets.length!==1)return {ok:false,status:400,error:'SINGLE_POSITION_REQUIRED',message:'본전 스탑은 방향을 지정한 단일 포지션에만 적용됩니다'};
@@ -647,7 +649,7 @@ async function executeRealPositionAction({symbol,direction=null,action}={}){
    type:'STOP_MARKET',quantity:String(p.size),stopPrice:String(stopPrice),
    closePosition:'true',workingType:'MARK_PRICE',clientOrderId:cid,
   });
-  return {ok:true,action,symbol:p.symbol,direction:p.direction,stopPrice:Number(stopPrice),summary:`${p.symbol} ${p.direction==='LONG'?'롱':'숏'} 본전 스탑 설정 (${stopPrice} USDT)`};
+  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(stopPrice),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} 본전 스탑 설정 (${stopPrice} USDT)`};
  }
  const results=[];
  for(const p of targets){
@@ -665,7 +667,7 @@ async function executeRealPositionAction({symbol,direction=null,action}={}){
    ...sideParams({hedge,direction:p.direction,closing:true}),
    type:'MARKET',quantity:String(qty),clientOrderId:cid,
   });
-  results.push(`${p.symbol} ${p.direction==='LONG'?'롱':'숏'} ${qty}`);
+  results.push(`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${qty}`);
  }
  void refreshRealTradeNotices();
  return {ok:true,action,closed:results,summary:`${action==='CLOSE_HALF'?'50% 부분 청산':'전량 청산'}: ${results.join(', ')}`};

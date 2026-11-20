@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {atomicWriteStore,readStore} from './persistence.mjs';
+import {displaySymbol} from './public/symbol_display.js';
 
 export const COPY_CONTROLS_DEFAULTS=Object.freeze({
  traderBalanceUSD:null,
@@ -27,7 +28,7 @@ const err=(message,code='INVALID_COPY_CONTROLS')=>Object.assign(Error(message),{
 export function normalizeControlSymbol(raw){
  const cleaned=String(raw??'').trim().toUpperCase().replace(/[-_\s/]/g,'');
  if(!cleaned)return null;
- const sym=cleaned.endsWith('USDT')?cleaned:`${cleaned}USDT`;
+ const sym=displaySymbol(cleaned.endsWith('USDT')?cleaned:`${cleaned}USDT`);
  return /^[A-Z0-9]{4,30}$/.test(sym)?sym:null;
 }
 
