@@ -31,6 +31,7 @@ import {livePositionView} from './live_overview.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
+import {observeWyckoff,WYCKOFF_CANDLES,WYCKOFF_INTERVAL_MS} from './scalp_wyckoff.mjs';
 import {zoneBook,zoneTouches,zoneTagFields,zoneSpanMs,ZONE_PROFILES,ZONE_TOUCH_PCT} from './backtest.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
@@ -51,6 +52,7 @@ const EARLY_TAKE_PROFIT_MS=45*60000,EARLY_EXIT_RETRY_MS=60000;
 const PROFIT_ONLY_RETRY_MS=15000;
 export const SCALP_PROFIT_HOLD_TARGET_MIN=60;
 const REVERSAL_RECHECK_MS=30*60000;
+const WYCKOFF_SCAN_BUDGET_MS=12_000;
 const RECHECK_REASONS=new Set(['PRICE_DRIFT','TP1_NET_RR_BELOW_MINIMUM']);
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -108,6 +110,7 @@ export function scalpExecConfig(env=process.env){
   // the filter skipped) = measured and logged with every signal and trade, never blocks; 'on' blocks against-trend
   // signals as in the backtest; 'off' skips the measurement.
   trendMode:(m=>['on','true','1','yes'].includes(m)?'on':['off','false','0','no'].includes(m)?'off':['record','log'].includes(m)?'record':'on')(String(env.SCALP_EXEC_TREND_FILTER||'').trim().toLowerCase()),
+  wyckoffRecord:!['off','false','0','no'].includes(String(env.SCALP_WYCKOFF_RECORD??'').trim().toLowerCase()),
   riskPct:n('SCALP_RISK_PCT',.5,.05,2),maxOpen:n('SCALP_MAX_OPEN',0,0,200),leverage:n('SCALP_LEVERAGE',10,1,20),
   scaleIn:!['off','false','0','no'].includes(String(env.SCALP_SCALE_IN??'').trim().toLowerCase()),
   stopLossEnabled:['on','true','1','yes'].includes(String(env.SCALP_STOP_LOSS??'').trim().toLowerCase()),
@@ -272,6 +275,7 @@ export class ScalpExecutor{
   this.budget=budget;this.reservedRisk=new Map();
   this.armed=false;this.entryRevision=0;this.reserved=new Set();this.universe=[];this.universeAt=0;this.trendCache=new Map();this.lastScanBucket=null;this.lastScan=null;
   this.reversalWatch=new Map();
+  this.wyckoffCache=new Map();
   this.scanning=false;this.reconciling=false;this.lastReconcileAt=0;this.cooldownUntil=0;this.funds=null;
   // Trade journal (scalp_journal.mjs, user 2026-11-16 22:18): every finished trade, never truncated; the stats
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
@@ -358,6 +362,7 @@ export class ScalpExecutor{
  async scan(now=this.now()){
   if(this.scanning)return this.lastScan;this.scanning=true;
   const revision=this.entryRevision,bucket=Math.floor(now/I5),st={at:now,bucket,checked:0,signals:0,entered:0,error:null};this.lastScanBucket=bucket;
+  const observations=[];
   try{
    const why=this.#blocked();if(why){st.error=why;return st}
    for(const [symbol,w] of this.reversalWatch)if(now-w.det.barAt>REVERSAL_RECHECK_MS)this.reversalWatch.delete(symbol);
@@ -404,14 +409,49 @@ export class ScalpExecutor{
     if(revision===this.entryRevision&&!r?.entered&&RECHECK_REASONS.has(r?.reason))this.reversalWatch.set(u.symbol,{det,kind,candle:ctx.candle});
     else this.reversalWatch.delete(u.symbol);
     if(r?.entered){st.entered++;if(kind===SCALP_KINDS.ZONE)st.zoneEntered=(st.zoneEntered||0)+1}
-    if(r?.reason!=='ALREADY_SENT')this.#logSignal(ctx,r);
+    if(r?.reason!=='ALREADY_SENT'){
+     if(this.config.wyckoffRecord&&this.signalsFile)observations.push({ctx,result:r});
+     else this.#logSignal(ctx,r);
+    }
    }
    // Scan duration on the positions this scan opened (journal only).
    for(const p of this.store.open)if(p.scan?.bucket===bucket)p.scan.durationMs=this.now()-st.at;
    if(!st.error&&st.failed&&!st.checked)st.error=`CANDLES_FAILED_${st.failed}:${st.lastFailure}`;
   }catch(e){st.error=e?.code||e?.message||'SCAN_FAILED'}
-  finally{this.scanning=false;this.lastScan=st;this.#save()}
+  finally{
+   try{await this.#recordWyckoff(observations,st)}finally{this.scanning=false;this.lastScan=st;this.#save()}
+  }
   return st;
+ }
+ /** Add context to the existing signal journal after all entry decisions. No context result gates an order. */
+ async #recordWyckoff(observations,st){
+  if(!observations.length)return;
+  const bucket=Math.floor(st.bucket*I5/WYCKOFF_INTERVAL_MS);
+  for(const [symbol,entry] of this.wyckoffCache)if(entry.bucket!==bucket)this.wyckoffCache.delete(symbol);
+  const deadline=performance.now()+WYCKOFF_SCAN_BUDGET_MS;
+  let canRead=!st.error&&!st.rateLimited;
+  for(const {ctx,result} of observations){
+   const timeLeft=Math.min(deadline-performance.now(),(st.bucket+1)*I5-this.now()-25_000);
+   const status=state=>({version:1,timeframe:'15m',model:'WYCKOFF_STRUCTURE_OBSERVATION',status:state});
+   let cached=this.wyckoffCache.get(ctx.symbol);
+   if(!cached&&canRead&&timeLeft>0){
+    const rows=await withTimeout(Promise.resolve().then(()=>this.candles(ctx.symbol,'15m',WYCKOFF_CANDLES)),Math.min(timeLeft,5000));
+    if(Array.isArray(rows)){
+     // Use the actual observation candle, including for a recheck of an older 5m candidate.
+     cached={bucket,observation:observeWyckoff(rows,{asOf:st.bucket*I5})};
+     if(cached.observation.status!=='INSUFFICIENT_CANDLES')this.wyckoffCache.set(ctx.symbol,cached);
+    }else{
+     ctx.wyckoff=status('READ_FAILED');
+     canRead=false;
+    }
+   }
+   if(cached){
+    const o=cached.observation;
+    const alignment=o.status==='CONFIRMED_RANGE'&&o.verdict?(o.verdict===ctx.direction?'ALIGNED':'OPPOSED'):null;
+    ctx.wyckoff={...o,alignment};
+   }else ctx.wyckoff??=status('READ_DEFERRED');
+   this.#logSignal(ctx,result);
+  }
  }
  #recheckReversal(symbol,closed,now){
   const candidate=this.reversalWatch.get(symbol);
@@ -640,7 +680,7 @@ export class ScalpExecutor{
  #logSignal(ctx,r){
   const line={v:1,at:ctx.at,symbol:ctx.symbol,venueSymbol:ctx.venueSymbol,kind:ctx.kind||SCALP_KINDS.MOVE,...(ctx.zone?{zone:ctx.zone}:{}),direction:ctx.direction,barAt:ctx.barAt,entered:r?.entered===true,reason:r?.entered?null:ctx.reason||r?.reason||null,
    detail:ctx.detail,evidence:ctx.evidence,candle:ctx.candle,atr:ctx.atr,trend4h:ctx.trend4h??null,withTrend:ctx.withTrend??null,plan:ctx.plan??null,universe:ctx.universe,scan:ctx.scan,
-   ...(ctx.recheckedAt?{recheckedAt:ctx.recheckedAt}:{})};
+   ...(ctx.recheckedAt?{recheckedAt:ctx.recheckedAt}:{}),...(ctx.wyckoff?{wyckoff:ctx.wyckoff}:{})};
   if(this.signalsFile)appendJsonl(signalsPath(this.signalsFile,ctx.at||this.now()),line,{maxBytes:SIGNALS_MAX_BYTES});else this.signalsMem=[...(this.signalsMem||[]),line].slice(-500);
  }
  /** Closed trades whose result is final (settled by the venue, or no more settle tries) go to the journal. */
