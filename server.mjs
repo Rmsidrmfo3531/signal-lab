@@ -5,7 +5,7 @@ import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
-import {exchangePnl,bingxBalanceRows} from './exchange_pnl.mjs';
+import {exchangePnl,bingxBalanceRows,balanceOf} from './exchange_pnl.mjs';
 import {createDailyPnl,PNL_CALENDAR_RESET_AT} from './daily_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
@@ -351,9 +351,9 @@ function readRealWallet(){
   if(snapshot){
    realWallet.last=snapshot;
    if(COPY.mode==='LIVE'&&copyTrader&&parsed?.equity>0){
-    const prevEq=Number(copyTrader.funds?.equity)||0;
+    const prevEq=Number(copyTrader.funds?.equity)||0,prevAv=Number(copyTrader.funds?.available)||0;
     copyTrader.funds={equity:parsed.equity,available,at:snapshot.at};
-    if(prevEq>0&&Math.abs(parsed.equity-prevEq)/prevEq>=0.05)reportsDirty=true;
+    if((prevEq>0&&Math.abs(parsed.equity-prevEq)/prevEq>=0.05)||(prevAv>0&&Math.abs(available-prevAv)/prevAv>=0.05))reportsDirty=true;
    }
   }
   return snapshot;
@@ -387,8 +387,13 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,controls:copyControls
  // The same balance cap as the signal strategy (a 100,000 virtual USDT testnet trades like the real account).
  // The testnet balance cap does not apply to a real-money copy (its own real equity).
  balance:async()=>{
-  const funds=bingxFunds(await copyClient.balance(),{requireAvailable:true});
-  if(COPY.mode==='LIVE'||funds.available===null||!(LIVE.balanceCapUSD>0))return funds;
+  const data=await copyClient.balance();
+  if(COPY.mode==='LIVE'){
+   const usdt=bingxBalanceRows(data).find(row=>row?.asset==='USDT'),funds=balanceOf(usdt);
+   return {equity:funds?.equity??null,available:funds?.available==null?null:Math.max(0,funds.available)};
+  }
+  const funds=bingxFunds(data,{requireAvailable:true});
+  if(funds.available===null||!(LIVE.balanceCapUSD>0))return funds;
   const used=Math.max(0,funds.equity-funds.available),equity=Math.min(funds.equity,LIVE.balanceCapUSD);
   return {equity,available:Math.max(0,Math.min(funds.available,equity-used))};
  },
@@ -1033,7 +1038,9 @@ async function uploadReport(force=false){
   if(COPY.mode==='LIVE'){
    report.copyAudit=copyTrader.auditStatus();
    const cs=copyTrader.status();
-   report.copySettings={sizing:cs.sizing,traderBalanceUSD:cs.traderBalanceUSD,equityUSD:cs.funds?.equity??null,ratioPct:cs.effectiveRatio!=null?+(cs.effectiveRatio*100).toFixed(2):null};
+   report.copySizing={mode:cs.sizing,balanceBasis:'AVAILABLE_MARGIN',traderBalanceUSD:cs.traderBalanceUSD,
+    equityUSD:cs.funds?.equity??null,availableUSD:cs.funds?.available??null,
+    ratioPct:cs.effectiveRatio!=null?+(cs.effectiveRatio*100).toFixed(2):null};
   }
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime=scalpExec.runtimeSummary();

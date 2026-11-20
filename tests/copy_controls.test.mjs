@@ -169,7 +169,7 @@ test('copyHTML renders runtime controls, live ratio, sizing mode selector, and a
   controls:{sizing:'BALANCE_RATIO',traderBalanceUSD:40000,maxSymbolMarginPct:20,maxLeverage:25,filterMode:'BLOCKLIST',blockedSymbols:['SNDKUSDT'],allowedSymbols:[],cooldownLosses:3,cooldownDailyLossPct:5,cooldownMinutes:120,cooldownActive:true,cooldownLeftMin:45,cooldownReason:'연속 3회 손실'}
  });
  assert.match(html,/카피 비중 · 위험 제어/);
- assert.match(html,/카피 비율<b >25\.0%<\/b>/);
+ assert.match(html,/카피 비율<b >23\.8%<\/b>/);
  assert.match(html,/data-copy-sizing="BALANCE_RATIO"/);
  assert.match(html,/자동 쿨다운 중/);
  assert.match(html,/SNDKUSDT/);

@@ -395,6 +395,46 @@ test('copy: a card whose quantity does not match its margin x leverage is not tr
  await ex.handle({id:6,date:1e12+800000,text:card(1000,'0.05300')});assert.equal(v.size,140,'the next small one carried again');
 });
 
+test('live copy uses fresh available margin for new entries and each increase even with a legacy fixed sizing setting',async()=>{
+ const env={COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY',COPY_SIZING:'MIN_ORDER'};
+ const config=copyConfig(env);
+ assert.equal(config.sizing,'BALANCE_RATIO');
+ assert.equal(copyConfig({...env,COPY_SIZING:'FIRST_1USD'}).sizing,'BALANCE_RATIO');
+ let available=3000;
+ const v=venue(),ex=new CopyExecutor({config,client:v.client,contractOf:async()=>contract,
+  balance:async()=>({equity:6500,available}),now:()=>1e12});
+ const card=(id,text)=>ex.handle({id,date:1e12+id*1000,text});
+ const buys=()=>v.calls.filter(c=>c.type==='MARKET'&&!c.reduceOnly).map(c=>Number(c.quantity));
+ assert.equal((await card(1,OPEN)).ok,true);
+ assert.deepEqual(buys(),[132]); // 880 × 3,000 / 20,000
+ available=6000;
+ assert.equal((await card(2,CHANGE(880,1760))).ok,true);
+ assert.deepEqual(buys(),[132,264]); // 880 more, using the new available margin
+ assert.equal((await card(3,CLOSE)).ok,true);
+ assert.equal(v.size,0);
+ assert.equal((await card(4,OPEN)).ok,true);
+ assert.deepEqual(buys(),[132,264,264]);
+});
+
+test('live copy applies current available margin to the next trader increase of a position saved in MIN_ORDER mode',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'copy-live-margin-'));
+ try{
+  let available=3000;
+  const v=venue(),config=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'});
+  const create=config=>new CopyExecutor({config,client:v.client,contractOf:async()=>contract,directory:dir,
+   balance:async()=>({equity:6500,available}),now:()=>1e12});
+  let ex=create({...config,sizing:'MIN_ORDER'});
+  assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).ok,true);
+  const savedSize=v.size;
+  available=6000;
+  ex=create(config);
+  assert.equal(ex.status().positions[0].sizing,'MIN_ORDER');
+  assert.equal(v.size,savedSize);
+  assert.equal((await ex.handle({id:2,date:1e12+1000,text:CHANGE(880,1760)})).ok,true);
+  assert.equal(v.size,savedSize+264);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
 test('copy entries need 90 % of the free margin; a venue minimum above 5 $ of margin is not taken',async()=>{
  const v=venue(),ex=make(v,{free:1});
  assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).reason,'MARGIN_SHORT');assert.equal(v.size,0);
