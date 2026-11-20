@@ -161,15 +161,47 @@ test('loss auto-cooldown (#11) pauses new entries after consecutive losses and r
  assert.equal((await ex.handle({id:6,date:now,text:OPEN(10000,10)})).ok,true);
 });
 
-test('copyHTML renders runtime controls and active cooldown banner cleanly on LIVE',()=>{
+test('copyHTML renders runtime controls, live ratio, sizing mode selector, and active cooldown banner cleanly on LIVE',()=>{
  const html=copyHTML({
   mode:'LIVE',enabled:true,armed:true,sizing:'BALANCE_RATIO',traderBalanceUSD:40000,
+  funds:{equity:10000,available:9500,at:Date.now()},
   maxAdds:100,maxTotalMarginPct:100,ledgerLossPct:50,positions:[],closed:[],events:[],
-  controls:{traderBalanceUSD:40000,maxSymbolMarginPct:20,maxLeverage:25,filterMode:'BLOCKLIST',blockedSymbols:['SNDKUSDT'],allowedSymbols:[],cooldownLosses:3,cooldownDailyLossPct:5,cooldownMinutes:120,cooldownActive:true,cooldownLeftMin:45,cooldownReason:'연속 3회 손실'}
+  controls:{sizing:'BALANCE_RATIO',traderBalanceUSD:40000,maxSymbolMarginPct:20,maxLeverage:25,filterMode:'BLOCKLIST',blockedSymbols:['SNDKUSDT'],allowedSymbols:[],cooldownLosses:3,cooldownDailyLossPct:5,cooldownMinutes:120,cooldownActive:true,cooldownLeftMin:45,cooldownReason:'연속 3회 손실'}
  });
  assert.match(html,/카피 비중 · 위험 제어/);
+ assert.match(html,/카피 비율<b >23\.8%<\/b>/);
+ assert.match(html,/data-copy-sizing="BALANCE_RATIO"/);
  assert.match(html,/자동 쿨다운 중/);
  assert.match(html,/SNDKUSDT/);
  assert.match(html,/data-copy-tb="40000"/);
  assert.match(html,/data-copy-clear-cooldown/);
 });
+
+test('CopyExecutor automatically scales new entries and adds when live equity increases after a deposit, and honors runtime sizing override',async()=>{
+ const dir=tmp();
+ let equity=3000,now=1795000000000;
+ const controls=new CopyControls({directory:dir,now:()=>now});
+ // Even if .env had legacy MIN_ORDER, runtime control switches to BALANCE_RATIO cleanly
+ controls.configure({sizing:'BALANCE_RATIO',traderBalanceUSD:20000});
+ assert.equal(controls.effectiveSizing('MIN_ORDER'),'BALANCE_RATIO');
+ const v=venue();
+ const ex=new CopyExecutor({
+  config:copyConfig({COPY_SIZING:'MIN_ORDER',COPY_TRADER_BALANCE_USD:'20000',COPY_STOPS:'off'},'TESTNET'),
+  client:v.client,controls,contractOf:async()=>contract,
+  balance:async()=>({equity,available:equity*0.9}),now:()=>now,
+ });
+ // Entry #1 at $3,000 equity -> scale = 3000/20000 = 0.15 -> 10000 * 0.15 = 1500
+ assert.equal((await ex.handle({id:1,date:now,text:OPEN(10000,10)})).ok,true);
+ assert.equal(v.size,1500);
+ assert.equal(ex.status().funds.equity,3000);
+ assert.equal(ex.status().effectiveRatio,0.15);
+
+ // Deposit arrives: equity jumps to $10,000 -> add of 10000 automatically scales at 10000/20000 = 0.50 (+5000)
+ equity=10000;
+ now+=60000;
+ assert.equal((await ex.handle({id:2,date:now,text:CHANGE(10000,20000)})).ok,true);
+ assert.equal(v.size,6500,'1500 initial + 5000 deposit-scaled add');
+ assert.equal(ex.status().funds.equity,10000);
+ assert.equal(ex.status().effectiveRatio,0.5);
+});
+

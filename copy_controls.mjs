@@ -10,6 +10,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 
 export const COPY_CONTROLS_DEFAULTS=Object.freeze({
+ sizing:null,
  traderBalanceUSD:null,
  maxSymbolMarginPct:0,
  maxLeverage:null,
@@ -20,6 +21,7 @@ export const COPY_CONTROLS_DEFAULTS=Object.freeze({
  cooldownDailyLossPct:0,
  cooldownMinutes:120,
 });
+const VALID_SIZINGS=new Set(['BALANCE_RATIO','MIN_ORDER','FIRST_1USD']);
 
 const KST_MS=9*3600000;
 const kstDay=t=>new Date(Number(t)+KST_MS).toISOString().slice(0,10);
@@ -49,7 +51,9 @@ export class CopyControls{
   this.now=now;
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
+  const savedSizing=typeof saved?.sizing==='string'&&VALID_SIZINGS.has(saved.sizing.toUpperCase())?saved.sizing.toUpperCase():null;
   this.store={
+   sizing:savedSizing,
    traderBalanceUSD:this.#validNullableNum(saved?.traderBalanceUSD,1000,1e6),
    maxSymbolMarginPct:this.#validNum(saved?.maxSymbolMarginPct,0,100,COPY_CONTROLS_DEFAULTS.maxSymbolMarginPct),
    maxLeverage:this.#validNullableInt(saved?.maxLeverage,1,125),
@@ -76,6 +80,10 @@ export class CopyControls{
   if(!this.file)return;
   fs.mkdirSync(path.dirname(this.file),{recursive:true});
   atomicWriteStore(this.file,{version:1,...this.store});
+ }
+
+ effectiveSizing(fallback='BALANCE_RATIO'){
+  return this.store.sizing??fallback;
  }
 
  effectiveTraderBalanceUSD(fallback=20000){
@@ -184,6 +192,14 @@ export class CopyControls{
  configure(patch={}){
   if(!patch||typeof patch!=='object'||Array.isArray(patch))throw err('JSON object required');
   const next={...this.store,blockedSymbols:[...this.store.blockedSymbols],allowedSymbols:[...this.store.allowedSymbols]};
+  if(Object.hasOwn(patch,'sizing')){
+   if(patch.sizing===null||patch.sizing===''||String(patch.sizing).toUpperCase()==='DEFAULT')next.sizing=null;
+   else{
+    const sz=String(patch.sizing||'').trim().toUpperCase();
+    if(!VALID_SIZINGS.has(sz))throw err('sizing은 BALANCE_RATIO, MIN_ORDER, FIRST_1USD 중 하나여야 합니다');
+    next.sizing=sz;
+   }
+  }
   if(Object.hasOwn(patch,'traderBalanceUSD')){
    if(patch.traderBalanceUSD===null||patch.traderBalanceUSD==='')next.traderBalanceUSD=null;
    else{
@@ -257,6 +273,7 @@ export class CopyControls{
  status(at=this.now()){
   const active=Boolean(this.store.cooldownUntil&&this.store.cooldownUntil>at);
   return {
+   sizing:this.store.sizing,
    traderBalanceUSD:this.store.traderBalanceUSD,
    maxSymbolMarginPct:this.store.maxSymbolMarginPct,
    maxLeverage:this.store.maxLeverage,

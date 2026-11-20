@@ -344,10 +344,18 @@ function readRealWallet(){
  if(realWallet.pending)return realWallet.pending;
  realWallet.pending=realBingxClient.balance().then(data=>{
   const usdt=bingxBalanceRows(data).find(row=>row?.asset==='USDT'),raw=usdt?.availableMargin;
-  const available=['number','string'].includes(typeof raw)?bingxFunds(usdt,{requireAvailable:true}).available:null;
+  const parsed=['number','string'].includes(typeof raw)?bingxFunds(usdt,{requireAvailable:true}):null;
+  const available=parsed?.available??null;
   const snapshot=available===null?null:{available,at:Date.now()};
   realWallet.error=snapshot?null:'AVAILABLE_MARGIN_MISSING';
-  if(snapshot)realWallet.last=snapshot;
+  if(snapshot){
+   realWallet.last=snapshot;
+   if(COPY.mode==='LIVE'&&copyTrader&&parsed?.equity>0){
+    const prevEq=Number(copyTrader.funds?.equity)||0,prevAv=Number(copyTrader.funds?.available)||0;
+    copyTrader.funds={equity:parsed.equity,available,at:snapshot.at};
+    if((prevEq>0&&Math.abs(parsed.equity-prevEq)/prevEq>=0.05)||(prevAv>0&&Math.abs(available-prevAv)/prevAv>=0.05))reportsDirty=true;
+   }
+  }
   return snapshot;
  }).catch(e=>{
   const code=e?.code??'';
@@ -1029,7 +1037,10 @@ async function uploadReport(force=false){
    balanceAsset:b.balanceAsset,balanceRefreshMs:TESTNET_BALANCE_REFRESH_MS,balanceError:b.balanceError,dailyLossPct:b.dailyLossPct,limitUSD:b.limitUSD,marginCapPct:b.marginCapPct,marginCapUSD:b.marginCapUSD}}
   if(COPY.mode==='LIVE'){
    report.copyAudit=copyTrader.auditStatus();
-   report.copySizing={mode:COPY.sizing,balanceBasis:'AVAILABLE_MARGIN',traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD)};
+   const cs=copyTrader.status();
+   report.copySizing={mode:cs.sizing,balanceBasis:'AVAILABLE_MARGIN',traderBalanceUSD:cs.traderBalanceUSD,
+    equityUSD:cs.funds?.equity??null,availableUSD:cs.funds?.available??null,
+    ratioPct:cs.effectiveRatio!=null?+(cs.effectiveRatio*100).toFixed(2):null};
   }
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime=scalpExec.runtimeSummary();

@@ -351,9 +351,9 @@ export class AccountAlerts{
    }
    if(!Number.isFinite(next)||next<1000||next>1000000)return '⚠️ 기준 잔고는 1,000 ~ 1,000,000 USD 사이로 입력하세요. (예: /size 20000 또는 /size 0.5x)';
    try{
-    const res=await this.onControls({traderBalanceUSD:Math.round(next)});
+    const res=await this.onControls({sizing:'BALANCE_RATIO',traderBalanceUSD:Math.round(next)});
     const tb=res?.traderBalanceUSD??Math.round(next);
-    return `✅ 카피 기준 잔고를 $${Number(tb).toLocaleString()}로 변경했습니다.\n(새 진입부터 내 순자산 ÷ $${Number(tb).toLocaleString()} 비율 적용)`;
+    return `✅ 카피 기준 잔고를 $${Number(tb).toLocaleString()}로 변경했습니다.\n(잔고 비례 모드 · 내 순자산 ÷ $${Number(tb).toLocaleString()} 비율 자동 적용)`;
    }catch(e){return `⚠️ 변경 실패: ${e?.message||'ERROR'}`}
   }
 

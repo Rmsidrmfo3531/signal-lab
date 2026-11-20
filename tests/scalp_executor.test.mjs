@@ -84,29 +84,61 @@ test('profit-only fallback waits 15 minutes, covers fees and booked loss, and re
    const getPositions=v.client.positions;
    let bookedLoss=0;
    v.client.positions=async(...args)=>(await getPositions(...args)).map(row=>({...row,realisedProfit:String(-bookedLoss)}));
-   assert.equal(ex.runtimeSummary().profitCheckStartsMin,15);
+   assert.equal(ex.runtimeSummary().profitCheckStartsMin,0);
+   assert.equal(ex.runtimeSummary().earlyFallbackMin,15);
+   assert.equal(ex.runtimeSummary().minProfitRoePct,10);
    assert.ok(placed(v,'TAKE_PROFIT').length>0,'planned targets are active during the early-exit wait');
-   v.mark=p.avg+sign*3;
-   clock.t=p.openedAt+15*60000-1;await ex.reconcile();assert.equal(requests().length,0);
+   // Before 15m, micro-profits (+0.02, +0.40) cover bare fees (+0.16%) but are below +10% Net ROE (~+1.16% at 10x), so no exit fires.
+   v.mark=p.avg+sign*.02;
+   clock.t=p.openedAt+5000;await ex.reconcile();assert.equal(requests().length,0);
+   v.mark=p.avg+sign*.4;
+   clock.t=p.openedAt+15*60000-1;await ex.reconcile();assert.equal(requests().length,0,'bare fee-covering move does not exit before 15m');
+   // At 15m fallback, +0.02 still fails fee coverage.
    v.mark=p.avg+sign*.02;
    clock.t=p.openedAt+15*60000;await ex.reconcile();assert.equal(requests().length,0);
    bookedLoss=p.size*2;
    v.mark=p.avg+sign;
-   clock.t+=15000;await ex.reconcile();assert.equal(requests().length,0);
+   clock.t+=5000;await ex.reconcile();assert.equal(requests().length,0);
    v.mark=p.avg+sign*3;
-   clock.t+=15000;await ex.reconcile();
+   clock.t+=5000;await ex.reconcile();
    const [order]=requests();
    assert.equal(order.side,shortSide?'BUY':'SELL');assert.equal(order.reduceOnly,'true');
    assert.ok(sign*(Number(order.price)-p.avg)>2+.0012*p.avg);
    assert.equal(v.size,0);
    if(shortSide){assert.ok(p.earlyTakeProfit);ex=make(v,inputs)}
-   clock.t+=15000;await ex.reconcile();clock.t+=15000;await ex.reconcile();
+   clock.t+=5000;await ex.reconcile();clock.t+=5000;await ex.reconcile();
    assert.equal(requests().length,1);
    assert.equal(ex.store.closed[0].closeReason,'EARLY_TAKE_PROFIT');
    assert.ok(ex.store.closed[0].netUSD>0);
    const margin=ex.journal()[0].margin;
    assert.ok(Math.abs(margin.initialUSD-p.firstEntryPrice*p.initialQty/p.leverage)<.0001);
    assert.equal(margin.totalUSD,margin.initialUSD);
+  }finally{fs.rmSync(dir,{recursive:true,force:true})}
+ }
+});
+
+test('profit-only testnet closes within 5~10 seconds when price spike clears +10% Net ROE floor',async()=>{
+ for(const direction of ['LONG','SHORT']){
+  const dir=tmp(),clock={t:T0},shortSide=direction==='SHORT',sign=shortSide?-1:1;
+  const v=venue({fillAt:shortSide?PX_S:PX});
+  const inputs={clock,dir,config:{stopLossEnabled:false,scaleIn:false},...(shortSide?{price:PX_S,trend:down4h,rows:rise}:{})};
+  try{
+   const ex=make(v,inputs);ex.arm();await ex.scan();
+   const p=ex.store.open[0];
+   // 5 seconds after entry: a +0.3% move (covers 0.16% fees, ~1.4% net ROE) does NOT close
+   v.mark=+(p.avg*(1+sign*0.003)).toFixed(2);
+   clock.t=p.openedAt+5000;await ex.tick(clock.t);
+   assert.equal(ex.store.open.length,1,'0.3% move stays open for larger profit');
+   // 10 seconds after entry: a +1.25% move (>= +10% Net ROE at 10x leverage after 0.16% fees) closes immediately
+   v.mark=+(p.avg*(1+sign*0.0125)).toFixed(2);
+   clock.t=p.openedAt+10000;await ex.tick(clock.t);
+   assert.equal(v.size,0,'position closed on venue at 10s');
+   clock.t+=5000;await ex.reconcile();clock.t+=5000;await ex.reconcile();
+   assert.equal(ex.store.open.length,0);
+   const closed=ex.store.closed[0];
+   assert.equal(closed.closeReason,'EARLY_TAKE_PROFIT');
+   const marginUSD=p.avg*p.filled/(p.leverage||10);
+   assert.ok(closed.netUSD/marginUSD>=0.095,`expected >= ~10% net ROE, got ${(closed.netUSD/marginUSD*100).toFixed(2)}%`);
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
  }
 });
@@ -157,7 +189,8 @@ test('a reversal skipped for price drift is checked again after 25 minutes if it
 test('config: TESTNET or OFF only — LIVE is refused; settings as the user set them; costs = backtest costs',()=>{
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
  assert.equal(c.stopLossEnabled,false);
- assert.equal(c.settings.minMovePct,5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,SCALP_TIMEFRAMES['5m'].minMovePct*2);
+ assert.equal(c.settings.minMovePct,3.5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,3.5);assert.equal(scalpExecConfig({SCALP_MIN_MOVE_PCT:'5'}).settings.minMovePct,5);
+ assert.equal(c.minProfitRoePct,10);assert.equal(scalpExecConfig({SCALP_MIN_PROFIT_ROE_PCT:'15'}).minProfitRoePct,15);
  assert.deepEqual(c.settings.retracements,[.382,.5,.618]);assert.equal(c.settings.stopAtr,.25);assert.equal(c.settings.climaxVolume,3);
  assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,0);assert.equal(scalpExecConfig({SCALP_MAX_OPEN:'5'}).maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'record'}).trendMode,'record');
  assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:' On '}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'true'}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'off'}).trendMode,'off');
@@ -184,7 +217,7 @@ test('detection on synthetic closed 5m candles -> plan: 38.2/50/61.8 % targets, 
  assert.equal(det.barAt,BUCKET*I,'entry at the next candle open');
  const {extreme,origin}=det.evidence,move=origin-extreme;
  assert.ok([.382,.5,.618].every((f,i)=>Math.abs(det.targets[i]-(extreme+f*move))<1e-9));
- assert.equal(detectScalpReversal(crash({move:4}),{now:T0,interval:'5m',settings:cfg.settings}).ok,false,'a 4 % drop is below the 5 % setting');
+ assert.equal(detectScalpReversal(crash({move:2.5,wick:.2}),{now:T0,interval:'5m',settings:cfg.settings}).ok,false,'a ~2.7 % drop is below the 3.5 % setting');
  const plan=planScalpOrder({det,price:det.entry+.02,contract:SOL,equity:10000,available:9000,leverage:10,config:cfg});
  assert.equal(plan.ok,true,JSON.stringify(plan));assert.ok(plan.stop<extreme&&plan.entry>plan.stop&&plan.targets[0]>plan.entry);
  assert.ok(Math.abs(plan.riskUSD-50)<.2,'0.5 % of 10,000 at the stop');assert.ok(plan.netRR>=1);
@@ -754,9 +787,12 @@ const Z1_FAR=blocks([[60,119,121,1],[60,130,131,5]],DAY0,D1);
 const small=()=>crash({move:4,wick:.3}),PX_Z=+(Number(small().at(-1)[4])+.02).toFixed(2);
 function zoneFeed(h4=Z4_TOUCH,d1=Z1_FAR){const calls=[];const fn=async(s,iv,limit)=>{calls.push({iv,limit});const r=iv==='4h'?h4:iv==='1d'?d1:null;
  if(r instanceof Error)throw r;return typeof r==='function'?r():r};fn.calls=calls;return fn}
-const zoneMake=(v,opt={})=>make(v,{rows:small,price:PX_Z,...opt,zone:opt.zone??zoneFeed()});
+const zoneMake=(v,opt={})=>make(v,{rows:small,price:PX_Z,...opt,config:{...scalpExecConfig({SCALP_MIN_MOVE_PCT:'5'}),stopLossEnabled:true,scaleIn:false,...opt.config},zone:opt.zone??zoneFeed()});
 
 test('매물대 반전: a 2.5 %+ reversal whose low touched a 4H zone enters as ZONE_REVERSAL; the same signal off a zone is skipped',async()=>{
+ // With the 3.5 % default minMovePct, a ~4.35 % drop enters directly as MOVE_REVERSAL without needing a zone read.
+ {const v35=venue({fillAt:PX_Z}),z35=zoneFeed(),ex35=make(v35,{rows:small,price:PX_Z,zone:z35});ex35.arm();
+  const st35=await ex35.scan();assert.equal(st35.entered,1);assert.equal(st35.signals,1);assert.equal(ex35.store.open[0].kind,'MOVE_REVERSAL');assert.equal(z35.calls.length,0)}
  const v=venue({fillAt:PX_Z}),zone=zoneFeed(),ex=zoneMake(v,{zone});ex.arm();
  const st=await ex.scan();assert.equal(st.entered,1,JSON.stringify({st,skips:ex.store.skips}));assert.equal(st.signals,0,'not a 5 % signal');
  assert.equal(st.zoneSignals,1);assert.equal(st.zoneAtZone,1);assert.equal(st.zoneEntered,1);
@@ -775,8 +811,8 @@ test('매물대 반전: a 2.5 %+ reversal whose low touched a 4H zone enters as 
  assert.equal(s2.entered,0);assert.equal(s2.zoneSignals,1);assert.equal(placed(w,'MARKET').length,0);
  assert.equal(off.store.skips.at(-1).reason,'ZONE_NOT_TOUCHED');assert.equal(off.store.skips.at(-1).kind,'ZONE_REVERSAL');assert.ok(scalpReasonKo('ZONE_NOT_TOUCHED')!=='ZONE_NOT_TOUCHED');
  const line=off.signals(5).at(-1);assert.equal(line.kind,'ZONE_REVERSAL');assert.equal(line.reason,'ZONE_NOT_TOUCHED');assert.equal(line.zone.atZone,false);assert.ok(line.zone.distPct>20);
- // The 5 % rule alone: the 4.9 % drop is not a signal.
- const x=venue({fillAt:PX_Z}),offCfg=zoneMake(x,{config:scalpExecConfig({SCALP_ZONE_SIGNALS:'off'}),zone:zoneFeed()});offCfg.arm();
+ // The 5 % rule alone: the 4.4 % drop is not a signal when zoneSignals is off.
+ const x=venue({fillAt:PX_Z}),offCfg=zoneMake(x,{config:scalpExecConfig({SCALP_ZONE_SIGNALS:'off',SCALP_MIN_MOVE_PCT:'5'}),zone:zoneFeed()});offCfg.arm();
  const s3=await offCfg.scan();assert.equal(s3.entered,0);assert.equal(s3.zoneSignals,undefined);assert.equal(placed(x,'MARKET').length,0);
  assert.equal(offCfg.status().settings.zoneSignals,false);assert.equal(ex.status().settings.zoneSignals,true);assert.equal(scalpExecConfig({}).zoneSignals,true);
  assert.equal(scalpExecConfig({SCALP_ZONE_SIGNALS:' OFF '}).zoneSignals,false);assert.equal(scalpExecConfig({SCALP_ZONE_SIGNALS:'on'}).zoneSignals,true);
