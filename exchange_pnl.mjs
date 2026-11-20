@@ -6,9 +6,14 @@ const DAY=86400000,WINDOW=7*DAY,KST=9*3600000;
 const FLOW=new Set(['TRANSFER','TRIAL_FUND','DEPOSIT','WITHDRAW']);
 const r2=x=>Math.round(x*100)/100,r4=x=>Math.round(x*1e4)/1e4;
 
+/** BingX returns either multiple balance rows, a wrapped row, or a single row. */
+export function bingxBalanceRows(data){
+ const rows=data?.balance&&typeof data.balance==='object'?data.balance:data;
+ return Array.isArray(rows)?rows:rows&&typeof rows==='object'?[rows]:[];
+}
 /** USDT (or the testnet VST) balance row of a BingX v3 balance answer: {equity, balance, unrealized, available}. */
 export function balanceOf(data){
- const list=Array.isArray(data)?data:[data?.balance??data],u=list.find(x=>['USDT','VST'].includes(x?.asset))??list[0];
+ const list=bingxBalanceRows(data),u=list.find(x=>['USDT','VST'].includes(x?.asset))??list[0];
  if(!u)return null;const num=k=>u[k]!==null&&u[k]!==undefined&&String(u[k]).trim()!==''&&Number.isFinite(Number(u[k]))?Number(u[k]):null;
  return {asset:u.asset??null,equity:num('equity'),balance:num('balance'),unrealized:num('unrealizedProfit'),available:num('availableMargin')};
 }

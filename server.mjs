@@ -5,7 +5,7 @@ import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
 import {buildReport,pushReport} from './reports_push.mjs';
-import {exchangePnl} from './exchange_pnl.mjs';
+import {exchangePnl,bingxBalanceRows} from './exchange_pnl.mjs';
 import {createDailyPnl,PNL_CALENDAR_RESET_AT} from './daily_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
 import {copyEventText} from './copy_telegram.mjs';
@@ -319,7 +319,7 @@ async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPn
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
  return {...s,...v,manual:manualLedger.status()}}
 const bingxFunds=(data,{requireAvailable=false,testnet=false}={})=>{
- const list=Array.isArray(data)?data:[data?.balance??data];
+ const list=bingxBalanceRows(data);
  const usdt=list.find(x=>x?.asset==='USDT');
  const u=testnet?(list.find(x=>x?.asset==='VST')??usdt):(usdt??list[0]);
  const amount=testnet?u?.equity:(u?.equity??u?.balance),number=Number(amount);
@@ -329,6 +329,24 @@ const bingxFunds=(data,{requireAvailable=false,testnet=false}={})=>{
  if(requireAvailable&&(raw==null||String(raw).trim()===''||!Number.isFinite(free)))return {equity,available:null};
  return {equity,available:Number.isFinite(free)?Math.max(0,free):equity};
 };
+const realWallet={pending:null,last:null,error:null,lastAlertIssue:null};
+const REAL_WALLET_REFRESH_MS=10000,REAL_WALLET_MAX_AGE_MS=30000;
+function readRealWallet(){
+ if(realWallet.pending)return realWallet.pending;
+ realWallet.pending=realBingxClient.balance().then(data=>{
+  const usdt=bingxBalanceRows(data).find(row=>row?.asset==='USDT'),raw=usdt?.availableMargin;
+  const available=['number','string'].includes(typeof raw)?bingxFunds(usdt,{requireAvailable:true}).available:null;
+  const snapshot=available===null?null:{available,at:Date.now()};
+  realWallet.error=snapshot?null:'AVAILABLE_MARGIN_MISSING';
+  if(snapshot)realWallet.last=snapshot;
+  return snapshot;
+ }).catch(e=>{
+  const code=e?.code??'';
+  realWallet.error=/^[A-Z_0-9]{1,40}$/.test(code)?code:'BALANCE_READ_FAILED';
+  throw e;
+ }).finally(()=>{realWallet.pending=null});
+ return realWallet.pending;
+}
 copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',auditOrders:COPY.mode==='LIVE',
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
  // A coin missing or suspended in the cached list re-reads the list (new listings / delistings, 2026-11-16).
@@ -372,7 +390,10 @@ function refreshRealTradeNotices(){
   .catch(e=>console.warn('[MANUAL]',e.message)).finally(()=>{realTradePoll=null});
  void realTradePoll.then(()=>{void manualLedger.settleNotifications();void manualLedger.recoverFastTrades()});
 }
-if(manualLedger){setInterval(refreshRealTradeNotices,3000).unref?.();
+if(manualLedger){
+ const refreshWallet=()=>{void readRealWallet().catch(()=>{})};
+ refreshWallet();setInterval(refreshWallet,REAL_WALLET_REFRESH_MS).unref?.();
+ setInterval(refreshRealTradeNotices,3000).unref?.();
  setInterval(()=>{void manualLedger.settle()},15000).unref?.()}
 // Daily results of the real account for the page calendar (daily_pnl.mjs, user 2026-11-18): BingX income per KST day,
 // copy and manual together, read in the background at most every 5 min; the page gets the cached value (daily).
@@ -485,17 +506,15 @@ const realTradeMessages=new WeakMap();
 function prepareRealTradeMessage(e){
  if(!e?.fromFills)return Promise.resolve(null);
  const pending=realTradeMessages.get(e);if(pending)return pending;
- const read=realBingxClient.balance().then(data=>{
-  const usdt=Array.isArray(data)?data.find(row=>row?.asset==='USDT'):data?.balance??data;
-  if(usdt?.asset!=='USDT'||!['number','string'].includes(typeof usdt.availableMargin))return null;
-  return bingxFunds(usdt,{requireAvailable:true}).available;
- }).catch(()=>null);
+ const read=readRealWallet().catch(()=>null);
  // Both transports use one post-confirmation snapshot. A slow wallet read cannot hold an alert indefinitely.
  let timer;
- const deadline=new Promise(resolve=>{timer=setTimeout(resolve,1500,null);timer.unref()});
- const message=Promise.race([read,deadline]).then(availableMargin=>{
-  if(availableMargin===null)realTradeMessages.delete(e);
-  return realTradeMessage(e,{availableMargin});
+ const deadline=new Promise(resolve=>{timer=setTimeout(resolve,1500);timer.unref()});
+ const message=Promise.race([read,deadline]).then(snapshot=>{
+  if(snapshot)return realTradeMessage(e,{availableMargin:snapshot.available});
+  const at=Date.now(),last=realWallet.last,recent=last&&at>=last.at&&at-last.at<=REAL_WALLET_MAX_AGE_MS;
+  realWallet.lastAlertIssue={at,reason:snapshot===undefined?'BALANCE_READ_TIMEOUT':realWallet.error??'BALANCE_READ_FAILED',usedRecent:Boolean(recent)};
+  return realTradeMessage(e,recent?{availableMargin:last.available,availableMarginAt:last.at}:{});
  }).finally(()=>clearTimeout(timer));
  realTradeMessages.set(e,message);
  return message;
@@ -881,7 +900,9 @@ async function uploadReport(force=false){
    scalp:scalpExport?.summary??null,ledgers:reportLedgers(),exchange});
   report.release=appVersion.displayVersion;
   if(testnetHistoryReset)report.testnetHistoryReset={at:testnetHistoryReset.at,removed:testnetHistoryReset.removed};
-  if(manualLedger)report.manualAlerts={...manualLedger.alertStatus(),telegram:{...manualLedger.telegramStatus(),
+  if(manualLedger)report.manualAlerts={...manualLedger.alertStatus(),
+   availableMargin:{lastReadAt:realWallet.last?.at??null,lastAlertIssue:realWallet.lastAlertIssue},
+   telegram:{...manualLedger.telegramStatus(),
     enabled:true,configured:Boolean(CONFIG.tgToken&&(CONFIG.tgScannerChat||CONFIG.tgChat.trim())),
     destination:CONFIG.tgScannerChat?'SCANNER_CHANNEL':'CONFIGURED_CHAT'}};
   if(hasTestnetBingx){const b=testnetBudget.status();report.testnetBudget={equityUSD:b.equityUSD,accountEquityUSD:b.accountEquityUSD,balanceAt:b.balanceAt,
