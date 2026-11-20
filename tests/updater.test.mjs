@@ -30,7 +30,7 @@ test('runtime-module update is verified, applied, and retains both current and b
   const records=JSON.stringify({paper:{open:[{key:'keep-open'}],closed:[{key:'keep-pnl',realizedPnLUSD:13.5}]}});
   fs.writeFileSync(path.join(dir,'store.json'),records);fs.mkdirSync(path.join(dir,'backups'));
   fs.writeFileSync(path.join(dir,'backups','store-existing.json'),records);
-  const names=['paper.mjs','quality.mjs','signal_pipeline.mjs','tradfi_feed.mjs','windows_paper_notify.ps1','scripts/check-market-data.mjs'];
+  const names=['paper.mjs','quality.mjs','signal_pipeline.mjs','copy_controls.mjs','windows_paper_notify.ps1','scripts/check-market-data.mjs'];
   const files=names.map(name=>({path:name,url:'./'+name,sha256:hex('verified '+name)}));
   const docs={[manifestUrl]:JSON.stringify({version:'6.0.0',files})};
   for(const name of names)docs['https://releases.example.test/'+name]='verified '+name;

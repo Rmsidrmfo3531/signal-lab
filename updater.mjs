@@ -16,7 +16,7 @@ const ALLOWED_ROOTS = new Set([
  'scripts/compare-issue6-strategies.mjs','research/legacy_v58/engine.mjs','research/legacy_v58/quality.mjs','server.mjs','engine.mjs','quality.mjs',
  'signal_pipeline.mjs','observation.mjs','scan_diagnostics.mjs','signal_policy.mjs','research/legacy_v58/decision.mjs','markets.mjs','news.mjs',
  'links.mjs','journal.mjs','signal_lifecycle.mjs','paper.mjs','paper_health.mjs','mobile_access.mjs','windows_paper_notify.mjs',
- 'windows_paper_notify.ps1','tradfi.mjs','tradfi_signal.mjs','tradfi_feed.mjs','updater.mjs','update-cli.mjs','package.json','start.sh',
+ 'windows_paper_notify.ps1','updater.mjs','update-cli.mjs','package.json','start.sh',
  'persistence.mjs','data-cli.mjs','start.bat','start_mobile.bat','start_auto.bat','start_auto_test.bat','enable_auto_update.bat',
  'disable_auto_update.bat','windows-supervisor.mjs','windows-update-source.mjs','backup_data.bat','migrate_legacy_data.bat','restore_data.bat',
  'open_data_folder.bat','scripts/check-market-data.mjs','scripts/check-news.mjs','scripts/check-venue-market-data.mjs','scripts/backtest.mjs','backtest.bat','venue_overlap.bat','start_shared.bat','scripts/venue-overlap.mjs','paper_telegram.mjs','windows_keep_awake.mjs','windows_keep_awake.ps1','research/candidates.mjs','research/trader_entries.mjs','research/follow_scan.mjs','exchange_pnl.mjs','venue_positions.mjs','manual_ledger.mjs','daily_pnl.mjs','testnet_budget.mjs','testnet_history_reset.mjs','research/data/trader_entries.json','pattern_detectors.mjs','score_factors.mjs','venue_charts.mjs','copy_controls.mjs','account_alerts.mjs','copy_analytics.mjs','scalp_simulator.mjs','scalp_wyckoff.mjs','scalp_vsa.mjs'

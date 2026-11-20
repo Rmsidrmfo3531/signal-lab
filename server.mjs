@@ -40,7 +40,6 @@ import {translateNewsArticles,googleTranslate,googleTranslateStatus,createOpenAI
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {PublicReadBudget} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
-import {tradfiAvailability} from './tradfi.mjs';
 import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
 import {liveConfig} from './live_orders.mjs';
 import {LiveExecutor} from './live_executor.mjs';
@@ -839,16 +838,6 @@ async function binance(url,ttl=30000){
  apiCache.set(url,{data:cache?.data,until:0,pending:task});
  if(apiCache.size>1200){for(const [key,value]of apiCache){if(!value.pending&&value.until<Date.now())apiCache.delete(key);if(apiCache.size<=1000)break}}
  try{return await task;}catch(e){if(apiCache.get(url)?.pending===task)apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
-}
-// No validated replacement market/contract feed is configured for TradFi.
-// Keep historical records intact; never mark stale positions as freshly tracked.
-function tradfiPublic(){
- const retained=paper.store;
- return {...tradfiAvailability(),retainedRecords:{
-  open:retained.open.filter(x=>x.market==='TRADFI').length,
-  pending:retained.pending.filter(x=>x.market==='TRADFI').length,
-  closed:retained.closed.filter(x=>x.market==='TRADFI').length
- }};
 }
 const exchangeInfo=()=>binance('/fapi/v1/exchangeInfo',15*60*1000);
 const market24=()=>binance('/fapi/v1/ticker/24hr',75000);
@@ -2050,8 +2039,6 @@ const server=http.createServer(async(req,res)=>{
    if(!symbols.length)return response(res,400,{error:'INVALID_SYMBOLS',ordersEnabled:false});
    return response(res,200,await venueQuotes.snapshot(symbols,{binancePrice:symbol=>state.quotes.get(symbol)?.price??null}));
   }
-  if(pathname==='/api/tradfi')return response(res,200,tradfiPublic());
-  if(pathname==='/api/tradfi/refresh'&&req.method==='POST')return response(res,409,{accepted:false,...tradfiPublic()});
   if(pathname==='/api/scan'&&req.method==='POST'){if(state.scanActive)return response(res,202,{accepted:false,reason:'스캔 진행 중',status:getStatus()});void runScan();return response(res,202,{accepted:true,message:'백그라운드 스캔 시작',status:getStatus()})}
   // Cloud server (git checkout under systemd): check / apply from GitHub with one tap.
   if(pathname==='/api/update/git'&&req.method==='GET'){if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});try{return response(res,200,{...await gitCheck(__dirname),bootId:SERVER_BOOT_ID})}catch(e){return response(res,502,{error:e.message})}}

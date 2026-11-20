@@ -1,16 +1,16 @@
 // Client-side section routing: panels remain mounted so live positions, copy state,
-// news and journal data are never reset on navigation.
-// The dashboard shows only these four pages (user request 2026-11-17); the server keeps
-// running the removed pages' features (scanner, Telegram notices, notification settings).
+// news data are never reset on navigation.
+// The dashboard shows only these three pages (user request 2026-11-17; 매매일지 removed 2026-11-20);
+// the server keeps running the removed pages' features (scanner, Telegram notices, notification
+// settings, /api/journal records).
 const workspaceRoutes = Object.freeze({
   real: '실계좌 · 카피 매매',
   live: '테스트넷 · 신호 전략',
-  news: '시황 · 뉴스',
-  journal: '매매일지 · 위험관리'
+  news: '시황 · 뉴스'
 });
 const defaultRoute = 'real';
 // Old bookmarks of the removed 자동 모의매매 page open the 테스트넷 page.
-// Every other old or unknown hash (#overview, #alerts, #chartPanel, #venues, #scanner, ...) opens 실계좌.
+// Every other old or unknown hash (#overview, #alerts, #chartPanel, #venues, #scanner, #journal, ...) opens 실계좌.
 const workspaceAliases = Object.freeze({ paper: 'live' });
 const workspaceSections = [...document.querySelectorAll('.content > [data-workspace-route]')];
 
