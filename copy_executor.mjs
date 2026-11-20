@@ -29,7 +29,7 @@ import {directionOf,venueRows} from './venue_positions.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,positionRow} from './bingx_position_mode.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'MIN_ORDER',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
+export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
 const AUDIT_MAX_AGE=135000,CLOSE_DELAY=120000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
@@ -119,7 +119,9 @@ export function copyConfig(env=process.env,liveMode='OFF'){
  // MIN_ORDER (default, user 2026-11-14 12:31 "증거금을 최소한 매매가 진행될 수 있도록", adds as many as
  // possible): the first buy is the venue's smallest valid order; later buys follow the trader's
  // quantities in proportion to that first buy (small ones carried until they make a valid order).
- const sz=String(env.COPY_SIZING||'').toUpperCase(),sizing=['BALANCE_RATIO','FIRST_1USD'].includes(sz)?sz:'MIN_ORDER';
+ // BALANCE_RATIO (default, user 2026-11-20 "기준과 동일하게 2만불로 적용해줘"): trader quantity x our equity / 20,000 $.
+ // MIN_ORDER and FIRST_1USD remain selectable via COPY_SIZING.
+ const sz=String(env.COPY_SIZING||'').toUpperCase(),sizing=['MIN_ORDER','FIRST_1USD','BALANCE_RATIO'].includes(sz)?sz:COPY_DEFAULTS.sizing;
  return {enabled,mode,sizing,traderBalanceUSD:n('COPY_TRADER_BALANCE_USD',COPY_DEFAULTS.traderBalanceUSD,100,1e9),marginUSD:n('COPY_MARGIN_USD',COPY_DEFAULTS.marginUSD,.1,1000),
   // MIN_ORDER's first buy is at least this much margin (user 2026-11-14: BTC/ETH minimums were too small); 0 = the bare minimum.
   firstMarginUSD:n('COPY_FIRST_MARGIN_USD',COPY_DEFAULTS.firstMarginUSD,0,1000),maxLossPct:n('COPY_MAX_LOSS_PCT',COPY_DEFAULTS.maxLossPct,1,90),
