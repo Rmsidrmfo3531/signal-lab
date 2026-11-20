@@ -755,13 +755,20 @@ export class CopyExecutor{
   const minOnly=sizing==='MIN_ORDER';
   let qty=scale!=null?this.#qty(c,m.quantity*scale/mult):minOnly?this.#qty(c,this.config.firstMarginUSD*leverage/price):this.#qty(c,this.config.marginUSD*leverage/price);
   const minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
-  // Below the venue minimum: the smallest valid order instead (flagged: larger than the ratio asks).
-  let minOrder=false;
+  // Below the venue minimum: if BALANCE_RATIO shrank a small trader entry below the minimum (scale < 1),
+  // match the trader's exact 1x quantity for this position and its adds instead of entering a tiny venue minimum.
+  let minOrder=false,matchTraderQty=false;
   // The minimum is measured at the lower of the card and venue prices, with 5 % room: BingX checks it at
   // its own price, and a card price above it left the order under the minimum (user 2026-11-14, AKEUSDT
   // real account: "minimum order amount is 149 AKE" / "minimum order value is 2 USDT", five entries).
   const minPrice=venuePrice>0?Math.min(price,venuePrice):price;
-  if(qty<minQ||qty*minPrice<minN){qty=this.#qty(c,Math.max(minQ,minN/minPrice*1.05),'UP');minOrder=!minOnly}
+  if(qty<minQ||qty*minPrice<minN){
+   if(scale!=null&&scale<1&&m.quantity>0){
+    scale=1;matchTraderQty=true;
+    qty=this.#qty(c,m.quantity/mult);
+   }
+   if(qty<minQ||qty*minPrice<minN){qty=this.#qty(c,Math.max(minQ,minN/minPrice*1.05),'UP');minOrder=!minOnly}
+  }
   if(minOnly&&qty*price/leverage>Math.max(this.config.minOrderMaxMarginUSD,this.config.firstMarginUSD*1.05)){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   // The card's quantity must be coins: with a 마진 line, quantity x price must match margin x leverage
   // (within 30 %), else it may be a contract count and is not traded.
@@ -771,7 +778,7 @@ export class CopyExecutor{
   if(minOrder&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
   const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,hedge,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
-   scale,mult,sizing,firstQty:qty,venueAlias:c.alias??null,minOrder,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[],fillTracked:true};
+   scale,mult,sizing,firstQty:qty,venueAlias:c.alias??null,minOrder,matchTraderQty,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[],fillTracked:true};
   // At most 3 s for the zones (the message queue must not wait on a slow profile); then the cap stop.
   try{const zones=await Promise.race([this.zonesOf(m.symbol,{tickSize:c.tickSize}),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);
    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
@@ -788,15 +795,20 @@ export class CopyExecutor{
   try{fill=await sendOpen()}
   catch(error){
    if(error.orderBlock)return skipBeforeSend(error.orderBlock);
-   // 101400 is a refusal (nothing filled). When it names the venue minimum, one more try at that minimum
-   // if it still fits the same margin limits; otherwise the ledger entry is dropped, so no empty position
-   // is left to be closed later as "external".
+   // 101400 is a refusal (nothing filled). When it names the venue minimum, try 1x trader qty if BALANCE_RATIO
+   // was scaled down (< 1), otherwise retry at the venue minimum if it still fits the margin limits.
    const need=error.code==='VENUE_ERROR_101400'?this.#venueMinimum(c,error.message,minPrice):null;
+   const traderQty=need&&scale!=null&&scale<1&&m.quantity>0?this.#qty(c,m.quantity/mult):null;
+   const retryMatch=traderQty!=null&&traderQty>=need;
+   const retryQty=retryMatch?traderQty:need;
    // The same limits as the first order (5 $ minimum-order margin, the copy margin cap, 90 % of the free
    // margin), measured at the higher of the card and venue prices.
-   const margin=need?need*Math.max(price,venuePrice||0)/leverage:Infinity;
-   if(need>qty&&margin<=this.config.minOrderMaxMarginUSD){
-    this.#event('ENTRY_RETRY_MIN',{symbol:m.symbol,from:qty,to:need});qty=need;p.firstQty=need;p.minOrder=true;
+   const margin=retryQty?retryQty*Math.max(price,venuePrice||0)/leverage:Infinity;
+   if(retryQty>qty&&(retryMatch||margin<=this.config.minOrderMaxMarginUSD)){
+    this.#event('ENTRY_RETRY_MIN',{symbol:m.symbol,from:qty,to:retryQty,...(retryMatch?{matchTraderQty:true}:{})});
+    qty=retryQty;p.firstQty=retryQty;
+    if(retryMatch){scale=1;p.scale=1;p.matchTraderQty=true;p.minOrder=false}
+    else p.minOrder=true;
     try{fill=await sendOpen()}
     catch(e2){
      if(e2.orderBlock)return skipBeforeSend(e2.orderBlock);
@@ -806,7 +818,7 @@ export class CopyExecutor{
   p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
   await this.#protect(p,{ownFill:true});
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null,scale,minOrder:p.minOrder});
+  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null,scale:p.scale,minOrder:p.minOrder,matchTraderQty:p.matchTraderQty===true});
   return {ok:true};
  }
  /** The quantity a BingX 101400 message asks for ("minimum order amount is 149 AKE" / "minimum order
@@ -897,7 +909,9 @@ export class CopyExecutor{
   if(!(price>0)){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}
   const activeSizing=this.#effectiveSizing();
   let scale=p.scale,funds;
-  if(activeSizing==='BALANCE_RATIO'&&(this.config.mode==='LIVE'||p.scale!=null)){
+  if(p.matchTraderQty){
+   scale=1;p.scale=1;
+  }else if(activeSizing==='BALANCE_RATIO'&&(this.config.mode==='LIVE'||p.scale!=null)){
    funds=await this.#readFunds();
    const ratio=this.#balanceRatio(funds),reason=this.#sendBlock(p,entry)??ratio.reason;
    if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason});return {ok:false,reason}}
@@ -925,7 +939,7 @@ export class CopyExecutor{
   p.adds++;
   p.steps.push({kind:'ADD',at:this.now(),qty:fill.qty??buy,avg:fill.avg,theirQty,marginUSD});this.#save();
   await this.#protect(p,{ownFill:true});if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('ADDED',{symbol:p.symbol,direction:p.direction,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null,scale});
+  this.#event('ADDED',{symbol:p.symbol,direction:p.direction,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null,scale,matchTraderQty:p.matchTraderQty===true});
   return {ok:true};
  }
  async #close(m,reason){

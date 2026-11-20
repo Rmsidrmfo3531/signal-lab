@@ -15,9 +15,9 @@ function realCopyTradeText(e){
  const sym=displaySymbol(e.symbol);
  const head=[`카피 | ${action}`,[sym,LIVE_SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
  let detail;
- if(e.type==='OPENED')detail=[`수량 ${e.qty} · 평균 진입가 ${e.avg??'—'} USDT`,
+ if(e.type==='OPENED')detail=[`수량 ${e.qty}${e.matchTraderQty?' (트레이더 1배 수량)':''} · 평균 진입가 ${e.avg??'—'} USDT`,
   e.stop?`거래소 보호 손절 ${e.stop} USDT`:null,e.stopDistPct!=null?`매물대 기준 ${e.stopDistPct}% · 거래량 동반 이탈 시`:null];
- if(e.type==='ADDED')detail=[`${e.n}차 · 수량 +${e.qty} · 총 ${e.total}`,`평균 진입가 ${e.avg??'—'} USDT`,e.stop?`거래소 보호 손절 ${e.stop} USDT`:null];
+ if(e.type==='ADDED')detail=[`${e.n}차 · 수량 +${e.qty}${e.matchTraderQty?' (1배)':''} · 총 ${e.total}`,`평균 진입가 ${e.avg??'—'} USDT`,e.stop?`거래소 보호 손절 ${e.stop} USDT`:null];
  if(e.type==='REDUCED')detail=[`수량 −${e.qty} · 잔여 ${e.left}`];
  if(e.type==='CLOSED')detail=[why(e.reason),
   e.evidence==='MANUAL_CLOSE'?'수동 청산 확인':e.evidence==='UNCONFIRMED'?'청산 경로 확인 불가':null,
