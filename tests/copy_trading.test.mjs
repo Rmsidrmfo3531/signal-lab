@@ -363,8 +363,8 @@ test('copy review: the trader total follows the trader even when our buy is skip
 });
 
 test('copy BALANCE_RATIO: the trader quantity x our equity / 20,000 $, no 1 $ floor; each cut has its own order id',async()=>{
- // Default (user 2026-11-14 12:31): the venue's smallest order first, adds as many as the trader (100), up to 100 % of the equity as margin.
- assert.equal(copyConfig({},'TESTNET').sizing,'MIN_ORDER');assert.equal(copyConfig({},'TESTNET').maxAdds,100);assert.equal(copyConfig({},'TESTNET').maxTotalMarginPct,100);assert.equal(copyConfig({},'TESTNET').marginUSD,1);
+ // Default (user 2026-11-20): BALANCE_RATIO (trader quantity x our equity / 20,000 $), adds as many as the trader (100), up to 100 % of the equity as margin.
+ assert.equal(copyConfig({},'TESTNET').sizing,'BALANCE_RATIO');assert.equal(copyConfig({},'TESTNET').traderBalanceUSD,20000);assert.equal(copyConfig({COPY_SIZING:'MIN_ORDER'},'TESTNET').sizing,'MIN_ORDER');assert.equal(copyConfig({},'TESTNET').maxAdds,100);assert.equal(copyConfig({},'TESTNET').maxTotalMarginPct,100);assert.equal(copyConfig({},'TESTNET').marginUSD,1);
  const card=(q,entry)=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×5\n━━━━━━━━━━━━━━━━\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
  const v=venue();const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_MAX_TOTAL_MARGIN_PCT:'30'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // 880 x 400 / 20,000 = 17.6 -> 17 coins (0.87 $ of notional... venue minimum 2 $ -> raised to the minimum).
@@ -471,9 +471,9 @@ test('copy: a venue error shows the exchange message and the failed step',async(
  assert.match(e.detail,/단계 레버리지 설정/);assert.match(e.detail,/BingX: PositionSide must be/);
 });
 
-test('copy MIN_ORDER (default): first buy = venue minimum, adds in proportion to it, small ones carried',async()=>{
+test('copy MIN_ORDER (selectable): first buy = venue minimum, adds in proportion to it, small ones carried',async()=>{
  const card=(q,entry)=>`📌 포지션 진입\nTNSRUSDT 🔴 Short ×5\n진입가 ${entry} USDT\n현재가 0.05000 USDT\n수량 ${q}`;
- const v=venue(),ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const v=venue(),ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'MIN_ORDER'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  await ex.handle({id:1,date:1e12,text:card(1000,'0.05000')});const first=v.size;
  // The smallest valid order: at most 2 % over the venue minimum (2 $ notional here).
  assert.ok(first*0.05>=2&&first*0.05<=2.1,'minimum order: '+first);
@@ -540,7 +540,7 @@ test('copy MIN_ORDER: the first buy is at least 0.3 $ of margin (BTC at 80x), th
  const btc={...contract,minQuantityBase:'0.0001',quantityStep:'0.0001',minNotionalUSDT:'2',tickSize:'0.1'};
  const card=`📌 포지션 진입\nBTCUSDT 🟢 Long ×80\n진입가 67727.2 USDT\n현재가 67727.2 USDT\n수량 0.5`;
  const v=venue();v.client.leverage=async()=>({maxLongLeverage:125});
- const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>btc,markOf:async()=>67727.2,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'MIN_ORDER'},'TESTNET'),client:v.client,contractOf:async()=>btc,markOf:async()=>67727.2,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  await ex.handle({id:1,date:1e12,text:card});
  // 0.3 $ x 80 / 67727 = 0.000354 -> 0.0003 BTC (about 0.25 $ of margin; the bare minimum 0.0001 was 0.08 $).
  assert.equal(v.calls.find(c=>c.type==='MARKET').quantity,'0.0003');
@@ -621,7 +621,7 @@ test('real-money copy only with COPY_MODE=LIVE and the confirm phrase; notices u
 });
 
 test('copy MIN_ORDER: the minimum is met at the venue price, a 101400 minimum is retried once, a refused entry leaves no ledger row',async()=>{
- const mk=(v,markOf)=>new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const mk=(v,markOf)=>new CopyExecutor({config:copyConfig({COPY_SIZING:'MIN_ORDER'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf,balance:async()=>({equity:400,available:300}),now:()=>1e12});
  // Card 0.051, venue 0.0485: 2 USDT x 1.05 / 0.0485 = 43.3 -> 44 coins (the card price alone gave 42).
  let v=venue(),ex=mk(v,async()=>0.0485);await ex.handle({id:1,date:1e12,text:OPEN});
  assert.equal(v.calls.find(c=>c.type==='MARKET').quantity,'44');
@@ -973,7 +973,7 @@ test('real copy does not dispatch a pending entry or add after a stop, and still
   const cfg=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'},'OFF');
   ex=new CopyExecutor({config:cfg,client:v.client,contractOf:async()=>contract,now:()=>1e12,
    gate:()=>ex.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'},entryGateRevision:()=>gateRevision,
-   balance:async()=>{if(pause){waiting.resolve();await resume.promise}return {equity:400,available:300}}});
+   balance:async()=>{if(pause){waiting.resolve();await resume.promise}return {equity:2000,available:1500}}});
   ex.arm();
   if(kind==='add')assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).ok,true);
   const size=v.size,orders=v.calls.filter(c=>c.type==='MARKET').length;
@@ -997,14 +997,14 @@ test('copy blocks new risk when either balance field is unverified; a known zero
  const cfg=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'},'OFF');
  for(const [balance,reason] of [
   [async()=>{throw Error('unavailable')},'NO_BALANCE'],
-  [async()=>({equity:400}),'NO_BALANCE'],
-  [async()=>({equity:400,available:null}),'NO_BALANCE'],
-  [async()=>({equity:400,available:0}),'MARGIN_SHORT'],
+  [async()=>({equity:2000}),'NO_BALANCE'],
+  [async()=>({equity:2000,available:null}),'NO_BALANCE'],
+  [async()=>({equity:2000,available:0}),'MARGIN_SHORT'],
  ]){
   const v=venue();
   let healthy=true;
   const ex=new CopyExecutor({config:cfg,client:v.client,contractOf:async()=>contract,
-   balance:async()=>healthy?{equity:400,available:300}:balance(),now:()=>1e12});
+   balance:async()=>healthy?{equity:2000,available:1500}:balance(),now:()=>1e12});
   healthy=false;
   assert.equal((await ex.handle({id:1,date:1e12,text:OPEN})).reason,reason);
   assert.equal(v.size,0);
