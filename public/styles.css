@@ -623,3 +623,15 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .note-edit-btn:hover{border-color:#5a9cff;color:#e5f0ff}
 .sim-form{grid-template-columns:repeat(auto-fit,minmax(135px,1fr))}
 .sim-form select{width:100%;min-width:0;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:#0a1522;color:var(--text);font-size:11.5px}
+.an-costs{padding:8px 10px;border:1px solid #1c3048;border-radius:8px;background:#091422;display:grid;gap:6px}
+.an-costs.is-warn{border-color:rgba(241,113,134,.45);background:rgba(241,113,134,.05)}
+.an-costs-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px;font-size:12px}
+.an-costs-head small{color:var(--dim);font-size:11px}
+.an-costs-head em{font-style:normal;color:#f7a7b6;font-weight:600}
+.an-cost-leaks{display:flex;flex-wrap:wrap;align-items:center;gap:5px;font-size:11px;color:var(--dim)}
+.an-leak-chip{padding:2px 7px;border-radius:6px;background:#0f1e30;border:1px solid #20364f;color:#c9d6e6;font-variant-numeric:tabular-nums}
+.an-leak-chip.is-warn{border-color:rgba(241,113,134,.5)}
+.an-leak-chip i{font-style:normal}
+.copy-sub-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.copy-sub-row .copy-sub{margin-bottom:4px}
+.copy-export-btn{text-decoration:none;display:inline-flex;align-items:center;line-height:1.2}

@@ -89,11 +89,37 @@ export function formatStatusReply({equityUSD,availableUSD,positions=[],copy}){
  return lines.join('\n');
 }
 
+export function formatScalpStatusReply(rt,{now=Date.now()}={}){
+ if(!rt)return '⚠️ 테스트넷 단타 상태를 조회하지 못했습니다.';
+ const state=rt.mode!=='TESTNET'?'○ 꺼짐 (TESTNET 아님)':!rt.armed?'○ 비활성':rt.blocked?`■ 진입 중지 (${rt.blocked})`:rt.scanning?'● 5분봉 스캔 진행 중':'● 활성화 (5분 감시 중)';
+ const rules=[
+  `4H 추세: ${rt.trendMode==='on'?'역추세 차단':rt.trendMode==='off'?'미사용':'기록만'}`,
+  `손절: ${rt.stopLossEnabled?'ON':'무손절'}`,
+  `반복추매: ${rt.repeatedScaleIn?'ON':'OFF'}`,
+  `보유: ${rt.open??0}개`,
+ ].join(' · ');
+ const ls=rt.lastScan;
+ let scanLine='마지막 스캔: 아직 기록 없음 (다음 5분봉 마감 대기)';
+ if(ls?.at){
+  const kstTime=new Date(Number(ls.at)+KST_MS).toISOString().slice(5,16).replace('T',' ');
+  const ageMin=Math.max(0,Math.floor((now-Number(ls.at))/60000));
+  const denom=Number(rt.universeCount)||Number(ls.checked)||0;
+  const det=(Number(ls.signals)||0)+(Number(ls.zoneSignals)||0);
+  const extras=[
+   ls.failed>0?`실패 ${ls.failed}건${ls.lastFailure?`(${ls.lastFailure})`:''}`:null,
+   ls.error?`오류 ${ls.error}`:null,
+  ].filter(Boolean).join(' · ');
+  scanLine=`마지막 스캔: ${kstTime} KST (${ageMin===0?'방금':ageMin+'분 전'}) · 검사 ${ls.checked??0}/${denom}종목 · 감지 ${det}건 · 진입 ${ls.entered??0}건${extras?' · ⚠️ '+extras:''}`;
+ }
+ return ['⚡ 테스트넷 단타 현황',`상태: ${state}`,rules,scanLine].join('\n');
+}
+
 export class AccountAlerts{
  constructor({directory=null,fileName='account-alerts.json',now=()=>Date.now(),log=()=>{},
   sendText=async()=>({ok:false}),post=null,allowedChatId='',
-  getSnapshot=async()=>null,onPause=async()=>null,onResume=async()=>null,onClose=async()=>null}={}){
-  Object.assign(this,{now,log,sendText,allowedChatId:String(allowedChatId||'').trim(),getSnapshot,onPause,onResume,onClose});
+  getSnapshot=async()=>null,getScalpStatus=async()=>null,onControls=null,
+  onPause=async()=>null,onResume=async()=>null,onClose=async()=>null}={}){
+  Object.assign(this,{now,log,sendText,allowedChatId:String(allowedChatId||'').trim(),getSnapshot,getScalpStatus,onControls,onPause,onResume,onClose});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={
@@ -285,13 +311,15 @@ export class AccountAlerts{
 
   if(cmd==='/help'||cmd==='/도움'||cmd==='/start'){
    return [
-    '🤖 Signal Lab 실계좌 원격 명령어',
-    '/status — 잔고·증거금·보유 포지션 조회',
-    '/pause — 실계좌 카피 일시정지(비활성화)',
-    '/resume — 실계좌 카피 재개(활성화)',
+    '🤖 Signal Lab 원격 명령어',
+    '/status — 실계좌 잔고·증거금·보유 포지션',
+    '/scalp — 테스트넷 단타 5분 스캔 상태',
     '/report — 오늘 KST 손익 중간 리포트',
-    '/close 종목 [LONG|SHORT] — 해당 포지션 청산 (2단계 확인)',
-    '/close ALL — 전체 포지션 청산 (2단계 확인)',
+    '/size [금액|0.5x|1x|2x] — 카피 기준 잔고 조회·변경',
+    '/block [종목] — 카피 제외 목록 조회·추가',
+    '/unblock 종목 — 카피 제외 목록에서 제거',
+    '/pause · /resume — 실계좌 카피 일시정지·재개',
+    '/close 종목 [LONG|SHORT] 또는 /close ALL — 청산 (2단계 확인)',
     '/confirm 코드 — 청산 실행 확인',
    ].join('\n');
   }
@@ -300,6 +328,61 @@ export class AccountAlerts{
    const snap=await this.getSnapshot();
    if(!snap)return '⚠️ 현재 실계좌 상태를 조회하지 못했습니다.';
    return formatStatusReply(snap);
+  }
+
+  if(cmd==='/scalp'||cmd==='/단타'){
+   const rt=await this.getScalpStatus();
+   return formatScalpStatusReply(rt,{now});
+  }
+
+  if(cmd==='/size'||cmd==='/비중'){
+   if(typeof this.onControls!=='function')return '⚠️ 카피 비중 제어가 연결되어 있지 않습니다.';
+   const arg=String(parts[1]||'').trim().toLowerCase().replace(/[,$]/g,'');
+   if(!arg){
+    const cur=await this.onControls(null);
+    const tb=cur?.traderBalanceUSD??20000;
+    return `⚖️ 현재 카피 기준 잔고: $${Number(tb).toLocaleString()}\n변경 예: /size 20000 (1배) · /size 40000 (0.5배) · /size 10000 (2배)\n또는 /size 0.5x · /size 1x · /size 1.5x · /size 2x`;
+   }
+   const presetMap={'0.5x':40000,'1x':20000,'1.5x':13333,'2x':10000};
+   let next=presetMap[arg]??null;
+   if(next==null){
+    const km=/^(\d+(?:\.\d+)?)k$/.exec(arg);
+    next=km?Math.round(Number(km[1])*1000):Number(arg);
+   }
+   if(!Number.isFinite(next)||next<1000||next>1000000)return '⚠️ 기준 잔고는 1,000 ~ 1,000,000 USD 사이로 입력하세요. (예: /size 20000 또는 /size 0.5x)';
+   try{
+    const res=await this.onControls({traderBalanceUSD:Math.round(next)});
+    const tb=res?.traderBalanceUSD??Math.round(next);
+    return `✅ 카피 기준 잔고를 $${Number(tb).toLocaleString()}로 변경했습니다.\n(새 진입부터 내 순자산 ÷ $${Number(tb).toLocaleString()} 비율 적용)`;
+   }catch(e){return `⚠️ 변경 실패: ${e?.message||'ERROR'}`}
+  }
+
+  if(cmd==='/block'||cmd==='/제외'){
+   if(typeof this.onControls!=='function')return '⚠️ 종목 필터 제어가 연결되어 있지 않습니다.';
+   const sym=String(parts[1]||'').trim();
+   if(!sym){
+    const cur=await this.onControls(null);
+    const c=cur?.controls||{};
+    const mode=c.filterMode==='ALLOWLIST'?'허용 목록(화이트리스트)':'제외 목록(블랙리스트)';
+    const list=(c.filterMode==='ALLOWLIST'?c.allowedSymbols:c.blockedSymbols)||[];
+    return `🚫 종목 필터 (${mode})\n${list.length?list.map(displaySymbol).join(', '):'등록된 종목 없음'}\n추가: /block BTC · 제거: /unblock BTC`;
+   }
+   try{
+    const res=await this.onControls({addBlocked:sym});
+    const list=(res?.controls?.blockedSymbols||[]).map(displaySymbol);
+    return `🚫 ${displaySymbol(sym.toUpperCase().endsWith('USDT')?sym.toUpperCase():sym.toUpperCase()+'USDT')} 종목을 카피 제외 목록에 추가했습니다.\n현재 제외 목록 (${list.length}개): ${list.join(', ')||'없음'}`;
+   }catch(e){return `⚠️ 제외 추가 실패: ${e?.message||'ERROR'}`}
+  }
+
+  if(cmd==='/unblock'||cmd==='/해제'){
+   if(typeof this.onControls!=='function')return '⚠️ 종목 필터 제어가 연결되어 있지 않습니다.';
+   const sym=String(parts[1]||'').trim();
+   if(!sym)return '사용법: /unblock 종목 (예: /unblock BTC)';
+   try{
+    const res=await this.onControls({removeBlocked:sym});
+    const list=(res?.controls?.blockedSymbols||[]).map(displaySymbol);
+    return `✅ ${displaySymbol(sym.toUpperCase().endsWith('USDT')?sym.toUpperCase():sym.toUpperCase()+'USDT')} 종목을 제외 목록에서 제거했습니다.\n현재 제외 목록 (${list.length}개): ${list.join(', ')||'없음'}`;
+   }catch(e){return `⚠️ 제외 제거 실패: ${e?.message||'ERROR'}`}
   }
 
   if(cmd==='/pause'||cmd==='/정지'){

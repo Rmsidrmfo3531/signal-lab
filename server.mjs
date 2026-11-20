@@ -61,7 +61,7 @@ import {createVenuePositionsReader,venueRows,normalizeVenuePosition} from './ven
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
-import {buildCopyAnalytics} from './copy_analytics.mjs';
+import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
@@ -322,7 +322,7 @@ const venuePositionsReader=realBingxClient?.mode==='LIVE'
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
 let accountAlerts=null;
 async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;
- const analytics=buildCopyAnalytics({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:s0.funds?.equity??null,confirmedOnly:COPY.mode==='LIVE'});
+ const analytics=buildCopyAnalytics({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:s0.funds?.equity??null,confirmedOnly:COPY.mode==='LIVE',exchangeCosts:dailyPnl?.costSummary?.()??null});
  const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{})};
  if(!venuePositionsReader)return {...s,...extra};
  const v=await venuePositionsReader.snapshot(realCopyPositions());if(!manualLedger)return {...s,...v,...extra};
@@ -687,6 +687,11 @@ if(COPY.mode==='LIVE'){
     copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],
     dailyByDay:dailyPnl?.status()?.byDay??null,
    };
+  },
+  getScalpStatus:async()=>scalpExec?.runtimeSummary?.()??null,
+  onControls:patch=>{
+   if(patch){copyControls.configure(patch);reportsDirty=true}
+   return {controls:copyControls.status(),traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD)};
   },
   onPause:()=>copyTrader.disarm(),
   onResume:()=>{
@@ -1936,7 +1941,12 @@ const server=http.createServer(async(req,res)=>{
     dailyByDay:dailyPnl?.status()?.byDay??null,
     equityUSD:copyTrader.funds?.equity??null,
     confirmedOnly:COPY.mode==='LIVE',
+    exchangeCosts:dailyPnl?.costSummary?.()??null,
    }));
+  }
+  if(pathname==='/api/copy/export'&&req.method==='GET'){
+   res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-real-trades.csv"','Cache-Control':'no-store',...SECURITY_HEADERS});
+   return res.end(exportCopyTradesCSV({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[]}));
   }
   if(pathname==='/api/real/position-action'&&req.method==='POST'){
    const body=await bodyJson(req);
