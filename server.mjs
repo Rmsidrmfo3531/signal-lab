@@ -58,6 +58,7 @@ import {TestnetBudget,TESTNET_BALANCE_REFRESH_MS,testnetDailyLossPct,testnetMarg
 import {resetTestnetHistory,withTestnetResetRisk} from './testnet_history_reset.mjs';
 import {createVenuePositionsReader} from './venue_positions.mjs';
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
+import {CopyControls} from './copy_controls.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
 import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recordHost,findConflictCopies} from './persistence.mjs';
 
@@ -347,7 +348,8 @@ function readRealWallet(){
  }).finally(()=>{realWallet.pending=null});
  return realWallet.pending;
 }
-copyTrader=new CopyExecutor({config:COPY,client:copyClient,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',auditOrders:COPY.mode==='LIVE',
+const copyControls=new CopyControls({directory:storage.dir,fileName:COPY.mode==='LIVE'?'copy-controls-live.json':'copy-controls.json'});
+copyTrader=new CopyExecutor({config:COPY,client:copyClient,controls:copyControls,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',auditOrders:COPY.mode==='LIVE',
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
  // A coin missing or suspended in the cached list re-reads the list (new listings / delistings, 2026-11-16).
  contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.contractsFor(symbol),symbol),
@@ -1766,6 +1768,12 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
   if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});return response(res,200,copyTrader.arm())}
   if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
+  if(pathname==='/api/copy/controls'&&req.method==='GET')return response(res,200,{controls:copyControls.status(),traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD),maxLeverage:copyControls.effectiveMaxLeverage(COPY.maxLeverage)});
+  if(pathname==='/api/copy/controls'&&req.method==='POST'){
+   const body=await bodyJson(req);
+   try{const controls=copyControls.configure(body);reportsDirty=true;return response(res,200,{controls,traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD),maxLeverage:copyControls.effectiveMaxLeverage(COPY.maxLeverage)})}
+   catch(e){return response(res,e.httpStatus||500,{error:e.code||'COPY_CONTROLS_SAVE_FAILED',message:e.message})}
+  }
   // From the local channel listener only: a shared token (COPY_LISTENER_TOKEN in .env), compared in constant time.
   if(pathname==='/api/copy/message'&&req.method==='POST'){
    const token=String(req.headers['x-copy-token']||''),want=String(process.env.COPY_LISTENER_TOKEN||'');

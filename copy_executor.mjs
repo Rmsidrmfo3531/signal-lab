@@ -145,8 +145,8 @@ export function copyConfig(env=process.env,liveMode='OFF'){
 }
 
 export class CopyExecutor{
- constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),entryGateRevision=()=>null,isBusy=()=>false,balance=async()=>null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},auditOrders=false,retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
-  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,entryGateRevision,isBusy,balance,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
+ constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),entryGateRevision=()=>null,isBusy=()=>false,balance=async()=>null,controls=null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},auditOrders=false,retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
+  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,entryGateRevision,isBusy,balance,controls,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],killed:saved?.killed||false};
@@ -163,6 +163,13 @@ export class CopyExecutor{
    }
   }
  }
+ #effectiveTraderBalanceUSD(){return this.controls?this.controls.effectiveTraderBalanceUSD(this.config.traderBalanceUSD):this.config.traderBalanceUSD}
+ #effectiveMaxLeverage(){return this.controls?this.controls.effectiveMaxLeverage(this.config.maxLeverage):this.config.maxLeverage}
+ #checkCooldown(){
+  if(!this.controls)return;
+  const r=this.controls.evaluateCooldown({closedTrades:this.store.closed,equityUSD:this.funds?.equity??null,now:this.now()});
+  if(r?.triggered)this.#event('COPY_COOLDOWN_TRIGGERED',{reason:r.reason,until:r.until,minutes:r.minutes,detail:`${r.reason} · ${r.minutes}분간 신규 진입 휴식`});
+ }
  arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
  disarm(){this.entryRevision++;this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
  #save(){if(!this.file)return;this.store.closed=this.store.closed.slice(-MAX_CLOSED);this.store.events=this.store.events.slice(-MAX_EVENTS);this.store.seen=this.store.seen.slice(-MAX_SEEN);
@@ -171,8 +178,9 @@ export class CopyExecutor{
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){const s=new Set(this.reserved);for(const sym of this.reserved)if(sym.endsWith('USDT')&&!sym.includes('-'))s.add(sym.replace(/USDT$/,'-USDT'));for(const p of Object.values(this.store.positions))if(p.status==='OPEN'){s.add(p.symbol);if(p.venueSymbol)s.add(p.venueSymbol);if(p.venueAlias)s.add(p.venueAlias)}return s}
  status(){const closed=this.store.closed.filter(p=>!p.archivedFromHistory);
-  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,maxAdds:this.config.maxAdds,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.config.traderBalanceUSD,stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing:this.config.sizing,traderBalanceUSD:this.#effectiveTraderBalanceUSD(),maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:closed.slice(-200).reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
+  ...(this.controls?{controls:this.controls.status(this.now())}:{}),
   ...(this.audit?{audit:this.auditStatus()}:{})}}
 
  /** status() with fresh numbers for the screen (user 2026-11-14: the real-account page did not update):
@@ -392,7 +400,7 @@ export class CopyExecutor{
   *    else (lookup failed, size moved, no lookup call) -> not sent (an under-fill rather than a double fill).
   * A venue error code is never retried here. event: ENTRY_RETRY / ADD_RETRY. p.inflight marks it meanwhile. */
  async #send(p,side,quantity,{tag},{event,before,step,entry,marginUSD}){
-  const margin=await this.#orderMargin(marginUSD);
+  const margin=await this.#orderMargin(marginUSD,p.symbol);
   const blocked=this.#sendBlock(p,entry),orderBlock=blocked?{reason:blocked}:margin;
   if(orderBlock)throw Object.assign(Error(orderBlock.reason),{code:orderBlock.reason,orderBlock});
   const cid=this.#clientId(p,tag),started=Date.now(),delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[];
@@ -412,7 +420,7 @@ export class CopyExecutor{
      detail:`${attempt}차 시도 · ${{ALREADY_FILLED:'앞 주문이 이미 체결됨(다시 보내지 않음)',UNVERIFIED:'체결 여부 확인 불가(보내지 않음)',RESENT:'같은 주문 번호로 다시 보냄',BUDGET:'재시도 시간 한도(약 30초) 초과'}[outcome]}`});
     if(Date.now()-started+delays[i]>this.retryBudgetMs){ev('BUDGET');break}
     await this.sleep(delays[i]);
-    const margin=await this.#orderMargin(marginUSD);
+    const margin=await this.#orderMargin(marginUSD,p.symbol);
     const seen=await this.#orderOutcome(p,cid,{before,step});
     if(seen.filled){this.#rememberFillOrder(p,seen.orderId,side,true,this.#fillNotice(p,tag));this.#notifyOrderReceipt(p,seen.orderId);ev('ALREADY_FILLED',{via:seen.via});return {orderId:seen.orderId??null,avg:seen.avg??null,qty:seen.qty??null}}
     if(!seen.absent){ev('UNVERIFIED',seen.why?{why:seen.why}:{});continue}
@@ -427,16 +435,21 @@ export class CopyExecutor{
   }finally{p.inflight=false}
  }
  /** Both account values must be present for the margin checks before an entry, add, or resend. */
- async #orderMargin(need){
+ async #orderMargin(need,symbol=null){
   if(!Number.isFinite(need)||need<=0)return {reason:'PRICE_UNVERIFIED'};
   let funds;try{funds=await this.balance()}catch{}
   const equity=pos(funds?.equity),raw=funds?.available;
   const free=raw==null||String(raw).trim()===''?null:num(raw);
   if(!equity||free===null)return {reason:'NO_BALANCE'};
-  const used=Object.values(this.store.positions).filter(p=>p.status==='OPEN')
-   .reduce((total,p)=>total+(p.qty||0)*(p.avg||0)/(p.leverage||1),0);
+  const open=Object.values(this.store.positions).filter(p=>p.status==='OPEN');
+  const used=open.reduce((total,p)=>total+(p.qty||0)*(p.avg||0)/(p.leverage||1),0);
   const remaining=equity*this.config.maxTotalMarginPct/100-used;
   if(need>remaining)return {reason:'COPY_MARGIN_CAP',need:+need.toFixed(2),free:+remaining.toFixed(2)};
+  if(symbol&&this.controls){
+   const symUsed=open.filter(p=>p.symbol===symbol).reduce((total,p)=>total+(p.qty||0)*(p.avg||0)/(p.leverage||1),0);
+   const symBlock=this.controls.checkSymbolMargin({symbol,existingMarginUSD:symUsed,newMarginUSD:need,equityUSD:equity});
+   if(symBlock)return symBlock;
+  }
   if(need>free*.9)return {reason:'MARGIN_SHORT',need:+need.toFixed(2),free};
   return null;
  }
@@ -607,6 +620,8 @@ export class CopyExecutor{
   }
   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs){this.#event('SKIPPED',{symbol:m.symbol,reason:'MONITOR_RESTART_SNAPSHOT'});return {ok:false,reason:'SNAPSHOT'}}
   const g=this.gate();if(!g.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  const symBlock=this.controls?.checkSymbol(m.symbol);if(symBlock){this.#event('SKIPPED',{symbol:m.symbol,...symBlock});return {ok:false,reason:symBlock.reason}}
+  const cooldown=this.controls?.checkCooldown(this.now());if(cooldown){this.#event('SKIPPED',{symbol:m.symbol,...cooldown});return {ok:false,reason:cooldown.reason}}
   const audit=this.#auditBlock(m.symbol);if(audit){this.#event('SKIPPED',{symbol:m.symbol,reason:audit});return {ok:false,reason:audit}}
   if(this.isBusy(m.symbol)){this.#event('SKIPPED',{symbol:m.symbol,reason:'SYMBOL_HELD_BY_SIGNAL_STRATEGY'});return {ok:false,reason:'SYMBOL_BUSY'}}
   // Our copy of the other side of this coin: one-way mode would merge the two. A copy opened in hedge mode
@@ -631,7 +646,7 @@ export class CopyExecutor{
    const cardPrice=(pos(m.price)??pos(m.entry))*(Number(c.unitMultiplier)||1);
    if(!(venuePrice>0)){if(c.alias){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}}
    else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
-  let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.config.maxLeverage));
+  let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.#effectiveMaxLeverage()));
   this.step='레버리지 조회';try{const info=await this.client.leverage(venueSymbol),maxL=Number((m.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
   // The account's position mode (one-way: positionSide BOTH; hedge: LONG / SHORT, user 2026-11-17), read
   // before every entry and kept on the position. Not readable or not stated: skipped before any setting or
@@ -664,7 +679,7 @@ export class CopyExecutor{
   if(this.config.sizing==='BALANCE_RATIO'){
    if(!(m.quantity>0))throw Object.assign(Error('TRADER_QUANTITY_MISSING'),{code:'TRADER_QUANTITY_MISSING'});
    const eq=pos((await this.balance().catch(()=>null))?.equity);if(!eq)throw Object.assign(Error('NO_BALANCE'),{code:'NO_BALANCE'});
-   scale=eq/this.config.traderBalanceUSD;
+   scale=eq/this.#effectiveTraderBalanceUSD();
   }
   const minOnly=this.config.sizing==='MIN_ORDER';
   let qty=scale!=null?this.#qty(c,m.quantity*scale/mult):minOnly?this.#qty(c,this.config.firstMarginUSD*leverage/price):this.#qty(c,this.config.marginUSD*leverage/price);
@@ -792,6 +807,7 @@ export class CopyExecutor{
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
   const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();if(!g.ok){this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  const symBlock=this.controls?.checkSymbol(p.symbol);if(symBlock){this.#event('ADD_SKIPPED',{symbol:p.symbol,...symBlock});return {ok:false,reason:symBlock.reason}}
   if(this.audit){
    let reason=this.#auditBlock(p.symbol,p.venueSymbol),detail;
    if(!reason){
@@ -891,6 +907,7 @@ export class CopyExecutor{
   const row={...p,netUSD:estimate,netSource:estimate!=null?'ESTIMATE_BEFORE_FEES':'UNKNOWN',theirPnlUSD};
   this.store.closed.push(row);const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];
   this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds,...(p.closeEvidence?{evidence:p.closeEvidence.kind}:{})});
+  this.#checkCooldown();
  }
  /** Per-position exchange settlement by exact order id, run outside the order queue. */
  settlementStatus(p){
@@ -972,6 +989,7 @@ export class CopyExecutor{
     Object.assign(p,{netSource:'EXCHANGE_FILLS',netUSD:result.netUSD,pnlUSD:result.pnlUSD,feeUSD:result.feeUSD,settledAt:now});
     mark('CONFIRMED');
     this.#event('COPY_SETTLED',{symbol:p.symbol,direction:p.direction});
+    this.#checkCooldown();
    }catch(error){mark('LOOKUP_FAILED',/^[A-Z_0-9]{1,48}$/.test(error?.code??error?.message??'')?(error.code??error.message):null);this.log(`[COPY] fill settlement ${error?.code||error?.message||'FAILED'}`)}
  }
  async #legacyOrders(p,{startTs,endTs},{externalClose=false}={}){
