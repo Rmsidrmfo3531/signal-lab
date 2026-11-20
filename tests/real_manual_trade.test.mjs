@@ -112,11 +112,52 @@ test('executeRealManualOrder enforces confirmation, sets margin/leverage, submit
  assert.equal(calls.at(-1).op,'cancel');
 });
 
-test('realTradePanelHTML, computeOrderPreview, and venuePositionsHTML render manual trade UI and quick-fill button',()=>{
+test('buildBingxMarketList and filterSortMarkets support all BingX Futures + TradFi symbols, search, category tabs, favorites, and sorting',async()=>{
+ const {buildBingxMarketList}=await import('../real_manual_trade.mjs');
+ const {filterSortMarkets}=await import('../public/real_trade.js');
+ const contracts=new Map([
+  ['BTCUSDT',{symbol:'BTCUSDT',venueSymbol:'BTC-USDT',tradable:true,tickSize:'0.1',quantityStep:'0.001',minNotionalUSDT:5}],
+  ['AKEUSDT',{symbol:'AKEUSDT',venueSymbol:'AKE-USDT',tradable:true,tickSize:'0.000001',quantityStep:'10',minNotionalUSDT:2}],
+  ['NCSKSNDK2USDUSDT',{symbol:'NCSKSNDK2USDUSDT',venueSymbol:'NCSKSNDK2USD-USDT',tradable:true,tickSize:'0.01',quantityStep:'0.1',minNotionalUSDT:2}],
+  ['DEADUSDT',{symbol:'DEADUSDT',venueSymbol:'DEAD-USDT',tradable:false}],
+ ]);
+ const tickers=[
+  {symbol:'BTC-USDT',lastPrice:'61451.0',priceChangePercent:'-3.85',quoteVolume:'2500000000'},
+  {symbol:'AKE-USDT',lastPrice:'0.004407',priceChangePercent:'-54.5',quoteVolume:'18500000'},
+  {symbol:'NCSKSNDK2USD-USDT',lastPrice:'125.5',priceChangePercent:'4.2',quoteVolume:'32000000'},
+ ];
+ const markets=buildBingxMarketList({
+  contracts,tickers,
+  openPositions:[{symbol:'AKEUSDT',direction:'LONG',size:2000,avg:0.005,unrealized:-1.2,roePct:-12,origin:'copy'}],
+ });
+ assert.equal(markets.length,3,'excludes untradable');
+ assert.equal(markets[0].displaySymbol,'BTCUSDT','sorted by volume desc by default');
+ assert.equal(markets[1].displaySymbol,'SNDKUSDT');
+ assert.equal(markets[1].category,'TRADFI');
+ assert.equal(markets[2].holding.length,1);
+
+ assert.deepEqual(filterSortMarkets(markets,{tab:'TRADFI'}).map(m=>m.displaySymbol),['SNDKUSDT']);
+ assert.deepEqual(filterSortMarkets(markets,{tab:'HELD'}).map(m=>m.displaySymbol),['AKEUSDT']);
+ assert.deepEqual(filterSortMarkets(markets,{tab:'FAV',favorites:new Set(['BTCUSDT'])}).map(m=>m.displaySymbol),['BTCUSDT']);
+ assert.deepEqual(filterSortMarkets(markets,{query:'sndk'}).map(m=>m.displaySymbol),['SNDKUSDT']);
+ assert.deepEqual(filterSortMarkets(markets,{sortBy:'change',sortDir:'desc'}).map(m=>m.displaySymbol),['SNDKUSDT','BTCUSDT','AKEUSDT']);
+ assert.deepEqual(filterSortMarkets(markets,{sortBy:'price',sortDir:'asc'}).map(m=>m.displaySymbol),['AKEUSDT','SNDKUSDT','BTCUSDT']);
+});
+
+test('realTradePanelHTML, computeOrderPreview, roundToTick, and venuePositionsHTML render dropdown, chart overlays, click-to-trade bar, and quick-fill button',async()=>{
+ const {roundToTick}=await import('../public/real_trade_chart.js');
+ assert.equal(roundToTick(0.0058714,'0.000001'),0.005871);
+ assert.equal(roundToTick(61451.27,'0.1'),61451.3);
+
  const st={
-  open:true,symbol:'AKEUSDT',marginMode:'CROSSED',leverage:7,orderType:'MARKET',limitPrice:'',
-  amountMode:'MARGIN_USDT',amount:'20',tpPrice:'',slPrice:'',availableUSD:2900,
-  heldPositions:[{symbol:'AKEUSDT'}],
+  open:true,dropdownOpen:true,symbol:'AKEUSDT',marginMode:'CROSSED',leverage:7,orderType:'MARKET',limitPrice:'',
+  amountMode:'MARGIN_USDT',amount:'20',tpPrice:'',slPrice:'',availableUSD:2900,interval:'15m',showEma:true,selectedPrice:0.00512,
+  marketQuery:'',marketTab:'ALL',marketSortBy:'volume',marketSortDir:'desc',favorites:new Set(['BTCUSDT']),
+  markets:[
+   {symbol:'BTCUSDT',displaySymbol:'BTCUSDT',category:'FUTURES',lastPrice:61451,changePct:-3.85,quoteVolume:2.5e9,holding:[]},
+   {symbol:'AKEUSDT',displaySymbol:'AKEUSDT',category:'FUTURES',lastPrice:0.005,changePct:-12.4,quoteVolume:18e6,holding:[{direction:'LONG'}]},
+  ],
+  heldPositions:[{symbol:'AKEUSDT',direction:'LONG',origin:'copy',size:360,avg:0.0058,unrealized:-0.28,roePct:-11.2}],
   info:{symbol:'AKEUSDT',displaySymbol:'AKEUSDT',venueSymbol:'AKE-USDT',price:0.005,quantityStep:'10',minQuantityBase:10,minNotionalUSDT:2,unitMultiplier:1,maxLeverage:{long:20},copyHolding:[{direction:'LONG',qty:360,leverage:7}]},
   openOrders:[{orderId:'11',displaySymbol:'AKEUSDT',venueSymbol:'AKE-USDT',side:'BUY',positionSide:'LONG',type:'LIMIT',price:0.0048,origQty:5000}],
  };
@@ -124,7 +165,13 @@ test('realTradePanelHTML, computeOrderPreview, and venuePositionsHTML render man
  assert.equal(prev.qty,28000);
  assert.equal(prev.warn,null);
  const html=realTradePanelHTML(st);
- assert.match(html,/수동 매매 · 거래소 주문/);
+ assert.match(html,/거래소 차트 · 수동 매매/);
+ assert.match(html,/data-rt-dropdown/);
+ assert.match(html,/data-rt-dd-sort="volume"/);
+ assert.match(html,/data-rt-dd-sort="change"/);
+ assert.match(html,/data-rt-canvas/);
+ assert.match(html,/data-rt-ca="LIMIT_LONG"/);
+ assert.match(html,/data-rt-ca="LIMIT_SHORT"/);
  assert.match(html,/카피 매매 보유 중/);
  assert.match(html,/data-rt-submit="LONG"/);
  assert.match(html,/data-rt-submit="SHORT"/);

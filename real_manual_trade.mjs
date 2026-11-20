@@ -6,10 +6,59 @@ import {readPositionMode,leverageSideFor,positionSideFor,forMode} from './bingx_
 import {resolveCopyContract} from './copy_executor.mjs';
 import {bingxBalanceRows,balanceOf} from './exchange_pnl.mjs';
 import {displaySymbol} from './public/symbol_display.js';
+import {isCoinSymbol} from './venue_charts.mjs';
+
+export const REAL_CHART_INTERVALS=Object.freeze(['1m','5m','15m','1h','4h','1d']);
 
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const err=(code,message,httpStatus=400)=>Object.assign(Error(message),{code,httpStatus});
+
+/** Build full tradable BingX perpetual futures market list joined with 24h tickers and open positions. */
+export function buildBingxMarketList({contracts,tickers=[],openPositions=[]}={}){
+ const tMap=new Map();
+ for(const t of Array.isArray(tickers)?tickers:[]){
+  const vs=String(t?.symbol||'').toUpperCase();
+  if(vs)tMap.set(vs,t);
+ }
+ const posMap=new Map();
+ for(const p of Array.isArray(openPositions)?openPositions:[]){
+  const k=displaySymbol(String(p?.symbol||p?.venueSymbol||'').replace(/[-_]/g,'').toUpperCase());
+  if(!k)continue;
+  const arr=posMap.get(k)||[];
+  arr.push({direction:p.direction,size:pos(p.size??p.qty),avg:pos(p.avg),unrealized:num(p.unrealized),roePct:num(p.roePct),origin:p.origin||'copy'});
+  posMap.set(k,arr);
+ }
+ const entries=contracts instanceof Map?[...contracts.values()]:Array.isArray(contracts)?contracts:[];
+ const out=[];
+ for(const c of entries){
+  if(!c||c.tradable===false||!c.venueSymbol)continue;
+  const t=tMap.get(String(c.venueSymbol).toUpperCase());
+  const lastPrice=pos(t?.lastPrice);
+  const changePct=num(t?.priceChangePercent);
+  const rawQuote=num(t?.quoteVolume);
+  const quoteVolume=rawQuote!=null?rawQuote:(pos(t?.volume)&&lastPrice?Number(t.volume)*lastPrice:0);
+  const disp=displaySymbol(c.symbol);
+  out.push({
+   symbol:c.symbol,
+   displaySymbol:disp,
+   venueSymbol:c.venueSymbol,
+   category:isCoinSymbol(c.symbol)?'FUTURES':'TRADFI',
+   lastPrice,
+   changePct,
+   quoteVolume:Number.isFinite(quoteVolume)?+quoteVolume.toFixed(2):0,
+   high24h:pos(t?.highPrice),
+   low24h:pos(t?.lowPrice),
+   tickSize:c.tickSize??null,
+   quantityStep:c.quantityStep??null,
+   minQuantityBase:pos(c.minQuantityBase)??0,
+   minNotionalUSDT:pos(c.minNotionalUSDT)??0,
+   holding:posMap.get(disp)||[],
+  });
+ }
+ out.sort((a,b)=>(b.quoteVolume||0)-(a.quoteVolume||0)||a.displaySymbol.localeCompare(b.displaySymbol));
+ return out;
+}
 
 export function normalizeManualSymbol(raw){
  const s=String(raw||'').trim().toUpperCase().replace(/[^A-Z0-9]/g,'');

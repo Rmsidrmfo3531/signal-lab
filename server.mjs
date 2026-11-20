@@ -8,7 +8,7 @@ import {buildReport,pushReport} from './reports_push.mjs';
 import {exchangePnl,bingxBalanceRows,balanceOf} from './exchange_pnl.mjs';
 import {createDailyPnl,PNL_CALENDAR_RESET_AT} from './daily_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
-import {lookupRealTradeSymbol,executeRealManualOrder,listRealOpenOrders,cancelRealOpenOrder} from './real_manual_trade.mjs';
+import {lookupRealTradeSymbol,executeRealManualOrder,listRealOpenOrders,cancelRealOpenOrder,buildBingxMarketList,REAL_CHART_INTERVALS} from './real_manual_trade.mjs';
 import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
@@ -1989,6 +1989,46 @@ const server=http.createServer(async(req,res)=>{
     if(r.ok)reportsDirty=true;
     return response(res,r.ok?200:(r.status||409),r);
    }catch(e){return response(res,502,{ok:false,error:e.code||'POSITION_ACTION_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/real/trade/markets'&&req.method==='GET'){
+   if(COPY.mode!=='LIVE'||!realBingxClient)return response(res,409,{error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'});
+   try{
+    if(!copyTickers.at||Date.now()-copyTickers.at>5000){
+     copyTickers.pending??=venueQuotes.clients.BINGX.tickers().then(rows=>{copyTickers={at:Date.now(),rows}},()=>{copyTickers.pending=null});
+     await copyTickers.pending;
+    }
+    const contracts=await venueQuotes.clients.BINGX.loadContracts();
+    const openPositions=Array.isArray(venuePositionsReader?.last?.venuePositions)
+     ?venuePositionsReader.last.venuePositions
+     :Object.values(copyTrader.store.positions||{}).filter(p=>p.status==='OPEN');
+    const markets=buildBingxMarketList({contracts,tickers:copyTickers.rows,openPositions});
+    return response(res,200,{at:copyTickers.at||Date.now(),count:markets.length,markets});
+   }catch(e){return response(res,e.httpStatus||502,{error:e.code||'MARKETS_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/real/trade/klines'&&req.method==='GET'){
+   if(COPY.mode!=='LIVE'||!realBingxClient)return response(res,409,{error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'});
+   const rawSymbol=url.searchParams.get('symbol')||'BTCUSDT';
+   const interval=String(url.searchParams.get('interval')||'15m').trim();
+   if(!REAL_CHART_INTERVALS.includes(interval))return response(res,400,{error:'INVALID_INTERVAL',message:'지원하지 않는 시간봉입니다'});
+   const limit=Math.max(40,Math.min(300,Math.round(Number(url.searchParams.get('limit'))||160)));
+   try{
+    const norm=rawSymbol.trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+    const sym=norm.endsWith('USDT')?norm:`${norm}USDT`;
+    const contracts=await venueQuotes.clients.BINGX.contractsFor(sym);
+    const c=resolveCopyContract(contracts,sym);
+    if(!c)return response(res,404,{error:'NO_BINGX_CONTRACT',message:`${displaySymbol(sym)} 종목을 찾지 못했습니다`});
+    const cacheKey=`real:${c.symbol}:${interval}:${limit}`;
+    const cached=venueKlineCache.get(cacheKey);
+    let rows;
+    if(cached&&Date.now()<cached.until){rows=await cached.pending}
+    else{
+     const pending=venueQuotes.clients.BINGX.klines(c.symbol,interval,limit);
+     venueKlineCache.set(cacheKey,{pending,until:Date.now()+4000});
+     try{rows=await pending}catch(e){venueKlineCache.delete(cacheKey);throw e}
+    }
+    const candles=(rows||[]).map(r=>[r[0],r[1],r[2],r[3],r[4],r[5]]);
+    return response(res,200,{symbol:c.symbol,displaySymbol:displaySymbol(c.symbol),venueSymbol:c.venueSymbol,interval,tickSize:c.tickSize??null,candles});
+   }catch(e){return response(res,e.httpStatus||502,{error:e.code||'KLINES_FAILED',message:e.message})}
   }
   if(pathname==='/api/real/trade/info'&&req.method==='GET'){
    if(COPY.mode!=='LIVE'||!realBingxClient)return response(res,409,{error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'});
