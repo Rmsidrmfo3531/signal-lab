@@ -28,16 +28,27 @@ export function createDailyPnl({client,resetAt=null,read=null,now=()=>Date.now()
   if(typeof client?.income!=='function')return {error:'NO_CLIENT'};
   const rows=await incomeRows(client,{since,now});
   const trading=rows.filter(x=>Number(x.time)>=since&&Number(x.time)<=now&&PNL_TYPES.has(x.incomeType));
-  return {byDay:summarizeIncome(trading,null,{since,now}).byDay};
+  const summary=summarizeIncome(trading,null,{since,now});
+  return {
+   byDay:summary.byDay,
+   costs:{
+    realizedPnlUSD:summary.realizedPnlUSD,
+    feesUSD:summary.feesUSD,
+    fundingUSD:summary.fundingUSD,
+    tradingNetUSD:summary.tradingNetUSD,
+    closes:summary.closes,
+    bySymbol:summary.bySymbol,
+   },
+  };
  });
- let byDay={},at=null,from=null,error=null,errorAt=null,lastFull=0,busy=null,timer=null;
+ let byDay={},costs=null,costsAt=null,at=null,from=null,error=null,errorAt=null,lastFull=0,busy=null,timer=null;
  async function readDays(start,end){
   let result;
   try{result=await doRead(start,end)}catch(e){return {error:safeError(e?.code||e?.message)}}
   if(!result?.byDay||typeof result.byDay!=='object'||Array.isArray(result.byDay)||result.error)return {error:safeError(result?.error)};
   const days={},first=kstDay(start),last=kstDay(end);
   for(const [d,v] of Object.entries(result.byDay))if(d>=first&&d<=last&&(typeof v==='number'||typeof v==='string'&&v.trim()!=='')&&/^\d{4}-\d{2}-\d{2}$/.test(d)&&Number.isFinite(Number(v)))days[d]=Math.round(Number(v)*1e4)/1e4;
-  return {days};
+  return {days,costs:result.costs&&typeof result.costs==='object'?result.costs:null};
  }
  function replaceRecent(start,days){
   const cut=kstDay(start),keep={};
@@ -63,8 +74,10 @@ export function createDailyPnl({client,resetAt=null,read=null,now=()=>Date.now()
     }
     error=result.error;errorAt=t;log('[DAILY_PNL]',error);return;
    }
-   if(full){byDay=result.days;from=start;lastFull=t}
-   else replaceRecent(start,result.days);
+   if(full){
+    byDay=result.days;from=start;lastFull=t;
+    if(result.costs){costs=result.costs;costsAt=t}
+   }else replaceRecent(start,result.days);
    at=t;error=null;errorAt=null;
   })().finally(()=>{busy=null});
   return busy;
@@ -77,6 +90,8 @@ export function createDailyPnl({client,resetAt=null,read=null,now=()=>Date.now()
    return {at,since:from===null?null:Math.max(from,start),byDay:Object.fromEntries(Object.entries(byDay).filter(([day])=>day>=first&&day<=last)),
     error,errorAt,...(Number.isFinite(resetAt)?{resetAt,availableSince:start}:{})};
   },
+  /** Exchange-level realized PnL, trading fees, funding, and per-symbol totals from the last full income read. */
+  costSummary:()=>costs?{...costs,bySymbol:Array.isArray(costs.bySymbol)?costs.bySymbol.map(x=>({...x})):[],at:costsAt,since:from}:null,
   start(){if(timer)return;const tick=()=>{refresh().catch(()=>{})};tick();timer=setInterval(tick,every);timer.unref?.()},
   stop(){clearInterval(timer);timer=null},
  };

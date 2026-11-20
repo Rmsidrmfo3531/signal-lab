@@ -1,6 +1,7 @@
 // Exchange-side profit and loss of a BingX account (user 2026-11-17 "실제 매매 기록을 갖고 와서 수익률이 얼마인지
 // 정확하게"): the account's own income history (realized PnL, trading fees, funding) and its balance, read-only GETs.
 // Our ledgers estimate before fees and miss some closes; this is the exchange's own record.
+import {displaySymbol} from './public/symbol_display.js';
 const DAY=86400000,WINDOW=7*DAY,KST=9*3600000;
 // Capital moving in or out, not trading results.
 const FLOW=new Set(['TRANSFER','TRIAL_FUND','DEPOSIT','WITHDRAW']);
@@ -63,7 +64,7 @@ export function summarizeIncome(rows,balance,{since,now=Date.now()}={}){
   closes:rows.filter(x=>x.incomeType==='REALIZED_PNL').length,rows:rows.length,
   byType:Object.fromEntries(Object.entries(byType).map(([k,v])=>[k,r4(v)])),
   byDay:Object.fromEntries(Object.entries(byDay).map(([k,v])=>[k,r4(v)])),
-  bySymbol:Object.entries(bySymbol).map(([symbol,b])=>({symbol,netUSD:r4(b.net),pnlUSD:r4(b.pnl),feeUSD:r4(b.fee),fundingUSD:r4(b.funding),closes:b.closes})).sort((a,b)=>a.netUSD-b.netUSD)};
+  bySymbol:Object.entries(bySymbol).map(([symbol,b])=>({symbol,displaySymbol:displaySymbol(symbol),netUSD:r4(b.net),pnlUSD:r4(b.pnl),feeUSD:r4(b.fee),fundingUSD:r4(b.funding),closes:b.closes})).sort((a,b)=>a.netUSD-b.netUSD)};
 }
 
 /** Read and summarize one account; errors come back as {error} instead of throwing. */

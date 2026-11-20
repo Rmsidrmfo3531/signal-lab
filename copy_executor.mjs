@@ -338,6 +338,7 @@ export class CopyExecutor{
   return orders;
  }
  async #auditOpenOrders(symbol,allOrders=()=>this.#readOpenOrders()){
+  const transient=e=>noVenueAnswer(e)||/^HTTP_5\d\d$/.test(String(e?.code||''));
   try{return {orders:await this.#readOpenOrders(symbol)}}
   catch(e){
    const scoped=orderReadCode(e);
@@ -347,6 +348,10 @@ export class CopyExecutor{
     const orders=await allOrders();
     return {orders:orders.filter(o=>o.symbol===symbol)};
    }catch(fallback){
+    if(transient(e)||transient(fallback)){
+     await this.sleep(Math.min(400,this.goneRecheckMs??400));
+     try{return {orders:await this.#readOpenOrders(symbol)}}catch{}
+    }
     return {orders:null,detail:`종목 조회 ${scoped} · 계좌 조회 ${orderReadCode(fallback)}`};
    }
   }
@@ -833,7 +838,7 @@ export class CopyExecutor{
    // limit or a stop must not be undone), and not on a reduction. After an external close (user 2026-11-17)
    // it is entered again (#open marks it refollow).
    if(this.config.lateEntry&&m.to>m.from&&why.cause!=='OUR_COPY_CLOSED'){
-    this.#event('LATE_ENTRY',{symbol:m.symbol,from:m.from,to:m.to,...why});
+    if(why.cause!=='VENUE_POSITION_EXISTS')this.#event('LATE_ENTRY',{symbol:m.symbol,from:m.from,to:m.to,...why});
     return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to,late:true},at,entry);
    }
    this.#event('SKIPPED',{symbol:m.symbol,reason:'NOT_COPIED',from:m.from,to:m.to,...why});return {ok:false,reason:'NOT_COPIED'}}
