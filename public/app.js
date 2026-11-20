@@ -1,11 +1,12 @@
-// Dashboard: 실계좌·카피 / 테스트넷 / 뉴스 / 매매일지 only (user request 2026-11-17).
+// Dashboard: 실계좌·카피 / 테스트넷 / 뉴스 only (user request 2026-11-17; 매매일지 tab removed 2026-11-20).
+// The server still records and serves /api/journal* data; this page no longer renders it.
 // The removed 대시보드·차트 and 알림·시스템 pages' server features (scanner, Telegram notices,
 // notification settings) keep running on the server; this page no longer renders them.
 import {notifyOn} from './notify_settings.js';
 import {NEWS_PER_PAGE,paginateNews,clipNewsText,pageWindow,featureNews} from "/news_pagination.js";
 const $=id=>document.getElementById(id);
 let gitUpdate=false; // set once /api/update says this server updates from GitHub
-const app={market:[],marketMap:new Map(),status:null,news:[],newsMeta:null,newsPage:1,expandedNewsId:null,stream:null,journal:[],journalSummary:null};
+const app={market:[],marketMap:new Map(),status:null,news:[],newsMeta:null,newsPage:1,expandedNewsId:null,stream:null};
 const escapeHtml=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=(x)=>{const v=Number(x);if(!Number.isFinite(v)||v<=0)return '—';if(v>=1000)return v.toLocaleString('en-US',{maximumFractionDigits:2});if(v>=1)return v.toLocaleString('en-US',{maximumFractionDigits:4});if(v>=.01)return v.toFixed(5);return v>=.0001?v.toFixed(7):v.toFixed(Math.min(14,Math.max(8,Math.ceil(-Math.log10(v))+5))).replace(/0+$/,'').replace(/\.$/,'')};
 const clock=t=>t?new Date(t).toLocaleTimeString('ko-KR',{timeZone:'Asia/Seoul',hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
@@ -40,12 +41,11 @@ function setStatus(s){app.status=s;
  else if(s.rest==='connected')clearBanner();
  if(s.newsChecked && !app.newsMeta)loadNews();
 }
-// Binance listings feed the journal's symbol list.
+// Binance listings (kept for the status refresh check below).
 function applyMarket({markets}){
  if(!Array.isArray(markets))return;
  app.marketMap=new Map(markets.map(m=>[m.symbol,{...m}]));
  app.market=markets.map(m=>app.marketMap.get(m.symbol));
- updateJournalSymbols();
 }
 // Article body: fetched from the publisher when an item is opened, translated to Korean.
 const newsBodies=new Map();
@@ -68,56 +68,6 @@ async function loadNewsBody(id,{retry=false}={}){
  render();
 }
 if(typeof document!=='undefined')document.addEventListener('toggle',e=>{const d=e.target;if(d?.classList?.contains('news-entry')&&d.open)void loadNewsBody(d.dataset.newsId)},true);
-// Local manual trade journal - no exchange credentials or automatic execution.
-function updateJournalSymbols(){
- const el=$('journalSymbol');if(!el)return;
- const previous=el.value;el.innerHTML=app.market.map(m=>`<option value="${escapeHtml(m.symbol)}">${escapeHtml(m.symbol)}</option>`).join('');
- el.value=app.marketMap.has(previous)?previous:app.marketMap.has('BTCUSDT')?'BTCUSDT':app.market[0]?.symbol||'';
-}
-function journalFormData(){
- return {symbol:$('journalSymbol').value,side:$('journalSide').value,entry:$('journalEntry').value,stop:$('journalStop').value,notional:$('journalNotional').value,leverage:$('journalLeverage').value,fees:$('journalFees').value,funding:$('journalFunding').value,exit:$('journalExit').value,note:$('journalNote').value};
-}
-function calcJournalPreview(){
- const x=journalFormData(),entry=Number(x.entry),stop=Number(x.stop),notional=Number(x.notional),leverage=Number(x.leverage),fees=Number(x.fees)||0,exit=x.exit?Number(x.exit):null;
- const box=$('journalPreview');
- if(!entry||!stop||!notional||!leverage){box.className='journal-preview';box.textContent='진입가·손절가·명목금액·레버리지를 입력하면 계획 손실을 계산합니다.';return}
- const stopValid=x.side==='LONG'?stop<entry:stop>entry;
- if(!stopValid){box.className='journal-preview warn';box.textContent='손절가는 롱일 때 진입가 아래, 숏일 때 진입가 위여야 합니다.';return}
- const loss=notional*Math.abs(entry-stop)/entry+fees, margin=notional/leverage;
- const pnl=exit?(x.side==='LONG'?1:-1)*notional*(exit-entry)/entry-fees-(Number(x.funding)||0):null;
- box.className='journal-preview';
- box.textContent=`계획상 손절 손실 ${loss.toFixed(2)} · 초기 증거금 약 ${margin.toFixed(2)}${pnl!=null?' · 입력 청산가 기준 실현손익 $'+pnl.toFixed(2):''} · 계좌 자산 가정 없음. 실제 슬리피지·청산 위험은 별도입니다.`;
-}
-// Automatic journal entries from live trades: result, likely reasons, what to change next.
-const OUTCOME_KO={PROFIT:'수익',LOSS:'손절',BREAKEVEN:'본절',UNKNOWN:'확인 불가'};
-function autoJournalHTML(t){
- const v=t.review||{},pnl=Number(t.realizedPnLUSD),cls=pnl>0?'journal-pnl-positive':pnl<0?'journal-pnl-negative':'';
- const list=a=>a?.length?`<ul>${a.map(x=>`<li>${escapeHtml(x)}</li>`).join('')}</ul>`:'';
- return `<div class="journal-record journal-auto"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side==='LONG'?'롱':'숏'} · ${escapeHtml(v.pattern||'')}</span><span class="${cls}">${OUTCOME_KO[v.outcome]||''} ${Number.isFinite(pnl)?(pnl>=0?'+':'−')+'$'+Math.abs(pnl).toFixed(2):'—'}${t.realizedSource==='ESTIMATE'?' 추정':''}</span></div>
- <p class="journal-facts">진입 ${fmt(t.entry)} · 평균 ${fmt(t.averageEntry)} · 손절 ${fmt(t.stop)} · ${escapeHtml(t.leverage)}배 · 추매 ${escapeHtml(v.addsFilled??0)}/${escapeHtml(v.addsMax??0)}회${v.holdHours!=null?` · 보유 ${escapeHtml(v.holdHours)}시간`:''}${v.score!=null?` · 점수 ${escapeHtml(v.score)}`:''}</p>
- <div class="journal-review"><b>원인 분석</b>${list(v.reasons)}${v.next?.length?`<b>다음 개선</b>${list(v.next)}`:''}</div>
- <small>${dateClock(t.closedAt)} KST 마감 · 자동 기록 (테스트넷)</small><div class="journal-record-actions"><button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`;
-}
-function insightsHTML(rows){
- if(!rows?.length)return '<p class="empty-small">실매매 거래가 쌓이면 패턴별 결과와 개선 방향을 여기에 정리합니다.</p>';
- return `<table class="venues-table"><thead><tr><th>패턴</th><th>거래</th><th>승률</th><th>누적 손익</th><th>개선 방향</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${escapeHtml(r.pattern)}</td><td>${r.trades}</td><td>${r.winRatePct}%</td><td class="${r.netUSD>0?'positive':r.netUSD<0?'negative':''}">${r.netUSD>=0?'+':'−'}$${Math.abs(r.netUSD).toFixed(2)}</td><td>${r.suggestions.length?r.suggestions.map(escapeHtml).join('<br>'):r.trades<5?'5건 이상 쌓이면 판단':'유지'}</td></tr>`).join('')}</tbody></table>`;
-}
-function renderJournal(){
- const j=app.journalSummary||{};const cur=v=>'$'+Number(v||0).toFixed(2);const signed=v=>Number(v||0)>0?'positive':Number(v||0)<0?'negative':'';
- $('journalToday').textContent=cur(j.todayPnL);$('journalToday').className=signed(j.todayPnL);
- $('journalWeek').textContent=cur(j.weekPnL);$('journalWeek').className=signed(j.weekPnL);
- $('journalTotal').textContent=cur(j.totalPnL)+' / '+(j.winRate==null?'승률 —':(100*j.winRate).toFixed(1)+'%');$('journalTotal').className=signed(j.totalPnL);
- $('journalOpenRisk').textContent=cur(j.stopRiskOpen)+' ('+(j.open||0)+'건)';
- $('journalInsights')&&($('journalInsights').innerHTML=insightsHTML(app.journalInsights));
- $('journalList').innerHTML=app.journal.length?app.journal.slice(0,50).map(t=>t.source==='LIVE_AUTO'?autoJournalHTML(t):`<div class="journal-record"><div class="journal-record-title"><span>${escapeHtml(t.symbol)} · ${t.side}</span><span class="${t.realizedPnLUSD>0?'journal-pnl-positive':t.realizedPnLUSD<0?'journal-pnl-negative':''}">${t.status==='OPEN'?'진행 중':cur(t.realizedPnLUSD)}</span></div><p>진입 ${fmt(t.entry)} · 손절 ${fmt(t.stop)} · ${t.status==='CLOSED'?'청산 '+fmt(t.exit)+' · ':''}명목 ${cur(t.notional)} · ${t.leverage}x<br>계획 손절 ${cur(t.stopRiskUSD)} · 기록된 비용 ${cur(t.fees)} · 펀딩 ${cur(t.funding)}</p><small>${dateClock(t.createdAt)} KST · ${escapeHtml(t.note||'메모 없음')}</small><div class="journal-record-actions">${t.status==='OPEN'?`<button data-close="${escapeHtml(t.id)}">청산 기록</button>`:''}<button data-delete="${escapeHtml(t.id)}">삭제</button></div></div>`).join(''):'<div class="empty-small">저장된 거래 기록이 없습니다. 실매매 거래는 자동으로 기록되며 수동으로도 입력할 수 있습니다.</div>';
- document.querySelectorAll('#journalList [data-close]').forEach(b=>b.addEventListener('click',()=>{closingTradeId=b.dataset.close;$('closeTradePrice').value='';$('closeTradeFee').value='0';$('closeTradeFunding').value='0';$('closeTradeError').textContent='';$('closeTradeDialog').showModal()}));
- document.querySelectorAll('#journalList [data-delete]').forEach(b=>b.addEventListener('click',async()=>{if(!confirm('이 수동 거래 기록을 삭제할까요?'))return;try{await json('/api/journal/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:b.dataset.delete})});await loadJournal();toast('삭제 완료')}catch(e){toast('삭제 실패: '+e.message,true)}}));
- calcJournalPreview();
-}
-async function loadJournal(){try{const data=await json('/api/journal');app.journal=data.entries||[];app.journalSummary=data.summary;app.journalInsights=data.insights||[];renderJournal()}catch(e){toast('매매일지 조회 실패: '+e.message,true)}}
-let closingTradeId='';
-async function saveJournal(e){e.preventDefault();if(!app.marketMap.has($('journalSymbol').value)){toast('상장 목록이 확인되지 않았습니다.',true);return}try{const body=journalFormData();await json('/api/journal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});$('journalForm').reset();await loadJournal();toast('수동 매매 기록 저장 완료')}catch(e){toast('저장 실패: '+e.message,true)}}
-async function closeJournalTrade(){try{await json('/api/journal/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:closingTradeId,exit:$('closeTradePrice').value,fees:$('closeTradeFee').value,funding:$('closeTradeFunding').value})});$('closeTradeDialog').close();await loadJournal();toast('수동 청산 기록 완료')}catch(e){$('closeTradeError').textContent=e.message}}
 let audioContext;
 function ping(){try{audioContext??=new(window.AudioContext||window.webkitAudioContext)();const osc=audioContext.createOscillator(),g=audioContext.createGain();osc.frequency.value=880;g.gain.setValueAtTime(.0001,audioContext.currentTime);g.gain.exponentialRampToValueAtTime(.12,audioContext.currentTime+.02);g.gain.exponentialRampToValueAtTime(.0001,audioContext.currentTime+.35);osc.connect(g);g.connect(audioContext.destination);osc.start();osc.stop(audioContext.currentTime+.38)}catch{}}
 function renderNews(){
@@ -173,7 +123,6 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('market',e=>{try{applyMarket(JSON.parse(e.data))}catch{}});
  es.addEventListener('news',e=>{try{applyNews(JSON.parse(e.data))}catch{}});
  es.addEventListener('live-notice',e=>{try{liveNotice(JSON.parse(e.data))}catch{}});
- es.addEventListener('journal',()=>loadJournal());
  es.addEventListener('update',e=>{try{updateStatusText(JSON.parse(e.data))}catch{}});
  es.onerror=()=>{if(es.readyState===EventSource.CLOSED)banner('서버 연결 종료','Node.js 서버를 다시 실행하세요.');$('socketStatus').innerHTML='<i class="dot red"></i><span>서버 재접속</span>'};
 }
@@ -181,12 +130,8 @@ async function loadAll(){
  const [st,market]=await Promise.allSettled([json('/api/status'),json('/api/market')]);
  if(st.status==='fulfilled')setStatus(st.value);
  if(market.status==='fulfilled')applyMarket(market.value);
- await Promise.allSettled([loadNews(),loadJournal()]);
+ await Promise.allSettled([loadNews()]);
 }
-$('journalForm').addEventListener('submit',saveJournal);
-$('journalForm').addEventListener('input',calcJournalPreview);
-$('journalReset').addEventListener('click',()=>{$('journalForm').reset();calcJournalPreview()});
-$('closeTradeSave').addEventListener('click',closeJournalTrade);
 $('notificationButton').addEventListener('click',async()=>{
  if(!('Notification' in window)){toast('이 브라우저는 알림 기능을 지원하지 않습니다.',true);return}
  const r=await Notification.requestPermission();$('notificationButton').textContent=r==='granted'?'✓ 브라우저 알림 ON':'♧ 알림 권한 확인';toast(r==='granted'?'브라우저를 열어 둔 상태에서 실매매·카피 알림을 받습니다.':'알림 권한이 허용되지 않았습니다.',r!=='granted');if(r==='granted')ping();
@@ -310,6 +255,6 @@ $('newsList').addEventListener('toggle',e=>{if(!e.target.matches?.('details[data
 $('newsList').addEventListener('click',e=>{const button=e.target.closest?.('[data-news-retry]');if(button)void loadNewsBody(button.dataset.newsRetry,{retry:true})});
 $('menuButton').addEventListener('click',()=>{$('sidebar').classList.toggle('open')});document.querySelectorAll('.navlink').forEach(a=>a.addEventListener('click',()=>{$('sidebar').classList.remove('open');document.querySelectorAll('.navlink').forEach(x=>x.classList.toggle('active',x===a))}));
 setInterval(()=>{$('clock').textContent=clock(Date.now())+' KST';if(app.status)setStatus(app.status)},1000);
-setInterval(loadJournal,60000);setInterval(loadNews,90000);setInterval(async()=>{try{const st=await json('/api/status');const changed=st.lastMarketListings!==app.status?.lastMarketListings;setStatus(st);if(!app.market.length||changed)applyMarket(await json('/api/market'))}catch{}},18000);
+setInterval(loadNews,90000);setInterval(async()=>{try{const st=await json('/api/status');const changed=st.lastMarketListings!==app.status?.lastMarketListings;setStatus(st);if(!app.market.length||changed)applyMarket(await json('/api/market'))}catch{}},18000);
 if('Notification' in window&&Notification.permission==='granted')$('notificationButton').textContent='✓ 브라우저 알림 ON';
 connectEvents();loadAll();

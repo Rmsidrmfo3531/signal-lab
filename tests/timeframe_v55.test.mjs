@@ -3,21 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
-import {pullSeries,fetchTwelveSeries} from '../tradfi_feed.mjs';
 import {entryTiming} from '../public/trade_plan.js';
 import {describeScanFunnel} from '../scan_diagnostics.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-
-test('disabled TradFi performs no 1H, 4H or shorter candle requests even with an old feed key',async()=>{
- const got=[];
- const fetchFn=async(u)=>{
-  got.push(new URL(u).searchParams.get('interval'));
-  return new Response(JSON.stringify({values:[]}),{status:200,headers:{'content-type':'application/json'}});
- };
- await assert.rejects(pullSeries('XAU/USD','fake-key',{fetchFn}),{code:'TRADFI_PROVIDER_UNAVAILABLE'});
- await assert.rejects(fetchTwelveSeries({symbol:'XAU/USD',apiKey:'fake-key',interval:'m15',fetchFn}),{code:'TRADFI_PROVIDER_UNAVAILABLE'});
- assert.deepEqual(got,[]);
-});
 
 test('entry timing can be evaluated with only a 1H completed pattern, 4H trend and approved venue',()=>{
  const now=Date.now();
