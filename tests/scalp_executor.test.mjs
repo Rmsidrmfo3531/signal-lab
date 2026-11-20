@@ -71,7 +71,7 @@ const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
 const short=(opt={})=>{const v=venue({fillAt:PX_S,...opt.venue}),clock=opt.clock||{t:T0};return {v,clock,ex:make(v,{clock,price:PX_S,trend:down4h,rows:rise,...opt})}};
 
-test('profit-only testnet checks immediately, covers fees and booked loss, and recovers a lost reply',async()=>{
+test('profit-only fallback waits 15 minutes, covers fees and booked loss, and recovers a lost reply',async()=>{
  for(const direction of ['LONG','SHORT']){
   const dir=tmp(),clock={t:T0},shortSide=direction==='SHORT',sign=shortSide?-1:1;
   const v=venue({fillAt:shortSide?PX_S:PX,loseEarlyReply:shortSide});
@@ -84,8 +84,12 @@ test('profit-only testnet checks immediately, covers fees and booked loss, and r
    const getPositions=v.client.positions;
    let bookedLoss=0;
    v.client.positions=async(...args)=>(await getPositions(...args)).map(row=>({...row,realisedProfit:String(-bookedLoss)}));
+   assert.equal(ex.runtimeSummary().profitCheckStartsMin,15);
+   assert.ok(placed(v,'TAKE_PROFIT').length>0,'planned targets are active during the early-exit wait');
+   v.mark=p.avg+sign*3;
+   clock.t=p.openedAt+15*60000-1;await ex.reconcile();assert.equal(requests().length,0);
    v.mark=p.avg+sign*.02;
-   clock.t=p.openedAt+15000;await ex.reconcile();assert.equal(requests().length,0);
+   clock.t=p.openedAt+15*60000;await ex.reconcile();assert.equal(requests().length,0);
    bookedLoss=p.size*2;
    v.mark=p.avg+sign;
    clock.t+=15000;await ex.reconcile();assert.equal(requests().length,0);
@@ -100,6 +104,9 @@ test('profit-only testnet checks immediately, covers fees and booked loss, and r
    assert.equal(requests().length,1);
    assert.equal(ex.store.closed[0].closeReason,'EARLY_TAKE_PROFIT');
    assert.ok(ex.store.closed[0].netUSD>0);
+   const margin=ex.journal()[0].margin;
+   assert.ok(Math.abs(margin.initialUSD-p.firstEntryPrice*p.initialQty/p.leverage)<.0001);
+   assert.equal(margin.totalUSD,margin.initialUSD);
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
  }
 });
@@ -900,6 +907,23 @@ test('report push: scalp ledger trades carry kind',async()=>{
  const {ledgerSummary}=await import('../reports_push.mjs');
  const s=ledgerSummary({closed:[{symbol:'A',direction:'LONG',kind:'ZONE_REVERSAL',closedAt:2,netUSD:1},{symbol:'B',direction:'SHORT',closedAt:3,netUSD:-1}],open:[]},{now:10});
  assert.equal(s.trades[0].kind,'ZONE_REVERSAL');assert.equal('kind' in s.trades[1],false,'copy / older rows: no kind field');
+});
+
+test('closed sizing shows entry leverage and sums only filled margin, including older records',async()=>{
+ const {exportLine,scalpMargin}=await import('../scalp_journal.mjs');
+ const {testnetClosedHTML,setTestnetPage}=await import('../public/live_control.js');
+ const x={id:'trade',symbol:'SOLUSDT',direction:'LONG',openedAt:T0,closedAt:T0+900000,leverage:10,firstEntryPrice:100,initialQty:10,
+  scaleIn:{version:2,count:2,filledAt:20,fillQty:5,fillPrice:110,orders:[{at:10,qty:5,price:90},{at:20,marginUSD:55}]}};
+ const margin=scalpMargin(x);
+ assert.deepEqual(margin,{initialUSD:100,addedUSD:100,totalUSD:200});
+ assert.deepEqual(scalpMargin({...x,scaleIn:{...x.scaleIn,state:'RESIZE',filledAt:30,fillQty:5,fillPrice:104}}),
+  {initialUSD:100,addedUSD:152,totalUSD:252});
+ assert.deepEqual(exportLine({entry:{price:100,qty:10,leverage:10},scaleIn:{fillQty:5,fillPrice:80}}).margin,
+  {initialUSD:100,addedUSD:40,totalUSD:140});
+ assert.equal(scalpMargin({...x,scaleIn:{...x.scaleIn,count:3}}).totalUSD,null);
+ setTestnetPage(0);const html=testnetClosedHTML({scalp:{closed:[{...x,margin}]}});
+ assert.match(html,/<th>배율<\/th><th class="num">증거금<\/th>/);
+ assert.match(html,/10배/);assert.match(html,/첫 \$100\.00 · 누적 \$200\.00/);
 });
 
 test('Map, VSA and AI Lens share one 15m read after testnet entries and preserve orders on read failure',async()=>{

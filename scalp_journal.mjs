@@ -61,6 +61,28 @@ export function trackExcursion(p,mark,at){
  if(p.maePct==null||e.pct<p.maePct){p.maePct=r4(e.pct);p.maeR=r4(e.r);p.maeAt=at}
 }
 
+const positive=v=>Number.isFinite(Number(v))&&Number(v)>0?Number(v):null;
+
+/** Entry notional divided by configured leverage, summed over filled entries. */
+export function scalpMargin(x){
+ const entry=typeof x.entry==='object'?x.entry:null,a=x.scaleIn,legacy=x.legacyScaleIn;
+ const leverage=positive(entry?.leverage??x.leverage);
+ const fillMargin=(price,qty)=>positive(price)&&positive(qty)&&leverage?Number(price)*Number(qty)/leverage:null;
+ const singleAdd=s=>positive(s?.fillMarginUSD)??(positive(s?.fillQty)?fillMargin(s.fillPrice,s.fillQty):0);
+ let added=singleAdd(a);
+ if(a?.version===2){
+  const orders=Array.isArray(a.orders)?a.orders:[];
+  const values=orders.map(o=>positive(o.marginUSD)??fillMargin(o.price,o.qty));
+  if(a.state==='RESIZE'&&!orders.some(o=>o.at===a.filledAt))values.push(singleAdd(a));
+  values.push(singleAdd(legacy));
+  added=Number(a.count||0)>orders.length||values.some(v=>v===null)?null:values.reduce((sum,v)=>sum+v,0);
+ }
+ const firstPrice=entry?.price??x.firstEntryPrice??a?.initialEntry??(added===0?x.avg:null);
+ const firstQty=entry?.qty??x.initialQty??a?.initialQty??(added===0?(x.filled??x.qty):null);
+ const initial=fillMargin(firstPrice,firstQty)??positive(x.initialMarginUSD??a?.initialMarginUSD??x.plan?.marginUSD??(added===0?x.marginUSD:null));
+ return {initialUSD:r4(initial),addedUSD:r4(added),totalUSD:initial!==null&&added!==null?r4(initial+added):null};
+}
+
 /** One journal line for a finished trade (the closed ledger row). */
 export function journalLine(x){
  const dir=x.direction==='SHORT'?-1:1,avg=Number(x.avg),plan=Number(x.checkedPrice??x.entry),signal=Number(x.plannedEntry);
@@ -84,6 +106,7 @@ export function journalLine(x){
    tp1NetR:r4(Number(x.netRR)),riskUSD:r4(firstRiskUSD),marginUSD:r4(firstMarginUSD),driftPct:x.driftPct??null},
   entry:{at:x.openedAt??null,price:firstAvg||null,qty:firstQty||x.filled||x.qty,leverage:x.leverage,delayMs:x.openedAt&&x.barAt?x.openedAt-x.barAt:null,
    slippageBpsVsPlan:bps(firstAvg,plan),slippageBpsVsSignal:bps(firstAvg,signal)},
+  margin:scalpMargin(x),
   universe:x.universe??null,scan:x.scan??null,btc:x.btc??null,
   tpFills:(x.tpFills||[]).map((f,i)=>f?{tp:i+1,at:f.at??null,price:f.price??null,qty:f.qty??null}:null).filter(Boolean),tpHits:x.tpHits??0,
   breakeven:{moved:x.breakevenMoved===true,at:x.breakevenAt??null,price:x.breakevenMoved?x.stop:null},
@@ -124,7 +147,7 @@ export function summarizeJournal(lines,{now=Date.now()}={}){
   last:list.slice(-5).map(x=>({symbol:x.symbol,kind:x.kind||'MOVE_REVERSAL',direction:x.direction,exitAt:x.exit?.at,reason:x.exit?.reason,r:x.pnl?.r,netUSD:x.pnl?.netUSD}))};
 }
 /** A journal line for the reports repository: no client order id (a trade key instead). */
-export function exportLine(x){const {id,venueSymbol,...rest}=x;return {...rest,tradeKey:`${x.symbol}|${x.direction}|${x.barAt}`}}
+export function exportLine(x){const {id,venueSymbol,...rest}=x;return {...rest,margin:x.margin??scalpMargin(x),tradeKey:`${x.symbol}|${x.direction}|${x.barAt}`}}
 /** Signals of one KST day (YYYY-MM-DD). */
 export const signalsOfDay=(lines,day)=>(lines||[]).filter(x=>x?.at&&kst(x.at).toISOString().slice(0,10)===day);
 /** Files and summary for the reports repository: scalp/trades.jsonl (every trade) and
