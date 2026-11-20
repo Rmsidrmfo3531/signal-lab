@@ -59,15 +59,17 @@ test('real trades stay in the queue without a destination or when the explicit s
  }
 });
 test('prepareRealTradeMessage does not cache a failed balance lookup across Telegram retries',async()=>{
+ const walletCode=section('const realWallet=','const copyControls=');
  const prepCode=section('const realTradeMessages=new WeakMap();','function confirmedRealTradeNotice(');
  let calls=0;
  const sandbox={
   realBingxClient:{balance:async()=>{calls++;if(calls===1)throw Error('TIMEOUT');return [{asset:'USDT',availableMargin:'123.45'}]}},
+  bingxBalanceRows:d=>Array.isArray(d)?d:[d?.balance??d].filter(Boolean),
   bingxFunds:u=>({available:Number(u.availableMargin)}),
   realTradeMessage:(_e,{availableMargin})=>({text:availableMargin==null?'조회 불가':`가용 ${availableMargin}`}),
   setTimeout,clearTimeout
  };
- vm.createContext(sandbox);vm.runInContext(prepCode,sandbox);
+ vm.createContext(sandbox);vm.runInContext(walletCode+'\n'+prepCode,sandbox);
  const event={fromFills:true,type:'MANUAL_SETTLED',symbol:'BTCUSDT'};
  const first=await sandbox.prepareRealTradeMessage(event);
  assert.equal(first.text,'조회 불가');

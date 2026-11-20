@@ -646,6 +646,25 @@ export function testnetSummaryHTML(st,{scalpOnly=false}={}){
  ${scalpOnly?'':`<p class="copy-split tn-split">신호 <b class="${tnCls(s.netUSD)}">${tnMoney(s.netUSD??0)}</b> (${esc(s.trades??0)}건) · 단타 <b class="${tnCls(c.netUSD)}">${tnMoney(c.netUSD??0)}</b> (${esc(c.trades??0)}건)</p>`}`;
 }
 
+let scalpSimOpen=false,lastScalpSim=null,lastScalpSimParams={days:7,minMovePct:5,trendMode:'on',zoneSignals:true,minNetRR:0,sides:'LONG,SHORT'};
+export function setScalpSimOpen(v){scalpSimOpen=!!v}
+const SIM_REASON_KO={AGAINST_4H_TREND:'4H 역추세',TP1_NET_RR_BELOW_MINIMUM:'손익비 미달',SIDE_OFF:'방향 꺼짐',SHORT_NOT_TRADED:'숏 꺼짐',ZONE_NOT_TOUCHED:'매물대 미도달'};
+export function scalpSimResultHTML(d){
+ if(!d)return '';
+ const b=d.baseline||{},sim=d.simulated||{},sig=d.signalSummary||{};
+ const pf=x=>x?.profitFactor!=null?esc(x.profitFactor):x?.trades&&x.netUSD>0?'∞':'—';
+ const wr=x=>x?.winRatePct!=null?esc(x.winRatePct)+'%':'—';
+ const unlockedList=Object.entries(sim.unlockedByReason||{}).map(([k,v])=>`${esc(SIM_REASON_KO[k]||k)} ${esc(v)}건`).join(' · ');
+ const summary=`<div class="an-summary">
+  <span>기존 실제 종료 (${esc(d.window?.days??7)}일)<b>${esc(b.trades??0)}건 · 승률 ${wr(b)} · PF ${pf(b)}</b><small class="${tnCls(b.netUSD)}">${tnMoney(b.netUSD)}</small></span>
+  <span>조건 적용 후 거래<b>${esc(sim.trades??0)}건 · 승률 ${wr(sim)} · PF ${pf(sim)}</b><small class="${tnCls(sim.netUSD)}">${tnMoney(sim.netUSD)} (제외 ${esc(sim.removedTrades??0)}건 · ${tnMoney(sim.removedNetUSD)})</small></span>
+  <span>새로 통과할 후보 신호<b>+${esc(sim.unlockedSignals??0)}건</b><small>${unlockedList||'추가 해제 없음'}</small></span>
+  <span>분석 신호 / 진입<b>${esc(sig.totalSignals??0)}건 / 진입 ${esc(sig.originalEntered??0)}건</b><small>미진입 ${esc(sig.stillBlocked??0)}건 유지</small></span>
+ </div>`;
+ const presets=Array.isArray(d.presets)&&d.presets.length?`<div class="copy-table-scroll an-scroll" role="region" aria-label="단타 조건 프리셋 비교" tabindex="0"><table class="copy-table analytics-table"><thead><tr><th>조건 프리셋</th><th class="num">거래</th><th class="num">승률</th><th class="num">PF</th><th class="num">누적 손익</th><th class="num">제외 손익</th><th class="num">추가 후보</th></tr></thead><tbody>${d.presets.map(p=>`<tr><td><b>${esc(p.label)}</b></td><td class="num">${esc(p.trades)}건</td><td class="num">${wr(p)}</td><td class="num">${pf(p)}</td><td class="num"><b class="${tnCls(p.netUSD)}">${p.trades?tnMoney(p.netUSD):'—'}</b></td><td class="num ${tnCls(p.removedNetUSD)}">${p.removedTrades?tnMoney(p.removedNetUSD):'—'}</td><td class="num">+${esc(p.unlockedSignals??0)}건</td></tr>`).join('')}</tbody></table></div>`:'';
+ return summary+presets;
+}
+
 /** The scalp's own details, collapsed under "단타 신호·건너뜀": rules, 롱 / 숏 totals, last scan, skip reasons, journal. */
 export function scalpDetailsHTML(s){
  if(!s)return '';
@@ -664,7 +683,21 @@ export function scalpDetailsHTML(s){
  const skipBox=counts.length?`<h5 class="copy-sub">진입 안 한 이유</h5><p class="copy-rules">${counts.map(c=>`${esc(c.label)} ${esc(c.count)}회`).join(' · ')}</p><ul class="copy-list muted">${skips.map(x=>`<li><span class="muted">${tnWhen(x.at)}</span>${esc(x.symbol||'')}${x.kind==='ZONE_REVERSAL'?' <small>매물대 후보</small>':''}${x.direction?` <b class="${x.direction==='LONG'?'pos':'neg'}">${x.direction==='LONG'?'롱(급락 후 반등)':'숏(급등 후 되돌림)'}</b>`:''}${x.movePct!=null?` <small>${esc(Number(x.movePct).toFixed(1))}% 움직임</small>`:''} · ${esc(x.label||x.reason)}${skipDetail(x)}</li>`).join('')}</ul>`:'<p class="empty-small">건너뛴 신호가 없습니다.</p>';
  const journal=`<p class="copy-rules">전체 기록: <a href="/api/scalp/journal?limit=200" target="_blank" rel="noopener">단타 거래 기록</a> · <a href="/api/scalp/journal?kind=signals&amp;limit=200" target="_blank" rel="noopener">감지된 신호</a> (JSON)</p>`;
  const experiment=S.repeatedScaleIn&&st.repeatedScaleIn?`<p class="copy-rules">반복 추매 실험 종료 ${esc(st.repeatedScaleIn.closed)}건 · 추매 ${esc(st.repeatedScaleIn.adds)}회</p>`:st.scaleIn&&S.scaleIn?`<p class="copy-rules">추매 실험 종료 ${esc(st.scaleIn.closed)}건 · 추매 체결 ${esc(st.scaleIn.filled)}건</p>`:'';
- return byKind+bySide+rules.replace('</p>',`${recheck}</p>`)+experiment+skipBox+journal;
+ const sp=lastScalpSimParams;
+ const simBox=`<details class="copy-analytics-fold scalp-sim-fold"${scalpSimOpen?' open':''}><summary data-scalp-sim-toggle><b>단타 조건 시뮬레이터 (What-If)</b> <small>최근 신호·거래 기반 조건 비교 · 주문 없음</small></summary>
+  <div class="an-body">
+   <form class="ctrl-form sim-form" data-scalp-sim-form>
+    <label>분석 기간 (일) <input name="days" type="number" min="1" max="30" step="1" value="${esc(sp.days)}"></label>
+    <label>최소 급변 (%) <input name="minMovePct" type="number" min="2.5" max="15" step="0.5" value="${esc(sp.minMovePct)}"></label>
+    <label>4H 추세 필터 <select name="trendMode"><option value="on"${sp.trendMode==='on'?' selected':''}>ON (역추세 제외)</option><option value="off"${sp.trendMode==='off'?' selected':''}>OFF (모두 허용)</option></select></label>
+    <label>매물대 반전 <select name="zoneSignals"><option value="true"${sp.zoneSignals?' selected':''}>ON (2.5%+매물대)</option><option value="false"${!sp.zoneSignals?' selected':''}>OFF (급변만)</option></select></label>
+    <label>최소 손익비 (RR) <input name="minNetRR" type="number" min="0" max="3" step="0.1" value="${esc(sp.minNetRR)}" title="0 = 제한 없음"></label>
+    <label>방향 <select name="sides"><option value="LONG,SHORT"${sp.sides==='LONG,SHORT'?' selected':''}>롱 + 숏</option><option value="LONG"${sp.sides==='LONG'?' selected':''}>롱만</option><option value="SHORT"${sp.sides==='SHORT'?' selected':''}>숏만</option></select></label>
+    <button type="submit" class="outline-btn small">시뮬레이션 실행</button>
+   </form>
+   <div data-scalp-sim-out>${lastScalpSim?scalpSimResultHTML(lastScalpSim):'<p class="empty-small">시뮬레이션 실행 버튼을 누르면 최근 신호와 종료 거래로 조건별 차이를 계산합니다.</p>'}</div>
+  </div></details>`;
+ return byKind+bySide+rules.replace('</p>',`${recheck}</p>`)+experiment+skipBox+simBox+journal;
 }
 function bindTestnetPager(el){
  if(!el||el.dataset.tnBound)return;el.dataset.tnBound='1';
@@ -851,7 +884,7 @@ function render(o){
  if($('navRealMode'))$('navRealMode').textContent=!real?'—':copy.armed&&!copy.killed?'ON':'OFF';
  // Testnet: the scalp's own details (rules, skips, journal), collapsed; its switch is the one testnet switch above.
  // Signal strategy not on the testnet (LIVE): the scalp keeps its own panel and buttons as before (review M3).
- if($('liveScalpSection')){$('liveScalpSection').hidden=!(tn&&o.scalp);if(tn&&o.scalp&&$('liveScalp'))$('liveScalp').innerHTML=scalpDetailsHTML(o.scalp)}
+ if($('liveScalpSection')){$('liveScalpSection').hidden=!(tn&&o.scalp);if(tn&&o.scalp&&$('liveScalp')&&!$('liveScalp').contains(document.activeElement))$('liveScalp').innerHTML=scalpDetailsHTML(o.scalp)}
  bindScalpButtons($('liveScalpOwn'));
  if($('liveScalpPanel')){$('liveScalpPanel').hidden=Boolean(tn)||!o.scalp;if(!tn&&o.scalp&&$('liveScalpOwn')&&!scalpActionBusy)$('liveScalpOwn').innerHTML=scalpHTML(o.scalp)}
  const closedBox=$('liveClosed');
@@ -921,6 +954,7 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
  });
 const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 삭제할 수 없습니다',TODAY_COUNTS_FOR_DAILY_RISK:'오늘 종료된 거래는 하루 손실 한도 계산에 쓰여 내일부터 삭제할 수 있습니다',NOT_FOUND:'이미 삭제된 기록입니다',SAFETY_RECORD:'긴급 정지를 일으킨 기록이라 남겨 둡니다'};
  document.addEventListener('click',async e=>{
+  if(e.target.closest?.('[data-scalp-sim-toggle]')){scalpSimOpen=!e.target.closest('details')?.open;return}
   const b=e.target.closest?.('[data-live-delete]');if(!b)return;
   const key=b.dataset.liveDelete;if(!key||liveDeleteBusy.has(key))return;
   if(!confirm('이 기록을 삭제합니다. 되돌릴 수 없습니다. 계속할까요?'))return;
@@ -930,6 +964,24 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
   finally{liveDeleteBusy.delete(key);await load().catch(()=>{})}
  });
  document.addEventListener('submit',async e=>{
+  const simForm=e.target.closest?.('form[data-scalp-sim-form]');
+  if(simForm){
+   e.preventDefault();
+   const btn=simForm.querySelector('button[type="submit"]'),out=simForm.closest('details')?.querySelector('[data-scalp-sim-out]');
+   const val=n=>simForm.elements.namedItem(n)?.value??'';
+   const p={days:val('days')||'7',minMovePct:val('minMovePct')||'5',trendMode:val('trendMode')||'on',zoneSignals:val('zoneSignals')||'true',minNetRR:val('minNetRR')||'0',sides:val('sides')||'LONG,SHORT'};
+   lastScalpSimParams={days:Number(p.days)||7,minMovePct:Number(p.minMovePct)||5,trendMode:p.trendMode,zoneSignals:p.zoneSignals!=='false',minNetRR:Number(p.minNetRR)||0,sides:p.sides};
+   if(btn){btn.disabled=true;btn.textContent='계산 중…'}
+   if(out)out.innerHTML='<p class="empty-small">최근 신호와 거래 기록을 분석하는 중…</p>';
+   try{
+    const r=await fetch('/api/scalp/simulate?'+new URLSearchParams(p).toString(),{cache:'no-store',signal:AbortSignal.timeout(15000)}),d=await r.json().catch(()=>({}));
+    if(!r.ok)throw Error(d.message||d.error||'HTTP '+r.status);
+    lastScalpSim=d;
+    if(out)out.innerHTML=scalpSimResultHTML(d);
+   }catch(err){if(out)out.innerHTML=`<p class="live-warn-text">시뮬레이션 실패: ${esc(err.message)}</p>`}
+   finally{if(btn){btn.disabled=false;btn.textContent='시뮬레이션 실행'}}
+   return;
+  }
   const form=e.target.closest?.('form[data-live-levels]');if(!form)return;e.preventDefault();
   const key=form.dataset.liveLevels;if(!key||liveLevelsBusy.has(key))return;
   const msg=form.querySelector('[data-levels-msg]'),button=form.querySelector('button'),val=n=>{const i=form.querySelector(`input[name="${n}"]`);return i&&!i.disabled&&i.value.trim()!==''?Number(i.value.trim()):null};

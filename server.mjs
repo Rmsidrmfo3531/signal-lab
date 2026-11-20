@@ -12,6 +12,7 @@ import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig,SCALP_PROFIT_HOLD_TARGET_MIN} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
 import {scalpReportFiles} from './scalp_journal.mjs';
+import {simulateScalpSignals} from './scalp_simulator.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
 import {liveEventText,realTradeMessage} from './live_telegram.mjs';
 import {randomUUID,randomBytes,timingSafeEqual} from 'node:crypto';
@@ -524,6 +525,7 @@ function prepareRealTradeMessage(e){
   if(snapshot)return realTradeMessage(e,{availableMargin:snapshot.available});
   const at=Date.now(),last=realWallet.last,recent=last&&at>=last.at&&at-last.at<=REAL_WALLET_MAX_AGE_MS;
   realWallet.lastAlertIssue={at,reason:snapshot===undefined?'BALANCE_READ_TIMEOUT':realWallet.error??'BALANCE_READ_FAILED',usedRecent:Boolean(recent)};
+  if(!recent)realTradeMessages.delete(e);
   return realTradeMessage(e,recent?{availableMargin:last.available,availableMarginAt:last.at}:{});
  }).finally(()=>clearTimeout(timer));
  realTradeMessages.set(e,message);
@@ -1871,6 +1873,24 @@ const server=http.createServer(async(req,res)=>{
   // Trade journal (newest lines, oldest first): ?limit=N (default 200, max 2000); ?kind=signals for detected signals.
   if(pathname==='/api/scalp/journal'&&req.method==='GET'){const n=Math.max(1,Math.min(2000,Math.floor(Number(url.searchParams.get('limit')))||200));
    const kind=url.searchParams.get('kind')==='signals'?'signals':'trades',lines=kind==='signals'?scalpExec.signals(n):scalpExec.journal(n);return response(res,200,{kind,limit:n,count:lines.length,lines})}
+  if(pathname==='/api/scalp/simulate'&&req.method==='GET'){
+   const q=url.searchParams;
+   const params={
+    days:q.get('days')??7,
+    minMovePct:q.get('minMovePct')??5,
+    trendMode:q.get('trendMode')??'on',
+    zoneSignals:q.get('zoneSignals')??'true',
+    minNetRR:q.get('minNetRR')??0,
+    sides:q.get('sides')??'LONG,SHORT',
+   };
+   const days=Math.max(1,Math.min(30,Math.floor(Number(params.days))||7));
+   return response(res,200,simulateScalpSignals({
+    signals:scalpExec.recentSignals(days),
+    trades:scalpExec.recentTrades(days),
+    params,
+    now:Date.now(),
+   }));
+  }
   if(pathname==='/api/scalp/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='SCALP_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
    if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});
    try{return response(res,200,scalpExec.arm())}catch(e){return response(res,e.httpStatus||409,{error:e.code||e.message})}}
