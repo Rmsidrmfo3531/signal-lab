@@ -278,7 +278,7 @@ export class ScalpExecutor{
   for(const p of this.store.open)if(p.status==='SUBMITTING')p.status='UNKNOWN';
   // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the daily loss, open risk and margin shared with the
   // signal strategy on the testnet (TESTNET_DAILY_LOSS_PCT, default 15 %). Without it the scalp's own 3 % rules apply.
-  this.budget=budget;
+  this.budget=budget;this.reservedRisk=new Map();
   this.armed=false;this.entryRevision=0;this.reserved=new Set();this.universe=[];this.universeAt=0;this.trendCache=new Map();this.lastScanBucket=null;this.lastScan=null;
   this.reversalWatch=new Map();
   this.wyckoffCache=new Map();
@@ -578,9 +578,12 @@ export class ScalpExecutor{
     usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:this.config});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
+   // Reserve a plan that fits the shared budget while the venue setup runs. A larger plan may still fit after the cap.
+   if(this.budget?.check({equity:funds.equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'}).ok)
+    this.reservedRisk.set(u.symbol,{riskUSD:plan.riskUSD,marginUSD:plan.marginUSD});
    return await this.#enter(u,det,c,plan,key,{revision,equity:funds.equity});
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
-  finally{this.reserved.delete(u.symbol)}
+  finally{this.reserved.delete(u.symbol);this.reservedRisk.delete(u.symbol)}
  }
  /** The cheap entry checks: 4H trend (cached per 4H candle), position cap, one per symbol, another strategy's coin.
   * A skip result, or null. Used by #consider and, before any zone read, by #zoneCheck. */
@@ -596,8 +599,9 @@ export class ScalpExecutor{
  }
  /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only. */
  budgetSource(){
+  const reserved=k=>[...this.reservedRisk.values()].reduce((t,x)=>t+(x[k]||0),0);
   return {realizedToday:day=>this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0),
-   openRisk:()=>this.#openRisk(),usedMargin:()=>this.#usedMargin(),
+   openRisk:()=>this.#openRisk()+reserved('riskUSD'),usedMargin:()=>this.#usedMargin()+reserved('marginUSD'),
    unrealized:()=>this.store.open.reduce((t,p)=>t+(Number(p.unrealized)||0),0),stoppedToday:day=>this.store.dailyStop?.day===day&&this.store.dailyStop.shared===true};
  }
  async #enter(u,det,c,initialPlan,id,{revision,equity}){
@@ -632,6 +636,7 @@ export class ScalpExecutor{
    if(this.cur?.plan)Object.assign(this.cur.plan,{qty,riskUSD:plan.riskUSD});
   }
   // Check the final size and save it in the ledger before yielding to order dispatch.
+  this.reservedRisk.delete(u.symbol);
   if(this.budget){
    const b=this.budget.check({equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'});
    if(this.cur?.plan&&b.snap?.ok)this.cur.plan.openRiskUSD=+(b.snap.usedUSD+plan.riskUSD).toFixed(2);
