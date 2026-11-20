@@ -685,11 +685,19 @@ async function executeRealPositionAction({symbol,direction=null,action}={}){
  return {ok:true,action,closed:results,summary:`${action==='CLOSE_HALF'?'50% 부분 청산':'전량 청산'}: ${results.join(', ')}`};
 }
 if(COPY.mode==='LIVE'){
+ const sendAccountAlertTelegram=async text=>{
+  if(!/<pre>[\s\S]*<\/pre>/.test(String(text||'')))return sendTradeTelegram(text);
+  if(persisted.notifySettings?.telegramLive===false)return;
+  const {chatId:chat_id,paused,error:destErr}=await resolveTradeTelegramDestination();
+  if(!chat_id||persisted.notifySettings?.telegramLive===false){if(!chat_id&&!paused)console.warn('[TRADE TELEGRAM]',destErr);return}
+  const {response,error}=await sendRealTradeRequest({chat_id,text,parse_mode:'HTML'});
+  if(!response?.ok)console.warn('[TRADE TELEGRAM]',error??`HTTP_${response?.status}`);
+ };
  accountAlerts=new AccountAlerts({
   directory:storage.dir,
   allowedChatId:CONFIG.tgChat,
   post:CONFIG.tgToken?telegramPost:null,
-  sendText:text=>sendTradeTelegram(text),
+  sendText:sendAccountAlertTelegram,
   log:(...a)=>console.log(...a),
   getSnapshot:async()=>{
    const st=await copyLiveStatus();

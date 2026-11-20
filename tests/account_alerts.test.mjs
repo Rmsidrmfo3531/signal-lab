@@ -174,7 +174,7 @@ test('copyHTML renders accountAlerts panel on LIVE',()=>{
  assert.equal(typeof formatDailyReport,'function');
 });
 
-test('open-position PnL summary sends concise one-line-per-position Telegram alert, respects interval cooldown, and supports /pos command',async()=>{
+test('open-position PnL summary sends aligned Excel-style <pre> table Telegram alert, respects interval cooldown, and supports /pos command',async()=>{
  const {formatPositionPnlLine,formatPositionsSummary}=await import('../account_alerts.mjs');
  const positions=[
   {symbol:'BTCUSDT',direction:'LONG',unrealized:100.11,roePct:12.5},
@@ -182,10 +182,12 @@ test('open-position PnL summary sends concise one-line-per-position Telegram ale
  ];
  assert.equal(formatPositionPnlLine(positions[0]),'BTCUSDT / +100.11(12.5%)');
  assert.equal(formatPositionPnlLine(positions[1]),'SNDKUSDT / -45.20(-8.3%)');
- assert.equal(
-  formatPositionsSummary(positions),
-  '📈 진행 중 포지션 (2개)\nBTCUSDT / +100.11(12.5%)\nSNDKUSDT / -45.20(-8.3%)'
- );
+ const summary=formatPositionsSummary(positions);
+ assert.match(summary,/^📈 진행 중 포지션 \(2개\)\n<pre>[\s\S]+<\/pre>$/);
+ assert.match(summary,/종목\s+손익\(\$\)\s+수익률/);
+ assert.match(summary,/BTCUSDT\s+\+100\.11\s+\+12\.5%/);
+ assert.match(summary,/SNDKUSDT\s+-45\.20\s+-8\.3%/);
+ assert.match(summary,/합계\s+\+54\.91/);
 
  const dir=tmp();
  try{
@@ -202,8 +204,7 @@ test('open-position PnL summary sends concise one-line-per-position Telegram ale
   const r1=await alerts.checkPositionSummary({positions,now});
   assert.equal(r1.sent,true);assert.equal(r1.count,2);
   assert.equal(sent.length,1);
-  assert.match(sent[0],/BTCUSDT \/ \+100\.11\(12\.5%\)/);
-  assert.match(sent[0],/SNDKUSDT \/ -45\.20\(-8\.3%\)/);
+  assert.equal(sent[0],summary);
   // Within 30m cooldown -> suppressed
   now+=10*60000;
   assert.equal((await alerts.checkPositionSummary({positions,now})).reason,'COOLDOWN');
@@ -211,9 +212,9 @@ test('open-position PnL summary sends concise one-line-per-position Telegram ale
   now+=21*60000;
   assert.equal((await alerts.checkPositionSummary({positions,now})).sent,true);
   assert.equal(sent.length,2);
-  // /pos command returns exact one-line list immediately
+  // /pos command returns exact aligned table immediately
   const reply=await alerts.handleCommand('/pos','123456',now);
-  assert.equal(reply,'📈 진행 중 포지션 (2개)\nBTCUSDT / +100.11(12.5%)\nSNDKUSDT / -45.20(-8.3%)');
+  assert.equal(reply,summary);
   // Toggle off suppresses periodic sends (force still works)
   alerts.configure({positionSummaryAlerts:false,positionSummaryIntervalMin:15});
   now+=20*60000;
