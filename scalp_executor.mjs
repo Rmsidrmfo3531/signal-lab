@@ -70,6 +70,7 @@ export function zoneRecord(touches){
  return {...(best||{tf:null,low:null,high:null,price:null,sharePct:null,rank:null,distPct:null}),atZone:zoneTagFields(touches||{}).atZone===true,zone4h:a,zone1d:b};
 }
 const orderId=d=>{const o=orderOf(d),id=o?.orderId??o?.orderID;return id===undefined||id===null?null:String(id)};
+const orderAbsent=e=>/80016/.test(String(e?.code||''))||/not exist/i.test(String(e?.message||''));
 const kstDay=t=>new Date(t+9*3600000).toISOString().slice(0,10);
 const grid=(v,step,mode)=>{try{return roundDecimalToStep(v,step,mode)}catch{return null}};
 const withTimeout=(p,ms,fallback=null)=>Promise.race([Promise.resolve(p).catch(()=>fallback),new Promise(r=>setTimeout(()=>r(fallback),ms).unref?.())]);
@@ -370,7 +371,10 @@ export class ScalpExecutor{
   const revision=this.entryRevision,bucket=Math.floor(now/I5),st={at:now,bucket,checked:0,signals:0,entered:0,error:null};this.lastScanBucket=bucket;
   const observations=[];
   try{
-   const why=this.#blocked();if(why){st.error=why;return st}
+   let why=this.#blocked();
+   // An UNKNOWN entry or PENDING FOK scale-in may already have settled on the venue; reconcile once before aborting the 5m scan.
+   if(why==='UNRESOLVED_ORDER_STATE'&&!this.reconciling&&this.client){await this.reconcile();why=this.#blocked()}
+   if(why){st.error=why;return st}
    for(const [symbol,w] of this.reversalWatch)if(now-w.det.barAt>REVERSAL_RECHECK_MS)this.reversalWatch.delete(symbol);
    await this.#refreshUniverse(now);
    // Coins that moved most over the last ~35 minutes are read first (user 2026-11-17: by the 60th coin the
@@ -882,7 +886,18 @@ export class ScalpExecutor{
   // A restarted legacy add may already have been applied to the position before resizing targets.
   const applied=a.state==='RESIZE';
   if(!applied){
-   order??=orderOf(await this.client.getOrder(vs,{clientOrderId:a.clientOrderId}).catch(()=>null));
+   let absent=false;
+   if(!order){
+    try{order=orderOf(await this.client.getOrder(vs,{clientOrderId:a.clientOrderId}))}
+    catch(e){if(orderAbsent(e))absent=true}
+   }
+   if(absent){
+    const fresh=await this.#position(vs,p.direction,p.hedge===true).catch(()=>null);
+    if(fresh&&Number.isFinite(fresh.size)&&fresh.size<=p.filled+(Number(p.quantityStep)||0)/2){
+     if(a.version===SCALP_REPEAT_SCALE_IN.version)this.#retryRepeat(p,'ORDER_NOT_FOUND');else this.#addDecision(p,'SKIPPED','ORDER_NOT_FOUND');
+     return;
+    }
+   }
    const status=String(order?.status).toUpperCase();
    if(!['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(status)){
     if(this.now()-(a.attemptedAt||0)>=5*60000){
@@ -1040,7 +1055,16 @@ export class ScalpExecutor{
   if(this.config.stopLossEnabled===false)return this.#recoverRepeat(p,order);
   const a=p.scaleIn,vs=p.venueSymbol;
   if(a.state==='PENDING'){
-   order??=orderOf(await this.client.getOrder(vs,{clientOrderId:a.clientOrderId}).catch(()=>null));
+   let absent=false;
+   if(!order){
+    try{order=orderOf(await this.client.getOrder(vs,{clientOrderId:a.clientOrderId}))}
+    catch(e){if(orderAbsent(e))absent=true}
+   }
+   if(absent){
+    const fresh=await this.#position(vs,p.direction,p.hedge===true).catch(()=>null);
+    if(fresh&&Number.isFinite(fresh.size)&&fresh.size<=p.filled+(Number(p.quantityStep)||0)/2)
+     return this.#addDecision(p,'SKIPPED','ORDER_NOT_FOUND');
+   }
    const terminal=['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(String(order?.status).toUpperCase());
    if(!terminal){
     if(!a.unknownLogged){a.unknownLogged=true;this.#event('SCALE_IN_PENDING',{symbol:p.symbol,reason:'ORDER_OUTCOME_UNKNOWN'});this.#save()}
