@@ -45,6 +45,8 @@ const isHtmlMessage=s=>/<(?:b|i|u|s|a|pre|code)\b[^>]*>[\s\S]*<\/(?:b|i|u|s|a|pr
 
 function positionRowParts(p){
  const sym=displaySymbol(p?.symbol||p?.venueSymbol||'');
+ const dir=String(p?.direction||p?.side||'').toUpperCase();
+ const side=dir==='LONG'?'롱':dir==='SHORT'?'숏':'';
  const u=Number(p?.unrealized);
  const hasU=p?.unrealized!=null&&Number.isFinite(u);
  const pnl=hasU?`${u>=0?'+':'-'}$${Math.abs(u).toFixed(2)}`:'—';
@@ -52,13 +54,14 @@ function positionRowParts(p){
  if((p?.roePct==null||!Number.isFinite(roeNum))&&hasU&&Number(p?.margin)>0)roeNum=u/Number(p.margin)*100;
  const roe=Number.isFinite(roeNum)?`${roeNum>=0?'+':'-'}${Math.abs(roeNum).toFixed(1)}%`:null;
  const dot=!hasU?'⚪':u>0?'🟢':u<0?'🔴':'⚪';
- return {sym,u:hasU?u:null,pnl,roe,dot};
+ return {sym,side,u:hasU?u:null,pnl,roe,dot};
 }
 
 export function formatPositionPnlLine(p){
  const r=positionRowParts(p);
+ const sidePart=r.side?` [${r.side}]`:'';
  const roe=r.roe?` (${r.roe})`:'';
- return `${r.dot} <b>${escHtml(r.sym)}</b>   ${r.pnl}${roe}`;
+ return `${r.dot} <b>${escHtml(r.sym)}</b>${sidePart}   ${r.pnl}${roe}`;
 }
 
 export function formatPositionsSummary(positions=[]){

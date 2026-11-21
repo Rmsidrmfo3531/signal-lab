@@ -180,13 +180,13 @@ test('open-position PnL summary sends clean readable Telegram list (no code bloc
   {symbol:'NCSKSNDK2USDUSDT',direction:'SHORT',unrealized:-45.2,margin:544.58},
   {symbol:'BTCUSDT',direction:'LONG',unrealized:100.11,roePct:12.5},
  ];
- assert.equal(formatPositionPnlLine(positions[1]),'🟢 <b>BTCUSDT</b>   +$100.11 (+12.5%)');
- assert.equal(formatPositionPnlLine(positions[0]),'🔴 <b>SNDKUSDT</b>   -$45.20 (-8.3%)');
+ assert.equal(formatPositionPnlLine(positions[1]),'🟢 <b>BTCUSDT</b> [롱]   +$100.11 (+12.5%)');
+ assert.equal(formatPositionPnlLine(positions[0]),'🔴 <b>SNDKUSDT</b> [숏]   -$45.20 (-8.3%)');
  const summary=formatPositionsSummary(positions);
  assert.doesNotMatch(summary,/<pre>|<code>/);
  assert.equal(
   summary,
-  '📊 <b>진행 중 포지션 (2개)</b> · 합계 <b>+$54.91</b>\n\n🟢 <b>BTCUSDT</b>   +$100.11 (+12.5%)\n🔴 <b>SNDKUSDT</b>   -$45.20 (-8.3%)'
+  '📊 <b>진행 중 포지션 (2개)</b> · 합계 <b>+$54.91</b>\n\n🟢 <b>BTCUSDT</b> [롱]   +$100.11 (+12.5%)\n🔴 <b>SNDKUSDT</b> [숏]   -$45.20 (-8.3%)'
  );
 
  const dir=tmp();
