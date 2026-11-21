@@ -100,6 +100,12 @@ test('scalpScanStatusHTML renders healthy, scanning, stale, blocked, error, and 
  assert.match(errored,/오류: HTTP_429/);
  assert.doesNotMatch(errored,/<img/);
 
+ // Temporary pause (e.g. UNRESOLVED_ORDER_STATE) once recovered shows healthy badge + Korean pause explanation
+ const paused=scalpScanStatusHTML({...base,blocked:null,lastScan:{at:T0-60000,checked:0,failed:0,signals:0,entered:0,error:'UNRESOLVED_ORDER_STATE'}},{now:T0});
+ assert.match(paused,/● 5분봉 정상 감시 중/);
+ assert.match(paused,/직전 보류: 미확인 주문 확인 중/);
+ assert.doesNotMatch(paused,/⚠ 단타 스캔 오류/);
+
  // Blocked
  const blocked=scalpScanStatusHTML({...base,blocked:'DAILY_LOSS_LIMIT',blockedKo:'하루 손실 한도 도달',lastScan:{at:T0-60000,checked:80}},{now:T0});
  assert.match(blocked,/■ 단타 진입 중지 \(하루 손실 한도 도달\)/);

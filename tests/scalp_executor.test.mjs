@@ -1067,3 +1067,41 @@ test('Map, VSA and AI Lens share one 15m read after testnet entries and preserve
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
  }
 });
+
+test('repeat scale-in clears PENDING immediately on BingX 80016 when size did not grow, and scan() reconciles before aborting on UNRESOLVED_ORDER_STATE',async()=>{
+ // Case 1: getOrder answers VENUE_ERROR_80016 and venue size is unchanged -> PENDING clears immediately (no 5m stall).
+ {
+  const v=venue(),clock={t:T0};
+  const ex=make(v,{clock,price:()=>PX,config:{stopLossEnabled:false,scaleIn:true}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],origSize=p.size;
+  clock.t+=I;
+  p.scaleIn.state='PENDING';p.scaleIn.clientOrderId=p.id+'a2';p.scaleIn.attemptedAt=clock.t-10000;
+  v.client.getOrder=async()=>{throw Object.assign(Error('order not exist'),{code:'VENUE_ERROR_80016'})};
+  assert.equal(ex.status().blocked,'UNRESOLVED_ORDER_STATE');
+  // Calling scan() on the next 5m candle reconciles first, clears PENDING via 80016 + unchanged size, and proceeds with the scan!
+  const st=await ex.scan(clock.t);
+  assert.equal(st.error,null,'scan recovered via reconcile instead of aborting with UNRESOLVED_ORDER_STATE');
+  assert.equal(st.checked,1);
+  assert.equal(p.scaleIn.state,'WATCH');
+  assert.equal(p.scaleIn.lastReason,'ORDER_NOT_FOUND');
+  assert.equal(p.size,origSize);
+  assert.equal(ex.status().blocked,null);
+ }
+ // Case 2: getOrder answers VENUE_ERROR_80016 BUT venue size actually grew -> stays PENDING safely (never drops a real fill).
+ {
+  const v=venue(),clock={t:T0};
+  const ex=make(v,{clock,price:()=>PX,config:{stopLossEnabled:false,scaleIn:true}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  clock.t+=I;
+  p.scaleIn.state='PENDING';p.scaleIn.clientOrderId=p.id+'a2';p.scaleIn.attemptedAt=clock.t-10000;
+  v.size=p.filled*2;
+  v.client.getOrder=async()=>{throw Object.assign(Error('order not exist'),{code:'VENUE_ERROR_80016'})};
+  const st=await ex.scan(clock.t);
+  assert.equal(st.error,'UNRESOLVED_ORDER_STATE','venue size grew so PENDING stays blocked safely');
+  assert.equal(st.checked,0);
+  assert.equal(p.scaleIn.state,'PENDING');
+ }
+});
+

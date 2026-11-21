@@ -624,10 +624,18 @@ export function testnetBudgetHTML(t){
  return `${state}${who?`<span class="tn-who">${esc(who)}</span>`:''}<span class="tn-budget-nums">공동 한도 · 오늘 손실 <b class="${Number(b.lossUSD)>0?'paper-loss':''}">${loss}</b> / 한도 <b>${fin(b.limitUSD)?tnUsd(b.limitUSD):'잔고 확인 중'}</b> (${esc(b.dailyLossPct??'—')}%) · 열린 위험 <b>${tnUsd(b.openRiskUSD)}</b>${fin(b.marginUSD)?` · 증거금 ${tnUsd(b.marginUSD)} / ${fin(b.marginCapUSD)?tnUsd(b.marginCapUSD):'—'} (${esc(b.marginCapPct??'—')}%)`:''}</span>${balance?`<small class="tn-who">${balance}</small>`:''}${budgetError?`<small class="live-warn-text">${budgetError}</small>`:''}${t.scalpError?`<small class="muted">단타 켜지 않음: ${esc(t.scalpError)}</small>`:''}`;
 }
 
+const SCALP_SCAN_PAUSE_KO=Object.freeze({
+ UNRESOLVED_ORDER_STATE:'미확인 주문 확인 중 (다음 5분봉 자동 재개)',
+ RATE_LIMIT_COOLDOWN:'요청 과다로 잠시 대기',
+ DAILY_LOSS_LIMIT:'하루 손실 한도 도달',
+ KILL_SWITCH:'긴급 정지 중',
+ UPDATING:'업데이트 중',
+});
 /** Always-visible 5m scalp scan heartbeat bar on the testnet screen so the operator can verify scan health at a glance. */
 export function scalpScanStatusHTML(s,{now=Date.now()}={}){
  if(!s||s.mode!=='TESTNET'||!s.credentials)return '';
  const ls=s.lastScan,total=Number(s.universe?.count)||0;
+ const pauseKo=ls?.error?SCALP_SCAN_PAUSE_KO[ls.error]||null:null;
  const scanSummary=()=>{
   if(!ls?.at)return '';
   const ageMin=Math.max(0,Math.floor((now-Number(ls.at))/60000));
@@ -635,7 +643,7 @@ export function scalpScanStatusHTML(s,{now=Date.now()}={}){
   const checked=Number(ls.checked)||0,denom=total||checked;
   const detected=(Number(ls.signals)||0)+(Number(ls.zoneSignals)||0),entered=Number(ls.entered)||0;
   const failPart=ls.failed>0?` · <span class="live-warn-text">조회 실패 ${esc(ls.failed)}건${ls.lastFailure?` (${esc(ls.lastFailure)})`:''}</span>`:'';
-  const errPart=ls.error?` · <span class="live-warn-text">오류: ${esc(ls.error)}</span>`:'';
+  const errPart=ls.error?pauseKo?` · <small class="muted">직전 보류: ${esc(pauseKo)}</small>`:` · <span class="live-warn-text">오류: ${esc(ls.error)}</span>`:'';
   const rlPart=ls.rateLimited>0?` · <small class="muted">속도제한 재시도 ${esc(ls.rateLimited)}회</small>`:'';
   return `<span class="tn-budget-nums">마지막 스캔 <b>${esc(tnWhen(ls.at))}</b> (${esc(ageTxt)}) · 검사 <b>${esc(checked)}${denom?`/${esc(denom)}`:''}종목</b> · 감지 ${esc(detected)}건 · 진입 ${esc(entered)}건${failPart}${errPart}${rlPart}</span>`;
  };
@@ -652,7 +660,7 @@ export function scalpScanStatusHTML(s,{now=Date.now()}={}){
   return `<b class="copy-state on">● 5분봉 스캔 대기 중</b><span class="tn-who">다음 5분봉 마감 직후 첫 검사를 실행합니다</span>`;
  }
  const ageMin=Math.max(0,Math.floor((now-Number(ls.at))/60000));
- const stale=ageMin>=8,hasErr=Boolean(ls.error)||(ls.failed>0&&!(ls.checked>0));
+ const stale=ageMin>=8,hasErr=(Boolean(ls.error)&&!pauseKo)||(ls.failed>0&&!(ls.checked>0));
  const badge=hasErr?'<b class="copy-state kill">⚠ 단타 스캔 오류</b>':stale?`<b class="copy-state kill">⚠ 단타 스캔 지연 (${esc(ageMin)}분 전)</b>`:'<b class="copy-state on">● 5분봉 정상 감시 중</b>';
  return `${badge}${scanSummary()}`;
 }
