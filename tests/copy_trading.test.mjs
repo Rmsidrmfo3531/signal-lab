@@ -1087,3 +1087,54 @@ test('copy blocks new risk when either balance field is unverified; a known zero
   assert.equal(v.size,size);
  }
 });
+
+test('hedge-mode copy settlement recovers manual adds and closes on the isolated hedge lane (ETHUSDT 11/21 scenario) without mixing opposite side',async()=>{
+ for(const hasOverlap of [false,true]){
+  const v=venue({hedge:true}),ex=make(v,{config:{mode:'LIVE',stops:false}});ex.goneRecheckMs=0;
+  const openAt=1e12,closeAt=1e12+60000;
+  ex.now=()=>openAt;
+  const p={
+   id:'cp-eth-long',symbol:'ETHUSDT',venueSymbol:'ETH-USDT',direction:'LONG',hedge:true,
+   leverage:80,openedAt:openAt,closedAt:closeAt,status:'CLOSED',closeReason:'STOP_OR_EXTERNAL',
+   fillTracked:true,fillOrders:[{id:'copy-buy-1',side:'BUY',confirmed:true}],
+   entryCids:['cp-eth-open'],netSource:'UNKNOWN',netUSD:null,
+   settlement:{state:'QUANTITY_MISMATCH',checkedAt:closeAt+15000},
+  };
+  ex.store.closed.push(p);
+  if(hasOverlap){
+   ex.store.closed.push({
+    id:'cp-eth-long-overlap',symbol:'ETHUSDT',venueSymbol:'ETH-USDT',direction:'LONG',hedge:true,
+    openedAt:openAt+10000,closedAt:closeAt-5000,status:'CLOSED',netSource:'EXCHANGE_FILLS',netUSD:1,
+   });
+  }
+  const symbol='ETH-USDT';
+  v.client.allOrders=async()=>({orders:[
+   {orderId:'copy-buy-1',symbol,side:'BUY',positionSide:'LONG',executedQty:'2',updateTime:openAt,status:'FILLED',clientOrderId:'cp-eth-open'},
+   {orderId:'manual-buy-add',symbol,side:'BUY',positionSide:'LONG',executedQty:'8',updateTime:openAt+20000,status:'FILLED',clientOrderId:'man-1'},
+   {orderId:'manual-sell-close',symbol,side:'SELL',positionSide:'LONG',executedQty:'10',updateTime:closeAt+1000,status:'FILLED',clientOrderId:'man-2'},
+   // Opposite hedge lane SHORT (-$355) MUST NEVER contaminate LONG settlement
+   {orderId:'opp-short-open',symbol,side:'SELL',positionSide:'SHORT',executedQty:'10.4',updateTime:openAt+30000,status:'FILLED'},
+   {orderId:'opp-short-close',symbol,side:'BUY',positionSide:'SHORT',executedQty:'10.4',updateTime:closeAt-2000,status:'FILLED'},
+  ]});
+  v.client.fillHistory=async()=>[
+   {orderId:'copy-buy-1',tradeId:'t1',symbol,side:'BUY',qty:2,price:'1600',fee:'-1.5',realizedPnl:0,time:openAt},
+   {orderId:'manual-buy-add',tradeId:'t2',symbol,side:'BUY',qty:8,price:'1600',fee:'-6.0',realizedPnl:0,time:openAt+20000},
+   {orderId:'manual-sell-close',tradeId:'t3',symbol,side:'SELL',qty:10,price:'1640',fee:'-8.0',realizedPnl:400,time:closeAt+1000},
+   {orderId:'opp-short-open',tradeId:'t4',symbol,side:'SELL',qty:10.4,price:'1581.91',fee:'-8.0',realizedPnl:0,time:openAt+30000},
+   {orderId:'opp-short-close',tradeId:'t5',symbol,side:'BUY',qty:10.4,price:'1615',fee:'-8.0',realizedPnl:-355,time:closeAt-2000},
+  ];
+  ex.now=()=>closeAt+30000;
+  await ex.settle({recheck:true});
+  if(!hasOverlap){
+   assert.equal(p.netSource,'EXCHANGE_FILLS');
+   assert.equal(p.settlement.state,'CONFIRMED');
+   assert.equal(p.pnlUSD,400);
+   assert.equal(p.feeUSD,-15.5);
+   assert.equal(p.netUSD,384.5);
+  }else{
+   assert.equal(p.netSource,'UNKNOWN');
+   assert.equal(p.settlement.state,'QUANTITY_MISMATCH');
+  }
+ }
+});
+

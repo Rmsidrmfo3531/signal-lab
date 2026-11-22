@@ -1110,18 +1110,49 @@ export class CopyExecutor{
   // A manual full close can consist of several reductions between position polls. Only recover
   // additional orders if the complete history identifies the recorded exit and every opening belongs to this copy.
   const evidence=p.closeEvidence;
-  if(!externalClose||evidence?.kind!=='MANUAL_CLOSE'||!evidence.orderId||rows.length>=500)return orders;
+  if(!externalClose||rows.length>=500)return orders;
   const executed=rows.filter(row=>pos(row?.executedQty)||String(row?.status).toUpperCase()==='FILLED');
   const lane=p.hedge===true?p.direction:'BOTH',positionSide=row=>String(row.positionSide??'').toUpperCase();
   if(executed.some(row=>row.symbol!==p.venueSymbol||!['BOTH','LONG','SHORT'].includes(positionSide(row))||
    (p.hedge===true?positionSide(row)==='BOTH':positionSide(row)!=='BOTH')))return orders;
   const ownLane=executed.filter(row=>positionSide(row)===lane);
-  if(!ownLane.some(row=>String(row.orderId)===String(evidence.orderId)&&String(row.side).toUpperCase()===closeSide))return orders;
-  const extra=ownLane.filter(row=>!orders.has(String(row.orderId)));
-  if(extra.some(row=>!row.orderId||!pos(row.executedQty)||String(row.side).toUpperCase()!==closeSide||
-   !(p.hedge===true||String(row.reduceOnly).toLowerCase()==='true'||String(row.closePosition).toLowerCase()==='true')||
-   !(Number(row.updateTime??row.time)>=p.openedAt&&Number(row.updateTime??row.time)<=p.closedAt)))return orders;
-  for(const row of extra){const id=String(row.orderId);orders.set(id,{id,side:closeSide,confirmed:true,verifiedQty:Number(row.executedQty),order:row})}
+  if(evidence?.kind==='MANUAL_CLOSE'&&evidence.orderId&&ownLane.some(row=>String(row.orderId)===String(evidence.orderId)&&String(row.side).toUpperCase()===closeSide)){
+   const extra=ownLane.filter(row=>!orders.has(String(row.orderId)));
+   if(!extra.some(row=>!row.orderId||!pos(row.executedQty)||String(row.side).toUpperCase()!==closeSide||
+    !(p.hedge===true||String(row.reduceOnly).toLowerCase()==='true'||String(row.closePosition).toLowerCase()==='true')||
+    !(Number(row.updateTime??row.time)>=p.openedAt&&Number(row.updateTime??row.time)<=p.closedAt))){
+    for(const row of extra){const id=String(row.orderId);orders.set(id,{id,side:closeSide,confirmed:true,verifiedQty:Number(row.executedQty),order:row})}
+    return orders;
+   }
+  }
+  // Isolated hedge-lane recovery: in hedge mode (positionSide LONG/SHORT), manual adds/closes on a copy-held position
+  // live on that exact isolated lane. Recover all executed orders on the lane within [openedAt-5s, closedAt+10s] ONLY
+  // when no other copy position of the same symbol+direction overlaps and open/close quantities balance cleanly.
+  if(p.hedge===true&&orders.size>0){
+   const overlap=[...Object.values(this.store.positions||{}),...(this.store.closed||[])].some(other=>
+    other&&other!==p&&other.symbol===p.symbol&&other.direction===p.direction&&
+    Number(other.openedAt)<=p.closedAt+10000&&(other.closedAt==null||Number(other.closedAt)>=p.openedAt-5000));
+   if(!overlap){
+    const inWin=ownLane.filter(row=>{
+     const t=Number(row.updateTime??row.time);
+     return row.orderId&&pos(row.executedQty)&&[openSide,closeSide].includes(String(row.side).toUpperCase())
+      &&t>=p.openedAt-5000&&t<=p.closedAt+10000;
+    });
+    if(inWin.some(row=>orders.has(String(row.orderId)))){
+     let oq=0,cq=0;
+     for(const row of inWin){
+      if(String(row.side).toUpperCase()===openSide)oq+=Number(row.executedQty);
+      else cq+=Number(row.executedQty);
+     }
+     if(oq>0&&cq>0&&sameSize(oq,cq)){
+      for(const row of inWin){
+       const id=String(row.orderId),s=String(row.side).toUpperCase();
+       if(!orders.has(id))orders.set(id,{id,side:s,confirmed:true,verifiedQty:Number(row.executedQty),order:row});
+      }
+     }
+    }
+   }
+  }
   return orders;
  }
  /** A position found gone on the venue without our close order: classified (#goneEvidence) and booked. An entry

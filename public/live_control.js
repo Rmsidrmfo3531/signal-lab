@@ -504,9 +504,14 @@ export function copyHTML(c){
  // balance is the testnet account's, shown once in the status box above.
  const liveBasis=fin(f?.available)?Number(f.available):Number(f?.equity);
  const liveRatioVal=isLive&&c.sizing==='BALANCE_RATIO'&&liveBasis>0&&Number(c.traderBalanceUSD)>0?`${(liveBasis/Number(c.traderBalanceUSD)*100).toFixed(1)}%`:null;
+ const dailyVals=isLive&&c.daily?.at&&c.daily?.byDay&&typeof c.daily.byDay==='object'?Object.values(c.daily.byDay).map(Number).filter(Number.isFinite):[];
+ const exNet=dailyVals.length?Math.round(dailyVals.reduce((s,v)=>s+v,0)*1e4)/1e4:null;
+ const unsettledCount=isLive?closed.filter(x=>!confirmedCopyResult(x)&&x.netSource!=='PENDING').length:0;
+ const displayNet=exNet!=null?exNet:(counted?net:null);
+ const netTitle=exNet!=null?' title="BingX 거래소 기준 실현 손익 + 수수료 + 펀딩 합계 (미확정 원장 왜곡 없음)"':'';
  const stats=`<div class="copy-stats">${isLive?stat('잔고',usd(f?.equity)):''}${stat('사용 가능',usd(f?.available))}${liveRatioVal?stat('카피 비율',liveRatioVal):''}${vpList?'':stat('미실현',money(open.length?unreal:null),`class="${cls(unreal)}"`)}
-  ${stat(isLive?'정산 확인':'종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat('누적 손익',money(counted?net:null),`class="${cls(net)}"`)}</div>`+
-  (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.n?st.copy.net:null)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.n?st.manual.net:null)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}</p>`:'')+
+  ${stat(isLive?'정산 확인':'종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat(exNet!=null?'누적 손익 (거래소)':'누적 손익',money(displayNet),`class="${cls(displayNet)}"${netTitle}`)}</div>`+
+  (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.n?st.copy.net:null)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.n?st.manual.net:null)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}${exNet!=null&&unsettledCount>0?` · <span class="muted">원장 미확정 ${unsettledCount}건 제외</span>`:''}</p>`:'')+
   (!isLive&&(st.all.n||st.all.unknown)?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
  const sizingBasis=isLive?'내 가용 증거금':'내 잔고';
  const rules=`<details class="copy-rules-fold"><summary>규칙 보기</summary><p class="copy-rules">수량 ${c.sizing==='BALANCE_RATIO'?`트레이더 수량 × ${sizingBasis} ÷ $${Number(c.traderBalanceUSD).toLocaleString()} (최소 주문 미달 시 트레이더 1배 수량·추매 1배)`:c.sizing==='MIN_ORDER'?`첫 증거금 $${esc(c.firstMarginUSD??0)} (거래소 최소 주문보다 작으면 최소 주문), 추매는 트레이더 비율`:`첫 증거금 $${esc(c.marginUSD)}`} · 추매 최대 ${esc(c.maxAdds??10)}회 · 손절 ${c.stops?`포지션당 잔고 ${esc(c.maxLossPct)}%`:'없음(트레이더 청산만)'} · 한도 증거금 ${esc(c.maxTotalMarginPct)}%·손실 ${esc(c.ledgerLossPct)}%</p></details>`;
