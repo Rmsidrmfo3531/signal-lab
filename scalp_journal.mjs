@@ -99,7 +99,7 @@ export function journalLine(x){
   ...(repeat?{count:a.count,orders:a.orders}: {})}:null;
  const bps=(a,b)=>a>0&&b>0?r2(dir*(a-b)/b*1e4):null; // + = worse for us (paid more on a LONG, got less on a SHORT)
  // kind: MOVE_REVERSAL (5 % move) or ZONE_REVERSAL (매물대 반전, 2.5 % at a 4H / 1D zone; zone = the touched zone).
- return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,
+ return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,capitalBasisUSD:positive(x.capitalBasisUSD),
   barAt:x.barAt,detectedAt:x.detectedAt??null,evidence:x.evidence??null,candle:x.candle??null,atr:x.atr??null,trend4h:x.trend4h??null,withTrend:x.withTrend??null,
   plan:{signalClose:signal||null,checkedPrice:plan||null,entry:x.entry,stop:x.stopLossEnabled===false?null:x.initialStop,
    ...(x.stopLossEnabled===false?{riskReference:x.initialStop}:{}),targets:x.targets,parts:x.parts,targetCount:x.targetCount??null,merged:x.merged===true,

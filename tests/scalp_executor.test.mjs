@@ -6,6 +6,7 @@ import {scalpEventText,scalpReasonKo} from '../scalp_telegram.mjs';
 import {detectScalpReversal,SCALP_TIMEFRAMES} from '../scalp_reversal.mjs';
 import {BACKTEST_COSTS} from '../backtest.mjs';
 import {scalpDetailsHTML,scalpPositionCardHTML} from '../public/live_control.js';
+import {TestnetBudget} from '../testnet_budget.mjs';
 
 const I=300000,BUCKET=Math.floor(Date.parse('2026-11-16T03:00:00Z')/I),T0=BUCKET*I+5000;
 // 50 quiet 5m candles near 100, a fast ~6.6 % drop on heavy volume, then a hammer (the candle that just closed).
@@ -1392,6 +1393,37 @@ test('BTC shock guard blocks counter-shock altcoin entries (BTC_DUMP_GUARD / BTC
   }
  }
 });
+
+test('scalpEventText includes avg improvement on scale-in, partial profit lock-in details, and trailing peak ROE on close; $3k capitalBasisUSD scales legacy VST stats/budget',async()=>{
+ const addMsg=scalpEventText({type:'SCALE_IN_FILLED',symbol:'SOLUSDT',direction:'LONG',count:2,fillMarginUSD:120,qty:10,price:92,prevAvg:100,avg:96,avgImprovePct:4,left:20});
+ assert.match(addMsg,/평단 100 → 96 \(4\.00% 개선\)/);
+ const partialMsg=scalpEventText({type:'PARTIAL_TAKE_PROFIT',symbol:'SOLUSDT',direction:'LONG',qty:5,left:5,netRoePct:6.8,estProfitUSD:18.5});
+ assert.match(partialMsg,/50% 부분 익절 확정/);
+ assert.match(partialMsg,/ROE \+6\.8%/);
+ assert.match(partialMsg,/\+\$18\.50/);
+ const closeMsg=scalpEventText({type:'CLOSED',symbol:'SOLUSDT',direction:'LONG',reason:'EARLY_TAKE_PROFIT',netUSD:42.5,roePct:11.2,peakRoePct:14.8,holdMs:1800000});
+ assert.match(closeMsg,/\(\+11\.2% ROE\)/);
+ assert.match(closeMsg,/트레일링 고점 \+14\.8%/);
+
+ // Proportional scaling on ScalpExecutor budgetSource & stats with $3,000 capital cap over $150,000 VST equity
+ const clock={t:T0};
+ const budget=new TestnetBudget({accountEquity:true,capitalCapUSD:3000,now:()=>clock.t});
+ budget.observeAccount(150000,'VST'); // displayScale = 0.02
+ const v=venue();
+ const ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:true},funds:{equity:3000,available:2500},budget});
+ ex.store.closed.push(
+  {id:'old',symbol:'OLDUSDT',direction:'LONG',netUSD:500,closedAt:T0-60000,closeReason:'EARLY_TAKE_PROFIT'},
+  {id:'new',symbol:'NEWUSDT',direction:'SHORT',netUSD:15,closedAt:T0-30000,closeReason:'EARLY_TAKE_PROFIT',capitalBasisUSD:3000},
+ );
+ const st=ex.stats();
+ // old: 500 * 0.02 = 10; new: 15 * 1 = 15 -> total netUSD = 25
+ assert.equal(st.netUSD,25);
+ assert.equal(st.trades,2);
+ ex.arm();
+ assert.equal((await ex.scan()).entered,1);
+ assert.equal(ex.store.open[0].capitalBasisUSD,3000,'new $3k trade tagged with capitalBasisUSD=3000');
+});
+
 
 
 

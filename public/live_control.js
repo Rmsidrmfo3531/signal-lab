@@ -198,11 +198,29 @@ export function venuePositionsHTML(c,copyOpen=[]){
  if(!list)return head+'<p class="empty-small">거래소 포지션을 아직 읽지 못했습니다.</p>';
  if(!list.length&&!copyOpen.length)return head+'<p class="empty-small">보유 중인 포지션이 없습니다. 채널에 새 진입 알림이 오면 따라 들어갑니다.</p>';
  const totals=`<p class="copy-stamp vp-total">미실현 합계 <b class="${cls(sum(list))}">${money(sum(list))}</b> · 수동만 <b class="${cls(sum(manual))}">${manual.length?money(sum(manual)):'—'}</b></p>`;
+ const tr=c.trailing||null;
+ const trInfo=p=>{
+  if(!tr?.enabled)return null;
+  const isCopy=p.origin==='copy';
+  if((isCopy&&!tr.applyToCopy)||(!isCopy&&!tr.applyToManual))return null;
+  const disp=symText(p.symbol),excluded=(tr.excludedSymbols||[]).includes(disp);
+  const st=tr.tracked?.[keyOf(p.symbol,p.direction)]||null;
+  return {disp,excluded,st};
+ };
+ const trBadge=p=>{
+  const info=trInfo(p);if(!info)return '';
+  if(info.excluded)return '<span class="vp-badge" title="자동 트레일링 제외 종목">트레일 제외</span>';
+  if(info.st?.partialTaken&&fin(info.st?.peakRoePct))return `<span class="vp-badge copy" title="50% 부분 익절 완료 · 잔여 50% 트레일링 중">50%확정·고점 +${Number(info.st.peakRoePct).toFixed(1)}%</span>`;
+  if(fin(info.st?.peakRoePct))return `<span class="vp-badge copy" title="고점 대비 ${esc(tr.trailPullbackRatio)}% 되돌림 시 자동 익절">트레일 고점 +${Number(info.st.peakRoePct).toFixed(1)}%</span>`;
+  return '';
+ };
  const posActions=p=>{
   const inProfit=fin(p.unrealized)&&Number(p.unrealized)>0,sym=esc(p.symbol),dir=esc(p.direction),sz=esc(qtyFmt(p.size)),lev=esc(p.leverage||''),mmMode=esc(p.marginMode||'CROSSED');
-  return `<div class="vp-actions"><button type="button" class="vp-act-btn trade" data-trade-fill data-pos-symbol="${sym}" data-pos-lev="${lev}" data-pos-mm="${mmMode}" title="이 종목을 수동 주문 패널에 불러오기">주문/추매</button><button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button></div>`;
+  const info=trInfo(p);
+  const trBtn=info?`<button type="button" class="vp-act-btn" data-trail-toggle="${esc(info.disp)}" title="${info.excluded?'이 종목을 자동 트레일링 대상에 다시 포함':'이 종목을 자동 트레일링에서 제외'}">${info.excluded?'트레일 포함':'트레일 제외'}</button>`:'';
+  return `<div class="vp-actions"><button type="button" class="vp-act-btn trade" data-trade-fill data-pos-symbol="${sym}" data-pos-lev="${lev}" data-pos-mm="${mmMode}" title="이 종목을 수동 주문 패널에 불러오기">주문/추매</button><button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button>${trBtn}</div>`;
  };
- const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}">${symTag(p.symbol)}${badge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · 부분청산 ${partialCount(r)} · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b>${posActions(p)}</li>`};
+ const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}">${symTag(p.symbol)}${badge(p)}${trBadge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · 부분청산 ${partialCount(r)} · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b>${posActions(p)}</li>`};
 
  const table=`<table class="copy-table vp-table vp-two-row only-desk">
   <colgroup><col style="width:26%"><col style="width:12%"><col style="width:12%"><col style="width:17%"><col style="width:18%"><col style="width:15%"></colgroup>
@@ -210,7 +228,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
   <tbody>${list.map(p=>{
    const r=info(p),manual=p.origin==='copy'?'':' vp-manual';
    return `<tr class="vp-primary${manual}">
-    <td class="vp-symbol-cell" rowspan="2">${symTag(p.symbol,'vp-symbol')} ${badge(p)}${posActions(p)}</td>
+    <td class="vp-symbol-cell" rowspan="2">${symTag(p.symbol,'vp-symbol')} ${badge(p)} ${trBadge(p)}${posActions(p)}</td>
     <td>${side(p.direction)}</td>
     <td>${esc(p.leverage??'—')}배 <small class="muted">${mm(p)}</small></td>
     <td class="num">${esc(qtyFmt(p.size))}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td>
@@ -229,10 +247,11 @@ export function venuePositionsHTML(c,copyOpen=[]){
 }
 
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
-let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,analyticsOpen=false,analyticsTab='symbol',lastCopy=null,realTradeCtrl=null;
+let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,trailingOpen=false,analyticsOpen=false,analyticsTab='symbol',lastCopy=null,realTradeCtrl=null;
 export function setFailOpen(v){failOpen=!!v}
 export function setControlsOpen(v){controlsOpen=!!v}
 export function setAlertsOpen(v){alertsOpen=!!v}
+export function setTrailingOpen(v){trailingOpen=!!v}
 export function setAnalyticsOpen(v){analyticsOpen=!!v}
 export function setAnalyticsTab(t){if(['symbol','hour','leverage'].includes(t))analyticsTab=t}
 export const COPY_PAGE_SIZE=10;
@@ -497,6 +516,24 @@ export function copyHTML(c){
    </form>
    <span class="copy-msg" data-account-alerts-msg></span>
   </div></details>`:'';
+ const tr=c.trailing||null;
+ const trailingPanel=isLive&&tr?`<details class="copy-controls-fold"${trailingOpen?' open':''}><summary data-trailing-toggle>자동 트레일링 익절 (실계좌) <small>${tr.enabled?`ON · ${tr.applyToManual?'수동':''}${tr.applyToManual&&tr.applyToCopy?'+':''}${tr.applyToCopy?'카피':''} · +${esc(tr.partialLockRoePct)}%`:'OFF (기본 꺼짐)'}</small></summary>
+  <div class="copy-ctrl-body">
+   <form class="ctrl-form" data-real-trailing-form>
+    <label class="ctrl-check"><input name="enabled" type="checkbox"${tr.enabled?' checked':''}> <b>자동 트레일링 익절 활성화</b> (실계좌 자동 청산)</label>
+    <label class="ctrl-check"><input name="applyToManual" type="checkbox"${tr.applyToManual!==false?' checked':''}> 수동 포지션 적용</label>
+    <label class="ctrl-check"><input name="applyToCopy" type="checkbox"${tr.applyToCopy?' checked':''}> 카피 포지션 적용 (기본 OFF 권장)</label>
+    <label class="ctrl-check"><input name="autoBreakeven" type="checkbox"${tr.autoBreakeven!==false?' checked':''}> 50% 확정 후 잔여 물량 본전 스탑 자동 설정</label>
+    <label>부분 익절 ROE (%) <input name="partialLockRoePct" type="number" min="2" max="200" step="0.5" value="${esc(tr.partialLockRoePct??8)}"></label>
+    <label>부분 청산 비율 (0=끄기, 50=절반) <input name="partialClosePct" type="number" min="0" max="100" step="50" value="${esc(tr.partialClosePct??50)}"></label>
+    <label>트레일링 시작 ROE (%) <input name="trailActivateRoePct" type="number" min="2" max="200" step="0.5" value="${esc(tr.trailActivateRoePct??8)}"></label>
+    <label>고점 대비 되돌림 (%) <input name="trailPullbackRatio" type="number" min="5" max="70" step="1" value="${esc(tr.trailPullbackRatio??25)}"></label>
+    <label>최소 확정 ROE (%) <input name="minLockRoePct" type="number" min="0.5" max="50" step="0.5" value="${esc(tr.minLockRoePct??2)}"></label>
+    <label>제외 종목 (쉼표) <input name="excludedSymbols" type="text" placeholder="예: BTC, ETH" value="${esc((tr.excludedSymbols||[]).join(', '))}"></label>
+    <div class="ctrl-btn-row"><button type="submit" class="outline-btn small">트레일링 저장</button></div>
+   </form>
+   <span class="copy-msg" data-real-trailing-msg></span>
+  </div></details>`:'';
  const f=c.funds,stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
  // With the exchange list (real account), 보유 / 미실현 count every position, copy and manual alike.
  const vpList=c.mode==='LIVE'&&Array.isArray(c.venuePositions)?c.venuePositions:null,vpUnreal=(vpList||[]).reduce((t,p)=>t+(Number(p.unrealized)||0),0);
@@ -549,7 +586,7 @@ export function copyHTML(c){
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,Number(c.venuePositionsAt)||0,...fresh);
  const deferredNote=c.deferredEntries>0?`<p class="copy-stamp">⏳ 업데이트 대기 중인 카피 신호 ${esc(c.deferredEntries)}건 (재시작 직후 처리)</p>`:'';
  const stamp=isLive&&updated>0?`<p class="copy-stamp">${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
- const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${deferredNote}${stats}${controlsPanel}${alertsPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
+ const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${deferredNote}${stats}${controlsPanel}${alertsPanel}${trailingPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (c.analytics?analyticsHTML(c.analytics):'')+
@@ -620,6 +657,14 @@ export const TN_BADGE={signal:'<span class="vp-badge tn-signal">신호</span>',s
 // 단타·매물대 = 매물대 반전 (ZONE_REVERSAL, 2.5 % at a 4H / 1D volume zone).
 export function scalpBadge(kind){return kind==='ZONE_REVERSAL'?TN_BADGE.scalpZone:TN_BADGE.scalp}
 
+/** Proportional display scale for legacy uncapped VST items when a testnet capital cap (default $3,000) is active. */
+export function tnScaleOf(item,budget){
+ const ds=Number(budget?.displayScale),cap=Number(budget?.capitalCapUSD);
+ if(!(cap>0&&Number.isFinite(ds)&&ds>0&&ds<1))return 1;
+ if(fin(item?.capitalBasisUSD)&&Number(item.capitalBasisUSD)>0&&Number(item.capitalBasisUSD)<=cap*1.5)return 1;
+ return ds;
+}
+
 /** Status line: on / off and today's shared budget: "오늘 손실 −$x / 한도 $y (15%) · 열린 위험 $z". */
 export function testnetBudgetHTML(t){
  if(!t)return '';
@@ -629,7 +674,8 @@ export function testnetBudgetHTML(t){
  const who=t.partial?[t.signal?`신호 ${t.signal.armed?'●':'○'}`:null,t.scalp?`단타 ${t.scalp.armed?'●':'○'}`:null].filter(Boolean).join(' · '):'';
  const loss=Number(b.lossUSD)>0?`−$${Number(b.lossUSD).toFixed(2)}`:'$0.00';
  const capped=fin(b.equityUSD)&&fin(b.accountEquityUSD)&&b.accountEquityUSD>b.equityUSD;
- const balance=fin(b.equityUSD)?`${fin(b.accountEquityUSD)?`BingX 순자산 ${tnUsd(b.accountEquityUSD)}`:`기준 순자산 ${tnUsd(b.equityUSD)}`}${capped?` · 한도 기준 ${tnUsd(b.equityUSD)}`:''}${b.balanceAt?` · ${esc(auditTime(b.balanceAt))} KST`:''}`:'';
+ const scaledNote=capped&&fin(b.displayScale)&&Number(b.displayScale)<1?` · 기준 자본 ${tnUsd(b.equityUSD)} (VST 비례 환산)`:capped?` · 한도 기준 ${tnUsd(b.equityUSD)}`:'';
+ const balance=fin(b.equityUSD)?`${fin(b.accountEquityUSD)?`BingX 순자산 ${tnUsd(b.accountEquityUSD)}`:`기준 순자산 ${tnUsd(b.equityUSD)}`}${scaledNote}${b.balanceAt?` · ${esc(auditTime(b.balanceAt))} KST`:''}`:'';
  const budgetError=b.balanceError==='BALANCE_STALE'?'현재 순자산 갱신 지연':b.balanceError?'현재 순자산 조회 실패':'';
  return `${state}${who?`<span class="tn-who">${esc(who)}</span>`:''}<span class="tn-budget-nums">공동 한도 · 오늘 손실 <b class="${Number(b.lossUSD)>0?'paper-loss':''}">${loss}</b> / 한도 <b>${fin(b.limitUSD)?tnUsd(b.limitUSD):'잔고 확인 중'}</b> (${esc(b.dailyLossPct??'—')}%) · 열린 위험 <b>${tnUsd(b.openRiskUSD)}</b>${fin(b.marginUSD)?` · 증거금 ${tnUsd(b.marginUSD)} / ${fin(b.marginCapUSD)?tnUsd(b.marginCapUSD):'—'} (${esc(b.marginCapPct??'—')}%)`:''}</span>${balance?`<small class="tn-who">${balance}</small>`:''}${budgetError?`<small class="live-warn-text">${budgetError}</small>`:''}${t.scalpError?`<small class="muted">단타 켜지 않음: ${esc(t.scalpError)}</small>`:''}`;
 }
@@ -676,19 +722,28 @@ export function scalpScanStatusHTML(s,{now=Date.now()}={}){
 }
 
 /** One open scalp position as a card next to the signal cards (badge 단타). */
-export function scalpPositionCardHTML(p,{allowClose=false}={}){
+export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
  const px=v=>fin(v)?esc(+Number(v).toPrecision(6)):'—';
  const tgt=(p.targets||[]).map((t,i)=>p.parts?.[i]>0?`<i class="tn-tp${p.tpDone?.[i]?' paper-profit':''}">${px(t)}</i>`:null).filter(Boolean).join(' · ')||'—'; // <i>: the card styles every <span> as a cell
- const details=p.details??{firstEntryPrice:p.scaleIn?.initialEntry??p.avg,averageEntryPrice:p.avg,currentPrice:p.mark,
+ const sc=tnScaleOf(p,budget);
+ const rawDetails=p.details??{firstEntryPrice:p.scaleIn?.initialEntry??p.avg,averageEntryPrice:p.avg,currentPrice:p.mark,
   currentPriceSource:fin(p.mark)?'VENUE_TICKER':null,asset:String(p.symbol||'').replace(/USDT$/,''),
   quantity:{base:p.size},unrealized:fin(p.unrealized)?{usd:p.unrealized,source:'ESTIMATE'}:null,tickSize:p.tickSize};
+ const details=sc<1?{
+  ...rawDetails,
+  unrealized:rawDetails.unrealized&&fin(rawDetails.unrealized.usd)?{...rawDetails.unrealized,usd:Number(rawDetails.unrealized.usd)*sc}:rawDetails.unrealized,
+  margin:rawDetails.margin&&fin(rawDetails.margin.usd)?{...rawDetails.margin,usd:Number(rawDetails.margin.usd)*sc}:rawDetails.margin,
+  realizedOpen:rawDetails.realizedOpen&&fin(rawDetails.realizedOpen.usd)?{...rawDetails.realizedOpen,usd:Number(rawDetails.realizedOpen.usd)*sc}:rawDetails.realizedOpen,
+ }:rawDetails;
+ const riskVal=fin(p.riskUSD)?Number(p.riskUSD)*sc:p.riskUSD;
+ const scaleBadge=sc<1?`<span class="vp-badge" title="기존 VST 포지션을 기준 자본(${tnUsd(budget?.capitalCapUSD)})에 비례 환산해 표시 (신규 매매는 1:1)">비례환산</span>`:'';
  return `<article class="paper-trade live-position tn-scalp-card${p.status&&p.status!=='OPEN'?' live-warn':''}">
- <header><b>${esc(p.symbol)}</b>${scalpBadge(p.kind)}${side(p.direction||'LONG')}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · BingX</span><span class="live-state s-${esc(p.status||'OPEN')}">${esc(p.status==='OPEN'||!p.status?'보유 중':p.status)}</span></header>
+ <header><b>${esc(p.symbol)}</b>${scalpBadge(p.kind)}${scaleBadge}${side(p.direction||'LONG')}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · BingX</span><span class="live-state s-${esc(p.status||'OPEN')}">${esc(p.status==='OPEN'||!p.status?'보유 중':p.status)}</span></header>
  <div class="paper-trade-values live-values">
   ${positionMetricsHTML(details)}
   ${p.stopLossEnabled===false?'<span>자동 손절<b>없음</b></span>':`<span>손절가<b>${px(p.stop)}</b>${p.breakevenMoved?'<small>1차 목표 뒤 본전</small>':''}</span>`}
   <span class="tp-cell">목표<b>${tgt}</b></span>
-  <span>${p.stopLossEnabled===false?'한도 계산 위험':'위험'}<b>${tnUsd(p.riskUSD)}</b></span>
+  <span>${p.stopLossEnabled===false?'한도 계산 위험':'위험'}<b>${tnUsd(riskVal)}</b></span>
   <span>보유<b>${tnHeld(p.openedAt||p.createdAt,Date.now())}째</b>${p.stopLossEnabled===false?'':'<small>최대 2시간</small>'}</span>
  </div>${p.kind==='ZONE_REVERSAL'&&p.zone?.tf?`<p class="copy-rules tn-zone">매물대 반전 · ${esc(String(p.zone.tf).toUpperCase())} 매물대 ${px(p.zone.low)}~${px(p.zone.high)}${fin(p.zone.sharePct)?` · 거래량 ${esc(Number(p.zone.sharePct).toFixed(1))}% · ${esc(p.zone.rank)}위`:''}${fin(p.zone.distPct)&&p.zone.distPct>0?` · ${esc(Number(p.zone.distPct).toFixed(2))}% 거리`:''}</p>`:''}
  ${allowClose&&p.status==='OPEN'&&p.size>0&&p.id?testnetCloseButton('scalp',p.id,p):''}
@@ -701,7 +756,7 @@ export function testnetCloses(o){
  const sig=(o?.testnet?.scalpOnly?[]:o?.closed||[]).filter(c=>c.mode==='TESTNET'&&c.test!==true).map(c=>({kind:'signal',key:c.signalKey,symbol:c.symbol,direction:c.direction,openedAt:c.createdAt,closedAt:c.closedAt,reason:c.closeReasonKo||c.closeReason,
   netUSD:c.realized?.netUSD??null,source:c.realized?.source||'PENDING',test:c.test===true,deletable:c.deletable===true}));
  const sc=(o?.scalp?.closed||[]).map(x=>({kind:'scalp',scalpKind:x.kind||'MOVE_REVERSAL',key:x.id,symbol:x.symbol,direction:x.direction||'LONG',openedAt:x.openedAt||x.createdAt,closedAt:x.closedAt,reason:x.closeReasonKo||x.closeReason,
-  netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',r:x.rMultiple??null,leverage:x.leverage,margin:x.margin}));
+  netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',r:x.rMultiple??null,leverage:x.leverage,margin:x.margin,capitalBasisUSD:x.capitalBasisUSD??null}));
  return [...sig,...sc].sort((a,b)=>(Number(b.closedAt)||0)-(Number(a.closedAt)||0));
 }
 let tnPage=0,lastTestnet=null;
@@ -716,7 +771,17 @@ const tnResult=x=>x.source==='PENDING'?'<span class="muted">정산 중</span>':x
 /** The merged 종료된 거래 list, 10 per page (the copy page's pager), desktop table / phone list. */
 export function testnetClosedHTML(o){
  lastTestnet=o;
- const all=testnetCloses(o);
+ const budget=o?.testnet?.budget??null;
+ const all=testnetCloses(o).map(x=>{
+  const sc=tnScaleOf(x,budget);
+  if(!(sc<1))return x;
+  const m=x.margin?{
+   initialUSD:fin(x.margin.initialUSD)?Number(x.margin.initialUSD)*sc:x.margin.initialUSD,
+   addedUSD:fin(x.margin.addedUSD)?Number(x.margin.addedUSD)*sc:x.margin.addedUSD,
+   totalUSD:fin(x.margin.totalUSD)?Number(x.margin.totalUSD)*sc:x.margin.totalUSD,
+  }:x.margin;
+  return {...x,netUSD:fin(x.netUSD)?Number(x.netUSD)*sc:x.netUSD,margin:m};
+ });
  if(!all.length)return '<p class="empty-small">아직 종료된 테스트넷 거래가 없습니다.</p>';
  const pages=Math.max(1,Math.ceil(all.length/TESTNET_PAGE_SIZE)),page=Math.min(tnPage,pages-1),shown=all.slice(page*TESTNET_PAGE_SIZE,page*TESTNET_PAGE_SIZE+TESTNET_PAGE_SIZE);
  const pager=pages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-tn-page="-1"${page===0?' disabled':''}>‹ 이전</button><span class="muted">${page+1} / ${pages}쪽</span><button type="button" class="outline-btn small" data-tn-page="1"${page>=pages-1?' disabled':''}>다음 ›</button></div>`:'';
@@ -727,13 +792,14 @@ export function testnetClosedHTML(o){
  return `<ul class="copy-list only-mob">${shown.map(li).join('')}</ul>${scrollCopyTable(table,'테스트넷 종료 거래')}${pager}`;
 }
 /** Totals over both strategies (server testnetStats) and the 신호 / 단타 breakdown line. */
-export function testnetSummaryHTML(st,{scalpOnly=false,open=[]}={}){
+export function testnetSummaryHTML(st,{scalpOnly=false,open=[],budget=null}={}){
  const a=st?.all||{},s=st?.signal||{},c=st?.scalp||{};
  const priced=open.filter(p=>fin(p?.usd));
  const unrealized=priced.length?priced.reduce((total,p)=>total+Number(p.usd),0):open.length?null:0;
  const coverage=priced.length<open.length?`확인 ${priced.length}/${open.length}건`:`보유 ${open.length}건`;
  const profitSource=priced.some(p=>p.source==='ESTIMATE')?' · 추정 포함':'';
- return `<div><span>누적 실현 손익 (수수료 반영)</span><strong class="${tnCls(a.netUSD)}">${a.trades?tnMoney(a.netUSD):'—'}</strong></div>
+ const scaledCap=fin(budget?.capitalCapUSD)&&Number(budget.capitalCapUSD)>0&&fin(budget?.displayScale)&&Number(budget.displayScale)<1?`<small>기준 자본 ${tnUsd(budget.capitalCapUSD)} 비례 환산</small>`:'';
+ return `<div><span>누적 실현 손익 (수수료 반영)</span><strong class="${tnCls(a.netUSD)}">${a.trades?tnMoney(a.netUSD):'—'}</strong>${scaledCap}</div>
  <div><span>미실현 손익 합계</span><strong class="${tnCls(unrealized)}">${unrealized===0?'$0.00':tnMoney(unrealized)}</strong><small>${coverage}${profitSource}</small></div>
  <div><span>거래</span><strong>${esc(a.trades??0)}건</strong><small>${esc(a.wins??0)}승 ${esc((a.trades??0)-(a.wins??0))}패</small></div>
  <div><span>승률</span><strong>${fin(a.winRatePct)?Number(a.winRatePct).toFixed(1)+'%':'—'}</strong></div>
@@ -844,6 +910,29 @@ function bindCopyButtons(el){
   finally{copyActionBusy=false;if(btn&&origText!=null){btn.disabled=false;btn.textContent=origText}}
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('submit',e=>{
+  const trailingForm=e.target.closest('[data-real-trailing-form]');
+  if(trailingForm){
+   e.preventDefault();
+   const ck=n=>Boolean(trailingForm.elements.namedItem(n)?.checked);
+   const numv=n=>Number(trailingForm.elements.namedItem(n)?.value);
+   const enabled=ck('enabled');
+   if(enabled&&!lastCopy?.trailing?.enabled){
+    if(!window.confirm('⚠️ 실계좌 자동 트레일링 익절을 켭니다.\n설정한 ROE 도달 시 50% 부분 익절·본전 스탑·고점 대비 트레일링 청산 주문이 자동으로 실행됩니다. 계속할까요?'))return;
+   }
+   const body={
+    enabled,
+    applyToManual:ck('applyToManual'),
+    applyToCopy:ck('applyToCopy'),
+    autoBreakeven:ck('autoBreakeven'),
+    partialLockRoePct:numv('partialLockRoePct'),
+    partialClosePct:numv('partialClosePct'),
+    trailActivateRoePct:numv('trailActivateRoePct'),
+    trailPullbackRatio:numv('trailPullbackRatio'),
+    minLockRoePct:numv('minLockRoePct'),
+    excludedSymbols:String(trailingForm.elements.namedItem('excludedSymbols')?.value||''),
+   };
+   return call(trailingForm.querySelector('button[type="submit"]'),'/api/real/trailing',body,'저장 중…','[data-real-trailing-msg]');
+  }
   const alertsForm=e.target.closest('[data-account-alerts-form]');
   if(alertsForm){
    e.preventDefault();
@@ -878,7 +967,12 @@ function bindCopyButtons(el){
   if(e.target.closest('[data-fail-toggle]')){failOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-controls-toggle]')){controlsOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-alerts-toggle]')){alertsOpen=!e.target.closest('details')?.open;}
+  if(e.target.closest('[data-trailing-toggle]')){trailingOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-analytics-toggle]')){analyticsOpen=!e.target.closest('details')?.open;}
+  const trailBtn=e.target.closest('[data-trail-toggle]');
+  if(trailBtn){
+   return call(trailBtn,'/api/real/trailing',{toggleExcludeSymbol:trailBtn.dataset.trailToggle},'처리 중…','[data-real-trailing-msg]');
+  }
   const anTab=e.target.closest('[data-analytics-tab]');
   if(anTab){
    setAnalyticsTab(anTab.dataset.analyticsTab);
@@ -966,7 +1060,11 @@ function render(o){
  const budgetEdit=$('testnetBudgetEdit'),budgetForm=$('testnetBudgetForm');
  if(budgetEdit&&budgetForm){
   budgetEdit.hidden=!tn?.budget||!canArm;
-  if(tn?.budget&&!budgetEdit.open){for(const key of ['dailyLossPct','marginCapPct'])budgetForm.elements.namedItem(key).value=tn.budget[key]??''}
+  if(tn?.budget&&!budgetEdit.open){
+   for(const key of ['dailyLossPct','marginCapPct'])budgetForm.elements.namedItem(key).value=tn.budget[key]??'';
+   const capEl=budgetForm.elements.namedItem('capitalCapUSD');
+   if(capEl)capEl.value=tn.budget.capitalCapUSD??0;
+  }
  }
  const scanEl=$('scalpScanStatus');
  if(scanEl){const scanHtml=tn&&o.scalp?scalpScanStatusHTML(o.scalp):'';scanEl.hidden=!scanHtml;if(scanHtml)scanEl.innerHTML=scanHtml}
@@ -989,7 +1087,7 @@ function render(o){
   const drafts=new Map();box.querySelectorAll('[data-live-levels-key]').forEach(d=>{if(d.open){const v={};d.querySelectorAll('input').forEach(i=>{v[i.name]=i.value});drafts.set(d.dataset.liveLevelsKey,v)}});
   // Testnet: the signal strategy's cards (badge 신호, stop/TP editor) and the scalp's (badge 단타) in one list.
   const scalpOpen=tn?(o.scalp?.positions||[]):[],signalCards=(o.positions||[]).map(p=>positionCardHTML(p,tn?{badge:scalpOnly?'<span class="vp-badge">기존 신호</span>':TN_BADGE.signal,allowClose:true}:{}));
-  const scalpCards=scalpOpen.map(p=>scalpPositionCardHTML(p,{allowClose:true})),cards=scalpOnly?[...scalpCards,...signalCards]:[...signalCards,...scalpCards];
+  const scalpCards=scalpOpen.map(p=>scalpPositionCardHTML(p,{allowClose:true,budget:tn?.budget??null})),cards=scalpOnly?[...scalpCards,...signalCards]:[...signalCards,...scalpCards];
   box.innerHTML=cards.length?cards.join(''):`<p class="empty-small">${o.mode==='OFF'&&!tn?.scalp?'실매매가 꺼져 있습니다.':on||some?`보유 중인 포지션이 없습니다. ${scalpOnly?'단타':'신호·단타'} 진입을 기다리는 중입니다.`:'보유 중인 포지션이 없습니다. “활성화”를 눌러야 주문이 나갑니다.'}</p>`;
   box.querySelectorAll('[data-live-levels-key]').forEach(d=>{const v=drafts.get(d.dataset.liveLevelsKey);if(!v)return;d.open=true;d.querySelectorAll('input').forEach(i=>{if(!i.disabled&&v[i.name]!==undefined)i.value=v[i.name]})});
  }
@@ -1001,8 +1099,13 @@ function render(o){
  if(tn&&testnetSummary){
   const signal=(o.positions||[]).filter(p=>p.mode==='TESTNET'&&p.test!==true&&(p.status==='OPEN'||p.quantity?.source==='EXCHANGE'));
   const scalp=(o.scalp?.positions||[]).filter(p=>p.size>0);
-  const open=[...signal.map(p=>p.unrealized),...scalp.map(p=>p.details?p.details.unrealized:fin(p.unrealized)?{usd:p.unrealized,source:'ESTIMATE'}:null)];
-  testnetSummary.innerHTML=testnetSummaryHTML(tn.stats,{scalpOnly,open});
+  const open=[...signal.map(p=>p.unrealized),...scalp.map(p=>{
+   const u=p.details?p.details.unrealized:fin(p.unrealized)?{usd:p.unrealized,source:'ESTIMATE'}:null;
+   if(!u||!fin(u.usd))return u;
+   const sc=tnScaleOf(p,tn.budget);
+   return sc<1?{...u,usd:Number(u.usd)*sc}:u;
+  })];
+  testnetSummary.innerHTML=testnetSummaryHTML(tn.stats,{scalpOnly,open,budget:tn.budget});
  }
  // Real-money copy has its own page (실계좌); the testnet page keeps only testnet copies.
  const copy=o.copy,real=copy?.mode==='LIVE';
@@ -1088,9 +1191,16 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
   if(btn.disabled)return;
   btn.disabled=true;msg.textContent='저장 중…';
   try{
-   const {budget}=await post('/api/live/testnet-budget',{dailyLossPct:form.elements.namedItem('dailyLossPct').valueAsNumber,marginCapPct:form.elements.namedItem('marginCapPct').valueAsNumber},{lockLive:false});
+   const capEl=form.elements.namedItem('capitalCapUSD');
+   const capRaw=capEl&&capEl.value!==''?capEl.valueAsNumber:undefined;
+   const payload={
+    dailyLossPct:form.elements.namedItem('dailyLossPct').valueAsNumber,
+    marginCapPct:form.elements.namedItem('marginCapPct').valueAsNumber,
+    ...(capRaw!==undefined&&Number.isFinite(capRaw)?{capitalCapUSD:capRaw}:{}),
+   };
+   const {budget}=await post('/api/live/testnet-budget',payload,{lockLive:false});
    msg.textContent=budget.stopped?'저장됨 · 오늘 거래 정지 상태':'저장됨';
-  }catch(err){msg.textContent=err.message==='INVALID_TESTNET_BUDGET'?'하루 손실 1~50%, 증거금 1~30%를 입력하세요.':'공동 한도 변경 결과를 확인하지 못했습니다.'}
+  }catch(err){msg.textContent=err.message==='INVALID_TESTNET_BUDGET'?'하루 손실 1~50%, 증거금 1~30%, 기준 자본 $100 이상(0=전체)을 입력하세요.':'공동 한도 변경 결과를 확인하지 못했습니다.'}
   finally{btn.disabled=false}
  });
  $('liveKill')?.addEventListener('click',()=>{if(!liveActionBusy)post('/api/live/kill').catch(fail)});
