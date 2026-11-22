@@ -56,7 +56,7 @@ export class TestnetBudget{
    settings={...settings,dailyLossPct:100,marginCapPct:100,v100Migrated:true};
    migrated=true;
   }
-  this.state={stop:saved?.stop&&typeof saved.stop.day==='string'?saved.stop:null,settings:valid?settings:null};
+  this.state={stop:migrated?null:(saved?.stop&&typeof saved.stop.day==='string'?saved.stop:null),settings:valid?settings:null};
   if(valid){
    Object.assign(this,{dailyLossPct:settings.dailyLossPct,marginCapPct:settings.marginCapPct});
    if(Object.hasOwn(settings,'capitalCapUSD'))this.capitalCapUSD=Number(settings.capitalCapUSD)>0?Number(settings.capitalCapUSD):null;
