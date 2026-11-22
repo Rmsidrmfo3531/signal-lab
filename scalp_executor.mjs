@@ -48,12 +48,23 @@ export const SCALP_ZONE_MIN_MOVE_PCT=SCALP_TIMEFRAMES['5m'].minMovePct;
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 export const SCALP_EXEC_COSTS=Object.freeze({takerRate:.0006,makerRate:.0002,slippageBps:2,spreadBps:1,fundingRate:.0001,assumption:'EXPLICIT_PAPER_ASSUMPTIONS'});
 export const SCALP_SCALE_IN=Object.freeze({version:1,windowBars:6,near:.5,far:.75});
-export const SCALP_REPEAT_SCALE_IN=Object.freeze({version:2,stepR:.5});
+export const SCALP_REPEAT_SCALE_IN=Object.freeze({
+ version:2,
+ stepR:1.0,
+ stepRs:Object.freeze([1.0,2.0,3.5,5.0]),
+ qtyMultipliers:Object.freeze([1.0,1.0,1.5,2.0]),
+ maxAdds:4,
+ slippagePct:0.35,
+ minPartialRemainRatio:0.25,
+});
 const SCREEN_CLOSED=100,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.25],MAX_CLOSED=300,MAX_EVENTS=200,MAX_SKIPS=60,MAX_KEYS=500,SETTLE_DELAY_MS=150000,SETTLE_TRIES=4;
 const EARLY_TAKE_PROFIT_MS=45*60000,EARLY_EXIT_RETRY_MS=60000;
 const PROFIT_ONLY_EARLY_EXIT_MIN=15,PROFIT_ONLY_RETRY_MS=5000;
 export const SCALP_PROFIT_HOLD_TARGET_MIN=60;
 export const SCALP_MIN_PROFIT_ROE_PCT=10;
+export const SCALP_SCALE_IN_MIN_ROE_PCT=5;
+export const SCALP_TRAIL_PULLBACK_RATIO=0.25;
+export const SCALP_TRAIL_MIN_PULLBACK_ROE=1.5;
 const REVERSAL_RECHECK_MS=30*60000;
 const WYCKOFF_SCAN_BUDGET_MS=12_000;
 const RECHECK_REASONS=new Set(['PRICE_DRIFT','TP1_NET_RR_BELOW_MINIMUM']);
@@ -811,8 +822,41 @@ export class ScalpExecutor{
    this.#save();return true;
   }catch(e){const reason=e?.code||e?.message;if(p.stopRetirementError!==reason)this.#event('SCALP_STOP_CANCEL_PENDING',{symbol:p.symbol,reason});p.stopRetirementError=reason;return false}
  }
+ #partialTooSmall(p,size=p.size){
+  const base=pos(p.scaleIn?.initialQty)??pos(p.initialQty)??pos(p.filled);
+  if(!(base>0))return p.everReduced===true;
+  return p.everReduced===true&&!(size>=base*SCALP_REPEAT_SCALE_IN.minPartialRemainRatio-1e-12);
+ }
+ #repeatStepR(count=0){
+  const arr=SCALP_REPEAT_SCALE_IN.stepRs;
+  return arr[Math.min(Math.max(0,Number(count)||0),arr.length-1)]??SCALP_REPEAT_SCALE_IN.stepR;
+ }
+ #repeatMultiplier(count=0){
+  const arr=SCALP_REPEAT_SCALE_IN.qtyMultipliers;
+  return arr[Math.min(Math.max(0,Number(count)||0),arr.length-1)]??1;
+ }
+ async #isFallingKnife(symbol,direction,now){
+  if(typeof this.candles!=='function')return false;
+  const rows=await withTimeout(this.candles(symbol,'5m',3),2500);
+  if(!Array.isArray(rows)||!rows.length)return false;
+  const closed=rows.filter(r=>{const ct=Number(r?.[6]);return ct>0&&ct<now&&now-ct<=2*I5});
+  const bar=closed.at(-1);
+  if(!bar)return false;
+  const o=Number(bar[1]),h=Number(bar[2]),l=Number(bar[3]),c=Number(bar[4]),range=h-l;
+  if(!(range>0&&o>0&&c>0))return false;
+  const body=Math.abs(c-o);
+  if(direction==='SHORT')return c>o&&body/range>=0.65&&(h-c)/range<0.20;
+  return c<o&&body/range>=0.65&&(c-l)/range<0.20;
+ }
  #enableRepeat(p){
-  if(!this.config.scaleIn||p.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version)return;
+  if(!this.config.scaleIn)return;
+  if(p.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version){
+   // Re-open positions that were previously skipped solely due to partial exit when >=25% remains and under maxAdds.
+   if(p.scaleIn.state==='SKIPPED'&&p.scaleIn.reason==='POSITION_CHANGED'&&!this.#partialTooSmall(p)&&(p.scaleIn.count||0)<SCALP_REPEAT_SCALE_IN.maxAdds){
+    p.scaleIn.state='WATCH';p.scaleIn.reason=null;this.#save();
+   }
+   return;
+  }
   const a=p.scaleIn,opening=p.steps?.find(s=>s.kind==='OPEN'),initialEntry=pos(a?.initialEntry)??pos(opening?.avg)??pos(p.avg);
   const initialQty=pos(a?.initialQty)??pos(opening?.qty)??pos(p.filled);
   if(!initialEntry||!initialQty||!pos(p.leverage))return;
@@ -824,7 +868,7 @@ export class ScalpExecutor{
  }
  #repeatDistance(p){
   const entry=pos(p.scaleIn?.initialEntry)??pos(p.avg)??p.entry;
-  return Math.max(Number(p.tickSize),Math.abs(entry-p.initialStop)*SCALP_REPEAT_SCALE_IN.stepR);
+  return Math.max(Number(p.tickSize),Math.abs(entry-p.initialStop)*this.#repeatStepR(p.scaleIn?.count||0));
  }
  #repeatTrigger(p){return p.scaleIn.anchor-dirOf(p.direction)*this.#repeatDistance(p)}
  #repeatRisk(p,entry,mark){
@@ -835,46 +879,78 @@ export class ScalpExecutor{
  async #considerRepeat(p,mark){
   const a=p.scaleIn,dir=dirOf(p.direction),bucket=Math.floor(this.now()/I5),step=Number(p.quantityStep);
   if(!this.config.scaleIn||a?.state!=='WATCH'||this.#blocked()||!mark||bucket<=Math.floor(p.openedAt/I5)||a.checkedBucket===bucket)return;
-  if(Math.abs(p.size-p.filled)>step/2||p.everReduced){this.#addDecision(p,'SKIPPED','POSITION_CHANGED');return}
+  if((a.count||0)>=SCALP_REPEAT_SCALE_IN.maxAdds){a.lastReason='MAX_ADDS_REACHED';return}
+  if(this.#partialTooSmall(p)||(!p.everReduced&&Math.abs(p.size-p.filled)>step/2)){this.#addDecision(p,'SKIPPED','POSITION_CHANGED');return}
   const trigger=this.#repeatTrigger(p);
   if(!(trigger>0)||dir*(mark-trigger)>1e-12)return;
   a.checkedBucket=bucket;
+  if(await this.#isFallingKnife(p.symbol,p.direction,this.now())){a.lastReason='FALLING_KNIFE';return}
   const revision=this.entryRevision,vs=p.venueSymbol,hedge=p.hedge===true;
-  const [price,funds,fresh]=await Promise.all([withTimeout(this.priceOf(p.symbol,vs),3000),this.#funds({requireAvailable:true}),this.#position(vs,p.direction,hedge)]);
+  const [price,funds,fresh,levInfo]=await Promise.all([
+   withTimeout(this.priceOf(p.symbol,vs),3000),
+   this.#funds({requireAvailable:true}),
+   this.#position(vs,p.direction,hedge),
+   typeof this.client.leverage==='function'?withTimeout(this.client.leverage(vs),2500):null,
+  ]);
   if(!funds){a.lastReason='NO_BALANCE';return}
-  if(!fresh.avg||Math.abs(fresh.size-p.size)>step/2||Math.abs(fresh.avg-p.avg)>Number(p.tickSize)/2){a.lastReason='POSITION_CHANGED';return}
+  if(!fresh.avg||Math.abs(fresh.size-p.size)>step/2||Math.abs(fresh.avg-p.avg)>Number(p.tickSize)/2||this.#partialTooSmall(p,fresh.size)){a.lastReason='POSITION_CHANGED';return}
   if(!pos(price)||!fresh.mark||dir*(price-trigger)>1e-12||dir*(fresh.mark-trigger)>1e-12){a.lastReason='PRICE_OUTSIDE_BAND';return}
   const limit=pos(grid(trigger,p.tickSize,awayMode(p.direction)));
   if(!limit||dir*(price-limit)>1e-12){a.lastReason='PRICE_OUTSIDE_BAND';return}
-  // A marketable limit capped at one tick through the checked quote, and never past the adverse trigger.
-  const bound=Number(grid(price+dir*Number(p.tickSize),p.tickSize,awayMode(p.direction)));
-  const orderPrice=dir>0?Math.min(limit,bound):Math.max(limit,bound);
-  if(!(fresh.size>=a.minPart&&fresh.size*orderPrice>=a.minNotional)){a.lastReason='MIN_QUANTITY';return}
+  // Marketable IOC limit with 0.35% slippage allowance (capped near trigger) so thin orderbooks fill partially/fully instead of FOK-canceling.
+  const slip=SCALP_REPEAT_SCALE_IN.slippagePct/100;
+  const bound=Number(grid(price*(1+dir*slip),p.tickSize,awayMode(p.direction)))||Number(grid(price+dir*Number(p.tickSize),p.tickSize,awayMode(p.direction)));
+  const triggerCap=Number(grid(limit*(1+dir*0.0015),p.tickSize,awayMode(p.direction)))||limit;
+  const orderPrice=dir>0?Math.min(triggerCap,bound):Math.max(triggerCap,bound);
+  const baseQty=p.everReduced?fresh.size:(pos(a.initialQty)??fresh.size);
+  const desiredQty=baseQty*this.#repeatMultiplier(a.count||0);
+  if(!(desiredQty>=a.minPart&&desiredQty*orderPrice>=a.minNotional)){a.lastReason='MIN_QUANTITY';return}
   const room=this.#scaleBudgetRoom(funds.equity);
   if(!room){a.lastReason='TESTNET_BUDGET';return}
+  const rawVenueRoom=p.direction==='SHORT'?levInfo?.availableShortVol:levInfo?.availableLongVol;
+  const parsedVenueRoom=typeof rawVenueRoom==='number'||(typeof rawVenueRoom==='string'&&rawVenueRoom.trim()!=='')?num(rawVenueRoom):null;
+  const venueRoom=parsedVenueRoom!==null&&parsedVenueRoom>=0?parsedVenueRoom:null;
+  if(venueRoom!==null&&!(venueRoom>=a.minPart&&venueRoom*orderPrice>=a.minNotional)){a.lastReason='VENUE_POSITION_LIMIT';return}
   const marginUnit=orderPrice/p.leverage,riskUnit=this.#repeatRisk(p,orderPrice,fresh.mark);
   const extraExistingRisk=Math.max(0,this.#repeatRisk(p,fresh.avg,fresh.mark)*fresh.size-this.#repeatRisk(p,p.avg,p.mark)*p.size);
   const availRisk=Math.max(0,room.risk-extraExistingRisk);
   const cap=Math.min(funds.available*.9,funds.equity*this.config.maxMarginPct/100-fresh.size*fresh.avg/p.leverage,room.margin);
-  // Scale from the exchange-confirmed holding. Use a smaller order when funds or risk are tight.
-  const maxQty=Math.min(fresh.size,cap/marginUnit,riskUnit>0?availRisk/riskUnit:Infinity);
+  // Controlled progressive multiplier capped by confirmed funds, shared budget, and BingX remaining side volume.
+  const maxQty=Math.min(desiredQty,cap/marginUnit,riskUnit>0?availRisk/riskUnit:Infinity,venueRoom??Infinity);
   const quantity=Number(grid(Math.max(0,maxQty),p.quantityStep,'DOWN'));
-  if(!(quantity>0&&quantity>=a.minPart&&quantity*orderPrice>=a.minNotional)){a.lastReason='RISK_OR_MARGIN_CAP';return}
-  const margin=quantity*marginUnit,risk=quantity*riskUnit;
+  if(!(quantity>0&&quantity>=a.minPart&&quantity*orderPrice>=a.minNotional)){a.lastReason=venueRoom!==null&&venueRoom<desiredQty?'VENUE_POSITION_LIMIT':'RISK_OR_MARGIN_CAP';return}
   const guard=()=>this.#blocked(p.id)||(revision!==this.entryRevision?'NOT_ARMED':null)
    ||(Math.floor(this.now()/I5)!==bucket?'WINDOW_EXPIRED':null)||(!this.#scaleBudget(funds.equity)?'TESTNET_BUDGET':null);
   if(guard())return;
-  a.attempt++;
-  const id=p.id+'a'+(a.attempt+1); // a1 was used by the single-add strategy.
-  Object.assign(a,{state:'PENDING',clientOrderId:id,attemptedAt:this.now(),limit:orderPrice,requestedQty:quantity,
-   reservedRiskUSD:risk,reservedMarginUSD:margin,plannedMarginUSD:margin,unknownLogged:false,lastReason:null});
-  this.#save();
-  let order;
-  try{order=orderOf(await this.client.placeOrder({symbol:vs,side:openSide(p.direction),positionSide:positionSideFor({hedge,direction:p.direction}),
-   type:'LIMIT',timeInForce:'FOK',price:String(orderPrice),quantity:String(quantity),clientOrderId:id},{beforeSend:guard}))}
-  catch(e){
-   if(e?.code==='ENTRY_NOT_SENT'||/^VENUE_ERROR_\d+$/.test(e?.code||'')&&!/duplicate|exist/i.test(e?.message||'')){
-    this.#retryRepeat(p,e.reason||e.code);return;
+  // Send IOC limit; on BingX 101429 (symbol position limit) automatically downsize 50% -> 25% before giving up.
+  const scales=[1,0.5,0.25];
+  let order,lastTryQty=Infinity;
+  for(const factor of scales){
+   const tryQty=factor===1?quantity:Number(grid(quantity*factor,p.quantityStep,'DOWN'));
+   if(!(tryQty>0&&tryQty>=a.minPart&&tryQty*orderPrice>=a.minNotional&&tryQty<lastTryQty)){
+    if(factor<1){this.#retryRepeat(p,'VENUE_POSITION_LIMIT');return}
+    break;
+   }
+   lastTryQty=tryQty;
+   const margin=tryQty*marginUnit,risk=tryQty*riskUnit;
+   a.attempt++;
+   const id=p.id+'a'+(a.attempt+1); // a1 was used by the single-add strategy.
+   Object.assign(a,{state:'PENDING',clientOrderId:id,attemptedAt:this.now(),limit:orderPrice,requestedQty:tryQty,preAddSize:fresh.size,
+    reservedRiskUSD:risk,reservedMarginUSD:margin,plannedMarginUSD:margin,unknownLogged:false,lastReason:null});
+   this.#save();
+   try{
+    order=orderOf(await this.client.placeOrder({symbol:vs,side:openSide(p.direction),positionSide:positionSideFor({hedge,direction:p.direction}),
+     type:'LIMIT',timeInForce:'IOC',price:String(orderPrice),quantity:String(tryQty),clientOrderId:id},{beforeSend:guard}));
+    break;
+   }catch(e){
+    if(e?.code===POSITION_LIMIT_ERROR){
+     if(factor===scales.at(-1)){this.#retryRepeat(p,'VENUE_POSITION_LIMIT');return}
+     continue;
+    }
+    if(e?.code==='ENTRY_NOT_SENT'||/^VENUE_ERROR_\d+$/.test(e?.code||'')&&!/duplicate|exist/i.test(e?.message||'')){
+     this.#retryRepeat(p,e.reason||e.code);return;
+    }
+    break;
    }
   }
   await this.#recoverRepeat(p,order);
@@ -894,7 +970,8 @@ export class ScalpExecutor{
    }
    if(absent){
     const fresh=await this.#position(vs,p.direction,p.hedge===true).catch(()=>null);
-    if(fresh&&Number.isFinite(fresh.size)&&fresh.size<=p.filled+(Number(p.quantityStep)||0)/2){
+    const baseSize=pos(a.preAddSize)??pos(p.size)??p.filled;
+    if(fresh&&Number.isFinite(fresh.size)&&fresh.size<=baseSize+(Number(p.quantityStep)||0)/2){
      if(a.version===SCALP_REPEAT_SCALE_IN.version)this.#retryRepeat(p,'ORDER_NOT_FOUND');else this.#addDecision(p,'SKIPPED','ORDER_NOT_FOUND');
      return;
     }
@@ -912,9 +989,12 @@ export class ScalpExecutor{
    const added=pos(order.executedQty),fill=pos(order.avgPrice);
    if((!added&&status==='FILLED')||(added&&!fill))return;
    if(!added){if(a.version===SCALP_REPEAT_SCALE_IN.version)this.#retryRepeat(p,'NOT_FILLED');else this.#addDecision(p,'SKIPPED','NOT_FILLED');return}
+   const prevSize=pos(a.preAddSize)??pos(p.size)??p.filled;
+   const newSize=prevSize+added;
    const total=p.filled+added;
    Object.assign(a,{fillQty:added,fillPrice:fill,fillMarginUSD:fill*added/p.leverage,filledAt:this.now()});
-   p.avg=(p.avg*p.filled+fill*added)/total;p.filled=total;p.size=total;p.marginUSD=p.avg*total/p.leverage;
+   p.avg=(p.avg*prevSize+fill*added)/newSize;p.filled=total;p.size=newSize;p.marginUSD=p.avg*newSize/p.leverage;
+   p.trailPeakRoePct=null;
    p.steps.push({kind:'ADD',at:a.filledAt,qty:added,avg:p.avg});
    a.state='RESIZE';this.#save();
   }
@@ -923,13 +1003,16 @@ export class ScalpExecutor{
   const alreadyAllocated=a.version!==SCALP_REPEAT_SCALE_IN.version&&applied;
   const extra=alreadyAllocated?Math.max(0,p.filled-p.parts.reduce((n,q)=>n+q,0)):a.fillQty;
   let committed=p.parts.reduce((n,q)=>n+q,0)+(p.addTargets||[]).reduce((n,g)=>n+g.parts.reduce((sum,q)=>sum+q,0),0);
-  if(fresh.size+Number(p.quantityStep)/2<p.filled){
+  const expectedSize=pos(a.preAddSize)?a.preAddSize+a.fillQty:p.filled;
+  if(fresh.size+Number(p.quantityStep)/2<expectedSize){
    const ids=[...p.tpOrderIds,...(p.addTargets||[]).flatMap(g=>g.ids)].filter(Boolean);
    let reduced=0;
    for(const id of ids){const current=orderOf(await this.client.getOrder(vs,{orderId:id}));reduced+=pos(current?.executedQty)??0}
-   if(reduced+Number(p.quantityStep)/2<p.filled-fresh.size&&this.now()-a.filledAt<45000)return;
+   if(reduced+Number(p.quantityStep)/2<expectedSize-fresh.size&&this.now()-a.filledAt<45000)return;
    committed-=reduced;
    p.everReduced=true;
+  }else if(p.everReduced&&pos(a.preAddSize)){
+   committed=Math.min(committed,a.preAddSize);
   }
   const room=Math.min(extra,Math.max(0,fresh.size-committed));
   const split=scalpSplits(room,p.quantityStep,a.minPart);
@@ -938,8 +1021,12 @@ export class ScalpExecutor{
    a.count++;a.anchor=a.fillPrice;
    a.orders.push({at:a.filledAt,qty:a.fillQty,price:a.fillPrice,marginUSD:a.fillMarginUSD});
   }
+  delete a.preAddSize;
   p.size=fresh.size;p.mark=fresh.mark??p.mark;p.riskUSD=a.riskAfterUSD=this.#repeatRisk(p,p.avg,p.mark)*fresh.size;
-  Object.assign(a,{state:a.version===SCALP_REPEAT_SCALE_IN.version&&fresh.size>0?(p.everReduced?'SKIPPED':'WATCH'):'FILLED',reason:fresh.size>0?null:'FLAT_DURING_RESIZE'});
+  const nextState=a.version!==SCALP_REPEAT_SCALE_IN.version||!(fresh.size>0)?'FILLED'
+   :this.#partialTooSmall(p,fresh.size)?'SKIPPED'
+   :(a.count>=SCALP_REPEAT_SCALE_IN.maxAdds?'FILLED':'WATCH');
+  Object.assign(a,{state:nextState,reason:fresh.size>0?(nextState==='SKIPPED'?'POSITION_CHANGED':null):'FLAT_DURING_RESIZE'});
   this.#save();this.#event('SCALE_IN_FILLED',{symbol:p.symbol,direction:p.direction,count:a.count,fillMarginUSD:a.fillMarginUSD,qty:a.fillQty,price:a.fillPrice,left:p.size});
   if(!fresh.size){await this.#finish(p);return}
   await this.#placeTargets(p);
@@ -1143,7 +1230,7 @@ export class ScalpExecutor{
   const dir=dirOf(p.direction);
   let price=profitOnly?profitLimit(p):null;
   if(profitOnly&&!price)return;
-  const minRoe=profitOnly&&!(p.scaleIn?.count>0)?(this.config.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):0;
+  const minRoe=profitOnly?(p.scaleIn?.count>0?SCALP_SCALE_IN_MIN_ROE_PCT:(this.config.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT)):0;
   let triggerFloor=profitOnly?(profitLimit(p,0,{minNetRoePct:minRoe})??price):null;
   const groups=[{parts:p.parts,ids:p.tpOrderIds,tries:p.tpTries,done:p.tpDone},...(p.addTargets||[])];
   for(const g of groups){
@@ -1245,12 +1332,36 @@ export class ScalpExecutor{
   if(this.config.mode!=='TESTNET'||!(opened>0)||now-opened<delay||now-(p.earlyTakeProfitAt??0)<retry||!(mark>0&&p.avg>0&&p.size>0))return false;
   const direction=dirOf(p.direction);
   const qty=Number(grid(p.size,p.quantityStep,'DOWN'));
+  if(!(qty>0))return false;
   const bookedLoss=profitOnly?Math.max(0,-(num(p.exchangePosition?.realizedPnLUSD)??0)):0;
-  const fallbackElapsed=now-opened>=PROFIT_ONLY_EARLY_EXIT_MIN*60000;
-  const recoveryMode=bookedLoss>0||(p.scaleIn?.count||0)>0||fallbackElapsed;
-  const minNetRoePct=profitOnly&&!recoveryMode?(this.config.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):0;
-  const limit=qty>0?profitLimit(p,bookedLoss/qty,{minNetRoePct}):null;
-  if(!(qty>0&&Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+  const scaledIn=(p.scaleIn?.count||0)>0;
+  let limit;
+  if(profitOnly&&scaledIn){
+   // Scaled-in positions require >= +5% Net ROE to arm trailing, then ride rebounds and exit on pullback from peak.
+   const fee=Math.max(p.takerRate||0,SCALP_EXEC_COSTS.takerRate);
+   const reserve=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/10000+SCALP_EXEC_COSTS.fundingRate;
+   const lev=Math.max(1,Number(p.leverage)||10);
+   const grossMove=direction*(mark-p.avg)/p.avg;
+   const lossMove=bookedLoss>0?bookedLoss/(qty*p.avg):0;
+   const netRoePct=(grossMove-2*fee-reserve-lossMove)*lev*100;
+   if(netRoePct>=SCALP_SCALE_IN_MIN_ROE_PCT){
+    const prevPeak=Number(p.trailPeakRoePct);
+    if(!Number.isFinite(prevPeak)||netRoePct>prevPeak){p.trailPeakRoePct=+netRoePct.toFixed(2);this.#save()}
+   }
+   const peak=Number(p.trailPeakRoePct);
+   if(!(Number.isFinite(peak)&&peak>=SCALP_SCALE_IN_MIN_ROE_PCT))return false;
+   const pullback=Math.max(SCALP_TRAIL_MIN_PULLBACK_ROE,peak*SCALP_TRAIL_PULLBACK_RATIO);
+   const trailStopRoe=Math.max(SCALP_SCALE_IN_MIN_ROE_PCT,peak-pullback);
+   if(netRoePct>trailStopRoe)return false;
+   limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
+   if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+  }else{
+   const fallbackElapsed=now-opened>=PROFIT_ONLY_EARLY_EXIT_MIN*60000;
+   const recoveryMode=bookedLoss>0||fallbackElapsed;
+   const minNetRoePct=profitOnly&&!recoveryMode?(this.config.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):0;
+   limit=profitLimit(p,bookedLoss/qty,{minNetRoePct});
+   if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+  }
   const clientOrderId=createHash('sha256').update(`${p.id}|early|${now}`).digest('hex').slice(0,32);
   p.earlyTakeProfit={clientOrderId,qty};p.earlyTakeProfitAt=now;this.#save();
   const response=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),
@@ -1467,9 +1578,9 @@ export class ScalpExecutor{
      scaleInPositions:this.store.open.map(p=>{
       const a=p.scaleIn,position=p.exchangePosition;
       return {symbol:p.symbol,direction:p.direction,status:p.status,
-       state:a?.state??null,reason:short(a?.reason),lastReason:short(a?.lastReason),checkedBucket:a?.checkedBucket??null,
+       state:a?.state??null,adds:a?.count??0,reason:short(a?.reason),lastReason:short(a?.lastReason),checkedBucket:a?.checkedBucket??null,
        mark:pos(position?.markPrice),positionCheckedAt:position?.at??null,trigger:a?.version===SCALP_REPEAT_SCALE_IN.version?pos(this.#repeatTrigger(p)):null,
-       size:pos(p.size),filled:pos(p.filled),partialExit:p.everReduced===true,exitPending:Boolean(p.earlyTakeProfit||p.exitReason==='EARLY_TAKE_PROFIT'),
+       size:pos(p.size),filled:pos(p.filled),partialExit:p.everReduced===true,trailPeakRoePct:num(p.trailPeakRoePct),exitPending:Boolean(p.earlyTakeProfit||p.exitReason==='EARLY_TAKE_PROFIT'),
        stopRetirementPending:Boolean(p.stopRetirementError)};
      }),
     }:{}),
