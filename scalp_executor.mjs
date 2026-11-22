@@ -31,7 +31,7 @@ import {livePositionView} from './live_overview.mjs';
 import {waitForFlat} from './live_orders.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,scalpMargin,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
-import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
+import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows,scoreScalpSetup,SCALP_SCORE_DEFAULTS} from './scalp_reversal.mjs';
 import {closedScalpBars,observeScalpStructure,WYCKOFF_CANDLES,WYCKOFF_INTERVAL_MS} from './scalp_wyckoff.mjs';
 import {vsaStatus} from './scalp_vsa.mjs';
 import {aiLensHigherTimeframe,aiLensRiskMap,aiLensStatus,LENS_HIGHER_INTERVAL_MS} from './scalp_ai_lens.mjs';
@@ -39,8 +39,8 @@ import {zoneBook,zoneTouches,zoneTagFields,zoneSpanMs,ZONE_PROFILES,ZONE_TOUCH_P
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
 export const SCALP_EXEC_MODES=Object.freeze(['OFF','TESTNET']);
-// User 2026-11-20: move = 3.5 % (lowered from 5 % to capture 4~5+ daily climax setups while keeping 4x ATR, 3x volume, RSI 25/75, 50% wick).
-export const SCALP_EXEC_SETTINGS=Object.freeze({minMovePct:3.5,retracements:Object.freeze([.382,.5,.618]),stopAtr:.25,climaxVolume:3});
+// User 2026-11-20/23: move = 3.5 %, minMoveAtr = 3 (40-coin backtest: 3.0~4.5x ATR had highest PF while >6x blowoffs underperformed).
+export const SCALP_EXEC_SETTINGS=Object.freeze({minMovePct:3.5,minMoveAtr:3,retracements:Object.freeze([.382,.5,.618]),stopAtr:.25,climaxVolume:3});
 // The backtest's cost assumptions (backtest.mjs BACKTEST_COSTS), the venue's taker fee when higher.
 // Signal kinds (journal, screen badge, report): the 3.5 % move rule, and candidate B at a 4H / 1D volume zone.
 export const SCALP_KINDS=Object.freeze({MOVE:'MOVE_REVERSAL',ZONE:'ZONE_REVERSAL'});
@@ -164,6 +164,10 @@ export function scalpExecConfig(env=process.env){
   profitOnlyMaxHoldMin:n('SCALP_MAX_HOLD_MIN',480,0,4320),
   emergencyStopRoePct:n('SCALP_EMERGENCY_STOP_ROE_PCT',40,0,95),
   maxScaleInAdds:n('SCALP_MAX_SCALE_IN_ADDS',3,0,10),
+  // Data-calibrated 100-point setup scoring (40-coin BingX 5m Train/OOS backtest): >=65 entry floor, >=70 A/S-grade 1.25x sizing.
+  minScore:n('SCALP_MIN_SCORE',SCALP_SCORE_DEFAULTS.minScore,0,100),
+  highScore:n('SCALP_HIGH_SCORE',SCALP_SCORE_DEFAULTS.highScore,0,100),
+  highScoreSizeMult:n('SCALP_HIGH_SCORE_SIZE_MULT',SCALP_SCORE_DEFAULTS.highSizeMult,1,2),
   // 매물대 반전 (user 2026-11-17 23:12): on by default, SCALP_ZONE_SIGNALS=off turns it off.
   zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT};
 }
@@ -617,6 +621,11 @@ export class ScalpExecutor{
   const scaledAvail=cap<Infinity&&eq>cap&&available!==null?equity*(available/eq):Math.min(available??equity,equity-used);
   this.funds={equity,available:Math.max(0,scaledAvail),at:this.now()};return this.funds;
  }
+ async #btcTrend4h(symbol){
+  if(symbol==='BTCUSDT')return this.cur?.trend4h??await this.#trend('BTCUSDT');
+  if(!this.universe.some(x=>x.symbol==='BTCUSDT'))return null;
+  return await this.#trend('BTCUSDT');
+ }
  async #consider(u,det,revision){
   const key=scalpClientId(u.symbol,det.barAt,det.direction),skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   if(this.store.sent.includes(key))return {entered:false,reason:'ALREADY_SENT'};
@@ -635,11 +644,27 @@ export class ScalpExecutor{
    const shared=this.budget?.snapshot(funds.equity,{who:'scalp'});
    if(shared&&!shared.ok)return skip('TESTNET_BUDGET_UNAVAILABLE');
    const againstTrend=this.config.trendMode==='record'&&this.cur?.withTrend===false;
-   const planConfig=againstTrend?{...this.config,riskPct:this.config.riskPct*SCALP_AGAINST_TREND_RISK_SCALE}:this.config;
-   const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
-    usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:planConfig});
+   const basePlanConfig=againstTrend?{...this.config,riskPct:this.config.riskPct*SCALP_AGAINST_TREND_RISK_SCALE}:this.config;
+   let plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
+    usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:basePlanConfig});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
+   // Data-calibrated 100-point setup score (40-coin BingX 5m Train/OOS): filter negative-EV (<minScore) & scale up A/S setups.
+   const btcTrend4h=this.config.trendMode==='off'?null:await this.#btcTrend4h(u.symbol);
+   const scalpScore=scoreScalpSetup({direction:det.direction,evidence:det.evidence,trend4h:this.cur?.trend4h??null,btcTrend4h,netRR:plan.netRR,config:this.config});
+   if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=scalpScore}
+   if(Number(this.config.minScore)>0&&!scalpScore.pass){
+    return skip('SCORE_BELOW_MINIMUM',`${scalpScore.score}점/${this.config.minScore}점 (${scalpScore.grade}급 · ${scalpScore.shortBreakdown})`);
+   }
+   if(!againstTrend&&scalpScore.sizeMult>1){
+    const boosted=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
+     usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,
+     config:{...basePlanConfig,riskPct:basePlanConfig.riskPct*scalpScore.sizeMult}});
+    if(boosted.ok){
+     plan=boosted;
+     if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty??null,riskUSD:plan.riskUSD??null,sizeMult:scalpScore.sizeMult});
+    }
+   }
    // Reserve a plan that fits the shared budget while the venue setup runs. A larger plan may still fit after the cap.
    if(this.budget?.check({equity:funds.equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'}).ok)
     this.reservedRisk.set(u.symbol,{riskUSD:plan.riskUSD,marginUSD:plan.marginUSD});
@@ -786,7 +811,9 @@ export class ScalpExecutor{
    ...(this.config.stopLossEnabled===false?{profitTargetsReady:true}:{}),
    ...(plan.scaleIn?{scaleIn:plan.scaleIn}:{}),
    // Journal context (analysis only).
-   atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,withTrend:this.cur?.withTrend??null,universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
+   atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,btcTrend4h:this.cur?.btcTrend4h??null,withTrend:this.cur?.withTrend??null,
+   ...(this.cur?.score?{scalpScore:{score:this.cur.score.score,grade:this.cur.score.grade,sizeMult:this.cur.score.sizeMult,breakdown:this.cur.score.breakdown,summary:this.cur.score.summary}}:{}),
+   universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
   this.store.open.push(p);this.store.sent.push(id);this.#save();
   let fill;
   try{fill=await cl.placeOrder({symbol:vs,side:openSide(d),positionSide:positionSideFor({hedge,direction:d}),type:'MARKET',quantity:String(plan.qty),clientOrderId:id,
@@ -825,7 +852,7 @@ export class ScalpExecutor{
   trackExcursion(p,p.avg,this.now());
   // BTC 5m / 1h change around the entry: read after the orders are in, never awaited (journal only).
   void withTimeout(this.#btc(),5000).then(b=>{if(b)p.btc=b});
-  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged});
+  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,sizeMult:p.scalpScore.sizeMult}:{})});
   this.#save();return {entered:true};
  }
  /** BTC change over the last closed 5m candle and the last hour (12 candles), cached per 5m candle. */
@@ -839,7 +866,7 @@ export class ScalpExecutor{
  /** One line per detected signal: entered, or why not (scalp-signals.jsonl, rotated at 20 MB). */
  #logSignal(ctx,r){
   const line={v:1,at:ctx.at,symbol:ctx.symbol,venueSymbol:ctx.venueSymbol,kind:ctx.kind||SCALP_KINDS.MOVE,...(ctx.zone?{zone:ctx.zone}:{}),direction:ctx.direction,barAt:ctx.barAt,entered:r?.entered===true,reason:r?.entered?null:ctx.reason||r?.reason||null,
-   detail:ctx.detail,evidence:ctx.evidence,candle:ctx.candle,atr:ctx.atr,trend4h:ctx.trend4h??null,withTrend:ctx.withTrend??null,plan:ctx.plan??null,universe:ctx.universe,scan:ctx.scan,
+   detail:ctx.detail,evidence:ctx.evidence,candle:ctx.candle,atr:ctx.atr,trend4h:ctx.trend4h??null,btcTrend4h:ctx.btcTrend4h??null,withTrend:ctx.withTrend??null,...(ctx.score?{score:ctx.score}:{}),plan:ctx.plan??null,universe:ctx.universe,scan:ctx.scan,
    ...(ctx.recheckedAt?{recheckedAt:ctx.recheckedAt}:{}),...(ctx.wyckoff?{wyckoff:ctx.wyckoff,vsa:ctx.vsa,aiLens:ctx.aiLens}:{})};
   if(this.signalsFile)appendJsonl(signalsPath(this.signalsFile,ctx.at||this.now()),line,{maxBytes:SIGNALS_MAX_BYTES});else this.signalsMem=[...(this.signalsMem||[]),line].slice(-500);
  }
@@ -1808,6 +1835,7 @@ export class ScalpExecutor{
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,
+    minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,
     scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,exchangePosition,...p})=>({...p,details:scalpPositionDetails({...p,steps,exchangePosition},this.now())})),
@@ -1822,7 +1850,8 @@ export class ScalpExecutor{
   const skipCounts=Object.fromEntries(Object.entries(this.store.skipCounts||{}).filter(([,v])=>Number.isFinite(Number(v))&&Number(v)>0).slice(0,30));
   return {
    mode:c.mode,armed:this.armed,blocked:this.#blocked(),scanning:this.scanning===true,
-   trendMode:c.trendMode,aiLensRecord:c.mode==='TESTNET'&&c.wyckoffRecord===true&&Boolean(this.signalsFile),scaleInEnabled:c.scaleIn,stopLossEnabled:c.stopLossEnabled,
+   trendMode:c.trendMode,minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,
+   aiLensRecord:c.mode==='TESTNET'&&c.wyckoffRecord===true&&Boolean(this.signalsFile),scaleInEnabled:c.scaleIn,stopLossEnabled:c.stopLossEnabled,
    repeatedScaleIn:c.scaleIn&&!c.stopLossEnabled,open:this.store.open.length,
    ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0,earlyFallbackMin:PROFIT_ONLY_EARLY_EXIT_MIN,minProfitRoePct:c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT,minMovePct:c.settings?.minMovePct??null}:{}),
    stopRetirementPending:this.store.open.filter(p=>p.stopRetirementError).length,
