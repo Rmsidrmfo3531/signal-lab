@@ -57,13 +57,22 @@ export class TestnetBudget{
   this.account=null;this.accountError=null;
  }
  #save(state){if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...state})}}
- configure({dailyLossPct,marginCapPct,capitalCapUSD}={}){
+ configure({dailyLossPct,marginCapPct,capitalCapUSD,clearStop}={}){
+  if(clearStop===true&&dailyLossPct===undefined&&marginCapPct===undefined&&capitalCapUSD===undefined)return this.clearStop();
   const hasCap=capitalCapUSD!==undefined;
   const nextCap=hasCap?(capitalCapUSD===null||capitalCapUSD===''||Number(capitalCapUSD)===0?null:Number(capitalCapUSD)):this.capitalCapUSD;
   const settings={dailyLossPct,marginCapPct,...(hasCap||this.capitalCapUSD!==null?{capitalCapUSD:nextCap}:{})};
   if(!validBudgetSettings(settings))throw codeErr('INVALID_TESTNET_BUDGET',400);
-  const state={...this.state,settings};this.#save(state);
+  const state={...this.state,settings,...(clearStop===true?{stop:null}:{})};this.#save(state);
   this.state=state;Object.assign(this,{dailyLossPct,marginCapPct,capitalCapUSD:nextCap});
+  return this.status();
+ }
+ clearStop(){
+  if(this.state.stop){
+   const state={...this.state,stop:null};
+   this.#save(state);
+   this.state=state;
+  }
   return this.status();
  }
  displayScale(){
@@ -113,7 +122,14 @@ export class TestnetBudget{
     by[name]=s;realized+=s.realizedNetUSD;loss+=s.lossUSD;lossOpen+=s.lossWithOpenUSD;open+=s.openRiskUSD;margin+=s.marginUSD;unreal+=s.unrealizedUSD;stopped||=s.stopped;provisional||=s.provisional;
    }catch(e){ok=false;by[name]={error:e?.code||e?.message||'READ_FAILED'}}
   }
-  const eq=this.basis(equity,who),limit=eq!==null?eq*this.dailyLossPct/100:null,stored=this.storedStop(day);
+  const eq=this.basis(equity,who),limit=eq!==null?eq*this.dailyLossPct/100:null;
+  let stored=this.storedStop(day);
+  // Self-heal an impossible unscaled legacy-VST stop (recorded loss > 100% of current equity) once scaled loss is below limit.
+  if(stored&&ok&&eq>0&&limit!==null&&Number(stored.lossUSD)>eq&&loss<limit&&lossOpen<limit){
+   this.state={...this.state,stop:null};
+   try{this.#save(this.state)}catch(e){this.log('[TESTNET BUDGET] clear stale stop',e.message)}
+   stored=null;
+  }
   if(stored)stopped=true;
   // Reached from final values: written once for the rest of the KST day. From a placeholder or open unrealized loss: blocks now, not written.
   if(ok&&limit!==null&&limit>0&&(loss>=limit||lossOpen>=limit)){stopped=true;if(!provisional&&!stored&&loss>=limit)this.markStopped({lossUSD:+loss.toFixed(2),limitUSD:+limit.toFixed(2),reason:'REALIZED'},day)}

@@ -676,10 +676,19 @@ export function scalpBadge(kind){return kind==='ZONE_REVERSAL'?TN_BADGE.scalpZon
 
 /** Proportional display scale for legacy uncapped VST items when a testnet capital cap (default $3,000) is active. */
 export function tnScaleOf(item,budget){
- const ds=Number(budget?.displayScale),cap=Number(budget?.capitalCapUSD);
- if(!(cap>0&&Number.isFinite(ds)&&ds>0&&ds<1))return 1;
+ const cap=Number(budget?.capitalCapUSD);
+ if(!(cap>0))return 1;
  if(fin(item?.capitalBasisUSD)&&Number(item.capitalBasisUSD)>0&&Number(item.capitalBasisUSD)<=cap*1.5)return 1;
- return ds;
+ const ds=Number(budget?.displayScale);
+ if(Number.isFinite(ds)&&ds>0&&ds<1)return ds;
+ // Account VST equity was already lowered to <= cap (e.g. $3,000), but legacy oversized VST trades remain in history.
+ const r=Number(item?.initialRiskUSD??item?.riskUSD)||0;
+ const m=Number(item?.initialMarginUSD??item?.margin?.initialUSD??item?.marginUSD)||0;
+ if(m>cap*0.18||r>cap*0.05){
+  const implied=Math.max(r>0?r/0.005:0,m>0?m/0.05:0,100000);
+  return +(Math.min(1,cap/implied)).toFixed(6);
+ }
+ return 1;
 }
 
 /** Status line: on / off and today's shared budget: "오늘 손실 −$x / 한도 $y (15%) · 열린 위험 $z". */
@@ -687,7 +696,7 @@ export function testnetBudgetHTML(t){
  if(!t)return '';
  // The mode is the header's, on / off and 긴급 정지 the buttons' (user 2026-11-18: one place per fact); this line keeps
  // what only it has: a stop for today, a part-on switch (which strategy is on) and the shared budget.
- const b=t.budget||{},state=b.stopped?'<b class="copy-state kill">■ 오늘 정지 (하루 손실 한도)</b>':t.partial?'<b class="copy-state on">◐ 일부 활성화</b>':'';
+ const b=t.budget||{},state=b.stopped?'<b class="copy-state kill">■ 오늘 정지 (하루 손실 한도)</b> <button type="button" class="outline-btn small" data-testnet-clear-stop>오늘 정지 해제</button>':t.partial?'<b class="copy-state on">◐ 일부 활성화</b>':'';
  const who=t.partial?[t.signal?`신호 ${t.signal.armed?'●':'○'}`:null,t.scalp?`단타 ${t.scalp.armed?'●':'○'}`:null].filter(Boolean).join(' · '):'';
  const loss=Number(b.lossUSD)>0?`−$${Number(b.lossUSD).toFixed(2)}`:'$0.00';
  const capped=fin(b.equityUSD)&&fin(b.accountEquityUSD)&&b.accountEquityUSD>b.equityUSD;
@@ -773,7 +782,7 @@ export function testnetCloses(o){
  const sig=(o?.testnet?.scalpOnly?[]:o?.closed||[]).filter(c=>c.mode==='TESTNET'&&c.test!==true).map(c=>({kind:'signal',key:c.signalKey,symbol:c.symbol,direction:c.direction,openedAt:c.createdAt,closedAt:c.closedAt,reason:c.closeReasonKo||c.closeReason,
   netUSD:c.realized?.netUSD??null,source:c.realized?.source||'PENDING',test:c.test===true,deletable:c.deletable===true}));
  const sc=(o?.scalp?.closed||[]).map(x=>({kind:'scalp',scalpKind:x.kind||'MOVE_REVERSAL',key:x.id,symbol:x.symbol,direction:x.direction||'LONG',openedAt:x.openedAt||x.createdAt,closedAt:x.closedAt,reason:x.closeReasonKo||x.closeReason,
-  netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',r:x.rMultiple??null,leverage:x.leverage,margin:x.margin,capitalBasisUSD:x.capitalBasisUSD??null}));
+  netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',r:x.rMultiple??null,leverage:x.leverage,margin:x.margin,capitalBasisUSD:x.capitalBasisUSD??null,initialRiskUSD:x.initialRiskUSD??x.riskUSD??null,initialMarginUSD:x.initialMarginUSD??x.margin?.initialUSD??x.marginUSD??null}));
  return [...sig,...sc].sort((a,b)=>(Number(b.closedAt)||0)-(Number(a.closedAt)||0));
 }
 let tnPage=0,lastTestnet=null;
@@ -1226,6 +1235,15 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
   const text=mode==='LIVE'?'실거래(실제 돈)를 활성화합니다. 다음 최종 신호부터 거래소에 실제 돈으로 주문이 나갑니다. 계속할까요?':'테스트넷(모의 자금)의 신호 전략과 되돌림 단타를 함께 활성화합니다. 다음 최종 신호·5분봉 단타 신호부터 BingX 테스트넷에 주문이 나갑니다(하루 손실 한도는 둘이 공동). 계속할까요?';
   if(confirm(text))post('/api/live/arm',{confirm:'ARM'}).catch(fail)});
  $('liveDisarm')?.addEventListener('click',()=>{if(!liveActionBusy)post('/api/live/disarm').catch(fail)});
+ $('testnetBudget')?.addEventListener('click',async e=>{
+  const btn=e.target.closest?.('[data-testnet-clear-stop]');
+  if(!btn||btn.disabled)return;
+  if(!confirm('오늘 테스트넷 하루 손실 정지를 해제하고 5분봉 단타 스캔을 즉시 재개할까요?'))return;
+  btn.disabled=true;btn.textContent='해제 중…';
+  try{await post('/api/live/testnet-budget',{clearStop:true},{lockLive:false})}
+  catch(err){fail(err)}
+  finally{btn.disabled=false}
+ });
  $('testnetBudgetForm')?.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.currentTarget,btn=form.querySelector('button'),msg=$('testnetBudgetMessage');
   if(btn.disabled)return;
