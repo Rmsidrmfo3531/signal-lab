@@ -135,3 +135,17 @@ test('checkPostUpdateNotice stays silent on fresh boot and same-version restart,
  assert.match(markerNotice,/자동 복원: 신호 전략 ● · 테스트넷 단타 ●/);
 });
 
+test('auto-update streams live progress via SSE and locks manual update button against overlapping clicks',()=>{
+ const server=fs.readFileSync(new URL('../server.mjs',import.meta.url),'utf8');
+ const appJs=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+ assert.match(server,/function emitUpdateProgress\(\)\{\s*try\{send\('update-progress',\{\.\.\.updateJob,\.\.\.appVersion,bootId:SERVER_BOOT_ID\}\)\}catch\{\}\s*\}/);
+ assert.match(server,/if\(pathname==='\/api\/update\/git'&&req\.method==='GET'\)\{if\(!GIT_UPDATE\)return response\(res,404,\{error:'GIT_UPDATE_UNAVAILABLE'\}\);if\(updateJob\.active\)return response\(res,200,\{state:'updating',\.\.\.updateJob,\.\.\.appVersion,bootId:SERVER_BOOT_ID\}\)/);
+ assert.match(server,/updating:updateJob\.active===true,updateJob:updateJob\.active\?\{\.\.\.updateJob\}:null/);
+ assert.match(appJs,/es\.addEventListener\('update-progress'/);
+ assert.match(appJs,/async function trackRunningUpdate\(/);
+ assert.match(appJs,/setUpdateButtonBusy\(true/);
+ assert.match(appJs,/if\(check\.state==='updating'\)\{await trackRunningUpdate\(check\);return\}/);
+ assert.match(appJs,/if\(x\.error==='UPDATE_IN_PROGRESS'\)\{joinedExisting=true;/);
+});
+
+
