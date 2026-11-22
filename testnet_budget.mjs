@@ -20,39 +20,47 @@ import path from 'node:path';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 
 export const TESTNET_DAILY_LOSS_DEFAULT=15;
+export const TESTNET_DAILY_LOSS_MAX=100;
 export const kstDay=t=>new Date(Number(t)+9*3600000).toISOString().slice(0,10);
 const fin=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
 const r2=v=>Math.round(v*100)/100;
 
-/** TESTNET_DAILY_LOSS_PCT: 1-50, default 15. */
+/** TESTNET_DAILY_LOSS_PCT: 1-100, default 15. */
 export function testnetDailyLossPct(env=process.env){
  const raw=env?.TESTNET_DAILY_LOSS_PCT,v=Number(raw);
- return raw!==undefined&&raw!==''&&Number.isFinite(v)&&v>=1&&v<=50?v:TESTNET_DAILY_LOSS_DEFAULT;
+ return raw!==undefined&&raw!==''&&Number.isFinite(v)&&v>=1&&v<=TESTNET_DAILY_LOSS_MAX?v:TESTNET_DAILY_LOSS_DEFAULT;
 }
 
 const EQUITY_FRESH_MS=10*60000;
 export const TESTNET_BALANCE_REFRESH_MS=3000;
 const ACCOUNT_EQUITY_FRESH_MS=3*TESTNET_BALANCE_REFRESH_MS;
 const ALTERNATE_EQUITY_FRESH_MS=30000;
-/** TESTNET_MARGIN_CAP_PCT: the shared margin cap, default and maximum 30 % (review L5: never follows LIVE_MARGIN_USE_PCT). */
-export const TESTNET_MARGIN_CAP_MAX=30;
+/** TESTNET_MARGIN_CAP_PCT: the shared margin cap, default 30 %, maximum 100 % (never follows LIVE_MARGIN_USE_PCT). */
+export const TESTNET_MARGIN_CAP_DEFAULT=30;
+export const TESTNET_MARGIN_CAP_MAX=100;
 export function testnetMarginCapPct(env=process.env){
  const raw=env?.TESTNET_MARGIN_CAP_PCT,v=Number(raw);
- return raw!==undefined&&raw!==''&&Number.isFinite(v)&&v>=1&&v<=TESTNET_MARGIN_CAP_MAX?v:TESTNET_MARGIN_CAP_MAX;
+ return raw!==undefined&&raw!==''&&Number.isFinite(v)&&v>=1&&v<=TESTNET_MARGIN_CAP_MAX?v:TESTNET_MARGIN_CAP_DEFAULT;
 }
 export const TESTNET_CAPITAL_CAP_DEFAULT=3000;
 export class TestnetBudget{
- constructor({dailyLossPct=TESTNET_DAILY_LOSS_DEFAULT,marginCapPct=TESTNET_MARGIN_CAP_MAX,accountEquity=false,capitalCapUSD=null,now=()=>Date.now(),directory=null,fileName='testnet-budget.json',log=()=>{}}={}){
-  Object.assign(this,{dailyLossPct,marginCapPct:Math.min(TESTNET_MARGIN_CAP_MAX,Number(marginCapPct)||TESTNET_MARGIN_CAP_MAX),accountEquity,capitalCapUSD:Number(capitalCapUSD)>0?Number(capitalCapUSD):null,now,log});
+ constructor({dailyLossPct=TESTNET_DAILY_LOSS_DEFAULT,marginCapPct=TESTNET_MARGIN_CAP_DEFAULT,accountEquity=false,capitalCapUSD=null,now=()=>Date.now(),directory=null,fileName='testnet-budget.json',log=()=>{}}={}){
+  Object.assign(this,{dailyLossPct:Math.min(TESTNET_DAILY_LOSS_MAX,Number(dailyLossPct)||TESTNET_DAILY_LOSS_DEFAULT),marginCapPct:Math.min(TESTNET_MARGIN_CAP_MAX,Number(marginCapPct)||TESTNET_MARGIN_CAP_DEFAULT),accountEquity,capitalCapUSD:Number(capitalCapUSD)>0?Number(capitalCapUSD):null,now,log});
   this.sources=new Map();this.equities=new Map();
   this.file=directory?path.join(directory,fileName):null;
   let saved=null;try{saved=this.file?readStore(this.file):null}catch(e){this.log('[TESTNET BUDGET] state unreadable',e.message)}
-  const settings=saved?.settings;
+  let settings=saved?.settings;
   const valid=settings&&validBudgetSettings(settings);
+  let migrated=false;
+  if(valid&&settings.v100Migrated!==true&&settings.dailyLossPct===50&&settings.marginCapPct===30){
+   settings={...settings,dailyLossPct:100,marginCapPct:100,v100Migrated:true};
+   migrated=true;
+  }
   this.state={stop:saved?.stop&&typeof saved.stop.day==='string'?saved.stop:null,settings:valid?settings:null};
   if(valid){
    Object.assign(this,{dailyLossPct:settings.dailyLossPct,marginCapPct:settings.marginCapPct});
    if(Object.hasOwn(settings,'capitalCapUSD'))this.capitalCapUSD=Number(settings.capitalCapUSD)>0?Number(settings.capitalCapUSD):null;
+   if(migrated){try{this.#save(this.state)}catch(e){this.log('[TESTNET BUDGET] migrate 100%',e.message)}}
   }
   this.account=null;this.accountError=null;
  }
@@ -61,7 +69,7 @@ export class TestnetBudget{
   if(clearStop===true&&dailyLossPct===undefined&&marginCapPct===undefined&&capitalCapUSD===undefined)return this.clearStop();
   const hasCap=capitalCapUSD!==undefined;
   const nextCap=hasCap?(capitalCapUSD===null||capitalCapUSD===''||Number(capitalCapUSD)===0?null:Number(capitalCapUSD)):this.capitalCapUSD;
-  const settings={dailyLossPct,marginCapPct,...(hasCap||this.capitalCapUSD!==null?{capitalCapUSD:nextCap}:{})};
+  const settings={dailyLossPct,marginCapPct,v100Migrated:true,...(hasCap||this.capitalCapUSD!==null?{capitalCapUSD:nextCap}:{})};
   if(!validBudgetSettings(settings))throw codeErr('INVALID_TESTNET_BUDGET',400);
   const state={...this.state,settings,...(clearStop===true?{stop:null}:{})};this.#save(state);
   this.state=state;Object.assign(this,{dailyLossPct,marginCapPct,capitalCapUSD:nextCap});
@@ -161,7 +169,7 @@ export class TestnetBudget{
 }
 function validBudgetSettings({dailyLossPct,marginCapPct,capitalCapUSD}){
  const capOk=capitalCapUSD===undefined||capitalCapUSD===null||(Number.isFinite(capitalCapUSD)&&capitalCapUSD>=100&&capitalCapUSD<=10000000);
- return capOk&&Number.isFinite(dailyLossPct)&&dailyLossPct>=1&&dailyLossPct<=50&&Number.isFinite(marginCapPct)&&marginCapPct>=1&&marginCapPct<=TESTNET_MARGIN_CAP_MAX;
+ return capOk&&Number.isFinite(dailyLossPct)&&dailyLossPct>=1&&dailyLossPct<=TESTNET_DAILY_LOSS_MAX&&Number.isFinite(marginCapPct)&&marginCapPct>=1&&marginCapPct<=TESTNET_MARGIN_CAP_MAX;
 }
 
 const codeErr=(code,status=409)=>Object.assign(Error(code),{code,httpStatus:status});
