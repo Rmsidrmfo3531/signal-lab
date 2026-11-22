@@ -106,7 +106,7 @@ test('configuration defaults are OFF and conservative; LIVE needs the confirmati
  {const c=liveConfig({LIVE_RISK_PROFILE:'conservative'});assert.deepEqual([c.maxLossPct,c.dailyMaxLossPct,c.maxOpen],[1,3,4])}
  {const t=liveConfig({LIVE_TRADING_MODE:'TESTNET',DCA_MAX_LOSS_PCT:'30',LIVE_DAILY_MAX_LOSS_PCT:'60'});assert.deepEqual([t.riskProfile,t.maxLossPct,t.dailyMaxLossPct,t.maxOpen],['GROWTH',3,15,8],'profile is a ceiling on testnet; daily = the shared testnet 15 % (user 2026-11-17)')}
  assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',TESTNET_DAILY_LOSS_PCT:'20'}).dailyMaxLossPct,20,'TESTNET_DAILY_LOSS_PCT sets the shared testnet %');
- assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',TESTNET_DAILY_LOSS_PCT:'99'}).dailyMaxLossPct,15,'out of range: default 15');
+ assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',TESTNET_DAILY_LOSS_PCT:'101'}).dailyMaxLossPct,15,'out of range: default 15');
  assert.equal(liveConfig({LIVE_TRADING_MODE:'TESTNET',LIVE_DAILY_MAX_LOSS_PCT:'5'}).dailyMaxLossPct,5,'a stricter single value is still kept');
  assert.equal(liveConfig({LIVE_TRADING_MODE:'LIVE',TESTNET_DAILY_LOSS_PCT:'20',LIVE_RISK_PROFILE:'GROWTH'}).dailyMaxLossPct,9,'LIVE never takes the testnet %');
  // LIVE keeps the earlier values until the user approves the change.

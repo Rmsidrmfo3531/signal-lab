@@ -680,15 +680,15 @@ export function tnScaleOf(item,budget){
  if(!(cap>0))return 1;
  if(fin(item?.capitalBasisUSD)&&Number(item.capitalBasisUSD)>0&&Number(item.capitalBasisUSD)<=cap*1.5)return 1;
  const ds=Number(budget?.displayScale);
- if(Number.isFinite(ds)&&ds>0&&ds<1)return ds;
- // Account VST equity was already lowered to <= cap (e.g. $3,000), but legacy oversized VST trades remain in history.
+ const base=Number.isFinite(ds)&&ds>0&&ds<1?ds:1;
+ // Account VST equity may be at or slightly above cap (e.g. $3,002 vs $3,000 -> ds=0.9993), while legacy oversized VST trades remain in history.
  const r=Number(item?.initialRiskUSD??item?.riskUSD)||0;
  const m=Number(item?.initialMarginUSD??item?.margin?.initialUSD??item?.marginUSD)||0;
- if(m>cap*0.18||r>cap*0.05){
+ if(m*base>cap*0.18||r*base>cap*0.05){
   const implied=Math.max(r>0?r/0.005:0,m>0?m/0.05:0,100000);
-  return +(Math.min(1,cap/implied)).toFixed(6);
+  return +(Math.min(base,cap/implied)).toFixed(6);
  }
- return 1;
+ return base;
 }
 
 /** Status line: on / off and today's shared budget: "오늘 손실 −$x / 한도 $y (15%) · 열린 위험 $z". */
@@ -1243,6 +1243,16 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
   try{await post('/api/live/testnet-budget',{clearStop:true},{lockLive:false})}
   catch(err){fail(err)}
   finally{btn.disabled=false}
+ });
+ $('testnetResetPnl')?.addEventListener('click',async e=>{
+  const btn=e.currentTarget;
+  if(!btn||btn.disabled)return;
+  if(!confirm('테스트넷 누적 실현 손익(종료 거래 기록)과 오늘 하루 손실 정지를 초기화할까요?\n\n보유 중인 포지션과 실계좌 기록은 그대로 유지되며, 5분봉 단타 스캔이 즉시 정상 재개됩니다.'))return;
+  const label=btn.textContent;
+  btn.disabled=true;btn.textContent='초기화 중…';
+  try{await post('/api/live/testnet-reset-pnl',{confirm:'RESET_TESTNET_PNL'},{lockLive:false})}
+  catch(err){fail(err)}
+  finally{btn.disabled=false;btn.textContent=label}
  });
  $('testnetBudgetForm')?.addEventListener('submit',async e=>{
   e.preventDefault();const form=e.currentTarget,btn=form.querySelector('button'),msg=$('testnetBudgetMessage');

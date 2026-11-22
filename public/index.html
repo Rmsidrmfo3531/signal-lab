@@ -37,7 +37,7 @@
         <div id="liveControl" class="live-control" aria-labelledby="liveHeading">
           <h3 id="liveHeading" class="sr-only">실매매 상태</h3>
           <section class="paper-section tn-summary" id="testnetSummarySection" aria-labelledby="testnetPnlHeading" hidden>
-            <h4 id="testnetPnlHeading">테스트넷 손익 요약</h4>
+            <div class="tn-summary-head"><h4 id="testnetPnlHeading">테스트넷 손익 요약</h4><button type="button" class="outline-btn small" id="testnetResetPnl" title="테스트넷 종료 거래·누적 실현 손익과 오늘 정지 상태를 초기화합니다 (보유 중 포지션과 실계좌 기록은 유지)">누적 손익 초기화</button></div>
             <div class="paper-metrics live-metrics tn-metrics" id="testnetSummary"></div>
           </section>
           <div id="liveModeDetails" hidden>

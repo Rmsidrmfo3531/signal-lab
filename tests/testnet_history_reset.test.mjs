@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {test} from 'node:test';
-import {resetTestnetHistory,withTestnetResetRisk} from '../testnet_history_reset.mjs';
+import {resetTestnetHistory,resetTestnetPnl,recordManualTestnetPnlReset,latestTestnetReset,withTestnetResetRisk} from '../testnet_history_reset.mjs';
 import {atomicWriteStore,readStore} from '../persistence.mjs';
 import {SCALP_JOURNAL_FILE,scalpReportFiles} from '../scalp_journal.mjs';
 
@@ -63,3 +63,55 @@ test('a failed journal removal resumes with the original trade count and risk to
  assert.equal(reset.risk.scalp.netUSD,-4);
  assert.equal(reset.completed,true);
 });
+
+test('resetTestnetPnl clears realized PnL, dailyStop, and budget stop cleanly without carrying over legacy loss',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'testnet-pnl-reset-'));
+ t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const tNow=Date.parse('2026-11-22T23:55:00+09:00');
+ const file=name=>path.join(dir,name),put=(name,value)=>atomicWriteStore(file(name),value);
+ const get=name=>readStore(file(name));
+ const closed={mode:'TESTNET',status:'CLOSED',closedAt:tNow-1000,realized:{source:'EXCHANGE',netUSD:-500}};
+ const open={mode:'TESTNET',status:'OPEN',entryOrderId:'running'};
+ const live={...closed,mode:'LIVE'};
+ put('live-orders.json',{records:[closed,open,live],archived:[closed,live],killSwitch:false});
+ put('scalp-store.json',{closed:[{closedAt:tNow-1000,netUSD:-3249.02},{closedAt:tNow-2000,netUSD:-2484.50}],open:[open],events:[{type:'DAILY_LOSS_LIMIT'}],sent:['k1'],dailyStop:{day:'2026-11-22',lossUSD:-8650,shared:true}});
+ put('copy-store.json',{closed:[closed],positions:{active:open},pending:[]});
+ put('copy-store-live.json',{closed:[live]});
+ put('manual-trades-live.json',{closed:[live]});
+ put('testnet-budget.json',{version:1,settings:{dailyLossPct:100,marginCapPct:100,capitalCapUSD:3000,v100Migrated:true},stop:{day:'2026-11-22',lossUSD:8650,limitUSD:3000,reason:'REALIZED'}});
+ const realJournal={source:'LIVE_AUTO',mode:'LIVE'},manualJournal={source:'MANUAL'};
+ put('store.json',{journal:[{source:'LIVE_AUTO',mode:'TESTNET'},realJournal,manualJournal]});
+ const journal=file(SCALP_JOURNAL_FILE);
+ fs.writeFileSync(journal,'{"id":"legacy1","pnl":{"netUSD":-3249.02}}\n');
+
+ assert.equal(resetTestnetPnl(dir,{now:tNow,apply:false}),null);
+ const reset=resetTestnetPnl(dir,{now:tNow});
+ assert.equal(reset.completed,true);
+ assert.equal(reset.clearRisk,true);
+ assert.deepEqual(reset.removed,{signal:2,scalp:2,copy:1,journal:1});
+ assert.deepEqual(get('live-orders.json'),{records:[open,live],archived:[live],killSwitch:false});
+ assert.deepEqual(get('scalp-store.json'),{closed:[],open:[open],events:[],sent:['k1'],skips:[],skipCounts:{},dailyStop:null});
+ assert.deepEqual(get('copy-store.json'),{closed:[],positions:{active:open},pending:[],events:[]});
+ assert.deepEqual(get('copy-store-live.json'),{closed:[live]});
+ assert.deepEqual(get('manual-trades-live.json'),{closed:[live]});
+ assert.equal(get('testnet-budget.json').stop,null);
+ assert.deepEqual(get('testnet-budget.json').settings,{dailyLossPct:100,marginCapPct:100,capitalCapUSD:3000,v100Migrated:true});
+ assert.deepEqual(get('store.json').journal,[realJournal,manualJournal]);
+ assert.equal(fs.existsSync(journal),false);
+
+ // clearRisk: true means withTestnetResetRisk carries over $0 of pre-reset loss
+ const scalpSource=withTestnetResetRisk({realizedToday:()=>0},reset,'scalp');
+ assert.equal(scalpSource.realizedToday('2026-11-22'),0);
+
+ // Idempotent: subsequent new trades are NOT wiped on restart
+ put('scalp-store.json',{closed:[{netUSD:5}],open:[],events:[],sent:[],skips:[],skipCounts:{},dailyStop:null});
+ assert.deepEqual(resetTestnetPnl(dir,{now:tNow+60000}),reset);
+ assert.deepEqual(get('scalp-store.json').closed,[{netUSD:5}]);
+
+ // Manual reset marker supersedes startup reset in latestTestnetReset
+ const manual=recordManualTestnetPnlReset(dir,{now:tNow+120000,removed:{scalp:1}});
+ const newest=latestTestnetReset(dir,reset);
+ assert.equal(newest.at,manual.at);
+ assert.equal(newest.clearRisk,true);
+});
+

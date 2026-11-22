@@ -56,7 +56,7 @@ import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
 import {liveOverview,checkLiveLevels,testnetStats} from './live_overview.mjs';
 import {TestnetBudget,TESTNET_BALANCE_REFRESH_MS,TESTNET_CAPITAL_CAP_DEFAULT,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch} from './testnet_budget.mjs';
-import {resetTestnetHistory,withTestnetResetRisk} from './testnet_history_reset.mjs';
+import {resetTestnetHistory,resetTestnetPnl,recordManualTestnetPnlReset,latestTestnetReset,withTestnetResetRisk} from './testnet_history_reset.mjs';
 import {createVenuePositionsReader,venueRows,normalizeVenuePosition} from './venue_positions.mjs';
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
@@ -181,7 +181,9 @@ const LIVE=liveConfig(process.env);
 LIVE.testnetSignalEntries=/^(on|true|1|yes)$/i.test(String(process.env.TESTNET_SIGNAL_ENTRIES||'').trim());
 const TESTNET_SCALP_ONLY=LIVE.mode==='TESTNET'&&!LIVE.testnetSignalEntries;
 const SCALP_EXEC=scalpExecConfig(process.env);
-const testnetHistoryReset=resetTestnetHistory(storage.dir,{apply:SCALP_EXEC.mode==='TESTNET'&&(TESTNET_SCALP_ONLY||LIVE.mode==='OFF')});
+const legacyTestnetHistoryReset=resetTestnetHistory(storage.dir,{apply:SCALP_EXEC.mode==='TESTNET'&&(TESTNET_SCALP_ONLY||LIVE.mode==='OFF')});
+const testnetPnlReset=resetTestnetPnl(storage.dir,{apply:LIVE.mode!=='LIVE'&&(SCALP_EXEC.mode==='TESTNET'||LIVE.mode==='TESTNET')});
+let testnetHistoryReset=latestTestnetReset(storage.dir,legacyTestnetHistoryReset,testnetPnlReset);
 let persisted={watchlist:['BTCUSDT','ETHUSDT','SOLUSDT'],seen:{},alerts:[],newsSeen:{},journal:[],tradfiSeen:{}};
 const historical=readStore(dataPath);
 if(historical)persisted={...persisted,...historical};
@@ -2272,6 +2274,25 @@ const server=http.createServer(async(req,res)=>{
     if(LIVE.mode==='LIVE'||LIVE.mode!=='TESTNET'&&SCALP_EXEC.mode!=='TESTNET')return response(res,409,{error:'NOT_TESTNET'});
     try{if(hasTestnetBingx)await refreshTestnetBudgetBalance();if(body?.clearStop===true)scalpExec?.clearDailyStop?.();const budget=testnetBudget.configure(body);reportsDirty=true;return response(res,200,{budget})}
     catch(e){return response(res,e.httpStatus||500,{error:e.code==='INVALID_TESTNET_BUDGET'?e.code:'TESTNET_BUDGET_SAVE_FAILED'})}
+   }
+   if(pathname==='/api/live/testnet-reset-pnl'){
+    if(body?.confirm!=='RESET_TESTNET_PNL')return response(res,400,{error:'CONFIRM_REQUIRED'});
+    if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATING'});
+    if(LIVE.mode==='LIVE'||LIVE.mode!=='TESTNET'&&SCALP_EXEC.mode!=='TESTNET')return response(res,409,{error:'NOT_TESTNET'});
+    try{
+     const sigRes=live.resetTestnetHistory?.()||{removed:0};
+     const scalpRes=scalpExec?.resetHistory?.()||{removed:0};
+     const copyRes=COPY.mode==='TESTNET'&&copyTrader?.resetTestnetHistory?copyTrader.resetTestnetHistory():{removed:0};
+     const autoTestnet=x=>x?.source==='LIVE_AUTO'&&x.mode==='TESTNET';
+     const journalRemoved=persisted.journal.filter(autoTestnet).length;
+     if(journalRemoved>0){persisted.journal=persisted.journal.filter(x=>!autoTestnet(x));save()}
+     testnetBudget.clearStop();
+     const removed={signal:sigRes.removed||0,scalp:scalpRes.removed||0,copy:copyRes.removed||0,journal:journalRemoved};
+     testnetHistoryReset=recordManualTestnetPnlReset(storage.dir,{now:Date.now(),removed});
+     if(hasTestnetBingx)await refreshTestnetBudgetBalance().catch(()=>{});
+     reportsDirty=true;
+     return response(res,200,{ok:true,at:testnetHistoryReset.at,removed,budget:testnetBudget.status()});
+    }catch(e){return response(res,e.httpStatus||500,{error:e.code||'TESTNET_RESET_PNL_FAILED',message:e.message})}
    }
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
     if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});

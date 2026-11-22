@@ -177,6 +177,14 @@ export class CopyExecutor{
  }
  arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
  disarm(){this.entryRevision++;this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
+ resetTestnetHistory(){
+  if(this.config.mode==='LIVE')throw Object.assign(Error('NOT_TESTNET'),{code:'NOT_TESTNET',httpStatus:409});
+  const removed=this.store.closed.length;
+  this.store.closed=[];
+  this.store.events=[];
+  this.#save();
+  return {removed};
+ }
  #save(){if(!this.file)return;this.store.closed=this.store.closed.slice(-MAX_CLOSED);this.store.events=this.store.events.slice(-MAX_EVENTS);this.store.seen=this.store.seen.slice(-MAX_SEEN);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...this.store})}
  #event(type,detail={}){const cur=this.curMsg,e={type,at:this.now(),mode:this.config.mode,...(detail.symbol&&cur?.symbol===detail.symbol&&cur.direction?{direction:cur.direction}:{}),...detail};this.store.events.push(e);this.log(`[COPY] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
