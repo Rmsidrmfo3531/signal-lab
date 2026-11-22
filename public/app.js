@@ -124,6 +124,7 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('news',e=>{try{applyNews(JSON.parse(e.data))}catch{}});
  es.addEventListener('live-notice',e=>{try{liveNotice(JSON.parse(e.data))}catch{}});
  es.addEventListener('update',e=>{try{updateStatusText(JSON.parse(e.data))}catch{}});
+ es.addEventListener('update-progress',e=>{try{handleUpdateProgressEvent(JSON.parse(e.data))}catch{}});
  es.onerror=()=>{if(es.readyState===EventSource.CLOSED)banner('서버 연결 종료','Node.js 서버를 다시 실행하세요.');$('socketStatus').innerHTML='<i class="dot red"></i><span>서버 재접속</span>'};
 }
 async function loadAll(){
@@ -137,8 +138,21 @@ $('notificationButton').addEventListener('click',async()=>{
  const r=await Notification.requestPermission();$('notificationButton').textContent=r==='granted'?'✓ 브라우저 알림 ON':'♧ 알림 권한 확인';toast(r==='granted'?'브라우저를 열어 둔 상태에서 실매매·카피 알림을 받습니다.':'알림 권한이 허용되지 않았습니다.',r!=='granted');if(r==='granted')ping();
 });
 // Cloud server: one tap fetches the GitHub version, lists the changes, applies and restarts.
-let updateBoot=null,manualUpdate=false,autoUpdateNotice=false;
+let updateBoot=null,manualUpdate=false,activeUpdateWatch=false,pushUpdateProgress=null;
 const updateTime=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Seoul',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+function setUpdateButtonBusy(busy,{source='button',pct=null}={}){
+ const b=$('updateButton');if(!b)return;
+ if(busy){
+  b.disabled=true;
+  const prefix=source==='auto'?'↻ 자동 업데이트':'↻ 업데이트';
+  b.textContent=Number.isFinite(pct)&&pct>0?`${prefix} ${Math.floor(pct)}%`:`${prefix} 중…`;
+  b.title='업데이트가 진행 중입니다. 중복 실행 방지를 위해 완료될 때까지 버튼이 잠깁니다.';
+ }else{
+  b.disabled=false;
+  b.textContent=gitUpdate?'↻ 업데이트':'↻ 업데이트 확인';
+  b.title=gitUpdate?'GitHub 최신 버전을 확인하고 적용합니다':'신뢰할 수 있는 업데이트 서버를 설정해야 작동합니다';
+ }
+}
 function showCompletedUpdate(info){
  let done=null,auto=false;
  try{done=JSON.parse(sessionStorage.getItem('updateDone')||'null');
@@ -155,11 +169,12 @@ function showCompletedUpdate(info){
 }
 json('/api/update').then(u=>{
  updateBoot=u;setAppVersion(u);gitUpdate=u.git===true;
- if(gitUpdate){$('updateButton').textContent='↻ 업데이트';$('updateButton').title='GitHub 최신 버전을 확인하고 적용합니다'}
+ if(gitUpdate&&!activeUpdateWatch&&!manualUpdate){$('updateButton').textContent='↻ 업데이트';$('updateButton').title='GitHub 최신 버전을 확인하고 적용합니다'}
  showCompletedUpdate(u);
+ if(u.updating&&u.updateJob&&!manualUpdate&&!activeUpdateWatch)void trackRunningUpdate({...u.updateJob,bootId:u.bootId});
 }).catch(()=>showCompletedUpdate(null));
 // Update progress: a centred popup with a 0.1 % progress bar fed by the server's own steps
-// (/api/update/git/progress); while the server restarts the bar keeps moving until it is back.
+// (SSE update-progress + /api/update/git/progress); while the server restarts the bar keeps moving until it is back.
 function updateModal(){
  let m=document.getElementById('updateModal');
  if(!m){m=document.createElement('div');m.id='updateModal';m.className='update-modal';m.setAttribute('role','dialog');m.setAttribute('aria-modal','true');
@@ -176,25 +191,104 @@ function setUpdate({title,version,label,pct,note,done=false,error=false}){
  if(note!==undefined)m.querySelector('.update-note').textContent=note;
  m.querySelector('.update-close').hidden=!(done||error);
 }
+function handleUpdateProgressEvent(p){
+ if(!p||typeof p!=='object')return;
+ if(pushUpdateProgress)pushUpdateProgress(p);
+ else if(p.active&&!manualUpdate&&!activeUpdateWatch)void trackRunningUpdate(p);
+}
+// Track an already-running auto (or other-tab) update with live progress bar and locked manual button.
+async function trackRunningUpdate(initial={}){
+ if(activeUpdateWatch||manualUpdate)return;
+ activeUpdateWatch=true;
+ const source=initial.source||'auto';
+ const originalBoot=initial.bootId||updateBoot?.bootId||null;
+ let from=initial.fromDisplayVersion||appVersionText(updateBoot)||$('appVersion')?.textContent||'';
+ let to=initial.toDisplayVersion||'';
+ let shown=Math.max(0,Number(initial.pct)||0),target=Math.max(2,shown);
+ let label=initial.label||(source==='auto'?'자동 업데이트 진행 중':'업데이트 진행 중');
+ let down=false,finished=false,restartAt=0,terminalJob=null;
+ const versionText=()=>[from,to&&to!==from?to:''].filter(Boolean).join(' → ');
+ const title=source==='auto'?'자동 업데이트 중':'업데이트 중';
+ const note='업데이트가 진행 중입니다. 중복 실행 방지를 위해 수동 업데이트가 잠기며, 완료 후 화면이 자동으로 새로고침됩니다.';
+ setUpdateButtonBusy(true,{source,pct:shown});
+ setUpdate({title,version:versionText(),label,pct:shown,note});
+ const applySnap=p=>{
+  if(!p||typeof p!=='object')return;
+  if(p.fromDisplayVersion&&!from)from=p.fromDisplayVersion;
+  if(p.toDisplayVersion&&p.toDisplayVersion!==to){to=p.toDisplayVersion;setUpdate({version:versionText()})}
+  if(p.active){
+   target=Math.max(target,Number(p.pct)||0);
+   if(p.label)label=p.label;
+  }else if(!down&&(!originalBoot||!p.bootId||p.bootId===originalBoot)){
+   terminalJob=p;
+  }
+ };
+ pushUpdateProgress=applySnap;
+ const anim=setInterval(()=>{
+  if(shown<target){shown=Math.min(target,shown+Math.max(0.1,(target-shown)*0.12))}
+  setUpdate({pct:shown,label});
+  setUpdateButtonBusy(true,{source,pct:shown});
+ },100);
+ try{
+  for(let i=0;i<1400&&!finished;i++){
+   await new Promise(r=>setTimeout(r,250));
+   try{
+    const r=await fetch('/api/update/git/progress',{cache:'no-store'});
+    if(!r.ok)throw Error('down');
+    const p=await r.json();
+    const restarted=originalBoot&&p.bootId?originalBoot!==p.bootId:down;
+    if(restarted){
+     finished=true;target=100;label='완료';
+     await new Promise(r=>setTimeout(r,600));
+     clearInterval(anim);setUpdate({pct:100,label:'완료',done:true});
+     const running=appVersionText(p);
+     try{sessionStorage.setItem('updateDone',JSON.stringify({fromDisplayVersion:from||null,toDisplayVersion:running||to||null,appliedAt:p.bootId||null,auto:source==='auto'}))}catch{}
+     location.reload();return;
+    }
+    applySnap(p);
+    if(!p.active&&!down){
+     const ended=terminalJob||p;
+     finished=true;clearInterval(anim);
+     if(ended.state==='postponed'){
+      document.getElementById('updateModal')?.remove();
+      toast('⏳ 진행 중인 주문이 끝나는 대로 새 버전으로 자동 재시작됩니다.');
+     }else if(ended.error||(ended.state&&!['current','applied'].includes(ended.state))){
+      setUpdate({title:source==='auto'?'자동 업데이트 중단':'업데이트 중단',label:ended.error||ended.label||ended.state,pct:shown,note:'서버는 이전 버전으로 계속 동작합니다.',error:true});
+     }else{
+      document.getElementById('updateModal')?.remove();
+     }
+     return;
+    }
+   }catch{
+    if(!down){down=true;restartAt=Date.now();label='서버 재시작 중'}
+    const t=(Date.now()-restartAt)/1000;target=Math.max(target,92+7.9*(1-Math.exp(-t/20)));
+   }
+  }
+ }finally{
+  clearInterval(anim);
+  if(pushUpdateProgress===applySnap)pushUpdateProgress=null;
+  activeUpdateWatch=false;
+  if(!finished)document.getElementById('updateModal')?.remove();
+  setUpdateButtonBusy(false);
+ }
+}
 // After an automatic update, reload and use the running server's version for the completion toast.
-setInterval(async()=>{if(manualUpdate)return;try{
+setInterval(async()=>{if(manualUpdate||activeUpdateWatch)return;try{
  const u=await json('/api/update');
- if(manualUpdate)return;
+ if(manualUpdate||activeUpdateWatch)return;
  if(updateBoot?.bootId&&u.bootId&&u.bootId!==updateBoot.bootId){
   if(appVersionText(u)!==appVersionText(updateBoot))try{sessionStorage.setItem('autoReloaded','1')}catch{}
   location.reload();return;
  }
  if(u.bootId)updateBoot=u;
- if(!autoUpdateNotice&&!document.getElementById('updateModal')){
-  const job=await json('/api/update/git/progress');
-  if(job?.active&&job.source==='auto'&&!manualUpdate){
-   autoUpdateNotice=true;
-   toast(['🔄 자동 업데이트 중',job.toDisplayVersion,'완료 후 새로고침됩니다'].filter(Boolean).join(' · '));
-  }
- }
-}catch{}},10000);
+ if(u.updating&&u.updateJob){void trackRunningUpdate({...u.updateJob,bootId:u.bootId});return}
+ const job=await json('/api/update/git/progress');
+ if(job?.active&&!manualUpdate&&!activeUpdateWatch)void trackRunningUpdate(job);
+}catch{}},5000);
 async function runGitUpdate(){
+ if(activeUpdateWatch||manualUpdate)return;
  const check=await json('/api/update/git');
+ if(check.state==='updating'){await trackRunningUpdate(check);return}
  const from=check.currentDisplayVersion||appVersionText(updateBoot)||$('appVersion')?.textContent;
  const to=check.latestDisplayVersion;
  if(check.state==='current'){toast(['최신 버전 사용 중',from].filter(Boolean).join(' · '));return}
@@ -203,46 +297,56 @@ async function runGitUpdate(){
  const versionLine=[from,to].filter(Boolean).join(' → ');
  if(!confirm(`새 버전을 적용하고 서버를 재시작합니다.\n${versionLine?versionLine+'\n':''}\n${list}\n\n재시작 후 카피(실계좌 포함)·신호 전략(테스트넷)·되돌림 단타가 모두 자동으로 켜집니다.`))return;
  manualUpdate=true;
- let shown=0,target=1,label='업데이트 시작',down=false,applied=null,finished=false,restartAt=0;
+ let shown=0,target=1,label='업데이트 시작',down=false,applied=null,finished=false,restartAt=0,joinedExisting=false;
+ setUpdateButtonBusy(true,{source:'button',pct:0});
  setUpdate({title:'업데이트 중',version:versionLine,label,pct:0,note:'창을 닫지 말고 잠시 기다려 주세요. 보통 30초~1분 걸립니다.'});
+ const feedSnap=p=>{if(p?.active){target=Math.max(target,Number(p.pct)||0);if(p.label)label=p.label}};
+ pushUpdateProgress=feedSnap;
  // Smooth 0.1 % steps toward the latest known progress.
- const anim=setInterval(()=>{if(shown<target){shown=Math.min(target,shown+Math.max(0.1,(target-shown)*0.08));setUpdate({pct:shown,label})}},100);
+ const anim=setInterval(()=>{if(shown<target){shown=Math.min(target,shown+Math.max(0.1,(target-shown)*0.08));setUpdate({pct:shown,label});setUpdateButtonBusy(true,{source:'button',pct:shown})}},100);
  // "주문 처리 중" (an order or position check running) is not a failure: tried again every 5 s for 2 minutes.
  const send=async()=>{for(let i=0;;i++){const r=await fetch('/api/update/git',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'UPDATE'})});
    const x=await r.json().catch(()=>({}));if(r.ok&&x.ok)return x;
-   if((x.error==='ORDER_IN_PROGRESS'||x.error==='UPDATE_IN_PROGRESS')&&i<24){label='진행 중인 주문 작업이 끝나기를 기다리는 중';await new Promise(w=>setTimeout(w,5000));continue}
+   // If an auto-update started in the exact moment confirm was clicked, attach smoothly instead of erroring.
+   if(x.error==='UPDATE_IN_PROGRESS'){joinedExisting=true;return {ok:true,joinedExisting:true,fromDisplayVersion:from,toDisplayVersion:to}}
+   if(x.error==='ORDER_IN_PROGRESS'&&i<24){label='진행 중인 주문 작업이 끝나기를 기다리는 중';await new Promise(w=>setTimeout(w,5000));continue}
    throw Error(x.message||x.error||'HTTP '+r.status)}};
  const post=send().then(x=>{applied=x}).catch(e=>{finished=true;clearInterval(anim);setUpdate({title:'업데이트 실패',label:e.message,pct:shown,note:'서버는 이전 버전으로 계속 동작합니다. 실매매 화면에서 활성화 상태를 확인해 주세요.',error:true})});
  // Up to 5 minutes for the restart; the page reloads by itself either way (user 2026-11-16).
- for(let i=0;i<1200&&!finished;i++){
-  await new Promise(r=>setTimeout(r,250));
-  try{
-   const r=await fetch('/api/update/git/progress',{cache:'no-store'});
-   if(!r.ok)throw Error('down');
-   const p=await r.json();
-   const originalBoot=check.bootId||updateBoot?.bootId;
-   const restarted=originalBoot&&p.bootId?originalBoot!==p.bootId:down;
-   const expected=applied?.toDisplayVersion||to,running=appVersionText(p);
-   if(restarted&&applied&&(!expected||!running||expected===running)){
-    finished=true;target=100;label='완료';await new Promise(r=>setTimeout(r,600));clearInterval(anim);setUpdate({pct:100,label:'완료'});
-    try{sessionStorage.setItem('updateDone',JSON.stringify({fromDisplayVersion:applied.fromDisplayVersion||from,
-     toDisplayVersion:running||expected,appliedAt:p.bootId||null,
-     rearm:applied.rearm===true,rearmCopy:applied.rearmCopy===true,rearmScalp:applied.rearmScalp===true}))}catch{}
-    location.reload();return;
+ try{
+  for(let i=0;i<1200&&!finished;i++){
+   await new Promise(r=>setTimeout(r,250));
+   try{
+    const r=await fetch('/api/update/git/progress',{cache:'no-store'});
+    if(!r.ok)throw Error('down');
+    const p=await r.json();
+    const originalBoot=check.bootId||updateBoot?.bootId;
+    const restarted=originalBoot&&p.bootId?originalBoot!==p.bootId:down;
+    const expected=applied?.toDisplayVersion||to,running=appVersionText(p);
+    if(restarted&&(applied||joinedExisting)&&(!expected||!running||expected===running)){
+     finished=true;target=100;label='완료';await new Promise(r=>setTimeout(r,600));clearInterval(anim);setUpdate({pct:100,label:'완료',done:true});
+     try{sessionStorage.setItem('updateDone',JSON.stringify({fromDisplayVersion:applied?.fromDisplayVersion||from,
+      toDisplayVersion:running||expected,appliedAt:p.bootId||null,
+      rearm:applied?.rearm===true,rearmCopy:applied?.rearmCopy===true,rearmScalp:applied?.rearmScalp===true}))}catch{}
+     location.reload();return;
+    }
+    if(p.active){target=Math.max(target,p.pct);label=p.label||label}
+   }catch{
+    if(!applied&&!down){continue} // the POST is still running
+    if(!down){down=true;restartAt=Date.now();label='서버 재시작 중'}
+    // While the server restarts: creep toward 99.9 %.
+    const t=(Date.now()-restartAt)/1000;target=Math.max(target,92+7.9*(1-Math.exp(-t/20)));
    }
-   if(p.active){target=Math.max(target,p.pct);label=p.label||label}
-  }catch{
-   if(!applied&&!down){continue} // the POST is still running
-   if(!down){down=true;restartAt=Date.now();label='서버 재시작 중'}
-   // While the server restarts: creep toward 99.9 %.
-   const t=(Date.now()-restartAt)/1000;target=Math.max(target,92+7.9*(1-Math.exp(-t/20)));
   }
+  await post.catch(()=>{});
+  if(!finished&&applied){clearInterval(anim);location.reload()}
+ }finally{
+  clearInterval(anim);
+  if(pushUpdateProgress===feedSnap)pushUpdateProgress=null;
  }
- await post.catch(()=>{});
- if(!finished&&applied){clearInterval(anim);location.reload()}
 }
-$('updateButton').addEventListener('click',async()=>{const b=$('updateButton');b.disabled=true;
- if(gitUpdate){try{await runGitUpdate()}catch(e){setUpdate({title:'업데이트 실패',label:e.message,pct:0,note:'',error:true})}finally{manualUpdate=false;b.disabled=false}return}
+$('updateButton').addEventListener('click',async()=>{if(activeUpdateWatch||manualUpdate)return;const b=$('updateButton');b.disabled=true;
+ if(gitUpdate){try{await runGitUpdate()}catch(e){setUpdate({title:'업데이트 실패',label:e.message,pct:0,note:'',error:true})}finally{manualUpdate=false;if(!activeUpdateWatch)setUpdateButtonBusy(false)}return}
  try{const x=await json('/api/update/check',{method:'POST'});updateStatusText(x);toast(x.message||'업데이트 확인 완료',x.state==='error')}catch(e){toast('업데이트 확인 실패: '+e.message,true)}finally{b.disabled=false}});
 $('dismissError').addEventListener('click',clearBanner);
 $('newsFilter').addEventListener('change',()=>{app.newsPage=1;app.expandedNewsId=null;renderNews()});
