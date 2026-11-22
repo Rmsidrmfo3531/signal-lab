@@ -28,6 +28,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {scalpReasonKo} from './scalp_telegram.mjs';
 import {livePositionView} from './live_overview.mjs';
+import {waitForFlat} from './live_orders.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,scalpMargin,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows} from './scalp_reversal.mjs';
@@ -778,7 +779,14 @@ export class ScalpExecutor{
  }
  /** The venue position of this symbol: `size` is the quantity on our side (a position on the other side
   * counts as 0 for us and is never closed by us), `any` any position at all. */
- async #position(vs,direction,hedge=false){return positionOf(await this.client.positions(vs),vs,direction,hedge)}
+ async #position(vs,direction,hedge=false,{strict=false}={}){
+  const rows=await this.client.positions(vs);
+  if(strict&&!Array.isArray(rows))throw err('POSITION_CHECK_FAILED',502);
+  const p=positionOf(rows,vs,direction,hedge);
+  if(strict&&p.row&&(p.row.positionAmt==null||p.row.positionAmt===''||num(p.row.positionAmt)===null))throw err('POSITION_CHECK_FAILED',502);
+  if(strict&&p.any>0&&p.size===0)throw err('POSITION_SIDE_MISMATCH');
+  return p;
+ }
  async #openOrders(vs){const o=await this.client.openOrders(vs);return o?.orders??(Array.isArray(o)?o:[])}
  /** The attached stop is confirmed; else a whole-position stop is placed; else the position is closed. */
  async #protect(p){
@@ -1223,10 +1231,44 @@ export class ScalpExecutor{
    }
   }
  }
- async #market(p,tag){
-  const now=await this.#position(p.venueSymbol,p.direction,p.hedge===true);if(!(now.size>0))return now;
+ async #market(p,tag,now=null){
+  now??=await this.#position(p.venueSymbol,p.direction,p.hedge===true);if(!(now.size>0))return now;
   const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(now.size),reduceOnly:'true',clientOrderId:(p.id+tag).slice(0,40)},p.hedge===true));
   const id=orderId(o);if(id)p.exitIds.push(id);return {...now,size:0,exitAvg:pos(orderOf(o)?.avgPrice)};
+ }
+ /** User-initiated exit for one tracked testnet scalp. */
+ async closeTestnetPosition(id,{sleep}={}){
+  const refuse=(error,status=409)=>({ok:false,error,status});
+  if(this.config.mode!=='TESTNET'||this.client?.mode!=='TESTNET')return refuse('TESTNET_CLOSE_ONLY');
+  const p=this.store.open.find(p=>p.id===id&&p.mode==='TESTNET'&&p.status==='OPEN');
+  if(!p)return refuse('POSITION_NOT_FOUND',404);
+  if(this.reserved.has(p.symbol)||this.reconcilingSymbol===p.symbol||['PENDING','RESIZE'].includes(p.scaleIn?.state))return refuse('SYMBOL_BUSY');
+  this.reserved.add(p.symbol);
+  try{
+   const mode=await readPositionMode(this.client);
+   if(!mode.ok)return refuse(mode.reason,502);
+   if(mode.hedge!==(p.hedge===true))return refuse('POSITION_MODE_CHANGED');
+   const read=()=>this.#position(p.venueSymbol,p.direction,p.hedge===true,{strict:true});
+   const held=await read();
+   let forced=null;
+   if(held.other>0)p.otherSideSeen=true;
+   if(held.size>0){
+    p.manualCloseAttempts=(p.manualCloseAttempts||0)+1;
+    const tag='m'+p.manualCloseAttempts;
+    this.#save();
+    try{await this.#market(p,tag,held);forced='MANUAL'}
+    catch{
+     const order=await this.client.getOrder(p.venueSymbol,{clientOrderId:(p.id+tag).slice(0,40)}).catch(()=>null);
+     const id=orderId(order);
+     if(id&&!p.exitIds.includes(id))p.exitIds.push(id);
+     if(pos(orderOf(order)?.executedQty))forced='MANUAL';
+    }
+    if(!await waitForFlat(read,sleep))return refuse('CLOSE_UNCONFIRMED',502);
+   }
+   const cleanupPending=await this.#finish(p,forced,{verifyCleanup:true});
+   return {ok:true,alreadyFlat:held.size===0,cleanupPending};
+  }catch(error){return refuse(error.code||'CLOSE_FAILED',error.httpStatus||502)}
+  finally{this.reserved.delete(p.symbol);this.#save()}
  }
  #recordEarlyTakeProfit(p,response){
   const o=orderOf(response),id=orderId(o),filled=Number(o?.executedQty)||0;
@@ -1294,7 +1336,8 @@ export class ScalpExecutor{
    let unrealized=0;
    for(const p of [...this.store.open]){
     // An entry still being placed (its stop / targets not yet sent) is left to the entry path.
-    if(p.status==='SUBMITTING'||this.reserved.has(p.symbol))continue;
+     if(p.status==='SUBMITTING'||p.status==='CLOSED'||this.reserved.has(p.symbol))continue;
+     this.reconcilingSymbol=p.symbol;
     try{
      if(p.scaleIn?.state==='PENDING'||p.scaleIn?.state==='RESIZE'){
       if(this.config.stopLossEnabled===false)await this.#retireStop(p);
@@ -1343,7 +1386,8 @@ export class ScalpExecutor{
      if(p.status==='OPEN'&&await this.#tryEarlyTakeProfit(p,mark))continue;
      if(p.status==='OPEN')await this.#placeTargets(p);
      if(p.status==='OPEN')await this.#considerAdd(p,mark);
-    }catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;break}this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message})}
+     }catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;break}this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message})}
+     finally{this.reconcilingSymbol=null}
    }
    for(const x of this.store.closed.filter(x=>!x.realized&&!x.otherSideSeen&&(x.settleTries||0)<SETTLE_TRIES&&this.now()-x.closedAt>=SETTLE_DELAY_MS&&this.now()-x.closedAt<2*3600000))await this.#settle(x).catch(()=>{});
    this.#flushJournal();
@@ -1378,11 +1422,18 @@ export class ScalpExecutor{
   }finally{this.reconciling=false;this.#save()}
  }
  /** Flat on the venue: leftover orders cancelled, the fills read, close reason and estimated result booked. */
- async #finish(p,forced=null){
+ async #finish(p,forced=null,{verifyCleanup=false}={}){
   const cl=this.client,vs=p.venueSymbol,targets=new Map(),fills=[];
   for(const group of [{ids:p.tpOrderIds},...(p.addTargets||[])])group.ids.forEach((id,i)=>{if(id)targets.set(id,i)});
   const exits=[...new Set([...p.stopIds,...targets.keys()].filter(Boolean))],ids=[...new Set([...exits,...p.exitIds].filter(Boolean))];
-  for(const id of exits){try{await cl.cancelOrder(vs,id)}catch{}}
+  const failedExits=[];
+  for(const id of exits){try{await cl.cancelOrder(vs,id)}catch{if(verifyCleanup)failedExits.push(id)}}
+  let cleanupPending=false;
+  if(failedExits.length){
+   const open=await cl.openOrders(vs).catch(()=>null),orders=open?.orders??open;
+   cleanupPending=!Array.isArray(orders)||orders.some(o=>failedExits.includes(orderId(o)));
+   if(cleanupPending)this.#event('CANCEL_FAILED',{symbol:p.symbol,direction:p.direction,reason:'MANUAL_CLOSE_CLEANUP'});
+  }
   for(const id of ids){try{const o=orderOf(await cl.getOrder(vs,{orderId:id})),q=pos(o?.executedQty),price=pos(o?.avgPrice);if(q&&price)fills.push({id,qty:q,price,status:o?.status})}catch{}}
   // Journal: fill prices count as excursions; target fills replace the price seen on the reconcile.
   p.tpFills??=[null,null,null];
@@ -1407,6 +1458,7 @@ export class ScalpExecutor{
   {const risk=p.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version?dir*(p.scaleIn.initialEntry-p.initialStop)*p.scaleIn.initialQty:dir*(p.avg-p.initialStop)*p.filled;row.rMultiple=risk>0?r((gross-fee)/risk):null}
   this.store.closed.push(row);this.store.open=this.store.open.filter(x=>x!==p);
   this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,holdMs:row.holdMs,entry:p.avg});
+  return cleanupPending;
  }
  /** BingX fund flow (realized PnL + fees + funding) of this trade's symbol and lifetime, read after the close. */
  async #settle(x){

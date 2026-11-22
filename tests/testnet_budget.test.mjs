@@ -160,6 +160,8 @@ test('totals over both strategies and the 신호 / 단타 breakdown line; budget
  assert.deepEqual(st.signal,{trades:2,wins:1,winRatePct:50,profitFactor:2.5,netUSD:6});
  assert.deepEqual(st.all,{trades:5,wins:3,winRatePct:60,profitFactor:2.6,netUSD:8});
  const h=testnetSummaryHTML(st);assert.match(h,/5건/);assert.match(h,/60\.0%/);assert.match(h,/2\.60/);assert.match(h,/\+\$8\.00/);
+ assert.ok(h.indexOf('누적 실현 손익')<h.indexOf('미실현 손익 합계'));
+ assert.ok(h.indexOf('미실현 손익 합계')<h.indexOf('<span>거래</span>'));
  assert.match(h,/미실현 손익 합계<\/span><strong class="">\$0\.00<\/strong><small>보유 0건/);
  const partial=testnetSummaryHTML(st,{open:[{usd:-12.5,source:'EXCHANGE'},{usd:2,source:'ESTIMATE'},null]});
  assert.match(partial,/미실현 손익 합계<\/span><strong class="paper-loss">−\$10\.50<\/strong><small>확인 2\/3건 · 추정 포함/);

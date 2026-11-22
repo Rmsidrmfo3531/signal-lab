@@ -185,6 +185,16 @@ export function bingxOrders({symbol,direction,stop,targets,qty,clientOrderId,hed
  };
 }
 
+/** A response to a close order is not a position snapshot. Poll without submitting another order. */
+export async function waitForFlat(readPosition,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))){
+ for(let attempt=0;attempt<4;attempt++){
+  if(attempt)await sleep(500);
+  const position=await readPosition().catch(()=>null);
+  if(position?.size===0)return position;
+ }
+ return null;
+}
+
 /** Gate.io single-position mode requests (sizes in contracts, signed by side). */
 export function gateOrders({contract,direction,stop,targets,qty,clientOrderId}){
  const sign=direction==='LONG'?1:-1,closeType=direction==='LONG'?'close-long-position':'close-short-position',

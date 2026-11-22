@@ -150,6 +150,45 @@ test('preflight blocks every unsafe condition with a named reason',()=>{
  assert.ok(!whole.reasons.includes('GATEIO_DECIMAL_SIZE_UNVERIFIED'),'whole contracts on a decimal contract are allowed');
 });
 
+test('manual testnet signal exit cancels its resting adds, reads current quantity and confirms flat before cleanup',async()=>{
+ let amount='0.20';
+ const m=mockBingX({positionAmt:()=>amount}),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});
+ ex.arm();await ex.onSignal(row(),{signalKey:'manual-close'});
+ const record=ex.store.records[0],id='9600';
+ record.adds=[{qty:0.2,price:97,orderId:id}];
+ m.orders.push({orderID:id,type:'LIMIT'});
+ m.orders.push({orderID:'9601',type:'LIMIT',clientOrderId:'someone-else'});
+ amount='0.13';ex.disarm();
+ const start=m.calls.length;
+ const result=await ex.closeTestnetPosition('manual-close',{sleep:async()=>{
+  assert.equal(record.status,'OPEN');
+  assert.equal(m.orders.some(o=>o.orderID===record.stopOrderId),true,'protective stop stays pending until the position is flat');
+  amount='0';
+ }});
+ assert.deepEqual(result,{ok:true,alreadyFlat:false,cleanupPending:false});
+ const calls=m.calls.slice(start);
+ const close=calls.findIndex(c=>c.method==='POST'&&c.params.type==='MARKET');
+ assert.ok(calls.findIndex(c=>c.method==='DELETE'&&c.params.orderId===id)<close);
+ assert.deepEqual([calls[close].params.quantity,calls[close].params.side,calls[close].params.reduceOnly],['0.13','SELL','true']);
+ assert.equal(m.orders.some(o=>o.orderID==='9601'),true);
+ assert.equal(record.status,'CLOSED');assert.equal(record.closeReason,'MANUAL');
+ const real=new LiveExecutor({config:config({mode:'LIVE'}),clients:{BINGX:m.client}});
+ assert.equal((await real.closeTestnetPosition('manual-close')).error,'TESTNET_CLOSE_ONLY');
+});
+
+test('manual testnet signal exit cannot leave an opening order unchecked',async()=>{
+ const m=mockBingX(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});
+ ex.arm();await ex.onSignal(row(),{signalKey:'cancel-incomplete'});
+ const record=ex.store.records[0],id='9600';
+ record.adds=[{qty:0.2,price:97,orderId:id}];
+ m.orders.push({orderID:id,type:'LIMIT'});
+ m.client.cancelOrder=async()=>{throw Error('cancel not confirmed')};
+ const start=m.calls.length;
+ assert.equal((await ex.closeTestnetPosition('cancel-incomplete')).error,'ADD_CANCEL_UNCONFIRMED');
+ assert.equal(record.status,'OPEN');
+ assert.equal(m.calls.slice(start).some(c=>c.method==='POST'&&c.params.type==='MARKET'),false);
+});
+
 test('BingX: entry carries the stop, three reduce-only targets follow, a repeated signal is never resent',async()=>{
  const m=mockBingX(),dir=tmp(),ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
  assert.equal((await ex.onSignal(row(),{signalKey:'k1'})).reasons[0],'NOT_ARMED');assert.equal(m.calls.length,0,'nothing is sent before arming');
