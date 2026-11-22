@@ -553,4 +553,20 @@ test('when BingX VST equity is reduced to $3,000, legacy oversized VST trades st
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
-
+test('one-time 50%/30% -> 100%/100% migration clears stale stop recorded under old 50% limit',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tb-mig-stop-'));
+ const day=kstDay(NOW);
+ try{
+  fs.writeFileSync(path.join(dir,'testnet-budget.json'),JSON.stringify({
+   version:1,
+   stop:{day,at:NOW-60000,lossUSD:1703.65,limitUSD:1500,reason:'REALIZED'},
+   settings:{dailyLossPct:50,marginCapPct:30,capitalCapUSD:3000},
+  }));
+  const budget=new TestnetBudget({accountEquity:true,capitalCapUSD:3000,now:()=>NOW,directory:dir});
+  budget.observeAccount(3002.06,'VST');
+  const st=budget.status();
+  assert.equal(st.dailyLossPct,100);
+  assert.equal(st.marginCapPct,100);
+  assert.equal(st.stopped,false,'auto-migration from 50%/30% to 100%/100% clears stale 50%-limit stop');
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});

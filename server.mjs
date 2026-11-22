@@ -64,6 +64,7 @@ import {AccountAlerts} from './account_alerts.mjs';
 import {RealTrailingManager} from './real_trailing.mjs';
 import {RealAccountGuard,REAL_SAFETY_COPY_PRESET} from './real_safety.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
+import {DailyAdvisor,buildImprovementAdvice,formatAdvisorTelegram} from './daily_advisor.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
 import {selectVenueOnlyCoins,venueVolumes,parseMarketCaps,screenByMarketCap,marketCapFor} from './venue_charts.mjs';
@@ -734,6 +735,7 @@ if(COPY.mode==='LIVE'){
    };
   },
   getScalpStatus:async()=>scalpExec?.runtimeSummary?.()??null,
+  getAdvisorReply:async()=>formatAdvisorTelegram(buildImprovementAdvice(advisorContext()),{mode:'ondemand'}),
   onControls:patch=>{
    if(patch){copyControls.configure(patch);reportsDirty=true}
    return {controls:copyControls.status(),traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD)};
@@ -787,6 +789,46 @@ if(COPY.mode==='LIVE'){
  setTimeout(()=>{void checkDaily()},25000).unref?.();
  if(CONFIG.tgToken&&CONFIG.tgChat)setInterval(()=>{void accountAlerts.pollCommands()},10000).unref?.();
 }
+function advisorContext(){
+ const copyClosed=COPY.mode==='LIVE'?(copyTrader?.store?.closed||[]):[];
+ const manualClosed=COPY.mode==='LIVE'?(manualLedger?.store?.closed||[]):[];
+ const analytics=COPY.mode==='LIVE'?buildCopyAnalytics({
+  copyClosed,manualClosed,
+  dailyByDay:dailyPnl?.status()?.byDay??null,
+  equityUSD:copyTrader?.funds?.equity??null,
+  confirmedOnly:true,
+  exchangeCosts:dailyPnl?.costSummary?.()??null,
+ }):null;
+ const scalpExport=scalpExec?.exportJournal?.()??null;
+ return {
+  copyClosed,
+  manualClosed,
+  copyControls:copyControls?.status?.()??null,
+  copyEvents:COPY.mode==='LIVE'?(copyTrader?.store?.events||[]):[],
+  copyAudit:COPY.mode==='LIVE'?(copyTrader?.auditStatus?.()??null):null,
+  analytics,
+  realEquityUSD:COPY.mode==='LIVE'?(copyTrader?.funds?.equity??null):null,
+  realSafety:realSafety?.status?.()??null,
+  realTrailing:realTrailing?.status?.()??null,
+  accountAlerts:accountAlerts?.status?.()??null,
+  scalpClosed:scalpExec?.store?.closed||[],
+  scalpStats:scalpExport?.summary??null,
+  scalpRuntime:scalpExec?.runtimeSummary?.()??null,
+  testnetBudget:hasTestnetBingx?testnetBudget.status():null,
+  testnetScalpOnly:TESTNET_SCALP_ONLY,
+  paperTrading:CONFIG.paperTrading,
+  copyTestnetTrades:COPY.mode==='TESTNET'?(copyTrader?.store?.closed?.length||0):0,
+ };
+}
+const dailyAdvisor=new DailyAdvisor({
+ directory:storage.dir,
+ sendText:COPY.mode==='LIVE'?sendTradeTelegram:async text=>{updateNotice(text);return {ok:true}},
+ log:(...a)=>console.log('[ADVISOR]',...a),
+});
+setInterval(()=>{void dailyAdvisor.checkDaily(advisorContext()).catch(e=>console.warn('[ADVISOR DAILY]',e.message))},10*60000).unref?.();
+setTimeout(()=>{void dailyAdvisor.checkDaily(advisorContext()).catch(e=>console.warn('[ADVISOR DAILY]',e.message))},45000).unref?.();
+setInterval(()=>{void dailyAdvisor.checkRealtime(advisorContext()).catch(e=>console.warn('[ADVISOR RT]',e.message))},5*60000).unref?.();
+setTimeout(()=>{void dailyAdvisor.checkRealtime(advisorContext()).catch(e=>console.warn('[ADVISOR RT]',e.message))},60000).unref?.();
 // The venue's public mid price for a live record (screen and exit estimates only; never an order input).
 function livePublicPrice(record){const book=venueBooks.get(record.venue+':'+record.symbol);return book?.ok&&Number.isFinite(book.mid)&&Date.now()-book.receivedAt<60000?book.mid:null}
 function liveRecordPrice(record){const p=record.position;return p?.markPrice>0&&Date.now()-p.at<90000?p.markPrice:livePublicPrice(record)}
@@ -2012,6 +2054,20 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/copy/export'&&req.method==='GET'){
    res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-real-trades.csv"','Cache-Control':'no-store',...SECURITY_HEADERS});
    return res.end(exportCopyTradesCSV({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[]}));
+  }
+  if(pathname==='/api/advisor'&&req.method==='GET'){
+   return response(res,200,{...buildImprovementAdvice(advisorContext()),config:dailyAdvisor.status()});
+  }
+  if(pathname==='/api/advisor/notify'&&req.method==='POST'){
+   try{
+    const r=await dailyAdvisor.sendNow(advisorContext());
+    return response(res,200,{ok:true,sent:r.sent,itemCount:r.advice?.totals?.itemCount??0,message:'텔레그램으로 개선 코치 리포트를 발송했습니다'});
+   }catch(e){return response(res,500,{error:e.code||'ADVISOR_NOTIFY_FAILED',message:e.message})}
+  }
+  if(pathname==='/api/advisor/config'&&req.method==='POST'){
+   const body=await bodyJson(req);
+   try{return response(res,200,{ok:true,config:dailyAdvisor.configure(body)})}
+   catch(e){return response(res,e.httpStatus||500,{error:e.code||'ADVISOR_CONFIG_FAILED',message:e.message})}
   }
   if(pathname==='/api/real/position-action'&&req.method==='POST'){
    const body=await bodyJson(req);

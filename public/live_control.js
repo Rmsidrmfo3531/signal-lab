@@ -1335,5 +1335,65 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
  // 실계좌 page: the copy panel alone every 3 s (prices cached 3 s on the server, balance 15 s), while visible.
  let fastBusy=false;
  setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy||copyActionBusy)return;fastBusy=true;
-  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'){realTradeCtrl?.syncContext({visible:true,availableUSD:c.funds?.available??null,heldPositions:c.venuePositions??[]});if(!copyActionBusy&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}}catch{}finally{fastBusy=false}},3000);window.addEventListener('hashchange',()=>setTimeout(()=>{tick();void refreshBudget()},60));
+  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'){realTradeCtrl?.syncContext({visible:true,availableUSD:c.funds?.available??null,heldPositions:c.venuePositions??[]});if(!copyActionBusy&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}}catch{}finally{fastBusy=false}},3000);
+ let advisorBusy=false;
+ const renderAdvisor=d=>{
+  const card=$('advisorCard'),meta=$('advisorSummaryMeta'),body=$('advisorBody');
+  if(!card||!body||!d)return;
+  card.hidden=false;
+  const addN=d.add?.length||0,impN=d.improve?.length||0,remN=d.remove?.length||0;
+  if(meta)meta.textContent=`추가 ${addN} · 개선 ${impN} · 삭제 ${remN} · 매일 ${String(d.config?.dailyHourKst??9).padStart(2,'0')}:00 KST 텔레그램`;
+  body.innerHTML=advisorHTML(d);
+ };
+ const loadAdvisor=async()=>{
+  if(advisorBusy||$('real')?.hidden||document.hidden)return;
+  advisorBusy=true;
+  try{const r=await fetch('/api/advisor',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok)renderAdvisor(await r.json())}catch{}finally{advisorBusy=false}
+ };
+ $('advisorCard')?.addEventListener('click',async e=>{
+  const notify=e.target.closest?.('[data-advisor-notify]');
+  const toggle=e.target.closest?.('[data-advisor-toggle]');
+  const rt=e.target.closest?.('[data-advisor-rt]');
+  if(!notify&&!toggle&&!rt)return;
+  const msg=$('advisorCard').querySelector('[data-advisor-msg]');
+  if(notify){
+   notify.disabled=true;if(msg)msg.textContent='텔레그램 발송 중…';
+   try{
+    const r=await fetch('/api/advisor/notify',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}),d=await r.json().catch(()=>({}));
+    if(!r.ok)throw Error(d.message||d.error||'HTTP '+r.status);
+    if(msg)msg.textContent=d.message||'텔레그램 발송 완료';
+   }catch(err){if(msg)msg.textContent='발송 실패: '+err.message}
+   finally{notify.disabled=false}
+   return;
+  }
+  const btn=toggle||rt;
+  const patch=toggle?{enabled:toggle.dataset.advisorToggle!=='1'}:{realtimeAlerts:rt.dataset.advisorRt!=='1'};
+  btn.disabled=true;
+  try{
+   const r=await fetch('/api/advisor/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
+   if(r.ok)await loadAdvisor();
+  }catch{}finally{btn.disabled=false}
+ });
+ setTimeout(()=>void loadAdvisor(),1200);
+ setInterval(()=>void loadAdvisor(),60000);
+ window.addEventListener('hashchange',()=>setTimeout(()=>{tick();void refreshBudget();void loadAdvisor()},60));
+}
+
+export function advisorHTML(d){
+ if(!d)return '<p class="empty-small">분석 데이터가 없습니다.</p>';
+ const cfg=d.config||{enabled:true,dailyHourKst:9,realtimeAlerts:true};
+ const scopeLabel=s=>s==='real'?'실계좌':s==='testnet'?'테스트넷':'UI/기능';
+ const renderGroup=(cls,title,list)=>{
+  if(!list?.length)return '';
+  return `<div class="adv-group ${cls}"><h5>${title} <small>${list.length}건</small></h5><ul class="adv-list">${list.map(x=>
+   `<li class="adv-item ${x.priority==='HIGH'?'is-high':''}"><div class="adv-item-head"><span class="adv-scope ${esc(x.scope||'')}">${scopeLabel(x.scope)}</span><b>${esc(x.title)}</b>${x.priority==='HIGH'?'<span class="adv-hi">중요</span>':''}</div><p>${esc(x.detail)}</p></li>`
+  ).join('')}</ul></div>`;
+ };
+ const groups=renderGroup('adv-add','➕ 추가 추천',d.add)+renderGroup('adv-improve','🔧 개선 추천',d.improve)+renderGroup('adv-remove','🗑 삭제·정리 추천',d.remove);
+ return `<div class="adv-toolbar">
+  <button type="button" class="outline-btn small" data-advisor-notify>📩 텔레그램 즉시 받기</button>
+  <button type="button" class="outline-btn small ${cfg.enabled?'is-current':''}" data-advisor-toggle="${cfg.enabled?'1':'0'}">매일 ${String(cfg.dailyHourKst??9).padStart(2,'0')}:00 자동 ${cfg.enabled?'ON':'OFF'}</button>
+  <button type="button" class="outline-btn small ${cfg.realtimeAlerts?'is-current':''}" data-advisor-rt="${cfg.realtimeAlerts?'1':'0'}">실시간 중요 감지 ${cfg.realtimeAlerts?'ON':'OFF'}</button>
+  <span class="adv-msg" data-advisor-msg role="status">텔레그램 명령어: /coach</span>
+ </div>${groups||'<p class="empty-small">현재 매매 기록·설정 기준 추가 개선 항목이 없습니다.</p>'}`;
 }

@@ -155,9 +155,9 @@ export function formatScalpStatusReply(rt,{now=Date.now()}={}){
 export class AccountAlerts{
  constructor({directory=null,fileName='account-alerts.json',now=()=>Date.now(),log=()=>{},
   sendText=async()=>({ok:false}),post=null,allowedChatId='',
-  getSnapshot=async()=>null,getScalpStatus=async()=>null,onControls=null,
+  getSnapshot=async()=>null,getScalpStatus=async()=>null,getAdvisorReply=async()=>null,onControls=null,
   onPause=async()=>null,onResume=async()=>null,onClose=async()=>null}={}){
-  Object.assign(this,{now,log,sendText,allowedChatId:String(allowedChatId||'').trim(),getSnapshot,getScalpStatus,onControls,onPause,onResume,onClose});
+  Object.assign(this,{now,log,sendText,allowedChatId:String(allowedChatId||'').trim(),getSnapshot,getScalpStatus,getAdvisorReply,onControls,onPause,onResume,onClose});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={
@@ -387,6 +387,7 @@ export class AccountAlerts{
     '/pos [분] — 진행 중 포지션 손익 요약 (숫자 입력 시 알림 주기 변경)',
     '/scalp — 테스트넷 단타 5분 스캔 상태',
     '/report — 오늘 KST 손익 중간 리포트',
+    '/coach — 실계좌·테스트넷 기반 추가·개선·삭제 코치',
     '/size [금액|0.5x|1x|2x] — 카피 기준 잔고 조회·변경',
     '/block [종목] — 카피 제외 목록 조회·추가',
     '/unblock 종목 — 카피 제외 목록에서 제거',
@@ -418,6 +419,11 @@ export class AccountAlerts{
   if(cmd==='/scalp'||cmd==='/단타'){
    const rt=await this.getScalpStatus();
    return formatScalpStatusReply(rt,{now});
+  }
+
+  if(cmd==='/coach'||cmd==='/코치'||cmd==='/개선'||cmd==='/조언'){
+   const reply=await this.getAdvisorReply();
+   return reply||'⚠️ 개선 코치 분석 데이터를 조회하지 못했습니다.';
   }
 
   if(cmd==='/size'||cmd==='/비중'){
