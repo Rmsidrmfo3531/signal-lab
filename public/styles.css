@@ -763,18 +763,3 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .rt-o-meta b{color:var(--text)}
 .vp-act-btn.trade{border-color:#2a5a8a;background:#102944;color:#9fd0ff}
 .vp-act-btn.trade:hover:not(:disabled){background:#193d63;border-color:#5a9cff}
-.advisor-card{margin-top:12px}
-.adv-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:10px}
-.adv-msg{font-size:11.5px;color:var(--dim);margin-left:auto}
-.adv-group{margin-top:8px}
-.adv-group h5{margin:0 0 6px;font-size:12.5px;color:var(--text);display:flex;align-items:center;gap:6px}
-.adv-group h5 small{color:var(--dim);font-weight:500}
-.adv-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
-.adv-item{padding:8px 10px;border-radius:8px;background:#08111c;border:1px solid #1a2d44}
-.adv-item.is-high{border-color:rgba(241,113,134,.45);background:rgba(241,113,134,.05)}
-.adv-item-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12.5px;margin-bottom:4px}
-.adv-item p{margin:0;font-size:11.8px;line-height:1.45;color:var(--dim)}
-.adv-scope{padding:1px 6px;border-radius:4px;font-size:10.5px;font-weight:700;background:#15283f;color:#9fd0ff}
-.adv-scope.testnet{background:#193026;color:#8ee8cb}
-.adv-scope.ui{background:#29223a;color:#ccb4ff}
-.adv-hi{padding:1px 5px;border-radius:4px;font-size:10px;font-weight:700;background:rgba(241,113,134,.2);color:#ff9bad}
