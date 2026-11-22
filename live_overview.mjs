@@ -13,7 +13,7 @@ export const LIVE_REASON_KO=Object.freeze({OPEN_RISK_LIMIT:'열린 포지션 최
  MAX_OPEN_POSITIONS:'동시 포지션 최대',MAX_SAME_DIRECTION_POSITIONS:'같은 방향 포지션 최대',SYMBOL_ALREADY_ACTIVE:'이미 보유 중인 종목',
  QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK:'최소 주문 수량 미달',GATEIO_DECIMAL_SIZE_UNVERIFIED:'Gate.io 소수 계약 미검증',DAILY_RISK_LIMIT:'하루 손실 한도 도달',
  BALANCE_UNAVAILABLE:'잔고 조회 실패',BALANCE_EMPTY:'잔고 없음',DUPLICATE_SIGNAL:'이미 주문한 신호',SYMBOL_BUSY:'주문 처리 중',SIGNAL_IN_FLIGHT:'같은 신호 처리 중',RETRY_WAIT:'재시도 대기'});
-export const LIVE_CLOSE_KO=Object.freeze({POSITION_FLAT:'거래소에서 청산됨 (익절·손절)',EMERGENCY_NO_STOP:'손절 주문 실패로 긴급 청산',LATE_ADD_AFTER_FLAT:'청산 뒤 체결된 추매를 긴급 청산',TEST_CLOSE:'시험 주문 청산'});
+export const LIVE_CLOSE_KO=Object.freeze({POSITION_FLAT:'거래소에서 청산됨 (익절·손절)',MANUAL:'수동 전량 청산',EMERGENCY_NO_STOP:'손절 주문 실패로 긴급 청산',LATE_ADD_AFTER_FLAT:'청산 뒤 체결된 추매를 긴급 청산',TEST_CLOSE:'시험 주문 청산'});
 export const LIVE_EVENT_KO=Object.freeze({
  MARGIN_SET:'교차 마진·배율 설정',LEVERAGE_CAPPED:'거래소 최대 배율로 낮춤',ENTRY_SENT:'진입 주문 체결',ENTRY_FILLED:'진입 체결',STOP_CONFIRMED:'손절 주문 확인',STOP_PLACED:'손절 주문 등록',
  STOP_WHOLE_POSITION:'전체 물량 손절 등록',PROTECTED:'손절·목표 주문 완료',ADDS_PLACED:'추매 주문 등록',ADD_FILLED:'추매 체결',ADDS_CANCELLED:'남은 추매 취소',

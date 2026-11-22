@@ -71,6 +71,39 @@ const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-exec-'));
 const placed=(v,type)=>v.calls.filter(c=>c.op==='order'&&c.type===type);
 const short=(opt={})=>{const v=venue({fillAt:PX_S,...opt.venue}),clock=opt.clock||{t:T0};return {v,clock,ex:make(v,{clock,price:PX_S,trend:down4h,rows:rise,...opt})}};
 
+test('manual testnet close uses the remaining scalp quantity and waits for venue flat',async()=>{
+ for(const direction of ['LONG','SHORT']){
+  const {v,ex}=direction==='SHORT'?short():(()=>{const v=venue();return {v,ex:make(v)}})();
+  ex.arm();await ex.scan();
+  const [p]=ex.store.open;
+  assert.match(scalpPositionCardHTML(p,{allowClose:true}),/data-strategy="scalp"/);
+  assert.doesNotMatch(scalpPositionCardHTML(p),/data-testnet-close/);
+  const remaining=p.size/2;
+  v.size=direction==='SHORT'?-remaining:remaining;
+  ex.disarm();
+  const guard=Promise.withResolvers();
+  const place=v.client.placeOrder;
+  v.client.placeOrder=async(...args)=>{await guard.promise;return place(...args)};
+  const close=ex.closeTestnetPosition(p.id,{sleep:async()=>{}});
+  assert.equal((await ex.closeTestnetPosition(p.id)).error,'SYMBOL_BUSY');
+  guard.resolve();
+  assert.deepEqual(await close,{ok:true,alreadyFlat:false,cleanupPending:false});
+  const exit=placed(v,'MARKET').at(-1);
+  assert.deepEqual([exit.side,exit.quantity,exit.reduceOnly],[direction==='LONG'?'SELL':'BUY',String(remaining),'true']);
+  assert.equal(v.size,0);assert.equal(ex.store.open.length,0);assert.equal(ex.store.closed[0].closeReason,'MANUAL');
+  assert.equal((await ex.closeTestnetPosition(p.id)).error,'POSITION_NOT_FOUND');
+ }
+});
+
+test('manual testnet close keeps the scalp open if the market order is acknowledged but not reflected in positions',async()=>{
+ const v=venue(),ex=make(v);ex.arm();await ex.scan();
+ const [p]=ex.store.open;let submitted=0;
+ v.client.placeOrder=async()=>{submitted++;return {order:{orderId:'manual-pending'}}};
+ assert.equal((await ex.closeTestnetPosition(p.id,{sleep:async()=>{}})).error,'CLOSE_UNCONFIRMED');
+ assert.equal(submitted,1);assert.equal(ex.store.open[0],p);assert.equal(ex.store.closed.length,0);
+ assert.equal(v.orders.get(p.stopOrderId).status,'NEW');
+});
+
 test('scalp caps entries with the directional BingX quantity after setting leverage',async()=>{
  for(const direction of ['LONG','SHORT']){
   const isShort=direction==='SHORT',price=isShort?PX_S:PX;

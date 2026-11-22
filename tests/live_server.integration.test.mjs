@@ -47,6 +47,8 @@ test('live control: OFF by default; testnet needs an explicit arm; secrets never
   const forged=await post(app,'/api/live/arm',{confirm:'ARM'},{origin:'https://attacker.example','sec-fetch-site':'cross-site'});
   assert.equal(forged.status,403,'another website cannot arm live trading');await forged.arrayBuffer();
   const noConfirm=await post(app,'/api/live/arm',{});assert.equal(noConfirm.status,400);await noConfirm.arrayBuffer();
+  const noCloseConfirm=await post(app,'/api/live/testnet-close',{strategy:'scalp',key:'missing'});assert.equal(noCloseConfirm.status,400);await noCloseConfirm.arrayBuffer();
+  const missingClose=await post(app,'/api/live/testnet-close',{strategy:'scalp',key:'missing',confirm:'CLOSE_TESTNET'});assert.equal(missingClose.status,404);await missingClose.arrayBuffer();
   const armed=await(await post(app,'/api/live/arm',{confirm:'ARM'})).json();assert.equal(armed.armed,true);
   const killed=await(await post(app,'/api/live/kill',{})).json();assert.equal(killed.killSwitch,true);assert.equal(killed.armed,false);
   const rearm=await post(app,'/api/live/arm',{confirm:'ARM'});assert.equal(rearm.status,409);await rearm.arrayBuffer();
@@ -56,6 +58,10 @@ test('live control: OFF by default; testnet needs an explicit arm; secrets never
  }finally{await app.close()}
 
  const live=await boot(t,{LIVE_TRADING_MODE:'LIVE'});
- try{const r=await post(live,'/api/live/arm',{confirm:'ARM'});assert.equal(r.status,409);assert.equal((await r.json()).error,'LIVE_CONFIRM_MISSING')}
+ try{
+  const r=await post(live,'/api/live/arm',{confirm:'ARM'});assert.equal(r.status,409);assert.equal((await r.json()).error,'LIVE_CONFIRM_MISSING');
+  const close=await post(live,'/api/live/testnet-close',{strategy:'scalp',key:'missing',confirm:'CLOSE_TESTNET'});
+  assert.equal(close.status,409);assert.equal((await close.json()).error,'TESTNET_CLOSE_ONLY');
+ }
  finally{await live.close()}
 });
