@@ -55,25 +55,53 @@ test('RealTrailingManager executes 50% partial lock-in + auto breakeven + peak p
  assert.match(msgs[0],/50% 부분 익절 확정/);
  assert.match(msgs[0],/본전 스탑 자동 설정/);
 
- // Step 2: Peak climbs to +20% ROE (within cooldown and after cooldown)
+ // Step 2: Peak climbs to +20% Net ROE (gross +21% - 1% fee at 10x)
  t+=20_000;
- assert.deepEqual(await rt.evaluate([pos({size:0.5,roePct:20,unrealized:30})],t),[]);
+ assert.deepEqual(await rt.evaluate([pos({size:0.5,roePct:21,unrealized:30})],t),[]);
  assert.equal(rt.status().tracked['ETHUSDT|LONG'].peakRoePct,20);
  assert.equal(rt.status().tracked['ETHUSDT|LONG'].partialTaken,true);
 
- // Pullback of 25% from +20% -> trail stop = +15% ROE. At +16% still holds.
+ // Pullback of 25% from +20% -> trail stop = +15% Net ROE. At +17% gross (+16% net) still holds.
  t+=20_000;
- assert.deepEqual(await rt.evaluate([pos({size:0.5,roePct:16,unrealized:24})],t),[]);
+ assert.deepEqual(await rt.evaluate([pos({size:0.5,roePct:17,unrealized:24})],t),[]);
 
- // Drops to +14.5% (<= 15%) -> trailing exit CLOSE_ALL
+ // Drops to +15.5% gross (+14.5% net <= 15%) -> trailing exit CLOSE_ALL
  t+=20_000;
- const a2=await rt.evaluate([pos({size:0.5,roePct:14.5,unrealized:21.75})],t);
+ const a2=await rt.evaluate([pos({size:0.5,roePct:15.5,unrealized:21.75})],t);
  assert.equal(a2.length,1);
  assert.equal(a2[0].action,'CLOSE_ALL');
  assert.equal(a2[0].peakRoePct,20);
  assert.equal(calls.at(-1).action,'CLOSE_ALL');
- assert.match(msgs[1],/고점 ROE \+20\.0% → 청산 ROE \+14\.5%/);
+ assert.match(msgs[1],/고점 순 ROE \+20\.0% → 청산 순 ROE \+14\.5%/);
  assert.equal(rt.status().tracked['ETHUSDT|LONG'],undefined,'tracking cleared after full exit');
+});
+
+test('RealTrailingManager skips TradFi thin-liquidity symbols by default and prevents fee-losing exits on high leverage',async()=>{
+ let t=1_700_000_000_000;
+ const calls=[];
+ const rt=new RealTrailingManager({
+  now:()=>t,
+  executeAction:async a=>{calls.push(a);return {ok:true}},
+ });
+ rt.configure({enabled:true,partialLockRoePct:8,trailActivateRoePct:8,skipTradfi:true});
+
+ // TradFi symbol (NCSKSNDK2USD-USDT / GOLDUSDT) skipped by default
+ assert.deepEqual(await rt.evaluate([
+  pos({symbol:'NCSKSNDK2USDUSDT',venueSymbol:'NCSKSNDK2USD-USDT',roePct:25,leverage:10}),
+  pos({symbol:'GOLDUSDT',venueSymbol:'NCCOGOLD2USD-USDT',roePct:25,leverage:10}),
+ ],t),[]);
+ assert.equal(calls.length,0);
+
+ // 50x leverage has 5.0% round-trip fee ROE -> gross +10% is only +5% Net ROE (< +8% trigger), so no premature close!
+ assert.deepEqual(await rt.evaluate([pos({symbol:'BTCUSDT',venueSymbol:'BTC-USDT',leverage:50,roePct:10})],t),[]);
+ assert.equal(calls.length,0);
+
+ // Once gross hits +14% (net +9% >= +8%), partial lock-in triggers cleanly
+ const a=await rt.evaluate([pos({symbol:'BTCUSDT',venueSymbol:'BTC-USDT',leverage:50,roePct:14})],t);
+ assert.equal(a.length,1);
+ assert.equal(a[0].action,'CLOSE_HALF');
+ assert.equal(a[0].feeRoePct,5);
+ assert.equal(a[0].roePct,9);
 });
 
 test('RealTrailingManager handles HALF_QTY_TOO_SMALL fallback, excludedSymbols, and persistence across restart',async()=>{
@@ -101,13 +129,13 @@ test('RealTrailingManager handles HALF_QTY_TOO_SMALL fallback, excludedSymbols, 
   rt.configure({toggleExcludeSymbol:'ETHUSDT'});
   assert.deepEqual(rt.status().excludedSymbols,['BTCUSDT']);
 
-  // HALF_QTY_TOO_SMALL marks partialTaken=true and falls back to full trailing
-  await rt.evaluate([pos({symbol:'ETHUSDT',roePct:12})],t);
+  // HALF_QTY_TOO_SMALL marks partialTaken=true and falls back to full trailing (10x -> -1% fee)
+  await rt.evaluate([pos({symbol:'ETHUSDT',roePct:13})],t);
   assert.equal(rt.status().tracked['ETHUSDT|LONG'].partialTaken,true);
   t+=20_000;
-  await rt.evaluate([pos({symbol:'ETHUSDT',roePct:16})],t);
+  await rt.evaluate([pos({symbol:'ETHUSDT',roePct:17})],t); // peak net ROE = 16%
   t+=20_000;
-  const res=await rt.evaluate([pos({symbol:'ETHUSDT',roePct:11.5})],t);
+  const res=await rt.evaluate([pos({symbol:'ETHUSDT',roePct:12.5})],t); // net 11.5% <= 12% stop
   assert.equal(res.length,1);
   assert.equal(res[0].action,'CLOSE_ALL');
 
@@ -141,6 +169,7 @@ test('Real-account UI renders trailing panel, live peak badges, and per-symbol e
  const h=copyHTML(liveCopy);
  assert.match(h,/자동 트레일링 익절 \(실계좌\)/);
  assert.match(h,/data-real-trailing-form/);
+ assert.match(h,/TradFi·주식 종목 자동 제외/);
  assert.match(h,/50%확정·고점 \+14\.2%/);
  assert.match(h,/트레일 제외/);
  assert.match(h,/data-trail-toggle="ETHUSDT"/);

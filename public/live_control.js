@@ -247,11 +247,12 @@ export function venuePositionsHTML(c,copyOpen=[]){
 }
 
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
-let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,trailingOpen=false,analyticsOpen=false,analyticsTab='symbol',lastCopy=null,realTradeCtrl=null;
+let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,trailingOpen=false,safetyOpen=false,analyticsOpen=false,analyticsTab='symbol',lastCopy=null,realTradeCtrl=null;
 export function setFailOpen(v){failOpen=!!v}
 export function setControlsOpen(v){controlsOpen=!!v}
 export function setAlertsOpen(v){alertsOpen=!!v}
 export function setTrailingOpen(v){trailingOpen=!!v}
+export function setSafetyOpen(v){safetyOpen=!!v}
 export function setAnalyticsOpen(v){analyticsOpen=!!v}
 export function setAnalyticsTab(t){if(['symbol','hour','leverage'].includes(t))analyticsTab=t}
 export const COPY_PAGE_SIZE=10;
@@ -517,22 +518,38 @@ export function copyHTML(c){
    <span class="copy-msg" data-account-alerts-msg></span>
   </div></details>`:'';
  const tr=c.trailing||null;
- const trailingPanel=isLive&&tr?`<details class="copy-controls-fold"${trailingOpen?' open':''}><summary data-trailing-toggle>자동 트레일링 익절 (실계좌) <small>${tr.enabled?`ON · ${tr.applyToManual?'수동':''}${tr.applyToManual&&tr.applyToCopy?'+':''}${tr.applyToCopy?'카피':''} · +${esc(tr.partialLockRoePct)}%`:'OFF (기본 꺼짐)'}</small></summary>
+ const trailingPanel=isLive&&tr?`<details class="copy-controls-fold"${trailingOpen?' open':''}><summary data-trailing-toggle>자동 트레일링 익절 (실계좌) <small>${tr.enabled?`ON · ${tr.applyToManual?'수동':''}${tr.applyToManual&&tr.applyToCopy?'+':''}${tr.applyToCopy?'카피':''} · 순ROE +${esc(tr.partialLockRoePct)}%`:'OFF (기본 꺼짐)'}</small></summary>
   <div class="copy-ctrl-body">
    <form class="ctrl-form" data-real-trailing-form>
-    <label class="ctrl-check"><input name="enabled" type="checkbox"${tr.enabled?' checked':''}> <b>자동 트레일링 익절 활성화</b> (실계좌 자동 청산)</label>
+    <label class="ctrl-check"><input name="enabled" type="checkbox"${tr.enabled?' checked':''}> <b>자동 트레일링 익절 활성화</b> (실계좌 자동 청산 · 수수료 반영 순 ROE)</label>
     <label class="ctrl-check"><input name="applyToManual" type="checkbox"${tr.applyToManual!==false?' checked':''}> 수동 포지션 적용</label>
     <label class="ctrl-check"><input name="applyToCopy" type="checkbox"${tr.applyToCopy?' checked':''}> 카피 포지션 적용 (기본 OFF 권장)</label>
     <label class="ctrl-check"><input name="autoBreakeven" type="checkbox"${tr.autoBreakeven!==false?' checked':''}> 50% 확정 후 잔여 물량 본전 스탑 자동 설정</label>
-    <label>부분 익절 ROE (%) <input name="partialLockRoePct" type="number" min="2" max="200" step="0.5" value="${esc(tr.partialLockRoePct??8)}"></label>
+    <label class="ctrl-check"><input name="skipTradfi" type="checkbox"${tr.skipTradfi!==false?' checked':''}> TradFi·주식 종목 자동 제외 (얇은 호가 보호)</label>
+    <label>부분 익절 순 ROE (%) <input name="partialLockRoePct" type="number" min="2" max="200" step="0.5" value="${esc(tr.partialLockRoePct??8)}"></label>
     <label>부분 청산 비율 (0=끄기, 50=절반) <input name="partialClosePct" type="number" min="0" max="100" step="50" value="${esc(tr.partialClosePct??50)}"></label>
-    <label>트레일링 시작 ROE (%) <input name="trailActivateRoePct" type="number" min="2" max="200" step="0.5" value="${esc(tr.trailActivateRoePct??8)}"></label>
+    <label>트레일링 시작 순 ROE (%) <input name="trailActivateRoePct" type="number" min="2" max="200" step="0.5" value="${esc(tr.trailActivateRoePct??8)}"></label>
     <label>고점 대비 되돌림 (%) <input name="trailPullbackRatio" type="number" min="5" max="70" step="1" value="${esc(tr.trailPullbackRatio??25)}"></label>
-    <label>최소 확정 ROE (%) <input name="minLockRoePct" type="number" min="0.5" max="50" step="0.5" value="${esc(tr.minLockRoePct??2)}"></label>
+    <label>최소 확정 순 ROE (%) <input name="minLockRoePct" type="number" min="0.5" max="50" step="0.5" value="${esc(tr.minLockRoePct??2)}"></label>
     <label>제외 종목 (쉼표) <input name="excludedSymbols" type="text" placeholder="예: BTC, ETH" value="${esc((tr.excludedSymbols||[]).join(', '))}"></label>
     <div class="ctrl-btn-row"><button type="submit" class="outline-btn small">트레일링 저장</button></div>
    </form>
    <span class="copy-msg" data-real-trailing-msg></span>
+  </div></details>`:'';
+ const sf=c.safety||null;
+ const safetyBanner=isLive&&sf?.tripped?`<p class="live-warn-text">🚨 일일 손실 차단 발동 (${esc(sf.trippedReason||`-${sf.dailyLossLimitPct}%`)}) — 오늘 신규 카피·수동 진입 중단 <button type="button" class="outline-btn small" data-safety-unlock>오늘 차단 해제</button></p>`:'';
+ const safetyPanel=isLive&&sf?`<details class="copy-controls-fold"${safetyOpen?' open':''}><summary data-safety-toggle>계좌 안전 가드 · 서킷 브레이커 <small>${sf.dailyLossLimitPct>0?`일일한도 -${esc(sf.dailyLossLimitPct)}%`:'일일차단 OFF'} · 수동 최대 ${sf.manualMaxLeverage>0?`${esc(sf.manualMaxLeverage)}배`:'제한없음'} · 증거금 ${sf.manualMaxMarginPct>0?`${esc(sf.manualMaxMarginPct)}%`:'제한없음'}</small></summary>
+  <div class="copy-ctrl-body">
+   <form class="ctrl-form" data-real-safety-form>
+    <label>통합 일일 손실 차단 (%, 0=꺼짐) <input name="dailyLossLimitPct" type="number" min="0" max="50" step="0.5" value="${esc(sf.dailyLossLimitPct??8)}" title="당일 거래소 실현 + 현재 미실현 합산 손실이 잔고의 이 비율에 닿으면 신규 진입 자동 중단"></label>
+    <label>수동 최대 레버리지 (배, 0=제한없음) <input name="manualMaxLeverage" type="number" min="0" max="125" step="1" value="${esc(sf.manualMaxLeverage??20)}" title="고배율(50~80배) 수동 진입 사고 방지"></label>
+    <label>수동 단일 증거금 한도 (%, 0=제한없음) <input name="manualMaxMarginPct" type="number" min="0" max="100" step="1" value="${esc(sf.manualMaxMarginPct??15)}" title="단일 수동 주문 증거금이 잔고의 이 비율을 넘으면 차단"></label>
+    <div class="ctrl-btn-row">
+     <button type="submit" class="outline-btn small">안전 가드 저장</button>
+     <button type="button" class="outline-btn small" data-safety-preset title="계좌 안전 가드(일일 -8%, 수동 최대 20배, 증거금 15%) + 카피 제어(최대 20배, 종목한도 15%, 3연패·-6% 쿨다운) 일괄 적용">🛡️ 권장 안전 프리셋 일괄 적용</button>
+    </div>
+   </form>
+   <span class="copy-msg" data-real-safety-msg></span>
   </div></details>`:'';
  const f=c.funds,stat=(k,v,extra='')=>`<span>${k}<b ${extra}>${v}</b></span>`;
  // With the exchange list (real account), 보유 / 미실현 count every position, copy and manual alike.
@@ -586,7 +603,7 @@ export function copyHTML(c){
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,Number(c.venuePositionsAt)||0,...fresh);
  const deferredNote=c.deferredEntries>0?`<p class="copy-stamp">⏳ 업데이트 대기 중인 카피 신호 ${esc(c.deferredEntries)}건 (재시작 직후 처리)</p>`:'';
  const stamp=isLive&&updated>0?`<p class="copy-stamp">${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
- const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${deferredNote}${stats}${controlsPanel}${alertsPanel}${trailingPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
+ const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${safetyBanner}${deferredNote}${stats}${safetyPanel}${controlsPanel}${alertsPanel}${trailingPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (c.analytics?analyticsHTML(c.analytics):'')+
@@ -910,6 +927,17 @@ function bindCopyButtons(el){
   finally{copyActionBusy=false;if(btn&&origText!=null){btn.disabled=false;btn.textContent=origText}}
   document.getElementById('liveRefresh')?.click()};
  el.addEventListener('submit',e=>{
+  const safetyForm=e.target.closest('[data-real-safety-form]');
+  if(safetyForm){
+   e.preventDefault();
+   const numv=n=>Number(safetyForm.elements.namedItem(n)?.value);
+   const body={
+    dailyLossLimitPct:numv('dailyLossLimitPct'),
+    manualMaxLeverage:numv('manualMaxLeverage'),
+    manualMaxMarginPct:numv('manualMaxMarginPct'),
+   };
+   return call(safetyForm.querySelector('button[type="submit"]'),'/api/real/safety',body,'저장 중…','[data-real-safety-msg]');
+  }
   const trailingForm=e.target.closest('[data-real-trailing-form]');
   if(trailingForm){
    e.preventDefault();
@@ -917,13 +945,14 @@ function bindCopyButtons(el){
    const numv=n=>Number(trailingForm.elements.namedItem(n)?.value);
    const enabled=ck('enabled');
    if(enabled&&!lastCopy?.trailing?.enabled){
-    if(!window.confirm('⚠️ 실계좌 자동 트레일링 익절을 켭니다.\n설정한 ROE 도달 시 50% 부분 익절·본전 스탑·고점 대비 트레일링 청산 주문이 자동으로 실행됩니다. 계속할까요?'))return;
+    if(!window.confirm('⚠️ 실계좌 자동 트레일링 익절을 켭니다.\n설정한 순 ROE 도달 시 50% 부분 익절·본전 스탑·고점 대비 트레일링 청산 주문이 자동으로 실행됩니다. 계속할까요?'))return;
    }
    const body={
     enabled,
     applyToManual:ck('applyToManual'),
     applyToCopy:ck('applyToCopy'),
     autoBreakeven:ck('autoBreakeven'),
+    skipTradfi:ck('skipTradfi'),
     partialLockRoePct:numv('partialLockRoePct'),
     partialClosePct:numv('partialClosePct'),
     trailActivateRoePct:numv('trailActivateRoePct'),
@@ -968,7 +997,18 @@ function bindCopyButtons(el){
   if(e.target.closest('[data-controls-toggle]')){controlsOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-alerts-toggle]')){alertsOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-trailing-toggle]')){trailingOpen=!e.target.closest('details')?.open;}
+  if(e.target.closest('[data-safety-toggle]')){safetyOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-analytics-toggle]')){analyticsOpen=!e.target.closest('details')?.open;}
+  const safetyPreset=e.target.closest('[data-safety-preset]');
+  if(safetyPreset){
+   if(!window.confirm('실계좌 권장 안전 프리셋을 일괄 적용할까요?\n· 통합 일일 손실 차단 -8%\n· 수동/카피 최대 레버리지 20배\n· 종목당·단일 증거금 한도 15%\n· 카피 3연패 또는 당일 -6% 쿨다운(2시간)'))return;
+   return call(safetyPreset,'/api/real/safety',{applyPreset:true},'적용 중…','[data-real-safety-msg]');
+  }
+  const safetyUnlock=e.target.closest('[data-safety-unlock]');
+  if(safetyUnlock){
+   if(!window.confirm('오늘 일일 손실 차단을 해제할까요? 해제 시 오늘 남은 시간 동안 신규 카피·수동 진입이 다시 허용됩니다.'))return;
+   return call(safetyUnlock,'/api/real/safety',{unlockToday:true},'해제 중…','[data-real-safety-msg]');
+  }
   const trailBtn=e.target.closest('[data-trail-toggle]');
   if(trailBtn){
    return call(trailBtn,'/api/real/trailing',{toggleExcludeSymbol:trailBtn.dataset.trailToggle},'처리 중…','[data-real-trailing-msg]');
@@ -1111,7 +1151,7 @@ function render(o){
  const copy=o.copy,real=copy?.mode==='LIVE';
  for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));
  if(!realTradeCtrl&&$('realTradePanel'))realTradeCtrl=createRealTradeController($('realTradePanel'),{onOrderDone:()=>$('liveRefresh')?.click()});
- realTradeCtrl?.syncContext({visible:real,availableUSD:copy?.funds?.available??null,heldPositions:copy?.venuePositions??[]});
+ realTradeCtrl?.syncContext({visible:real,availableUSD:copy?.funds?.available??null,equityUSD:copy?.funds?.equity??null,heldPositions:copy?.venuePositions??[],safety:copy?.safety??null});
  if($('liveCopySection')){$('liveCopySection').hidden=!copy||real||scalpOnly;if(copy&&!real&&!scalpOnly&&$('liveCopy')&&!copyActionBusy)$('liveCopy').innerHTML=copyHTML({...copy,followArmed:Boolean(o.armed&&!o.killSwitch)})}
  if($('realCopy')&&!copyActionBusy)$('realCopy').innerHTML=real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>';
  // The sidebar ON / OFF is a navigation hint; the page itself shows the state once, next to its button.

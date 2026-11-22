@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {displaySymbol} from './public/symbol_display.js';
+import {isCoinSymbol} from './venue_charts.mjs';
 
 export const REAL_TRAILING_DEFAULTS=Object.freeze({
  enabled:false,
@@ -16,6 +17,8 @@ export const REAL_TRAILING_DEFAULTS=Object.freeze({
  trailPullbackRatio:25,
  minLockRoePct:2,
  autoBreakeven:true,
+ skipTradfi:true,
+ roundTripFeePct:0.10, // BingX 0.05% taker × 2 (entry + exit)
  excludedSymbols:Object.freeze([]),
 });
 
@@ -26,6 +29,13 @@ const normSym=s=>{
  const clean=displaySymbol(String(s||'').trim().toUpperCase().replace(/[^A-Z0-9-]/g,'')).replace(/-USDT$/,'USDT').replace(/-/g,'');
  if(!clean)return '';
  return clean.endsWith('USDT')?clean:`${clean}USDT`;
+};
+const isTradfiPos=p=>{
+ const rawSym=String(p?.symbol||'').trim().toUpperCase().replace(/-USDT$/,'USDT');
+ const rawVs=String(p?.venueSymbol||'').trim().toUpperCase().replace(/-USDT$/,'USDT');
+ if(/^NC/.test(rawSym)||/^NC/.test(rawVs))return true;
+ const disp=normSym(rawSym||rawVs);
+ return Boolean(disp&&!isCoinSymbol(disp));
 };
 const sideKo=d=>d==='SHORT'?'🔴 숏':'🟢 롱';
 const money=v=>{const n=Number(v);return v==null||!Number.isFinite(n)?'—':`${n>=0?'+':'−'}$${Math.abs(n).toFixed(2)}`};
@@ -52,6 +62,8 @@ export class RealTrailingManager{
    trailPullbackRatio:Number.isFinite(Number(saved?.trailPullbackRatio))?Number(saved.trailPullbackRatio):REAL_TRAILING_DEFAULTS.trailPullbackRatio,
    minLockRoePct:Number.isFinite(Number(saved?.minLockRoePct))?Number(saved.minLockRoePct):REAL_TRAILING_DEFAULTS.minLockRoePct,
    autoBreakeven:saved?.autoBreakeven!==false,
+   skipTradfi:saved?.skipTradfi!==false,
+   roundTripFeePct:Number.isFinite(Number(saved?.roundTripFeePct))?Number(saved.roundTripFeePct):REAL_TRAILING_DEFAULTS.roundTripFeePct,
    excludedSymbols:Array.isArray(saved?.excludedSymbols)?[...new Set(saved.excludedSymbols.map(normSym).filter(Boolean))]:[],
   };
   this.tracked=new Map(); // `${dispSym}|${dir}` -> {peakRoePct, partialTaken, breakevenPlaced, avg, lastActionAt}
@@ -67,7 +79,7 @@ export class RealTrailingManager{
  configure(patch={}){
   if(!patch||typeof patch!=='object'||Array.isArray(patch))throw err('JSON object required');
   const next={...this.store};
-  for(const k of ['enabled','applyToManual','applyToCopy','autoBreakeven']){
+  for(const k of ['enabled','applyToManual','applyToCopy','autoBreakeven','skipTradfi']){
    if(Object.hasOwn(patch,k)){
     if(typeof patch[k]!=='boolean')throw err(`${k} must be a boolean`);
     next[k]=patch[k];
@@ -78,6 +90,7 @@ export class RealTrailingManager{
   if(Object.hasOwn(patch,'trailActivateRoePct'))next.trailActivateRoePct=parseNum(patch.trailActivateRoePct,2,200,'trailActivateRoePct');
   if(Object.hasOwn(patch,'trailPullbackRatio'))next.trailPullbackRatio=parseNum(patch.trailPullbackRatio,5,70,'trailPullbackRatio');
   if(Object.hasOwn(patch,'minLockRoePct'))next.minLockRoePct=parseNum(patch.minLockRoePct,0.5,50,'minLockRoePct');
+  if(Object.hasOwn(patch,'roundTripFeePct'))next.roundTripFeePct=parseNum(patch.roundTripFeePct,0,1,'roundTripFeePct');
   if(Object.hasOwn(patch,'excludedSymbols')){
    const list=Array.isArray(patch.excludedSymbols)?patch.excludedSymbols:String(patch.excludedSymbols||'').split(/[,\s]+/);
    next.excludedSymbols=[...new Set(list.map(normSym).filter(Boolean))].slice(0,50);
@@ -126,9 +139,14 @@ export class RealTrailingManager{
     if(isCopy&&!cfg.applyToCopy)continue;
     if(!isCopy&&!cfg.applyToManual)continue;
     if(excluded.has(disp))continue;
-    const roe=Number(p.roePct);
+    if(cfg.skipTradfi&&isTradfiPos(p))continue;
+    const grossRoe=Number(p.roePct);
     const avg=Number(p.avg);
-    if(!Number.isFinite(roe)||!(Number(p.size)>0)||!(avg>0))continue;
+    if(!Number.isFinite(grossRoe)||!(Number(p.size)>0)||!(avg>0))continue;
+    // Fee-adjusted Net ROE: subtract round-trip taker fee (default 0.10% × leverage) so high-leverage exits never lose to fees.
+    const lev=Math.max(1,Number(p.leverage)||10);
+    const feeRoePct=+(Number(cfg.roundTripFeePct||0)*lev).toFixed(2);
+    const roe=+(grossRoe-feeRoePct).toFixed(2);
 
     let st=this.tracked.get(key);
     if(!st||(st.avg>0&&Math.abs(avg-st.avg)/st.avg>0.02)){
@@ -153,9 +171,9 @@ export class RealTrailingManager{
        if(beRes?.ok){st.breakevenPlaced=true;beLine=`\n🛡️ 잔여 물량 본전 스탑 자동 설정 (${beRes.stopPrice})`}
       }
       const estHalf=Number.isFinite(Number(p.unrealized))?Number(p.unrealized)*0.5:null;
-      const msg=`💰 [실계좌 자동 익절] ${disp} ${sideKo(dir)} 50% 부분 익절 확정\n현재 ROE +${roe.toFixed(1)}% · 추정 실현 ${money(estHalf)}\n잔여 50% 고점 대비 ${cfg.trailPullbackRatio}% 트레일링 추적 중${beLine}`;
+      const msg=`💰 [실계좌 자동 익절] ${disp} ${sideKo(dir)} 50% 부분 익절 확정\n순 ROE +${roe.toFixed(1)}% (수수료 -${feeRoePct.toFixed(1)}% 반영) · 추정 실현 ${money(estHalf)}\n잔여 50% 고점 대비 ${cfg.trailPullbackRatio}% 트레일링 추적 중${beLine}`;
       try{await this.sendText(msg)}catch{}
-      actions.push({key,action:'CLOSE_HALF',roePct:roe,breakeven:st.breakevenPlaced});
+      actions.push({key,action:'CLOSE_HALF',roePct:roe,grossRoePct:grossRoe,feeRoePct,breakeven:st.breakevenPlaced});
      }else if(res?.error==='HALF_QTY_TOO_SMALL'){
       // Position too small to split in half -> skip partial lock-in and trail full position instead.
       st.partialTaken=true;
@@ -163,7 +181,7 @@ export class RealTrailingManager{
      continue;
     }
 
-    // Step 2: Peak-pullback trailing exit on remaining (or full) position
+    // Step 2: Peak-pullback trailing exit on remaining (or full) position (strictly fee-positive net ROE)
     if(st.peakRoePct!==null&&st.peakRoePct>=cfg.trailActivateRoePct){
      const pullback=Math.max(MIN_PULLBACK_ROE,st.peakRoePct*(cfg.trailPullbackRatio/100));
      const stopRoe=Math.max(cfg.minLockRoePct,st.peakRoePct-pullback);
@@ -171,9 +189,9 @@ export class RealTrailingManager{
       st.lastActionAt=now;
       const res=await this.executeAction({symbol:p.symbol,direction:dir,action:'CLOSE_ALL'}).catch(e=>({ok:false,error:e?.code||e?.message}));
       if(res?.ok){
-       const msg=`🎯 [실계좌 자동 트레일링] ${disp} ${sideKo(dir)} 익절 청산 완료\n고점 ROE +${st.peakRoePct.toFixed(1)}% → 청산 ROE +${roe.toFixed(1)}% (${money(p.unrealized)})`;
+       const msg=`🎯 [실계좌 자동 트레일링] ${disp} ${sideKo(dir)} 익절 청산 완료\n고점 순 ROE +${st.peakRoePct.toFixed(1)}% → 청산 순 ROE +${roe.toFixed(1)}% (${money(p.unrealized)})`;
        try{await this.sendText(msg)}catch{}
-       actions.push({key,action:'CLOSE_ALL',peakRoePct:st.peakRoePct,roePct:roe});
+       actions.push({key,action:'CLOSE_ALL',peakRoePct:st.peakRoePct,roePct:roe,grossRoePct:grossRoe,feeRoePct});
        this.tracked.delete(key);
       }
      }

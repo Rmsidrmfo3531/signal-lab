@@ -76,8 +76,15 @@ export function computeOrderPreview(st){
  const minN=Number(info?.minNotionalUSDT)||0;
  const minQ=Number(info?.minQuantityBase)||0;
  const avail=fin(st.availableUSD)?Number(st.availableUSD):null;
- const warn=!(cleanQty>0)||cleanQty<minQ?`최소 수량(${fmtQty(minQ)}) 미만`
+ const eq=fin(st.equityUSD)?Number(st.equityUSD):avail;
+ const sf=st.safety||null;
+ const safeMaxLev=sf?.manualMaxLeverage>0?Number(sf.manualMaxLeverage):null;
+ const safeMaxMargin=sf?.manualMaxMarginPct>0&&eq>0?eq*Number(sf.manualMaxMarginPct)/100:null;
+ const warn=sf?.tripped?`일일 손실 차단 발동 중 (신규 진입 불가)`
+  :safeMaxLev&&lev>safeMaxLev?`수동 안전 레버리지 상한(${safeMaxLev}배) 초과`
+  :!(cleanQty>0)||cleanQty<minQ?`최소 수량(${fmtQty(minQ)}) 미만`
   :minN>0&&notionalUSD<minN?`최소 주문 금액($${minN}) 미만`
+  :safeMaxMargin&&marginUSD>safeMaxMargin+0.01?`단일 증거금 안전 한도(${fmtUsd(safeMaxMargin)} · ${sf.manualMaxMarginPct}%) 초과`
   :avail!==null&&marginUSD>avail*0.98?`가용 증거금(${fmtUsd(avail)}) 초과`:null;
  return {qty:cleanQty,coinQty:cleanQty,execPrice,notionalUSD,marginUSD,warn};
 }
@@ -701,10 +708,12 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
  });
 
  return {
-  syncContext({visible,availableUSD,heldPositions}){
+  syncContext({visible,availableUSD,equityUSD,heldPositions,safety}){
    const changedVis=state.visible!==Boolean(visible);
    state.visible=Boolean(visible);
    if(fin(availableUSD))state.availableUSD=Number(availableUSD);
+   if(fin(equityUSD))state.equityUSD=Number(equityUSD);
+   if(safety!==undefined)state.safety=safety;
    if(Array.isArray(heldPositions))state.heldPositions=heldPositions;
    if(!state.visible){mountEl.hidden=true;return}
    if(changedVis||!mountEl.innerHTML){render();return}

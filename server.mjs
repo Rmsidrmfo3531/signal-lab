@@ -62,6 +62,7 @@ import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
 import {RealTrailingManager} from './real_trailing.mjs';
+import {RealAccountGuard,REAL_SAFETY_COPY_PRESET} from './real_safety.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
@@ -332,10 +333,10 @@ const venuePositionsReader=realBingxClient?.mode==='LIVE'
  ?createVenuePositionsReader({read:()=>realBingxClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
-let accountAlerts=null,realTrailing=null;
+let accountAlerts=null,realTrailing=null,realSafety=null;
 async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;
  const analytics=buildCopyAnalytics({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:s0.funds?.equity??null,confirmedOnly:COPY.mode==='LIVE',exchangeCosts:dailyPnl?.costSummary?.()??null});
- const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{}),...(realTrailing?{trailing:realTrailing.status()}:{})};
+ const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{}),...(realTrailing?{trailing:realTrailing.status()}:{}),...(realSafety?{safety:realSafety.status()}:{})};
  if(!venuePositionsReader)return {...s,...extra};
  const v=await venuePositionsReader.snapshot(realCopyPositions());if(!manualLedger)return {...s,...v,...extra};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
@@ -744,6 +745,12 @@ if(COPY.mode==='LIVE'){
   sendText:sendTradeTelegram,
   log:(...a)=>console.log('[REAL_TRAIL]',...a),
  });
+ realSafety=new RealAccountGuard({
+  directory:storage.dir,
+  onTrip:()=>{if(copyTrader?.armed)copyTrader.disarm()},
+  sendText:sendTradeTelegram,
+  log:(...a)=>console.log('[REAL_SAFETY]',...a),
+ });
  const checkRiskAndRoi=async()=>{
   if(!venuePositionsReader||!accountAlerts)return;
   try{
@@ -753,6 +760,7 @@ if(COPY.mode==='LIVE'){
    await accountAlerts.checkRisk({equityUSD:eq,positions});
    await accountAlerts.checkPositions({positions});
    await accountAlerts.checkPositionSummary({positions});
+   if(realSafety)await realSafety.evaluateDailyLoss({equityUSD:eq,dailyByDay:dailyPnl?.status()?.byDay??null,positions});
    if(realTrailing)await realTrailing.evaluate(positions);
   }catch(e){console.warn('[ALERTS]',e.message)}
  };
@@ -1945,7 +1953,7 @@ const server=http.createServer(async(req,res)=>{
    const running=Boolean(historyRefresh);void refreshTradeHistory({recheck:true});return response(res,202,{running:true,started:!running});
   }
   if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
-  if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});return response(res,200,copyTrader.arm())}
+  if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});if(COPY.mode==='LIVE'&&realSafety?.isTripped())return response(res,409,{error:'DAILY_LOSS_CIRCUIT_BREAKER',message:'오늘 일일 손실 차단이 발동 중입니다. 계좌 안전 가드에서 차단 해제 후 다시 시도하세요'});return response(res,200,copyTrader.arm())}
   if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
   if(pathname==='/api/copy/controls'&&req.method==='GET')return response(res,200,{controls:copyControls.status(),traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD),maxLeverage:copyControls.effectiveMaxLeverage(COPY.maxLeverage)});
   if(pathname==='/api/copy/controls'&&req.method==='POST'){
@@ -2099,6 +2107,7 @@ const server=http.createServer(async(req,res)=>{
      client:realBingxClient,
      contractsFor:sym=>venueQuotes.clients.BINGX.contractsFor(sym),
      markOf,
+     safety:realSafety?.orderGuard({equityUSD:copyTrader.funds?.equity??realWallet.last?.equity??null})??null,
     });
     reportsDirty=true;
     void refreshRealTradeNotices();
@@ -2130,6 +2139,26 @@ const server=http.createServer(async(req,res)=>{
     reportsDirty=true;
     return response(res,200,{ok:true,trailing,summary:trailing.enabled?'실계좌 자동 트레일링 ON 저장됨':'실계좌 자동 트레일링 OFF 저장됨'});
    }catch(e){return response(res,e.httpStatus||400,{ok:false,error:e.code||'INVALID_REAL_TRAILING',message:e.message})}
+  }
+  if(pathname==='/api/real/safety'&&req.method==='GET'){
+   if(COPY.mode!=='LIVE'||!realSafety)return response(res,404,{error:'REAL_SAFETY_UNAVAILABLE',message:'실계좌 안전 가드가 활성화되어 있지 않습니다'});
+   return response(res,200,{ok:true,safety:realSafety.status()});
+  }
+  if(pathname==='/api/real/safety'&&req.method==='POST'){
+   if(COPY.mode!=='LIVE'||!realSafety)return response(res,404,{error:'REAL_SAFETY_UNAVAILABLE',message:'실계좌 안전 가드가 활성화되어 있지 않습니다'});
+   const body=await bodyJson(req);
+   try{
+    const safety=realSafety.configure(body);
+    let controls=null;
+    if(body?.applyPreset===true){
+     controls=copyControls.configure(REAL_SAFETY_COPY_PRESET);
+    }
+    reportsDirty=true;
+    const summary=body?.applyPreset===true?'실계좌 권장 안전 프리셋 일괄 적용 완료 (최대 20배 · 증거금 15% · 일일한도 -8%)'
+     :body?.unlockToday===true?'오늘 일일 손실 차단이 해제되었습니다'
+     :'계좌 안전 가드 설정 저장됨';
+    return response(res,200,{ok:true,safety,...(controls?{controls}:{}),summary});
+   }catch(e){return response(res,e.httpStatus||400,{ok:false,error:e.code||'INVALID_REAL_SAFETY',message:e.message})}
   }
   if(pathname==='/api/manual/note'&&req.method==='POST'){
    if(!manualLedger)return response(res,404,{error:'MANUAL_LEDGER_UNAVAILABLE',message:'수동 거래 원장이 활성화되어 있지 않습니다'});

@@ -82,7 +82,7 @@ function parseLeverageInfo(raw){
 export function planRealManualOrder({
  side,orderType='MARKET',amountMode='MARGIN_USDT',amount,price=null,
  leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,
- contract,markPrice,availableUSD=null,maxLeverage=125,
+ contract,markPrice,availableUSD=null,maxLeverage=125,maxMarginUSD=null,
 }={}){
  const dir=String(side||'').trim().toUpperCase();
  if(!['LONG','SHORT'].includes(dir))throw err('INVALID_SIDE','방향은 LONG 또는 SHORT만 지원합니다');
@@ -128,6 +128,10 @@ export function planRealManualOrder({
  const avail=num(availableUSD);
  if(avail!==null&&marginUSD>avail*0.98){
   throw err('MARGIN_SHORT',`필요 증거금($${marginUSD.toFixed(2)})이 현재 가용 증거금($${avail.toFixed(2)})을 초과합니다`);
+ }
+ const marginCap=pos(maxMarginUSD);
+ if(marginCap!==null&&marginUSD>marginCap+0.01){
+  throw err('MANUAL_MARGIN_CAP',`단일 수동 주문 증거금($${marginUSD.toFixed(2)})이 안전 한도($${marginCap.toFixed(2)})를 초과합니다`);
  }
 
  let tp=null,sl=null;
@@ -203,10 +207,11 @@ export async function lookupRealTradeSymbol({
 export async function executeRealManualOrder({
  confirm,symbol,side,orderType='MARKET',amountMode='MARGIN_USDT',amount,price=null,
  leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,
- client,contractsFor,markOf,
+ client,contractsFor,markOf,safety=null,
 }){
  if(confirm!=='REAL_MANUAL_ORDER')throw err('CONFIRM_REQUIRED','실계좌 수동 주문 확인 문구가 필요합니다');
  if(!client||client.mode!=='LIVE')throw err('LIVE_ACCOUNT_UNAVAILABLE','실계좌 BingX 클라이언트가 연결되어 있지 않습니다',409);
+ if(safety?.blocked)throw err('DAILY_LOSS_CIRCUIT_BREAKER',safety.reason||'일일 손실 차단 발동으로 오늘 신규 수동 진입이 중단되었습니다',409);
  const normSym=normalizeManualSymbol(symbol);
  if(!normSym)throw err('INVALID_SYMBOL','종목명을 입력하세요');
  const mode=await readPositionMode(client);
@@ -225,14 +230,18 @@ export async function executeRealManualOrder({
  const usdt=bingxBalanceRows(balData).find(r=>r?.asset==='USDT');
  const funds=balanceOf(usdt);
  const availableUSD=funds?.available??null;
+ const equityUSD=funds?.equity??availableUSD;
  const levInfo=parseLeverageInfo(levRaw);
  const sideMaxLev=String(side||'').toUpperCase()==='SHORT'
   ?(levInfo.maxLeverage.short??levInfo.maxLeverage.long)
   :(levInfo.maxLeverage.long??levInfo.maxLeverage.short);
+ const safeMaxLev=pos(safety?.maxLeverage);
+ const effectiveMaxLev=safeMaxLev?Math.min(sideMaxLev??125,safeMaxLev):(sideMaxLev??125);
+ const safeMaxMarginUSD=pos(safety?.maxMarginUSD)??(pos(safety?.maxMarginPct)&&pos(equityUSD)?+(equityUSD*safety.maxMarginPct/100).toFixed(2):null);
 
  const plan=planRealManualOrder({
   side,orderType,amountMode,amount,price,leverage,marginMode,tpPrice,slPrice,
-  contract,markPrice,availableUSD,maxLeverage:sideMaxLev??125,
+  contract,markPrice,availableUSD,maxLeverage:effectiveMaxLev,maxMarginUSD:safeMaxMarginUSD,
  });
 
  // Switch margin mode only when needed (BingX returns 80001 if already set to the same mode).
