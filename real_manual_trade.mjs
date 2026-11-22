@@ -7,6 +7,7 @@ import {resolveCopyContract} from './copy_executor.mjs';
 import {bingxBalanceRows,balanceOf} from './exchange_pnl.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {isCoinSymbol} from './venue_charts.mjs';
+import {placeMakerThenMarket} from './maker_order.mjs';
 
 export const REAL_CHART_INTERVALS=Object.freeze(['1m','5m','15m','1h','4h','1d']);
 
@@ -81,7 +82,7 @@ function parseLeverageInfo(raw){
 /** Pure order planner & validator for manual BingX futures orders. */
 export function planRealManualOrder({
  side,orderType='MARKET',amountMode='MARGIN_USDT',amount,price=null,
- leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,
+ leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,makerFirst=false,
  contract,markPrice,availableUSD=null,maxLeverage=125,maxMarginUSD=null,
 }={}){
  const dir=String(side||'').trim().toUpperCase();
@@ -165,6 +166,7 @@ export function planRealManualOrder({
   marginUSD:+marginUSD.toFixed(2),
   tpPrice:tp,
   slPrice:sl,
+  makerFirst:type==='MARKET'&&makerFirst===true,
  };
 }
 
@@ -206,7 +208,7 @@ export async function lookupRealTradeSymbol({
 /** Execute a confirmed real-account manual order on BingX. */
 export async function executeRealManualOrder({
  confirm,symbol,side,orderType='MARKET',amountMode='MARGIN_USDT',amount,price=null,
- leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,
+ leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,makerFirst=false,makerWaitMs=2500,sleep,
  client,contractsFor,markOf,safety=null,
 }){
  if(confirm!=='REAL_MANUAL_ORDER')throw err('CONFIRM_REQUIRED','실계좌 수동 주문 확인 문구가 필요합니다');
@@ -240,7 +242,7 @@ export async function executeRealManualOrder({
  const safeMaxMarginUSD=pos(safety?.maxMarginUSD)??(pos(safety?.maxMarginPct)&&pos(equityUSD)?+(equityUSD*safety.maxMarginPct/100).toFixed(2):null);
 
  const plan=planRealManualOrder({
-  side,orderType,amountMode,amount,price,leverage,marginMode,tpPrice,slPrice,
+  side,orderType,amountMode,amount,price,leverage,marginMode,tpPrice,slPrice,makerFirst,
   contract,markPrice,availableUSD,maxLeverage:effectiveMaxLev,maxMarginUSD:safeMaxMarginUSD,
  });
 
@@ -262,27 +264,56 @@ export async function executeRealManualOrder({
  await client.setLeverage(plan.venueSymbol,leverageSideFor({hedge,direction:plan.side}),plan.leverage);
 
  const cid=('man'+Date.now().toString(36)+Math.random().toString(36).slice(2,6)).slice(0,32);
- const params=forMode({
-  symbol:plan.venueSymbol,
-  side:plan.orderSide,
-  positionSide:positionSideFor({hedge,direction:plan.side}),
-  type:plan.orderType,
-  quantity:String(plan.qty),
-  ...(plan.orderType==='LIMIT'?{price:String(plan.limitPrice),timeInForce:'GTC'}:{}),
+ const extraTpSl={
   ...(plan.tpPrice!=null?{takeProfit:JSON.stringify({type:'TAKE_PROFIT_MARKET',stopPrice:plan.tpPrice,workingType:'MARK_PRICE'})}:{}),
   ...(plan.slPrice!=null?{stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:plan.slPrice,workingType:'MARK_PRICE'})}:{}),
-  clientOrderId:cid,
- },hedge);
-
- const res=await client.placeOrder(params);
- const order=res?.order??res;
- const orderId=order?.orderId!=null?String(order.orderId):null;
+ };
+ let orderId=null,executionMode=plan.orderType==='LIMIT'?'LIMIT':'MARKET';
+ if(plan.orderType==='MARKET'&&plan.makerFirst){
+  const r=await placeMakerThenMarket({
+   client,
+   symbol:plan.venueSymbol,
+   side:plan.orderSide,
+   positionSide:positionSideFor({hedge,direction:plan.side}),
+   quantity:plan.qty,
+   quantityStep:contract.quantityStep,
+   minQuantity:contract.minQuantityBase,
+   tickSize:contract.tickSize,
+   markPrice:plan.execPrice,
+   hedge,
+   clientOrderId:cid,
+   extraParams:extraTpSl,
+   waitMs:makerWaitMs,
+   ...(typeof sleep==='function'?{sleep}:{}),
+  });
+  orderId=r.orderId;
+  executionMode=r.executionMode;
+ }else{
+  const params=forMode({
+   symbol:plan.venueSymbol,
+   side:plan.orderSide,
+   positionSide:positionSideFor({hedge,direction:plan.side}),
+   type:plan.orderType,
+   quantity:String(plan.qty),
+   ...(plan.orderType==='LIMIT'?{price:String(plan.limitPrice),timeInForce:'GTC'}:{}),
+   ...extraTpSl,
+   clientOrderId:cid,
+  },hedge);
+  const res=await client.placeOrder(params);
+  const order=res?.order??res;
+  orderId=order?.orderId!=null?String(order.orderId):null;
+ }
  const sideKo=plan.side==='LONG'?'롱':'숏';
- const typeKo=plan.orderType==='LIMIT'?`지정가 ${plan.limitPrice}`:'시장가';
+ const typeKo=plan.orderType==='LIMIT'
+  ?`지정가 ${plan.limitPrice}`
+  :executionMode==='MAKER'?'메이커 지정가 체결'
+   :executionMode==='HYBRID'?'메이커+시장가 체결'
+    :plan.makerFirst?'시장가 폴백':'시장가';
  return {
   ok:true,
   orderId,
   clientOrderId:cid,
+  executionMode,
   plan,
   summary:`${plan.displaySymbol} ${sideKo} ${typeKo} · 수량 ${plan.qty} (약 $${plan.marginUSD} · ${plan.leverage}배 ${plan.marginMode==='ISOLATED'?'격리':'교차'})${plan.tpPrice?` · TP ${plan.tpPrice}`:''}${plan.slPrice?` · SL ${plan.slPrice}`:''}`,
  };

@@ -22,6 +22,7 @@ export const ACCOUNT_ALERTS_DEFAULTS=Object.freeze({
  lossRoiPcts:[30,50,75],
  positionSummaryAlerts:true,
  positionSummaryIntervalMin:5,
+ positionSummaryMinDeltaUSD:2,
  skipAlerts:true,
  remoteCommands:true,
 });
@@ -176,10 +177,16 @@ export class AccountAlerts{
     if(saved?.positionSummaryIntervalCustom!==true&&n===30)return ACCOUNT_ALERTS_DEFAULTS.positionSummaryIntervalMin;
     return n;
    })(),
+   positionSummaryMinDeltaUSD:(()=>{
+    const n=Number(saved?.positionSummaryMinDeltaUSD);
+    return saved?.positionSummaryMinDeltaUSD!=null&&Number.isFinite(n)&&n>=0&&n<=1000?+n.toFixed(2):ACCOUNT_ALERTS_DEFAULTS.positionSummaryMinDeltaUSD;
+   })(),
    skipAlerts:saved?.skipAlerts!==false,
    remoteCommands:saved?.remoteCommands!==false,
    lastDailyReportDay:typeof saved?.lastDailyReportDay==='string'?saved.lastDailyReportDay:null,
    lastPositionSummaryAt:Number.isFinite(Number(saved?.lastPositionSummaryAt))?Number(saved.lastPositionSummaryAt):null,
+   lastPositionSummarySig:typeof saved?.lastPositionSummarySig==='string'?saved.lastPositionSummarySig:null,
+   lastPositionSummaryTotal:saved?.lastPositionSummaryTotal!=null&&Number.isFinite(Number(saved?.lastPositionSummaryTotal))?Number(saved.lastPositionSummaryTotal):null,
    lastUpdateId:Number.isSafeInteger(saved?.lastUpdateId)?saved.lastUpdateId:null,
   };
   this.bootAt=this.now();
@@ -215,6 +222,11 @@ export class AccountAlerts{
    next.positionSummaryIntervalMin=n;
    next.positionSummaryIntervalCustom=true;
   }
+  if(Object.hasOwn(patch,'positionSummaryMinDeltaUSD')){
+   const n=Number(patch.positionSummaryMinDeltaUSD);
+   if(!Number.isFinite(n)||n<0||n>1000)throw err('positionSummaryMinDeltaUSD must be 0..1000');
+   next.positionSummaryMinDeltaUSD=+n.toFixed(2);
+  }
   if(Object.hasOwn(patch,'marginWarnPcts'))next.marginWarnPcts=parseTierList(patch.marginWarnPcts,10,95,'marginWarnPcts');
   if(Object.hasOwn(patch,'lossWarnPcts'))next.lossWarnPcts=parseTierList(patch.lossWarnPcts,2,80,'lossWarnPcts');
   if(Object.hasOwn(patch,'profitRoiPcts'))next.profitRoiPcts=parseTierList(patch.profitRoiPcts,10,1000,'profitRoiPcts');
@@ -235,6 +247,7 @@ export class AccountAlerts{
    lossRoiPcts:[...this.store.lossRoiPcts],
    positionSummaryAlerts:this.store.positionSummaryAlerts,
    positionSummaryIntervalMin:this.store.positionSummaryIntervalMin,
+   positionSummaryMinDeltaUSD:this.store.positionSummaryMinDeltaUSD,
    skipAlerts:this.store.skipAlerts,
    remoteCommands:this.store.remoteCommands,
    lastDailyReportDay:this.store.lastDailyReportDay,
@@ -364,9 +377,21 @@ export class AccountAlerts{
   const intervalMs=(this.store.positionSummaryIntervalMin||ACCOUNT_ALERTS_DEFAULTS.positionSummaryIntervalMin)*60000;
   if(!force&&this.store.lastPositionSummaryAt!=null&&now-this.store.lastPositionSummaryAt<intervalMs)
    return {sent:false,reason:'COOLDOWN'};
+  const sig=list.map(p=>`${displaySymbol(p?.symbol||p?.venueSymbol||'')}|${String(p?.direction||p?.side||'').toUpperCase()}`).sort().join(',');
+  const hasTotal=list.some(p=>p?.unrealized!=null&&Number.isFinite(Number(p.unrealized)));
+  const total=hasTotal?list.reduce((s,p)=>s+(Number(p?.unrealized)||0),0):null;
+  const minDelta=Number(this.store.positionSummaryMinDeltaUSD)||0;
+  const heartbeatMs=Math.max(intervalMs,30*60000);
+  if(!force&&minDelta>0&&this.store.lastPositionSummaryAt!=null&&now-this.store.lastPositionSummaryAt<heartbeatMs
+   &&sig===this.store.lastPositionSummarySig&&total!==null&&this.store.lastPositionSummaryTotal!==null
+   &&Math.abs(total-this.store.lastPositionSummaryTotal)<minDelta){
+   return {sent:false,reason:'UNCHANGED'};
+  }
   const text=formatPositionsSummary(list);
   await this.sendText(text);
   this.store.lastPositionSummaryAt=now;
+  this.store.lastPositionSummarySig=sig;
+  this.store.lastPositionSummaryTotal=total;
   this.#save();
   return {sent:true,count:list.length,text};
  }
