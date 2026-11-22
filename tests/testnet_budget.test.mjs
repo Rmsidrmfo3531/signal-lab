@@ -570,3 +570,55 @@ test('one-time 50%/30% -> 100%/100% migration clears stale stop recorded under o
   assert.equal(st.stopped,false,'auto-migration from 50%/30% to 100%/100% clears stale 50%-limit stop');
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
+
+test('when VST equity rises slightly above $3,000 cap (e.g. $3,002.06 -> displayScale=0.9993), legacy oversized VST trades still scale down and never re-trip DAILY_LOSS_LIMIT',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sl-vst-3002-'));
+ try{
+  const day=kstDay(NOW);
+  fs.writeFileSync(path.join(dir,'scalp-store.json'),JSON.stringify({
+   version:1,strategy:'SCALP_REVERSAL',open:[{id:'open1',symbol:'BTCUSDT',direction:'LONG',status:'OPEN',avg:90000,size:0.01,leverage:10,capitalBasisUSD:3000}],
+   closed:[
+    {id:'leg1',symbol:'RENDERUSDT',direction:'SHORT',netUSD:-3249.02,closedAt:NOW-120000,closeReason:'MANUAL',initialRiskUSD:818.57,initialMarginUSD:8125.60},
+    {id:'leg2',symbol:'INJUSDT',direction:'LONG',netUSD:-2484.50,closedAt:NOW-120000,closeReason:'MANUAL',initialRiskUSD:913.93,initialMarginUSD:6996.77},
+    {id:'leg3',symbol:'SEIUSDT',direction:'LONG',netUSD:-2051.60,closedAt:NOW-120000,closeReason:'MANUAL',initialRiskUSD:597.82,initialMarginUSD:5849.28},
+    {id:'new1',symbol:'IDOLUSDT',direction:'LONG',netUSD:2.0605,closedAt:NOW-30000,closeReason:'EARLY_TAKE_PROFIT',capitalBasisUSD:3000,initialRiskUSD:8.28,initialMarginUSD:58.02},
+   ],
+   events:[],skips:[],skipCounts:{},sent:[],dailyStop:null,
+  }));
+  const budget=new TestnetBudget({dailyLossPct:100,marginCapPct:100,accountEquity:true,capitalCapUSD:3000,directory:dir,now:()=>NOW});
+  budget.observeAccount(3002.0605,'VST'); // displayScale() = 0.999314 (< 1)
+  assert.ok(budget.displayScale()>0.99&&budget.displayScale()<1);
+  const sc=new ScalpExecutor({config:scalpExecConfig({}),client:{mode:'TESTNET'},directory:dir,now:()=>NOW,budget});
+  budget.register('scalp',sc.budgetSource());
+
+  const st=budget.status();
+  assert.equal(st.stopped,false,'must not trip DAILY_LOSS_LIMIT when equity rises to $3,002.06');
+  assert.ok(st.lossUSD<200,`legacy losses must still scale down even when displayScale=0.9993, got $${st.lossUSD}`);
+  sc.arm();
+  assert.equal(sc.status().blocked,null);
+
+  // UI tnScaleOf also scales legacy oversized trades when displayScale=0.9993
+  const h=testnetClosedHTML({
+   testnet:{scalpOnly:true,budget:st},
+   scalp:{closed:[
+    {id:'leg1',symbol:'RENDERUSDT',direction:'SHORT',openedAt:NOW-3600000,closedAt:NOW-120000,closeReasonKo:'수동 청산',netUSD:-3249.02,netSource:'EXCHANGE',leverage:10,initialRiskUSD:818.57,initialMarginUSD:8125.60},
+    {id:'new1',symbol:'IDOLUSDT',direction:'LONG',openedAt:NOW-60000,closedAt:NOW-30000,closeReasonKo:'조기 익절',netUSD:2.0605,netSource:'EXCHANGE',leverage:10,capitalBasisUSD:3000,initialRiskUSD:8.28,initialMarginUSD:58.02},
+   ]},
+  });
+  assert.doesNotMatch(h,/3,249|3249|3,246|3246/,'UI must scale legacy trade down even when displayScale=0.9993');
+  assert.match(h,/\+\$2\.06/,'new $3k trade stays 1:1');
+
+  // resetHistory() clears closed/journal/dailyStop while preserving open position and armed state
+  sc.store.dailyStop={day,at:NOW,lossUSD:-500,equity:3000,shared:true};
+  const r=sc.resetHistory();
+  assert.equal(r.removed,4);
+  assert.equal(sc.store.closed.length,0);
+  assert.equal(sc.store.open.length,1,'open position preserved');
+  assert.equal(sc.store.dailyStop,null);
+  assert.equal(sc.armed,true);
+  assert.equal(sc.stats().trades,0);
+  assert.equal(sc.stats().netUSD,0);
+  assert.equal(budget.status().lossUSD,0);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+

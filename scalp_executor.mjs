@@ -337,6 +337,20 @@ export class ScalpExecutor{
   if(this.store.dailyStop){this.store.dailyStop=null;this.#save()}
   return this.status();
  }
+ resetHistory(){
+  const removed=Math.max(this.store.closed.length,this.journalRows.length);
+  this.store.closed=[];
+  this.store.events=[];
+  this.store.skips=[];
+  this.store.skipCounts={};
+  this.store.dailyStop=null;
+  this.journalRows=[];
+  this.journalIds=new Set();
+  this.journalMem=[];
+  if(this.journalFile){try{fs.rmSync(this.journalFile,{force:true})}catch{}}
+  this.#save();
+  return {removed,status:this.status()};
+ }
  /** Why no new entry may be sent now (null = may). */
  #blocked(ignoreAddId=null){
   if(this.config.mode!=='TESTNET')return this.config.refused||'SCALP_MODE_OFF';
@@ -672,16 +686,16 @@ export class ScalpExecutor{
   if(!(cap>0))return 1;
   if(pos(p?.capitalBasisUSD)&&Number(p.capitalBasisUSD)<=cap*1.5)return 1;
   const ds=this.budget?.displayScale?.();
-  if(Number.isFinite(ds)&&ds>0&&ds<1)return ds;
-  // When BingX VST balance was already lowered to <= cap (e.g. $3,000), infer scale for legacy oversized VST trades.
+  const base=Number.isFinite(ds)&&ds>0&&ds<1?ds:1;
+  // Even when BingX VST balance is near cap (e.g. $3,002 vs $3,000 -> ds=0.9993), legacy oversized VST trades must still scale down.
   const r=Number(p?.initialRiskUSD??p?.riskUSD??p?.plan?.riskUSD)||0;
   const m=Number(p?.initialMarginUSD??p?.margin?.initialUSD??p?.marginUSD??p?.plan?.marginUSD)||0;
-  if(m>cap*0.18||r>cap*0.05){
+  if(m*base>cap*0.18||r*base>cap*0.05){
    const rp=Number(this.config?.riskPct)>0?Number(this.config.riskPct):0.5;
    const implied=Math.max(r>0?r/(rp/100):0,m>0?m/0.05:0,100000);
-   return +(Math.min(1,cap/implied)).toFixed(6);
+   return +(Math.min(base,cap/implied)).toFixed(6);
   }
-  return 1;
+  return base;
  }
  /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only. */
  budgetSource(){

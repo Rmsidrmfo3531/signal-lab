@@ -113,6 +113,14 @@ export class LiveExecutor{
    events:(record.events||[]).filter(e=>e.type!=='RECONCILE_ERROR').map(e=>({type:e.type,at:e.at}))}].slice(-MAX_RECORDS);
   this.#save();return {ok:true}
  }
+ resetTestnetHistory(){
+  const terminal=r=>r?.mode==='TESTNET'&&['CLOSED','FAILED'].includes(r.status);
+  const removed=this.store.records.filter(terminal).length+this.store.archived.filter(terminal).length;
+  this.store.records=this.store.records.filter(r=>!terminal(r));
+  this.store.archived=this.store.archived.filter(r=>!terminal(r));
+  this.#save();
+  return {removed};
+ }
  /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only.
   *  realizedToday: closed (non-test) trades of this mode closed that KST day, deleted (archived) ones included (review
   *  M4). A trade not yet settled counts as the estimate from its fills, else as its planned worst loss (never as 0);
