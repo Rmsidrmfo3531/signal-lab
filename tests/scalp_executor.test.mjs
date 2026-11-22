@@ -220,28 +220,38 @@ test('profit-only fallback waits 15 minutes, covers fees and booked loss, and re
  }
 });
 
-test('profit-only testnet closes within 5~10 seconds when price spike clears +10% Net ROE floor',async()=>{
+test('profit-only testnet locks in 50% within 5~10 seconds at +10% Net ROE and trails remaining 50% runner',async()=>{
  for(const direction of ['LONG','SHORT']){
   const dir=tmp(),clock={t:T0},shortSide=direction==='SHORT',sign=shortSide?-1:1;
   const v=venue({fillAt:shortSide?PX_S:PX});
   const inputs={clock,dir,config:{stopLossEnabled:false,scaleIn:false},...(shortSide?{price:PX_S,trend:down4h,rows:rise}:{})};
   try{
    const ex=make(v,inputs);ex.arm();await ex.scan();
-   const p=ex.store.open[0];
+   const p=ex.store.open[0],initSize=p.size;
    // 5 seconds after entry: a +0.3% move (covers 0.16% fees, ~1.4% net ROE) does NOT close
    v.mark=+(p.avg*(1+sign*0.003)).toFixed(2);
    clock.t=p.openedAt+5000;await ex.tick(clock.t);
    assert.equal(ex.store.open.length,1,'0.3% move stays open for larger profit');
-   // 10 seconds after entry: a +1.25% move (>= +10% Net ROE at 10x leverage after 0.16% fees) closes immediately
+   // 10 seconds after entry: +1.25% move (>= +10% Net ROE) locks in 50% immediately and leaves 50% runner open!
    v.mark=+(p.avg*(1+sign*0.0125)).toFixed(2);
    clock.t=p.openedAt+10000;await ex.tick(clock.t);
-   assert.equal(v.size,0,'position closed on venue at 10s');
+   assert.equal(p.scaleInPartialTaken,true,'50% profit locked in at 10s');
+   assert.ok(Math.abs(v.size-initSize*0.5)<0.05,'half position remains open as runner');
+   // Spike extends to +2.4% move (~+22.4% net ROE): runner holds and tracks peak
+   v.mark=+(p.avg*(1+sign*0.024)).toFixed(2);
+   clock.t+=5000;await ex.reconcile();
+   assert.ok(v.size>0,'runner rides further spike');
+   assert.ok(p.trailPeakRoePct>=22);
+   // Pulls back 25%+ from peak (~+22.4% -> +16.4% net ROE <= ~16.8% trail stop): runner closes cleanly!
+   v.mark=+(p.avg*(1+sign*0.018)).toFixed(2);
+   clock.t+=5000;await ex.reconcile();
+   assert.equal(v.size,0,'runner closed on pullback from peak');
    clock.t+=5000;await ex.reconcile();clock.t+=5000;await ex.reconcile();
    assert.equal(ex.store.open.length,0);
    const closed=ex.store.closed[0];
    assert.equal(closed.closeReason,'EARLY_TAKE_PROFIT');
    const marginUSD=p.avg*p.filled/(p.leverage||10);
-   assert.ok(closed.netUSD/marginUSD>=0.095,`expected >= ~10% net ROE, got ${(closed.netUSD/marginUSD*100).toFixed(2)}%`);
+   assert.ok(closed.netUSD/marginUSD>=0.12,`expected >= +12% blended net ROE (beating flat +10%), got ${(closed.netUSD/marginUSD*100).toFixed(2)}%`);
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
  }
 });
@@ -1346,6 +1356,43 @@ test('profit-max suite: 4H against-trend 50% sizing, 24h+3-add rotation, <5% dus
   assert.ok(secondLimit>firstLimit,`expected escalated retry slippage limit (${secondLimit}) > initial (${firstLimit})`);
  }
 });
+
+test('BTC shock guard blocks counter-shock altcoin entries (BTC_DUMP_GUARD / BTC_PUMP_GUARD) while allowing with-shock direction',async()=>{
+ const BTC={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',tickSize:'0.1',quantityStep:'0.001',minQuantityBase:'0.001',minNotionalUSDT:2,tradable:true};
+ const makeBtcBar=(openPx,closePx)=>{
+  const t=(BUCKET-1)*I;
+  return [[t-2*I,openPx,openPx,openPx,openPx,100,t-I-1,0],[t-I,openPx,openPx,openPx,openPx,100,t-1,0],[t,openPx,Math.max(openPx,closePx),Math.min(openPx,closePx),closePx,1000,t+I-1,0]];
+ };
+ // 1) BTC 5m -2.0% dump blocks SOL LONG (BTC_DUMP_GUARD), but allows SOL SHORT
+ {
+  const v=venue(),clock={t:T0};
+  const ex=make(v,{clock,config:{stopLossEnabled:false}});
+  ex.contracts=async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]);
+  ex.tickers=async()=>[{symbol:'BTC-USDT',quoteVolume:'900000000',lastPrice:'60000'},{symbol:'SOL-USDT',quoteVolume:'90000000',lastPrice:String(PX)}];
+  const prevCandles=ex.candles;
+  ex.candles=async(sym,iv,lim)=>sym==='BTCUSDT'&&iv==='5m'?makeBtcBar(60000,58800):prevCandles(sym,iv,lim);
+  ex.arm();
+  const st=await ex.scan();
+  assert.equal(st.entered,0,'SOL LONG blocked during BTC -2% dump');
+  assert.equal(ex.store.skips.at(-1).reason,'BTC_DUMP_GUARD');
+ }
+ // 2) BTC 5m +2.0% pump blocks SOL SHORT (BTC_PUMP_GUARD), while calm BTC allows SOL SHORT
+ {
+  for(const [btcClose,expectEntered,expectSkip] of [[61200,0,'BTC_PUMP_GUARD'],[60100,1,null]]){
+   const v=venue({fillAt:PX_S}),clock={t:T0};
+   const ex=make(v,{clock,price:PX_S,trend:down4h,rows:rise,config:{stopLossEnabled:false}});
+   ex.contracts=async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]);
+   ex.tickers=async()=>[{symbol:'BTC-USDT',quoteVolume:'900000000',lastPrice:'60000'},{symbol:'SOL-USDT',quoteVolume:'90000000',lastPrice:String(PX_S)}];
+   const prevCandles=ex.candles;
+   ex.candles=async(sym,iv,lim)=>sym==='BTCUSDT'&&iv==='5m'?makeBtcBar(60000,btcClose):prevCandles(sym,iv,lim);
+   ex.arm();
+   const st=await ex.scan();
+   assert.equal(st.entered,expectEntered);
+   if(expectSkip)assert.equal(ex.store.skips.at(-1).reason,expectSkip);
+  }
+ }
+});
+
 
 
 
