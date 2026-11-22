@@ -56,16 +56,25 @@ export const SCALP_REPEAT_SCALE_IN=Object.freeze({
  qtyMultipliers:Object.freeze([1.0,1.0,1.5,2.0]),
  maxAdds:4,
  slippagePct:0.35,
+ retrySlippagePct:0.80,
  minPartialRemainRatio:0.25,
+ dustRatio:0.05,
 });
 const SCREEN_CLOSED=100,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.25],MAX_CLOSED=300,MAX_EVENTS=200,MAX_SKIPS=60,MAX_KEYS=500,SETTLE_DELAY_MS=150000,SETTLE_TRIES=4;
 const EARLY_TAKE_PROFIT_MS=45*60000,EARLY_EXIT_RETRY_MS=60000;
 const PROFIT_ONLY_EARLY_EXIT_MIN=15,PROFIT_ONLY_RETRY_MS=5000;
 export const SCALP_PROFIT_HOLD_TARGET_MIN=60;
 export const SCALP_MIN_PROFIT_ROE_PCT=10;
+export const SCALP_AGAINST_TREND_RISK_SCALE=0.5;
 export const SCALP_SCALE_IN_MIN_ROE_PCT=5;
+export const SCALP_SCALE_IN_PARTIAL_ROE_PCT=6;
 export const SCALP_TRAIL_PULLBACK_RATIO=0.25;
+export const SCALP_TRAIL_RUNNER_PULLBACK_RATIO=0.30;
 export const SCALP_TRAIL_MIN_PULLBACK_ROE=1.5;
+export const SCALP_TRAIL_RUNNER_MIN_PULLBACK_ROE=2.0;
+export const SCALP_STALE_ROTATE_HOURS=24;
+export const SCALP_STALE_ROTATE_MIN_ADDS=3;
+export const SCALP_STALE_ROTATE_ROE_PCT=2.5;
 const REVERSAL_RECHECK_MS=30*60000;
 const WYCKOFF_SCAN_BUDGET_MS=12_000;
 const RECHECK_REASONS=new Set(['PRICE_DRIFT','TP1_NET_RR_BELOW_MINIMUM']);
@@ -590,8 +599,10 @@ export class ScalpExecutor{
    try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)lev=Math.max(1,Math.min(lev,Math.floor(max)))}catch{}
    const shared=this.budget?.snapshot(funds.equity,{who:'scalp'});
    if(shared&&!shared.ok)return skip('TESTNET_BUDGET_UNAVAILABLE');
+   const againstTrend=this.config.trendMode==='record'&&this.cur?.withTrend===false;
+   const planConfig=againstTrend?{...this.config,riskPct:this.config.riskPct*SCALP_AGAINST_TREND_RISK_SCALE}:this.config;
    const plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
-    usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:this.config});
+    usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:planConfig});
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
    // Reserve a plan that fits the shared budget while the venue setup runs. A larger plan may still fit after the cap.
@@ -905,10 +916,12 @@ export class ScalpExecutor{
   if(!pos(price)||!fresh.mark||dir*(price-trigger)>1e-12||dir*(fresh.mark-trigger)>1e-12){a.lastReason='PRICE_OUTSIDE_BAND';return}
   const limit=pos(grid(trigger,p.tickSize,awayMode(p.direction)));
   if(!limit||dir*(price-limit)>1e-12){a.lastReason='PRICE_OUTSIDE_BAND';return}
-  // Marketable IOC limit with 0.35% slippage allowance (capped near trigger) so thin orderbooks fill partially/fully instead of FOK-canceling.
-  const slip=SCALP_REPEAT_SCALE_IN.slippagePct/100;
+  // Marketable IOC limit with 0.35% slippage allowance (widened to 0.80% after NOT_FILLED on thin books, capped near trigger).
+  const retryWide=a.lastReason==='NOT_FILLED';
+  const slip=(retryWide?SCALP_REPEAT_SCALE_IN.retrySlippagePct:SCALP_REPEAT_SCALE_IN.slippagePct)/100;
+  const triggerSlip=retryWide?0.0025:0.0015;
   const bound=Number(grid(price*(1+dir*slip),p.tickSize,awayMode(p.direction)))||Number(grid(price+dir*Number(p.tickSize),p.tickSize,awayMode(p.direction)));
-  const triggerCap=Number(grid(limit*(1+dir*0.0015),p.tickSize,awayMode(p.direction)))||limit;
+  const triggerCap=Number(grid(limit*(1+dir*triggerSlip),p.tickSize,awayMode(p.direction)))||limit;
   const orderPrice=dir>0?Math.min(triggerCap,bound):Math.max(triggerCap,bound);
   const baseQty=p.everReduced?fresh.size:(pos(a.initialQty)??fresh.size);
   const desiredQty=baseQty*this.#repeatMultiplier(a.count||0);
@@ -1002,7 +1015,7 @@ export class ScalpExecutor{
    const total=p.filled+added;
    Object.assign(a,{fillQty:added,fillPrice:fill,fillMarginUSD:fill*added/p.leverage,filledAt:this.now()});
    p.avg=(p.avg*prevSize+fill*added)/newSize;p.filled=total;p.size=newSize;p.marginUSD=p.avg*newSize/p.leverage;
-   p.trailPeakRoePct=null;
+   p.trailPeakRoePct=null;p.scaleInPartialTaken=false;
    p.steps.push({kind:'ADD',at:a.filledAt,qty:added,avg:p.avg});
    a.state='RESIZE';this.#save();
   }
@@ -1362,7 +1375,12 @@ export class ScalpExecutor{
   if(id&&!p.exitIds.includes(id))p.exitIds.push(id);
   if(filled>0){
    p.everReduced=true;
-   if(filled>=p.earlyTakeProfit.qty-Number(p.quantityStep)/2)p.exitReason='EARLY_TAKE_PROFIT';
+   if(p.earlyTakeProfit?.partial){
+    p.scaleInPartialTaken=true;
+    this.#event('PARTIAL_TAKE_PROFIT',{symbol:p.symbol,direction:p.direction,qty:filled,left:Math.max(0,p.size-filled)});
+   }else if(filled>=p.earlyTakeProfit.qty-Number(p.quantityStep)/2){
+    p.exitReason='EARLY_TAKE_PROFIT';
+   }
   }
   if(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(String(o?.status).toUpperCase()))
    delete p.earlyTakeProfit;
@@ -1377,26 +1395,53 @@ export class ScalpExecutor{
   if(!(qty>0))return false;
   const bookedLoss=profitOnly?Math.max(0,-(num(p.exchangePosition?.realizedPnLUSD)??0)):0;
   const scaledIn=(p.scaleIn?.count||0)>0;
-  let limit;
-  if(profitOnly&&scaledIn){
-   // Scaled-in positions require >= +5% Net ROE to arm trailing, then ride rebounds and exit on pullback from peak.
+  const initQty=pos(p.scaleIn?.initialQty)??pos(p.initialQty)??pos(p.filled);
+  const isDust=profitOnly&&p.everReduced===true&&initQty>0&&p.size<initQty*SCALP_REPEAT_SCALE_IN.dustRatio;
+  let limit,orderQty=qty,partial=false;
+  if(isDust){
+   // Auto-clean dust remainder (<5% of initialQty) as soon as breakeven+fees clears so slots stay clean.
+   limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
+   if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+  }else if(profitOnly&&scaledIn){
    const fee=Math.max(p.takerRate||0,SCALP_EXEC_COSTS.takerRate);
    const reserve=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/10000+SCALP_EXEC_COSTS.fundingRate;
    const lev=Math.max(1,Number(p.leverage)||10);
    const grossMove=direction*(mark-p.avg)/p.avg;
    const lossMove=bookedLoss>0?bookedLoss/(qty*p.avg):0;
    const netRoePct=(grossMove-2*fee-reserve-lossMove)*lev*100;
-   if(netRoePct>=SCALP_SCALE_IN_MIN_ROE_PCT){
-    const prevPeak=Number(p.trailPeakRoePct);
-    if(!Number.isFinite(prevPeak)||netRoePct>prevPeak){p.trailPeakRoePct=+netRoePct.toFixed(2);this.#save()}
+   const staleRotate=(p.scaleIn?.count||0)>=SCALP_STALE_ROTATE_MIN_ADDS&&(now-opened)>=SCALP_STALE_ROTATE_HOURS*3600000;
+   if(staleRotate&&netRoePct>=SCALP_STALE_ROTATE_ROE_PCT){
+    // Long-held (>=24h) deeply scaled-in (>=3 adds) position: rotate capital out at >= +2.5% Net ROE.
+    limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
+    if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+   }else{
+    if(netRoePct>=SCALP_SCALE_IN_MIN_ROE_PCT){
+     const prevPeak=Number(p.trailPeakRoePct);
+     if(!Number.isFinite(prevPeak)||netRoePct>prevPeak){p.trailPeakRoePct=+netRoePct.toFixed(2);this.#save()}
+    }
+    // 50% partial profit lock-in at +6% Net ROE, leaving 50% runner with wider 30% peak trailing stop.
+    if(!p.scaleInPartialTaken&&netRoePct>=SCALP_SCALE_IN_PARTIAL_ROE_PCT){
+     const minPart=pos(p.scaleIn?.minPart)??Number(p.quantityStep);
+     const minNotional=Number(p.scaleIn?.minNotional)||0;
+     const halfQty=Number(grid(qty*0.5,p.quantityStep,'DOWN'));
+     const remQty=Number(grid(qty-halfQty,p.quantityStep,'DOWN'));
+     if(halfQty>=minPart&&remQty>=minPart&&halfQty*mark>=minNotional&&remQty*mark>=minNotional){
+      limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
+      if(Number(limit)>0&&direction*(mark-Number(limit))>=0){orderQty=halfQty;partial=true}
+     }
+    }
+    if(!partial){
+     const peak=Number(p.trailPeakRoePct);
+     if(!(Number.isFinite(peak)&&peak>=SCALP_SCALE_IN_MIN_ROE_PCT))return false;
+     const ratio=p.scaleInPartialTaken?SCALP_TRAIL_RUNNER_PULLBACK_RATIO:SCALP_TRAIL_PULLBACK_RATIO;
+     const minBuf=p.scaleInPartialTaken?SCALP_TRAIL_RUNNER_MIN_PULLBACK_ROE:SCALP_TRAIL_MIN_PULLBACK_ROE;
+     const pullback=Math.max(minBuf,peak*ratio);
+     const trailStopRoe=Math.max(SCALP_SCALE_IN_MIN_ROE_PCT,peak-pullback);
+     if(netRoePct>trailStopRoe)return false;
+     limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
+     if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+    }
    }
-   const peak=Number(p.trailPeakRoePct);
-   if(!(Number.isFinite(peak)&&peak>=SCALP_SCALE_IN_MIN_ROE_PCT))return false;
-   const pullback=Math.max(SCALP_TRAIL_MIN_PULLBACK_ROE,peak*SCALP_TRAIL_PULLBACK_RATIO);
-   const trailStopRoe=Math.max(SCALP_SCALE_IN_MIN_ROE_PCT,peak-pullback);
-   if(netRoePct>trailStopRoe)return false;
-   limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
-   if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
   }else{
    const fallbackElapsed=now-opened>=PROFIT_ONLY_EARLY_EXIT_MIN*60000;
    const recoveryMode=bookedLoss>0||fallbackElapsed;
@@ -1404,11 +1449,11 @@ export class ScalpExecutor{
    limit=profitLimit(p,bookedLoss/qty,{minNetRoePct});
    if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
   }
-  const clientOrderId=createHash('sha256').update(`${p.id}|early|${now}`).digest('hex').slice(0,32);
-  p.earlyTakeProfit={clientOrderId,qty};p.earlyTakeProfitAt=now;this.#save();
+  const clientOrderId=createHash('sha256').update(`${p.id}|early|${partial?'p':'f'}|${now}`).digest('hex').slice(0,32);
+  p.earlyTakeProfit={clientOrderId,qty:orderQty,partial};p.earlyTakeProfitAt=now;this.#save();
   const response=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),
    positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'LIMIT',
-   timeInForce:'IOC',price:limit,quantity:String(qty),reduceOnly:'true',clientOrderId},p.hedge===true));
+   timeInForce:'IOC',price:limit,quantity:String(orderQty),reduceOnly:'true',clientOrderId},p.hedge===true));
   this.#recordEarlyTakeProfit(p,response);
   return true;
  }
@@ -1632,7 +1677,7 @@ export class ScalpExecutor{
       return {symbol:p.symbol,direction:p.direction,status:p.status,
        state:a?.state??null,adds:a?.count??0,reason:short(a?.reason),lastReason:short(a?.lastReason),checkedBucket:a?.checkedBucket??null,
        mark:pos(position?.markPrice),positionCheckedAt:position?.at??null,trigger:a?.version===SCALP_REPEAT_SCALE_IN.version?pos(this.#repeatTrigger(p)):null,
-       size:pos(p.size),filled:pos(p.filled),partialExit:p.everReduced===true,trailPeakRoePct:num(p.trailPeakRoePct),exitPending:Boolean(p.earlyTakeProfit||p.exitReason==='EARLY_TAKE_PROFIT'),
+       size:pos(p.size),filled:pos(p.filled),partialExit:p.everReduced===true,partialProfitTaken:p.scaleInPartialTaken===true,trailPeakRoePct:p.trailPeakRoePct==null?null:num(p.trailPeakRoePct),exitPending:Boolean(p.earlyTakeProfit||p.exitReason==='EARLY_TAKE_PROFIT'),
        stopRetirementPending:Boolean(p.stopRetirementError)};
      }),
     }:{}),
