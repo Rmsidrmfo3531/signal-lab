@@ -1258,7 +1258,7 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
    };
    const {budget}=await post('/api/live/testnet-budget',payload,{lockLive:false});
    msg.textContent=budget.stopped?'저장됨 · 오늘 거래 정지 상태':'저장됨';
-  }catch(err){msg.textContent=err.message==='INVALID_TESTNET_BUDGET'?'하루 손실 1~50%, 증거금 1~30%, 기준 자본 $100 이상(0=전체)을 입력하세요.':'공동 한도 변경 결과를 확인하지 못했습니다.'}
+  }catch(err){msg.textContent=err.message==='INVALID_TESTNET_BUDGET'?'하루 손실 1~100%, 증거금 1~100%, 기준 자본 $100 이상(0=전체)을 입력하세요.':'공동 한도 변경 결과를 확인하지 못했습니다.'}
   finally{btn.disabled=false}
  });
  $('liveKill')?.addEventListener('click',()=>{if(!liveActionBusy)post('/api/live/kill').catch(fail)});

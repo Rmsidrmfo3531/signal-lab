@@ -13,11 +13,11 @@ import {testnetCloses,testnetClosedHTML,testnetSummaryHTML,testnetBudgetHTML,set
 const NOW=Date.parse('2026-11-17T03:00:00Z'); // 12:00 KST
 const liveCfg=(extra={})=>({mode:'TESTNET',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:8,maxPerDirection:4,...extra});
 
-test('settings: TESTNET_DAILY_LOSS_PCT default 15 (1-50); TESTNET_MARGIN_CAP_PCT default and maximum 30',()=>{
- assert.equal(testnetDailyLossPct({}),15);assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'12'}),12);
- assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'0'}),15);assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'abc'}),15);
- assert.equal(testnetMarginCapPct({}),30);assert.equal(testnetMarginCapPct({TESTNET_MARGIN_CAP_PCT:'20'}),20);assert.equal(testnetMarginCapPct({TESTNET_MARGIN_CAP_PCT:'45'}),30,'never above 30');
- assert.equal(new TestnetBudget({marginCapPct:60}).marginCapPct,30);
+test('settings: TESTNET_DAILY_LOSS_PCT default 15 (1-100); TESTNET_MARGIN_CAP_PCT default 30, maximum 100',()=>{
+ assert.equal(testnetDailyLossPct({}),15);assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'100'}),100);
+ assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'0'}),15);assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'101'}),15);assert.equal(testnetDailyLossPct({TESTNET_DAILY_LOSS_PCT:'abc'}),15);
+ assert.equal(testnetMarginCapPct({}),30);assert.equal(testnetMarginCapPct({TESTNET_MARGIN_CAP_PCT:'20'}),20);assert.equal(testnetMarginCapPct({TESTNET_MARGIN_CAP_PCT:'100'}),100);assert.equal(testnetMarginCapPct({TESTNET_MARGIN_CAP_PCT:'105'}),30,'invalid > 100 falls back to default 30');
+ assert.equal(new TestnetBudget({marginCapPct:120}).marginCapPct,100);
  assert.equal(kstDay(Date.parse('2026-11-16T14:59:59Z')),'2026-11-16');assert.equal(kstDay(Date.parse('2026-11-16T15:00:00Z')),'2026-11-17');
 });
 
@@ -82,13 +82,14 @@ test('budget edits apply immediately and reload, and leave a previously reached 
  try{
   const make=()=>new TestnetBudget({directory:dir,now:()=>NOW,accountEquity:true});
   const b=make();b.observeAccount(1000);
-  assert.throws(()=>b.configure({dailyLossPct:10,marginCapPct:30.01}),/INVALID_TESTNET_BUDGET/);
+  assert.throws(()=>b.configure({dailyLossPct:10,marginCapPct:100.01}),/INVALID_TESTNET_BUDGET/);
+  assert.throws(()=>b.configure({dailyLossPct:100.01,marginCapPct:50}),/INVALID_TESTNET_BUDGET/);
   assert.equal(b.status().limitUSD,150);
   b.markStopped({reason:'REALIZED',lossUSD:100,limitUSD:100});
-  const s=b.configure({dailyLossPct:12.5,marginCapPct:23});
-  assert.deepEqual([s.limitUSD,s.marginCapUSD,s.stopped],[125,230,true]);
+  const s=b.configure({dailyLossPct:100,marginCapPct:100});
+  assert.deepEqual([s.limitUSD,s.marginCapUSD,s.stopped],[1000,1000,true]);
   const restarted=make();restarted.observeAccount(2000);
-  assert.deepEqual([restarted.status().limitUSD,restarted.status().marginCapUSD,restarted.status().stopped],[250,460,true]);
+  assert.deepEqual([restarted.status().limitUSD,restarted.status().marginCapUSD,restarted.status().stopped],[2000,2000,true]);
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
@@ -519,12 +520,22 @@ test('when BingX VST equity is reduced to $3,000, legacy oversized VST trades st
   budget.register('scalp',sc.budgetSource());
 
   // Legacy oversized trades must be scaled down (~-$110 instead of -$7,785) and stale unscaled stop must self-heal!
+  // Also verifies one-time migration of old pinned ceiling (50%/30%) -> 100%/100% ($3,000/$3,000).
   const st=budget.status();
+  assert.equal(st.dailyLossPct,100);
+  assert.equal(st.marginCapPct,100);
+  assert.equal(st.limitUSD,3000);
+  assert.equal(st.marginCapUSD,3000);
   assert.equal(st.stopped,false,'impossible -$8,652 stop on $3,000 equity self-heals');
   assert.ok(st.lossUSD<200,`scaled today loss should be < $200, got $${st.lossUSD}`);
   assert.ok(Math.abs(sc.stats().netUSD)<200,`scaled stats netUSD should be realistic for $3k, got $${sc.stats().netUSD}`);
   sc.arm();
   assert.equal(sc.status().blocked,null,'5m scalp scanning is unblocked immediately');
+
+  // Subsequent explicit manual edit back to 50%/30% is preserved across restart
+  budget.configure({dailyLossPct:50,marginCapPct:30,capitalCapUSD:3000});
+  const afterManual=new TestnetBudget({accountEquity:true,capitalCapUSD:3000,directory:dir,now:()=>NOW});
+  assert.deepEqual([afterManual.dailyLossPct,afterManual.marginCapPct],[50,30]);
 
   // UI closed list also scales legacy oversized trades even when displayScale === 1
   const h=testnetClosedHTML({
