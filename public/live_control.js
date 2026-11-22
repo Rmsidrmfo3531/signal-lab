@@ -214,13 +214,19 @@ export function venuePositionsHTML(c,copyOpen=[]){
   if(fin(info.st?.peakRoePct))return `<span class="vp-badge copy" title="고점 대비 ${esc(tr.trailPullbackRatio)}% 되돌림 시 자동 익절">트레일 고점 +${Number(info.st.peakRoePct).toFixed(1)}%</span>`;
   return '';
  };
+ const stopBadge=p=>{
+  if(fin(p.stop))return `<span class="vp-badge" title="거래소 손절 주문 설정됨">🛡 손절 ${px(p.stop)}</span>`;
+  if(p.origin!=='copy'&&p.stopChecked===true)return '<span class="vp-badge warn" title="손절 주문이 없습니다. 아래 버튼으로 즉시 설정할 수 있습니다.">⚠ 손절 없음</span>';
+  return '';
+ };
  const posActions=p=>{
   const inProfit=fin(p.unrealized)&&Number(p.unrealized)>0,sym=esc(p.symbol),dir=esc(p.direction),sz=esc(qtyFmt(p.size)),lev=esc(p.leverage||''),mmMode=esc(p.marginMode||'CROSSED');
   const info=trInfo(p);
+  const slBtn=p.origin!=='copy'&&!fin(p.stop)?`<button type="button" class="vp-act-btn warn" data-pos-action="SET_STOP_LOSS" data-pos-sl-roe="15" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="현재 포지션에 −15% ROE 손절(STOP_MARKET) 즉시 설정">🛡 -15% 손절</button>`:'';
   const trBtn=info?`<button type="button" class="vp-act-btn" data-trail-toggle="${esc(info.disp)}" title="${info.excluded?'이 종목을 자동 트레일링 대상에 다시 포함':'이 종목을 자동 트레일링에서 제외'}">${info.excluded?'트레일 포함':'트레일 제외'}</button>`:'';
-  return `<div class="vp-actions"><button type="button" class="vp-act-btn trade" data-trade-fill data-pos-symbol="${sym}" data-pos-lev="${lev}" data-pos-mm="${mmMode}" title="이 종목을 수동 주문 패널에 불러오기">주문/추매</button><button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button>${trBtn}</div>`;
+  return `<div class="vp-actions"><button type="button" class="vp-act-btn trade" data-trade-fill data-pos-symbol="${sym}" data-pos-lev="${lev}" data-pos-mm="${mmMode}" title="이 종목을 수동 주문 패널에 불러오기">주문/추매</button><button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button>${slBtn}${trBtn}</div>`;
  };
- const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}">${symTag(p.symbol)}${badge(p)}${trBadge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · 부분청산 ${partialCount(r)} · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b>${posActions(p)}</li>`};
+ const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}">${symTag(p.symbol)}${badge(p)}${stopBadge(p)}${trBadge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · 부분청산 ${partialCount(r)} · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b>${posActions(p)}</li>`};
 
  const table=`<table class="copy-table vp-table vp-two-row only-desk">
   <colgroup><col style="width:26%"><col style="width:12%"><col style="width:12%"><col style="width:17%"><col style="width:18%"><col style="width:15%"></colgroup>
@@ -228,7 +234,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
   <tbody>${list.map(p=>{
    const r=info(p),manual=p.origin==='copy'?'':' vp-manual';
    return `<tr class="vp-primary${manual}">
-    <td class="vp-symbol-cell" rowspan="2">${symTag(p.symbol,'vp-symbol')} ${badge(p)} ${trBadge(p)}${posActions(p)}</td>
+    <td class="vp-symbol-cell" rowspan="2">${symTag(p.symbol,'vp-symbol')} ${badge(p)} ${stopBadge(p)} ${trBadge(p)}${posActions(p)}</td>
     <td>${side(p.direction)}</td>
     <td>${esc(p.leverage??'—')}배 <small class="muted">${mm(p)}</small></td>
     <td class="num">${esc(qtyFmt(p.size))}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td>
@@ -1036,10 +1042,14 @@ function bindCopyButtons(el){
   const posAct=e.target.closest('[data-pos-action]');
   if(posAct){
    const action=posAct.dataset.posAction,symbol=posAct.dataset.posSymbol,direction=posAct.dataset.posDir,size=posAct.dataset.posSize||'';
+   const lossRoePct=posAct.dataset.posSlRoe?Number(posAct.dataset.posSlRoe):null;
    const symDisp=symText(symbol),dirKo=direction==='LONG'?'롱':'숏';
-   const desc=action==='CLOSE_HALF'?`${symDisp} ${dirKo} 포지션(${size})의 50%를 시장가 부분 청산합니다`:action==='CLOSE_ALL'?`${symDisp} ${dirKo} 포지션(${size})을 전량 시장가 청산합니다`:`${symDisp} ${dirKo} 포지션 평균 진입가에 본전 스탑(STOP_MARKET)을 설정합니다`;
+   const desc=action==='CLOSE_HALF'?`${symDisp} ${dirKo} 포지션(${size})의 50%를 시장가 부분 청산합니다`
+    :action==='CLOSE_ALL'?`${symDisp} ${dirKo} 포지션(${size})을 전량 시장가 청산합니다`
+    :action==='SET_STOP_LOSS'?`${symDisp} ${dirKo} 포지션에 −${lossRoePct||15}% ROE 손절(STOP_MARKET)을 설정합니다`
+    :`${symDisp} ${dirKo} 포지션 평균 진입가에 본전 스탑(STOP_MARKET)을 설정합니다`;
    if(!window.confirm(`⚠️ 실계좌 주문 확인\n${desc}.\n계속할까요?`))return;
-   return call(posAct,'/api/real/position-action',{confirm:'REAL_POSITION_ACTION',symbol,direction,action},'처리 중…');
+   return call(posAct,'/api/real/position-action',{confirm:'REAL_POSITION_ACTION',symbol,direction,action,...(lossRoePct?{lossRoePct}:{})},'처리 중…');
   }
   const noteBtn=e.target.closest('[data-manual-note-id]');
   if(noteBtn){
@@ -1124,6 +1134,7 @@ function render(o){
  if($('liveRules'))$('liveRules').replaceChildren(...rows.filter(([k])=>LIVE_RULE_KEYS.includes(k)).map(kv));
  if($('liveTest')){$('liveTest').hidden=o.mode!=='TESTNET'||scalpOnly;$('liveTest').disabled=liveTestBusy}
  if($('liveSignalDescription'))$('liveSignalDescription').hidden=scalpOnly;
+ if($('livePaperExplain'))$('livePaperExplain').hidden=scalpOnly||!o.paperTrading;
  // The button for the current state is shown as selected and cannot be pressed again.
  if($('liveArm')){$('liveArm').disabled=liveActionBusy||on||!canArm;$('liveArm').textContent=on?'● 활성화됨':'활성화';$('liveArm').classList.toggle('is-current',on)}
  if($('liveDisarm')){$('liveDisarm').disabled=liveActionBusy||!some;$('liveDisarm').textContent=some?'비활성화':'○ 비활성';$('liveDisarm').classList.toggle('is-current',!some)}

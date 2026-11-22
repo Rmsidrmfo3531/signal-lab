@@ -406,7 +406,7 @@ test('unprotected testnet scalps use progressive 1R->2R->3.5R->5R spacing and co
  for(const direction of ['LONG','SHORT']){
   const sign=direction==='LONG'?1:-1,entry=sign===1?PX:PX_S,v=venue({fillAt:entry}),clock={t:T0};
   let price=entry;
-  const ex=make(v,{clock,price:()=>price,trend:sign===1?up4h:down4h,rows:sign===1?crash:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+  const ex=make(v,{clock,price:()=>price,trend:sign===1?up4h:down4h,rows:sign===1?crash:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15,emergencyStopRoePct:0}});
   ex.arm();assert.equal((await ex.scan()).entered,1);
   const p=ex.store.open[0],a=p.scaleIn,first=p.size,rDist=Math.abs(a.initialEntry-p.initialStop);
   assert.equal(placed(v,'MARKET')[0].stopLoss,undefined);

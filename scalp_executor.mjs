@@ -158,8 +158,12 @@ export function scalpExecConfig(env=process.env){
   stopKeepPct:n('SCALP_STOP_KEEP_PCT',50,0,100),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
   universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),
   // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
-  watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanDelayMs:3000,
+  watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanGapMs:n('SCALP_SCAN_GAP_MS',120,0,1000),scanDelayMs:3000,
   balanceCapUSD:n('SCALP_BALANCE_CAP_USD',0,0,1e7),
+  // Unprotected scalp safety rails (user 2026-11-23): cap underwater hold duration, emergency ROE cut, and max adds.
+  profitOnlyMaxHoldMin:n('SCALP_MAX_HOLD_MIN',480,0,4320),
+  emergencyStopRoePct:n('SCALP_EMERGENCY_STOP_ROE_PCT',40,0,95),
+  maxScaleInAdds:n('SCALP_MAX_SCALE_IN_ADDS',3,0,10),
   // 매물대 반전 (user 2026-11-17 23:12): on by default, SCALP_ZONE_SIGNALS=off turns it off.
   zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT};
 }
@@ -537,12 +541,13 @@ export class ScalpExecutor{
   const bar=bars.at(-1),open=pos(bar[1]),close=pos(bar[4]);
   return open&&close&&dir*(close-open)>0?candidate:null;
  }
- /** A public read with the scan's 100410 handling: up to two more tries (1.5 s, then 3 s), and once the limit was
-  * hit the rest of the scan goes 300 ms slower (2026-11-16: 3 of 80 coins still failed after one retry). */
+ /** A public read with adaptive rate-limit pacing: gentle base gap across large universes (>10 coins) so
+  * 80-coin 5m scans avoid BingX 100410, plus two retries (1.5 s, 3.5 s) and escalating pacing if hit. */
  async #paced(read,st){
-  if(st.rateLimited)await sleep(300);
+  if(st.rateLimited)await sleep(Math.min(800,300+st.rateLimited*150));
+  else if(this.universe.length>10&&this.config.scanGapMs>0&&st.checked>0)await sleep(this.config.scanGapMs);
   try{return await read()}
-  catch(e){for(const w of [1500,3000]){if(e?.code!=='VENUE_ERROR_100410')throw e;st.rateLimited=(st.rateLimited||0)+1;await sleep(w);try{return await read()}catch(next){e=next}}throw e}
+  catch(e){for(const w of [1500,3500]){if(e?.code!=='VENUE_ERROR_100410')throw e;st.rateLimited=(st.rateLimited||0)+1;await sleep(w);try{return await read()}catch(next){e=next}}throw e}
  }
  /** The 4H / 1D zone book of a symbol (backtest.mjs zoneBook on BingX candles, ZONE_PROFILES counts), cached until the
   * next candle of that timeframe closes. null when the candles could not be read (not cached: read again next time). */
@@ -955,11 +960,12 @@ export class ScalpExecutor{
   if(direction==='SHORT')return c>o&&body/range>=0.65&&(h-c)/range<0.20;
   return c<o&&body/range>=0.65&&(c-l)/range<0.20;
  }
+ #maxAdds(){const m=Number(this.config?.maxScaleInAdds);return Number.isFinite(m)&&m>0?m:SCALP_REPEAT_SCALE_IN.maxAdds}
  #enableRepeat(p){
   if(!this.config.scaleIn)return;
   if(p.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version){
    // Re-open positions that were previously skipped solely due to partial exit when >=25% remains and under maxAdds.
-   if(p.scaleIn.state==='SKIPPED'&&p.scaleIn.reason==='POSITION_CHANGED'&&!this.#partialTooSmall(p)&&(p.scaleIn.count||0)<SCALP_REPEAT_SCALE_IN.maxAdds){
+   if(p.scaleIn.state==='SKIPPED'&&p.scaleIn.reason==='POSITION_CHANGED'&&!this.#partialTooSmall(p)&&(p.scaleIn.count||0)<this.#maxAdds()){
     p.scaleIn.state='WATCH';p.scaleIn.reason=null;this.#save();
    }
    return;
@@ -986,7 +992,7 @@ export class ScalpExecutor{
  async #considerRepeat(p,mark){
   const a=p.scaleIn,dir=dirOf(p.direction),bucket=Math.floor(this.now()/I5),step=Number(p.quantityStep);
   if(!this.config.scaleIn||a?.state!=='WATCH'||this.#blocked()||!mark||bucket<=Math.floor(p.openedAt/I5)||a.checkedBucket===bucket)return;
-  if((a.count||0)>=SCALP_REPEAT_SCALE_IN.maxAdds){a.lastReason='MAX_ADDS_REACHED';return}
+  if((a.count||0)>=this.#maxAdds()){a.lastReason='MAX_ADDS_REACHED';return}
   if(this.#partialTooSmall(p)||(!p.everReduced&&Math.abs(p.size-p.filled)>step/2)){this.#addDecision(p,'SKIPPED','POSITION_CHANGED');return}
   const trigger=this.#repeatTrigger(p);
   if(!(trigger>0)||dir*(mark-trigger)>1e-12)return;
@@ -1137,7 +1143,7 @@ export class ScalpExecutor{
   p.size=fresh.size;p.mark=fresh.mark??p.mark;p.riskUSD=a.riskAfterUSD=this.#repeatRisk(p,p.avg,p.mark)*fresh.size;
   const nextState=a.version!==SCALP_REPEAT_SCALE_IN.version||!(fresh.size>0)?'FILLED'
    :this.#partialTooSmall(p,fresh.size)?'SKIPPED'
-   :(a.count>=SCALP_REPEAT_SCALE_IN.maxAdds?'FILLED':'WATCH');
+   :(a.count>=this.#maxAdds()?'FILLED':'WATCH');
   Object.assign(a,{state:nextState,reason:fresh.size>0?(nextState==='SKIPPED'?'POSITION_CHANGED':null):'FLAT_DURING_RESIZE'});
   this.#save();this.#event('SCALE_IN_FILLED',{symbol:p.symbol,direction:p.direction,count:a.count,fillMarginUSD:a.fillMarginUSD,qty:a.fillQty,price:a.fillPrice,prevAvg:a.prevAvg??null,avg:p.avg,avgImprovePct:a.avgImprovePct??null,left:p.size});
   if(!fresh.size){await this.#finish(p);return}
@@ -1663,6 +1669,27 @@ export class ScalpExecutor{
       if(!await this.#retireStop(p))continue;
       await this.#retireLegacyProfitTargets(p);
       this.#enableRepeat(p);p.riskUSD=this.#repeatRisk(p,p.avg,mark)*size;
+      const lev=Math.max(1,Number(p.leverage)||10);
+      const roePct=mark>0&&p.avg>0?dirOf(p.direction)*(mark-p.avg)/p.avg*lev*100:null;
+      const emLimit=Number(this.config.emergencyStopRoePct)||0;
+      if(emLimit>0&&roePct!==null&&roePct<=-emLimit){
+       p.exitTries=(p.exitTries||0)+1;
+       const r=await this.#market(p,'em'+p.exitTries);
+       p.exitReason='EMERGENCY_ROE_STOP';
+       this.#event('EMERGENCY_ROE_STOP',{symbol:p.symbol,direction:p.direction,roePct:+roePct.toFixed(1),limitPct:emLimit});
+       if(!(r.size>0))await this.#finish(p,'EMERGENCY_ROE_STOP');
+       continue;
+      }
+      const maxHoldMin=Number(this.config.profitOnlyMaxHoldMin)||0;
+      const opened=p.openedAt??p.createdAt;
+      if(maxHoldMin>0&&opened>0&&this.now()-opened>=maxHoldMin*60000&&roePct!==null&&roePct<0){
+       p.exitTries=(p.exitTries||0)+1;
+       const r=await this.#market(p,'mh'+p.exitTries);
+       p.exitReason='MAX_HOLD_EXIT';
+       this.#event('MAX_HOLD_EXIT',{symbol:p.symbol,direction:p.direction,holdMin:Math.round((this.now()-opened)/60000),maxHoldMin,roePct:+roePct.toFixed(1)});
+       if(!(r.size>0))await this.#finish(p,'MAX_HOLD_EXIT');
+       continue;
+      }
      }else{
       if(this.now()>=p.deadline){p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'x'+p.exitTries);p.exitReason='TIME_STOP';if(!(r.size>0))await this.#finish(p);continue}
       if(p.tpDone[0]&&!p.breakevenMoved)await this.#breakeven(p,mark);

@@ -254,11 +254,12 @@ export function realTradePanelHTML(st){
        <div class="rt-seg">
         <button type="button" class="${st.orderType==='MARKET'?'is-current':''}" data-rt-otype="MARKET">시장가</button>
         <button type="button" class="${st.orderType==='LIMIT'?'is-current':''}" data-rt-otype="LIMIT">지정가</button>
+        ${st.orderType==='MARKET'?`<button type="button" class="${st.makerFirst?'is-current':''}" data-rt-maker title="지정가(PostOnly 0.02%)로 2.5초 먼저 체결 시도 후 미체결 잔량만 시장가(0.05%) 체결">⚡ 메이커 우선</button>`:''}
        </div>
       </div>
       <div class="rt-group">
        <span class="rt-lbl">지정가 (USDT)${st.orderType==='LIMIT'&&livePrice?` <button type="button" class="rt-link-btn" data-rt-fill-price>현재가</button>`:''}</span>
-       <input type="number" step="any" data-rt-limit-price value="${esc(st.limitPrice)}" placeholder="${st.orderType==='MARKET'?'시장가 체결':'지정가 입력'}"${st.orderType==='MARKET'?' disabled':''} aria-label="지정가 가격">
+       <input type="number" step="any" data-rt-limit-price value="${esc(st.limitPrice)}" placeholder="${st.orderType==='MARKET'?(st.makerFirst?'메이커 0.02% 우선 (2.5초 후 시장가)':'시장가 체결'):'지정가 입력'}"${st.orderType==='MARKET'?' disabled':''} aria-label="지정가 가격">
       </div>
      </div>
      <div class="rt-group">
@@ -278,12 +279,18 @@ export function realTradePanelHTML(st){
      </div>
      <div class="rt-row-2">
       <label class="rt-group"><span class="rt-lbl">익절가 TP (선택)</span><input type="number" step="any" min="0" data-rt-tp value="${esc(st.tpPrice)}" placeholder="비우면 설정 안 함"></label>
-      <label class="rt-group"><span class="rt-lbl">손절가 SL (선택)</span><input type="number" step="any" min="0" data-rt-sl value="${esc(st.slPrice)}" placeholder="비우면 설정 안 함"></label>
+      <div class="rt-group">
+       <span class="rt-lbl">손절가 SL ${st.slRoePct?`(자동 −${st.slRoePct}% ROE)`:'(선택)'}</span>
+       <input type="number" step="any" min="0" data-rt-sl value="${esc(st.slPrice)}" placeholder="${st.slRoePct?`주문 시 −${st.slRoePct}% ROE 자동 계산`:'비우면 손절 없음'}">
+       <div class="rt-mini-btns">${[0,10,15,25].map(r=>`<button type="button" class="${(r===0&&!st.slRoePct&&!st.slPrice)||(r>0&&st.slRoePct===r)?'is-current':''}" data-rt-sl-roe="${r}">${r===0?'없음':`-${r}%`}</button>`).join('')}</div>
+      </div>
      </div>
+     ${Number(st.leverage)>20?`<p class="rt-copy-warn">⚠️ ${esc(st.leverage)}배 고배율은 최근 수동 손실이 집중된 구간입니다 (20배 이하 권장).</p>`:''}
+     ${!st.slPrice&&!st.slRoePct?`<p class="rt-hint-sl">💡 손절가(SL) 미설정 상태입니다. 위 <b>-15%</b> 버튼을 누르면 롱·숏 방향에 맞춰 손절이 자동 부착됩니다.</p>`:''}
      ${previewHtml}
      <div class="rt-submit-row">
-      <button type="button" class="rt-btn-long" data-rt-submit="LONG"${st.busy?' disabled':''}>🟢 롱 / 매수${st.orderType==='LIMIT'?' (지정가)':' (시장가)'}</button>
-      <button type="button" class="rt-btn-short" data-rt-submit="SHORT"${st.busy?' disabled':''}>🔴 숏 / 매도${st.orderType==='LIMIT'?' (지정가)':' (시장가)'}</button>
+      <button type="button" class="rt-btn-long" data-rt-submit="LONG"${st.busy?' disabled':''}>🟢 롱 / 매수${st.orderType==='LIMIT'?' (지정가)':st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
+      <button type="button" class="rt-btn-short" data-rt-submit="SHORT"${st.busy?' disabled':''}>🔴 숏 / 매도${st.orderType==='LIMIT'?' (지정가)':st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
      </div>
      <div class="rt-status-msg${st.msgErr?' err':''}" role="status">${esc(st.msg||'')}</div>
     </div>
@@ -301,11 +308,13 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   marginMode:'CROSSED',
   leverage:10,
   orderType:'MARKET',
+  makerFirst:true,
   limitPrice:'',
   amountMode:'MARGIN_USDT',
   amount:'',
   tpPrice:'',
   slPrice:'',
+  slRoePct:null,
   availableUSD:null,
   heldPositions:[],
   info:null,
@@ -512,7 +521,16 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   const copyWarn=state.info?.copyHolding?.length?`\n⚠️ 현재 카피 포지션 보유 중(${state.info.copyHolding.map(h=>`${h.direction==='LONG'?'롱':'숏'} ${h.qty}`).join(', ')}) — 수동 추가 주문으로 들어갑니다.\n`:'';
   const tpSl=[state.tpPrice?`TP ${state.tpPrice}`:null,state.slPrice?`SL ${state.slPrice}`:null].filter(Boolean).join(' · ');
   const confirmMsg=`⚠️ BingX 실계좌 주문 확인${copyWarn}\n종목: ${symDisp}\n방향: ${sideKo}\n방식: ${typeKo}\n배율: ${state.leverage}배 (${state.marginMode==='ISOLATED'?'격리':'교차'})\n예상 수량: ${p?fmtQty(p.coinQty):state.amount} (필요 증거금 약 ${p?fmtUsd(p.marginUSD):'—'})${tpSl?`\nTP/SL: ${tpSl}`:''}\n\n실제 자금으로 주문을 전송할까요?`;
-  if(!window.confirm(confirmMsg))return;
+  const curMarket=(state.markets||[]).find(m=>m.displaySymbol===symDisplay());
+  const basePx=orderType==='LIMIT'?Number(limitPrice):(state.info?.price??curMarket?.lastPrice??null);
+  let resolvedSl=state.slPrice!==''?Number(state.slPrice):null;
+  if(resolvedSl==null&&state.slRoePct>0&&basePx>0&&Number(state.leverage)>0){
+   const dir=side==='LONG'?1:-1;
+   const raw=basePx*(1-dir*(state.slRoePct/100)/Number(state.leverage));
+   if(raw>0)resolvedSl=Number(raw.toPrecision(6));
+  }
+  const useMaker=orderType==='MARKET'&&state.makerFirst===true;
+  if(!window.confirm(confirmMsg+(resolvedSl!=null&&state.slPrice===''?`\n자동 손절(−${state.slRoePct}% ROE): ${resolvedSl} USDT`:'')+(useMaker?'\n방식: 메이커(0.02%) 지정가 2.5초 우선 → 미체결 잔량 시장가':'')))return;
   state.busy=true;state.msg='주문 전송 중…';state.msgErr=false;render();
   try{
    const r=await fetch('/api/real/trade/order',{
@@ -522,13 +540,14 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
      symbol:state.info?.symbol||state.symbol,
      side,
      orderType,
+     makerFirst:useMaker,
      amountMode:state.amountMode,
      amount:Number(state.amount),
      price:orderType==='LIMIT'?Number(limitPrice):null,
      leverage:Number(state.leverage),
      marginMode:state.marginMode,
      tpPrice:state.tpPrice!==''?Number(state.tpPrice):null,
-     slPrice:state.slPrice!==''?Number(state.slPrice):null,
+     slPrice:resolvedSl,
     }),
    });
    const d=await r.json().catch(()=>({}));
@@ -561,7 +580,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   if(t.matches('[data-rt-limit-price]')){state.limitPrice=t.value;updatePreviewOnly();return}
   if(t.matches('[data-rt-amount]')){state.amount=t.value;updatePreviewOnly();return}
   if(t.matches('[data-rt-tp]')){state.tpPrice=t.value;pushChartData();return}
-  if(t.matches('[data-rt-sl]')){state.slPrice=t.value;pushChartData();return}
+  if(t.matches('[data-rt-sl]')){state.slPrice=t.value;if(t.value!=='')state.slRoePct=null;pushChartData();return}
  });
 
  mountEl.addEventListener('click',e=>{
@@ -634,7 +653,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
    if(act==='CLEAR'){state.selectedPrice=null;chartInst?.clearSelection();renderClickBarOnly();return}
    if(act==='SET_LIMIT'&&fin(px)){state.orderType='LIMIT';state.limitPrice=String(px);render();return}
    if(act==='SET_TP'&&fin(px)){state.tpPrice=String(px);render();return}
-   if(act==='SET_SL'&&fin(px)){state.slPrice=String(px);render();return}
+   if(act==='SET_SL'&&fin(px)){state.slPrice=String(px);state.slRoePct=null;render();return}
    if(act==='LIMIT_LONG'&&fin(px)){state.orderType='LIMIT';state.limitPrice=String(px);void submitOrder('LONG',{overrideType:'LIMIT',overridePrice:px});return}
    if(act==='LIMIT_SHORT'&&fin(px)){state.orderType='LIMIT';state.limitPrice=String(px);void submitOrder('SHORT',{overrideType:'LIMIT',overridePrice:px});return}
   }
@@ -647,6 +666,17 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   if(ot){
    state.orderType=ot.dataset.rtOtype;
    if(state.orderType==='LIMIT'&&!state.limitPrice&&state.info?.price)state.limitPrice=String(state.info.price);
+   render();return;
+  }
+  if(e.target.closest('[data-rt-maker]')){
+   state.makerFirst=!state.makerFirst;
+   render();return;
+  }
+  const slRoe=e.target.closest('[data-rt-sl-roe]');
+  if(slRoe){
+   const v=Number(slRoe.dataset.rtSlRoe);
+   state.slRoePct=v>0?v:null;
+   state.slPrice='';
    render();return;
   }
   if(e.target.closest('[data-rt-fill-price]')){

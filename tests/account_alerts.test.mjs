@@ -209,10 +209,17 @@ test('open-position PnL summary sends clean readable Telegram list (no code bloc
   // Within 5m cooldown -> suppressed
   now+=3*60000;
   assert.equal((await alerts.checkPositionSummary({positions,now})).reason,'COOLDOWN');
-  // After 5m cooldown -> sends again
+  // After 5m cooldown with unchanged PnL (<$2 delta, <30m heartbeat) -> suppressed as UNCHANGED
   now+=3*60000;
-  assert.equal((await alerts.checkPositionSummary({positions,now})).sent,true);
+  assert.equal((await alerts.checkPositionSummary({positions,now})).reason,'UNCHANGED');
+  // Once PnL shifts by >=$2 -> sends immediately
+  const moved=[positions[0],{...positions[1],unrealized:103.5}];
+  assert.equal((await alerts.checkPositionSummary({positions:moved,now})).sent,true);
   assert.equal(sent.length,2);
+  // Even without PnL movement, sends again on 30m heartbeat
+  now+=31*60000;
+  assert.equal((await alerts.checkPositionSummary({positions:moved,now})).sent,true);
+  assert.equal(sent.length,3);
   // /pos command returns clean list immediately, and /pos 3 updates interval to 3 min
   const reply=await alerts.handleCommand('/pos','123456',now);
   assert.equal(reply,summary);

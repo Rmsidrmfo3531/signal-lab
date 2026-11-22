@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
+import {placeMakerThenMarket} from './maker_order.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {confirmedBingxFills,summarizeBalancedFills} from './live_clients.mjs';
 import {directionOf,venueRows} from './venue_positions.mjs';
@@ -134,7 +135,10 @@ export function copyConfig(env=process.env,liveMode='OFF'){
   // The venue-minimum bump may raise the first margin to at most this much (user 2026-11-14: start at 1 $).
   minOrderMaxMarginUSD:n('COPY_MIN_ORDER_MAX_MARGIN_USD',COPY_DEFAULTS.minOrderMaxMarginUSD,.1,1000),
   // Enter late when the trader adds to a position we missed (user 2026-11-14); COPY_LATE_ENTRY=off disables.
-  lateEntry:!/^(off|0|false|no)$/i.test(String(env.COPY_LATE_ENTRY||'on'))};
+  lateEntry:!/^(off|0|false|no)$/i.test(String(env.COPY_LATE_ENTRY||'on')),
+  // Post-Only maker-first entries on LIVE (0.02% vs 0.05% taker); falls back to MARKET after waitMs. COPY_MAKER_FIRST=off disables.
+  makerFirst:!/^(off|0|false|no)$/i.test(String(env.COPY_MAKER_FIRST??(mode==='LIVE'?'on':'off'))),
+  makerWaitMs:n('COPY_MAKER_WAIT_MS',2500,300,10000)};
 }
 
 export class CopyExecutor{
@@ -449,9 +453,31 @@ export class CopyExecutor{
   if(this.config.mode!=='LIVE'||id==null)return;
   this.#save();this.#event('ORDER_RECEIPT',{symbol:p.symbol,orderId:String(id)});
  }
- async #market(p,side,quantity,{reduceOnly=false,tag,beforeSend}){
+ async #market(p,side,quantity,{reduceOnly=false,tag,beforeSend,maker=null}){
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
-  const params={symbol:p.venueSymbol,side,positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(quantity),clientOrderId:this.#clientId(p,tag)};
+  const positionSide=positionSideFor({hedge:p.hedge===true,direction:p.direction});
+  if(this.config.makerFirst===true&&!reduceOnly&&maker?.markPrice>0&&pos(p.tickSize)){
+   const r=await placeMakerThenMarket({
+    client:this.client,symbol:p.venueSymbol,side,positionSide,quantity,
+    quantityStep:maker.step??null,minQuantity:maker.minQty??0,tickSize:p.tickSize,
+    markPrice:maker.markPrice,hedge:p.hedge===true,clientOrderId:this.#clientId(p,tag),
+    waitMs:this.config.makerWaitMs??2500,sleep:this.sleep,beforeSend,
+   });
+   const ids=[...new Set([r.makerOrderId,r.marketOrderId].filter(Boolean))];
+   for(const id of ids){
+    const isMain=id===r.orderId;
+    const notice=this.#fillNotice(p,tag);
+    if(isMain&&notice&&r.receipt&&String(r.receipt?.status).toUpperCase()==='FILLED'&&pos(r.receipt?.executedQty)&&pos(r.receipt?.avgPrice)){
+     notice.receipt={orderId:r.receipt.orderId,symbol:r.receipt.symbol??p.venueSymbol,side:r.receipt.side??side,positionSide:r.receipt.positionSide??positionSide,
+      status:r.receipt.status,executedQty:r.receipt.executedQty,avgPrice:r.receipt.avgPrice,updateTime:r.receipt.updateTime??r.receipt.updatedTime??r.receipt.filledTm,
+      profit:r.receipt.realizedPnl??r.receipt.realizedPnL??r.receipt.profit,commission:r.receipt.fee??r.receipt.commission};
+    }
+    this.#rememberFillOrder(p,id,side,true,notice);
+    this.#notifyOrderReceipt(p,id);
+   }
+   return {orderId:r.orderId??null,avg:r.avg??null,status:r.status??null,executionMode:r.executionMode};
+  }
+  const params={symbol:p.venueSymbol,side,positionSide,type:'MARKET',quantity:String(quantity),clientOrderId:this.#clientId(p,tag)};
   // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
   if(reduceOnly&&p.hedge!==true)params.reduceOnly='true';
   const notice=this.#fillNotice(p,tag),res=orderOf(await this.client.placeOrder(params,{beforeSend}));
@@ -474,14 +500,15 @@ export class CopyExecutor{
   *    answers "order does not exist" (80016) AND the venue size has not moved by one quantity step. Anything
   *    else (lookup failed, size moved, no lookup call) -> not sent (an under-fill rather than a double fill).
   * A venue error code is never retried here. event: ENTRY_RETRY / ADD_RETRY. p.inflight marks it meanwhile. */
- async #send(p,side,quantity,{tag},{event,before,step,entry,marginUSD,funds}){
+ async #send(p,side,quantity,{tag},{event,before,step,entry,marginUSD,funds,markPrice=null,minQty=0}){
   const margin=await this.#orderMargin(marginUSD,p.symbol,funds);
   const blocked=this.#sendBlock(p,entry),orderBlock=blocked?{reason:blocked}:margin;
   if(orderBlock)throw Object.assign(Error(orderBlock.reason),{code:orderBlock.reason,orderBlock});
   const cid=this.#clientId(p,tag),started=Date.now(),delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[];
   if(event==='ENTRY_RETRY')p.entryCids=[...(p.entryCids||[]),cid]; // looked up again before the ledger drops or adopts it
+  const maker=markPrice>0?{markPrice,step,minQty}:null;
   const sendMarket=async()=>{
-   try{return await this.#market(p,side,quantity,{tag,beforeSend:()=>this.#sendBlock(p,entry)})}
+   try{return await this.#market(p,side,quantity,{tag,beforeSend:()=>this.#sendBlock(p,entry),maker})}
    catch(e){
     if(e?.code==='ENTRY_NOT_SENT')throw Object.assign(Error(e.reason),{code:e.reason,orderBlock:{reason:e.reason}});
     throw e;
@@ -797,7 +824,7 @@ export class CopyExecutor{
    return {ok:false,reason:block.reason};
   };
   const sendOpen=()=>this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:this.#tag(p,'open')},
-   {event:'ENTRY_RETRY',before:0,step:c.quantityStep,entry,marginUSD:qty*Math.max(price,venuePrice||0)/leverage});
+   {event:'ENTRY_RETRY',before:0,step:c.quantityStep,entry,marginUSD:qty*Math.max(price,venuePrice||0)/leverage,markPrice:venuePrice||price,minQty:pos(c.minQuantityBase)??0});
   let fill;
   // The venue position was checked empty above: before = 0 for the retry check.
   try{fill=await sendOpen()}
@@ -938,7 +965,7 @@ export class CopyExecutor{
   else{buy=this.#qty(c,p.qty*((ratio??((p.theirTotal+theirQty)/p.theirTotal))-1));if(!(buy>0))return {ok:true,tooSmall:true}}
   let fill;
   try{fill=await this.#send(p,p.direction==='LONG'?'BUY':'SELL',buy,{tag:this.#tag(p,'add')},
-   {event:'ADD_RETRY',before:p.qty,step:c.quantityStep,entry,marginUSD:buy*Math.max(price,now.mark||0)/p.leverage,funds})}
+   {event:'ADD_RETRY',before:p.qty,step:c.quantityStep,entry,marginUSD:buy*Math.max(price,now.mark||0)/p.leverage,funds,markPrice:now.mark||price,minQty:pos(c.minQuantityBase)??0})}
   catch(e){
    if(!e.orderBlock)throw e;
    this.#event('ADD_SKIPPED',{symbol:p.symbol,...e.orderBlock});
