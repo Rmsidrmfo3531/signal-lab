@@ -500,6 +500,10 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .tn-closed .copy-table .tn-reason{white-space:normal;min-width:9rem}
 .tn-closed .copy-list li .ghost,.tn-closed .copy-table .ghost{margin-left:6px}
 .live-metrics .tn-split{grid-column:1/-1;margin:0;padding:9px 17px;background:#111f2d}
+.tn-summary>h4{margin:0 0 10px}
+.tn-summary .tn-metrics{margin-bottom:0}
+.tn-close-actions{display:flex;justify-content:flex-end;margin-top:8px}
+#testnetCloseResult{padding-bottom:10px}
 @media(min-width:1021px){.live-metrics.tn-metrics{grid-template-columns:repeat(5,minmax(0,1fr))}}
 .tn-scalp-details{padding:4px 2px 2px}.tn-scalp-details .copy-rules a{color:#9fc3ef}
 #liveScalpSection summary small{font-weight:400;color:var(--dim);margin-left:6px}

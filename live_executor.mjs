@@ -23,7 +23,7 @@ import {leverageForScore} from './paper.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {venueStop,venueCosts} from './venue_execution.mjs';
 import {readPositionMode,leverageSideFor,positionRow,orderOnSide,ordersOnSide,otherSideAmount} from './bingx_position_mode.mjs';
-import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight} from './live_orders.mjs';
+import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight,waitForFlat} from './live_orders.mjs';
 
 const MAX_RECORDS=300,MAX_DELETED_KEYS=500,MAX_EVENTS=40;
 /** Margin a plan ties up at the venue: the first entry plus every resting add, at the given leverage. */
@@ -427,10 +427,32 @@ export class LiveExecutor{
   return record.venue==='BINGX'?bingxOrders({symbol:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId,hedge:record.hedge===true})
    :gateOrders({contract:record.venueSymbol,direction:record.direction,stop:record.stop,targets:record.targets,qty:record.quantity,clientOrderId:record.clientOrderId});
  }
- async #cancelAdds(record,why){
+ async #cancelAdds(record,why,{verify=false}={}){
+  const client=this.clients[record.venue];
+  const bingx=record.venue==='BINGX';
+  if(verify&&bingx&&record.adds?.length){
+   const open=await client.openOrders(record.venueSymbol),orders=open?.orders??open;
+   if(!Array.isArray(orders))throw Object.assign(Error('ADD_CANCEL_UNCONFIRMED'),{code:'ADD_CANCEL_UNCONFIRMED'});
+   for(const [i,a] of record.adds.entries()){
+    const tag=record.clientOrderId+'a'+String.fromCharCode(97+i);
+    const row=orders.find(o=>String(o.clientOrderId??o.clientOrderID??'')===tag||a.orderId&&String(a.orderId)===bingxOrderId(o));
+    if(row&&bingxOrderId(row)){a.orderId=bingxOrderId(row);a.filled=false;a.cancelled=false}
+   }
+  }
   for(const a of record.adds||[]){if(!a.orderId||a.filled||a.cancelled)continue;
-   try{if(record.venue==='BINGX')await this.clients.BINGX.cancelOrder(record.venueSymbol,a.orderId);else await this.clients.GATEIO.cancelOrder(a.orderId);a.cancelled=true}
-   catch(error){this.#event(record,'ADD_CANCEL_FAILED',{orderId:a.orderId,reason:error.code||error.message})}
+   try{if(bingx)await client.cancelOrder(record.venueSymbol,a.orderId);else await client.cancelOrder(a.orderId);a.cancelled=true}
+   catch(error){
+    this.#event(record,'ADD_CANCEL_FAILED',{orderId:a.orderId,reason:error.code||error.message});
+    if(!verify)continue;
+    const data=await (bingx?client.getOrder(record.venueSymbol,{orderId:a.orderId}):client.getOrder(a.orderId)).catch(()=>null);
+    const status=String(orderOf(data)?.status??'').toUpperCase();
+    if(['FILLED','FINISHED','CANCELED','CANCELLED','EXPIRED','REJECTED'].includes(status)){a.cancelled=true;continue}
+    if(bingx){
+     const open=await client.openOrders(record.venueSymbol).catch(()=>null),orders=open?.orders??open;
+     if(Array.isArray(orders)&&!orders.some(o=>bingxOrderId(o)===String(a.orderId))){a.cancelled=true;continue}
+    }
+    throw Object.assign(Error('ADD_CANCEL_UNCONFIRMED'),{code:'ADD_CANCEL_UNCONFIRMED'});
+   }
   }
   this.#event(record,'ADDS_CANCELLED',{reason:why});
  }
@@ -521,6 +543,46 @@ export class LiveExecutor{
   }catch(error){fail('TEST_CLOSE_FAILED',error.code||error.message)}
   finally{this.busy.delete(record.symbol)}
  }
+ /** User-initiated exit for one tracked testnet signal position. Entries may be disarmed. */
+ async closeTestnetPosition(key,{sleep}={}){
+  const refuse=(error,status=409)=>({ok:false,error,status});
+  if(this.config.mode!=='TESTNET')return refuse('TESTNET_CLOSE_ONLY');
+  if(this.updating||this.paused)return refuse('UPDATING');
+  const record=this.store.records.find(r=>r.signalKey===key&&r.mode==='TESTNET'&&r.status==='OPEN'&&!r.test);
+  if(!record)return refuse('POSITION_NOT_FOUND',404);
+  const client=this.clients[record.venue];
+  if(client?.mode!=='TESTNET')return refuse('TESTNET_CLOSE_ONLY');
+  if(this.busy.has(record.symbol)||this.closing.has(key)||record.recovery==='PENDING')return refuse('SYMBOL_BUSY');
+  this.busy.add(record.symbol);
+  try{
+   if(record.venue==='BINGX'){
+    const mode=await readPositionMode(client);
+    if(!mode.ok)return refuse(mode.reason,502);
+    if(mode.hedge!==(record.hedge===true))return refuse('POSITION_MODE_CHANGED');
+   }
+   if(record.adds?.length)await this.#cancelAdds(record,'MANUAL',{verify:true});
+   const read=()=>this.#position(record,{strict:true});
+   const held=await read();
+   if(held.size>0&&held.side&&held.side!==record.direction)return refuse('POSITION_SIDE_MISMATCH');
+   let flat=held;
+   if(held.size>0){
+    const order=record.venue==='BINGX'?this.#plan(record).emergencyClose(held.size):
+     {contract:record.venueSymbol,size:record.direction==='LONG'?-held.size:held.size,price:'0',tif:'ioc',reduce_only:true};
+    let failure;
+    try{await client.placeOrder(order)}catch(error){failure=error}
+    flat=await waitForFlat(read,sleep);
+    if(!flat)return refuse('CLOSE_UNCONFIRMED',502);
+    if(!failure)record.closeReason='MANUAL';
+   }
+   if(held.otherSide>0)record.otherSideSeen=true;
+   this.#observe(record,flat);
+   let cleanupPending=false;
+   for(const id of [record.stopOrderId,...(record.targetOrderIds||[])].filter(Boolean))if(await this.#cancel(record,id)===false)cleanupPending=true;
+   record.status='CLOSED';record.closedAt=this.now();record.closeReason??='POSITION_FLAT';this.#event(record,'CLOSED');
+   return {ok:true,alreadyFlat:held.size===0,cleanupPending};
+  }catch(error){return refuse(error.code||'CLOSE_FAILED',502)}
+  finally{this.busy.delete(record.symbol);this.#save()}
+ }
  async reconcile(){
   // paused: the server is about to restart (update); no new venue work may start.
   if(this.reconciling||this.paused)return;this.reconciling=true;
@@ -584,6 +646,8 @@ export class LiveExecutor{
   // leave the same positions unchecked.
   const open=this.store.records.filter(r=>r.status==='OPEN'&&!this.busy.has(r.symbol)&&!this.closing.has(r.signalKey)),start=open.length?(this.roundStart=((this.roundStart||0)+1)%open.length):0;
   for(const record of [...open.slice(start),...open.slice(0,start)]){
+   if(record.status!=='OPEN'||this.busy.has(record.symbol))continue;
+   this.busy.add(record.symbol);
    try{
     const pos=await this.#position(record,{cached:true}),{size,entryPrice}=pos;
     const priorSize=record.position?.size;
@@ -648,6 +712,7 @@ export class LiveExecutor{
      if(!this.rateLimitNoted&&this.now()-this.rateLimitedSince>=5*60_000){this.rateLimitNoted=true;this.#event(record,'RECONCILE_ERROR',{reason:'HTTP_429 for 5+ min'})}
      limited=true;break}
     else this.#event(record,'RECONCILE_ERROR',{reason:error.code||error.message})}
+   finally{this.busy.delete(record.symbol)}
   }
   if(!limited){this.rateLimitedSince=null;this.rateLimitNoted=false}
   // Realized result of closed trades (read only): the venue's own settlement, else an estimate.
@@ -766,7 +831,7 @@ export class LiveExecutor{
   finally{this.busy.delete(record.symbol);this.#save()}
   return result;
  }
- async #position(record,{cached=false}={}){
+ async #position(record,{cached=false,strict=false}={}){
   const client=this.clients[record.venue];
   if(record.venue==='BINGX'){
    // The routine check reads all symbols in one call (rate limit); every other caller (orders, closes,
@@ -774,8 +839,10 @@ export class LiveExecutor{
    let list;
    if(cached){if(!this.posCache)this.posCache={at:this.now(),list:await client.positions()};list=this.posCache.list}
    else list=await client.positions(record.venueSymbol);
+   if(strict&&!Array.isArray(list))throw Object.assign(Error('POSITION_CHECK_FAILED'),{code:'POSITION_CHECK_FAILED'});
    // Hedge mode: the row of this record's own side (an opposite-side row is another position).
    const row=positionRow(list,record.venueSymbol,{hedge:record.hedge===true,direction:record.direction});
+   if(strict&&row&&given(row.positionAmt)===null)throw Object.assign(Error('POSITION_CHECK_FAILED'),{code:'POSITION_CHECK_FAILED'});
    return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
     marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit),
     // Side only when the venue states it (positionSide LONG/SHORT or a signed negative amount); an unsigned amount is not guessed.
@@ -783,7 +850,8 @@ export class LiveExecutor{
     otherSide:record.hedge===true?otherSideAmount(list,record.venueSymbol,record.direction):0};
   }
   const p=await client.position(record.venueSymbol);
-  return {size:Math.abs(Number(p?.size)||0),entryPrice:Number(p?.entry_price)||0,markPrice:posNum(p?.mark_price),unrealizedPnLUSD:p?num(p.unrealised_pnl):null,
+  if(strict&&given(p?.size)===null)throw Object.assign(Error('POSITION_CHECK_FAILED'),{code:'POSITION_CHECK_FAILED'});
+  return {size:Math.abs(Number(p?.size)||0),...(strict?{side:Number(p.size)<0?'SHORT':'LONG'}:{}),entryPrice:Number(p?.entry_price)||0,markPrice:posNum(p?.mark_price),unrealizedPnLUSD:p?num(p.unrealised_pnl):null,
    marginUSD:p?posNum(p.margin):null,realizedPnLUSD:given(p?.realised_pnl)};
  }
  async #cancel(record,id){
@@ -802,9 +870,9 @@ export class LiveExecutor{
     const exact=match&&bingxOrderId(match);
     if(exact&&exact!==String(id)){
      try{await this.clients.BINGX.cancelOrder(record.venueSymbol,exact);this.#event(record,'CANCELLED_BY_EXACT_ID',{orderId:exact});return}
-     catch(retry){this.#event(record,'CANCEL_FAILED',{orderId:exact,reason:retry.code||retry.message});return}
+     catch(retry){this.#event(record,'CANCEL_FAILED',{orderId:exact,reason:retry.code||retry.message});return false}
     }
    }
-   this.#event(record,'CANCEL_FAILED',{orderId:id,reason:error.code||error.message})}
+   this.#event(record,'CANCEL_FAILED',{orderId:id,reason:error.code||error.message});return false}
  }
 }

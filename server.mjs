@@ -2131,6 +2131,16 @@ const server=http.createServer(async(req,res)=>{
    priceOf:liveRecordPrice,balance,paperTrading:CONFIG.paperTrading})})}
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
+   if(pathname==='/api/live/testnet-close'){
+    if(body?.confirm!=='CLOSE_TESTNET')return response(res,400,{error:'CONFIRM_REQUIRED'});
+    if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATING'});
+    if(LIVE.mode==='LIVE'||LIVE.mode!=='TESTNET'&&SCALP_EXEC.mode!=='TESTNET')return response(res,409,{error:'TESTNET_CLOSE_ONLY'});
+    const executor=body.strategy==='scalp'?scalpExec:body.strategy==='signal'?live:null;
+    if(!executor||typeof body.key!=='string'||!body.key.trim()||body.key.length>256)return response(res,400,{error:'INVALID_POSITION'});
+    const {status,...result}=await executor.closeTestnetPosition(body.key);
+    if(result.ok)reportsDirty=true;
+    return response(res,status??200,result);
+   }
    if(pathname==='/api/live/testnet-budget'){
     if(LIVE.mode==='LIVE'||LIVE.mode!=='TESTNET'&&SCALP_EXEC.mode!=='TESTNET')return response(res,409,{error:'NOT_TESTNET'});
     try{if(hasTestnetBingx)await refreshTestnetBudgetBalance();const budget=testnetBudget.configure(body);reportsDirty=true;return response(res,200,{budget})}

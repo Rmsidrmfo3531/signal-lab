@@ -34,9 +34,16 @@
       </section>
       <section id="live" class="panel paper-panel live-screen" data-workspace-route="live">
         <div id="liveControl" class="live-control" aria-labelledby="liveHeading">
-          <div class="panel-header live-head"><h3 id="liveHeading" class="sr-only">실매매 상태</h3><div id="liveModeBadge" class="live-mode-inline" role="status" aria-live="polite"><span class="live-flag">상태 확인 중</span></div><div class="scan-toolbar"><small id="liveUpdated" class="live-updated">조회 중</small><button type="button" class="outline-btn" id="liveRefresh">↻ 갱신</button></div></div>
-          <div id="liveStatus" class="venues-status kv-list live-status-full" role="status" aria-live="polite">실매매 상태 확인 중</div>
-          <details class="venues-details live-rules-fold"><summary>규칙 보기 <small>전략 · 위험 한도 · 수량 · 동시 포지션</small></summary><div id="liveRules" class="venues-status kv-list live-status-full"></div></details>
+          <h3 id="liveHeading" class="sr-only">실매매 상태</h3>
+          <section class="paper-section tn-summary" id="testnetSummarySection" aria-labelledby="testnetPnlHeading" hidden>
+            <h4 id="testnetPnlHeading">테스트넷 손익 요약</h4>
+            <div class="paper-metrics live-metrics tn-metrics" id="testnetSummary"></div>
+          </section>
+          <div id="liveModeDetails" hidden>
+            <div class="panel-header live-head"><div id="liveModeBadge" class="live-mode-inline" role="status" aria-live="polite"></div><div class="scan-toolbar"><small id="liveUpdated" class="live-updated"></small><button type="button" class="outline-btn" id="liveRefresh">↻ 갱신</button></div></div>
+            <div id="liveStatus" class="venues-status kv-list live-status-full" role="status" aria-live="polite"></div>
+            <details class="venues-details live-rules-fold"><summary>규칙 보기 <small>전략 · 위험 한도 · 수량 · 동시 포지션</small></summary><div id="liveRules" class="venues-status kv-list live-status-full"></div></details>
+          </div>
           <div class="live-actions"><button type="button" class="outline-btn" id="liveArm">활성화</button><button type="button" class="outline-btn" id="liveDisarm">비활성화</button><button type="button" class="outline-btn danger-btn live-kill" id="liveKill">긴급 정지</button><button type="button" class="outline-btn" id="liveResetKill">긴급 정지 해제</button><button type="button" class="outline-btn" id="liveTest" hidden title="테스트넷에서만: DOGE 소액 롱을 실제 신호와 같은 순서로 주문하고 5초 뒤 청산">테스트넷 시험 주문</button></div>
           <div id="testnetBudget" class="copy-mode tn-budget" role="status" aria-live="polite" hidden></div>
           <details id="testnetBudgetEdit" class="venues-details tn-budget-edit" hidden>
@@ -53,9 +60,9 @@
           <div id="liveTestResult" class="venues-status kv-list live-test-result" role="status" hidden></div>
           <p id="livePaperNote" class="section-note" hidden><strong>자동 모의매매도 켜져 있습니다</strong> (<code>PAPER_TRADING=on</code>). 모의 기록은 화면에 표시하지 않으며 <a href="/api/paper/export" download>CSV로 내려받을</a> 수 있습니다.</p>
           <div id="liveReadiness" class="readiness" hidden></div>
-          <div class="paper-section"><h4>보유 중 <small id="livePositionCount">—</small></h4><div id="livePositions" class="paper-grid live-grid"><p class="empty-small">실매매 상태를 불러오는 중입니다.</p></div></div>
+          <div class="paper-section"><h4>보유 중 <small id="livePositionCount">—</small></h4><p id="testnetCloseResult" class="live-line" role="status" hidden></p><div id="livePositions" class="paper-grid live-grid"><p class="empty-small">실매매 상태를 불러오는 중입니다.</p></div></div>
           <div class="paper-section" id="liveCopySection" hidden><h4>카피 매매 <small id="liveCopyNote">텔레그램 채널 따라가기 · 위 스위치를 따름 · 별도 원장</small></h4><div id="liveCopy"></div></div>
-          <div class="paper-section"><h4 id="testnetPnlHeading" hidden>테스트넷 손익 요약</h4><div class="paper-metrics live-metrics" id="liveSummary"></div><h4>종료된 거래 <small>시험 주문 제외</small></h4><div id="liveClosed" class="paper-grid live-grid live-closed-list"><p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p></div></div>
+          <div class="paper-section"><div class="paper-metrics live-metrics" id="liveSummary" hidden></div><h4>종료된 거래 <small>시험 주문 제외</small></h4><div id="liveClosed" class="paper-grid live-grid live-closed-list"><p class="empty-small">아직 종료된 실매매 거래가 없습니다.</p></div></div>
           <div class="paper-section" id="liveScalpPanel" hidden><h4>되돌림 단타 (테스트넷) <small>5분봉 급락 후 반등 롱 · 급등 후 되돌림 숏 · BingX 테스트넷 전용 · 별도 원장</small></h4><div id="liveScalpOwn"></div></div>
           <details class="venues-details" id="liveScalpSection" hidden><summary>단타 신호·건너뜀 <small>유형·방향별 결과 · 규칙 · 건너뛴 이유</small></summary><div id="liveScalp" class="tn-scalp-details"></div></details>
           <details class="venues-details"><summary>최근 진입 제외 사유</summary><ul id="liveSkipped" class="live-skipped"><li>없음</li></ul></details>

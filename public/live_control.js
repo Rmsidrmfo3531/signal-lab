@@ -1,5 +1,5 @@
 // 실매매 (live / testnet) screen. Calls only this server's /api/live endpoints; no keys are ever
-// sent or shown here. Orders change only on an explicit click (activate, kill, stop/TP edit).
+// sent or shown here. Order actions require an explicit user action.
 import {priceFmt} from './price_format.js';
 import {displaySymbol} from './symbol_display.js';
 import {createRealTradeController} from './real_trade.js';
@@ -78,7 +78,11 @@ function positionMetricsHTML(p){
   <span>실현 손익<b class="${p.realizedOpen?pnlClass(p.realizedOpen.usd):''}">${p.realizedOpen?usd(p.realizedOpen.usd):'—'}</b><small>${p.realizedOpen?'부분 익절·수수료 포함':'거래소 값 없음'}</small></span>
   <span>추매<b>${esc(p.adds?.filled??0)}차 / ${p.adds?.repeat?'한도 내 반복':`최대 ${esc(p.adds?.max??0)}차`}</b>${p.adds?.skipped?`<small>주문 못 낸 추매 ${esc(p.adds.skipped)}건</small>`:''}</span>`;
 }
-export function positionCardHTML(p,{badge=''}={}){
+function testnetCloseButton(strategy,key,p){
+ const busy=testnetCloseBusy.has(strategy+'|'+key);
+ return `<div class="tn-close-actions"><button type="button" class="outline-btn small danger-btn" data-testnet-close="${esc(key)}" data-strategy="${strategy}" data-symbol="${esc(p.symbol)}" data-direction="${esc(p.direction)}"${busy?' disabled':''}>${busy?'청산 확인 중…':'전량 청산'}</button></div>`;
+}
+export function positionCardHTML(p,{badge='',allowClose=false}={}){
  const pf=priceFmt(p),pending=p.adds?.pending||[];
  const addsLine=pending.length?`<span class="add-chips">${pending.map(a=>`<span class="add-chip"><i>${a.n}차</i>${pf(a.price)}<small>${qtyFmt(a.qty)}</small></span>`).join('')}</span>`:'없음';
  const ev=p.lastEvent?`${esc(p.lastEvent.label)}${p.lastEvent.reason?' · '+esc(p.lastEvent.reasonKo||p.lastEvent.reason):''} · ${time(p.lastEvent.at)}`:'—';
@@ -93,6 +97,7 @@ export function positionCardHTML(p,{badge=''}={}){
  <p class="live-line"><span>최근 처리</span>${ev}</p>
  ${p.status==='UNKNOWN'?'<p class="live-line live-warn-text">주문 결과를 확인하지 못했습니다. 거래소 앱에서 포지션·주문을 직접 확인한 뒤 긴급 정지를 해제하세요.</p>':''}
  ${levelsEditor(p)}
+ ${allowClose&&p.status==='OPEN'&&p.mode==='TESTNET'&&p.test!==true&&p.signalKey?testnetCloseButton('signal',p.signalKey,p):''}
 </article>`;
 }
 
@@ -666,7 +671,7 @@ export function scalpScanStatusHTML(s,{now=Date.now()}={}){
 }
 
 /** One open scalp position as a card next to the signal cards (badge 단타). */
-export function scalpPositionCardHTML(p){
+export function scalpPositionCardHTML(p,{allowClose=false}={}){
  const px=v=>fin(v)?esc(+Number(v).toPrecision(6)):'—';
  const tgt=(p.targets||[]).map((t,i)=>p.parts?.[i]>0?`<i class="tn-tp${p.tpDone?.[i]?' paper-profit':''}">${px(t)}</i>`:null).filter(Boolean).join(' · ')||'—'; // <i>: the card styles every <span> as a cell
  const details=p.details??{firstEntryPrice:p.scaleIn?.initialEntry??p.avg,averageEntryPrice:p.avg,currentPrice:p.mark,
@@ -681,7 +686,8 @@ export function scalpPositionCardHTML(p){
   <span>${p.stopLossEnabled===false?'한도 계산 위험':'위험'}<b>${tnUsd(p.riskUSD)}</b></span>
   <span>보유<b>${tnHeld(p.openedAt||p.createdAt,Date.now())}째</b>${p.stopLossEnabled===false?'':'<small>최대 2시간</small>'}</span>
  </div>${p.kind==='ZONE_REVERSAL'&&p.zone?.tf?`<p class="copy-rules tn-zone">매물대 반전 · ${esc(String(p.zone.tf).toUpperCase())} 매물대 ${px(p.zone.low)}~${px(p.zone.high)}${fin(p.zone.sharePct)?` · 거래량 ${esc(Number(p.zone.sharePct).toFixed(1))}% · ${esc(p.zone.rank)}위`:''}${fin(p.zone.distPct)&&p.zone.distPct>0?` · ${esc(Number(p.zone.distPct).toFixed(2))}% 거리`:''}</p>`:''}
-</article>`;
+ ${allowClose&&p.status==='OPEN'&&p.size>0&&p.id?testnetCloseButton('scalp',p.id,p):''}
+ </article>`;
 }
 
 /** Signal closes (liveClosedView rows) and scalp closes in one list, newest first. */
@@ -722,11 +728,11 @@ export function testnetSummaryHTML(st,{scalpOnly=false,open=[]}={}){
  const unrealized=priced.length?priced.reduce((total,p)=>total+Number(p.usd),0):open.length?null:0;
  const coverage=priced.length<open.length?`확인 ${priced.length}/${open.length}건`:`보유 ${open.length}건`;
  const profitSource=priced.some(p=>p.source==='ESTIMATE')?' · 추정 포함':'';
- return `<div><span>거래</span><strong>${esc(a.trades??0)}건</strong><small>${esc(a.wins??0)}승 ${esc((a.trades??0)-(a.wins??0))}패</small></div>
+ return `<div><span>누적 실현 손익 (수수료 반영)</span><strong class="${tnCls(a.netUSD)}">${a.trades?tnMoney(a.netUSD):'—'}</strong></div>
+ <div><span>미실현 손익 합계</span><strong class="${tnCls(unrealized)}">${unrealized===0?'$0.00':tnMoney(unrealized)}</strong><small>${coverage}${profitSource}</small></div>
+ <div><span>거래</span><strong>${esc(a.trades??0)}건</strong><small>${esc(a.wins??0)}승 ${esc((a.trades??0)-(a.wins??0))}패</small></div>
  <div><span>승률</span><strong>${fin(a.winRatePct)?Number(a.winRatePct).toFixed(1)+'%':'—'}</strong></div>
  <div><span>PF</span><strong>${fin(a.profitFactor)?Number(a.profitFactor).toFixed(2):a.trades?'∞':'—'}</strong></div>
- <div><span>누적 실현 손익 (수수료 반영)</span><strong class="${tnCls(a.netUSD)}">${a.trades?tnMoney(a.netUSD):'—'}</strong></div>
- <div><span>미실현 손익 합계</span><strong class="${tnCls(unrealized)}">${unrealized===0?'$0.00':tnMoney(unrealized)}</strong><small>${coverage}${profitSource}</small></div>
  ${scalpOnly?'':`<p class="copy-split tn-split">신호 <b class="${tnCls(s.netUSD)}">${tnMoney(s.netUSD??0)}</b> (${esc(s.trades??0)}건) · 단타 <b class="${tnCls(c.netUSD)}">${tnMoney(c.netUSD??0)}</b> (${esc(c.trades??0)}건)</p>`}`;
 }
 
@@ -816,7 +822,7 @@ export function readinessHTML(r,positions){
 }
 
 let copyActionBusy=false,liveActionBusy=false,liveTestBusy=false;
-const liveLevelsBusy=new Set(),liveDeleteBusy=new Set();
+const liveLevelsBusy=new Set(),liveDeleteBusy=new Set(),testnetCloseBusy=new Set();
 
 function bindCopyButtons(el){
  if(!el||el.dataset.bound)return;el.dataset.bound='1';
@@ -944,6 +950,7 @@ function renderTestnetBudget(el,t){
 }
 function render(o){
  const $=id=>document.getElementById(id),m=modeInfo(o.mode),tn=o.testnet||null,scalpOnly=tn?.scalpOnly===true;
+ if($('liveModeDetails'))$('liveModeDetails').hidden=Boolean(tn);
  if($('liveReadiness')){$('liveReadiness').hidden=scalpOnly||!o.readiness;$('liveReadiness').innerHTML=scalpOnly?'':readinessHTML(o.readiness,(o.positions||[]).map(p=>({symbol:p.symbol,direction:p.direction,unrealizedUSD:p.unrealized?.usd??null})))}
  for(const [id,text] of [['liveHeading',m.title],['navLiveLabel',o.mode==='LIVE'?'실매매':scalpOnly?'테스트넷 단타':'테스트넷']])if($(id))$(id).textContent=text;
  if($('navLiveMode'))$('navLiveMode').textContent=m.badge;
@@ -976,24 +983,22 @@ function render(o){
   // Keep an open stop/TP editor (and what was typed) across the periodic refresh.
   const drafts=new Map();box.querySelectorAll('[data-live-levels-key]').forEach(d=>{if(d.open){const v={};d.querySelectorAll('input').forEach(i=>{v[i.name]=i.value});drafts.set(d.dataset.liveLevelsKey,v)}});
   // Testnet: the signal strategy's cards (badge 신호, stop/TP editor) and the scalp's (badge 단타) in one list.
-  const scalpOpen=tn?(o.scalp?.positions||[]):[],signalCards=(o.positions||[]).map(p=>positionCardHTML(p,tn?{badge:scalpOnly?'<span class="vp-badge">기존 신호</span>':TN_BADGE.signal}:{}));
-  const scalpCards=scalpOpen.map(scalpPositionCardHTML),cards=scalpOnly?[...scalpCards,...signalCards]:[...signalCards,...scalpCards];
+  const scalpOpen=tn?(o.scalp?.positions||[]):[],signalCards=(o.positions||[]).map(p=>positionCardHTML(p,tn?{badge:scalpOnly?'<span class="vp-badge">기존 신호</span>':TN_BADGE.signal,allowClose:true}:{}));
+  const scalpCards=scalpOpen.map(p=>scalpPositionCardHTML(p,{allowClose:true})),cards=scalpOnly?[...scalpCards,...signalCards]:[...signalCards,...scalpCards];
   box.innerHTML=cards.length?cards.join(''):`<p class="empty-small">${o.mode==='OFF'&&!tn?.scalp?'실매매가 꺼져 있습니다.':on||some?`보유 중인 포지션이 없습니다. ${scalpOnly?'단타':'신호·단타'} 진입을 기다리는 중입니다.`:'보유 중인 포지션이 없습니다. “활성화”를 눌러야 주문이 나갑니다.'}</p>`;
   box.querySelectorAll('[data-live-levels-key]').forEach(d=>{const v=drafts.get(d.dataset.liveLevelsKey);if(!v)return;d.open=true;d.querySelectorAll('input').forEach(i=>{if(!i.disabled&&v[i.name]!==undefined)i.value=v[i.name]})});
  }
  const nSig=o.positions?.length||0,nSc=tn?(o.scalp?.positions||[]).length:0;
  if($('livePositionCount'))$('livePositionCount').textContent=tn?(scalpOnly?`단타 ${nSc}개${nSig?` · 기존 신호 ${nSig}개`:''}`:`${nSig+nSc}개 · 신호 ${nSig} · 단타 ${nSc}`):`${nSig}개`;
- const pnlSummary=$('liveSummary');
- if(pnlSummary){
-  pnlSummary.classList.toggle('tn-metrics',Boolean(tn));
-  if(tn){
-   const signal=(o.positions||[]).filter(p=>p.mode==='TESTNET'&&p.test!==true&&(p.status==='OPEN'||p.quantity?.source==='EXCHANGE'));
-   const scalp=(o.scalp?.positions||[]).filter(p=>p.size>0);
-   const open=[...signal.map(p=>p.unrealized),...scalp.map(p=>p.details?p.details.unrealized:fin(p.unrealized)?{usd:p.unrealized,source:'ESTIMATE'}:null)];
-   pnlSummary.innerHTML=testnetSummaryHTML(tn.stats,{scalpOnly,open});
-  }else pnlSummary.innerHTML=summaryHTML(o.summary);
+ const pnlSummary=$('liveSummary'),testnetSummary=$('testnetSummary'),testnetSummarySection=$('testnetSummarySection');
+ if(pnlSummary){pnlSummary.hidden=Boolean(tn);if(!tn)pnlSummary.innerHTML=summaryHTML(o.summary)}
+ if(testnetSummarySection)testnetSummarySection.hidden=!tn;
+ if(tn&&testnetSummary){
+  const signal=(o.positions||[]).filter(p=>p.mode==='TESTNET'&&p.test!==true&&(p.status==='OPEN'||p.quantity?.source==='EXCHANGE'));
+  const scalp=(o.scalp?.positions||[]).filter(p=>p.size>0);
+  const open=[...signal.map(p=>p.unrealized),...scalp.map(p=>p.details?p.details.unrealized:fin(p.unrealized)?{usd:p.unrealized,source:'ESTIMATE'}:null)];
+  testnetSummary.innerHTML=testnetSummaryHTML(tn.stats,{scalpOnly,open});
  }
- if($('testnetPnlHeading'))$('testnetPnlHeading').hidden=!tn;
  // Real-money copy has its own page (실계좌); the testnet page keeps only testnet copies.
  const copy=o.copy,real=copy?.mode==='LIVE';
  for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));
@@ -1033,6 +1038,31 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
   return loadPending;
  };
  const setLiveButtonsBusy=busy=>{for(const id of ['liveArm','liveDisarm','liveKill','liveResetKill']){const b=$(id);if(b)b.disabled=busy}};
+ $('livePositions')?.addEventListener('click',async e=>{
+  const button=e.target.closest?.('[data-testnet-close]');
+  if(!button)return;
+  const {testnetClose:key,strategy,symbol,direction}=button.dataset,id=strategy+'|'+key;
+  if(testnetCloseBusy.has(id))return;
+  const position=`${symbol} ${direction==='SHORT'?'숏':'롱'}`;
+  if(!confirm(`테스트넷 ${position} 포지션을 시장가로 전량 청산할까요?`))return;
+  const message=$('testnetCloseResult');
+  const tell=(text,error=false)=>{if(message){message.hidden=false;message.classList.toggle('live-warn-text',error);message.textContent=text}};
+  testnetCloseBusy.add(id);button.disabled=true;button.textContent='청산 확인 중…';tell(position+' 청산 확인 중…');
+  try{
+   const r=await fetch('/api/live/testnet-close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy,key,confirm:'CLOSE_TESTNET'})});
+   const result=await r.json().catch(()=>({}));
+   if(!r.ok||result.ok!==true)throw Error(result.error||'CLOSE_UNCONFIRMED');
+   tell(position+(result.alreadyFlat?' 이미 청산됨':' 전량 청산 완료')+(result.cleanupPending?' · 남은 주문 취소 확인 필요':''),result.cleanupPending);
+  }catch(error){
+   const reason={SYMBOL_BUSY:'주문 처리 중입니다. 잠시 후 다시 시도하세요',POSITION_NOT_FOUND:'이미 종료된 포지션입니다',
+    ADD_CANCEL_UNCONFIRMED:'대기 추매 주문의 취소를 확인하지 못했습니다',CLOSE_UNCONFIRMED:'거래소 잔량이 0인지 확인하지 못했습니다',
+    POSITION_MODE_CHANGED:'거래소 포지션 모드가 변경됐습니다',POSITION_SIDE_MISMATCH:'거래소 포지션 방향이 달라졌습니다'}[error.message];
+   tell(`${position} · ${reason||'청산 결과 확인 필요 ('+error.message+')'}`,true);
+  }finally{
+   testnetCloseBusy.delete(id);button.disabled=false;button.textContent='전량 청산';
+   await load().catch(()=>{});
+  }
+ });
  const post=async(path,body,{lockLive=true}={})=>{
   if(lockLive){if(liveActionBusy)return;liveActionBusy=true;setLiveButtonsBusy(true)}
   try{
