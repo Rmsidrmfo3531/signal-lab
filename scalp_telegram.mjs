@@ -13,6 +13,7 @@ export const SCALP_REASON_KO=Object.freeze({SIDE_OFF:'꺼 둔 방향의 신호 (
  SCALP_TESTNET_ONLY:'테스트넷 전용',KILL_SWITCH:'긴급 정지 중',KILL_SWITCH_ON:'긴급 정지 중',UPDATING:'업데이트 중',DAILY_LOSS_LIMIT:'하루 손실 한도 도달',UNRESOLVED_ORDER_STATE:'확인 안 된 주문이 있음',RATE_LIMIT_COOLDOWN:'요청 과다로 잠시 쉼',
  FALLING_KNIFE:'강한 역방향 장대봉 진행 중 (반전 대기)',MAX_ADDS_REACHED:'최대 추매 횟수 도달',
  BTC_DUMP_GUARD:'BTC 급락 연동 방어 (알트 롱 일시 보류)',BTC_PUMP_GUARD:'BTC 급등 연동 방어 (알트 숏 일시 보류)',
+ SCORE_BELOW_MINIMUM:'신호 점수 미달 (100점 기준 진입 보류)',
  // Close reasons
  STOP:'손절',BREAKEVEN_STOP:'1차 목표 뒤 본전 손절',ALL_TARGETS:'목표 모두 도달',TIME_STOP:'2시간 보유 시간 만료',MAX_HOLD_EXIT:'최대 보유시간 컷 (손실 장기화 차단)',EMERGENCY_ROE_STOP:'비상 손절 (-ROE 한도)',EARLY_TAKE_PROFIT:'조기 익절',EXTERNAL:'외부 청산',NO_STOP:'보호 손절 실패로 긴급 청산',MANUAL:'수동',NO_PROTECTIVE_STOP:'보호 손절 실패'});
 export const scalpReasonKo=r=>SCALP_REASON_KO[r]||r||'';
@@ -30,7 +31,10 @@ export function scalpEventText(e){
  const head=`${SCALP_LABEL} ${e.symbol||''}`.trim();
  if(e.type==='ARMED')return `${SCALP_LABEL} 활성화 — 5분봉 급락 후 반등 롱·급등 후 되돌림 숏을 테스트넷에서 주문합니다.`;
  if(e.type==='DISARMED')return ['DAILY_LOSS_LIMIT','NO_PROTECTIVE_STOP'].includes(e.reason)?null:`${SCALP_LABEL} 비활성화`;
- if(e.type==='OPENED')return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배`;
+ if(e.type==='OPENED'){
+  const scorePart=Number.isFinite(Number(e.score))?` · 점수 ${e.score}점(${e.grade||''}급${Number(e.sizeMult)>1?` · 비중 ${e.sizeMult}x`:''})`:'';
+  return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}`;
+ }
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
  if(e.type==='SCALE_IN_FILLED'&&e.qty>0){
   const avgLine=Number(e.prevAvg)>0&&Number(e.avg)>0?`\n평단 ${fmt(e.prevAvg)} → ${fmt(e.avg)}${Number(e.avgImprovePct)>0?` (${Number(e.avgImprovePct).toFixed(2)}% 개선)`:''}`:'';

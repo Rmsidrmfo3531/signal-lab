@@ -174,3 +174,76 @@ export function fourHourTrend(rows,now=Date.now()){
 }
 /** 180-day backtest: fading the 4H trend lost most; no rebound LONG in a downtrend, no fade SHORT in an uptrend. */
 export function trendAllows(direction,trend){return trend!==null&&!(direction==='LONG'&&trend==='down')&&!(direction==='SHORT'&&trend==='up')}
+
+/**
+ * Data-calibrated 100-point scalp setup scoring (40-coin BingX 5m empirical Train/OOS backtest, pure 5-point increments).
+ * Weights sum strictly to 100:
+ *   movePct (25) + trend4h (20) + btcTrend4h (15) + moveAtr (15) + retracedPct (10)
+ *   + climaxVolume (5) + netRR (5) + rsiExtreme (5) = 100.
+ */
+export const SCALP_SCORE_DEFAULTS=Object.freeze({
+ minScore:65,      // B-grade entry floor (<65 blocked as negative EV in Train & OOS)
+ highScore:70,     // A/S-grade size boost threshold
+ topScore:80,      // S-grade display threshold
+ highSizeMult:1.25 // Risk sizing multiplier for A/S-grade setups
+});
+export const SCALP_SCORE_WEIGHTS=Object.freeze({
+ movePct:25,
+ trend4h:20,
+ btcTrend4h:15,
+ moveAtr:15,
+ retracedPct:10,
+ climaxVolume:5,
+ netRR:5,
+ rsiExtreme:5
+});
+
+function trendRelation(direction,trend){
+ if(trend!=='up'&&trend!=='down')return 'range';
+ return trendAllows(direction,trend)?'aligned':'against';
+}
+
+export function scoreScalpSetup({direction='LONG',evidence={},trend4h=null,btcTrend4h=null,netRR=null,config={}}={}){
+ const dir=direction==='SHORT'?'SHORT':'LONG';
+ const minScore=Number.isFinite(Number(config.minScore))?Number(config.minScore):SCALP_SCORE_DEFAULTS.minScore;
+ const highScore=Number.isFinite(Number(config.highScore))?Number(config.highScore):SCALP_SCORE_DEFAULTS.highScore;
+ const topScore=Number.isFinite(Number(config.topScore))?Number(config.topScore):SCALP_SCORE_DEFAULTS.topScore;
+ const highSizeMult=Number.isFinite(Number(config.highScoreSizeMult??config.highSizeMult))&&Number(config.highScoreSizeMult??config.highSizeMult)>=1
+  ?Number(config.highScoreSizeMult??config.highSizeMult):SCALP_SCORE_DEFAULTS.highSizeMult;
+
+ const movePctVal=Number(evidence?.movePct);
+ const moveAtrVal=Number(evidence?.moveAtr);
+ const retracedVal=Number(evidence?.retracedPct);
+ const volVal=Number(evidence?.climaxVolumeRatio);
+ const rsiVal=Number(evidence?.rsiPeak);
+ const rrVal=Number(netRR);
+
+ // 1. Move % Size (25 pts) — strongest monotonic predictor across Train & OOS
+ const movePct=Number.isFinite(movePctVal)?(movePctVal>=5.0?25:movePctVal>=3.5?15:movePctVal>=2.5?5:0):0;
+ // 2. Coin 4H Trend (20 pts)
+ const coinRel=trendRelation(dir,trend4h);
+ const trend4hPts=coinRel==='aligned'?20:coinRel==='range'?10:0;
+ // 3. BTC 4H Trend (15 pts)
+ const btcRel=trendRelation(dir,btcTrend4h);
+ const btcTrend4hPts=btcRel==='aligned'?15:btcRel==='range'?10:0;
+ // 4. Move ATR Sweet Spot (15 pts) — 3.0~4.5x healthy mean reversion; >=6.0x news/liquidation blowoffs score 0
+ const moveAtr=Number.isFinite(moveAtrVal)?(moveAtrVal>=3.0&&moveAtrVal<4.5?15:moveAtrVal>=4.5&&moveAtrVal<6.0?10:0):0;
+ // 5. Retraced Before Entry (10 pts) — confirmed bounce 15~30% beats catching falling knives (<=10%)
+ const retracedPct=Number.isFinite(retracedVal)?(retracedVal>=15&&retracedVal<=30?10:retracedVal>10&&retracedVal<15?5:0):0;
+ // 6. Climax Volume (5 pts)
+ const climaxVolume=Number.isFinite(volVal)&&volVal>=5.0?5:0;
+ // 7. TP1 Net RR (5 pts)
+ const netRRPts=Number.isFinite(rrVal)&&rrVal>=1.2?5:0;
+ // 8. RSI Extreme (5 pts)
+ const rsiExtreme=Number.isFinite(rsiVal)&&(dir==='LONG'?rsiVal<=22:rsiVal>=78)?5:0;
+
+ const breakdown={movePct,trend4h:trend4hPts,btcTrend4h:btcTrend4hPts,moveAtr,retracedPct,climaxVolume,netRR:netRRPts,rsiExtreme};
+ const score=movePct+trend4hPts+btcTrend4hPts+moveAtr+retracedPct+climaxVolume+netRRPts+rsiExtreme;
+ const grade=score>=topScore?'S':score>=highScore?'A':score>=Math.max(1,minScore)?'B':score>=50?'C':'D';
+ const pass=minScore<=0||score>=minScore;
+ const sizeMult=pass?(score>=highScore?highSizeMult:1):0;
+ const shortBreakdown=`급변${movePct}·4H${trend4hPts}·BTC${btcTrend4hPts}·ATR${moveAtr}·반등${retracedPct}·거래량${climaxVolume}·RR${netRRPts}·RSI${rsiExtreme}`;
+ const summary=`${score}점(${grade}급) · ${shortBreakdown}`;
+ return {score,maxScore:100,grade,pass,minScore,highScore,sizeMult,breakdown,shortBreakdown,summary};
+}
+

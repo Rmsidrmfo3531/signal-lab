@@ -75,7 +75,7 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fi
   fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(Math.abs(amt));o.avgPrice=String(price??o.stopPrice);reduce(Number(o.executedQty))}};
 }
 function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash,budget=null,zone=null}={}){
- return new ScalpExecutor({config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
+ return new ScalpExecutor({config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,minScore:0,highScoreSizeMult:1,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
   candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
   balance:async()=>typeof funds==='function'?funds():funds,gate,isBusy,directory:dir,now:()=>clock.t,budget,...(zone?{zoneCandles:zone}:{})});
 }
@@ -913,7 +913,7 @@ const Z1_FAR=blocks([[60,119,121,1],[60,130,131,5]],DAY0,D1);
 const small=()=>crash({move:4,wick:.3}),PX_Z=+(Number(small().at(-1)[4])+.02).toFixed(2);
 function zoneFeed(h4=Z4_TOUCH,d1=Z1_FAR){const calls=[];const fn=async(s,iv,limit)=>{calls.push({iv,limit});const r=iv==='4h'?h4:iv==='1d'?d1:null;
  if(r instanceof Error)throw r;return typeof r==='function'?r():r};fn.calls=calls;return fn}
-const zoneMake=(v,opt={})=>make(v,{rows:small,price:PX_Z,...opt,config:{...scalpExecConfig({SCALP_MIN_MOVE_PCT:'5'}),stopLossEnabled:true,scaleIn:false,...opt.config},zone:opt.zone??zoneFeed()});
+const zoneMake=(v,opt={})=>make(v,{rows:small,price:PX_Z,...opt,config:{...scalpExecConfig({SCALP_MIN_MOVE_PCT:'5'}),stopLossEnabled:true,scaleIn:false,minScore:0,highScoreSizeMult:1,...opt.config},zone:opt.zone??zoneFeed()});
 
 test('매물대 반전: a 2.5 %+ reversal whose low touched a 4H zone enters as ZONE_REVERSAL; the same signal off a zone is skipped',async()=>{
  // With the 3.5 % default minMovePct, a ~4.35 % drop enters directly as MOVE_REVERSAL without needing a zone read.
