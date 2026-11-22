@@ -113,7 +113,7 @@ test('testnet budget settings are saved and both caps follow the latest BingX te
   const getBudget=async()=>(await app.get('/api/live/testnet-budget')).budget;
   const before=await getBudget();assert.equal(before.accountEquityUSD,1000);assert.equal(before.balanceAsset,'VST');assert.equal(before.limitUSD,150);assert.equal(before.marginCapUSD,300);
   const overview=await app.get('/api/live/overview');assert.equal(overview.balance.usd,overview.testnet.budget.accountEquityUSD);assert.equal(overview.balance.at,overview.testnet.budget.balanceAt);
-  const bad=await edit({dailyLossPct:12.5,marginCapPct:31});assert.equal(bad[0],400);
+  const bad=await edit({dailyLossPct:12.5,marginCapPct:101});assert.equal(bad[0],400);
   const [status,saved]=await edit({dailyLossPct:12.5,marginCapPct:25});assert.equal(status,200);
   assert.deepEqual([saved.budget.limitUSD,saved.budget.marginCapUSD],[125,250]);
   await app.write({fakeBingxTestnetBalances:balances('1600')});

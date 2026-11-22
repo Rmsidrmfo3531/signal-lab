@@ -1,6 +1,6 @@
 import http from 'node:http';
 import {exec,execFile} from 'node:child_process';
-import {gitUpdateAvailable,gitCheck,gitApply,checkTree,displayVersionOf} from './git_update.mjs';
+import {gitUpdateAvailable,gitCheck,gitApply,checkTree,displayVersionOf,checkPostUpdateNotice} from './git_update.mjs';
 import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
@@ -634,18 +634,25 @@ async function sendRealTradeTelegram(e){
 // armed by itself; any other restart (reboot, crash) also starts disarmed.
 {
  const marker=path.join(storage.dir,'rearm-after-update.json');
+ let updateMarker=null;
+ const restored=[];
  try{
   const m=JSON.parse(fs.readFileSync(marker,'utf8'));fs.rmSync(marker,{force:true});
+  updateMarker=m;
   const fresh=Date.now()-Number(m?.at)<15*60000&&!live.store.killSwitch;
-  if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY){live.arm();console.log('[LIVE] 업데이트 후 자동 활성화 (테스트넷)')}
+  if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY){live.arm();restored.push('신호 전략 ●');console.log('[LIVE] 업데이트 후 자동 활성화 (테스트넷)')}
   // Copy, real account included (user 2026-11-16 "실계좌도 알아서 켜주고"): only after the one-tap update,
   // only if it was on when the update started, same mode, copy enabled, its loss limit not hit.
   if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){
-   copyTrader.arm();console.log(`[COPY] 업데이트 후 자동 활성화 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`);
+   copyTrader.arm();restored.push(`${COPY.mode==='LIVE'?'실계좌':'테스트넷'} 카피 ●`);console.log(`[COPY] 업데이트 후 자동 활성화 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`);
    if(copyTrader.store.deferredEntries.length)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{}).then(()=>copyTrader.replayDeferred()).catch(e=>console.warn('[COPY REPLAY]',e.message))},2000).unref?.();
   }
-  if(fresh&&m.scalpArmed===true){try{scalpExec.arm();console.log('[SCALP] 업데이트 후 자동 활성화 (테스트넷)')}catch(e){console.warn('[SCALP] 복원 안 함:',e.message)}}
+  if(fresh&&m.scalpArmed===true){try{scalpExec.arm();restored.push('테스트넷 단타 ●');console.log('[SCALP] 업데이트 후 자동 활성화 (테스트넷)')}catch(e){console.warn('[SCALP] 복원 안 함:',e.message)}}
  }catch{}
+ try{
+  const postUpdateMsg=checkPostUpdateNotice({dir:storage.dir,appVersion,marker:updateMarker,restored});
+  if(postUpdateMsg)setTimeout(()=>{updateNotice(postUpdateMsg)},3000).unref?.();
+ }catch(e){console.warn('[UPDATE NOTICE]',e.message)}
 }
 // Shared real-account position operator (used by Telegram /close+#confirm and dashboard one-click actions).
 async function executeRealPositionAction({symbol,direction=null,action}={}){
@@ -977,9 +984,8 @@ async function runGitUpdate(source='button'){
   // was before (the guards at start-up still apply: kill switch, loss limit, mode, 15 min). Written just
   // before the restart, so a crash or manual restart before that finds no marker (review 2026-11-16).
   const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY,copyArmed:COPY.enabled===true,scalpArmed:!!scalpExec};
-   if(st.signalArmed||st.copyArmed||st.scalpArmed)try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to,source}))}catch{}};
+   try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to,fromDisplayVersion:result.fromDisplayVersion||appVersion.displayVersion,toDisplayVersion:result.toDisplayVersion||null,changes:(result.changes||[]).slice(0,8).map(c=>c.subject),source}))}catch{}};
   console.log('[UPDATE]',source,result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
-  if(source==='auto')updateNotice(`🔄 자동 업데이트 적용 ${result.fromDisplayVersion||appVersion.displayVersion} → ${result.toDisplayVersion||'새 버전'}\n${(result.changes||[]).slice(0,8).map(c=>'· '+c.subject).join('\n')}\n잠시 뒤 서버가 재시작되고 카피·신호 전략·단타가 자동으로 다시 켜집니다.`);
   (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
    // Paused only once idle; if never idle in 10 minutes the restart waits for the next try.
    if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;updateJob={...updateJob,active:false};pendingRestart={writeMarker,from:result.from,to:result.to};if(wasArmed)live.arm();try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();

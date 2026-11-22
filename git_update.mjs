@@ -60,3 +60,67 @@ export async function checkTree(root,{nodeCheck,onFile=()=>{}}){
  }
  return files.length;
 }
+
+export const LAST_VERSION_FILE='last-notified-version.json';
+
+/** Format a concise Korean Telegram confirmation after the new version boots cleanly. */
+export function formatUpdateCompletedNotice({version=null,displayVersion=null,fromDisplayVersion=null,to=null,source=null,changes=[],restored=[]}={}){
+ const cur=displayVersion||(version?`v${version}`:'새 버전');
+ const verTag=version&&displayVersion&&!String(displayVersion).includes(version)?`v${version} (${displayVersion})`:cur;
+ const kind=source==='manual'?'수동 업데이트 완료':source==='auto'?'자동 업데이트 완료':'버전 업데이트 완료';
+ const lines=[`✅ [Signal Lab ${kind}] ${verTag}`];
+ if(fromDisplayVersion&&fromDisplayVersion!==cur){
+  lines.push(`버전: ${fromDisplayVersion} → ${cur}${to?` (${to})`:''}`);
+ }else if(to){
+  lines.push(`커밋: ${to}`);
+ }
+ const list=(Array.isArray(changes)?changes:[]).map(c=>typeof c==='string'?c:c?.subject).filter(Boolean).slice(0,8);
+ if(list.length){
+  lines.push('변경 내역:');
+  for(const item of list)lines.push(`· ${item}`);
+ }
+ if(Array.isArray(restored)&&restored.length){
+  lines.push(`자동 복원: ${restored.join(' · ')}`);
+ }else{
+  lines.push('새 버전으로 서버가 정상 시작되었습니다.');
+ }
+ return lines.join('\n');
+}
+
+/** Detect whether this boot is a newly updated version (via rearm marker or persisted version change) and update the marker file. */
+export function checkPostUpdateNotice({dir,appVersion,marker=null,restored=[],now=Date.now()}={}){
+ if(!dir||!appVersion)return null;
+ const file=path.join(dir,LAST_VERSION_FILE);
+ let prev=null;
+ try{if(fs.existsSync(file))prev=JSON.parse(fs.readFileSync(file,'utf8'))}catch{}
+ const curVer=appVersion.version??null;
+ const curDisp=appVersion.displayVersion??null;
+ try{
+  fs.mkdirSync(dir,{recursive:true});
+  fs.writeFileSync(file,JSON.stringify({version:curVer,displayVersion:curDisp,at:now}));
+ }catch{}
+ if(marker&&Number.isFinite(Number(marker.at))&&now-Number(marker.at)<30*60000){
+  return formatUpdateCompletedNotice({
+   version:curVer,
+   displayVersion:curDisp||marker.toDisplayVersion||null,
+   fromDisplayVersion:marker.fromDisplayVersion||prev?.displayVersion||null,
+   to:marker.to||null,
+   source:marker.source||null,
+   changes:marker.changes||[],
+   restored,
+  });
+ }
+ const prevId=prev?displayVersionOf(prev):null;
+ const curId=displayVersionOf(appVersion);
+ if(prev&&((curId&&prevId&&prevId!==curId)||(curVer&&prev.version&&prev.version!==curVer))){
+  return formatUpdateCompletedNotice({
+   version:curVer,
+   displayVersion:curDisp,
+   fromDisplayVersion:prevId||prev.version||null,
+   source:'restart',
+   restored,
+  });
+ }
+ return null;
+}
+

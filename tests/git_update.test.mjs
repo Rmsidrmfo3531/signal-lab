@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {gitUpdateAvailable,gitCheck,gitApply} from '../git_update.mjs';
+import {gitUpdateAvailable,gitCheck,gitApply,formatUpdateCompletedNotice,checkPostUpdateNotice,LAST_VERSION_FILE} from '../git_update.mjs';
 
 // A fake git: HEAD / origin/main shas and a log; records every call.
 function fakeGit({head='aaa1111',origin='bbb2222',log='bbb2222 Fix stop order\nccc3333 New screen',
@@ -74,3 +74,64 @@ test('link check finds a missing named export without running the module',async(
  assert.match(run(path.join(dir,'a.mjs')),/FAIL LINK_FAIL .*nope/);
  assert.match(run(new URL('../server.mjs',import.meta.url).pathname),/LINK_OK/);
 });
+
+test('formatUpdateCompletedNotice formats auto, manual, and restart version notices cleanly',()=>{
+ const autoMsg=formatUpdateCompletedNotice({
+  version:'5.8.0',
+  displayVersion:'2026-11-22 23:25 KST',
+  fromDisplayVersion:'2026-11-22 23:16 KST',
+  to:'abc1234',
+  source:'auto',
+  changes:['텔레그램 업데이트 완료 알림 추가','테스트넷 자금 한도 100% 상향'],
+  restored:['실계좌 카피 ●','테스트넷 단타 ●'],
+ });
+ assert.match(autoMsg,/✅ \[Signal Lab 자동 업데이트 완료\] v5\.8\.0 \(2026-11-22 23:25 KST\)/);
+ assert.match(autoMsg,/버전: 2026-11-22 23:16 KST → 2026-11-22 23:25 KST \(abc1234\)/);
+ assert.match(autoMsg,/· 텔레그램 업데이트 완료 알림 추가/);
+ assert.match(autoMsg,/자동 복원: 실계좌 카피 ● · 테스트넷 단타 ●/);
+
+ const manualMsg=formatUpdateCompletedNotice({
+  version:'5.8.0',
+  displayVersion:'2026-11-22 23:25 KST',
+  source:'manual',
+ });
+ assert.match(manualMsg,/✅ \[Signal Lab 수동 업데이트 완료\]/);
+ assert.match(manualMsg,/새 버전으로 서버가 정상 시작되었습니다\./);
+});
+
+test('checkPostUpdateNotice stays silent on fresh boot and same-version restart, notifies on update marker or version change',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'up-notice-'));
+ const v1={version:'5.8.0',displayVersion:'2026-11-22 23:16 KST'};
+ const v2={version:'5.8.0',displayVersion:'2026-11-22 23:25 KST'};
+ const v3={version:'5.8.0',displayVersion:'2026-11-22 23:40 KST'};
+ const t0=1795350000000;
+
+ // 1) Fresh install / clean sandbox -> silent, records current version
+ assert.equal(checkPostUpdateNotice({dir,appVersion:v1,now:t0}),null);
+ assert.ok(fs.existsSync(path.join(dir,LAST_VERSION_FILE)));
+
+ // 2) Same-version restart -> silent
+ assert.equal(checkPostUpdateNotice({dir,appVersion:v1,now:t0+60000}),null);
+
+ // 3) External restart with new version (e.g. Windows supervisor or manual git pull) -> notifies once
+ const restartNotice=checkPostUpdateNotice({dir,appVersion:v2,now:t0+120000});
+ assert.ok(restartNotice);
+ assert.match(restartNotice,/✅ \[Signal Lab 버전 업데이트 완료\] v5\.8\.0 \(2026-11-22 23:25 KST\)/);
+ assert.match(restartNotice,/버전: 2026-11-22 23:16 KST → 2026-11-22 23:25 KST/);
+ assert.equal(checkPostUpdateNotice({dir,appVersion:v2,now:t0+180000}),null,'does not repeat on next restart');
+
+ // 4) One-tap / auto update with fresh rearm marker -> includes source, commit list, and restored services
+ const markerNotice=checkPostUpdateNotice({
+  dir,
+  appVersion:v3,
+  marker:{at:t0+230000,from:'aaa1111',to:'bbb2222',fromDisplayVersion:v2.displayVersion,toDisplayVersion:v3.displayVersion,source:'manual',changes:['UI 개선']},
+  restored:['신호 전략 ●','테스트넷 단타 ●'],
+  now:t0+240000,
+ });
+ assert.ok(markerNotice);
+ assert.match(markerNotice,/✅ \[Signal Lab 수동 업데이트 완료\] v5\.8\.0 \(2026-11-22 23:40 KST\)/);
+ assert.match(markerNotice,/버전: 2026-11-22 23:25 KST → 2026-11-22 23:40 KST \(bbb2222\)/);
+ assert.match(markerNotice,/· UI 개선/);
+ assert.match(markerNotice,/자동 복원: 신호 전략 ● · 테스트넷 단타 ●/);
+});
+
