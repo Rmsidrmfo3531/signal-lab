@@ -716,12 +716,17 @@ export function testnetClosedHTML(o){
  return `<ul class="copy-list only-mob">${shown.map(li).join('')}</ul>${scrollCopyTable(table,'테스트넷 종료 거래')}${pager}`;
 }
 /** Totals over both strategies (server testnetStats) and the 신호 / 단타 breakdown line. */
-export function testnetSummaryHTML(st,{scalpOnly=false}={}){
+export function testnetSummaryHTML(st,{scalpOnly=false,open=[]}={}){
  const a=st?.all||{},s=st?.signal||{},c=st?.scalp||{};
+ const priced=open.filter(p=>fin(p?.usd));
+ const unrealized=priced.length?priced.reduce((total,p)=>total+Number(p.usd),0):open.length?null:0;
+ const coverage=priced.length<open.length?`확인 ${priced.length}/${open.length}건`:`보유 ${open.length}건`;
+ const profitSource=priced.some(p=>p.source==='ESTIMATE')?' · 추정 포함':'';
  return `<div><span>거래</span><strong>${esc(a.trades??0)}건</strong><small>${esc(a.wins??0)}승 ${esc((a.trades??0)-(a.wins??0))}패</small></div>
  <div><span>승률</span><strong>${fin(a.winRatePct)?Number(a.winRatePct).toFixed(1)+'%':'—'}</strong></div>
  <div><span>PF</span><strong>${fin(a.profitFactor)?Number(a.profitFactor).toFixed(2):a.trades?'∞':'—'}</strong></div>
- <div><span>누적 손익 (수수료 반영)</span><strong class="${tnCls(a.netUSD)}">${a.trades?tnMoney(a.netUSD):'—'}</strong></div>
+ <div><span>누적 실현 손익 (수수료 반영)</span><strong class="${tnCls(a.netUSD)}">${a.trades?tnMoney(a.netUSD):'—'}</strong></div>
+ <div><span>미실현 손익 합계</span><strong class="${tnCls(unrealized)}">${unrealized===0?'$0.00':tnMoney(unrealized)}</strong><small>${coverage}${profitSource}</small></div>
  ${scalpOnly?'':`<p class="copy-split tn-split">신호 <b class="${tnCls(s.netUSD)}">${tnMoney(s.netUSD??0)}</b> (${esc(s.trades??0)}건) · 단타 <b class="${tnCls(c.netUSD)}">${tnMoney(c.netUSD??0)}</b> (${esc(c.trades??0)}건)</p>`}`;
 }
 
@@ -978,7 +983,17 @@ function render(o){
  }
  const nSig=o.positions?.length||0,nSc=tn?(o.scalp?.positions||[]).length:0;
  if($('livePositionCount'))$('livePositionCount').textContent=tn?(scalpOnly?`단타 ${nSc}개${nSig?` · 기존 신호 ${nSig}개`:''}`:`${nSig+nSc}개 · 신호 ${nSig} · 단타 ${nSc}`):`${nSig}개`;
- if($('liveSummary'))$('liveSummary').innerHTML=tn?testnetSummaryHTML(tn.stats,{scalpOnly}):summaryHTML(o.summary);
+ const pnlSummary=$('liveSummary');
+ if(pnlSummary){
+  pnlSummary.classList.toggle('tn-metrics',Boolean(tn));
+  if(tn){
+   const signal=(o.positions||[]).filter(p=>p.mode==='TESTNET'&&p.test!==true&&(p.status==='OPEN'||p.quantity?.source==='EXCHANGE'));
+   const scalp=(o.scalp?.positions||[]).filter(p=>p.size>0);
+   const open=[...signal.map(p=>p.unrealized),...scalp.map(p=>p.details?p.details.unrealized:fin(p.unrealized)?{usd:p.unrealized,source:'ESTIMATE'}:null)];
+   pnlSummary.innerHTML=testnetSummaryHTML(tn.stats,{scalpOnly,open});
+  }else pnlSummary.innerHTML=summaryHTML(o.summary);
+ }
+ if($('testnetPnlHeading'))$('testnetPnlHeading').hidden=!tn;
  // Real-money copy has its own page (실계좌); the testnet page keeps only testnet copies.
  const copy=o.copy,real=copy?.mode==='LIVE';
  for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));

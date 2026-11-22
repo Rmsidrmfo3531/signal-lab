@@ -500,6 +500,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .tn-closed .copy-table .tn-reason{white-space:normal;min-width:9rem}
 .tn-closed .copy-list li .ghost,.tn-closed .copy-table .ghost{margin-left:6px}
 .live-metrics .tn-split{grid-column:1/-1;margin:0;padding:9px 17px;background:#111f2d}
+@media(min-width:1021px){.live-metrics.tn-metrics{grid-template-columns:repeat(5,minmax(0,1fr))}}
 .tn-scalp-details{padding:4px 2px 2px}.tn-scalp-details .copy-rules a{color:#9fc3ef}
 #liveScalpSection summary small{font-weight:400;color:var(--dim);margin-left:6px}
 @media(max-width:690px){.tn-budget{margin:10px 14px 0}.live-metrics .tn-split{padding:9px 12px}#liveScalpSection summary small{display:block;margin:2px 0 0}}

@@ -826,6 +826,7 @@ export class ScalpExecutor{
   const entry=pos(p.scaleIn?.initialEntry)??pos(p.avg)??p.entry;
   return Math.max(Number(p.tickSize),Math.abs(entry-p.initialStop)*SCALP_REPEAT_SCALE_IN.stepR);
  }
+ #repeatTrigger(p){return p.scaleIn.anchor-dirOf(p.direction)*this.#repeatDistance(p)}
  #repeatRisk(p,entry,mark){
   const dir=dirOf(p.direction),worst=(pos(mark)??entry)-dir*this.#repeatDistance(p);
   const reference=dir>0?Math.max(Number(p.tickSize),Math.min(p.initialStop,worst)):Math.max(p.initialStop,worst);
@@ -835,7 +836,7 @@ export class ScalpExecutor{
   const a=p.scaleIn,dir=dirOf(p.direction),bucket=Math.floor(this.now()/I5),step=Number(p.quantityStep);
   if(!this.config.scaleIn||a?.state!=='WATCH'||this.#blocked()||!mark||bucket<=Math.floor(p.openedAt/I5)||a.checkedBucket===bucket)return;
   if(Math.abs(p.size-p.filled)>step/2||p.everReduced){this.#addDecision(p,'SKIPPED','POSITION_CHANGED');return}
-  const trigger=a.anchor-dir*this.#repeatDistance(p);
+  const trigger=this.#repeatTrigger(p);
   if(!(trigger>0)||dir*(mark-trigger)>1e-12)return;
   a.checkedBucket=bucket;
   const revision=this.entryRevision,vs=p.venueSymbol,hedge=p.hedge===true;
@@ -1460,6 +1461,18 @@ export class ScalpExecutor{
    ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0,earlyFallbackMin:PROFIT_ONLY_EARLY_EXIT_MIN,minProfitRoePct:c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT,minMovePct:c.settings?.minMovePct??null}:{}),
    stopRetirementPending:this.store.open.filter(p=>p.stopRetirementError).length,
    openAdds:this.store.open.reduce((n,p)=>n+(p.scaleIn?.count||0),0),
+    ...(c.scaleIn&&!c.stopLossEnabled?{
+     availableMarginUSD:this.funds?.available??null,
+     maxPositionMarginPct:c.maxMarginPct,
+     scaleInPositions:this.store.open.map(p=>{
+      const a=p.scaleIn,position=p.exchangePosition;
+      return {symbol:p.symbol,direction:p.direction,status:p.status,
+       state:a?.state??null,reason:short(a?.reason),lastReason:short(a?.lastReason),checkedBucket:a?.checkedBucket??null,
+       mark:pos(position?.markPrice),positionCheckedAt:position?.at??null,trigger:a?.version===SCALP_REPEAT_SCALE_IN.version?pos(this.#repeatTrigger(p)):null,
+       size:pos(p.size),filled:pos(p.filled),partialExit:p.everReduced===true,exitPending:Boolean(p.earlyTakeProfit||p.exitReason==='EARLY_TAKE_PROFIT'),
+       stopRetirementPending:Boolean(p.stopRetirementError)};
+     }),
+    }:{}),
    universeCount:this.universe.length,universeRefreshedAt:this.universeAt||null,
    lastScan:ls?{at:ls.at??null,bucket:ls.bucket??null,checked:ls.checked??0,failed:ls.failed??0,
     lastFailure:short(ls.lastFailure),rateLimited:ls.rateLimited??0,signals:ls.signals??0,

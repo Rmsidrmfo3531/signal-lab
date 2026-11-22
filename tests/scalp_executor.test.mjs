@@ -363,6 +363,11 @@ test('unprotected testnet scalps use the current holding for each adverse add on
   assert.equal(afterFirstSize,first*2);
   await moves(afterFirst-sign*(dist+.06));assert.equal(a.count,1,'at most one attempt in a candle');
   clock.t+=I;await moves(afterFirst-sign*(dist-.03));assert.equal(a.count,1,'a new adverse level must be reached');
+  const [watch]=ex.runtimeSummary().scaleInPositions;
+  assert.equal(watch.state,'WATCH');assert.equal(watch.mark,price);assert.equal(watch.positionCheckedAt,clock.t);
+  assert.ok(Math.abs(watch.trigger-(afterFirst-sign*dist))<1e-9);
+  assert.equal(watch.partialExit,false);
+  assert.doesNotMatch(JSON.stringify(watch),/clientOrderId|orderId/);
   await moves(afterFirst-sign*(dist+.03));assert.equal(a.count,2);
   const adds=placed(v,'LIMIT');assert.equal(new Set(adds.map(o=>o.clientOrderId)).size,2);
   assert.equal(a.orders[1].qty,afterFirstSize);
@@ -373,6 +378,7 @@ test('unprotected testnet scalps use the current holding for each adverse add on
   clock.t=p.deadline+I;await moves(a.anchor);assert.equal(ex.store.open.length,1,'adverse position survives expiry');
   const firstTarget=active.find(o=>o.stopPrice===active[0].stopPrice);v.fill(firstTarget);
   clock.t+=I;await moves(a.anchor-sign*(dist+.03));assert.equal(a.count,2,'reducing a position ends the add cycle');
+  assert.equal(ex.runtimeSummary().scaleInPositions[0].partialExit,true);
   assert.equal(placed(v,'STOP_MARKET').length,0);assert.equal(placed(v,'MARKET').length,1);
   for(const target of active.filter(o=>o.status==='NEW'))v.fill(target);
   await ex.reconcile();await ex.reconcile();
