@@ -75,6 +75,8 @@ export const SCALP_TRAIL_RUNNER_MIN_PULLBACK_ROE=2.0;
 export const SCALP_STALE_ROTATE_HOURS=24;
 export const SCALP_STALE_ROTATE_MIN_ADDS=3;
 export const SCALP_STALE_ROTATE_ROE_PCT=2.5;
+export const SCALP_BTC_GUARD_5M_PCT=1.5;
+export const SCALP_BTC_GUARD_15M_PCT=2.5;
 const REVERSAL_RECHECK_MS=30*60000;
 const WYCKOFF_SCAN_BUDGET_MS=12_000;
 const RECHECK_REASONS=new Set(['PRICE_DRIFT','TP1_NET_RR_BELOW_MINIMUM']);
@@ -612,12 +614,38 @@ export class ScalpExecutor{
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
   finally{this.reserved.delete(u.symbol);this.reservedRisk.delete(u.symbol)}
  }
- /** The cheap entry checks: 4H trend (cached per 4H candle), position cap, one per symbol, another strategy's coin.
+ /** BTC 5m/15m shock check (cached once per 5m bucket) to avoid catching simultaneous altcoin knives during BTC dumps/pumps. */
+ async #btcShock(bucket){
+  if(this.btcShockCache?.b===bucket)return this.btcShockCache.v;
+  if(!this.universe.some(x=>x.symbol==='BTCUSDT')||typeof this.candles!=='function')return null;
+  const rows=await withTimeout(this.candles('BTCUSDT','5m',5),2500);
+  const closed=(Array.isArray(rows)?rows:[]).filter(r=>Number(r?.[6])<this.now());
+  const last=closed.at(-1);
+  if(!last)return null;
+  const o1=Number(last[1]),c1=Number(last[4]);
+  const pct5m=o1>0&&c1>0?(c1/o1-1)*100:0;
+  const bar3=closed.length>=3?closed.at(-3):null;
+  const o3=Number(bar3?.[1]);
+  const pct15m=o3>0&&c1>0?(c1/o3-1)*100:0;
+  const v={pct5m:+pct5m.toFixed(2),pct15m:+pct15m.toFixed(2)};
+  this.btcShockCache={b:bucket,v};
+  return v;
+ }
+ /** The cheap entry checks: 4H trend (cached per 4H candle), BTC shock guard, position cap, one per symbol, another strategy's coin.
   * A skip result, or null. Used by #consider and, before any zone read, by #zoneCheck. */
  async #precheck(u,det){
   const skip=reason=>detail=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null||trend==='range'?null:trendAllows(det.direction,trend)}
    if(this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND')(trend)}
+  if(u.symbol!=='BTCUSDT'&&this.config.btcGuard!==false){
+   const shock=await this.#btcShock(Math.floor(this.now()/I5));
+   if(shock){
+    if(det.direction==='LONG'&&(shock.pct5m<=-SCALP_BTC_GUARD_5M_PCT||shock.pct15m<=-SCALP_BTC_GUARD_15M_PCT))
+     return skip('BTC_DUMP_GUARD')(`BTC 5m ${shock.pct5m}% · 15m ${shock.pct15m}%`);
+    if(det.direction==='SHORT'&&(shock.pct5m>=SCALP_BTC_GUARD_5M_PCT||shock.pct15m>=SCALP_BTC_GUARD_15M_PCT))
+     return skip('BTC_PUMP_GUARD')(`BTC 5m +${shock.pct5m}% · 15m +${shock.pct15m}%`);
+   }
+  }
   if(this.config.maxOpen>0&&this.store.open.length+this.reserved.size>=this.config.maxOpen)return skip('MAX_OPEN_POSITIONS')();
   if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD')();
   let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
@@ -1444,10 +1472,47 @@ export class ScalpExecutor{
    }
   }else{
    const fallbackElapsed=now-opened>=PROFIT_ONLY_EARLY_EXIT_MIN*60000;
-   const recoveryMode=bookedLoss>0||fallbackElapsed;
-   const minNetRoePct=profitOnly&&!recoveryMode?(this.config.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):0;
-   limit=profitLimit(p,bookedLoss/qty,{minNetRoePct});
-   if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+   const minRoe=this.config.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT;
+   if(profitOnly&&minRoe>0&&(p.scaleInPartialTaken||(!fallbackElapsed&&!(bookedLoss>0)))){
+    const fee=Math.max(p.takerRate||0,SCALP_EXEC_COSTS.takerRate);
+    const reserve=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/10000+SCALP_EXEC_COSTS.fundingRate;
+    const lev=Math.max(1,Number(p.leverage)||10);
+    const grossMove=direction*(mark-p.avg)/p.avg;
+    const lossMove=bookedLoss>0?bookedLoss/(qty*p.avg):0;
+    const netRoePct=(grossMove-2*fee-reserve-lossMove)*lev*100;
+    if(netRoePct>=minRoe){
+     const prevPeak=Number(p.trailPeakRoePct);
+     if(!Number.isFinite(prevPeak)||netRoePct>prevPeak){p.trailPeakRoePct=+netRoePct.toFixed(2);this.#save()}
+    }
+    if(!p.scaleInPartialTaken&&netRoePct>=minRoe){
+     const minPart=pos(p.scaleIn?.minPart)??Number(p.quantityStep);
+     const minNotional=Number(p.scaleIn?.minNotional)||0;
+     const halfQty=Number(grid(qty*0.5,p.quantityStep,'DOWN'));
+     const remQty=Number(grid(qty-halfQty,p.quantityStep,'DOWN'));
+     if(halfQty>=minPart&&remQty>=minPart&&halfQty*mark>=minNotional&&remQty*mark>=minNotional){
+      limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
+      if(Number(limit)>0&&direction*(mark-Number(limit))>=0){orderQty=halfQty;partial=true}
+     }
+    }
+    if(!partial){
+     if(p.scaleInPartialTaken){
+      const peak=Number(p.trailPeakRoePct);
+      const pullback=Math.max(SCALP_TRAIL_RUNNER_MIN_PULLBACK_ROE,peak*SCALP_TRAIL_PULLBACK_RATIO);
+      const trailStopRoe=Math.max(minRoe,peak-pullback);
+      if(netRoePct>trailStopRoe)return false;
+      limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
+      if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+     }else{
+      limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:minRoe});
+      if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+     }
+    }
+   }else{
+    const recoveryMode=bookedLoss>0||fallbackElapsed;
+    const minNetRoePct=profitOnly&&!recoveryMode?minRoe:0;
+    limit=profitLimit(p,bookedLoss/qty,{minNetRoePct});
+    if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+   }
   }
   const clientOrderId=createHash('sha256').update(`${p.id}|early|${partial?'p':'f'}|${now}`).digest('hex').slice(0,32);
   p.earlyTakeProfit={clientOrderId,qty:orderQty,partial};p.earlyTakeProfitAt=now;this.#save();
