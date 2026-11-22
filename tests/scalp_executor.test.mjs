@@ -1243,7 +1243,7 @@ test('repeat scale-in IOC handles thin-book partial fills, 101429 auto-downsize,
  }
 });
 
-test('scaled-in positions enforce +5% Net ROE floor and trail rebounds from peak instead of breakeven exit',async()=>{
+test('scaled-in positions lock in 50% at +6% Net ROE and trail remaining 50% runner with 30% peak pullback',async()=>{
  const v=venue(),clock={t:T0};
  let price=PX;
  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
@@ -1253,32 +1253,99 @@ test('scaled-in positions enforce +5% Net ROE floor and trail rebounds from peak
  clock.t+=I;price=+(p.scaleIn.anchor-rDist-.2).toFixed(2);v.mark=price;
  await ex.reconcile();
  assert.equal(p.scaleIn.count,1);
- const avg=p.avg;
- // Wait past 15m (old logic dumped at +0.2% breakeven); +0.35% move (~+1.9% net ROE at 10x) MUST HOLD
+ assert.equal(ex.runtimeSummary().scaleInPositions[0].trailPeakRoePct,null,'null stays null in runtimeSummary');
+ const avg=p.avg,fullSize=p.size;
+ // Wait past 15m: +0.35% move (~+1.9% net ROE) MUST HOLD
  clock.t=p.openedAt+20*60000;
  v.mark=+(avg*1.0035).toFixed(2);
  await ex.reconcile();
  assert.equal(ex.store.open.length,1,'scaled-in position does not exit at +1.9% ROE');
  assert.equal(p.trailPeakRoePct,null);
- // Rebound to +1.0% move (~+8.4% net ROE): arms trailing and keeps holding (new peak!)
+ // Rebound to +1.0% move (~+8.4% net ROE >= +6%): locks in 50% profit immediately and keeps 50% runner open!
  clock.t+=5000;v.mark=+(avg*1.010).toFixed(2);
  await ex.reconcile();
- assert.equal(ex.store.open.length,1,'trailing holds while making new peak');
+ assert.equal(ex.store.open.length,1,'50% runner stays open after partial lock-in');
+ assert.equal(p.scaleInPartialTaken,true);
+ assert.ok(Math.abs(v.size-fullSize*0.5)<0.05,'half position closed to lock profit');
  assert.ok(p.trailPeakRoePct>=8,'peak ROE tracked');
- // Continues climbing to +1.6% move (~+14.4% net ROE): raises peak and keeps riding!
+ assert.equal(ex.runtimeSummary().scaleInPositions[0].partialProfitTaken,true);
+ // Runner keeps climbing to +1.6% move (~+14.4% net ROE): raises peak and keeps riding!
  clock.t+=5000;v.mark=+(avg*1.016).toFixed(2);
  await ex.reconcile();
- assert.equal(ex.store.open.length,1,'keeps riding higher rebound');
+ assert.equal(ex.store.open.length,1,'runner rides higher rebound');
  assert.ok(p.trailPeakRoePct>=14);
- // Pulls back 25%+ from peak (~+14.4% -> +10.2% net ROE, <= ~10.8% trail stop): exits cleanly via IOC!
- clock.t+=5000;v.mark=+(avg*1.0118).toFixed(2);
+ // Pulls back 30%+ from peak (~+14.4% -> +9.4% net ROE <= ~10.1% runner trail stop): exits remaining 50% cleanly!
+ clock.t+=5000;v.mark=+(avg*1.0110).toFixed(2);
  await ex.reconcile();
- assert.equal(v.size,0,'trailing stop locked in ~+10% ROE on pullback from +14% peak');
+ assert.equal(v.size,0,'runner closed on 30% pullback from peak');
  clock.t+=5000;await ex.reconcile();clock.t+=5000;await ex.reconcile();
  assert.equal(ex.store.open.length,0);
  assert.equal(ex.store.closed[0].closeReason,'EARLY_TAKE_PROFIT');
  const marginUSD=avg*p.filled/(p.leverage||10);
- assert.ok(ex.store.closed[0].netUSD/marginUSD>=0.08,`expected >= +8% net ROE captured, got ${(ex.store.closed[0].netUSD/marginUSD*100).toFixed(2)}%`);
+ assert.ok(ex.store.closed[0].netUSD/marginUSD>=0.075,`expected >= +7.5% blended net ROE captured, got ${(ex.store.closed[0].netUSD/marginUSD*100).toFixed(2)}%`);
 });
+
+test('profit-max suite: 4H against-trend 50% sizing, 24h+3-add rotation, <5% dust cleanup, and NOT_FILLED slippage escalation',async()=>{
+ // 1) 4H against-trend entry uses 50% size compared to with-trend when trendMode==='record'
+ {
+  const vWith=venue(),vAgainst=venue();
+  const exWith=make(vWith,{trend:up4h,config:{trendMode:'record',stopLossEnabled:false}});
+  const exAgainst=make(vAgainst,{trend:down4h,config:{trendMode:'record',stopLossEnabled:false}});
+  exWith.arm();exAgainst.arm();
+  assert.equal((await exWith.scan()).entered,1);
+  assert.equal((await exAgainst.scan()).entered,1);
+  const qWith=exWith.store.open[0].filled,qAgainst=exAgainst.store.open[0].filled;
+  assert.ok(Math.abs(qAgainst/qWith-0.5)<0.05,`expected ~50% size against 4H trend, got ${(qAgainst/qWith*100).toFixed(1)}%`);
+ }
+
+ // 2) Stale rotation: >=24h held & >=3 adds exits at >= +2.5% Net ROE instead of waiting for +5%
+ {
+  const v=venue(),clock={t:T0};
+  const ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  p.scaleIn.count=3;
+  // At 23h, +3.0% Net ROE (~+0.46% move) still holds (under 24h)
+  clock.t=p.openedAt+23*3600000;v.mark=+(p.avg*1.0046).toFixed(2);
+  await ex.reconcile();
+  assert.ok(v.size>0,'holds before 24h');
+  // At 24h, +3.0% Net ROE (>= +2.5%) rotates capital out immediately!
+  clock.t=p.openedAt+24*3600000;v.mark=+(p.avg*1.0046).toFixed(2);
+  await ex.reconcile();
+  assert.equal(v.size,0,'rotated out at >=24h + 3 adds + >=2.5% ROE');
+ }
+
+ // 3) Dust auto-cleanup: <5% of initialQty remaining closes immediately once breakeven+fees clears
+ {
+  const v=venue(),clock={t:T0};
+  const ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],dust=+(p.initialQty*0.02).toFixed(2);
+  v.size=dust;p.size=dust;p.everReduced=true;
+  // Just 10s after open (way before 15m), +0.3% move clears fees -> dust auto-cleaned!
+  clock.t=p.openedAt+10000;v.mark=+(p.avg*1.003).toFixed(2);
+  await ex.reconcile();
+  assert.equal(v.size,0,'dust remainder (<5%) auto-cleaned once profitable');
+ }
+
+ // 4) NOT_FILLED slippage escalation: widens IOC limit cushion from 0.35% to 0.80% on retry
+ {
+  const v=venue({fillAdd:false}),clock={t:T0};
+  let price=PX;
+  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],rDist=Math.abs(p.scaleIn.initialEntry-p.initialStop);
+  // Deeply past trigger (-2.5R) so triggerCap doesn't clip either 0.35% or 0.80% cushion
+  clock.t+=I;price=+(p.scaleIn.anchor-rDist*2.5).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(p.scaleIn.lastReason,'NOT_FILLED');
+  const firstLimit=Number(placed(v,'LIMIT')[0].price);
+  clock.t+=I;
+  await ex.reconcile();
+  const secondLimit=Number(placed(v,'LIMIT')[1].price);
+  assert.ok(secondLimit>firstLimit,`expected escalated retry slippage limit (${secondLimit}) > initial (${firstLimit})`);
+ }
+});
+
 
 
