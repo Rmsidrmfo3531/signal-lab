@@ -128,6 +128,17 @@ test('calendar and curve appear on the real-account copy page',async()=>{
  const html=m.copyHTML({...base,daily});
  assert.match(html,/<div class="copy-side">[\s\S]*copy-stats[\s\S]*class="pnl-cal"[\s\S]*data-pnl-chart[\s\S]*copy-rules[\s\S]*<\/div><div class="copy-main">/);
  assert.match(html,/\+\$4\.56/);
+ assert.match(html,/누적 손익 \(거래소\)<b class="paper-profit"[^>]*>\+\$4\.56/);
+ // When a hedge copy leg is unsettled (QUANTITY_MISMATCH) while opposite manual loss (-$355) is confirmed,
+ // the headline 누적 손익 still reflects BingX's true exchange total (-$48.15) and notes 1 unsettled record.
+ const skewed=m.copyHTML({
+  ...base,
+  closed:[{symbol:'ETHUSDT',direction:'LONG',openedAt:now-7200000,closedAt:now-3600000,netUSD:null,netSource:'UNKNOWN',settlement:{state:'QUANTITY_MISMATCH',checkedAt:now}}],
+  manual:{closed:[{origin:'manual',symbol:'ETHUSDT',direction:'SHORT',openedAt:now-7200000,closedAt:now-3700000,netUSD:-355.15,netSource:'EXCHANGE_FILLS'}]},
+  daily:{at:now,since:now-40*86400000,byDay:{'2026-11-20':27.26,'2026-11-21':-65.86,'2026-11-22':-9.55},error:null},
+ });
+ assert.match(skewed,/누적 손익 \(거래소\)<b class="paper-loss"[^>]*>−\$48\.15/);
+ assert.match(skewed,/원장 미확정 1건 제외/);
  assert.doesNotMatch(m.copyHTML({...base,daily:undefined}),/pnl-cal/);
  assert.doesNotMatch(m.copyHTML({...base,mode:'TESTNET',daily}),/pnl-cal/);
 });
