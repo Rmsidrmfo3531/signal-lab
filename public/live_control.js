@@ -758,9 +758,9 @@ export function scalpSimResultHTML(d){
 
 /** The scalp's own details, collapsed under "단타 신호·건너뜀": rules, 롱 / 숏 totals, last scan, skip reasons, journal. */
 function scalpExitRule(S){
- const protection=S.stopLossEnabled===false?`자동 손절·시간 만료 청산 없음${S.repeatedScaleIn?' · 현재 보유 수량까지 반복 추매(가용 증거금·한도 내, 5분봉당 최대 1회, 첫 청산 전까지)':''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유`;
+ const protection=S.stopLossEnabled===false?`자동 손절·시간 만료 청산 없음${S.repeatedScaleIn?' · 점진 확대 추매(1R→2R→3.5R→5R · 1x/1x/1.5x/2x · 최대 4회 · IOC 0.35% · 추매 후 +5% ROE 트레일링 익절)':''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유`;
  const roe=Number(S.minProfitRoePct),fallbackMin=S.earlyTakeProfitMin??15;
- return protection+(S.profitHoldTargetMin?(roe>0?` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 5초 주기 점검으로 수수료 제외 순수익률(ROE) +${esc(roe)}% 이상 즉시 익절 · ${esc(fallbackMin)}분 경과·추매 시 예상 비용 충당 익절`:` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 조기 전량 익절은 진입 ${esc(fallbackMin)}분부터 · 예상 비용을 넘기는 가격에서 지정가 청산`):
+ return protection+(S.profitHoldTargetMin?(roe>0?` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 5초 주기 점검으로 수수료 제외 순수익률(ROE) +${esc(roe)}% 이상 즉시 익절 · 추매 포지션은 +5% ROE 이상 고점 대비 트레일링 · 비추매 ${esc(fallbackMin)}분 경과 시 비용 충당 익절`:` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 조기 전량 익절은 진입 ${esc(fallbackMin)}분부터 · 예상 비용을 넘기는 가격에서 지정가 청산`):
   S.earlyTakeProfitMin?` · ${esc(S.earlyTakeProfitMin)}분 경과 후 예상 비용을 충당하는 가격에 지정가 익절`:'');
 }
 

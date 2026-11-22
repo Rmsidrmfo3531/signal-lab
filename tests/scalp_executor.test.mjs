@@ -24,7 +24,7 @@ const ENTRY=Number(crash().at(-1)[4]),PX=+(ENTRY+.02).toFixed(2),ENTRY_S=Number(
 const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
 
 // One-way BingX fake: amt is the signed position (+ long, - short), as positionAmt.
-function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fillAdd=true,loseAddReply=false,loseEarlyReply=false}={}){
+function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fillAdd=true,partialAddRatio=1,loseAddReply=false,loseEarlyReply=false}={}){
  const calls=[],orders=new Map();let amt=0,avg=0,mark=0,id=1;
  const reduce=q=>{amt=amt>0?+Math.max(0,amt-q).toFixed(8):+Math.min(0,amt+q).toFixed(8)};
  const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
@@ -46,11 +46,22 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fi
     return {order:o};
    }
    if(p.type==='LIMIT'&&p.timeInForce==='IOC'){
-    const q=Number(p.quantity),canFill=p.side==='SELL'?mark>=Number(p.price):mark<=Number(p.price);
-    if(!canFill)return {order:add(p,{status:'EXPIRED',executedQty:'0'})};
-    reduce(q);
-    const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark)});
-    if(loseEarlyReply)throw Object.assign(Error('response lost'),{code:'NETWORK_UNREACHABLE'});
+    if(p.reduceOnly){
+     const q=Number(p.quantity),canFill=p.side==='SELL'?mark>=Number(p.price):mark<=Number(p.price);
+     if(!canFill)return {order:add(p,{status:'EXPIRED',executedQty:'0'})};
+     reduce(q);
+     const o=add(p,{status:'FILLED',executedQty:String(q),avgPrice:String(mark)});
+     if(loseEarlyReply)throw Object.assign(Error('response lost'),{code:'NETWORK_UNREACHABLE'});
+     return {order:o};
+    }
+    if(!fillAdd)return {order:add(p,{status:'EXPIRED',executedQty:'0'})};
+    const rawQ=Number(p.quantity),q=+(rawQ*partialAddRatio).toFixed(2),fillPx=mark||Number(p.price);
+    const canFill=p.side==='BUY'?Number(p.price)>=fillPx-1e-9:Number(p.price)<=fillPx+1e-9;
+    if(!canFill||!(q>0))return {order:add(p,{status:'EXPIRED',executedQty:'0'})};
+    avg=(avg*Math.abs(amt)+fillPx*q)/(Math.abs(amt)+q);amt=+(amt+(p.side==='SELL'?-q:q)).toFixed(8);
+    const st=q<rawQ?'CANCELED':'FILLED';
+    const o=add(p,{status:st,executedQty:String(q),avgPrice:String(fillPx)});
+    if(loseAddReply)throw Object.assign(Error('response lost'),{code:'NETWORK_UNREACHABLE'});
     return {order:o};
    }
    if(p.type==='MARKET'){const q=Number(p.quantity);
@@ -380,40 +391,46 @@ test('scale-in uses equal entry margin after a closed retest on either side, res
  }
 });
 
-test('unprotected testnet scalps use the current holding for each adverse add on both sides',async()=>{
+test('unprotected testnet scalps use progressive 1R->2R->3.5R->5R spacing and controlled 1x/1x/1.5x/2x adds on both sides',async()=>{
  for(const direction of ['LONG','SHORT']){
   const sign=direction==='LONG'?1:-1,entry=sign===1?PX:PX_S,v=venue({fillAt:entry}),clock={t:T0};
   let price=entry;
   const ex=make(v,{clock,price:()=>price,trend:sign===1?up4h:down4h,rows:sign===1?crash:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
   ex.arm();assert.equal((await ex.scan()).entered,1);
-  const p=ex.store.open[0],a=p.scaleIn,first=p.size,dist=Math.abs(a.initialEntry-p.initialStop)*.5;
+  const p=ex.store.open[0],a=p.scaleIn,first=p.size,rDist=Math.abs(a.initialEntry-p.initialStop);
   assert.equal(placed(v,'MARKET')[0].stopLoss,undefined);
   const moves=async value=>{price=value;v.mark=value;await ex.reconcile()};
-  clock.t+=I;await moves(a.anchor-sign*(dist+.03));
+  // Step 1: 1.0R adverse -> adds 1.0x initialQty via IOC
+  clock.t+=I;await moves(a.anchor-sign*(rDist+.03));
   assert.equal(a.count,1);assert.equal(a.state,'WATCH');
   const afterFirst=a.anchor,afterFirstSize=p.size;
   assert.equal(a.orders[0].qty,first);
   assert.equal(afterFirstSize,first*2);
-  await moves(afterFirst-sign*(dist+.06));assert.equal(a.count,1,'at most one attempt in a candle');
-  clock.t+=I;await moves(afterFirst-sign*(dist-.03));assert.equal(a.count,1,'a new adverse level must be reached');
+  await moves(afterFirst-sign*(rDist*2+.06));assert.equal(a.count,1,'at most one attempt in a candle');
+  // Step 2: requires 2.0R from new anchor (1.0R is not enough)
+  clock.t+=I;await moves(afterFirst-sign*(rDist*2-.03));assert.equal(a.count,1,'progressive 2.0R level must be reached');
   const [watch]=ex.runtimeSummary().scaleInPositions;
   assert.equal(watch.state,'WATCH');assert.equal(watch.mark,price);assert.equal(watch.positionCheckedAt,clock.t);
-  assert.ok(Math.abs(watch.trigger-(afterFirst-sign*dist))<1e-9);
+  assert.ok(Math.abs(watch.trigger-(afterFirst-sign*rDist*2))<1e-9);
   assert.equal(watch.partialExit,false);
   assert.doesNotMatch(JSON.stringify(watch),/clientOrderId|orderId/);
-  await moves(afterFirst-sign*(dist+.03));assert.equal(a.count,2);
+  await moves(afterFirst-sign*(rDist*2+.03));assert.equal(a.count,2);
   const adds=placed(v,'LIMIT');assert.equal(new Set(adds.map(o=>o.clientOrderId)).size,2);
-  assert.equal(a.orders[1].qty,afterFirstSize);
-  assert.equal(p.size,afterFirstSize*2);
+  assert.ok(adds.every(o=>o.timeInForce==='IOC'),'repeat scale-in uses IOC');
+  assert.equal(a.orders[1].qty,first,'2nd add uses 1.0x initialQty (controlled multiplier)');
+  assert.equal(p.size,first*3);
   const active=[...v.orders.values()].filter(o=>o.type==='TAKE_PROFIT'&&o.status==='NEW');
   assert.ok(Math.abs(active.reduce((n,o)=>n+Number(o.quantity),0)-p.filled)<1e-8);
   assert.ok(active.every(o=>sign*(Number(o.price)-p.avg)>0),'the conditional exits also enforce a profitable limit');
   clock.t=p.deadline+I;await moves(a.anchor);assert.equal(ex.store.open.length,1,'adverse position survives expiry');
-  const firstTarget=active.find(o=>o.stopPrice===active[0].stopPrice);v.fill(firstTarget);
-  clock.t+=I;await moves(a.anchor-sign*(dist+.03));assert.equal(a.count,2,'reducing a position ends the add cycle');
+  // Reducing down to < 25% dust (< 0.25 * initialQty) ends the add cycle
+  for(const target of active.slice(0,-1))v.fill(target);
+  v.size=+(first*0.1).toFixed(2);
+  clock.t+=I;await moves(a.anchor-sign*(rDist*3.5+.03));assert.equal(a.count,2,'dust remainder (<25%) ends the add cycle');
   assert.equal(ex.runtimeSummary().scaleInPositions[0].partialExit,true);
   assert.equal(placed(v,'STOP_MARKET').length,0);assert.equal(placed(v,'MARKET').length,1);
   for(const target of active.filter(o=>o.status==='NEW'))v.fill(target);
+  v.size=0;
   await ex.reconcile();await ex.reconcile();
   assert.equal(ex.store.closed[0].closeReason,'ALL_TARGETS');assert.equal(ex.stats().repeatedScaleIn.adds,2);
   assert.equal(ex.journal()[0].scaleIn.count,2);
@@ -427,17 +444,17 @@ test('repeated testnet adds trim size to confirmed available funds and shared ma
  const ex=make(v,{clock,budget,price:()=>price,funds:()=>({equity:10000,available}),config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
  budget.register('signal',{usedMargin:()=>otherMargin}).register('scalp',ex.budgetSource());
  ex.arm();assert.equal((await ex.scan()).entered,1);
- const p=ex.store.open[0],a=p.scaleIn,first=p.size,dist=Math.abs(a.initialEntry-p.initialStop)*.5;
- const next=async()=>{clock.t+=I;price=a.anchor-dist-.03;v.mark=price;await ex.reconcile()};
- available=undefined;await next();
+ const p=ex.store.open[0],a=p.scaleIn,first=p.size,rDist=Math.abs(a.initialEntry-p.initialStop);
+ const next=async step=>{clock.t+=I;price=a.anchor-rDist*step-.03;v.mark=price;await ex.reconcile()};
+ available=undefined;await next(1);
  assert.equal(a.lastReason,'NO_BALANCE');assert.equal(placed(v,'LIMIT').length,0);
- available=10;await next();
+ available=10;await next(1);
  assert.equal(a.count,1);
  assert.ok(a.orders[0].qty<first);
  assert.ok(a.orders[0].marginUSD<=9&&a.orders[0].marginUSD>8.9);
  available=9000;
  otherMargin=budget.snapshot(10000).marginCapUSD-ex.budgetSource().usedMargin()-5;
- await next();
+ await next(2);
  assert.equal(a.count,2);
  assert.ok(a.orders[1].marginUSD<=5&&a.orders[1].marginUSD>4.9);
  assert.ok(budget.snapshot(10000).marginUSD<=3000+1e-9);
@@ -1143,4 +1160,125 @@ test('repeat scale-in clears PENDING immediately on BingX 80016 when size did no
   assert.equal(p.scaleIn.state,'PENDING');
  }
 });
+
+test('repeat scale-in IOC handles thin-book partial fills, 101429 auto-downsize, falling-knife filter, and >=25% partial-exit continuation',async()=>{
+ // 1) Thin-book IOC partial fill (40%) + 0.35% slippage cushion fills instead of FOK-canceling
+ {
+  const v=venue({partialAddRatio:0.4}),clock={t:T0};
+  let price=PX;
+  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],first=p.size,rDist=Math.abs(p.scaleIn.initialEntry-p.initialStop);
+  clock.t+=I;price=+(p.scaleIn.anchor-rDist-.2).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  const [addOrder]=placed(v,'LIMIT');
+  assert.equal(addOrder.timeInForce,'IOC');
+  assert.ok(Number(addOrder.price)>price,'IOC limit includes slippage cushion above quote');
+  assert.equal(p.scaleIn.count,1,'partial IOC fill still records scale-in');
+  assert.ok(p.size>first&&p.size<first*2,'40% partial fill added to position');
+ }
+
+ // 2) BingX VENUE_ERROR_101429 triggers automatic 50% -> 25% downsize retry and succeeds
+ {
+  const v=venue(),clock={t:T0};
+  let price=PX;
+  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],first=p.size,rDist=Math.abs(p.scaleIn.initialEntry-p.initialStop);
+  const origPlace=v.client.placeOrder;
+  const triedQtys=[];
+  v.client.placeOrder=async(params,opts)=>{
+   if(params.type==='LIMIT'&&params.timeInForce==='IOC'&&!params.reduceOnly){
+    triedQtys.push(Number(params.quantity));
+    if(Number(params.quantity)>first*0.6)throw Object.assign(Error('position limit'),{code:'VENUE_ERROR_101429'});
+   }
+   return origPlace(params,opts);
+  };
+  clock.t+=I;price=+(p.scaleIn.anchor-rDist-.2).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(triedQtys.length,2,'first 100% failed 101429, second 50% succeeded');
+  assert.ok(triedQtys[1]<triedQtys[0]&&triedQtys[1]<=first*0.5+0.01);
+  assert.equal(p.scaleIn.count,1);
+  assert.equal(p.scaleIn.state,'WATCH');
+ }
+
+ // 3) Falling-knife marubozu candle defers scale-in (FALLING_KNIFE), then stabilization candle executes
+ {
+  const v=venue(),clock={t:T0};
+  let price=PX,knife=true;
+  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],rDist=Math.abs(p.scaleIn.initialEntry-p.initialStop);
+  const prevCandles=ex.candles;
+  ex.candles=async(sym,iv,lim)=>{
+   if(iv!=='5m')return prevCandles(sym,iv,lim);
+   const ct=clock.t-1000;
+   // Big red marubozu (body 95%, lower wick 0%) vs bounce candle (close > open)
+   return knife?[[ct-I,100,100.1,95.0,95.1,1000,ct]]:[[ct-I,95.1,96.0,94.8,95.7,1000,ct]];
+  };
+  clock.t+=I;price=+(p.scaleIn.anchor-rDist-.2).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(p.scaleIn.count,0,'deferred during vertical dump');
+  assert.equal(p.scaleIn.lastReason,'FALLING_KNIFE');
+  knife=false;clock.t+=I;
+  await ex.reconcile();
+  assert.equal(p.scaleIn.count,1,'executed once 5m candle stabilized');
+ }
+
+ // 4) Partial exit with >=25% remaining auto-reopens SKIPPED (PIEVERSEUSDT case) and scales in cleanly
+ {
+  const v=venue(),clock={t:T0};
+  let price=PX;
+  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],first=p.size,rDist=Math.abs(p.scaleIn.initialEntry-p.initialStop);
+  const rem=+(first*0.4).toFixed(2);
+  v.size=rem;p.size=rem;p.everReduced=true;
+  p.scaleIn.state='SKIPPED';p.scaleIn.reason='POSITION_CHANGED';
+  clock.t+=I;price=+(p.scaleIn.anchor-rDist-.2).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(p.scaleIn.count,1,'40% remaining position auto-reopened and scaled in');
+  assert.equal(p.scaleIn.state,'WATCH');
+  assert.ok(Math.abs(p.size-rem*2)<0.05);
+ }
+});
+
+test('scaled-in positions enforce +5% Net ROE floor and trail rebounds from peak instead of breakeven exit',async()=>{
+ const v=venue(),clock={t:T0};
+ let price=PX;
+ const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
+ ex.arm();assert.equal((await ex.scan()).entered,1);
+ const p=ex.store.open[0],rDist=Math.abs(p.scaleIn.initialEntry-p.initialStop);
+ // Execute 1st scale-in at -1R
+ clock.t+=I;price=+(p.scaleIn.anchor-rDist-.2).toFixed(2);v.mark=price;
+ await ex.reconcile();
+ assert.equal(p.scaleIn.count,1);
+ const avg=p.avg;
+ // Wait past 15m (old logic dumped at +0.2% breakeven); +0.35% move (~+1.9% net ROE at 10x) MUST HOLD
+ clock.t=p.openedAt+20*60000;
+ v.mark=+(avg*1.0035).toFixed(2);
+ await ex.reconcile();
+ assert.equal(ex.store.open.length,1,'scaled-in position does not exit at +1.9% ROE');
+ assert.equal(p.trailPeakRoePct,null);
+ // Rebound to +1.0% move (~+8.4% net ROE): arms trailing and keeps holding (new peak!)
+ clock.t+=5000;v.mark=+(avg*1.010).toFixed(2);
+ await ex.reconcile();
+ assert.equal(ex.store.open.length,1,'trailing holds while making new peak');
+ assert.ok(p.trailPeakRoePct>=8,'peak ROE tracked');
+ // Continues climbing to +1.6% move (~+14.4% net ROE): raises peak and keeps riding!
+ clock.t+=5000;v.mark=+(avg*1.016).toFixed(2);
+ await ex.reconcile();
+ assert.equal(ex.store.open.length,1,'keeps riding higher rebound');
+ assert.ok(p.trailPeakRoePct>=14);
+ // Pulls back 25%+ from peak (~+14.4% -> +10.2% net ROE, <= ~10.8% trail stop): exits cleanly via IOC!
+ clock.t+=5000;v.mark=+(avg*1.0118).toFixed(2);
+ await ex.reconcile();
+ assert.equal(v.size,0,'trailing stop locked in ~+10% ROE on pullback from +14% peak');
+ clock.t+=5000;await ex.reconcile();clock.t+=5000;await ex.reconcile();
+ assert.equal(ex.store.open.length,0);
+ assert.equal(ex.store.closed[0].closeReason,'EARLY_TAKE_PROFIT');
+ const marginUSD=avg*p.filled/(p.leverage||10);
+ assert.ok(ex.store.closed[0].netUSD/marginUSD>=0.08,`expected >= +8% net ROE captured, got ${(ex.store.closed[0].netUSD/marginUSD*100).toFixed(2)}%`);
+});
+
 
