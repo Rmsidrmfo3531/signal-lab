@@ -55,12 +55,13 @@ import {windowsPaperNotify} from './windows_paper_notify.mjs';
 import {startKeepAwake} from './windows_keep_awake.mjs';
 import {paperTelegramText} from './paper_telegram.mjs';
 import {liveOverview,checkLiveLevels,testnetStats} from './live_overview.mjs';
-import {TestnetBudget,TESTNET_BALANCE_REFRESH_MS,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch} from './testnet_budget.mjs';
+import {TestnetBudget,TESTNET_BALANCE_REFRESH_MS,TESTNET_CAPITAL_CAP_DEFAULT,testnetDailyLossPct,testnetMarginCapPct,armTestnet,disarmTestnet,testnetSwitch} from './testnet_budget.mjs';
 import {resetTestnetHistory,withTestnetResetRisk} from './testnet_history_reset.mjs';
 import {createVenuePositionsReader,venueRows,normalizeVenuePosition} from './venue_positions.mjs';
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
+import {RealTrailingManager} from './real_trailing.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
@@ -289,14 +290,25 @@ let copyTrader=null,scalpExec=null;
 const signalClients=liveClients();
 const hasTestnetBingx=LIVE.mode==='TESTNET'&&Boolean(signalClients.BINGX)||LIVE.mode!=='LIVE'&&SCALP_EXEC.mode==='TESTNET'&&Boolean(process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET);
 const testnetCapitalCaps=[LIVE.mode==='TESTNET'?LIVE.balanceCapUSD:0,SCALP_EXEC.mode==='TESTNET'?(SCALP_EXEC.balanceCapUSD||LIVE.balanceCapUSD):0].filter(x=>x>0);
+const envTestnetCapRaw=process.env.TESTNET_CAPITAL_CAP_USD;
+const envTestnetCap=envTestnetCapRaw!==undefined&&String(envTestnetCapRaw).trim()!==''?Number(envTestnetCapRaw):NaN;
+const defaultTestnetCap=Number.isFinite(envTestnetCap)?(envTestnetCap>0?envTestnetCap:null):(testnetCapitalCaps.length?Math.min(...testnetCapitalCaps):TESTNET_CAPITAL_CAP_DEFAULT);
 // One shared TESTNET risk budget for the signal strategy and the reversal scalp (testnet_budget.mjs, user 2026-11-17
 // "한도까지 하나로" / "하루 손실을 늘리면 되지"): TESTNET_DAILY_LOSS_PCT (default 15) of the equity for today's loss of both +
 // every open stop risk of both + the new trade (each strategy's loss counted alone); margin of both within TESTNET_MARGIN_CAP_PCT
 // (30 %). The shared day stop is kept in testnet-budget.json. The signal side only on TESTNET.
 const testnetBudget=new TestnetBudget({dailyLossPct:testnetDailyLossPct(process.env),marginCapPct:testnetMarginCapPct(process.env),accountEquity:hasTestnetBingx,
- capitalCapUSD:testnetCapitalCaps.length?Math.min(...testnetCapitalCaps):null,directory:storage.dir,log:(...a)=>console.warn(...a)});
+ capitalCapUSD:defaultTestnetCap,directory:storage.dir,log:(...a)=>console.warn(...a)});
+const cappedTestnetFunds=async()=>{
+ const f=await testnetAccountFunds();
+ const budgetCap=Number(testnetBudget?.capitalCapUSD)>0?Number(testnetBudget.capitalCapUSD):Infinity;
+ const cap=LIVE.balanceCapUSD>0?Math.min(LIVE.balanceCapUSD,budgetCap):budgetCap;
+ if(!(cap<Infinity)||!(f.equity>cap))return f;
+ const equity=cap,avail=f.available!=null?equity*(f.available/f.equity):equity;
+ return {...f,equity,available:Math.max(0,avail)};
+};
 const live=new LiveExecutor({config:LIVE,clients:signalClients,directory:storage.dir,log:(...a)=>console.log(...a),onChange:status=>send('live',status),budget:LIVE.mode==='TESTNET'?testnetBudget:null,
- testnetBingxFunds:hasTestnetBingx?testnetAccountFunds:null,
+ testnetBingxFunds:hasTestnetBingx?cappedTestnetFunds:null,
  // Copy positions on the same testnet account are kept apart; a real-money copy uses another account.
  // Testnet reversal scalps (scalp_executor.mjs) share the testnet account too.
  externalHeld:()=>new Set([...(COPY_ON_SAME_ACCOUNT()?copyTrader?.heldSymbols()??[]:[]),...(LIVE.mode==='TESTNET'?scalpExec?.heldSymbols()??[]:[])]),
@@ -320,10 +332,10 @@ const venuePositionsReader=realBingxClient?.mode==='LIVE'
  ?createVenuePositionsReader({read:()=>realBingxClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
-let accountAlerts=null;
+let accountAlerts=null,realTrailing=null;
 async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;
  const analytics=buildCopyAnalytics({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:s0.funds?.equity??null,confirmedOnly:COPY.mode==='LIVE',exchangeCosts:dailyPnl?.costSummary?.()??null});
- const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{})};
+ const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{}),...(realTrailing?{trailing:realTrailing.status()}:{})};
  if(!venuePositionsReader)return {...s,...extra};
  const v=await venuePositionsReader.snapshot(realCopyPositions());if(!manualLedger)return {...s,...v,...extra};
  try{manualLedger.observe(v);void manualLedger.settle()}catch(e){console.warn('[MANUAL]',e.message)}
@@ -476,9 +488,13 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  // Entry price check: the BingX book mid, else a fresh BingX last price.
  priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
  markOf:venueSymbol=>scalpLast(venueSymbol,20000),
- // Same balance cap as the signal strategy unless SCALP_BALANCE_CAP_USD is set (applied in the executor).
- balance:async()=>{const f=hasTestnetBingx?await testnetAccountFunds():bingxFunds(await scalpClient.balance());const cap=SCALP_EXEC.balanceCapUSD>0?Infinity:LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity;if(!(cap<Infinity))return f;
-  const used=Math.max(0,f.equity-f.available),equity=Math.min(f.equity,cap);return {equity,available:Math.max(0,Math.min(f.available,equity-used))}},
+ // Apply live testnet capitalCapUSD (default $3,000) with proportional free margin so huge legacy VST positions don't collapse available to 0.
+ balance:async()=>{const f=hasTestnetBingx?await testnetAccountFunds():bingxFunds(await scalpClient.balance());
+  const budgetCap=Number(testnetBudget?.capitalCapUSD)>0?Number(testnetBudget.capitalCapUSD):Infinity;
+  const cap=SCALP_EXEC.balanceCapUSD>0?Math.min(SCALP_EXEC.balanceCapUSD,budgetCap):LIVE.balanceCapUSD>0?Math.min(LIVE.balanceCapUSD,budgetCap):budgetCap;
+  if(!(cap<Infinity)||!(f.equity>cap))return f;
+  const equity=cap,avail=f.available!=null?equity*(f.available/f.equity):equity;
+  return {equity,available:Math.max(0,avail)}},
  // The signal strategy (testnet) and the testnet copy share this account: their symbols are skipped.
  isBusy:(symbol,venueSymbol)=>LIVE.mode==='TESTNET'&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&(r.symbol===symbol||r.venueSymbol===venueSymbol)))
   ||COPY.mode==='TESTNET'&&(copyTrader.heldSymbols().has(symbol)||Object.values(copyTrader.store.positions).some(p=>p.status==='OPEN'&&p.venueSymbol===venueSymbol)),
@@ -722,6 +738,12 @@ if(COPY.mode==='LIVE'){
   },
   onClose:({symbol,direction})=>executeRealPositionAction({symbol,direction,action:'CLOSE_ALL'}),
  });
+ realTrailing=new RealTrailingManager({
+  directory:storage.dir,
+  executeAction:executeRealPositionAction,
+  sendText:sendTradeTelegram,
+  log:(...a)=>console.log('[REAL_TRAIL]',...a),
+ });
  const checkRiskAndRoi=async()=>{
   if(!venuePositionsReader||!accountAlerts)return;
   try{
@@ -731,6 +753,7 @@ if(COPY.mode==='LIVE'){
    await accountAlerts.checkRisk({equityUSD:eq,positions});
    await accountAlerts.checkPositions({positions});
    await accountAlerts.checkPositionSummary({positions});
+   if(realTrailing)await realTrailing.evaluate(positions);
   }catch(e){console.warn('[ALERTS]',e.message)}
  };
  const checkDaily=async()=>{
@@ -2095,6 +2118,19 @@ const server=http.createServer(async(req,res)=>{
     return response(res,200,r);
    }catch(e){return response(res,e.httpStatus||502,{ok:false,error:e.code||'CANCEL_ORDER_FAILED',message:e.message})}
   }
+  if(pathname==='/api/real/trailing'&&req.method==='GET'){
+   if(COPY.mode!=='LIVE'||!realTrailing)return response(res,404,{error:'REAL_TRAILING_UNAVAILABLE',message:'실계좌 자동 트레일링이 활성화되어 있지 않습니다'});
+   return response(res,200,{ok:true,trailing:realTrailing.status()});
+  }
+  if(pathname==='/api/real/trailing'&&req.method==='POST'){
+   if(COPY.mode!=='LIVE'||!realTrailing)return response(res,404,{error:'REAL_TRAILING_UNAVAILABLE',message:'실계좌 자동 트레일링이 활성화되어 있지 않습니다'});
+   const body=await bodyJson(req);
+   try{
+    const trailing=realTrailing.configure(body);
+    reportsDirty=true;
+    return response(res,200,{ok:true,trailing,summary:trailing.enabled?'실계좌 자동 트레일링 ON 저장됨':'실계좌 자동 트레일링 OFF 저장됨'});
+   }catch(e){return response(res,e.httpStatus||400,{ok:false,error:e.code||'INVALID_REAL_TRAILING',message:e.message})}
+  }
   if(pathname==='/api/manual/note'&&req.method==='POST'){
    if(!manualLedger)return response(res,404,{error:'MANUAL_LEDGER_UNAVAILABLE',message:'수동 거래 원장이 활성화되어 있지 않습니다'});
    const body=await bodyJson(req);
@@ -2121,8 +2157,8 @@ const server=http.createServer(async(req,res)=>{
   }
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
   if(pathname==='/api/live/overview'&&req.method==='GET'){
-   const [scalp,rawBalance]=await Promise.all([SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?scalpExec.liveStatus():null,liveBalanceSnapshot(),
-    hasTestnetBingx?refreshTestnetBudgetBalance():null]);
+   if(hasTestnetBingx)await refreshTestnetBudgetBalance();
+   const [scalp,rawBalance]=await Promise.all([SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?scalpExec.liveStatus():null,liveBalanceSnapshot()]);
    // One testnet screen (user 2026-11-17): one switch, the shared budget, totals over both strategies. Not for LIVE.
    const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(rawBalance?.usd)>0?Math.min(Number(rawBalance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
     return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY?'TESTNET':null,scalpStats:scalp?.stats??null})}})();

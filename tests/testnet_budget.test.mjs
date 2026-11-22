@@ -442,3 +442,54 @@ test('the shared margin cap is checked again before placing resting adds after t
  assert.ok(record.adds.length>0&&record.adds.every(add=>add.skipped&&!add.orderId));
  assert.ok(record.events.some(e=>e.type==='ADDS_SKIPPED'&&e.reason==='TESTNET_MARGIN_CAP'));
 });
+
+test('testnet $3,000 capitalCapUSD scales legacy VST positions/closes proportionally while keeping $3k-capped trades 1:1',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sl-cap-3k-'));
+ try{
+  const b=new TestnetBudget({accountEquity:true,capitalCapUSD:3000,directory:dir,now:()=>NOW});
+  b.observeAccount(150000,'VST');
+  const st=b.status();
+  assert.equal(st.equityUSD,3000);
+  assert.equal(st.capitalCapUSD,3000);
+  assert.equal(st.displayScale,0.02);
+  assert.equal(st.limitUSD,450);
+  assert.equal(st.marginCapUSD,900);
+
+  // Configure capitalCapUSD to 5000 -> persists across restart; 0 -> uncaps to null
+  const updated=b.configure({dailyLossPct:15,marginCapPct:30,capitalCapUSD:5000});
+  assert.equal(updated.capitalCapUSD,5000);
+  assert.equal(updated.equityUSD,5000);
+  const reloaded=new TestnetBudget({accountEquity:true,capitalCapUSD:3000,directory:dir,now:()=>NOW});
+  reloaded.observeAccount(150000,'VST');
+  assert.equal(reloaded.capitalCapUSD,5000);
+  const uncapped=reloaded.configure({dailyLossPct:15,marginCapPct:30,capitalCapUSD:0});
+  assert.equal(uncapped.capitalCapUSD,undefined);
+  assert.equal(uncapped.equityUSD,150000);
+
+  // Proportional display scaling in UI: legacy VST trade scales by 0.02, new $3,000 trade stays 1:1
+  const budget={equityUSD:3000,accountEquityUSD:150000,capitalCapUSD:3000,displayScale:0.02,dailyLossPct:15,limitUSD:450,openRiskUSD:30,marginUSD:120,marginCapUSD:900,marginCapPct:30};
+  const bHtml=testnetBudgetHTML({armed:true,budget});
+  assert.match(bHtml,/기준 자본 \$3,000\.00 \(VST 비례 환산\)/);
+
+  const legacyCard=scalpPositionCardHTML({symbol:'BTCUSDT',direction:'LONG',status:'OPEN',avg:100,mark:95,size:100,stop:90,targets:[],parts:[],riskUSD:1000,unrealized:-500,leverage:10,openedAt:NOW},{budget});
+  assert.match(legacyCard,/비례환산/);
+  assert.match(legacyCard,/−\$10\.00/);
+  assert.match(legacyCard,/\$20\.00/);
+
+  const freshCard=scalpPositionCardHTML({symbol:'ETHUSDT',direction:'LONG',status:'OPEN',avg:100,mark:105,size:2,stop:95,targets:[],parts:[],riskUSD:30,unrealized:10,leverage:10,capitalBasisUSD:3000,openedAt:NOW},{budget});
+  assert.doesNotMatch(freshCard,/비례환산/);
+  assert.match(freshCard,/\+\$10\.00/);
+
+  const closedHtml=testnetClosedHTML({
+   testnet:{scalpOnly:true,budget},
+   scalp:{closed:[
+    {id:'legacy1',symbol:'OLDUSDT',direction:'LONG',openedAt:NOW-3600000,closedAt:NOW-1000,closeReasonKo:'익절',netUSD:1000,netSource:'EXCHANGE',leverage:10,margin:{initialUSD:5000,totalUSD:10000}},
+    {id:'new1',symbol:'NEWUSDT',direction:'SHORT',openedAt:NOW-1800000,closedAt:NOW,closeReasonKo:'익절',netUSD:25,netSource:'EXCHANGE',leverage:10,margin:{initialUSD:200,totalUSD:200},capitalBasisUSD:3000},
+   ]},
+  });
+  assert.match(closedHtml,/\+\$20\.00/,'legacy $1000 * 0.02 = $20.00');
+  assert.match(closedHtml,/\+\$25\.00/,'new $3k trade stays 1:1 at $25.00');
+  assert.match(testnetSummaryHTML({all:{trades:2,wins:2,winRatePct:100,profitFactor:null,netUSD:45},signal:{trades:0,netUSD:0},scalp:{trades:2,netUSD:45}},{scalpOnly:true,open:[],budget}),/기준 자본 \$3,000\.00 비례 환산/);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+

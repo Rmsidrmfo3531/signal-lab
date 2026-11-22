@@ -40,25 +40,35 @@ export function testnetMarginCapPct(env=process.env){
  const raw=env?.TESTNET_MARGIN_CAP_PCT,v=Number(raw);
  return raw!==undefined&&raw!==''&&Number.isFinite(v)&&v>=1&&v<=TESTNET_MARGIN_CAP_MAX?v:TESTNET_MARGIN_CAP_MAX;
 }
+export const TESTNET_CAPITAL_CAP_DEFAULT=3000;
 export class TestnetBudget{
  constructor({dailyLossPct=TESTNET_DAILY_LOSS_DEFAULT,marginCapPct=TESTNET_MARGIN_CAP_MAX,accountEquity=false,capitalCapUSD=null,now=()=>Date.now(),directory=null,fileName='testnet-budget.json',log=()=>{}}={}){
-  Object.assign(this,{dailyLossPct,marginCapPct:Math.min(TESTNET_MARGIN_CAP_MAX,Number(marginCapPct)||TESTNET_MARGIN_CAP_MAX),accountEquity,capitalCapUSD,now,log});
+  Object.assign(this,{dailyLossPct,marginCapPct:Math.min(TESTNET_MARGIN_CAP_MAX,Number(marginCapPct)||TESTNET_MARGIN_CAP_MAX),accountEquity,capitalCapUSD:Number(capitalCapUSD)>0?Number(capitalCapUSD):null,now,log});
   this.sources=new Map();this.equities=new Map();
   this.file=directory?path.join(directory,fileName):null;
   let saved=null;try{saved=this.file?readStore(this.file):null}catch(e){this.log('[TESTNET BUDGET] state unreadable',e.message)}
   const settings=saved?.settings;
   const valid=settings&&validBudgetSettings(settings);
   this.state={stop:saved?.stop&&typeof saved.stop.day==='string'?saved.stop:null,settings:valid?settings:null};
-  if(valid)Object.assign(this,{dailyLossPct:settings.dailyLossPct,marginCapPct:settings.marginCapPct});
+  if(valid){
+   Object.assign(this,{dailyLossPct:settings.dailyLossPct,marginCapPct:settings.marginCapPct});
+   if(Object.hasOwn(settings,'capitalCapUSD'))this.capitalCapUSD=Number(settings.capitalCapUSD)>0?Number(settings.capitalCapUSD):null;
+  }
   this.account=null;this.accountError=null;
  }
  #save(state){if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,...state})}}
- configure({dailyLossPct,marginCapPct}={}){
-  const settings={dailyLossPct,marginCapPct};
+ configure({dailyLossPct,marginCapPct,capitalCapUSD}={}){
+  const hasCap=capitalCapUSD!==undefined;
+  const nextCap=hasCap?(capitalCapUSD===null||capitalCapUSD===''||Number(capitalCapUSD)===0?null:Number(capitalCapUSD)):this.capitalCapUSD;
+  const settings={dailyLossPct,marginCapPct,...(hasCap||this.capitalCapUSD!==null?{capitalCapUSD:nextCap}:{})};
   if(!validBudgetSettings(settings))throw codeErr('INVALID_TESTNET_BUDGET',400);
   const state={...this.state,settings};this.#save(state);
-  this.state=state;Object.assign(this,settings);
+  this.state=state;Object.assign(this,{dailyLossPct,marginCapPct,capitalCapUSD:nextCap});
   return this.status();
+ }
+ displayScale(){
+  if(!this.accountEquity||!(this.capitalCapUSD>0)||!(this.account?.equity>this.capitalCapUSD))return 1;
+  return +(this.capitalCapUSD/this.account.equity).toFixed(6);
  }
  observeAccount(equity,asset=null){
   if(!fin(equity)||Number(equity)<0){this.accountError='BALANCE_UNAVAILABLE';return}
@@ -126,14 +136,16 @@ export class TestnetBudget{
  /** For the page: rounded numbers. */
  status(equity=null){const s=this.snapshot(equity);
   return {ok:s.ok,at:this.now(),day:s.day,dailyLossPct:s.dailyLossPct,equityUSD:s.equityUSD,limitUSD:s.limitUSD===null?null:r2(s.limitUSD),realizedNetUSD:r2(s.realizedNetUSD),lossUSD:r2(s.lossUSD),
+   ...(this.capitalCapUSD>0?{capitalCapUSD:this.capitalCapUSD,displayScale:this.displayScale()}:{}),
    ...(this.accountEquity?{accountEquityUSD:this.account?.equity??null,balanceAsset:this.account?.asset??null,balanceAt:this.account?.at??null,
     balanceError:this.accountError||(this.account&&s.equityUSD===null?'BALANCE_STALE':null)}:{}),
    openRiskUSD:r2(s.openRiskUSD),usedUSD:r2(s.usedUSD),marginUSD:r2(s.marginUSD),marginCapPct:s.marginCapPct,marginCapUSD:s.marginCapUSD===null?null:r2(s.marginCapUSD),stopped:s.stopped,provisional:s.provisional,
    by:Object.fromEntries(Object.entries(s.by).map(([k,v])=>[k,v.error?v:{realizedNetUSD:r2(v.realizedNetUSD),lossUSD:r2(v.lossUSD),openRiskUSD:r2(v.openRiskUSD),marginUSD:r2(v.marginUSD)}]))};
  }
 }
-function validBudgetSettings({dailyLossPct,marginCapPct}){
- return Number.isFinite(dailyLossPct)&&dailyLossPct>=1&&dailyLossPct<=50&&Number.isFinite(marginCapPct)&&marginCapPct>=1&&marginCapPct<=TESTNET_MARGIN_CAP_MAX;
+function validBudgetSettings({dailyLossPct,marginCapPct,capitalCapUSD}){
+ const capOk=capitalCapUSD===undefined||capitalCapUSD===null||(Number.isFinite(capitalCapUSD)&&capitalCapUSD>=100&&capitalCapUSD<=10000000);
+ return capOk&&Number.isFinite(dailyLossPct)&&dailyLossPct>=1&&dailyLossPct<=50&&Number.isFinite(marginCapPct)&&marginCapPct>=1&&marginCapPct<=TESTNET_MARGIN_CAP_MAX;
 }
 
 const codeErr=(code,status=409)=>Object.assign(Error(code),{code,httpStatus:status});

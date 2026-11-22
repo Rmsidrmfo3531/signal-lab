@@ -51,6 +51,7 @@
             <form id="testnetBudgetForm" class="tn-budget-form">
               <label>하루 손실·열린 위험 (%) <input name="dailyLossPct" type="number" min="1" max="50" step="any" inputmode="decimal" required></label>
               <label>공동 증거금 (%) <input name="marginCapPct" type="number" min="1" max="30" step="any" inputmode="decimal" required></label>
+              <label>기준 자본 (USD) <input name="capitalCapUSD" type="number" min="0" max="10000000" step="any" inputmode="decimal" placeholder="3000 (0=전체)"></label>
               <button type="submit" class="outline-btn small">저장</button>
               <span id="testnetBudgetMessage" role="status"></span>
             </form>

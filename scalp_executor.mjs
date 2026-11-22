@@ -311,7 +311,7 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,SCALP_JOURNAL_FILE):null;this.signalsFile=directory?path.join(directory,SCALP_SIGNALS_FILE):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn}));
+  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,capitalBasisUSD:pos(x.capitalBasisUSD)??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
@@ -582,7 +582,8 @@ export class ScalpExecutor{
   const raw=b.available,available=num(raw);
   if(requireAvailable&&(!['number','string'].includes(typeof raw)||String(raw).trim()===''||available===null))return null;
   const cap=this.config.balanceCapUSD>0?this.config.balanceCapUSD:Infinity,equity=Math.min(eq,cap),used=Math.max(0,eq-(available??eq));
-  this.funds={equity,available:Math.max(0,Math.min(available??equity,equity-used)),at:this.now()};return this.funds;
+  const scaledAvail=cap<Infinity&&eq>cap&&available!==null?equity*(available/eq):Math.min(available??equity,equity-used);
+  this.funds={equity,available:Math.max(0,scaledAvail),at:this.now()};return this.funds;
  }
  async #consider(u,det,revision){
   const key=scalpClientId(u.symbol,det.barAt,det.direction),skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
@@ -652,12 +653,35 @@ export class ScalpExecutor{
   if(busy)return skip('SYMBOL_HELD_BY_OTHER_STRATEGY')();
   return null;
  }
+ /** Scale factor for legacy uncapped VST positions/closes when testnet capitalCapUSD is active (1 for $3k-capped trades). */
+ #displayScaleFor(p){
+  const cap=this.budget?.capitalCapUSD;
+  if(!(cap>0))return 1;
+  if(pos(p?.capitalBasisUSD)&&Number(p.capitalBasisUSD)<=cap*1.5)return 1;
+  const ds=this.budget?.displayScale?.();
+  return Number.isFinite(ds)&&ds>0&&ds<1?ds:1;
+ }
  /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only. */
  budgetSource(){
   const reserved=k=>[...this.reservedRisk.values()].reduce((t,x)=>t+(x[k]||0),0);
-  return {realizedToday:day=>this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0),
-   openRisk:()=>this.#openRisk()+reserved('riskUSD'),usedMargin:()=>this.#usedMargin()+reserved('marginUSD'),
-   unrealized:()=>this.store.open.reduce((t,p)=>t+(Number(p.unrealized)||0),0),stoppedToday:day=>this.store.dailyStop?.day===day&&this.store.dailyStop.shared===true};
+  const scaleOf=p=>this.#displayScaleFor(p);
+  return {
+   realizedToday:day=>this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0)*scaleOf(x),0),
+   openRisk:()=>this.store.open.reduce((t,p)=>{
+    const sc=scaleOf(p),d=dirOf(p.direction),e=pos(p.avg||p.entry),st=pos(p.stop),q=pos(p.size||p.qty),pending=(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedRiskUSD||0):0)*sc;
+    if(!e||!st||!q)return t+pending;
+    if(this.config.stopLossEnabled===false)return t+this.#repeatRisk(p,e,p.mark)*q*sc+pending;
+    const unit=p.scaleIn?riskAtStop(p.direction,e,st,p.takerRate):Math.max(0,d*(e-st));
+    if(p.scaleIn&&p.status==='SUBMITTING')return t+Math.max(unit*q,p.riskUSD)*sc+pending;
+    return t+unit*q*sc+pending;
+   },0)+reserved('riskUSD'),
+   usedMargin:()=>this.store.open.reduce((t,p)=>{
+    const sc=scaleOf(p);
+    return t+((p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1)+(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedMarginUSD||0):0))*sc;
+   },0)+reserved('marginUSD'),
+   unrealized:()=>this.store.open.reduce((t,p)=>t+(Number(p.unrealized)||0)*scaleOf(p),0),
+   stoppedToday:day=>this.store.dailyStop?.day===day&&this.store.dailyStop.shared===true,
+  };
  }
  async #enter(u,det,c,initialPlan,id,{revision,equity}){
   const cl=this.client,vs=u.venueSymbol,d=det.direction,skip=(reason,detail)=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
@@ -714,7 +738,7 @@ export class ScalpExecutor{
   const kind=this.cur?.kind||SCALP_KINDS.MOVE;
   const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,kind,...(kind===SCALP_KINDS.ZONE&&this.cur?.zone?{zone:this.cur.zone}:{}),mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
    pattern:det.pattern,barAt:det.barAt,plannedEntry:det.entry,checkedPrice:plan.entry,driftPct:plan.driftPct,entry:plan.entry,stop:plan.stop,initialStop:plan.stop,targets:plan.targets,
-   qty:plan.qty,initialQty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,initialRiskUSD:plan.riskUSD,marginUSD:plan.marginUSD,initialMarginUSD:plan.marginUSD,netRR:plan.netRR,
+   qty:plan.qty,initialQty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,initialRiskUSD:plan.riskUSD,marginUSD:plan.marginUSD,initialMarginUSD:plan.marginUSD,capitalBasisUSD:pos(equity)??null,netRR:plan.netRR,
    tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
    avg:null,size:0,filled:0,stopOrderId:null,stopIds:[],tpOrderIds:[null,null,null],tpTries:[0,0,0],breakevenMoved:false,exitIds:[],steps:[],
    stopLossEnabled:this.config.stopLossEnabled!==false,
@@ -791,7 +815,7 @@ export class ScalpExecutor{
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
    x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
-   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn});
+   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,capitalBasisUSD:pos(x.capitalBasisUSD)??null});
   }
  }
  /** The newest `limit` journal lines (oldest first). */
@@ -1039,10 +1063,13 @@ export class ScalpExecutor{
    if((!added&&status==='FILLED')||(added&&!fill))return;
    if(!added){if(a.version===SCALP_REPEAT_SCALE_IN.version)this.#retryRepeat(p,'NOT_FILLED');else this.#addDecision(p,'SKIPPED','NOT_FILLED');return}
    const prevSize=pos(a.preAddSize)??pos(p.size)??p.filled;
+   const prevAvg=pos(p.avg);
    const newSize=prevSize+added;
    const total=p.filled+added;
-   Object.assign(a,{fillQty:added,fillPrice:fill,fillMarginUSD:fill*added/p.leverage,filledAt:this.now()});
-   p.avg=(p.avg*prevSize+fill*added)/newSize;p.filled=total;p.size=newSize;p.marginUSD=p.avg*newSize/p.leverage;
+   const nextAvg=(p.avg*prevSize+fill*added)/newSize;
+   const avgImprovePct=prevAvg>0?+(Math.abs(nextAvg-prevAvg)/prevAvg*100).toFixed(2):0;
+   Object.assign(a,{fillQty:added,fillPrice:fill,fillMarginUSD:fill*added/p.leverage,filledAt:this.now(),prevAvg,avgImprovePct});
+   p.avg=nextAvg;p.filled=total;p.size=newSize;p.marginUSD=p.avg*newSize/p.leverage;
    p.trailPeakRoePct=null;p.scaleInPartialTaken=false;
    p.steps.push({kind:'ADD',at:a.filledAt,qty:added,avg:p.avg});
    a.state='RESIZE';this.#save();
@@ -1076,7 +1103,7 @@ export class ScalpExecutor{
    :this.#partialTooSmall(p,fresh.size)?'SKIPPED'
    :(a.count>=SCALP_REPEAT_SCALE_IN.maxAdds?'FILLED':'WATCH');
   Object.assign(a,{state:nextState,reason:fresh.size>0?(nextState==='SKIPPED'?'POSITION_CHANGED':null):'FLAT_DURING_RESIZE'});
-  this.#save();this.#event('SCALE_IN_FILLED',{symbol:p.symbol,direction:p.direction,count:a.count,fillMarginUSD:a.fillMarginUSD,qty:a.fillQty,price:a.fillPrice,left:p.size});
+  this.#save();this.#event('SCALE_IN_FILLED',{symbol:p.symbol,direction:p.direction,count:a.count,fillMarginUSD:a.fillMarginUSD,qty:a.fillQty,price:a.fillPrice,prevAvg:a.prevAvg??null,avg:p.avg,avgImprovePct:a.avgImprovePct??null,left:p.size});
   if(!fresh.size){await this.#finish(p);return}
   await this.#placeTargets(p);
  }
@@ -1405,7 +1432,7 @@ export class ScalpExecutor{
    p.everReduced=true;
    if(p.earlyTakeProfit?.partial){
     p.scaleInPartialTaken=true;
-    this.#event('PARTIAL_TAKE_PROFIT',{symbol:p.symbol,direction:p.direction,qty:filled,left:Math.max(0,p.size-filled)});
+    this.#event('PARTIAL_TAKE_PROFIT',{symbol:p.symbol,direction:p.direction,qty:filled,left:Math.max(0,p.size-filled),netRoePct:p.earlyTakeProfit.netRoePct??null,estProfitUSD:p.earlyTakeProfit.estProfitUSD??null});
    }else if(filled>=p.earlyTakeProfit.qty-Number(p.quantityStep)/2){
     p.exitReason='EARLY_TAKE_PROFIT';
    }
@@ -1425,7 +1452,7 @@ export class ScalpExecutor{
   const scaledIn=(p.scaleIn?.count||0)>0;
   const initQty=pos(p.scaleIn?.initialQty)??pos(p.initialQty)??pos(p.filled);
   const isDust=profitOnly&&p.everReduced===true&&initQty>0&&p.size<initQty*SCALP_REPEAT_SCALE_IN.dustRatio;
-  let limit,orderQty=qty,partial=false;
+  let limit,orderQty=qty,partial=false,partialRoePct=null,partialProfitUSD=null;
   if(isDust){
    // Auto-clean dust remainder (<5% of initialQty) as soon as breakeven+fees clears so slots stay clean.
    limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
@@ -1455,7 +1482,7 @@ export class ScalpExecutor{
      const remQty=Number(grid(qty-halfQty,p.quantityStep,'DOWN'));
      if(halfQty>=minPart&&remQty>=minPart&&halfQty*mark>=minNotional&&remQty*mark>=minNotional){
       limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
-      if(Number(limit)>0&&direction*(mark-Number(limit))>=0){orderQty=halfQty;partial=true}
+      if(Number(limit)>0&&direction*(mark-Number(limit))>=0){orderQty=halfQty;partial=true;partialRoePct=+netRoePct.toFixed(1);partialProfitUSD=+(direction*(mark-p.avg)*halfQty).toFixed(2)}
      }
     }
     if(!partial){
@@ -1491,7 +1518,7 @@ export class ScalpExecutor{
      const remQty=Number(grid(qty-halfQty,p.quantityStep,'DOWN'));
      if(halfQty>=minPart&&remQty>=minPart&&halfQty*mark>=minNotional&&remQty*mark>=minNotional){
       limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
-      if(Number(limit)>0&&direction*(mark-Number(limit))>=0){orderQty=halfQty;partial=true}
+      if(Number(limit)>0&&direction*(mark-Number(limit))>=0){orderQty=halfQty;partial=true;partialRoePct=+netRoePct.toFixed(1);partialProfitUSD=+(direction*(mark-p.avg)*halfQty).toFixed(2)}
      }
     }
     if(!partial){
@@ -1515,7 +1542,7 @@ export class ScalpExecutor{
    }
   }
   const clientOrderId=createHash('sha256').update(`${p.id}|early|${partial?'p':'f'}|${now}`).digest('hex').slice(0,32);
-  p.earlyTakeProfit={clientOrderId,qty:orderQty,partial};p.earlyTakeProfitAt=now;this.#save();
+  p.earlyTakeProfit={clientOrderId,qty:orderQty,partial,...(partial?{netRoePct:partialRoePct,estProfitUSD:partialProfitUSD}:{})};p.earlyTakeProfitAt=now;this.#save();
   const response=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),
    positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'LIMIT',
    timeInForce:'IOC',price:limit,quantity:String(orderQty),reduceOnly:'true',clientOrderId},p.hedge===true));
@@ -1678,7 +1705,9 @@ export class ScalpExecutor{
   // R multiple on the actual entry and the initial stop (replaced by the settled result when the journal line is written).
   {const risk=p.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version?dir*(p.scaleIn.initialEntry-p.initialStop)*p.scaleIn.initialQty:dir*(p.avg-p.initialStop)*p.filled;row.rMultiple=risk>0?r((gross-fee)/risk):null}
   this.store.closed.push(row);this.store.open=this.store.open.filter(x=>x!==p);
-  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,holdMs:row.holdMs,entry:p.avg});
+  const marginBase=p.avg>0&&p.filled>0?(p.avg*p.filled/(p.leverage||1)):0;
+  const roePct=marginBase>0?+(row.netUSD/marginBase*100).toFixed(2):null;
+  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,holdMs:row.holdMs,entry:p.avg,roePct,peakRoePct:pos(p.trailPeakRoePct)??null});
   return cleanupPending;
  }
  /** BingX fund flow (realized PnL + fees + funding) of this trade's symbol and lifetime, read after the close. */
@@ -1702,10 +1731,11 @@ export class ScalpExecutor{
   all.scaleIn={closed:experiment.length,filled:experiment.filter(x=>x.scaleIn.fillQty>0).length};
   all.repeatedScaleIn={closed:repeated.length,filled:repeated.filter(x=>x.scaleIn.count>0).length,adds:repeated.reduce((n,x)=>n+(x.scaleIn.count||0),0)};return all}
  #stats(list){
-  const n=list.length,wins=list.filter(x=>x.netUSD>0),gross=wins.reduce((t,x)=>t+x.netUSD,0),loss=-list.filter(x=>x.netUSD<0).reduce((t,x)=>t+x.netUSD,0);
+  const n=list.length,scaled=list.map(x=>({x,net:(Number(x.netUSD)||0)*this.#displayScaleFor(x)}));
+  const wins=scaled.filter(r=>r.net>0),gross=wins.reduce((t,r)=>t+r.net,0),loss=-scaled.filter(r=>r.net<0).reduce((t,r)=>t+r.net,0);
   const today=kstDay(this.now()),reasons={};for(const x of list)reasons[x.closeReason]=(reasons[x.closeReason]||0)+1;
-  return {trades:n,wins:wins.length,grossProfitUSD:+gross.toFixed(2),grossLossUSD:+loss.toFixed(2),winRatePct:n?+(wins.length/n*100).toFixed(1):null,profitFactor:loss>0?+(gross/loss).toFixed(2):null,netUSD:+list.reduce((t,x)=>t+(Number(x.netUSD)||0),0).toFixed(2),
-   todayNetUSD:+list.filter(x=>kstDay(x.closedAt)===today).reduce((t,x)=>t+(Number(x.netUSD)||0),0).toFixed(2),closeReasons:reasons};
+  return {trades:n,wins:wins.length,grossProfitUSD:+gross.toFixed(2),grossLossUSD:+loss.toFixed(2),winRatePct:n?+(wins.length/n*100).toFixed(1):null,profitFactor:loss>0?+(gross/loss).toFixed(2):null,netUSD:+scaled.reduce((t,r)=>t+r.net,0).toFixed(2),
+   todayNetUSD:+scaled.filter(r=>kstDay(r.x.closedAt)===today).reduce((t,r)=>t+r.net,0).toFixed(2),closeReasons:reasons};
  }
  status(){
   const c=this.config,g=this.#gate();
