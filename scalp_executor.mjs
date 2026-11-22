@@ -311,7 +311,7 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,SCALP_JOURNAL_FILE):null;this.signalsFile=directory?path.join(directory,SCALP_SIGNALS_FILE):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,capitalBasisUSD:pos(x.capitalBasisUSD)??null}));
+  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
@@ -323,7 +323,20 @@ export class ScalpExecutor{
  #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null,kind:this.cur.kind||SCALP_KINDS.MOVE}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
  #gate(){try{return this.gate()||{ok:true}}catch{return {ok:false,reason:'GATE_ERROR'}}}
  // With the shared budget only a stop written under it counts (review L2: a scalp-only 3 % stop saved before is ignored).
- #todayStopped(){const d=this.store.dailyStop;return d?.day===kstDay(this.now())&&(!this.budget||d.shared===true)}
+ #todayStopped(day=kstDay(this.now())){
+  const d=this.store.dailyStop;
+  if(!(d?.day===day&&(!this.budget||d.shared===true)))return false;
+  const cap=this.budget?.capitalCapUSD;
+  // Self-heal an impossible unscaled legacy-VST dailyStop (loss > 100% of current capitalCapUSD).
+  if(this.budget&&cap>0&&Number.isFinite(Number(d.lossUSD))&&Math.abs(Number(d.lossUSD))>cap){
+   this.store.dailyStop=null;this.#save();return false;
+  }
+  return true;
+ }
+ clearDailyStop(){
+  if(this.store.dailyStop){this.store.dailyStop=null;this.#save()}
+  return this.status();
+ }
  /** Why no new entry may be sent now (null = may). */
  #blocked(ignoreAddId=null){
   if(this.config.mode!=='TESTNET')return this.config.refused||'SCALP_MODE_OFF';
@@ -659,7 +672,16 @@ export class ScalpExecutor{
   if(!(cap>0))return 1;
   if(pos(p?.capitalBasisUSD)&&Number(p.capitalBasisUSD)<=cap*1.5)return 1;
   const ds=this.budget?.displayScale?.();
-  return Number.isFinite(ds)&&ds>0&&ds<1?ds:1;
+  if(Number.isFinite(ds)&&ds>0&&ds<1)return ds;
+  // When BingX VST balance was already lowered to <= cap (e.g. $3,000), infer scale for legacy oversized VST trades.
+  const r=Number(p?.initialRiskUSD??p?.riskUSD??p?.plan?.riskUSD)||0;
+  const m=Number(p?.initialMarginUSD??p?.margin?.initialUSD??p?.marginUSD??p?.plan?.marginUSD)||0;
+  if(m>cap*0.18||r>cap*0.05){
+   const rp=Number(this.config?.riskPct)>0?Number(this.config.riskPct):0.5;
+   const implied=Math.max(r>0?r/(rp/100):0,m>0?m/0.05:0,100000);
+   return +(Math.min(1,cap/implied)).toFixed(6);
+  }
+  return 1;
  }
  /** Getters for the shared TESTNET budget (testnet_budget.mjs). Read only. */
  budgetSource(){
@@ -680,7 +702,7 @@ export class ScalpExecutor{
     return t+((p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1)+(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedMarginUSD||0):0))*sc;
    },0)+reserved('marginUSD'),
    unrealized:()=>this.store.open.reduce((t,p)=>t+(Number(p.unrealized)||0)*scaleOf(p),0),
-   stoppedToday:day=>this.store.dailyStop?.day===day&&this.store.dailyStop.shared===true,
+   stoppedToday:day=>this.#todayStopped(day),
   };
  }
  async #enter(u,det,c,initialPlan,id,{revision,equity}){
@@ -815,7 +837,7 @@ export class ScalpExecutor{
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
    x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
-   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,capitalBasisUSD:pos(x.capitalBasisUSD)??null});
+   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
   }
  }
  /** The newest `limit` journal lines (oldest first). */

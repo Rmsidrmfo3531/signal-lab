@@ -2208,7 +2208,7 @@ const server=http.createServer(async(req,res)=>{
    }
    if(pathname==='/api/live/testnet-budget'){
     if(LIVE.mode==='LIVE'||LIVE.mode!=='TESTNET'&&SCALP_EXEC.mode!=='TESTNET')return response(res,409,{error:'NOT_TESTNET'});
-    try{if(hasTestnetBingx)await refreshTestnetBudgetBalance();const budget=testnetBudget.configure(body);reportsDirty=true;return response(res,200,{budget})}
+    try{if(hasTestnetBingx)await refreshTestnetBudgetBalance();if(body?.clearStop===true)scalpExec?.clearDailyStop?.();const budget=testnetBudget.configure(body);reportsDirty=true;return response(res,200,{budget})}
     catch(e){return response(res,e.httpStatus||500,{error:e.code==='INVALID_TESTNET_BUDGET'?e.code:'TESTNET_BUDGET_SAVE_FAILED'})}
    }
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});

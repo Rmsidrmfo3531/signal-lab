@@ -493,3 +493,53 @@ test('testnet $3,000 capitalCapUSD scales legacy VST positions/closes proportion
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
+test('when BingX VST equity is reduced to $3,000, legacy oversized VST trades still scale proportionally and stale unscaled dailyStop self-heals',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sl-vst-reset-3k-'));
+ try{
+  const day=kstDay(NOW);
+  // Simulate pre-fix persisted state: budget stop and scalp dailyStop recorded from -$8,652 unscaled legacy VST closes
+  fs.writeFileSync(path.join(dir,'testnet-budget.json'),JSON.stringify({
+   version:1,
+   stop:{day,at:NOW-60000,lossUSD:8652.24,limitUSD:1500,reason:'REALIZED'},
+   settings:{dailyLossPct:50,marginCapPct:30,capitalCapUSD:3000},
+  }));
+  fs.writeFileSync(path.join(dir,'scalp-store.json'),JSON.stringify({
+   version:1,strategy:'SCALP_REVERSAL',open:[],
+   closed:[
+    {id:'leg1',symbol:'RENDERUSDT',direction:'SHORT',netUSD:-3249.02,closedAt:NOW-120000,closeReason:'MANUAL',initialRiskUSD:818.57,initialMarginUSD:8125.60},
+    {id:'leg2',symbol:'INJUSDT',direction:'LONG',netUSD:-2484.50,closedAt:NOW-120000,closeReason:'MANUAL',initialRiskUSD:913.93,initialMarginUSD:6996.77},
+    {id:'leg3',symbol:'SEIUSDT',direction:'LONG',netUSD:-2051.60,closedAt:NOW-120000,closeReason:'MANUAL',initialRiskUSD:597.82,initialMarginUSD:5849.28},
+   ],
+   events:[],skips:[],skipCounts:{},sent:[],
+   dailyStop:{day,at:NOW-60000,lossUSD:-8652.24,equity:3000,shared:true},
+  }));
+  const budget=new TestnetBudget({accountEquity:true,capitalCapUSD:3000,directory:dir,now:()=>NOW});
+  budget.observeAccount(3000,'VST'); // VST account itself is now $3,000 -> displayScale() === 1
+  const sc=new ScalpExecutor({config:scalpExecConfig({}),client:{mode:'TESTNET'},directory:dir,now:()=>NOW,budget});
+  budget.register('scalp',sc.budgetSource());
+
+  // Legacy oversized trades must be scaled down (~-$110 instead of -$7,785) and stale unscaled stop must self-heal!
+  const st=budget.status();
+  assert.equal(st.stopped,false,'impossible -$8,652 stop on $3,000 equity self-heals');
+  assert.ok(st.lossUSD<200,`scaled today loss should be < $200, got $${st.lossUSD}`);
+  assert.ok(Math.abs(sc.stats().netUSD)<200,`scaled stats netUSD should be realistic for $3k, got $${sc.stats().netUSD}`);
+  sc.arm();
+  assert.equal(sc.status().blocked,null,'5m scalp scanning is unblocked immediately');
+
+  // UI closed list also scales legacy oversized trades even when displayScale === 1
+  const h=testnetClosedHTML({
+   testnet:{scalpOnly:true,budget:st},
+   scalp:{closed:[{id:'leg1',symbol:'RENDERUSDT',direction:'SHORT',openedAt:NOW-3600000,closedAt:NOW-120000,closeReasonKo:'수동 청산',netUSD:-3249.02,netSource:'EXCHANGE',leverage:10,initialRiskUSD:818.57,initialMarginUSD:8125.60,margin:{initialUSD:8125.60,totalUSD:11518.02}}]},
+  });
+  assert.doesNotMatch(h,/3,249|3249/,'raw -$3,249 VST loss should be scaled down to ~$60');
+
+  // Explicit clearStop clears a legitimate stop and UI renders the clear-stop button when stopped
+  budget.markStopped({lossUSD:500,limitUSD:450,reason:'REALIZED'},day);
+  assert.equal(budget.status().stopped,true);
+  assert.match(testnetBudgetHTML({armed:true,budget:budget.status()}),/data-testnet-clear-stop/);
+  budget.clearStop();
+  assert.equal(budget.status().stopped,false);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
+
