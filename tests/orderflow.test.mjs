@@ -376,7 +376,84 @@ test('FireCharts engine builds 4-cohort real-trade CVD (Normalized & Absolute), 
   assert.match(page, /Normalized CVD/);
   assert.match(page, /Absolute CVD/);
   assert.match(page, /data-of-range="1M"/);
+  assert.match(page, /data-of-fc-inspect/);
+  assert.match(page, /data-of-wall-strip/);
   clearFirechartHistory();
 });
 
+test('FireCharts wall touch inspection snaps to liquidity wall lines, renders crosshair price badge, readout bar, and tappable wall chips', async () => {
+  const {
+    findFirechartWallAt,
+    firechartInspectBarHTML,
+    firechartWallSummaryHTML,
+    firechartSvg,
+  } = await import('../public/orderflow_ui.js');
+  const { buildHistoricalCohortSeries } = await import('../firechart.mjs');
 
+  const candles = makeCandles(24, i => ({
+    o: 100, h: 110, l: 90, c: 100,
+    v: 1000, q: 100_000, buyVol: 52_000, sellVol: 48_000, delta: 4000,
+  }));
+  const cohorts = buildHistoricalCohortSeries(candles);
+  const hm = {
+    priceBins: 40,
+    minPrice: 90,
+    maxPrice: 110,
+    maxUsd: 1_500_000,
+    p80Usd: 200_000,
+    hasLiveBook: true,
+    snapshotCount: 2,
+    liveWalls: [],
+    cells: [
+      // Strong ASK wall near yBin 30 (price 105.25 -> yNorm = 1 - 30.5/40 = 0.2375)
+      { x0: 0.75, x1: 1.0, yBin: 30, price: 105.25, usd: 1_450_000, pctRank: 99, side: 'ASK', live: true },
+      // Strong BID wall near yBin 10 (price 95.25 -> yNorm = 1 - 10.5/40 = 0.7375)
+      { x0: 0.2, x1: 0.85, yBin: 10, price: 95.25, usd: 880_000, pctRank: 96, side: 'BID', live: false },
+    ],
+  };
+  const data = {
+    symbol: 'BTCUSDT',
+    range: 'LIVE',
+    price: { mark: 100 },
+    series: candles,
+    firechart: { range: 'LIVE', cohortMode: 'REAL_TRADES', cohorts, heatmap: hm },
+  };
+
+  // 1) Touching near the ASK wall bar snaps to exact wall price $105.25
+  const askHit = findFirechartWallAt(data, { xNorm: 0.88, yNorm: 0.24, minPct: 93, maxPct: 99 });
+  assert.equal(askHit.snapped, true);
+  assert.equal(askHit.price, 105.25);
+  assert.equal(askHit.side, 'ASK');
+  assert.equal(askHit.usd, 1_450_000);
+  assert.equal(askHit.live, true);
+  assert.equal(askHit.distPct, 5.25);
+
+  // 2) Touching empty space far from walls returns exact free price level
+  const freeHit = findFirechartWallAt(data, { xNorm: 0.1, yNorm: 0.5, minPct: 93, maxPct: 99 });
+  assert.equal(freeHit.snapped, false);
+  assert.equal(freeHit.price, 100);
+
+  // 3) Readout banner & wall chip strip render exact prices and metadata
+  const idleBar = firechartInspectBarHTML(null);
+  assert.match(idleBar, /매물대 줄을 터치/);
+
+  const activeBar = firechartInspectBarHTML(askHit);
+  assert.match(activeBar, /매도벽 \(저항\)/);
+  assert.match(activeBar, /\$105\.25/);
+  assert.match(activeBar, /\+5\.25%/);
+  assert.match(activeBar, /\$1\.45M/);
+  assert.match(activeBar, /실시간 L2 호가벽/);
+  assert.match(activeBar, /data-of-inspect-clear/);
+
+  const strip = firechartWallSummaryHTML(data, { minPct: 93, maxPct: 99, inspected: askHit });
+  assert.match(strip, /상단 매도벽/);
+  assert.match(strip, /하단 매수벽/);
+  assert.match(strip, /data-wall-price="105\.25"/);
+  assert.match(strip, /data-wall-price="95\.25"/);
+
+  // 4) SVG renders horizontal dashed crosshair guide line + right-axis price pill
+  const svgWithCrosshair = firechartSvg(data, { cvdMode: 'normalized', minPct: 93, maxPct: 99, inspected: askHit });
+  assert.match(svgWithCrosshair, /data-fc-crosshair/);
+  assert.match(svgWithCrosshair, /105\.25/);
+  assert.match(svgWithCrosshair, /class="of-fc-wall"/);
+});
