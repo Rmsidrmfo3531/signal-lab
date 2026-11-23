@@ -11,6 +11,7 @@ import {displaySymbol} from './public/symbol_display.js';
 
 export const COPY_CONTROLS_DEFAULTS=Object.freeze({
  sizing:null,
+ executionMode:null,
  traderBalanceUSD:null,
  maxSymbolMarginPct:0,
  maxLeverage:null,
@@ -22,6 +23,7 @@ export const COPY_CONTROLS_DEFAULTS=Object.freeze({
  cooldownMinutes:120,
 });
 const VALID_SIZINGS=new Set(['BALANCE_RATIO','MIN_ORDER','FIRST_1USD']);
+const VALID_EXEC_MODES=new Set(['INSTANT','MAKER_FIRST']);
 
 const KST_MS=9*3600000;
 const kstDay=t=>new Date(Number(t)+KST_MS).toISOString().slice(0,10);
@@ -52,8 +54,10 @@ export class CopyControls{
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   const savedSizing=typeof saved?.sizing==='string'&&VALID_SIZINGS.has(saved.sizing.toUpperCase())?saved.sizing.toUpperCase():null;
+  const savedExec=typeof saved?.executionMode==='string'&&VALID_EXEC_MODES.has(saved.executionMode.toUpperCase())?saved.executionMode.toUpperCase():null;
   this.store={
    sizing:savedSizing,
+   executionMode:savedExec,
    traderBalanceUSD:this.#validNullableNum(saved?.traderBalanceUSD,1000,1e6),
    maxSymbolMarginPct:this.#validNum(saved?.maxSymbolMarginPct,0,100,COPY_CONTROLS_DEFAULTS.maxSymbolMarginPct),
    maxLeverage:this.#validNullableInt(saved?.maxLeverage,1,125),
@@ -84,6 +88,10 @@ export class CopyControls{
 
  effectiveSizing(fallback='BALANCE_RATIO'){
   return this.store.sizing??fallback;
+ }
+
+ effectiveExecutionMode(fallback='INSTANT'){
+  return this.store.executionMode??fallback;
  }
 
  effectiveTraderBalanceUSD(fallback=20000){
@@ -200,6 +208,14 @@ export class CopyControls{
     next.sizing=sz;
    }
   }
+  if(Object.hasOwn(patch,'executionMode')){
+   if(patch.executionMode===null||patch.executionMode===''||String(patch.executionMode).toUpperCase()==='DEFAULT')next.executionMode=null;
+   else{
+    const em=String(patch.executionMode||'').trim().toUpperCase();
+    if(!VALID_EXEC_MODES.has(em))throw err('executionMode는 INSTANT 또는 MAKER_FIRST여야 합니다');
+    next.executionMode=em;
+   }
+  }
   if(Object.hasOwn(patch,'traderBalanceUSD')){
    if(patch.traderBalanceUSD===null||patch.traderBalanceUSD==='')next.traderBalanceUSD=null;
    else{
@@ -274,6 +290,7 @@ export class CopyControls{
   const active=Boolean(this.store.cooldownUntil&&this.store.cooldownUntil>at);
   return {
    sizing:this.store.sizing,
+   executionMode:this.store.executionMode,
    traderBalanceUSD:this.store.traderBalanceUSD,
    maxSymbolMarginPct:this.store.maxSymbolMarginPct,
    maxLeverage:this.store.maxLeverage,

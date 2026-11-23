@@ -468,13 +468,16 @@ export function copyHTML(c){
   const ratioPct=curSizing==='BALANCE_RATIO'&&basisVal>0&&tb>0?(basisVal/tb*100).toFixed(1):null;
   const sizingModes=[['BALANCE_RATIO','잔고 비례 (자동)'],['MIN_ORDER','최소 주문'],['FIRST_1USD','$1 고정']];
   const sizingBtns=sizingModes.map(([m,lbl])=>`<button type="button" class="outline-btn small${curSizing===m?' is-current':''}" data-copy-sizing="${m}">${lbl}</button>`).join('');
+  const curExec=c.executionMode||(ctrl.executionMode==='MAKER_FIRST'?'MAKER_FIRST':'INSTANT');
+  const execBtns=[['INSTANT','⚡ 즉시 시장가 (기본)'],['MAKER_FIRST','메이커 우선 (1초)']].map(([m,lbl])=>`<button type="button" class="outline-btn small${curExec===m?' is-current':''}" data-copy-exec-mode="${m}" title="${m==='INSTANT'?'트레이더 알림 수신 즉시 시장가 체결 (가장 빠름)':'지정가(PostOnly 0.02%) 1초 대기 후 미체결분 시장가 체결'}">${lbl}</button>`).join('');
   const sizingSummary=curSizing==='BALANCE_RATIO'?(ratioPct?`잔고 비례 ${ratioPct}% (기준 $${Number(tb).toLocaleString()})`:`잔고 비례 · 기준 $${Number(tb).toLocaleString()}`):curSizing==='MIN_ORDER'?'최소 주문':'$1 고정';
   const presets=[[40000,'0.5배 ($40k)'],[20000,'1배 ($20k)'],[13333,'1.5배 ($13.3k)'],[10000,'2배 ($10k)']];
   const presetBtns=presets.map(([v,lbl])=>`<button type="button" class="outline-btn small${Math.abs(tb-v)<=5?' is-current':''}" data-copy-tb="${v}">${lbl}</button>`).join('');
   const isAllow=ctrl.filterMode==='ALLOWLIST',symList=isAllow?(ctrl.allowedSymbols||[]):(ctrl.blockedSymbols||[]);
   const chips=symList.length?symList.map(s=>`<span class="ctrl-chip">${esc(symText(s))}<button type="button" data-copy-sym-remove="${esc(s)}" data-copy-sym-kind="${isAllow?'allowed':'blocked'}" aria-label="${esc(symText(s))} 제거">×</button></span>`).join(''):`<span class="muted">${isAllow?'등록된 허용 종목 없음 (전체 차단)':'제외된 종목 없음'}</span>`;
-  return `<details class="copy-controls-fold"${controlsOpen?' open':''}><summary data-controls-toggle>카피 비중 · 위험 제어 <small>${sizingSummary}${ctrl.maxSymbolMarginPct>0?` · 종목한도 ${ctrl.maxSymbolMarginPct}%`:''}${ctrl.maxLeverage?` · 최대 ${ctrl.maxLeverage}배`:''}</small></summary>
+  return `<details class="copy-controls-fold"${controlsOpen?' open':''}><summary data-controls-toggle>카피 비중 · 위험 제어 <small>${curExec==='MAKER_FIRST'?'메이커우선':'⚡즉시체결'} · ${sizingSummary}${ctrl.maxSymbolMarginPct>0?` · 종목한도 ${ctrl.maxSymbolMarginPct}%`:''}${ctrl.maxLeverage?` · 최대 ${ctrl.maxLeverage}배`:''}</small></summary>
    <div class="copy-ctrl-body">
+    <div class="ctrl-row"><span class="ctrl-label">체결 속도</span><div class="ctrl-presets">${execBtns}</div></div>
     <div class="ctrl-row"><span class="ctrl-label">수량 방식</span><div class="ctrl-presets">${sizingBtns}</div></div>
     <div class="ctrl-row"><span class="ctrl-label">비중 프리셋</span><div class="ctrl-presets">${presetBtns}</div></div>
     <form class="ctrl-form" data-copy-controls-form>
@@ -1100,6 +1103,8 @@ function bindCopyButtons(el){
   if(sendRep)return call(sendRep,'/api/account/alerts/daily-report',{},'발송 중…','[data-account-alerts-msg]');
   const clearCd=e.target.closest('[data-copy-clear-cooldown]');
   if(clearCd)return call(clearCd,'/api/copy/controls',{clearCooldown:true},'해제 중…');
+  const execBtn=e.target.closest('[data-copy-exec-mode]');
+  if(execBtn)return call(execBtn,'/api/copy/controls',{executionMode:execBtn.dataset.copyExecMode},'적용 중…','[data-copy-ctrl-msg]');
   const szBtn=e.target.closest('[data-copy-sizing]');
   if(szBtn)return call(szBtn,'/api/copy/controls',{sizing:szBtn.dataset.copySizing},'적용 중…','[data-copy-ctrl-msg]');
   const tbBtn=e.target.closest('[data-copy-tb]');

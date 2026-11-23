@@ -13,7 +13,8 @@ function realCopyTradeText(e){
  const action={OPENED:e.refollow?'다시 진입':e.late?'늦은 진입':'신규 진입',ADDED:'추매',REDUCED:'일부 청산',CLOSED:'전량 청산'}[e.type];
  if(!action)return null;
  const sym=displaySymbol(e.symbol);
- const head=[`카피 | ${action}`,[sym,LIVE_SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null].filter(Boolean).join(' · ')];
+ const speedTag=Number.isFinite(Number(e.execMs))&&Number(e.execMs)>=0?`⚡ ${(Number(e.execMs)/1000).toFixed(2)}초`:null;
+ const head=[`카피 | ${action}`,[sym,LIVE_SIDE[e.direction],e.leverage>0?`${e.leverage}배`:null,speedTag].filter(Boolean).join(' · ')];
  let detail;
  if(e.type==='OPENED')detail=[`수량 ${e.qty}${e.matchTraderQty?' (트레이더 1배 수량)':''} · 평균 진입가 ${e.avg??'—'} USDT`,
   e.stop?`거래소 보호 손절 ${e.stop} USDT`:null,e.stopDistPct!=null?`매물대 기준 ${e.stopDistPct}% · 거래량 동반 이탈 시`:null];

@@ -205,3 +205,27 @@ test('CopyExecutor automatically scales new entries and adds when live equity in
  assert.equal(ex.status().effectiveRatio,0.5);
 });
 
+test('CopyControls persists executionMode (INSTANT vs MAKER_FIRST) and live_control UI renders speed toggle',async()=>{
+ const {copyHTML}=await import('../public/live_control.js');
+ const dir=tmp();
+ const c1=new CopyControls({directory:dir});
+ assert.equal(c1.effectiveExecutionMode('INSTANT'),'INSTANT');
+ c1.configure({executionMode:'MAKER_FIRST'});
+ assert.equal(c1.status().executionMode,'MAKER_FIRST');
+ const c2=new CopyControls({directory:dir});
+ assert.equal(c2.effectiveExecutionMode('INSTANT'),'MAKER_FIRST');
+ c2.configure({executionMode:'INSTANT'});
+ assert.equal(c2.status().executionMode,'INSTANT');
+ assert.throws(()=>c2.configure({executionMode:'BOGUS'}),/INVALID_COPY_CONTROLS|INSTANT/);
+
+ const html=copyHTML({
+  mode:'LIVE',enabled:true,armed:true,sizing:'BALANCE_RATIO',executionMode:'INSTANT',
+  traderBalanceUSD:20000,funds:{equity:3000,available:2500},
+  positions:[],closed:[],events:[],controls:c2.status(),
+ });
+ assert.match(html,/data-copy-exec-mode="INSTANT"/);
+ assert.match(html,/data-copy-exec-mode="MAKER_FIRST"/);
+ assert.match(html,/⚡즉시체결/);
+});
+
+

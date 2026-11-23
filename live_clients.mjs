@@ -40,18 +40,38 @@ export class BingXTradeClient{
   // BingX limits request rates per key: signed calls go out one at a time with a small gap, and an
   // HTTP 429 pauses every call for the time the venue asks (Retry-After, else 10 s). A read (GET)
   // is tried once more after the pause; an order refused with 429 (not taken) is sent again up to twice.
-  let chain=Promise.resolve(),last=-Infinity,cooldownUntil=-Infinity;
+  let last=-Infinity,cooldownUntil=-Infinity;
   const mono=()=>performance.now();
-  // Gap between signed calls: BINGX_MIN_INTERVAL_MS, else 250 ms (0 with an injected test transport).
-  const envGap=process.env.BINGX_MIN_INTERVAL_MS,gapMs=envGap!==undefined&&envGap!==''&&Number(envGap)>=0?Number(envGap):fetcher===globalThis.fetch?250:0;
+  // Gap between signed calls: BINGX_MIN_INTERVAL_MS, else 80 ms (0 with an injected test transport).
+  const envGap=process.env.BINGX_MIN_INTERVAL_MS,gapMs=envGap!==undefined&&envGap!==''&&Number(envGap)>=0?Number(envGap):fetcher===globalThis.fetch?80:0;
   const sleep=ms=>ms>0?new Promise(r=>setTimeout(r,ms)):Promise.resolve();
   // A read (GET) waits out a 429 pause before it joins the queue, so it never holds the queue;
-  // an order (POST) inside the queue waits at most 3 s of a pause, so a stop or an emergency close
-  // is not held back. If the venue still refuses, the caller sees HTTP_429 and handles it.
-  const slot=maxPause=>{const p=chain.then(async()=>{await sleep(Math.max(Math.min(cooldownUntil-mono(),maxPause),last+gapMs-mono()));last=mono()});chain=p.catch(()=>{});return p};
+  // an order (POST/DELETE) joins the priority lane ahead of pending GET reads and waits at most 3 s of a 429 pause,
+  // so copy/manual orders never sit behind background dashboard or history polls.
+  const highQ=[],lowQ=[];
+  let pumping=false;
+  const pump=async()=>{
+   if(pumping)return;
+   pumping=true;
+   try{
+    while(highQ.length||lowQ.length){
+     const peek=highQ.length?highQ[0]:lowQ[0];
+     const wait=Math.max(Math.min(cooldownUntil-mono(),peek.maxPause),last+gapMs-mono());
+     if(wait>0)await sleep(wait);
+     const job=highQ.length?highQ.shift():lowQ.shift();
+     if(!job)break;
+     last=mono();
+     job.resolve();
+    }
+   }finally{pumping=false}
+  };
+  const slot=(maxPause,priority=false)=>new Promise(resolve=>{
+   (priority?highQ:lowQ).push({maxPause,resolve});
+   void pump();
+  });
   this.request=async(method,path,params={},retried=false,beforeSend)=>{
    if(method==='GET')while(cooldownUntil>mono())await sleep(cooldownUntil-mono());
-   await slot(method==='GET'?0:3000);
+   await slot(method==='GET'?0:3000,method!=='GET');
    checkOrderDispatch(beforeSend);
    const signed={...params,recvWindow,timestamp:now()};
    const url=`${host}${path}?${bingxQuery(signed,bingxSign(signed,secret))}`;

@@ -1246,3 +1246,96 @@ test('Astra audit regressions: idempotent partial reduce, exact partial fill qty
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
  }
 });
+
+test('fast copy execution: instant MARKET default, skips unused zonesOf, deduplicates balance read, caches setup, skips redundant post-fill/close polls, and prioritizes BingX orders',async()=>{
+ const {BingXTradeClient}=await import('../live_clients.mjs');
+ const {CopyControls}=await import('../copy_controls.mjs');
+
+ // 1) LIVE config defaults to instant MARKET (makerFirst: false) for lowest latency
+ const liveCfg=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'},'OFF');
+ assert.equal(liveCfg.makerFirst,false,'LIVE copy defaults to instant market');
+ assert.equal(liveCfg.makerWaitMs,1000,'makerWaitMs lowered to 1000ms when opted in');
+
+ // 2) Fast entry & close path: 0 zonesOf calls, 1 balance read, cached setup on 2nd entry, 0ms recheck sleep on FILLED close
+ let zonesCalls=0,balCalls=0,posCalls=0,modeCalls=0,levReadCalls=0,marginSetCalls=0,levSetCalls=0,sleepCalls=0;
+ let amt=0,oid=1;
+ const client={
+  positionMode:async()=>{modeCalls++;return {dualSidePosition:true}},
+  leverage:async()=>{levReadCalls++;return {maxLongLeverage:20,maxShortLeverage:20}},
+  setMarginType:async()=>{marginSetCalls++;return {}},
+  setLeverage:async()=>{levSetCalls++;return {}},
+  positions:async()=>{posCalls++;return amt>0?[{symbol:'TNSR-USDT',positionSide:'SHORT',positionAmt:String(amt),avgPrice:'0.051',markPrice:'0.051',unrealizedProfit:'0.4'}]:[]},
+  placeOrder:async p=>{
+   const q=Number(p.quantity);
+   if(p.side==='SELL')amt=+(amt+q).toFixed(6);
+   else amt=Math.max(0,+(amt-q).toFixed(6));
+   return {order:{orderId:String(oid++),status:'FILLED',executedQty:String(q),avgPrice:'0.051'}};
+  },
+  cancelOrder:async()=>({}),
+ };
+ const controls=new CopyControls();
+ const ex=new CopyExecutor({
+  config:liveCfg,client,controls,
+  contractOf:async()=>contract,
+  markOf:async()=>0.051,
+  zonesOf:async()=>{zonesCalls++;return [{priceLow:0.04,priceHigh:0.045}]},
+  balance:async()=>{balCalls++;return {equity:2000,available:1500}},
+  gate:()=>({ok:true}),
+  sleep:async()=>{sleepCalls++},
+  now:()=>1e12,
+ });
+ // Entry #1
+ const r1=await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(r1.ok,true);
+ assert.equal(typeof r1.execMs,'number');
+ assert.equal(zonesCalls,0,'zonesOf skipped completely when stops=false');
+ assert.equal(balCalls,1,'single balance read per entry (no duplicate in #orderMargin)');
+ assert.equal(posCalls,1,'post-fill positions() skipped when FILLED receipt carries qty+avg');
+ assert.equal(ex.status().executionMode,'INSTANT');
+ assert.match(copyEventText(ex.status().events.find(e=>e.type==='OPENED')),/⚡ \d+\.\d{2}초/);
+
+ // Close #1: FILLED full close completes immediately without extra positions() or 1000ms recheck sleep
+ const posBeforeClose=posCalls;
+ const rc=await ex.handle({id:2,date:1e12+1000,text:CLOSE});
+ assert.equal(rc.ok,true);
+ assert.equal(posCalls,posBeforeClose+1,'only pre-close positions() read, no post-close recheck');
+ assert.equal(sleepCalls,0,'zero 1000ms #recheck sleep on confirmed FILLED close');
+
+ // Entry #2 on same symbol/side/leverage reuses cached positionMode, maxLeverage, setMarginType, setLeverage
+ const r2=await ex.handle({id:3,date:1e12+2000,text:OPEN});
+ assert.equal(r2.ok,true);
+ assert.equal(modeCalls,1,'positionMode cached');
+ assert.equal(levReadCalls,1,'maxLeverage cached');
+ assert.equal(marginSetCalls,1,'setMarginType cached');
+ assert.equal(levSetCalls,1,'setLeverage cached');
+
+ // Runtime toggle switches to MAKER_FIRST cleanly
+ controls.configure({executionMode:'MAKER_FIRST'});
+ assert.equal(ex.status().executionMode,'MAKER_FIRST');
+
+ // 3) BingXTradeClient priority lane: POST order jumps ahead of queued GET reads
+ const prevGap=process.env.BINGX_MIN_INTERVAL_MS;
+ process.env.BINGX_MIN_INTERVAL_MS='15';
+ try{
+  const order=[];
+  const mockFetch=async(url,init)=>{
+   const tag=init.method==='POST'?'POST':'GET';
+   order.push(`${tag}:${new URL(url).pathname.split('/').pop()}`);
+   return new Response(JSON.stringify({code:0,data:{}}),{status:200,headers:{'content-type':'application/json'}});
+  };
+  const bx=new BingXTradeClient({apiKey:'k',secret:'s',mode:'TESTNET',fetcher:mockFetch});
+  // Queue 3 GETs and then immediately dispatch a POST order
+  const p1=bx.positions();
+  const p2=bx.balance();
+  const p3=bx.openOrders('BTC-USDT');
+  const pOrder=bx.placeOrder({symbol:'BTC-USDT',side:'BUY',type:'MARKET',quantity:'1'});
+  await Promise.all([p1,p2,p3,pOrder]);
+  // First GET starts immediately; POST jumps ahead of the remaining queued GETs!
+  assert.equal(order[0],'GET:positions');
+  assert.equal(order[1],'POST:order','POST order preempts queued GET reads');
+ }finally{
+  if(prevGap===undefined)delete process.env.BINGX_MIN_INTERVAL_MS;
+  else process.env.BINGX_MIN_INTERVAL_MS=prevGap;
+ }
+});
+
