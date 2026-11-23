@@ -109,11 +109,22 @@ test('Telegram bot commands: /scalp, /size, /block, /unblock work cleanly and en
  // /size
  const szCur=await alerts.handleCommand('/size','777',T0);
  assert.match(szCur,/\$20,000/);
+ // 2-step (decision 2026-11-23 (c)): nothing changes until /confirm; before/after and the size factor are shown.
+ const confirm=async reply=>alerts.handleCommand('/confirm '+reply.match(/\/confirm (\d{4})/)[1],'777',T0+1000);
  const szHalf=await alerts.handleCommand('/size 0.5x','777',T0);
- assert.match(szHalf,/\$40,000/);
+ assert.match(szHalf,/\$20,000 → 변경 후: \$40,000/);
+ assert.match(szHalf,/지금의 0\.50배/);
+ assert.equal(controls.effectiveTraderBalanceUSD(20000),20000,'not changed before /confirm');
+ assert.match(await confirm(szHalf),/\$40,000로 변경/);
  assert.equal(controls.effectiveTraderBalanceUSD(20000),40000);
  const sz15k=await alerts.handleCommand('/size 15k','777',T0);
  assert.match(sz15k,/\$15,000/);
+ assert.match(await confirm(sz15k),/\$15,000로 변경/);
+ assert.equal(controls.effectiveTraderBalanceUSD(20000),15000);
+ const szBig=await alerts.handleCommand('/size 1000','777',T0);
+ assert.match(szBig,/15\.0배로 커지는 큰 변경/);
+ assert.match(await alerts.handleCommand('/confirm 0000','777',T0+1000),/일치하지 않습니다/);
+ assert.match(await alerts.handleCommand('/confirm '+szBig.match(/\/confirm (\d{4})/)[1],'777',T0+61000),/만료/,'expires after 60 s');
  assert.equal(controls.effectiveTraderBalanceUSD(20000),15000);
  const szBad=await alerts.handleCommand('/size 50','777',T0);
  assert.match(szBad,/1,000 ~ 1,000,000/);

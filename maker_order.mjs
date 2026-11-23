@@ -1,7 +1,11 @@
 // Post-Only (maker 0.02%) first order execution with bounded wait and safe MARKET fallback
 // for any unfilled remainder (user 2026-11-23: cut taker 0.05% fee drain on BTC/ETH/alt entries).
-// Never double-fills: cancels the resting PostOnly order and reads final executedQty before
-// sending MARKET for strictly the remaining quantity.
+// Never double-fills (audit C-1, 2026-11-23): after the cancel the PostOnly order must be read back in a
+// terminal state (FILLED / CANCELED / EXPIRED ...) by its clientOrderId; only then is MARKET sent, for
+// strictly the confirmed remaining quantity. A state that stays unknown throws MAKER_STATE_UNCONFIRMED
+// and nothing is sent at market.
+// Child clientOrderIds (audit C-2): limit = cid.slice(0,31)+'p', market = cid.slice(0,31)+'m', so a full
+// 32-character id never makes the two orders share one clientOrderId.
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {forMode} from './bingx_position_mode.mjs';
 
@@ -10,6 +14,13 @@ const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const orderOf=d=>d?.order??d;
 const defaultSleep=ms=>new Promise(r=>setTimeout(r,ms));
 const TERMINAL=new Set(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED']);
+const CONFIRM_TRIES=4;
+
+/** The clientOrderIds of the PostOnly limit child and the MARKET remainder child of `clientOrderId`. */
+export function makerChildIds(clientOrderId){
+ const base=String(clientOrderId||'mk').slice(0,31);
+ return {limit:base+'p',market:base+'m'};
+}
 
 /** Compute a passive Post-Only limit price 1 tick inside the passive side of markPrice. */
 export function makerLimitPrice({side,markPrice,tickSize}){
@@ -89,8 +100,7 @@ export async function placeMakerThenMarket({
   return {executionMode:'MARKET',orderId:m.orderId,makerOrderId:null,marketOrderId:m.orderId,filledQty:m.filledQty,makerQty:0,marketQty:m.filledQty,avg:m.avg,status:m.status,receipt:m.res};
  }
 
- const makerCid=(String(clientOrderId||'mk')+'p').slice(0,32);
- const marketCid=(String(clientOrderId||'mk')+'m').slice(0,32);
+ const {limit:makerCid,market:marketCid}=makerChildIds(clientOrderId);
  let makerRes=null;
  try{
   makerRes=orderOf(await client.placeOrder({
@@ -110,28 +120,43 @@ export async function placeMakerThenMarket({
   return {executionMode:'MARKET',orderId:m.orderId,makerOrderId:null,marketOrderId:m.orderId,filledQty:m.filledQty,makerQty:0,marketQty:m.filledQty,avg:m.avg,status:m.status,receipt:m.res,makerFallbackReason:e?.code||'POST_ONLY_REJECTED'};
  }
 
- const makerId=makerRes?.orderId!=null?String(makerRes.orderId):null;
+ let makerId=makerRes?.orderId!=null?String(makerRes.orderId):null;
  let latest=makerRes;
  let status=String(latest?.status||'NEW').toUpperCase();
  const deadline=Date.now()+Math.max(0,Number(waitMs)||0);
+ const poll=Math.max(50,Number(pollMs)||500);
+ // Read the PostOnly order by its clientOrderId (works even when the placement answer had no orderId).
+ const readMaker=async()=>{
+  const fresh=orderOf(await client.getOrder(symbol,{clientOrderId:makerCid,...(makerId?{orderId:makerId}:{})}));
+  if(fresh){
+   latest=fresh;status=String(fresh.status||'').toUpperCase()||status;
+   if(!makerId&&fresh.orderId!=null)makerId=String(fresh.orderId);
+  }
+  return fresh;
+ };
 
- while(makerId&&!TERMINAL.has(status)&&Date.now()<deadline){
-  await sleep(Math.min(Math.max(50,Number(pollMs)||500),Math.max(0,deadline-Date.now())));
-  try{
-   const fresh=orderOf(await client.getOrder(symbol,{orderId:makerId}));
-   if(fresh){latest=fresh;status=String(fresh.status||status).toUpperCase()}
-  }catch{break}
+ while(!TERMINAL.has(status)&&Date.now()<deadline){
+  await sleep(Math.min(poll,Math.max(0,deadline-Date.now())));
+  try{await readMaker()}catch{break}
  }
 
- if(makerId&&!TERMINAL.has(status)){
-  try{await client.cancelOrder(symbol,makerId)}catch{}
-  try{
-   const fresh=orderOf(await client.getOrder(symbol,{orderId:makerId}));
-   if(fresh){latest=fresh;status=String(fresh.status||status).toUpperCase()}
-  }catch{}
+ if(!TERMINAL.has(status)){
+  // Cancel, then confirm a terminal state before anything is sent at market (a cancel that failed or a read
+  // that failed leaves the PostOnly order possibly resting: sending the remainder could double-fill).
+  for(let attempt=0;attempt<CONFIRM_TRIES&&!TERMINAL.has(status);attempt++){
+   if(attempt===0||attempt===2){try{await client.cancelOrder(symbol,makerId??undefined,{clientOrderId:makerCid})}catch{}}
+   if(attempt>0)await sleep(poll);
+   try{await readMaker()}catch{}
+  }
+ }
+ const confirmedQty=num(latest?.executedQty);
+ if(!TERMINAL.has(status)||(confirmedQty===null&&status!=='FILLED')){
+  const detail=`PostOnly 주문 최종 상태 확인 불가(${status||'UNKNOWN'}, ${makerCid}) — 시장가 잔량을 보내지 않음`;
+  throw Object.assign(Error(detail),{code:'MAKER_STATE_UNCONFIRMED',
+   makerOrderId:makerId,makerClientOrderId:makerCid,lastStatus:status||null,lastExecutedQty:confirmedQty,detail});
  }
 
- const makerQty=Math.max(0,num(latest?.executedQty)??0);
+ const makerQty=Math.max(0,confirmedQty??(status==='FILLED'?qty:0));
  const makerAvg=pos(latest?.avgPrice)??limitPx;
  const minQ=pos(minQuantity)??0;
  const remRaw=Math.max(0,qty-makerQty);
@@ -143,8 +168,8 @@ export async function placeMakerThenMarket({
    orderId:makerId,
    makerOrderId:makerId,
    marketOrderId:null,
-   filledQty:makerQty||qty,
-   makerQty:makerQty||qty,
+   filledQty:makerQty,
+   makerQty,
    marketQty:0,
    avg:makerAvg,
    status:status||'FILLED',

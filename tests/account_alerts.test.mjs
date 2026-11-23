@@ -135,7 +135,8 @@ test('Telegram bot remote commands (#6) enforce private chat auth, 2-step close 
 
   await alerts.pollCommands();
   assert.equal(paused,1,'only authorized /pause ran');
-  assert.equal(resumed,1);
+  assert.equal(resumed,0,'/resume waits for /confirm (decision 2026-11-23 (c))');
+  assert.match(replies[2].text,/카피 재개 확인[\s\S]*화면에서만 해제/);
   assert.equal(closed.length,0,'/close must NOT execute without /confirm');
   assert.equal(replies.length,4);
   assert.match(replies[0].text,/실계좌 현황[\s\S]*3,080\.50/);

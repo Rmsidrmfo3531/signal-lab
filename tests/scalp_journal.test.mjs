@@ -23,7 +23,7 @@ const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:
 
 function venue(){
  const calls=[],orders=new Map();let amt=0,avg=0,mark=0,id=1;const income=[];
- const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',...extra};orders.set(o.orderId,o);return o};
+ const add=(p,extra={})=>{const o={orderId:String(id++),...p,status:'NEW',executedQty:'0',...extra};orders.set(o.orderId,o);return o};
  const client={mode:'TESTNET',positionMode:async()=>({dualSidePosition:false}),marginType:async()=>({marginType:'CROSSED'}),setMarginType:async()=>({}),
   leverage:async()=>({maxLongLeverage:20,maxShortLeverage:20}),setLeverage:async(s,side,l)=>({leverage:l}),
   positions:async()=>amt?[{symbol:'SOL-USDT',positionAmt:String(amt),avgPrice:String(avg),markPrice:String(mark||avg),unrealizedProfit:String(((mark||avg)-avg)*amt)}]:[],

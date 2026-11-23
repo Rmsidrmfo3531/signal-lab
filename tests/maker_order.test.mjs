@@ -41,7 +41,8 @@ test('placeMakerThenMarket cancels partial PostOnly and sends MARKET strictly fo
    if(p.type==='LIMIT')return {order:{orderId:'mk2',status:'NEW',executedQty:'0',avgPrice:'0'}};
    return {order:{orderId:'mkt2',status:'FILLED',executedQty:p.quantity,avgPrice:'100.1'}};
   },
-  getOrder:async()=>({order:{orderId:'mk2',status:'PARTIALLY_FILLED',executedQty:'0.4',avgPrice:'99.9'}}),
+  // PARTIALLY_FILLED while resting; CANCELED (0.4 filled) once the cancel went through.
+  getOrder:async()=>({order:{orderId:'mk2',status:canceled.length?'CANCELED':'PARTIALLY_FILLED',executedQty:'0.4',avgPrice:'99.9'}}),
   cancelOrder:async(sym,id)=>{canceled.push([sym,id]);return {}},
  };
  const r=await placeMakerThenMarket({

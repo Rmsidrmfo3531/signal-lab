@@ -25,7 +25,8 @@ test('RealTrailingManager defaults to OFF and dispatches no actions until explic
  assert.equal(REAL_TRAILING_DEFAULTS.trailActivateRoePct,15);
  assert.equal(REAL_TRAILING_DEFAULTS.trailPullbackRatio,30);
  assert.equal(REAL_TRAILING_DEFAULTS.minLockRoePct,5);
- assert.equal(rt.status().applyToManual,true);
+ assert.equal(rt.status().applyToManual,false,'manual positions off by default (decision 2026-11-23 a)');
+ assert.equal(REAL_TRAILING_DEFAULTS.applyToManual,false);
  assert.equal(rt.status().applyToCopy,false);
  const res=await rt.evaluate([pos({roePct:25})]);
  assert.deepEqual(res,[]);
@@ -60,9 +61,12 @@ test('RealTrailingManager executes 50% partial lock-in + auto breakeven + peak p
  assert.match(msgs[0],/50% 부분 익절 확정/);
  assert.match(msgs[0],/본전 스탑 자동 설정/);
 
- // Step 2: Peak climbs to +20% Net ROE (gross +21% - 1% fee at 10x)
+ // Step 2: Peak climbs to +20% Net ROE (gross +21% - 1% fee at 10x): an exchange lock stop goes in at +15% net
+ // (gross +16% at 10x = avg x 1.016 = 3048).
  t+=20_000;
- assert.deepEqual(await rt.evaluate([pos({size:0.5,roePct:21,unrealized:30})],t),[]);
+ const lock=await rt.evaluate([pos({size:0.5,roePct:21,unrealized:30})],t);
+ assert.deepEqual(lock.map(a=>a.action),['TRAIL_STOP']);
+ assert.equal(calls.at(-1).action,'TRAIL_STOP');assert.ok(Math.abs(calls.at(-1).stopPrice-3048)<1e-6);
  assert.equal(rt.status().tracked['ETHUSDT|LONG'].peakRoePct,20);
  assert.equal(rt.status().tracked['ETHUSDT|LONG'].partialTaken,true);
 
@@ -77,7 +81,7 @@ test('RealTrailingManager executes 50% partial lock-in + auto breakeven + peak p
  assert.equal(a2[0].action,'CLOSE_ALL');
  assert.equal(a2[0].peakRoePct,20);
  assert.equal(calls.at(-1).action,'CLOSE_ALL');
- assert.match(msgs[1],/고점 순 ROE \+20\.0% → 청산 순 ROE \+14\.5%/);
+ assert.match(msgs.at(-1),/고점 순 ROE \+20\.0% → 청산 순 ROE \+14\.5%/);
  assert.equal(rt.status().tracked['ETHUSDT|LONG'],undefined,'tracking cleared after full exit');
 });
 
@@ -88,7 +92,7 @@ test('RealTrailingManager skips TradFi thin-liquidity symbols by default and pre
   now:()=>t,
   executeAction:async a=>{calls.push(a);return {ok:true}},
  });
- rt.configure({enabled:true,partialLockRoePct:8,trailActivateRoePct:8,skipTradfi:true});
+ rt.configure({enabled:true,applyToManual:true,partialLockRoePct:8,trailActivateRoePct:8,skipTradfi:true});
 
  // TradFi symbol (NCSKSNDK2USD-USDT / GOLDUSDT) skipped by default
  assert.deepEqual(await rt.evaluate([
@@ -123,7 +127,7 @@ test('RealTrailingManager handles HALF_QTY_TOO_SMALL fallback, excludedSymbols, 
     return {ok:true};
    },
   });
-  rt.configure({enabled:true,excludedSymbols:'BTC, eth'});
+  rt.configure({enabled:true,applyToManual:true,excludedSymbols:'BTC, eth'});
   assert.deepEqual(rt.status().excludedSymbols,['BTCUSDT','ETHUSDT']);
 
   // Excluded symbol skipped
@@ -143,6 +147,7 @@ test('RealTrailingManager handles HALF_QTY_TOO_SMALL fallback, excludedSymbols, 
   const res=await rt.evaluate([pos({symbol:'ETHUSDT',roePct:14.5})],t); // net 13.5% <= 14% stop
   assert.equal(res.length,1);
   assert.equal(res[0].action,'CLOSE_ALL');
+  assert.ok(calls.some(c=>c.action==='TRAIL_STOP'),'the exchange lock stop was placed at the +20% peak');
 
   // Persistence across restart
   const restarted=new RealTrailingManager({directory:dir});
@@ -207,7 +212,7 @@ test('RealTrailingManager backtest preset applies +16% Net ROE, 25% partial clos
  assert.equal(s0.autoBreakeven,true);
 
  // Enable and hit +17.5% gross (+16.5% net at 10x -> >= +16% trigger) -> 25% partial lock-in + 75% runner!
- rt.configure({enabled:true});
+ rt.configure({enabled:true,applyToManual:true});
  const a1=await rt.evaluate([pos({roePct:17.5,unrealized:40})],t);
  assert.equal(a1.length,1);
  assert.equal(a1[0].action,'CLOSE_HALF');
