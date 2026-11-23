@@ -559,7 +559,7 @@ export function copyHTML(c){
     <label>수동 단일 증거금 한도 (%, 0=제한없음) <input name="manualMaxMarginPct" type="number" min="0" max="100" step="1" value="${esc(sf.manualMaxMarginPct??15)}" title="단일 수동 주문 증거금이 잔고의 이 비율을 넘으면 차단"></label>
     <div class="ctrl-btn-row">
      <button type="submit" class="outline-btn small">안전 가드 저장</button>
-     <button type="button" class="outline-btn small" data-safety-preset title="계좌 안전 가드(일일 -8%, 수동 최대 20배, 증거금 15%) + 카피 제어(최대 20배, 종목한도 15%, 3연패·-6% 쿨다운) 일괄 적용">🛡️ 권장 안전 프리셋 일괄 적용</button>
+     <button type="button" class="outline-btn small" data-safety-preset title="계좌 안전 가드(일일 손실 차단 끔, 수동 최대 20배, 증거금 15%) + 카피 제어(최대 20배, 종목한도 15%, 3연패·-6% 쿨다운) 일괄 적용">🛡️ 권장 안전 프리셋 일괄 적용</button>
     </div>
    </form>
    <span class="copy-msg" data-real-safety-msg></span>
@@ -1057,7 +1057,7 @@ function bindCopyButtons(el){
   if(e.target.closest('[data-analytics-toggle]')){analyticsOpen=!e.target.closest('details')?.open;}
   const safetyPreset=e.target.closest('[data-safety-preset]');
   if(safetyPreset){
-   if(!window.confirm('실계좌 권장 안전 프리셋을 일괄 적용할까요?\n· 통합 일일 손실 차단 -8%\n· 수동/카피 최대 레버리지 20배\n· 종목당·단일 증거금 한도 15%\n· 카피 3연패 또는 당일 -6% 쿨다운(2시간)'))return;
+   if(!window.confirm('실계좌 권장 안전 프리셋을 일괄 적용할까요?\n· 통합 일일 손실 차단 끔\n· 수동/카피 최대 레버리지 20배\n· 종목당·단일 증거금 한도 15%\n· 카피 3연패 또는 당일 -6% 쿨다운(2시간)'))return;
    return call(safetyPreset,'/api/real/safety',{applyPreset:true},'적용 중…','[data-real-safety-msg]');
   }
   const safetyUnlock=e.target.closest('[data-safety-unlock]');

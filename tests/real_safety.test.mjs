@@ -22,7 +22,9 @@ test('RealAccountGuard trips combined daily loss circuit breaker, disarms copy, 
    onTrip:()=>{trippedCalls++},
    sendText:m=>{msgs.push(m)},
   });
-  assert.deepEqual([guard.status().dailyLossLimitPct,guard.status().manualMaxLeverage,guard.status().manualMaxMarginPct],[8,20,15]);
+  // Breaker off by default (user 2026-11-23 "이거는 없애줘"); this test turns it on at 8 % from the screen setting.
+  assert.deepEqual([guard.status().dailyLossLimitPct,guard.status().manualMaxLeverage,guard.status().manualMaxMarginPct],[0,20,15]);
+  guard.configure({dailyLossLimitPct:8});
   assert.equal(guard.isTripped(),false);
 
   // Realized -$100 + unrealized -$100 = -$200 (-6.67% of $3,000) -> below -8% threshold
@@ -55,7 +57,7 @@ test('RealAccountGuard trips combined daily loss circuit breaker, disarms copy, 
 });
 
 test('RealAccountGuard blocks high-leverage and oversized manual orders via executeRealManualOrder and surfaces UI warnings',async()=>{
- const guard=new RealAccountGuard({now:()=>NOW});
+ const guard=new RealAccountGuard({now:()=>NOW});guard.configure({dailyLossLimitPct:8});
  const og=guard.orderGuard({equityUSD:3000});
  assert.equal(og.maxLeverage,20);
  assert.equal(og.maxMarginUSD,450); // 15% of $3,000
@@ -110,4 +112,21 @@ test('RealAccountGuard blocks high-leverage and oversized manual orders via exec
  assert.match(html,/data-safety-unlock/);
  assert.equal(REAL_SAFETY_COPY_PRESET.maxLeverage,20);
  assert.equal(REAL_SAFETY_COPY_PRESET.maxSymbolMarginPct,15);
+});
+
+test('daily loss breaker is off by default and a saved 8 % from before 2026-11-23 is migrated to off once (user "이거는 없애줘")',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rs-off-'));
+ try{
+  const file=path.join(dir,'real-safety.json');
+  fs.writeFileSync(file,JSON.stringify({version:1,dailyLossLimitPct:8,manualMaxLeverage:20,manualMaxMarginPct:15,trippedDay:kstDay(NOW),trippedAt:NOW}));
+  const g=new RealAccountGuard({directory:dir,now:()=>NOW});
+  assert.equal(g.status().dailyLossLimitPct,0);
+  assert.equal(g.isTripped(),false,'an old trip of today no longer blocks');
+  const r=await g.evaluateDailyLoss({equityUSD:3000,dailyByDay:{[kstDay(NOW)]:-2000},positions:[],now:NOW});
+  assert.equal(r.tripped,false);assert.equal(g.orderGuard({equityUSD:3000}).blocked,false);
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).breakerOffMigrated,true);
+  // Turned back on from the screen: kept after restart (migration runs once).
+  g.configure({dailyLossLimitPct:8});
+  assert.equal(new RealAccountGuard({directory:dir,now:()=>NOW}).status().dailyLossLimitPct,8);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });

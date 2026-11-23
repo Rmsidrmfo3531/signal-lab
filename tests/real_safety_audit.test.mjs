@@ -40,7 +40,7 @@ test('R1 breaker: while tripped the copy refuses new entries and adds (closes st
  const dir=tmp();
  try{
   let t=Date.parse('2026-11-23T03:00:00Z');const day=kstDay(t);
-  const guard=new RealAccountGuard({directory:dir,now:()=>t});
+  const guard=new RealAccountGuard({directory:dir,now:()=>t});guard.configure({dailyLossLimitPct:8});
   const v=venue();
   const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,directory:dir,
    balance:async()=>({equity:3000,available:2500}),now:()=>1e12,breaker:()=>guard.isTripped()?'DAILY_LOSS_CIRCUIT_BREAKER':null});

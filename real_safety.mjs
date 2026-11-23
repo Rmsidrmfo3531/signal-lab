@@ -7,7 +7,8 @@ import path from 'node:path';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 
 export const REAL_SAFETY_DEFAULTS=Object.freeze({
- dailyLossLimitPct:8,
+ // Daily loss breaker off (user 2026-11-23 "이거는 없애줘"): 0 = off; can be set again from the screen (0..50 %).
+ dailyLossLimitPct:0,
  manualMaxLeverage:20,
  manualMaxMarginPct:15,
 });
@@ -51,7 +52,9 @@ export class RealAccountGuard{
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={
-   dailyLossLimitPct:Number.isFinite(Number(saved?.dailyLossLimitPct))?Number(saved.dailyLossLimitPct):REAL_SAFETY_DEFAULTS.dailyLossLimitPct,
+   // One-time migration: a value saved before the user turned the breaker off (2026-11-23) becomes 0.
+   dailyLossLimitPct:saved?.breakerOffMigrated===true&&Number.isFinite(Number(saved?.dailyLossLimitPct))?Number(saved.dailyLossLimitPct):REAL_SAFETY_DEFAULTS.dailyLossLimitPct,
+   breakerOffMigrated:true,
    manualMaxLeverage:Number.isFinite(Number(saved?.manualMaxLeverage))?Number(saved.manualMaxLeverage):REAL_SAFETY_DEFAULTS.manualMaxLeverage,
    manualMaxMarginPct:Number.isFinite(Number(saved?.manualMaxMarginPct))?Number(saved.manualMaxMarginPct):REAL_SAFETY_DEFAULTS.manualMaxMarginPct,
    trippedDay:typeof saved?.trippedDay==='string'?saved.trippedDay:null,
@@ -63,6 +66,7 @@ export class RealAccountGuard{
    unlockedAt:Number.isFinite(Number(saved?.unlockedAt))?Number(saved.unlockedAt):null,
   };
   this.lastEval=null;
+  if(saved&&saved.breakerOffMigrated!==true){this.#save();this.log('daily loss breaker turned off (user 2026-11-23); saved limit was',saved.dailyLossLimitPct)}
  }
 
  #save(){
@@ -73,7 +77,7 @@ export class RealAccountGuard{
 
  isTripped(at=this.now()){
   const today=kstDay(at);
-  return this.store.trippedDay===today&&this.store.unlockedDay!==today;
+  return this.store.dailyLossLimitPct>0&&this.store.trippedDay===today&&this.store.unlockedDay!==today;
  }
 
  configure(patch={}){
