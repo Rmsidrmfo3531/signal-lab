@@ -14,6 +14,7 @@ export const SCALP_REASON_KO=Object.freeze({SIDE_OFF:'꺼 둔 방향의 신호 (
  FALLING_KNIFE:'강한 역방향 장대봉 진행 중 (반전 대기)',MAX_ADDS_REACHED:'최대 추매 횟수 도달',
  BTC_DUMP_GUARD:'BTC 급락 연동 방어 (알트 롱 일시 보류)',BTC_PUMP_GUARD:'BTC 급등 연동 방어 (알트 숏 일시 보류)',
  SCORE_BELOW_MINIMUM:'신호 점수 미달 (100점 기준 진입 보류)',
+ SYMBOL_LOSS_COOLDOWN:'종목 손실 쿨다운 (연속 손절 방지 휴식)',
  // Close reasons
  STOP:'손절',BREAKEVEN_STOP:'1차 목표 뒤 본전 손절',ALL_TARGETS:'목표 모두 도달',TIME_STOP:'2시간 보유 시간 만료',MAX_HOLD_EXIT:'최대 보유시간 컷 (손실 장기화 차단)',EMERGENCY_ROE_STOP:'비상 손절 (-ROE 한도)',EARLY_TAKE_PROFIT:'조기 익절',EXTERNAL:'외부 청산',NO_STOP:'보호 손절 실패로 긴급 청산',MANUAL:'수동',NO_PROTECTIVE_STOP:'보호 손절 실패'});
 export const scalpReasonKo=r=>SCALP_REASON_KO[r]||r||'';
@@ -49,8 +50,9 @@ export function scalpEventText(e){
  if(e.type==='PARTIAL_EXIT')return `🎯 ${head} ${side(e)} 부분 청산\n청산 수량 ${fmt(e.qty)} · 잔여 ${fmt(e.left)}`;
  if(e.type==='CLOSED'){
   const trailPart=Number(e.peakRoePct)>0?` (트레일링 고점 +${Number(e.peakRoePct).toFixed(1)}%)`:'';
+  const scorePart=Number.isFinite(Number(e.score))?` · ${e.score}점(${e.grade||''}급)`:'';
   const roePart=Number.isFinite(Number(e.roePct))?` (${Number(e.roePct)>=0?'+':''}${Number(e.roePct).toFixed(1)}% ROE)`:'';
-  return `${Number(e.netUSD)>0?'✅':Number(e.netUSD)<0?'🔻':'⚪'} ${head} ${side(e)} 청산 · ${scalpReasonKo(e.reason)}${trailPart}\n손익 ${usd(e.netUSD)}${roePart} (수수료 포함 추정) · 목표 ${e.tp||0}개 · 보유 ${mins(e.holdMs)}`;
+  return `${Number(e.netUSD)>0?'✅':Number(e.netUSD)<0?'🔻':'⚪'} ${head} ${side(e)} 청산 · ${scalpReasonKo(e.reason)}${trailPart}${scorePart}\n손익 ${usd(e.netUSD)}${roePart} (수수료 포함 추정) · 목표 ${e.tp||0}개 · 보유 ${mins(e.holdMs)}`;
  }
  if(e.type==='DAILY_LOSS_LIMIT')return e.shared?`⛔ [테스트넷] 하루 손실 한도 도달 (신호+단타 ${usd(e.lossUSD)})\n오늘(한국 시간)은 신호 전략·단타 모두 신규 진입과 추매를 멈췄습니다.`
   :`⛔ ${SCALP_LABEL} 하루 손실 한도 도달 (${usd(e.lossUSD)})\n오늘은 신규 진입과 추매를 멈췄습니다.`;
