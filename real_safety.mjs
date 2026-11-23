@@ -9,8 +9,9 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 export const REAL_SAFETY_DEFAULTS=Object.freeze({
  // Daily loss breaker off (user 2026-11-23 "이거는 없애줘"): 0 = off; can be set again from the screen (0..50 %).
  dailyLossLimitPct:0,
- manualMaxLeverage:20,
- manualMaxMarginPct:15,
+ // Manual caps off too (user 2026-11-23 17:20 "다 없애 필요없어"): 0 = no limit; can be set again from the screen.
+ manualMaxLeverage:0,
+ manualMaxMarginPct:0,
 });
 
 export const REAL_SAFETY_COPY_PRESET=Object.freeze({
@@ -55,8 +56,10 @@ export class RealAccountGuard{
    // One-time migration: a value saved before the user turned the breaker off (2026-11-23) becomes 0.
    dailyLossLimitPct:saved?.breakerOffMigrated===true&&Number.isFinite(Number(saved?.dailyLossLimitPct))?Number(saved.dailyLossLimitPct):REAL_SAFETY_DEFAULTS.dailyLossLimitPct,
    breakerOffMigrated:true,
-   manualMaxLeverage:Number.isFinite(Number(saved?.manualMaxLeverage))?Number(saved.manualMaxLeverage):REAL_SAFETY_DEFAULTS.manualMaxLeverage,
-   manualMaxMarginPct:Number.isFinite(Number(saved?.manualMaxMarginPct))?Number(saved.manualMaxMarginPct):REAL_SAFETY_DEFAULTS.manualMaxMarginPct,
+   // One-time migration (limitsOffMigrated): manual caps saved before 2026-11-23 17:20 become 0 (no limit).
+   manualMaxLeverage:saved?.limitsOffMigrated===true&&Number.isFinite(Number(saved?.manualMaxLeverage))?Number(saved.manualMaxLeverage):REAL_SAFETY_DEFAULTS.manualMaxLeverage,
+   manualMaxMarginPct:saved?.limitsOffMigrated===true&&Number.isFinite(Number(saved?.manualMaxMarginPct))?Number(saved.manualMaxMarginPct):REAL_SAFETY_DEFAULTS.manualMaxMarginPct,
+   limitsOffMigrated:true,
    trippedDay:typeof saved?.trippedDay==='string'?saved.trippedDay:null,
    trippedAt:Number.isFinite(Number(saved?.trippedAt))?Number(saved.trippedAt):null,
    trippedLossUSD:Number.isFinite(Number(saved?.trippedLossUSD))?Number(saved.trippedLossUSD):null,
@@ -66,7 +69,7 @@ export class RealAccountGuard{
    unlockedAt:Number.isFinite(Number(saved?.unlockedAt))?Number(saved.unlockedAt):null,
   };
   this.lastEval=null;
-  if(saved&&saved.breakerOffMigrated!==true){this.#save();this.log('daily loss breaker turned off (user 2026-11-23); saved limit was',saved.dailyLossLimitPct)}
+  if(saved&&(saved.breakerOffMigrated!==true||saved.limitsOffMigrated!==true)){this.#save();this.log('daily loss breaker turned off (user 2026-11-23); saved limit was',saved.dailyLossLimitPct)}
  }
 
  #save(){

@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {parseCopyMessage} from '../copy_parser.mjs';
-import {CopyExecutor,copyConfig} from '../copy_executor.mjs';
+import {CopyExecutor,copyConfig as copyConfigRaw} from '../copy_executor.mjs';
+// The copy loss limit is off by default since 2026-11-23 (user "다 없애 필요없어"); these tests exercise it at 50 %.
+const copyConfig=(env={},mode)=>copyConfigRaw({COPY_LEDGER_LOSS_PCT:'50',...env},mode);
 import {copyEventText} from '../copy_telegram.mjs';
 
 const OPEN='📌 포지션 진입\n━━━━━━━━━━━━━━━━\n🪙 TNSRUSDT  🔴 Short  ×5\n━━━━━━━━━━━━━━━━\n진입가　0.05296 USDT\n현재가　0.05100 USDT\n수량　　880　마진 9.01 USDT\n손익　　🟢 +1.72 USDT';
@@ -1352,3 +1354,8 @@ test('fast copy execution: instant MARKET default, skips unused zonesOf, dedupli
  }
 });
 
+
+test('copy loss limit is off by default (user 2026-11-23 "다 없애 필요없어"): a deep open loss closes nothing and does not stop the copy',async()=>{
+ assert.equal(copyConfigRaw({},'TESTNET').ledgerLossPct,0);
+ assert.equal(copyConfigRaw({COPY_LEDGER_LOSS_PCT:'50'},'TESTNET').ledgerLossPct,50);
+});
