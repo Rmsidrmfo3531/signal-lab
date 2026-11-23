@@ -2,6 +2,9 @@
 // Pure math helpers are exported for unit tests; live fetchers pull real L2 orderbooks and signed trades
 // from Binance Futures (primary) with automatic Gate.io / BingX fallback, and accumulate live L2 snapshots in memory.
 
+import fs from 'node:fs';
+import path from 'node:path';
+
 export const FIRECHART_RANGES = Object.freeze({
   LIVE: { key: 'LIVE', labelKo: '실시간', interval: '5m', limit: 72, useRealTrades: true },
   '1D': { key: '1D', labelKo: '1D', interval: '15m', limit: 96, useRealTrades: false },
@@ -27,12 +30,43 @@ const round = (v, d = 4) => {
   return Math.round(n * f) / f;
 };
 
-// In-memory live L2 orderbook snapshot recorder (ring buffer per symbol, max 120 snapshots x 15 coins)
+// In-memory + optional disk-persisted live L2 orderbook snapshot recorder (ring buffer per symbol, max 120 snapshots x 15 coins)
 const MAX_SNAPSHOTS_PER_SYM = 120;
 const MAX_TRACKED_SYMS = 15;
 const bookHistory = new Map();
+let snapshotFile = null;
+let lastDiskFlushAt = 0;
 
-export function recordOrderbookSnapshot(symbol, book, now = Date.now()) {
+function flushSnapshotsToDisk(now = Date.now(), force = false) {
+  if (!snapshotFile) return;
+  if (!force && now - lastDiskFlushAt < 15_000) return;
+  lastDiskFlushAt = now;
+  try {
+    fs.mkdirSync(path.dirname(snapshotFile), { recursive: true });
+    const obj = { version: 1, at: now, symbols: Object.fromEntries(bookHistory.entries()) };
+    const tmp = `${snapshotFile}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(obj));
+    fs.renameSync(tmp, snapshotFile);
+  } catch {}
+}
+
+export function configureFirechartPersistence(directory) {
+  if (!directory) { snapshotFile = null; return; }
+  snapshotFile = path.join(directory, 'firechart-snapshots.json');
+  if (fs.existsSync(snapshotFile)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(snapshotFile, 'utf8'));
+      const syms = raw?.symbols && typeof raw.symbols === 'object' ? raw.symbols : {};
+      for (const [sym, arr] of Object.entries(syms)) {
+        if (Array.isArray(arr) && arr.length) {
+          bookHistory.set(sym.toUpperCase(), arr.slice(-MAX_SNAPSHOTS_PER_SYM));
+        }
+      }
+    } catch {}
+  }
+}
+
+export function recordOrderbookSnapshot(symbol, book, now = Date.now(), { forceFlush = false } = {}) {
   if (!symbol || !book || (!book.bids?.length && !book.asks?.length)) return;
   const sym = String(symbol).toUpperCase();
   let arr = bookHistory.get(sym);
@@ -50,6 +84,7 @@ export function recordOrderbookSnapshot(symbol, book, now = Date.now()) {
     .slice(0, 30);
   arr.push({ t: now, bids: topSide(book.bids), asks: topSide(book.asks) });
   if (arr.length > MAX_SNAPSHOTS_PER_SYM) arr.splice(0, arr.length - MAX_SNAPSHOTS_PER_SYM);
+  flushSnapshotsToDisk(now, forceFlush);
 }
 
 export function getOrderbookSnapshots(symbol) {
@@ -58,6 +93,63 @@ export function getOrderbookSnapshots(symbol) {
 
 export function clearFirechartHistory() {
   bookHistory.clear();
+  lastDiskFlushAt = 0;
+}
+
+/**
+ * Detect Whale (Red) + Large (Green) vs Retail (Orange) CVD divergence.
+ */
+export function detectCohortDivergence(series = []) {
+  if (!Array.isArray(series) || series.length < 4) {
+    return { type: 'NEUTRAL', badgeKo: '고래·개미 중립', detailKo: '코호트 간 유의미한 수급 역행 없음', tone: 'neutral' };
+  }
+  const last = series.at(-1);
+  const lookback = series[Math.max(0, series.length - Math.min(12, Math.floor(series.length / 2)))];
+  const whaleAbs = num(last?.abs?.whale);
+  const largeAbs = num(last?.abs?.large);
+  const retailAbs = num(last?.abs?.retail);
+  const whaleNorm = num(last?.norm?.whale, 0.5);
+  const retailNorm = num(last?.norm?.retail, 0.5);
+  const whaleRecentDelta = whaleAbs - num(lookback?.abs?.whale);
+  const retailRecentDelta = retailAbs - num(lookback?.abs?.retail);
+  const smartSum = whaleAbs + largeAbs * 0.5;
+
+  // 1) Whale Accumulation against Retail Selling (Bullish Smart-Money Divergence)
+  if ((whaleAbs > 0 || smartSum > 0) && retailAbs < 0 && (whaleNorm - retailNorm >= 0.22 || (whaleRecentDelta > 0 && retailRecentDelta < 0))) {
+    return {
+      type: 'WHALE_ACCUMULATION',
+      badgeKo: '🐋 고래 매집 · 개미 투매 역행',
+      detailKo: '고래(Red)·대형(Green) 순매수 유입 중 개미(Orange) 순매도 이탈 — 스마트머니 하방 흡수 우위',
+      tone: 'pos',
+    };
+  }
+  // 2) Whale Distribution into Retail Buying (Bearish Smart-Money Divergence)
+  if ((whaleAbs < 0 || smartSum < 0) && retailAbs > 0 && (retailNorm - whaleNorm >= 0.22 || (whaleRecentDelta < 0 && retailRecentDelta > 0))) {
+    return {
+      type: 'WHALE_DISTRIBUTION',
+      badgeKo: '🐋 고래 매도 · 개미 추격 역행',
+      detailKo: '고래(Red)·대형(Green) 순매도 이탈 중 개미(Orange) 추격 순매수 — 상방 물량 떠넘기기 주의',
+      tone: 'neg',
+    };
+  }
+  // 3) Strong Whale-led directional flow
+  if (whaleAbs > 0 && whaleNorm >= 0.72) {
+    return {
+      type: 'WHALE_LED_BUY',
+      badgeKo: '🐋 고래 주도 순매수 우위',
+      detailKo: '고래(Red) 계단식 순매수 누적 구간',
+      tone: 'pos',
+    };
+  }
+  if (whaleAbs < 0 && whaleNorm <= 0.28) {
+    return {
+      type: 'WHALE_LED_SELL',
+      badgeKo: '🐋 고래 주도 순매도 우위',
+      detailKo: '고래(Red) 계단식 순매도 이탈 구간',
+      tone: 'neg',
+    };
+  }
+  return { type: 'NEUTRAL', badgeKo: '고래·개미 동조/중립', detailKo: '코호트 간 뚜렷한 역행 없음', tone: 'neutral' };
 }
 
 /**
@@ -86,7 +178,8 @@ export function normalizeCohortSeries(points = []) {
     return { t: pt.t, price: num(pt.price), abs, norm };
   });
   const latest = series.at(-1) || { abs: { retail: 0, mid: 0, large: 0, whale: 0 }, norm: { retail: 0.5, mid: 0.5, large: 0.5, whale: 0.5 } };
-  return { series, latest, bounds };
+  const divergence = detectCohortDivergence(series);
+  return { series, latest, bounds, divergence };
 }
 
 /**

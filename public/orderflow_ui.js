@@ -571,6 +571,11 @@ export function orderflowHTML(data, {
     return `<span class="of-fc-leg"><i style="background:${m.color}"></i><b>${m.name}</b> <small>(${esc(thLabels[m.key] || '')})</small> <em class="${(val ?? 0) >= 0 ? 'paper-profit' : 'paper-loss'}">${esc(fmtUsdCompact(val ?? 0, true))}</em></span>`;
   }).join('');
 
+  const cDiv = fc?.cohorts?.divergence;
+  const cohortDivBadge = cDiv && cDiv.badgeKo
+    ? `<span class="of-tag ${cDiv.tone === 'pos' ? 'pos' : cDiv.tone === 'neg' ? 'neg' : 'neutral'}" data-of-cohort-div title="${esc(cDiv.detailKo || '')}">${esc(cDiv.badgeKo)}</span>`
+    : '';
+
   const modeNote = fc?.cohortMode === 'REAL_TRADES'
     ? `실제 개별 체결 ${esc(fc.cohorts?.tradeCount ?? 0)}건 분리 · 실시간 호가벽 ${esc(fc.heatmap?.liveWalls?.length ?? 0)}개${fc.heatmap?.snapshotCount > 0 ? ` · 누적 스냅샷 ${esc(fc.heatmap.snapshotCount)}회` : ''}`
     : `거래량 유동성 선반 + 우측 실시간 호가벽(${esc(SOURCE_LABELS[fc?.bookSource] || fc?.bookSource || '')}) · 캔들 규모 기반 고래/개미 추정 코호트`;
@@ -590,7 +595,7 @@ export function orderflowHTML(data, {
       </div>
     </div>
     <div class="of-fc-legend-row">
-      <div class="of-fc-legends">${cohortLegend}</div>
+      <div class="of-fc-legends">${cohortLegend}${cohortDivBadge}</div>
       <small class="of-fc-mode-note">${modeNote}</small>
     </div>
     <div data-of-fc-inspect-wrap>${firechartInspectBarHTML(inspected)}</div>

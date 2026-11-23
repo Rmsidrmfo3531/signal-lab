@@ -206,3 +206,28 @@ test('shared folder: PCs that used it are listed; OneDrive conflict copies are f
   assert.deepEqual(findConflictCopies(dir),['store (1).json','store-BOOK.json']);
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
+
+test('importLegacy respects SIGNAL_LAB_ENV_DIR and backup/restore preserves companion live/copy/scalp ledgers',()=>{
+ const old=work(),shared=work(),localEnv=work(),emptyRestore=work();
+ try{
+  atomicWriteStore(path.join(old,'store.json'),fixture('legacy-p'));
+  atomicWriteStore(path.join(old,'copy-store-live.json'),{version:1,positions:{},closed:[{id:'c1',netUSD:12.5}]});
+  atomicWriteStore(path.join(old,'scalp-store.json'),{version:1,open:[],closed:[{key:'s1',netUSD:4.2}]});
+  atomicWriteStore(path.join(old,'live-orders.json'),{version:1,killSwitch:false,records:[{signalKey:'l1',status:'CLOSED'}]});
+  fs.writeFileSync(path.join(old,'.env'),'BINGX_API_KEY=secret\n');
+
+  const res=importLegacy(old,shared,{env:{SIGNAL_LAB_DATA_DIR:shared,SIGNAL_LAB_ENV_DIR:localEnv}});
+  assert.equal(res.migratedEnv,true);
+  assert.equal(fs.existsSync(path.join(shared,'.env')),false,'secret .env is never copied into shared folder when SIGNAL_LAB_ENV_DIR is separate');
+  assert.equal(fs.readFileSync(path.join(localEnv,'.env'),'utf8'),'BINGX_API_KEY=secret\n');
+  assert.equal(readStore(path.join(shared,'copy-store-live.json')).closed[0].id,'c1');
+
+  const bk=backupStore(path.join(shared,'store.json'));
+  const restored=restoreStore(bk,emptyRestore);
+  assert.ok(restored.restoredLedgers?.includes('copy-store-live.json'));
+  assert.ok(restored.restoredLedgers?.includes('scalp-store.json'));
+  assert.ok(restored.restoredLedgers?.includes('live-orders.json'));
+  assert.equal(readStore(path.join(emptyRestore,'copy-store-live.json')).closed[0].netUSD,12.5);
+  assert.equal(readStore(path.join(emptyRestore,'scalp-store.json')).closed[0].netUSD,4.2);
+ }finally{for(const d of [old,shared,localEnv,emptyRestore])fs.rmSync(d,{recursive:true,force:true})}
+});
