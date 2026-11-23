@@ -94,6 +94,7 @@ test('manual levels for a live position: checked against the current price, only
 function fakeBingX({income=()=>[]}={}){
  const state={amt:100,avg:0.2,mark:0.205,orders:[],incomeCalls:0};
  return {state,client:{
+  mode:'TESTNET',
   positions:async()=>state.amt?[{symbol:'DOGE-USDT',positionAmt:String(state.amt),avgPrice:String(state.avg),markPrice:String(state.mark),unrealizedProfit:((state.mark-state.avg)*state.amt).toFixed(6)}]:[],
   placeOrder:async o=>{const id=String(9000+state.orders.length);state.orders.push({...o,id});return {order:{orderId:id}}},
   cancelOrder:async()=>({}),openOrders:async()=>({orders:[]}),balance:async()=>[{asset:'USDT',equity:'321.5'}],

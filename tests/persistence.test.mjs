@@ -125,6 +125,19 @@ test('explicit legacy import backs up existing empty shared store, blocks overwr
   assert.equal(readStore(path.join(dir,'store.json')).paper.open[0].key,'legacy');
  }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
 });
+test('legacy import places configuration in the selected local directory',()=>{
+ const sandbox=work();
+ try{
+  const old=path.join(sandbox,'old'),shared=path.join(sandbox,'shared'),envPath=path.join(sandbox,'local','.env');
+  fs.mkdirSync(old);
+  atomicWriteStore(path.join(old,'store.json'),fixture());
+  fs.writeFileSync(path.join(old,'.env'),'EXAMPLE_KEY=test-fixture');
+  assert.equal(importLegacy(old,shared,{envPath}).migratedEnv,true);
+  assert.equal(fs.readFileSync(envPath,'utf8'),'EXAMPLE_KEY=test-fixture');
+  assert.equal(fs.existsSync(path.join(shared,'.env')),false);
+ }finally{fs.rmSync(sandbox,{recursive:true,force:true})}
+});
+
 test('single writer lock prevents two versions modifying the same store',()=>{
  const sandbox=work();try{
   const release=acquireDataLock(sandbox);assert.equal(isLocked(sandbox),true);

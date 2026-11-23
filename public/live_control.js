@@ -1219,14 +1219,15 @@ function render(o){
 
 if(typeof document!=='undefined'&&document.getElementById('liveControl')){
  const $=id=>document.getElementById(id);
- let mode='OFF',loadPending=null;
+ let armMode=null,loadPending=null;
  const fail=e=>{const s=$('liveError');if(s){s.hidden=false;s.textContent='실매매 요청 실패: '+e.message}};
  const load=()=>{
   if(loadPending)return loadPending;
   loadPending=(async()=>{
    const r=await fetch('/api/live/overview',{cache:'no-store',signal:AbortSignal.timeout(15000)}),d=await r.json().catch(()=>({}));
    if(!r.ok)throw Error(d.error||'HTTP '+r.status);
-   mode=d.mode;if($('liveError'))$('liveError').hidden=true;render(d);return d;
+   armMode=d.mode==='LIVE'?'LIVE':d.mode==='TESTNET'||d.testnet?.scalp?'TESTNET':null;
+   if($('liveError'))$('liveError').hidden=true;render(d);return d;
   })().finally(()=>{loadPending=null});
   return loadPending;
  };
@@ -1267,9 +1268,10 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
  };
  $('liveRefresh')?.addEventListener('click',()=>load().catch(fail));
  $('liveArm')?.addEventListener('click',()=>{
-  if(liveActionBusy)return;
+  if(liveActionBusy||!armMode)return;
+  const mode=armMode;
   const text=mode==='LIVE'?'실거래(실제 돈)를 활성화합니다. 다음 최종 신호부터 거래소에 실제 돈으로 주문이 나갑니다. 계속할까요?':'테스트넷(모의 자금)의 신호 전략과 되돌림 단타를 함께 활성화합니다. 다음 최종 신호·5분봉 단타 신호부터 BingX 테스트넷에 주문이 나갑니다(하루 손실 한도는 둘이 공동). 계속할까요?';
-  if(confirm(text))post('/api/live/arm',{confirm:'ARM'}).catch(fail)});
+  if(confirm(text))post('/api/live/arm',{confirm:'ARM',mode}).catch(fail)});
  $('liveDisarm')?.addEventListener('click',()=>{if(!liveActionBusy)post('/api/live/disarm').catch(fail)});
  $('testnetBudget')?.addEventListener('click',async e=>{
   const btn=e.target.closest?.('[data-testnet-clear-stop]');

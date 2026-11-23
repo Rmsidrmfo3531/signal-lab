@@ -2282,7 +2282,10 @@ const server=http.createServer(async(req,res)=>{
      return response(res,200,{ok:true,at:testnetHistoryReset.at,removed,budget:testnetBudget.status()});
     }catch(e){return response(res,e.httpStatus||500,{error:e.code||'TESTNET_RESET_PNL_FAILED',message:e.message})}
    }
-   if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
+   if(pathname==='/api/live/arm'){
+    if(body?.confirm!=='ARM'||!['LIVE','TESTNET'].includes(body.mode))return response(res,400,{error:'CONFIRM_REQUIRED'});
+    const expectedMode=LIVE.mode==='LIVE'?'LIVE':'TESTNET';
+    if(body.mode!==expectedMode)return response(res,409,{error:'ARM_MODE_MISMATCH'});
     if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});
     // TESTNET / OFF: one switch for the signal strategy and the reversal scalp (user 2026-11-17). LIVE: unchanged.
     let status;

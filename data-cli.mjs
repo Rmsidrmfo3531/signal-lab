@@ -1,6 +1,6 @@
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {prepareData,resolveDataDir,backupStore,importLegacy,restoreStore,isLocked} from './persistence.mjs';
+import {prepareData,resolveDataDir,resolveEnvPath,backupStore,importLegacy,restoreStore,isLocked} from './persistence.mjs';
 const root=path.dirname(fileURLToPath(import.meta.url));
 const [command,arg,flag]=process.argv.slice(2);
 try{
@@ -13,7 +13,7 @@ try{
  }else if(command==='import'){
   if(!arg)throw Error('가져올 이전 버전 폴더를 지정하세요.');
   if(isLocked(dir))throw Error('기록 가져오기 전 Signal Lab 서버를 종료하세요.');
-  const result=importLegacy(arg,dir,{replace:flag==='--replace'});
+  const result=importLegacy(arg,dir,{replace:flag==='--replace',envPath:resolveEnvPath()});
   console.log('기록 가져오기 완료:',JSON.stringify(result,null,2));
  }else if(command==='restore'){
   if(!arg)throw Error('복원할 백업 store-*.json 경로를 지정하세요.');

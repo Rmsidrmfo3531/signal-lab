@@ -37,7 +37,7 @@ test('paper off by default: a final signal opens a TESTNET live position, no pap
   assert.equal((await post('/api/scalp/disarm',{})).body.armed,false);
   // One testnet switch (user 2026-11-17): 활성화 turns on the signal strategy and the scalp; the shared 15 % budget is shown.
   assert.equal(before.testnet.armed,false);assert.equal(before.testnet.budget.dailyLossPct,15);assert.equal(before.testnet.stats.all.trades,0);
-  const one=await post('/api/live/arm',{confirm:'ARM'});assert.equal(one.status,200,JSON.stringify(one.body));
+  const one=await post('/api/live/arm',{confirm:'ARM',mode:'TESTNET'});assert.equal(one.status,200,JSON.stringify(one.body));
   assert.equal(one.body.testnet.armed,true);assert.equal(one.body.testnet.scalp.armed,true);assert.equal(one.body.testnet.signal.armed,true);
   const both=await app.get('/api/live/overview');assert.equal(both.testnet.armed,true);assert.equal(both.scalp.armed,true);assert.equal(both.armed,true);
   assert.equal(both.scalp.settings.dailyLossPct,15);assert.equal(both.scalp.settings.sharedBudget,true);
@@ -78,7 +78,7 @@ test('the default testnet switch arms only scalps and rejects the signal test-or
  const post=(target,body)=>fetchLocal(app.base+target,{method:'POST',headers:{'content-type':'application/json',origin:app.base,'sec-fetch-site':'same-origin'},body:JSON.stringify(body)});
  try{
   await app.start();
-  const switched=await post('/api/live/arm',{confirm:'ARM'});
+  const switched=await post('/api/live/arm',{confirm:'ARM',mode:'TESTNET'});
   assert.equal(switched.status,200);
   assert.deepEqual((await switched.json()).testnet,{signal:null,scalp:{armed:true},armed:true,partial:false,killSwitch:false,scalpOnly:true});
   const blocked=await post('/api/live/test-order',{confirm:'TEST'});

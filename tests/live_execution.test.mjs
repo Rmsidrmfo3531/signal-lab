@@ -91,6 +91,74 @@ function row(venue='BINGX',extra={}){
   targetPlan:{quantity:0.6},execution:{estimatedStopLossUSD:6},decision:{ready:true},...extra};
 }
 
+test('signal reconciliation cannot use a LIVE client for TESTNET or unclassified records',async()=>{
+ const dir=tmp();
+ try{
+  const active={signalKey:'t',clientOrderId:'testnet-entry',symbol:'ETHUSDT',venue:'BINGX',venueSymbol:'ETH-USDT',direction:'LONG',
+   mode:'TESTNET',hedge:false,status:'OPEN',position:{size:10},quantity:{total:10,parts:[4,3.5,2.5]},
+   stop:97,targets:[105,108,112],targetOrderIds:[],events:[]};
+  fs.writeFileSync(path.join(dir,'live-orders.json'),JSON.stringify({records:[active,
+   {...active,signalKey:'legacy',mode:undefined},{...active,signalKey:'settle',status:'CLOSED',closedAt:NOW-180000}]}));
+  for(const liveConfirmed of [false,true]){
+   const m=mockBingX({mode:'LIVE',positionAmt:()=>'4'});
+   const ex=new LiveExecutor({config:config({mode:'LIVE',liveConfirmed}),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
+   await ex.reconcile();
+   assert.deepEqual(m.calls,[]);assert.equal(ex.store.records[0].position.size,10);
+   assert.deepEqual((await ex.setLevels('t',{stop:99})).reasons,['VENUE_ACCOUNT_MODE_MISMATCH']);
+  }
+  const m=mockBingX({mode:'LIVE'}),testnet=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir});
+  await testnet.reconcile();
+  assert.deepEqual(m.calls,[]);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
+test('signal reconciliation accepts wrapped positions and keeps protection when the position response is invalid',async()=>{
+ const held=[{symbol:'ETH-USDT',positionSide:'LONG',positionAmt:'0.2',avgPrice:'100.02'}];
+ let rows=held;
+ const m=mockBingX({rows:()=>rows});
+ const ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},now:()=>NOW});
+ ex.arm();await ex.onSignal(row(),{signalKey:'wrapped'});
+ const record=ex.store.records[0],before=m.calls.length;
+ rows={positions:held};await ex.reconcile();
+ assert.equal(record.position.size,.2);assert.equal(record.status,'OPEN');
+ rows={positions:[{symbol:'ETH-USDT',positionAmt:null}]};await ex.reconcile();
+ assert.equal(record.status,'OPEN');assert.equal(record.events.at(-1).reason,'POSITION_CHECK_FAILED');
+ assert.equal(m.calls.slice(before).some(c=>c.method==='DELETE'),false);
+});
+
+test('signal reconciliation retries order cleanup across restart before retiring a flat record',async()=>{
+ const dir=tmp();
+ try{
+  let amount='0.20';
+  const m=mockBingX({positionAmt:()=>amount});
+  let ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
+  ex.arm();await ex.onSignal(row(),{signalKey:'cleanup'});
+  const id='9600';
+  ex.store.records[0].adds=[{qty:.2,price:97,orderId:id}];
+  m.orders.push({orderID:id,type:'LIMIT'});
+  const cancel=m.client.cancelOrder.bind(m.client);let attempts=0;
+  m.client.cancelOrder=async(...args)=>{if(args[1]===id&&++attempts===1)throw Error('temporary failure');return cancel(...args)};
+  amount='0';await ex.reconcile();
+  assert.equal(ex.store.records[0].status,'OPEN');assert.equal(ex.store.records[0].flatCleanup,true);
+  ex=new LiveExecutor({config:config(),clients:{BINGX:m.client},directory:dir,now:()=>NOW});
+  await ex.reconcile();
+  assert.equal(attempts,2);assert.equal(ex.store.records[0].status,'CLOSED');assert.equal(ex.store.records[0].flatCleanup,undefined);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
+test('saving signal history preserves the oldest open record and its planned risk',()=>{
+ const dir=tmp();
+ try{
+  const ex=new LiveExecutor({config:config(),directory:dir});
+  ex.store.records.push({mode:'TESTNET',signalKey:'open',status:'OPEN',plannedRiskUSD:10,stopOrderId:'s'},
+   ...Array.from({length:301},(_,n)=>({mode:'TESTNET',signalKey:String(n),status:'CLOSED'})));
+  ex.resetKill();
+  const restored=new LiveExecutor({config:config(),directory:dir});
+  assert.equal(restored.store.records[0].signalKey,'open');assert.equal(restored.budgetSource().openRisk(),10);
+  assert.equal(restored.store.records.filter(r=>r.status==='CLOSED').length,300);
+ }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+
 test('live quantity scales the paper plan to the live risk cap on the 20-lot grid',()=>{
  const base=liveQuantity({quantity:0.6,estimatedStopLossUSD:6,maxRiskUSD:2,contract:row().venueContract});
  assert.deepEqual({total:base.total,parts:base.parts,unit:base.unit},{total:0.2,parts:[0.08,0.07,0.05],unit:'BASE_ASSET'});assert.ok(Math.abs(base.riskUSD-2)<1e-9);
@@ -580,7 +648,7 @@ test('open-risk cap: worst losses of all open positions plus the new one stay wi
  const m=mockBingX(),cfg=config({sizing:'BALANCE',unitPct:.19,maxLossPct:30,maxAdds:10,dailyMaxLossPct:60,maxOpen:4,maxPerDirection:4});
  const ex=new LiveExecutor({config:cfg,clients:{BINGX:m.client},now:()=>NOW});ex.arm();
  // An older open position (another day) with a planned worst loss of 599.95 on a 1000 balance (limit 600).
- ex.store.records.push({signalKey:'old',symbol:'XRPUSDT',venue:'BINGX',direction:'SHORT',status:'OPEN',day:'2000-01-01',plannedRiskUSD:599.95,createdAt:NOW-86400000});
+ ex.store.records.push({mode:'TESTNET',signalKey:'old',symbol:'XRPUSDT',venue:'BINGX',direction:'SHORT',status:'OPEN',day:'2000-01-01',plannedRiskUSD:599.95,createdAt:NOW-86400000});
  const r=await ex.onSignal(row('BINGX',{entry:100,leverage:10,stop:90,targets:[101.5,102,103]}),{signalKey:'new'});
  assert.equal(r.sent,false);assert.ok(r.reasons.includes('OPEN_RISK_LIMIT'),JSON.stringify(r.reasons));
  ex.store.records[0].plannedRiskUSD=10;
@@ -617,9 +685,9 @@ test('BingX 429: a non-JSON 429 page still pauses calls; an order waits at most 
 
 test('reconcile: a 429 ends the round (no waits per position); 5 minutes of 429 is recorded once',async()=>{
  let t=NOW,reads=0;const err=Object.assign(Error('rate'),{code:'HTTP_429'});
- const client={positions:async()=>{reads++;throw err}};
+ const client={mode:'TESTNET',positions:async()=>{reads++;throw err}};
  const ex=new LiveExecutor({config:config(),clients:{BINGX:client},now:()=>t});
- for(const k of ['a','b','c'])ex.store.records.push({signalKey:k,symbol:'ETHUSDT',venue:'BINGX',venueSymbol:'ETH-USDT',direction:'LONG',status:'OPEN',quantity:{total:1},targetOrderIds:[],events:[],createdAt:NOW});
+ for(const k of ['a','b','c'])ex.store.records.push({mode:'TESTNET',signalKey:k,symbol:'ETHUSDT',venue:'BINGX',venueSymbol:'ETH-USDT',direction:'LONG',status:'OPEN',quantity:{total:1},targetOrderIds:[],events:[],createdAt:NOW});
  await ex.reconcile();assert.equal(reads,1,'one read, then the round stops');
  assert.equal(ex.store.records.flatMap(r=>r.events||[]).filter(e=>e.type==='RECONCILE_ERROR').length,0);
  t+=6*60_000;await ex.reconcile();await ex.reconcile();
@@ -637,9 +705,9 @@ test('BingX 429: an order is not held behind a read that waits out a long pause'
 });
 
 test('reconcile: rounds start at a different position so a 429 does not starve the same ones',async()=>{
- const seen=[];const client={positions:async()=>{throw Object.assign(Error('rate'),{code:'HTTP_429'})}};
+ const seen=[];const client={mode:'TESTNET',positions:async()=>{throw Object.assign(Error('rate'),{code:'HTTP_429'})}};
  const ex=new LiveExecutor({config:config(),clients:{BINGX:client},now:()=>NOW});
- for(const k of ['A','B','C'])ex.store.records.push({signalKey:k,symbol:k+'USDT',venue:'BINGX',venueSymbol:'ETH-USDT',direction:'LONG',status:'OPEN',quantity:{total:1},targetOrderIds:[],events:[],createdAt:NOW});
+ for(const k of ['A','B','C'])ex.store.records.push({mode:'TESTNET',signalKey:k,symbol:k+'USDT',venue:'BINGX',venueSymbol:'ETH-USDT',direction:'LONG',status:'OPEN',quantity:{total:1},targetOrderIds:[],events:[],createdAt:NOW});
  ex.log=m=>{seen.push(m)};
  for(let i=0;i<3;i++)await ex.reconcile();
  assert.deepEqual(seen.map(m=>m.match(/\[LIVE BINGX (\w+)\]/)?.[1]).sort(),['AUSDT','BUSDT','CUSDT'],'each round hit a different position first');

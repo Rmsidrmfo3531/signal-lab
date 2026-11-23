@@ -118,7 +118,7 @@ export function restoreStore(sourcePath,dir){
 export function hasTradeRecords(store){
  return Boolean((store?.journal?.length||0)||(store?.alerts?.length||0)||(store?.paper?.open?.length||0)||(store?.paper?.pending?.length||0)||(store?.paper?.closed?.length||0)||(store?.paper?.skipped?.length||0));
 }
-export function importLegacy(sourcePath,dir,{replace=false}={}){
+export function importLegacy(sourcePath,dir,{replace=false,envPath=path.join(dir,'.env')}={}){
  const source=path.resolve(sourcePath);
  const srcFile=fs.statSync(source).isDirectory()?path.join(source,'store.json'):source;
  const incoming=readStore(srcFile);if(!incoming)throw Error('이전 기록 파일 store.json을 찾지 못했습니다: '+srcFile);
@@ -127,7 +127,9 @@ export function importLegacy(sourcePath,dir,{replace=false}={}){
  if(existing&&hasTradeRecords(existing)&&!replace)throw Error('공용 폴더에 이미 거래·신호 기록이 있습니다. 덮어쓰지 않았습니다. 백업 후 별도로 복원하세요.');
  const backup=existing?backupStore(dst):null;
  atomicWriteStore(dst,incoming);
- const srcEnv=path.join(path.dirname(srcFile),'.env');const migratedEnv=copyExclusive(srcEnv,path.join(dir,'.env'));
+ const srcEnv=path.join(path.dirname(srcFile),'.env');
+ if(fs.existsSync(srcEnv))fs.mkdirSync(path.dirname(envPath),{recursive:true,mode:0o700});
+ const migratedEnv=copyExclusive(srcEnv,envPath);
  return {dataDir:dir,backup,imported:srcFile,migratedEnv,recordCounts:{paperOpen:incoming.paper?.open?.length||0,paperClosed:incoming.paper?.closed?.length||0,paperPending:incoming.paper?.pending?.length||0,journal:incoming.journal?.length||0,alerts:incoming.alerts?.length||0}};
 }
 

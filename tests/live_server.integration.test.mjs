@@ -33,7 +33,7 @@ test('live control: OFF by default; testnet needs an explicit arm; secrets never
  try{
   const s=await(await off.request('/api/live')).json();
   assert.equal(s.mode,'OFF');assert.equal(s.armed,false);assert.deepEqual(s.credentialsConfigured,{BINGX:false,GATEIO:false});
-  const arm=await post(off,'/api/live/arm',{confirm:'ARM'});assert.equal(arm.status,409);assert.equal((await arm.json()).error,'LIVE_MODE_OFF');
+  const arm=await post(off,'/api/live/arm',{confirm:'ARM',mode:'TESTNET'});assert.equal(arm.status,409);assert.equal((await arm.json()).error,'LIVE_MODE_OFF');
  }finally{await off.close()}
 
  const app=await boot(t,{LIVE_TRADING_MODE:'TESTNET',TESTNET_SIGNAL_ENTRIES:'on',BINGX_API_KEY:SECRETS[0],BINGX_API_SECRET:SECRETS[1],GATEIO_API_KEY:SECRETS[2],GATEIO_API_SECRET:SECRETS[3]});
@@ -44,14 +44,15 @@ test('live control: OFF by default; testnet needs an explicit arm; secrets never
   const statusText=await(await app.request('/api/status')).text();for(const secret of SECRETS)assert.ok(!statusText.includes(secret));
   assert.equal(JSON.parse(statusText).live.mode,'TESTNET');
 
-  const forged=await post(app,'/api/live/arm',{confirm:'ARM'},{origin:'https://attacker.example','sec-fetch-site':'cross-site'});
+  const forged=await post(app,'/api/live/arm',{confirm:'ARM',mode:'TESTNET'},{origin:'https://attacker.example','sec-fetch-site':'cross-site'});
   assert.equal(forged.status,403,'another website cannot arm live trading');await forged.arrayBuffer();
   const noConfirm=await post(app,'/api/live/arm',{});assert.equal(noConfirm.status,400);await noConfirm.arrayBuffer();
   const noCloseConfirm=await post(app,'/api/live/testnet-close',{strategy:'scalp',key:'missing'});assert.equal(noCloseConfirm.status,400);await noCloseConfirm.arrayBuffer();
   const missingClose=await post(app,'/api/live/testnet-close',{strategy:'scalp',key:'missing',confirm:'CLOSE_TESTNET'});assert.equal(missingClose.status,404);await missingClose.arrayBuffer();
-  const armed=await(await post(app,'/api/live/arm',{confirm:'ARM'})).json();assert.equal(armed.armed,true);
+  const wrongMode=await post(app,'/api/live/arm',{confirm:'ARM',mode:'LIVE'});assert.equal(wrongMode.status,409);await wrongMode.arrayBuffer();
+  const armed=await(await post(app,'/api/live/arm',{confirm:'ARM',mode:'TESTNET'})).json();assert.equal(armed.armed,true);
   const killed=await(await post(app,'/api/live/kill',{})).json();assert.equal(killed.killSwitch,true);assert.equal(killed.armed,false);
-  const rearm=await post(app,'/api/live/arm',{confirm:'ARM'});assert.equal(rearm.status,409);await rearm.arrayBuffer();
+  const rearm=await post(app,'/api/live/arm',{confirm:'ARM',mode:'TESTNET'});assert.equal(rearm.status,409);await rearm.arrayBuffer();
   const reset=await post(app,'/api/live/reset-kill',{});assert.equal(reset.status,400);await reset.arrayBuffer();
   assert.equal((await(await post(app,'/api/live/reset-kill',{confirm:'RESET'})).json()).killSwitch,false);
   for(const secret of SECRETS)assert.ok(!app.logs().includes(secret),'server output never contains a key');
@@ -59,7 +60,10 @@ test('live control: OFF by default; testnet needs an explicit arm; secrets never
 
  const live=await boot(t,{LIVE_TRADING_MODE:'LIVE'});
  try{
-  const r=await post(live,'/api/live/arm',{confirm:'ARM'});assert.equal(r.status,409);assert.equal((await r.json()).error,'LIVE_CONFIRM_MISSING');
+  const r=await post(live,'/api/live/arm',{confirm:'ARM',mode:'LIVE'});assert.equal(r.status,409);assert.equal((await r.json()).error,'LIVE_CONFIRM_MISSING');
+  const testnetConfirm=await post(live,'/api/live/arm',{confirm:'ARM',mode:'TESTNET'});
+  assert.equal(testnetConfirm.status,409);assert.equal((await testnetConfirm.json()).error,'ARM_MODE_MISMATCH');
+  const legacyConfirm=await post(live,'/api/live/arm',{confirm:'ARM'});assert.equal(legacyConfirm.status,400);await legacyConfirm.arrayBuffer();
   const close=await post(live,'/api/live/testnet-close',{strategy:'scalp',key:'missing',confirm:'CLOSE_TESTNET'});
   assert.equal(close.status,409);assert.equal((await close.json()).error,'TESTNET_CLOSE_ONLY');
  }

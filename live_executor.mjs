@@ -22,10 +22,12 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {leverageForScore} from './paper.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {venueStop,venueCosts} from './venue_execution.mjs';
+import {venueRows} from './venue_positions.mjs';
 import {readPositionMode,leverageSideFor,positionRow,orderOnSide,ordersOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {bingxOrders,gateOrders,liveClientId,liveQuantity,liveSplitPlan,splitParts,preflight,waitForFlat} from './live_orders.mjs';
 
 const MAX_RECORDS=300,MAX_DELETED_KEYS=500,MAX_EVENTS=40;
+const terminal=record=>record.status==='CLOSED'||record.status==='FAILED';
 /** Margin a plan ties up at the venue: the first entry plus every resting add, at the given leverage. */
 const planMargin=(split,row,leverage)=>{if(!split)return 0;const cs=split.qty.unit==='CONTRACT'?Number(row?.venueContract?.contractSizeBase)||1:1;
  return (Number(split.qty.base)*Number(row?.entry)+(split.adds||[]).reduce((t,a)=>t+Number(a.qty)*cs*Number(a.price),0))/leverage};
@@ -68,11 +70,12 @@ export class LiveExecutor{
   this.store.records=this.store.records.filter(r=>!(r.test===true&&r.status==='CLOSED'&&r.closeReason==='TEST_CLOSE'));
   // An entry that was being submitted when the server stopped may have filled without its stop:
   // unknown state, which blocks new entries until a person checks the account.
-  for(const r of this.store.records)if(r.status==='SUBMITTING'){r.status='UNKNOWN';r.events=[...(r.events||[]),{type:'RESTART_WHILE_SUBMITTING',at:now()}].slice(-MAX_EVENTS)}
+  for(const r of this.store.records)if(this.#sameMode(r)&&r.status==='SUBMITTING'){r.status='UNKNOWN';r.events=[...(r.events||[]),{type:'RESTART_WHILE_SUBMITTING',at:now()}].slice(-MAX_EVENTS)}
   // Protection recovery (BingX): an entry cut off by a stop/crash, or an open position whose stop was
   // never confirmed, is checked against the venue at the next reconcile — the stop is found or placed,
   // otherwise the position is closed and trading stops. Other venues stay UNKNOWN and stop trading.
   for(const r of this.store.records){
+   if(!this.#sameMode(r))continue;
    const cut=r.status==='UNKNOWN'&&(r.events||[]).some(e=>e.type==='RESTART_WHILE_SUBMITTING')&&!r.recovery;
    const unprotected=r.status==='OPEN'&&!r.stopOrderId&&!(r.events||[]).some(e=>e.type==='PROTECTED'||e.type==='PROTECTION_RECOVERED')&&!r.test;
    if(!(cut||unprotected))continue;
@@ -82,7 +85,19 @@ export class LiveExecutor{
    r.recovery='MANUAL';this.store.killSwitch=true;try{this.onEvent?.(r,'RECOVERY_MANUAL',{})}catch{}
   }
  }
- #save(){this.store.records=this.store.records.slice(-MAX_RECORDS);if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records,deletedKeys:this.store.deletedKeys,archived:this.store.archived})}this.onChange(this.status())}
+ #sameMode(record){return (this.config.mode==='LIVE'||this.config.mode==='TESTNET')&&record.mode===this.config.mode}
+ #recordClient(record){
+  const client=this.clients[record.venue];
+  if(!this.#sameMode(record)||client?.mode!==record.mode)
+   throw Object.assign(Error('VENUE_ACCOUNT_MODE_MISMATCH'),{code:'VENUE_ACCOUNT_MODE_MISMATCH'});
+  return client;
+ }
+ #save(){
+  let excess=this.store.records.filter(terminal).length-MAX_RECORDS;
+  if(excess>0)this.store.records=this.store.records.filter(r=>!terminal(r)||excess--<=0);
+  if(this.file){fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,killSwitch:this.store.killSwitch,records:this.store.records,deletedKeys:this.store.deletedKeys,archived:this.store.archived})}
+  this.onChange(this.status());
+ }
  #event(record,type,detail={}){record.events=[...(record.events||[]),{type,at:this.now(),...detail}].slice(-MAX_EVENTS);this.log(`[LIVE ${record.venue} ${record.symbol}] ${type}`,detail.reason||'')
   // Notices only (Telegram); a failing listener never affects orders.
   try{this.onEvent?.(record,type,detail)}catch{}}
@@ -127,7 +142,7 @@ export class LiveExecutor{
   *  provisionalToday is then true, so no day stop is written from it (review M5). openRisk: planned worst loss of every
   *  active record (as the open-risk cap above). usedMargin: margin of the held size plus the resting adds. */
  budgetSource(){
-  const active=()=>this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.test!==true);
+  const active=()=>this.store.records.filter(r=>this.#sameMode(r)&&['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.test!==true);
   const kst=t=>new Date(Number(t)+9*3600000).toISOString().slice(0,10);
   const today=day=>[...this.store.records,...this.store.archived].filter(r=>r.status==='CLOSED'&&r.test!==true&&r.mode===this.config.mode&&r.closedAt>0&&kst(r.closedAt)===day);
   const settled=r=>r.realized&&r.realized.netUSD!==null&&r.realized.netUSD!==undefined&&Number.isFinite(Number(r.realized.netUSD));
@@ -141,7 +156,7 @@ export class LiveExecutor{
    usedMargin:()=>active().reduce((t,r)=>t+recordMargin(r),0),
    unrealized:()=>active().reduce((t,r)=>t+(Number(r.position?.unrealizedPnLUSD)||0),0)};
  }
- credentials(){return {BINGX:Boolean(this.clients.BINGX),GATEIO:Boolean(this.clients.GATEIO)}}
+ credentials(){return {BINGX:this.clients.BINGX?.mode===this.config.mode,GATEIO:this.clients.GATEIO?.mode===this.config.mode}}
  status(){
   return {mode:this.config.mode,armed:this.armed,killSwitch:this.store.killSwitch,liveConfirmed:this.config.liveConfirmed,venues:this.config.venues,
    credentialsConfigured:this.credentials(),limits:{riskProfile:this.config.riskProfile||null,strategyProfile:this.config.strategyProfile||null,hybridMaxAdds:this.config.hybridMaxAdds,sizing:this.config.sizing,marginUsePct:this.config.marginUsePct??25,balanceCapUSD:this.config.balanceCapUSD||null,unitPct:this.config.unitPct,maxLossPct:this.config.maxLossPct,dailyMaxLossPct:this.config.dailyMaxLossPct,maxRiskUSD:this.config.maxRiskUSD,dailyMaxRiskUSD:this.config.dailyMaxRiskUSD,maxOpen:this.config.maxOpen,maxPerDirection:this.config.maxPerDirection},
@@ -228,7 +243,7 @@ export class LiveExecutor{
      // Open-risk cap: the worst losses of every open position plus this one stay within the daily
      // loss limit of the balance — positions opened on earlier days count too (margin floor safety).
      // Always this strategy's own % (a stricter profile is never loosened by the shared testnet budget, review M1).
-     const openRisk=this.store.records.filter(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
+     const openRisk=this.store.records.filter(r=>this.#sameMode(r)&&['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)).reduce((n,r)=>n+(Number(r.plannedRiskUSD)||0),0);
      if(split&&openRisk+split.riskUSD>balanceUSD*this.config.dailyMaxLossPct/100)extra.push('OPEN_RISK_LIMIT');
      budgetEquity=balanceUSD;if(split)budgetMargin=planMargin(split,row,leverage);
      split&&Object.assign(split,{balanceUSD,freeUSD}); // equity (sizing and readiness drawdown), free margin at the entry
@@ -246,7 +261,7 @@ export class LiveExecutor{
     if(!b.ok)extra.push(b.reason);
    }
   }
-  const check=preflight({config,armed:this.armed,killSwitch:this.store.killSwitch,credentials:this.credentials(),row,records:this.store.records,now:this.now(),qty});
+  const check=preflight({config,armed:this.armed,killSwitch:this.store.killSwitch,credentials:this.credentials(),row,records:this.store.records.filter(r=>this.#sameMode(r)),now:this.now(),qty});
   if(extra.length){check.ok=false;check.reasons=[...extra,...check.reasons.filter(r=>r!=='QUANTITY_BELOW_MINIMUM_AT_LIVE_RISK')]}
   if(!check.ok){
    // The same signal is offered on every price tick while it stays valid: list a skip once per
@@ -560,7 +575,7 @@ export class LiveExecutor{
   if(!record)return refuse('POSITION_NOT_FOUND',404);
   const client=this.clients[record.venue];
   if(client?.mode!=='TESTNET')return refuse('TESTNET_CLOSE_ONLY');
-  if(this.busy.has(record.symbol)||this.closing.has(key)||record.recovery==='PENDING')return refuse('SYMBOL_BUSY');
+  if(this.busy.has(record.symbol)||this.closing.has(key)||record.flatCleanup||record.recovery==='PENDING')return refuse('SYMBOL_BUSY');
   this.busy.add(record.symbol);
   try{
    if(record.venue==='BINGX'){
@@ -569,7 +584,7 @@ export class LiveExecutor{
     if(mode.hedge!==(record.hedge===true))return refuse('POSITION_MODE_CHANGED');
    }
    if(record.adds?.length)await this.#cancelAdds(record,'MANUAL',{verify:true});
-   const read=()=>this.#position(record,{strict:true});
+   const read=()=>this.#position(record);
    const held=await read();
    if(held.size>0&&held.side&&held.side!==record.direction)return refuse('POSITION_SIDE_MISMATCH');
    let flat=held;
@@ -593,9 +608,9 @@ export class LiveExecutor{
  }
  async reconcile(){
   // paused: the server is about to restart (update); no new venue work may start.
-  if(this.reconciling||this.paused)return;this.reconciling=true;
+  if(this.reconciling||this.paused||this.config.mode==='OFF'||this.config.mode==='LIVE'&&!this.config.liveConfirmed)return;this.reconciling=true;
   try{
-   for(const record of this.store.records.filter(r=>r.recovery==='PENDING'&&!this.busy.has(r.symbol))){
+   for(const record of this.store.records.filter(r=>this.#sameMode(r)&&r.recovery==='PENDING'&&!this.busy.has(r.symbol))){
     this.busy.add(record.symbol);
     try{await this.#recover(record)}catch(error){
      // Retried at every check; recorded (and notified) only the first time.
@@ -610,7 +625,7 @@ export class LiveExecutor{
   // Cut off before the position mode was read: nothing was sent for it (the venue is not touched, so a
   // manual position on the coin is never taken as this trade's).
   if(record.hedge===null&&record.status==='UNKNOWN'&&!record.entryOrderId){record.status='FAILED';record.closeReason='ENTRY_NOT_SENT_AFTER_RESTART';record.recovery='DONE';this.#event(record,'RECOVERY_NO_ORDER_SENT');return}
-  const client=this.clients.BINGX,pos=await this.#position(record);
+  const client=this.#recordClient(record),pos=await this.#position(record);
   const open=await client.openOrders(record.venueSymbol),list=open?.orders??(Array.isArray(open)?open:[]);
   // Add orders of a cut-off entry were never tracked (no order ids): take them off the book.
   for(const o of list){
@@ -646,13 +661,13 @@ export class LiveExecutor{
   }
  }
  /** True while nothing is being ordered, cancelled or checked (safe moment to restart). */
- idle(){return !this.reconciling&&!this.inFlight.size&&!this.busy.size&&!this.closing.size&&!this.store.records.some(r=>r.status==='SUBMITTING')}
+ idle(){return !this.reconciling&&!this.inFlight.size&&!this.busy.size&&!this.closing.size&&!this.store.records.some(r=>this.#sameMode(r)&&r.status==='SUBMITTING')}
  async #reconcileOpen(){
   this.posCache=null; // one fresh all-symbols read per check
   let limited=false;
   // Each round starts one position further on, so a round cut short by a 429 does not always
   // leave the same positions unchecked.
-  const open=this.store.records.filter(r=>r.status==='OPEN'&&!this.busy.has(r.symbol)&&!this.closing.has(r.signalKey)),start=open.length?(this.roundStart=((this.roundStart||0)+1)%open.length):0;
+  const open=this.store.records.filter(r=>this.#sameMode(r)&&r.status==='OPEN'&&!this.busy.has(r.symbol)&&!this.closing.has(r.signalKey)),start=open.length?(this.roundStart=((this.roundStart||0)+1)%open.length):0;
   for(const record of [...open.slice(start),...open.slice(0,start)]){
    if(record.status!=='OPEN'||this.busy.has(record.symbol))continue;
    this.busy.add(record.symbol);
@@ -662,25 +677,29 @@ export class LiveExecutor{
     if(pos.otherSide>0&&!record.otherSideSeen){record.otherSideSeen=true;this.#event(record,'OTHER_SIDE_SEEN',{reason:`${pos.otherSide}`})}
     this.#observe(record,pos);
     if(record.mode==='TESTNET'&&size>0&&priorSize-size>Math.max(1e-12,priorSize*1e-9))this.#event(record,'PARTIAL_EXIT',{qty:priorSize-size,left:size});
-    if(size===0){
-     record.status='CLOSED';record.closedAt=this.now();record.closeReason=record.closeReason||'POSITION_FLAT';
+    if(size===0||record.flatCleanup){
+     if(!record.flatCleanup){record.flatCleanup=true;record.closedAt=this.now();record.closeReason??='POSITION_FLAT';this.#save()}
      this.closing.add(record.signalKey);try{
      // Resting adds first: an add left behind would open a new position on its own.
      if(record.adds?.length){
-      await this.#cancelAdds(record,'POSITION_FLAT');
+      await this.#cancelAdds(record,'POSITION_FLAT',{verify:true});
       // An add can fill between the stop-out and its cancel (the stop uses the mark price, the
       // add the last price). Such a position has no stop: close it at market and stop trading.
-      const again=await this.#position(record).catch(()=>null);
-      if(!again||again.size>0){
+      const again=await this.#position(record);
+      if(again.size>0){
        const plan=this.#plan(record);
-       try{if(!again)throw Object.assign(Error('position unknown'),{code:'POSITION_CHECK_FAILED'});
-        if(record.venue==='BINGX')await this.clients.BINGX.placeOrder(plan.emergencyClose(again.size));else await this.clients.GATEIO.placeOrder(plan.emergencyClose());
-        this.#event(record,'LATE_ADD_CLOSED',{reason:`size ${again.size}`})}
-       catch(error){this.#event(record,'LATE_ADD_CLOSE_FAILED',{reason:error.code||error.message})}
        record.closeReason='LATE_ADD_AFTER_FLAT';this.kill('LATE_ADD_'+record.venue);
+       try{
+        if(again.side&&again.side!==record.direction)throw Object.assign(Error('POSITION_SIDE_MISMATCH'),{code:'POSITION_SIDE_MISMATCH'});
+        if(record.venue==='BINGX')await this.clients.BINGX.placeOrder(plan.emergencyClose(again.size));else await this.clients.GATEIO.placeOrder(plan.emergencyClose());
+        if(!await waitForFlat(()=>this.#position(record)))throw Object.assign(Error('CLOSE_UNCONFIRMED'),{code:'CLOSE_UNCONFIRMED'});
+        this.#event(record,'LATE_ADD_CLOSED',{reason:`size ${again.size}`})}
+       catch(error){this.#event(record,'LATE_ADD_CLOSE_FAILED',{reason:error.code||error.message});throw error}
       }
      }
-     for(const id of [record.stopOrderId,...record.targetOrderIds].filter(Boolean))await this.#cancel(record,id);
+     for(const id of [record.stopOrderId,...(record.targetOrderIds||[])].filter(Boolean))
+      if(await this.#cancel(record,id)===false)throw Object.assign(Error('EXIT_CANCEL_UNCONFIRMED'),{code:'EXIT_CANCEL_UNCONFIRMED'});
+     record.status='CLOSED';delete record.flatCleanup;
      this.#event(record,'CLOSED');}finally{this.closing.delete(record.signalKey)}continue;
     }
     if(record.adds?.length&&!record.breakevenMoved&&size>(record.peakSize??record.quantity.total)*(1+1e-9)){
@@ -724,7 +743,7 @@ export class LiveExecutor{
   }
   if(!limited){this.rateLimitedSince=null;this.rateLimitNoted=false}
   // Realized result of closed trades (read only): the venue's own settlement, else an estimate.
-  if(!limited)for(const record of this.store.records.filter(r=>r.status==='CLOSED'&&!r.test&&!r.realized&&(r.settleAttempts||0)<SETTLE_TRIES&&r.closedAt>0&&this.now()-r.closedAt>=SETTLE_DELAY_MS&&this.now()-r.closedAt<SETTLE_WINDOW_MS)){
+  if(!limited)for(const record of this.store.records.filter(r=>this.#sameMode(r)&&r.status==='CLOSED'&&!r.test&&!r.realized&&(r.settleAttempts||0)<SETTLE_TRIES&&r.closedAt>0&&this.now()-r.closedAt>=SETTLE_DELAY_MS&&this.now()-r.closedAt<SETTLE_WINDOW_MS)){
    try{await this.#settle(record)}catch(error){this.#event(record,'SETTLE_ERROR',{reason:error.code||error.message})}
   }
   this.#save();
@@ -749,7 +768,7 @@ export class LiveExecutor{
   // A hedge trade that saw a position on the other side of its coin: the symbol's fund-flow rows mix both
   // positions, so the estimate from its own exits is used (review 2026-11-17).
   if(record.otherSideSeen){record.realized={...this.#estimate(record),reason:'HEDGE_OTHER_SIDE'};this.#event(record,'SETTLED',{reason:'estimate (other side held) '+record.realized?.netUSD});return}
-  if(record.venue==='BINGX'&&typeof this.clients.BINGX?.income==='function'){
+  if(record.venue==='BINGX'&&this.clients.BINGX?.mode===record.mode&&typeof this.clients.BINGX?.income==='function'){
    try{
     const from=(record.createdAt||record.closedAt)-30000,to=Math.min(this.now(),record.closedAt+120000);
     const data=await this.clients.BINGX.income({symbol:record.venueSymbol,startTime:from,endTime:to,limit:1000});
@@ -786,7 +805,9 @@ export class LiveExecutor{
   if(this.updating||this.paused)return {ok:false,live:true,reasons:['UPDATING']};
   const record=this.store.records.find(r=>r.signalKey===signalKey&&r.status==='OPEN');
   if(!record)return {ok:true,live:false};
-  if(this.busy.has(record.symbol))return {ok:false,live:true,reasons:['SYMBOL_BUSY']};
+  if(!this.#sameMode(record)||this.clients[record.venue]?.mode!==record.mode)return {ok:false,live:true,reasons:['VENUE_ACCOUNT_MODE_MISMATCH']};
+  if(this.config.mode==='LIVE'&&!this.config.liveConfirmed)return {ok:false,live:true,reasons:['LIVE_CONFIRM_MISSING']};
+  if(this.busy.has(record.symbol)||record.flatCleanup)return {ok:false,live:true,reasons:['SYMBOL_BUSY']};
   this.busy.add(record.symbol);
   const client=this.clients[record.venue],dir=record.direction==='LONG'?1:-1,result={ok:true,live:true,stopMoved:false,targetsMoved:[],errors:[]};
   // Manual levels arrive on the paper venue's grid: put them on this record's venue grid
@@ -839,18 +860,19 @@ export class LiveExecutor{
   finally{this.busy.delete(record.symbol);this.#save()}
   return result;
  }
- async #position(record,{cached=false,strict=false}={}){
-  const client=this.clients[record.venue];
+ async #position(record,{cached=false}={}){
+  const client=this.#recordClient(record);
   if(record.venue==='BINGX'){
    // The routine check reads all symbols in one call (rate limit); every other caller (orders, closes,
    // recovery) reads its own symbol fresh.
    let list;
    if(cached){if(!this.posCache)this.posCache={at:this.now(),list:await client.positions()};list=this.posCache.list}
    else list=await client.positions(record.venueSymbol);
-   if(strict&&!Array.isArray(list))throw Object.assign(Error('POSITION_CHECK_FAILED'),{code:'POSITION_CHECK_FAILED'});
+   list=venueRows(list);
+   if(!list||list.some(row=>typeof row?.symbol!=='string'||!row.symbol||given(row.positionAmt)===null))
+    throw Object.assign(Error('POSITION_CHECK_FAILED'),{code:'POSITION_CHECK_FAILED'});
    // Hedge mode: the row of this record's own side (an opposite-side row is another position).
    const row=positionRow(list,record.venueSymbol,{hedge:record.hedge===true,direction:record.direction});
-   if(strict&&row&&given(row.positionAmt)===null)throw Object.assign(Error('POSITION_CHECK_FAILED'),{code:'POSITION_CHECK_FAILED'});
    return {size:row?Math.abs(Number(row.positionAmt)||0):0,entryPrice:Number(row?.avgPrice)||0,markPrice:posNum(row?.markPrice),unrealizedPnLUSD:row?num(row.unrealizedProfit):null,
     marginUSD:row?posNum(row.initialMargin??row.margin):null,realizedPnLUSD:given(row?.realisedProfit??row?.realizedProfit),
     // Side only when the venue states it (positionSide LONG/SHORT or a signed negative amount); an unsigned amount is not guessed.
@@ -858,8 +880,8 @@ export class LiveExecutor{
     otherSide:record.hedge===true?otherSideAmount(list,record.venueSymbol,record.direction):0};
   }
   const p=await client.position(record.venueSymbol);
-  if(strict&&given(p?.size)===null)throw Object.assign(Error('POSITION_CHECK_FAILED'),{code:'POSITION_CHECK_FAILED'});
-  return {size:Math.abs(Number(p?.size)||0),...(strict?{side:Number(p.size)<0?'SHORT':'LONG'}:{}),entryPrice:Number(p?.entry_price)||0,markPrice:posNum(p?.mark_price),unrealizedPnLUSD:p?num(p.unrealised_pnl):null,
+  if(given(p?.size)===null)throw Object.assign(Error('POSITION_CHECK_FAILED'),{code:'POSITION_CHECK_FAILED'});
+  return {size:Math.abs(Number(p.size)),side:Number(p.size)<0?'SHORT':'LONG',entryPrice:Number(p.entry_price)||0,markPrice:posNum(p.mark_price),unrealizedPnLUSD:num(p.unrealised_pnl),
    marginUSD:p?posNum(p.margin):null,realizedPnLUSD:given(p?.realised_pnl)};
  }
  async #cancel(record,id){
