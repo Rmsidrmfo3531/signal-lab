@@ -183,10 +183,29 @@ export function scalpExecConfig(env=process.env){
   orderflowBoost:!['off','false','0','no'].includes(String(env.SCALP_ORDERFLOW_BOOST??'').trim().toLowerCase()),
   orderflowOiBonus:n('SCALP_ORDERFLOW_OI_BONUS',5,0,15),
   orderflowCvdSizeMult:n('SCALP_ORDERFLOW_CVD_SIZE_MULT',1.5,1,2),
+  // Backtest-validated session asymmetry (40 coins, Train/OOS): EU(08-14 UTC / 17-23 KST) PF 0.96 -> 0.5x; US+Late(14-24 UTC / 23-09 KST) PF 2.25+ -> 1.15x.
+  sessionWeighting:!['off','false','0','no'].includes(String(env.SCALP_SESSION_WEIGHTING??'').trim().toLowerCase()),
+  sessionEuMult:n('SCALP_SESSION_EU_MULT',0.5,0.25,1.5),
+  sessionUsMult:n('SCALP_SESSION_US_MULT',1.15,0.5,1.5),
   // Unified 2.5%+ score gate (backtest: 2.5~3.5% setups scoring >=65 achieved 100% WR without requiring a 4H/1D zone touch).
   scoreUnifiedMove:!['off','false','0','no'].includes(String(env.SCALP_SCORE_UNIFIED_MOVE??'').trim().toLowerCase()),
   // 매물대 반전 (user 2026-11-17 23:12): on by default, SCALP_ZONE_SIGNALS=off turns it off.
   zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT};
+}
+
+/** Backtest-validated session size multiplier (40 coins, Train/OOS): EU(08-14 UTC / 17-23 KST) 0.5x, US/Late(14-24 UTC / 23-09 KST) 1.15x, Asia 1.0x. */
+export function scalpSessionMultiplier(now=Date.now(),config={}){
+ if(config?.sessionWeighting===false)return {session:'OFF',labelKo:'',mult:1};
+ const utcH=new Date(now).getUTCHours();
+ if(utcH>=8&&utcH<14){
+  const mult=Number.isFinite(Number(config?.sessionEuMult))?Number(config.sessionEuMult):0.5;
+  return {session:'EUROPE',labelKo:'유럽장',mult};
+ }
+ if(utcH>=14){
+  const mult=Number.isFinite(Number(config?.sessionUsMult))?Number(config.sessionUsMult):1.15;
+  return {session:'US',labelKo:'미국·야간장',mult};
+ }
+ return {session:'ASIA',labelKo:'아시아장',mult:1};
 }
 
 /** BingX USDT perpetuals by 24h quote volume (stock / fx 'NC*' contracts excluded), tradable via API. */
@@ -689,17 +708,21 @@ export class ScalpExecutor{
      scalpScore={...scalpScore,score:nextScore,grade:nextGrade,pass:nextPass,sizeMult:nextMult,oiBonus:boost.oiBonus,orderflow:boost};
     }
    }
+   // Backtest-validated session asymmetry (EU 08-14 UTC -> 0.5x, US/Late 14-24 UTC -> 1.15x; only active when scoring is enabled).
+   const sess=minSc>0?scalpSessionMultiplier(this.now(),this.config):{session:'OFF',labelKo:'',mult:1};
+   const effectiveMult=+(Math.max(0.1,(scalpScore.sizeMult||1)*sess.mult)).toFixed(4);
+   if(sess.session!=='OFF')scalpScore={...scalpScore,session:sess,effectiveMult};
    if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=scalpScore}
    if(minSc>0&&!scalpScore.pass){
     return skip('SCORE_BELOW_MINIMUM',`${scalpScore.score}점/${this.config.minScore}점 (${scalpScore.grade}급 · ${scalpScore.shortBreakdown})`);
    }
-   if(!againstTrend&&scalpScore.sizeMult>1){
-    const boosted=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
+   if(!againstTrend&&Math.abs(effectiveMult-1)>1e-6){
+    const scaled=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
      usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,
-     config:{...basePlanConfig,riskPct:basePlanConfig.riskPct*scalpScore.sizeMult}});
-    if(boosted.ok){
-     plan=boosted;
-     if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty??null,riskUSD:plan.riskUSD??null,sizeMult:scalpScore.sizeMult});
+     config:{...basePlanConfig,riskPct:basePlanConfig.riskPct*effectiveMult}});
+    if(scaled.ok){
+     plan=scaled;
+     if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty??null,riskUSD:plan.riskUSD??null,sizeMult:effectiveMult});
     }
    }
    // Reserve a plan that fits the shared budget while the venue setup runs. A larger plan may still fit after the cap.
@@ -872,7 +895,7 @@ export class ScalpExecutor{
    ...(plan.scaleIn?{scaleIn:plan.scaleIn}:{}),
    // Journal context (analysis only).
    atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,btcTrend4h:this.cur?.btcTrend4h??null,withTrend:this.cur?.withTrend??null,
-   ...(this.cur?.score?{scalpScore:{score:this.cur.score.score,grade:this.cur.score.grade,sizeMult:this.cur.score.sizeMult,breakdown:this.cur.score.breakdown,summary:this.cur.score.summary,...(this.cur.score.oiBonus?{oiBonus:this.cur.score.oiBonus}:{}),...(this.cur.score.orderflow?{orderflow:this.cur.score.orderflow}:{})}}:{}),
+   ...(this.cur?.score?{scalpScore:{score:this.cur.score.score,grade:this.cur.score.grade,sizeMult:this.cur.score.sizeMult,breakdown:this.cur.score.breakdown,summary:this.cur.score.summary,...(this.cur.score.oiBonus?{oiBonus:this.cur.score.oiBonus}:{}),...(this.cur.score.orderflow?{orderflow:this.cur.score.orderflow}:{}),...(this.cur.score.session?{session:this.cur.score.session,effectiveMult:this.cur.score.effectiveMult}:{})}}:{}),
    universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
   this.store.open.push(p);this.store.sent.push(id);this.#save();
   let fill,executionMode='MARKET';
@@ -926,7 +949,7 @@ export class ScalpExecutor{
   trackExcursion(p,p.avg,this.now());
   // BTC 5m / 1h change around the entry: read after the orders are in, never awaited (journal only).
   void withTimeout(this.#btc(),5000).then(b=>{if(b)p.btc=b});
-  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{})}:{})});
+  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{})});
   this.#save();return {entered:true};
  }
  /** BTC change over the last closed 5m candle and the last hour (12 candles), cached per 5m candle. */
@@ -1927,6 +1950,7 @@ export class ScalpExecutor{
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,
     minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
     orderflowBoost:c.orderflowBoost!==false,orderflowOiBonus:c.orderflowOiBonus??5,orderflowCvdSizeMult:c.orderflowCvdSizeMult??1.5,
+    sessionWeighting:c.sessionWeighting!==false,sessionEuMult:c.sessionEuMult??0.5,sessionUsMult:c.sessionUsMult??1.15,
     symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,
     scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,

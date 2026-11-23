@@ -241,4 +241,58 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   const tg = scalpEventText(opened);
   assert.match(tg, /수급 OI 소진 -2\.2%\(\+5점\) · CVD 강한반전 \+32%\(1\.5x\)/);
   assert.match(tg, /비중 1\.5x/);
+  assert.match(tg, /유럽장 0\.5x/);
+  assert.equal(exBoosted.store.open[0].scalpScore.session.session, 'EUROPE');
+  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.75);
 });
+
+test('scalpSessionMultiplier applies backtest-validated EU 0.5x, US/Late 1.15x, Asia 1.0x', async () => {
+  const { scalpSessionMultiplier } = await import('../scalp_executor.mjs');
+  const cfg = scalpExecConfig({});
+  assert.equal(cfg.sessionWeighting, true);
+  assert.equal(cfg.sessionEuMult, 0.5);
+  assert.equal(cfg.sessionUsMult, 1.15);
+
+  const asia = scalpSessionMultiplier(Date.parse('2026-11-22T03:00:00Z'), cfg);
+  assert.equal(asia.session, 'ASIA');
+  assert.equal(asia.mult, 1);
+
+  const eu = scalpSessionMultiplier(Date.parse('2026-11-22T10:30:00Z'), cfg);
+  assert.equal(eu.session, 'EUROPE');
+  assert.equal(eu.mult, 0.5);
+
+  const us = scalpSessionMultiplier(Date.parse('2026-11-22T16:00:00Z'), cfg);
+  assert.equal(us.session, 'US');
+  assert.equal(us.mult, 1.15);
+
+  const late = scalpSessionMultiplier(Date.parse('2026-11-22T23:15:00Z'), cfg);
+  assert.equal(late.session, 'US');
+  assert.equal(late.mult, 1.15);
+
+  const off = scalpSessionMultiplier(Date.parse('2026-11-22T10:30:00Z'), { ...cfg, sessionWeighting: false });
+  assert.equal(off.mult, 1);
+});
+
+test('rankOrderflowAnomalies ranks OI flush, strong CVD flips, divergences and renders clickable radar strip', async () => {
+  const { rankOrderflowAnomalies } = await import('../orderflow.mjs');
+  const { orderflowRadarHTML } = await import('../public/orderflow_ui.js');
+  const snapshots = [
+    { ok: true, symbol: 'SOLUSDT', source: 'BINANCE', price: { mark: 180.5, windowChangePct: -2.1 }, oi: { change30mPct: -2.4 }, cvd: { lastDeltaNorm: 0.31, lastBuySharePct: 65.5, divergence: { type: 'BULLISH' } }, funding: { ratePct: -0.02 } },
+    { ok: true, symbol: 'BTCUSDT', source: 'BINANCE', price: { mark: 92000, windowChangePct: 0.3 }, oi: { change30mPct: 0.1 }, cvd: { lastDeltaNorm: 0.02, lastBuySharePct: 51, divergence: { type: 'NONE' } }, funding: { ratePct: 0.005 } },
+    { ok: true, symbol: 'ETHUSDT', source: 'GATEIO', price: { mark: 3100, windowChangePct: 1.4 }, oi: { change30mPct: 2.5 }, cvd: { lastDeltaNorm: -0.24, lastBuySharePct: 38, divergence: { type: 'BEARISH' } }, funding: { ratePct: 0.025 } },
+  ];
+  const radar = rankOrderflowAnomalies(snapshots);
+  assert.equal(radar.scanned, 3);
+  assert.equal(radar.flaggedCount, 2);
+  assert.equal(radar.anomalies[0].symbol, 'SOLUSDT');
+  assert.equal(radar.topOiFlush[0].symbol, 'SOLUSDT');
+  assert.equal(radar.topCvdFlip[0].symbol, 'SOLUSDT');
+
+  const html = orderflowRadarHTML({ ...radar, at: BASE_T }, 'SOLUSDT', false);
+  assert.match(html, /실시간 수급 이상치 레이더/);
+  assert.match(html, /data-of-symbol="SOLUSDT"/);
+  assert.match(html, /OI -2\.4% 소진\(\+5점\)/);
+  assert.match(html, /매수 CVD \+31%\(1\.5x\)/);
+  assert.match(html, /data-of-radar-refresh/);
+});
+

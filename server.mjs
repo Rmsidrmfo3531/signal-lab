@@ -63,7 +63,7 @@ import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
 import {RealTrailingManager} from './real_trailing.mjs';
 import {RealAccountGuard,REAL_SAFETY_COPY_PRESET} from './real_safety.mjs';
-import {fetchOrderflow,normalizeOrderflowSymbol} from './orderflow.mjs';
+import {fetchOrderflow,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
@@ -2346,6 +2346,21 @@ const server=http.createServer(async(req,res)=>{
    return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,updating:updateJob.active===true,updateJob:updateJob.active?{...updateJob}:null,bootId:SERVER_BOOT_ID,configured:Boolean(CONFIG.updateManifestURL),...appVersion,runtime,pending:pendingInfo(__dirname)?.version||null});
   }
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
+  if(pathname==='/api/orderflow/radar'&&req.method==='GET'){
+   const force=url.searchParams.get('force')==='1';
+   try{
+    const openHeld=[
+     ...(copyTrader?.store?.open||[]).map(p=>p.symbol),
+     ...(scalpExec?.store?.open||[]).map(p=>p.symbol),
+     ...(live?.store?.records||[]).filter(r=>r.status==='OPEN').map(r=>r.symbol),
+    ].filter(s=>/^[A-Z0-9]{4,25}$/.test(String(s||'')));
+    const topMarket=(state.ranked||[]).slice(0,16).map(m=>m.symbol);
+    const list=[...new Set([...openHeld,...ORDERFLOW_RADAR_DEFAULTS,...topMarket])].slice(0,20);
+    return response(res,200,await scanOrderflowAnomalies(list,{force}));
+   }catch(e){
+    return response(res,502,{ok:false,error:e?.message||'RADAR_FETCH_FAILED'});
+   }
+  }
   if(pathname==='/api/orderflow'&&req.method==='GET'){
    const rawSym=url.searchParams.get('symbol')||'BTCUSDT';
    const interval=url.searchParams.get('interval')||'5m';
