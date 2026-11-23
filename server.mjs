@@ -1981,6 +1981,7 @@ const server=http.createServer(async(req,res)=>{
     trendMode:q.get('trendMode')??'on',
     zoneSignals:q.get('zoneSignals')??'true',
     minNetRR:q.get('minNetRR')??0,
+    minScore:q.get('minScore')??0,
     sides:q.get('sides')??'LONG,SHORT',
    };
    const days=Math.max(1,Math.min(30,Math.floor(Number(params.days))||7));

@@ -153,4 +153,93 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  assert.equal(a.ex.runtimeSummary().minScore,65);
  const details=scalpDetailsHTML(st);
  assert.match(details,/100점 신호 점수 65점 이상 진입 \(70점\+ 비중 1\.25배\)/);
+ assert.match(details,/2\.5% 이상 통합 점수 판별 \(매물대 강제 해제\)/);
+ assert.match(details,/name="minScore"/);
+ assert.match(details,/S급 \(80\+\)/);
+ assert.match(details,/A급 \(70~75\)/);
+ assert.match(details,/B급 \(65\)/);
 });
+
+test('unified 2.5%+ score gate enters high-confluence 3% move without 4H/1D zone reads and tracks byGrade stats',async()=>{
+ // Build a realistic ~3.1% drop (below 3.5% MOVE floor) with ~4.0x ATR, RSI<=20, 8x volume, and a clean hammer (~20% bounce)
+ const rows=[];let p=100;
+ for(let i=0;i<50;i++){const o=p,c=p+(i%2?.15:-.15);rows.push([0,o,Math.max(o,c)+.30,Math.min(o,c)-.30,c,100]);p=c}
+ // 4 sharp drop candles (~2.64% body drop) with climax volume
+ for(let i=0;i<4;i++){const o=p,c=p-0.66;rows.push([0,o,o+.04,c-.04,c,100*(i===3?8:4)]);p=c}
+ // Hammer rejection candle dipping to ~3.3% total drop and closing ~16% off extreme (TP1 netRR > 1.3, ~4.2x ATR)
+ const low=p-0.42,close=p-0.06;
+ rows.push([0,p-0.04,close+0.03,low,close,700]);
+ const lastOpen=(BUCKET-1)*I;
+ const candles5m=[...rows.map((r,i)=>{const t=lastOpen-(rows.length-1-i)*I;return [t,...r.slice(1,6).map(String),t+I-1,String(r[5]*r[4])]}),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']];
+
+ let zoneCalls=0;
+ const v=mockVenue(close);
+ const ex=new ScalpExecutor({
+  config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false},
+  client:v.client,
+  contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
+  tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
+  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?candles5m:[]):up4h(T0),
+  zoneCandles:async()=>{zoneCalls++;return []},
+  priceOf:async()=>close,markOf:async()=>close,
+  balance:async()=>({equity:10000,available:9000}),
+  now:()=>T0,
+ });
+ ex.arm();
+ await ex.scan();
+ assert.equal(zoneCalls,0,'unified 2.5%+ score gate must not call 4H/1D zoneCandles');
+ assert.equal(ex.store.open.length,1,'high-confluence 3% move passes >=65 unified score gate');
+ assert.equal(ex.store.open[0].kind,'MOVE_REVERSAL');
+ assert.ok(ex.store.open[0].evidence.movePct>=2.5&&ex.store.open[0].evidence.movePct<3.5);
+ assert.ok(ex.store.open[0].scalpScore.score>=70);
+ assert.equal(ex.store.open[0].scalpScore.grade,'A');
+
+ // Close trade and verify stats().byGrade tracks S/A/B accurately
+ ex.store.closed.push({...ex.store.open.pop(),status:'CLOSED',closedAt:T0+60000,closeReason:'EARLY_TAKE_PROFIT',netUSD:25.5});
+ const st=ex.stats();
+ assert.equal(st.byGrade.A.trades,1);
+ assert.equal(st.byGrade.A.netUSD,25.5);
+ assert.equal(st.byGrade.S.trades,0);
+ assert.equal(st.byGrade.B.trades,0);
+});
+
+test('What-If simulator filters by minScore, retroactively scores legacy rows, and unlocks SCORE_BELOW_MINIMUM',async()=>{
+ const {simulateScalpSignals,normalizeSimParams}=await import('../scalp_simulator.mjs');
+ const now=Date.parse('2026-11-22T10:00:00Z');
+ const signals=[
+  // High score trade (80점): win +$30
+  {at:now-100000,barAt:now-120000,symbol:'AUSDT',direction:'LONG',kind:'MOVE_REVERSAL',entered:true,reason:null,evidence:{movePct:5.5,moveAtr:3.8,retracedPct:20,climaxVolumeRatio:6,rsiPeak:19},trend4h:'up',btcTrend4h:'up',withTrend:true,plan:{netRR:1.4}},
+  // Low score legacy trade (30점): loss -$20
+  {at:now-200000,barAt:now-220000,symbol:'BUSDT',direction:'LONG',kind:'MOVE_REVERSAL',entered:true,reason:null,evidence:{movePct:3.0,moveAtr:7.0,retracedPct:8,climaxVolumeRatio:3.2,rsiPeak:24},trend4h:'down',btcTrend4h:'down',withTrend:false,plan:{netRR:0.9}},
+  // Previously blocked by SCORE_BELOW_MINIMUM at 60점 (unlocks when minScore=60)
+  {at:now-300000,barAt:now-320000,symbol:'CUSDT',direction:'SHORT',kind:'MOVE_REVERSAL',entered:false,reason:'SCORE_BELOW_MINIMUM',score:{score:60,grade:'C'},evidence:{movePct:4.2,moveAtr:5.0,retracedPct:16,climaxVolumeRatio:5.5,rsiPeak:80},trend4h:'range',withTrend:null,plan:{netRR:1.2}},
+ ];
+ const trades=[
+  {symbol:'AUSDT',direction:'LONG',barAt:now-120000,kind:'MOVE_REVERSAL',evidence:signals[0].evidence,trend4h:'up',btcTrend4h:'up',withTrend:true,plan:{tp1NetR:1.4},exit:{at:now-50000},pnl:{netUSD:30,r:2.0}},
+  {symbol:'BUSDT',direction:'LONG',barAt:now-220000,kind:'MOVE_REVERSAL',evidence:signals[1].evidence,trend4h:'down',btcTrend4h:'down',withTrend:false,plan:{tp1NetR:0.9},exit:{at:now-150000},pnl:{netUSD:-20,r:-1.3}},
+ ];
+
+ assert.equal(normalizeSimParams({minScore:120}).minScore,100);
+ // At minScore=65: drops losing BUSDT (-$20), keeping winning AUSDT (+$30), CUSDT stays blocked
+ const s65=simulateScalpSignals({signals,trades,params:{days:7,minMovePct:2.5,trendMode:'off',zoneSignals:true,minNetRR:0,minScore:65},now,includePresets:false});
+ assert.equal(s65.simulated.trades,1);
+ assert.equal(s65.simulated.netUSD,30);
+ assert.equal(s65.simulated.removedTrades,1);
+ assert.equal(s65.simulated.removedNetUSD,-20);
+ assert.equal(s65.simulated.unlockedSignals,0);
+
+ // At minScore=60: unlocks CUSDT (SCORE_BELOW_MINIMUM)
+ const s60=simulateScalpSignals({signals,trades,params:{days:7,minMovePct:2.5,trendMode:'off',zoneSignals:true,minNetRR:0,minScore:60},now,includePresets:false});
+ assert.equal(s60.simulated.unlockedSignals,1);
+ assert.equal(s60.simulated.unlockedByReason.SCORE_BELOW_MINIMUM,1);
+});
+
+test('redundant against-trend 50% sizing is omitted when 100-point scoring is active',()=>{
+ const details=scalpDetailsHTML({
+  mode:'TESTNET',credentials:true,armed:true,
+  settings:{...scalpExecConfig({}),...SCALP_EXEC_SETTINGS,stopLossEnabled:false,repeatedScaleIn:true,minScore:65},
+  stats:{bySide:{},byKind:{},byGrade:{}},
+ });
+ assert.doesNotMatch(details,/4H 역추세 50%/);
+});
+

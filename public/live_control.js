@@ -840,10 +840,10 @@ export function testnetSummaryHTML(st,{scalpOnly=false,open=[],budget=null}={}){
  ${scalpOnly?'':`<p class="copy-split tn-split">신호 <b class="${tnCls(s.netUSD)}">${tnMoney(s.netUSD??0)}</b> (${esc(s.trades??0)}건) · 단타 <b class="${tnCls(c.netUSD)}">${tnMoney(c.netUSD??0)}</b> (${esc(c.trades??0)}건)</p>`}`;
 }
 
-let scalpSimOpen=false,scalpSimCustomized=false,lastScalpSim=null,lastScalpSimParams={days:7,minMovePct:5,trendMode:'off',zoneSignals:true,minNetRR:0,sides:'LONG,SHORT'};
+let scalpSimOpen=false,scalpSimCustomized=false,lastScalpSim=null,lastScalpSimParams={days:7,minMovePct:3.5,trendMode:'off',zoneSignals:true,minNetRR:0,minScore:65,sides:'LONG,SHORT'};
 export function setScalpSimOpen(v){scalpSimOpen=!!v}
 export function resetScalpSimParams(){scalpSimCustomized=false;lastScalpSim=null}
-const SIM_REASON_KO={AGAINST_4H_TREND:'4H 역추세',TP1_NET_RR_BELOW_MINIMUM:'손익비 미달',SIDE_OFF:'방향 꺼짐',SHORT_NOT_TRADED:'숏 꺼짐',ZONE_NOT_TOUCHED:'매물대 미도달'};
+const SIM_REASON_KO={AGAINST_4H_TREND:'4H 역추세',TP1_NET_RR_BELOW_MINIMUM:'손익비 미달',SIDE_OFF:'방향 꺼짐',SHORT_NOT_TRADED:'숏 꺼짐',ZONE_NOT_TOUCHED:'매물대 미도달',SCORE_BELOW_MINIMUM:'신호 점수 미달'};
 export function scalpSimResultHTML(d){
  if(!d)return '';
  const b=d.baseline||{},sim=d.simulated||{},sig=d.signalSummary||{};
@@ -862,7 +862,8 @@ export function scalpSimResultHTML(d){
 
 /** The scalp's own details, collapsed under "단타 신호·건너뜀": rules, 롱 / 숏 totals, last scan, skip reasons, journal. */
 function scalpExitRule(S){
- const protection=S.stopLossEnabled===false?`자동 손절·시간 만료 청산 없음${S.repeatedScaleIn?' · 점진 확대 추매(1R→2R→3.5R→5R · 1x/1x/1.5x/2x · 최대 4회 · IOC 0.35~0.8% · 4H 역추세 50% · BTC 급변 방어)':''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유`;
+ const hasScore=Number(S.minScore)>0;
+ const protection=S.stopLossEnabled===false?`자동 손절·시간 만료 청산 없음${S.repeatedScaleIn?` · 점진 확대 추매(1R→2R→3.5R→5R · 1x/1x/1.5x/2x · 최대 ${esc(S.maxScaleInAdds??3)}회 · IOC 0.35~0.8%${hasScore?'':' · 4H 역추세 50%'} · BTC 급변 방어)`:''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유`;
  const roe=Number(S.minProfitRoePct),fallbackMin=S.earlyTakeProfitMin??15;
  return protection+(S.profitHoldTargetMin?(roe>0?` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 5초 주기 점검으로 순수익률(ROE) +${esc(roe)}% 도달 시 50% 확정 + 잔여 50% 트레일링 · 추매 포지션은 +6% 50% 확정 후 30% 트레일링(24시간+3회 추매 시 +2.5% 회전, 5% 미만 먼지 자동 정리) · 비추매 ${esc(fallbackMin)}분 경과 시 비용 충당 익절`:` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 조기 전량 익절은 진입 ${esc(fallbackMin)}분부터 · 예상 비용을 넘기는 가격에서 지정가 청산`):
   S.earlyTakeProfitMin?` · ${esc(S.earlyTakeProfitMin)}분 경과 후 예상 비용을 충당하는 가격에 지정가 익절`:'');
@@ -876,20 +877,25 @@ export function scalpDetailsHTML(s){
  const noStop=S.stopLossEnabled===false;
  const exitRule=scalpExitRule(S);
  const recheck=S.reversalRecheckMin?` · 가격·손익비로 건너뛴 반전은 ${esc(S.reversalRecheckMin)}분 동안 재확인`:'';
+ const unifiedMove=Number(S.minScore)>0&&S.scoreUnifiedMove!==false;
+ const moveDesc=unifiedMove?`${esc(S.zoneMinMovePct??2.5)}% 이상 통합 점수 판별 (매물대 강제 해제)`:`${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''}`;
  const scoreRule=Number(S.minScore)>0?` · 100점 신호 점수 ${esc(S.minScore)}점 이상 진입${Number(S.highScoreSizeMult)>1&&Number(S.highScore)>0?` (${esc(S.highScore)}점+ 비중 ${esc(S.highScoreSizeMult)}배)`:''}`:'';
- const rules=`<p class="copy-rules">${mode?`상태 ${mode} · `:''}거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''} · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입${scoreRule} · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · ${exitRule} · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · ${noStop?'진입 규모 계산 위험':'거래당 위험'} 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%${S.sharedBudget?'(신호 전략과 공동)':''}에서 새 주문 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 ${noStop?'기준':'손절'} 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${tnWhen(s.lastScan.at)} (${esc(s.lastScan.checked)}종목${s.lastScan.failed>0?`, 실패 ${esc(s.lastScan.failed)}`:''}${s.lastScan.error?`, 오류 ${esc(s.lastScan.error)}`:''})`:''}</p>`;
+ const rules=`<p class="copy-rules">${mode?`상태 ${mode} · `:''}거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${moveDesc} · 거래량 ${esc(S.climaxVolume)}배 · 반전 캔들 확인 뒤 진입${scoreRule} · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%) · ${exitRule} · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · ${noStop?'진입 규모 계산 위험':'거래당 위험'} 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%${S.sharedBudget?'(신호 전략과 공동)':''}에서 새 주문 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 ${noStop?'기준':'손절'} 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${tnWhen(s.lastScan.at)} (${esc(s.lastScan.checked)}종목${s.lastScan.failed>0?`, 실패 ${esc(s.lastScan.failed)}`:''}${s.lastScan.error?`, 오류 ${esc(s.lastScan.error)}`:''})`:''}</p>`;
  const counts=(s.skipCounts||[]).slice(0,8),skips=(s.skips||[]).slice(0,10);
  const KK={MOVE_REVERSAL:'급변 5%',ZONE_REVERSAL:'매물대 반전'};
  const byKind=`<div class="copy-stats tn-kind-stats">${['MOVE_REVERSAL','ZONE_REVERSAL'].map(k=>{const b=st.byKind?.[k]||{};return stat(`${KK[k]}${k==='ZONE_REVERSAL'&&S.zoneSignals===false?' (꺼짐)':''}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${KK[k]} 손익`,tnMoney(b.trades?b.netUSD:null),`class="${tnCls(b.netUSD)}"`)}).join('')}</div>`;
+ const GK={S:'S급 (80+)',A:'A급 (70~75)',B:'B급 (65)'};
+ const byGrade=st.byGrade?`<div class="copy-stats tn-grade-stats">${['S','A','B'].map(g=>{const b=st.byGrade?.[g]||{};return stat(GK[g],`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'} · <i class="${tnCls(b.netUSD)}">${b.trades?tnMoney(b.netUSD):'—'}</i>`)}).join('')}</div>`:'';
  const skipBox=counts.length?`<h5 class="copy-sub">진입 안 한 이유</h5><p class="copy-rules">${counts.map(c=>`${esc(c.label)} ${esc(c.count)}회`).join(' · ')}</p><ul class="copy-list muted">${skips.map(x=>`<li><span class="muted">${tnWhen(x.at)}</span>${esc(x.symbol||'')}${x.kind==='ZONE_REVERSAL'?' <small>매물대 후보</small>':''}${x.direction?` <b class="${x.direction==='LONG'?'pos':'neg'}">${x.direction==='LONG'?'롱(급락 후 반등)':'숏(급등 후 되돌림)'}</b>`:''}${x.movePct!=null?` <small>${esc(Number(x.movePct).toFixed(1))}% 움직임</small>`:''} · ${esc(x.label||x.reason)}${skipDetail(x)}</li>`).join('')}</ul>`:'<p class="empty-small">건너뛴 신호가 없습니다.</p>';
  const journal=`<p class="copy-rules">전체 기록: <a href="/api/scalp/journal?limit=200" target="_blank" rel="noopener">단타 거래 기록</a> · <a href="/api/scalp/journal?kind=signals&amp;limit=200" target="_blank" rel="noopener">감지된 신호</a> (JSON)</p>`;
  const experiment=S.repeatedScaleIn&&st.repeatedScaleIn?`<p class="copy-rules">반복 추매 실험 종료 ${esc(st.repeatedScaleIn.closed)}건 · 추매 ${esc(st.repeatedScaleIn.adds)}회</p>`:st.scaleIn&&S.scaleIn?`<p class="copy-rules">추매 실험 종료 ${esc(st.scaleIn.closed)}건 · 추매 체결 ${esc(st.scaleIn.filled)}건</p>`:'';
  const sp=scalpSimCustomized?lastScalpSimParams:{
   days:7,
-  minMovePct:fin(S.minMovePct)?Number(S.minMovePct):5,
+  minMovePct:unifiedMove?(fin(S.zoneMinMovePct)?Number(S.zoneMinMovePct):2.5):(fin(S.minMovePct)?Number(S.minMovePct):5),
   trendMode:S.trendMode==='on'?'on':'off',
   zoneSignals:S.zoneSignals!==false,
   minNetRR:noStop?0:(fin(S.minNetRR)?Number(S.minNetRR):1),
+  minScore:fin(S.minScore)?Number(S.minScore):65,
   sides:Array.isArray(S.sides)&&S.sides.length?S.sides.join(','):'LONG,SHORT',
  };
  const simBox=`<details class="copy-analytics-fold scalp-sim-fold"${scalpSimOpen?' open':''}><summary data-scalp-sim-toggle><b>단타 조건 시뮬레이터 (What-If)</b> <small>최근 신호·거래 기반 조건 비교 · 주문 없음</small></summary>
@@ -897,6 +903,7 @@ export function scalpDetailsHTML(s){
    <form class="ctrl-form sim-form" data-scalp-sim-form>
     <label>분석 기간 (일) <input name="days" type="number" min="1" max="30" step="1" value="${esc(sp.days)}"></label>
     <label>최소 급변 (%) <input name="minMovePct" type="number" min="2.5" max="15" step="0.5" value="${esc(sp.minMovePct)}"></label>
+    <label>최소 점수 (100점) <input name="minScore" type="number" min="0" max="100" step="5" value="${esc(sp.minScore)}" title="0 = 점수 제한 없음"></label>
     <label>4H 추세 필터 <select name="trendMode"><option value="on"${sp.trendMode==='on'?' selected':''}>ON (역추세 제외)</option><option value="off"${sp.trendMode==='off'?' selected':''}>OFF (모두 허용)</option></select></label>
     <label>매물대 반전 <select name="zoneSignals"><option value="true"${sp.zoneSignals?' selected':''}>ON (2.5%+매물대)</option><option value="false"${!sp.zoneSignals?' selected':''}>OFF (급변만)</option></select></label>
     <label>최소 손익비 (RR) <input name="minNetRR" type="number" min="0" max="3" step="0.1" value="${esc(sp.minNetRR)}" title="0 = 제한 없음"></label>
@@ -905,7 +912,7 @@ export function scalpDetailsHTML(s){
    </form>
    <div data-scalp-sim-out>${lastScalpSim?scalpSimResultHTML(lastScalpSim):'<p class="empty-small">시뮬레이션 실행 버튼을 누르면 최근 신호와 종료 거래로 조건별 차이를 계산합니다.</p>'}</div>
   </div></details>`;
- return byKind+bySide+rules.replace('</p>',`${recheck}</p>`)+experiment+skipBox+simBox+journal;
+ return byKind+bySide+byGrade+rules.replace('</p>',`${recheck}</p>`)+experiment+skipBox+simBox+journal;
 }
 function bindTestnetPager(el){
  if(!el||el.dataset.tnBound)return;el.dataset.tnBound='1';
@@ -1316,9 +1323,9 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
    e.preventDefault();
    const btn=simForm.querySelector('button[type="submit"]'),out=simForm.closest('details')?.querySelector('[data-scalp-sim-out]');
    const val=n=>simForm.elements.namedItem(n)?.value??'';
-   const p={days:val('days')||'7',minMovePct:val('minMovePct')||'5',trendMode:val('trendMode')||'off',zoneSignals:val('zoneSignals')||'true',minNetRR:val('minNetRR')||'0',sides:val('sides')||'LONG,SHORT'};
+   const p={days:val('days')||'7',minMovePct:val('minMovePct')||'2.5',minScore:val('minScore')||'0',trendMode:val('trendMode')||'off',zoneSignals:val('zoneSignals')||'true',minNetRR:val('minNetRR')||'0',sides:val('sides')||'LONG,SHORT'};
    scalpSimCustomized=true;
-   lastScalpSimParams={days:Number(p.days)||7,minMovePct:Number(p.minMovePct)||5,trendMode:p.trendMode,zoneSignals:p.zoneSignals!=='false',minNetRR:Number(p.minNetRR)||0,sides:p.sides};
+   lastScalpSimParams={days:Number(p.days)||7,minMovePct:Number(p.minMovePct)||2.5,minScore:Number(p.minScore)||0,trendMode:p.trendMode,zoneSignals:p.zoneSignals!=='false',minNetRR:Number(p.minNetRR)||0,sides:p.sides};
    if(btn){btn.disabled=true;btn.textContent='계산 중…'}
    if(out)out.innerHTML='<p class="empty-small">최근 신호와 거래 기록을 분석하는 중…</p>';
    try{

@@ -168,6 +168,8 @@ export function scalpExecConfig(env=process.env){
   minScore:n('SCALP_MIN_SCORE',SCALP_SCORE_DEFAULTS.minScore,0,100),
   highScore:n('SCALP_HIGH_SCORE',SCALP_SCORE_DEFAULTS.highScore,0,100),
   highScoreSizeMult:n('SCALP_HIGH_SCORE_SIZE_MULT',SCALP_SCORE_DEFAULTS.highSizeMult,1,2),
+  // Unified 2.5%+ score gate (backtest: 2.5~3.5% setups scoring >=65 achieved 100% WR without requiring a 4H/1D zone touch).
+  scoreUnifiedMove:!['off','false','0','no'].includes(String(env.SCALP_SCORE_UNIFIED_MOVE??'').trim().toLowerCase()),
   // 매물대 반전 (user 2026-11-17 23:12): on by default, SCALP_ZONE_SIGNALS=off turns it off.
   zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT};
 }
@@ -319,7 +321,7 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,SCALP_JOURNAL_FILE):null;this.signalsFile=directory?path.join(directory,SCALP_SIGNALS_FILE):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
+  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
@@ -450,11 +452,15 @@ export class ScalpExecutor{
     // Only the candle that has just closed (a late or missing candle is not traded later).
     if(!closed.length||Number(closed.at(-1)[0])!==(bucket-1)*I5)continue;
     let det=detectScalpReversal(closed,{symbol:u.symbol,now:t,interval:'5m',settings:this.config.settings}),kind=SCALP_KINDS.MOVE;
-    // 매물대 반전 (backtestScalp zoneSignals): only when the 5 % rule found nothing on this candle, the same detection at
-    // 2.5 %; it is traded only when its extreme touched a 4H / 1D zone (checked below, zones read only for these).
+    // Unified 2.5%+ score gate (40-coin backtest: 2.5~3.5% setups scoring >=65 achieved 100% WR without 4H/1D zone gating).
+    // Respects explicit SCALP_ZONE_SIGNALS=off; falls back to legacy ZONE_REVERSAL + 4H/1D zone check when minScore===0 or scoreUnifiedMove===false.
+    const unifiedScoreMove=Number(this.config.minScore)>0&&this.config.scoreUnifiedMove!==false;
     if(!det.ok&&this.config.zoneSignals&&(this.config.settings.minMovePct??SCALP_TIMEFRAMES['5m'].minMovePct)>this.config.zoneMinMovePct){
      const alt=detectScalpReversal(closed,{symbol:u.symbol,now:t,interval:'5m',settings:{...this.config.settings,minMovePct:this.config.zoneMinMovePct}});
-     if(alt.ok){det=alt;kind=SCALP_KINDS.ZONE;st.zoneSignals=(st.zoneSignals||0)+1}
+     if(alt.ok){
+      det=alt;
+      if(!unifiedScoreMove){kind=SCALP_KINDS.ZONE;st.zoneSignals=(st.zoneSignals||0)+1}
+     }
     }
     const watched=!det.ok?this.#recheckReversal(u.symbol,closed,t):null;
     if(watched){det=watched.det;kind=watched.kind;st.rechecked=(st.rechecked||0)+1}
@@ -643,7 +649,8 @@ export class ScalpExecutor{
    try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)lev=Math.max(1,Math.min(lev,Math.floor(max)))}catch{}
    const shared=this.budget?.snapshot(funds.equity,{who:'scalp'});
    if(shared&&!shared.ok)return skip('TESTNET_BUDGET_UNAVAILABLE');
-   const againstTrend=this.config.trendMode==='record'&&this.cur?.withTrend===false;
+   // Legacy 4H against-trend 50% reduction applies only when 100-point scoring is disabled (scoring already weights 4H trend 0/20).
+   const againstTrend=!(Number(this.config.minScore)>0)&&this.config.trendMode==='record'&&this.cur?.withTrend===false;
    const basePlanConfig=againstTrend?{...this.config,riskPct:this.config.riskPct*SCALP_AGAINST_TREND_RISK_SCALE}:this.config;
    let plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
     usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:basePlanConfig});
@@ -883,7 +890,7 @@ export class ScalpExecutor{
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
    x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
-   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
+   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,scoreGrade:line.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
   }
  }
  /** The newest `limit` journal lines (oldest first). */
@@ -1816,6 +1823,7 @@ export class ScalpExecutor{
  // Over every trade: the journal plus the closed trades not yet written to it (the store keeps only the last 300).
  stats(){const list=[...this.journalRows,...this.store.closed.filter(x=>!x.journaled)];const all=this.#stats(list);all.bySide=Object.fromEntries(SCALP_SIDES.map(d=>[d,this.#stats(list.filter(x=>(x.direction||'LONG')===d))]));
   all.byKind=Object.fromEntries(Object.values(SCALP_KINDS).map(k=>[k,this.#stats(list.filter(x=>(x.kind||SCALP_KINDS.MOVE)===k))]));
+  all.byGrade=Object.fromEntries(['S','A','B'].map(g=>[g,this.#stats(list.filter(x=>(x.scoreGrade??x.scalpScore?.grade??x.score?.grade)===g))]));
   const experiment=list.filter(x=>x.scaleIn?.version===SCALP_SCALE_IN.version);
   const repeated=list.filter(x=>x.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version);
   all.scaleIn={closed:experiment.length,filled:experiment.filter(x=>x.scaleIn.fillQty>0).length};
@@ -1835,7 +1843,7 @@ export class ScalpExecutor{
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,
-    minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,
+    minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??3,
     scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,exchangePosition,...p})=>({...p,details:scalpPositionDetails({...p,steps,exchangePosition},this.now())})),
@@ -1850,7 +1858,7 @@ export class ScalpExecutor{
   const skipCounts=Object.fromEntries(Object.entries(this.store.skipCounts||{}).filter(([,v])=>Number.isFinite(Number(v))&&Number(v)>0).slice(0,30));
   return {
    mode:c.mode,armed:this.armed,blocked:this.#blocked(),scanning:this.scanning===true,
-   trendMode:c.trendMode,minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,
+   trendMode:c.trendMode,minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,
    aiLensRecord:c.mode==='TESTNET'&&c.wyckoffRecord===true&&Boolean(this.signalsFile),scaleInEnabled:c.scaleIn,stopLossEnabled:c.stopLossEnabled,
    repeatedScaleIn:c.scaleIn&&!c.stopLossEnabled,open:this.store.open.length,
    ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0,earlyFallbackMin:PROFIT_ONLY_EARLY_EXIT_MIN,minProfitRoePct:c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT,minMovePct:c.settings?.minMovePct??null}:{}),
