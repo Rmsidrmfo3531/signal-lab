@@ -6,6 +6,7 @@
 const workspaceRoutes = Object.freeze({
   real: '실계좌 · 카피 매매',
   live: '테스트넷 · 신호 전략',
+  orderflow: '수급 · 청산맵',
   news: '시황 · 뉴스'
 });
 const defaultRoute = 'real';
