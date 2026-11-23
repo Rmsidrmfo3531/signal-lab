@@ -91,6 +91,8 @@ const ARCHIVE_COPY_CLOSES=new Set([
 export function noVenueAnswer(e){return ['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET'].includes(e?.code)||['AbortError','TimeoutError'].includes(e?.name)}
 // BingX "order does not exist" for a lookup by clientOrderId (the only answer that proves the order is absent).
 const orderAbsent=e=>/80016/.test(String(e?.code||''))||/not exist/i.test(String(e?.message||''));
+const TERMINAL_ORDER=new Set(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED']);
+const RESTING_ORDER=new Set(['NEW','PENDING','PARTIALLY_FILLED']);
 
 /** BingX contract for a channel symbol: the same name, a 1000-coin contract (1000PEPEUSDT), or a stock
  * perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT). contracts: Map(symbol -> normalized contract). */
@@ -150,7 +152,9 @@ export class CopyExecutor{
   Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,breaker,entryGateRevision,isBusy,balance,controls,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
-  this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],deferredEntries:Array.isArray(saved?.deferredEntries)?saved.deferredEntries:[],killed:saved?.killed||false,userPaused:saved?.userPaused===true};
+  this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],deferredEntries:Array.isArray(saved?.deferredEntries)?saved.deferredEntries:[],killed:saved?.killed||false,userPaused:saved?.userPaused===true,
+   // MAKER_FIRST PostOnly children whose end state was never seen (#market): cancelled by the next reconcile.
+   makerUnsettled:Array.isArray(saved?.makerUnsettled)?saved.makerUnsettled.filter(u=>typeof u?.clientOrderId==='string'&&typeof u?.venueSymbol==='string'):[]};
   // An order in flight does not survive a restart.
   for(const p of Object.values(this.store.positions))delete p.inflight;
   this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;this.entryRevision=0;this.settling=null;this.settleAttempts=new Map();
@@ -509,13 +513,24 @@ export class CopyExecutor{
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
   const positionSide=positionSideFor({hedge:p.hedge===true,direction:p.direction});
   if(this.#effectiveMakerFirst()&&!reduceOnly&&maker?.markPrice>0&&pos(p.tickSize)){
-   {const cid=this.#clientId(p,tag);if(!p.makerCids?.includes(cid)){(p.makerCids??=[]).push(cid);p.makerCids=p.makerCids.slice(-64)}}
-   const r=await placeMakerThenMarket({
-    client:this.client,symbol:p.venueSymbol,side,positionSide,quantity,
-    quantityStep:maker.step??null,minQuantity:maker.minQty??0,tickSize:p.tickSize,
-    markPrice:maker.markPrice,hedge:p.hedge===true,clientOrderId:this.#clientId(p,tag),
-    waitMs:this.config.makerWaitMs??1000,pollMs:250,sleep:this.sleep,beforeSend,
-   });
+   const cid=this.#clientId(p,tag);
+   // On disk before the PostOnly child is sent (review 2026-11-23): after a crash the entry lookup must read the children.
+   if(!p.makerCids?.includes(cid)){(p.makerCids??=[]).push(cid);p.makerCids=p.makerCids.slice(-64);this.#save()}
+   let r;
+   try{
+    r=await placeMakerThenMarket({
+     client:this.client,symbol:p.venueSymbol,side,positionSide,quantity,
+     quantityStep:maker.step??null,minQuantity:maker.minQty??0,tickSize:p.tickSize,
+     markPrice:maker.markPrice,hedge:p.hedge===true,clientOrderId:cid,
+     waitMs:this.config.makerWaitMs??1000,pollMs:250,sleep:this.sleep,beforeSend,
+    });
+   }catch(e){
+    // The PostOnly child may still rest (no answer, MAKER_STATE_UNCONFIRMED, an unclear answer; open point (i) of the
+    // 2026-11-23 review): remembered on disk and cancelled by the next reconcile, so it cannot fill later into a
+    // position no ledger row follows. ENTRY_NOT_SENT: nothing on the book.
+    if(e?.code!=='ENTRY_NOT_SENT'){this.#noteUnsettled(p,makerChildIds(cid).limit);try{this.#save()}catch{}}
+    throw e;
+   }
    const ids=[...new Set([r.makerOrderId,r.marketOrderId].filter(Boolean))];
    for(const id of ids){
     const isMain=id===r.orderId;
@@ -740,29 +755,31 @@ export class CopyExecutor{
   * (cannot tell: no lookup call, no recorded order, or a failed lookup). */
  async #entryFill(p){
   const cids=p.entryCids||[];if(!cids.length||typeof this.client.getOrder!=='function')return {};
-  let absent=0;
+  let absent=0;const resting=[];
   for(const clientOrderId of cids){
    const f=await this.#lookupFamily(p,clientOrderId);
-   if(f.filled)return {filled:true,qty:f.qty,avg:f.avg};
+   if(f.resting?.length)resting.push(...f.resting);
+   if(f.filled)return {filled:true,qty:f.qty,avg:f.avg,resting};
    if(f.absent)absent++;
   }
-  return absent===cids.length?{absent:true}:{};
+  return absent===cids.length?{absent:true}:{resting};
  }
  /** One order id and its MAKER_FIRST children (maker_order.mjs makerChildIds): {filled, qty (summed), avg, orderId} /
   * {absent} (each one "does not exist" or finished without a fill) / {why} (cannot tell). */
  async #lookupFamily(p,clientOrderId){
   // Children only for ids sent through the maker-first path (p.makerCids), so a plain market id costs one lookup.
   const kids=makerChildIds(clientOrderId),ids=p.makerCids?.includes(clientOrderId)?[...new Set([clientOrderId,kids.limit,kids.market])]:[clientOrderId];
-  let qty=0,cost=0,orderId=null,anyFill=false,absent=0,why=null;
+  let qty=0,cost=0,orderId=null,anyFill=false,absent=0,why=null;const resting=[];
   for(const id of ids){
    try{const o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:id})),st=String(o?.status||'').toUpperCase(),exec=num(o?.executedQty)??0;
+    if(o&&RESTING_ORDER.has(st))resting.push(id); // still on the book (a PostOnly child left by a failed entry)
     if(o&&(exec>0||st==='FILLED'||st==='PARTIALLY_FILLED')){anyFill=true;orderId??=o.orderId??null;if(exec>0){qty+=exec;const a=pos(o.avgPrice);if(a)cost+=a*exec}continue}
     if(o&&['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st)){absent++;continue}
     why??='ORDER_STATE_'+(st||'UNKNOWN');
    }catch(e){if(orderAbsent(e))absent++;else why??='LOOKUP_'+(e.code||'FAILED')}
   }
-  if(anyFill)return {filled:true,orderId,qty:qty>0?+qty.toFixed(12):null,avg:qty>0&&cost>0?+(cost/qty).toPrecision(10):null};
-  return absent===ids.length?{absent:true}:{why:why??'UNKNOWN'};
+  if(anyFill)return {filled:true,orderId,qty:qty>0?+qty.toFixed(12):null,avg:qty>0&&cost>0?+(cost/qty).toPrecision(10):null,resting};
+  return absent===ids.length?{absent:true}:{why:why??'UNKNOWN',resting};
  }
  /** Our last close of this coin and side that did not follow the trader, with no trader close since. Unless it
   * was a confirmed manual close (externalClose), entering again would undo it (review 2026-11-14 / 2026-11-17). */
@@ -1372,6 +1389,10 @@ export class CopyExecutor{
  async #gone(p,reason,now){
   const key=this.#key(p);
   if(!p.steps?.length&&!p.closing){const f=await this.#entryFill(p);
+   // An entry PostOnly child still on the book (review 2026-11-23): not booked while it can still fill; the next
+   // reconcile cancels it first, then it is looked up again.
+   if(f.resting?.length){for(const id of f.resting)this.#noteUnsettled(p,id);this.#save();
+    this.#event('ENTRY_ORDER_RESTING',{symbol:p.symbol,reason,detail:'진입 PostOnly 주문이 아직 거래소에 남아 있음 — 취소 후 다시 확인'});return {ok:false,reason:'ENTRY_RESTING'}}
    if(f.absent){if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
     this.#event('ENTRY_NOT_FILLED',{symbol:p.symbol,reason,detail:'진입 주문이 거래소에 없음(80016) — 원장에서 지움'});return {ok:false,reason:'POSITION_GONE'}}
    p.steps=[{kind:f.filled?'OPEN':'ENTRY_UNVERIFIED',at:this.now(),qty:f.qty??null,avg:f.avg??null}]}
@@ -1413,6 +1434,7 @@ export class CopyExecutor{
  }
  async #reconcile(){
   if(this.audit)for(const p of Object.values(this.store.positions))if(p.auditQty==null)p.auditQty=pos(p.qty);
+  await this.#settleUnsettled();
   const inflight=job=>this.store.positions[this.#key(job.m)]?.inflight===true;
   const retried=new Set();
   for(const job of this.store.pending.splice(0)){
@@ -1442,6 +1464,8 @@ export class CopyExecutor{
     // An entry whose answer was lost: taken over only when its order shows filled; "does not exist" or a failed
     // lookup -> not ours to manage: dropped from the ledger, the venue position left alone (UNCONFIRMED_ADOPT).
     if(!p.steps?.length){const f=await this.#entryFill(p);
+     if(f.resting?.length)for(const id of f.resting)this.#noteUnsettled(p,id); // cancelled by the next reconcile
+     if(!f.filled&&f.resting?.length){this.#save();continue}
      if(!f.filled){const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
       this.#event('UNCONFIRMED_ADOPT',{symbol:p.symbol,reason:f.absent?'ENTRY_ORDER_NOT_FOUND':'ENTRY_LOOKUP_FAILED',size:now.size,detail:`거래소에 ${now.size} 보유 — 우리 진입 체결이 확인되지 않아 원장에 넣지 않음(직접 확인 필요)`});continue}
      p.steps=[{kind:'ADOPTED',at:this.now(),qty:now.size}];if(this.audit)p.auditQty=now.size}
@@ -1473,6 +1497,30 @@ export class CopyExecutor{
   const beyond=dir*(edge-close)>0,heavy=avgVol>0&&Number(last[5])>=avgVol*this.config.breakVolumeMult;
   if(beyond&&heavy)this.#event('ZONE_BREAK',{symbol:p.symbol,close,edge,volumeX:+(Number(last[5])/avgVol).toFixed(2)});
   return beyond&&heavy;
+ }
+ #noteUnsettled(p,clientOrderId){
+  const list=this.store.makerUnsettled;
+  if(!list.some(u=>u.clientOrderId===clientOrderId))list.push({symbol:p.symbol,venueSymbol:p.venueSymbol,clientOrderId,at:this.now()});
+  if(list.length>200)list.splice(0,list.length-200);
+ }
+ /** PostOnly children whose end state was never seen (#market, #gone): each is read by its clientOrderId; one still on
+  * the book is cancelled and read again next time; a finished one, or one the venue does not know, is dropped. */
+ async #settleUnsettled(){
+  const list=this.store.makerUnsettled;
+  if(!list.length||typeof this.client.getOrder!=='function')return;
+  const keep=[];
+  for(const u of list){
+   let o;
+   try{o=orderOf(await this.client.getOrder(u.venueSymbol,{clientOrderId:u.clientOrderId}))}
+   catch(e){if(!orderAbsent(e))keep.push(u);continue}
+   const st=String(o?.status||'').toUpperCase();
+   if(TERMINAL_ORDER.has(st))continue;
+   keep.push(u);
+   try{await this.client.cancelOrder(u.venueSymbol,o?.orderId!=null?String(o.orderId):undefined,{clientOrderId:u.clientOrderId});
+    this.#event('MAKER_REST_CANCELLED',{symbol:u.symbol,clientOrderId:u.clientOrderId,status:st||'UNKNOWN',detail:'확인되지 않은 PostOnly 주문 취소'})}
+   catch{}
+  }
+  this.store.makerUnsettled=keep;this.#save();
  }
  /** After the loss limit: copying resumes only when asked. */
  resume(){this.store.killed=false;this.#save();return this.status()}
