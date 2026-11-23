@@ -87,16 +87,62 @@ function buildSteppedPath(coords) {
   return d;
 }
 
+const PRICE_SPAN_PRESETS = Object.freeze({
+  LIVE: {
+    tight:  { spanMult: 0.18, pctPad: 0.01 },
+    normal: { spanMult: 0.55, pctPad: 0.03 },
+    wide:   { spanMult: 1.15, pctPad: 0.08 },
+    ultra:  { spanMult: 2.20, pctPad: 0.20 },
+  },
+  '1D': {
+    tight:  { spanMult: 0.18, pctPad: 0.02 },
+    normal: { spanMult: 0.50, pctPad: 0.06 },
+    wide:   { spanMult: 1.00, pctPad: 0.16 },
+    ultra:  { spanMult: 1.85, pctPad: 0.35 },
+  },
+  MACRO: {
+    tight:  { spanMult: 0.16, pctPad: 0.04 },
+    normal: { spanMult: 0.45, pctPad: 0.14 },
+    wide:   { spanMult: 0.95, pctPad: 0.35 },
+    ultra:  { spanMult: 1.65, pctPad: 0.60 },
+  },
+});
+
+/**
+ * Compute visible Y-axis [minP, maxP] for FireCharts heatmap according to user's zoom preset
+ * ('tight' | 'normal' | 'wide' | 'ultra') while preserving backward compatibility when candle bounds are absent.
+ */
+export function computeFirechartPriceBounds(data, priceSpan = 'wide') {
+  const hm = data?.firechart?.heatmap;
+  const candles = data?.series || [];
+  const lastPx = Number(data?.price?.mark) || Number(candles.at(-1)?.c) || 0;
+  // Backward compatibility: synthetic or legacy heatmaps without candleMinPrice/candleMaxPrice use exact hm bounds
+  if (hm && (!(Number(hm.candleMinPrice) > 0) || !(Number(hm.candleMaxPrice) > 0)) && Number(hm.minPrice) > 0 && Number(hm.maxPrice) > Number(hm.minPrice)) {
+    return { minP: Number(hm.minPrice), maxP: Number(hm.maxPrice) };
+  }
+  const cMin = Number(hm?.candleMinPrice) || (candles.length ? Math.min(...candles.map(c => c.l || c.c)) : 0);
+  const cMax = Number(hm?.candleMaxPrice) || (candles.length ? Math.max(...candles.map(c => c.h || c.c)) : 0);
+  if (!(cMax > 0)) return { minP: 0, maxP: 1 };
+  const rangeKey = String(data?.firechart?.range || data?.range || 'LIVE').toUpperCase();
+  const group = rangeKey === 'LIVE' ? PRICE_SPAN_PRESETS.LIVE : rangeKey === '1D' ? PRICE_SPAN_PRESETS['1D'] : PRICE_SPAN_PRESETS.MACRO;
+  const preset = group[priceSpan] || group.wide;
+  const cSpan = Math.max(cMax - cMin, lastPx * 0.012);
+  const pad = Math.max(cSpan * preset.spanMult, lastPx * preset.pctPad);
+  const floorMin = lastPx > 0 ? lastPx * 0.12 : 1e-12;
+  const minP = Math.max(floorMin, cMin - pad);
+  const maxP = cMax + pad;
+  return { minP, maxP: maxP > minP ? maxP : minP * 1.01 };
+}
+
 /**
  * Find the nearest visible liquidity wall to a touched/hovered (xNorm, yNorm) coordinate
  * inside the FireCharts upper heatmap canvas, or fall back to the exact touched price level.
  */
-export function findFirechartWallAt(data, { xNorm = 0.5, yNorm = 0.5, minPct = 93, maxPct = 99 } = {}) {
+export function findFirechartWallAt(data, { xNorm = 0.5, yNorm = 0.5, minPct = 93, maxPct = 99, priceSpan = 'wide' } = {}) {
   const hm = data?.firechart?.heatmap;
   const candles = data?.series || [];
   if (!hm || !candles.length) return null;
-  const minP = hm.minPrice || Math.min(...candles.map(c => c.l || c.c));
-  const maxP = hm.maxPrice || Math.max(...candles.map(c => c.h || c.c));
+  const { minP, maxP } = computeFirechartPriceBounds(data, priceSpan);
   const pSpan = maxP - minP || 1;
   const mark = Number(data?.price?.mark) || Number(candles.at(-1)?.c) || 0;
   const loPct = Math.min(minPct, maxPct);
@@ -105,13 +151,12 @@ export function findFirechartWallAt(data, { xNorm = 0.5, yNorm = 0.5, minPct = 9
   const xClamped = Math.max(0, Math.min(1, Number(xNorm)));
   const touchedPrice = maxP - yClamped * pSpan;
 
-  const visible = (hm.cells || []).filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99);
-  const bins = hm.priceBins || 44;
+  const visible = (hm.cells || []).filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99 && c.price >= minP && c.price <= maxP);
   let best = null;
   let bestScore = -Infinity;
 
   for (const c of visible) {
-    const wallYNorm = 1 - (c.yBin + 0.5) / bins;
+    const wallYNorm = (maxP - c.price) / pSpan;
     const dy = Math.abs(wallYNorm - yClamped);
     const inX = xClamped >= c.x0 - 0.045 && xClamped <= c.x1 + 0.045;
     const maxDy = inX ? 0.06 : 0.032; // generous touch tolerance on overlapping horizontal bar
@@ -151,11 +196,11 @@ export function findFirechartWallAt(data, { xNorm = 0.5, yNorm = 0.5, minPct = 9
 }
 
 /**
- * Render the touched/selected liquidity wall price readout banner.
+ * Render the touched/selected liquidity wall price readout banner with one-click real-account limit order handoff.
  */
-export function firechartInspectBarHTML(inspected) {
+export function firechartInspectBarHTML(inspected, symbol = '') {
   if (!inspected || !fin(inspected.price)) {
-    return '<div class="of-fc-inspect idle" data-of-fc-inspect><span>💡 차트의 매물대 줄을 터치(클릭)하면 정확한 가격대와 유동성 규모가 표시됩니다.</span></div>';
+    return '<div class="of-fc-inspect idle" data-of-fc-inspect><span>💡 차트의 매물대 줄을 터치(클릭)하면 정확한 가격대와 유동성 규모가 표시되며, 실계좌 지정가 주문으로 바로 전달할 수 있습니다.</span></div>';
   }
   const isAsk = inspected.side === 'ASK';
   const sideTag = inspected.snapped
@@ -165,22 +210,25 @@ export function firechartInspectBarHTML(inspected) {
   const wallMeta = inspected.snapped
     ? `<span class="of-fc-insp-meta">규모 <b>${esc(fmtUsdCompact(inspected.usd))}</b> · 상위 ${esc(inspected.pctRank)}% · ${inspected.live ? '실시간 L2 호가벽' : '거래량 매물대'}</span>`
     : '<span class="of-fc-insp-meta">현재가 대비 위치 확인</span>';
+  const sendOrderBtn = `<button type="button" class="of-fc-insp-order" data-of-send-real-order data-symbol="${esc(symbol)}" data-price="${esc(inspected.price)}" data-side="${isAsk ? 'SHORT' : 'LONG'}" data-wall-label="${esc(inspected.snapped ? (isAsk ? '매도벽' : '매수벽') : '선택가')}" title="이 가격을 실계좌 수동 주문 지정가(LIMIT)로 바로 채웁니다">⚡ 실계좌 지정가 주문 →</button>`;
   return `<div class="of-fc-inspect active ${isAsk ? 'ask' : 'bid'}" data-of-fc-inspect>
     <div class="of-fc-insp-main">${sideTag}<b class="of-fc-insp-px">$${esc(fmtPx(inspected.price))}</b>${distTxt}${wallMeta}</div>
-    <button type="button" class="of-fc-insp-close" data-of-inspect-clear aria-label="가격 표시 닫기">✕</button>
+    <div class="of-fc-insp-actions">${sendOrderBtn}<button type="button" class="of-fc-insp-close" data-of-inspect-clear aria-label="가격 표시 닫기">✕</button></div>
   </div>`;
 }
 
 /**
  * Render tappable major ASK/BID wall price chips under the FireCharts heatmap for quick mobile inspection.
  */
-export function firechartWallSummaryHTML(data, { minPct = 93, maxPct = 99, inspected = null } = {}) {
+export function firechartWallSummaryHTML(data, { minPct = 93, maxPct = 99, priceSpan = 'wide', inspected = null } = {}) {
   const hm = data?.firechart?.heatmap;
   const mark = Number(data?.price?.mark) || Number(data?.series?.at(-1)?.c) || 0;
   if (!hm?.cells?.length || !(mark > 0)) return '';
+  const { minP, maxP } = computeFirechartPriceBounds(data, priceSpan);
   const loPct = Math.min(minPct, maxPct);
   const hiPct = Math.max(minPct, maxPct);
-  const vis = hm.cells.filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99);
+  const inRange = hm.cells.filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99 && c.price >= minP && c.price <= maxP);
+  const vis = inRange.length ? inRange : hm.cells.filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99);
   if (!vis.length) return '';
 
   // Deduplicate by yBin keeping strongest wall per price shelf
@@ -211,7 +259,7 @@ export function firechartWallSummaryHTML(data, { minPct = 93, maxPct = 99, inspe
  * - Upper Pane: Pitch-black canvas with Fire Colorbar + Orderbook/Liquidity Wall Heatmap + Price Line + Touch Crosshair
  * - Lower Pane: 4-Cohort Multi-Line CVD (Normalized 0..1 OR Absolute USD) with Stepped Red Whale Line
  */
-export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct = 99, inspected = null } = {}) {
+export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct = 99, priceSpan = 'wide', inspected = null } = {}) {
   const fc = data?.firechart;
   const candles = data?.series || [];
   const cohortPts = fc?.cohorts?.series || [];
@@ -220,29 +268,31 @@ export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct
     return '<div class="empty-small" style="padding:36px">FireCharts 유동성 히트맵과 코호트 CVD를 계산하는 중입니다…</div>';
   }
 
-  const W = 920, H = 470;
+  const W = 920, H = 496;
   const PL = 86, PR = 78, PW = W - PL - PR;
-  const topY = 16, topH = 212;
-  const botY = 250, botH = 186;
+  const topY = 16, topH = 238;
+  const botY = 276, botH = 186;
   const loPct = Math.min(minPct, maxPct);
   const hiPct = Math.max(minPct, maxPct);
 
-  // Upper Pane: Price scale & Liquidity Heatmap
-  const minP = hm?.minPrice || Math.min(...candles.map(c => c.l || c.c));
-  const maxP = hm?.maxPrice || Math.max(...candles.map(c => c.h || c.c));
+  // Upper Pane: Dynamic wide price scale & Liquidity Heatmap
+  const { minP, maxP } = computeFirechartPriceBounds(data, priceSpan);
   const pSpan = maxP - minP || maxP * 0.01 || 1;
   const py = v => topY + topH - ((v - minP) / pSpan) * topH;
   const pxOf = (i, len) => PL + (len > 1 ? (i / (len - 1)) * PW : PW / 2);
 
-  const visibleCells = (hm?.cells || []).filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99);
+  const visibleCells = (hm?.cells || []).filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99 && c.price >= minP && c.price <= maxP);
   const maxVisUsd = Math.max(1, ...visibleCells.map(c => c.usd));
   const minVisUsd = visibleCells.length ? Math.min(...visibleCells.map(c => c.usd)) : 0;
-  const cellH = Math.max(2.8, topH / (hm?.priceBins || 44));
+  const masterSpan = Math.max(1e-12, (hm?.maxPrice || maxP) - (hm?.minPrice || minP));
+  const binPxStep = masterSpan / Math.max(1, hm?.priceBins || 72);
+  const cellH = Math.max(2.6, Math.min(10, (binPxStep / pSpan) * topH));
 
   const heatmapRects = visibleCells.map(c => {
     const x = PL + c.x0 * PW;
     const w = Math.max(4, (c.x1 - c.x0) * PW);
-    const y = topY + topH - ((c.yBin + 1) / (hm?.priceBins || 44)) * topH;
+    const yCenter = py(c.price);
+    const y = Math.max(topY, Math.min(topY + topH - cellH, yCenter - cellH / 2));
     const intensity = maxVisUsd > minVisUsd ? (c.usd - minVisUsd) / (maxVisUsd - minVisUsd) : 0.7;
     return `<rect class="of-fc-wall" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${cellH.toFixed(1)}" fill="${fireColor(intensity)}" rx="1" data-wall-price="${esc(c.price)}" data-wall-usd="${esc(c.usd)}" data-wall-side="${esc(c.side)}" data-wall-pct="${esc(c.pctRank)}" data-wall-live="${c.live ? '1' : '0'}"/>`;
   }).join('');
@@ -264,8 +314,8 @@ export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct
     </g>`;
   }
 
-  // Upper grid & price ticks
-  const pTicks = [0, 0.25, 0.5, 0.75, 1].map(f => {
+  // Upper grid & 6 price ticks for crisp readability on wide vertical spans
+  const pTicks = [0, 0.2, 0.4, 0.6, 0.8, 1].map(f => {
     const val = minP + f * pSpan;
     const y = py(val);
     return `<line x1="${PL}" y1="${y.toFixed(1)}" x2="${W - PR}" y2="${y.toFixed(1)}" stroke="#162130" stroke-width="1"/>
@@ -517,6 +567,7 @@ export function orderflowHTML(data, {
   cvdMode = 'normalized',
   minPct = 93,
   maxPct = 99,
+  priceSpan = 'wide',
   inspected = null,
   loading = false,
   error = '',
@@ -525,6 +576,7 @@ export function orderflowHTML(data, {
 } = {}) {
   const activeSym = data?.symbol || symbol;
   const activeRange = data?.range || range || 'LIVE';
+  const activeSpan = ['tight', 'normal', 'wide', 'ultra'].includes(priceSpan) ? priceSpan : 'wide';
   const quick = data?.quickSymbols?.length ? data.quickSymbols : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'SUIUSDT', 'AVAXUSDT', 'LINKUSDT', 'ADAUSDT', '1000PEPEUSDT'];
   const openSet = new Set(data?.openSymbols || []);
 
@@ -535,8 +587,12 @@ export function orderflowHTML(data, {
     return `<button type="button" class="of-chip${active}" data-of-symbol="${esc(s)}">${held}${esc(short)}</button>`;
   }).join('');
 
-  const rangeBtns = [['LIVE', '실시간 (체결)'], ['1D', '1D'], ['1W', '1W'], ['1M', '1M']].map(([k, lbl]) =>
+  const rangeBtns = [['LIVE', '실시간'], ['1D', '1D'], ['1W', '1W'], ['1M', '1M'], ['6M', '6M'], ['1Y', '1Y']].map(([k, lbl]) =>
     `<button type="button" class="outline-btn small${activeRange === k ? ' active-btn' : ''}" data-of-range="${k}">${lbl}</button>`
+  ).join('');
+
+  const spanBtns = [['tight', '좁게'], ['normal', '표준'], ['wide', '넓게'], ['ultra', '초광역']].map(([k, lbl]) =>
+    `<button type="button" class="of-fc-tab${activeSpan === k ? ' active' : ''}" data-of-price-span="${k}">${lbl}</button>`
   ).join('');
 
   const srcBadge = data?.source ? `<span class="of-src-badge">${esc(SOURCE_LABELS[data.source] || data.source)}</span>` : '';
@@ -589,6 +645,10 @@ export function orderflowHTML(data, {
           <input type="range" min="60" max="99" step="1" value="${esc(maxPct)}" data-of-pct-max aria-label="최대 유동성 백분위">
         </div>
       </div>
+      <div class="of-fc-span-ctrl">
+        <span>가격 범위</span>
+        <div class="of-fc-span-toggle" role="group" aria-label="가격 Y축 범위">${spanBtns}</div>
+      </div>
       <div class="of-fc-mode-toggle" role="group" aria-label="CVD 표시 모드">
         <button type="button" class="of-fc-tab${cvdMode !== 'absolute' ? ' active' : ''}" data-of-cvd-mode="normalized">Normalized CVD</button>
         <button type="button" class="of-fc-tab${cvdMode === 'absolute' ? ' active' : ''}" data-of-cvd-mode="absolute">Absolute CVD</button>
@@ -598,9 +658,9 @@ export function orderflowHTML(data, {
       <div class="of-fc-legends">${cohortLegend}${cohortDivBadge}</div>
       <small class="of-fc-mode-note">${modeNote}</small>
     </div>
-    <div data-of-fc-inspect-wrap>${firechartInspectBarHTML(inspected)}</div>
-    <div class="of-fc-canvas" data-of-fc-canvas>${firechartSvg(data, { cvdMode, minPct, maxPct, inspected })}</div>
-    <div data-of-wall-strip-wrap>${firechartWallSummaryHTML(data, { minPct, maxPct, inspected })}</div>
+    <div data-of-fc-inspect-wrap>${firechartInspectBarHTML(inspected, activeSym)}</div>
+    <div class="of-fc-canvas" data-of-fc-canvas>${firechartSvg(data, { cvdMode, minPct, maxPct, priceSpan: activeSpan, inspected })}</div>
+    <div data-of-wall-strip-wrap>${firechartWallSummaryHTML(data, { minPct, maxPct, priceSpan: activeSpan, inspected })}</div>
   </section>`;
 
   const buyPct = fin(cvd.lastBuySharePct) ? Number(cvd.lastBuySharePct) : 50;
@@ -689,6 +749,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       symbol: readLS('sl_of_symbol', 'BTCUSDT'),
       range: readLS('sl_of_range', 'LIVE'),
       cvdMode: readLS('sl_of_cvd_mode', 'normalized'),
+      priceSpan: readLS('sl_of_price_span', 'wide'),
       minPct: Number(readLS('sl_of_min_pct', '93')) || 93,
       maxPct: Number(readLS('sl_of_max_pct', '99')) || 99,
       inspected: null,
@@ -707,9 +768,12 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       const inspWrap = host.querySelector('[data-of-fc-inspect-wrap]');
       const stripWrap = host.querySelector('[data-of-wall-strip-wrap]');
       if (lbl) lbl.textContent = `${Math.min(state.minPct, state.maxPct)} .. ${Math.max(state.minPct, state.maxPct)}`;
-      if (inspWrap) inspWrap.innerHTML = firechartInspectBarHTML(state.inspected);
+      if (inspWrap) inspWrap.innerHTML = firechartInspectBarHTML(state.inspected, state.data?.symbol || state.symbol);
       if (box && state.data) box.innerHTML = firechartSvg(state.data, state);
       if (stripWrap && state.data) stripWrap.innerHTML = firechartWallSummaryHTML(state.data, state);
+      host.querySelectorAll('[data-of-price-span]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.ofPriceSpan === state.priceSpan);
+      });
     };
 
     const wallFromElement = el => {
@@ -739,17 +803,17 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       const rect = svg.getBoundingClientRect();
       if (!(rect.width > 0 && rect.height > 0)) return null;
       const W = Number(svg.dataset.w) || 920;
-      const H = Number(svg.dataset.h) || 470;
+      const H = Number(svg.dataset.h) || 496;
       const PL = Number(svg.dataset.pl) || 86;
       const PW = Number(svg.dataset.pw) || 756;
       const topY = Number(svg.dataset.topY) || 16;
-      const topH = Number(svg.dataset.topH) || 212;
+      const topH = Number(svg.dataset.topH) || 238;
       const svgX = ((e.clientX - rect.left) / rect.width) * W;
       const svgY = ((e.clientY - rect.top) / rect.height) * H;
       if (svgX < PL - 12 || svgX > PL + PW + 65 || svgY < topY - 8 || svgY > topY + topH + 8) return null;
       const xNorm = Math.max(0, Math.min(1, (svgX - PL) / PW));
       const yNorm = Math.max(0, Math.min(1, (svgY - topY) / topH));
-      return findFirechartWallAt(state.data, { xNorm, yNorm, minPct: state.minPct, maxPct: state.maxPct });
+      return findFirechartWallAt(state.data, { xNorm, yNorm, minPct: state.minPct, maxPct: state.maxPct, priceSpan: state.priceSpan });
     };
     const isVisible = () => {
       const sec = document.getElementById('orderflow');
@@ -796,9 +860,34 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     }
 
     host.addEventListener('click', e => {
+      const sendBtn = e.target.closest('[data-of-send-real-order]');
+      if (sendBtn) {
+        const sym = sendBtn.dataset.symbol || state.data?.symbol || state.symbol;
+        const limitPrice = Number(sendBtn.dataset.price);
+        const wallLabel = sendBtn.dataset.wallLabel || '매물대';
+        if (sym && Number.isFinite(limitPrice) && limitPrice > 0) {
+          const detail = {
+            symbol: sym,
+            orderType: 'LIMIT',
+            limitPrice,
+            note: `📌 FireCharts ${wallLabel} $${fmtPx(limitPrice)} 지정가 자동 입력 완료 (수량·방향 확인 후 주문하세요)`,
+          };
+          window.__signalLabPendingRealOrder = detail;
+          window.location.hash = '#real';
+          window.dispatchEvent(new CustomEvent('signal-lab:prefill-real-trade', { detail }));
+        }
+        return;
+      }
       if (e.target.closest('[data-of-inspect-clear]')) {
         state.inspected = null;
         state.inspectLocked = false;
+        rerenderFirechartOnly();
+        return;
+      }
+      const spanBtn = e.target.closest('[data-of-price-span]');
+      if (spanBtn) {
+        state.priceSpan = spanBtn.dataset.ofPriceSpan || 'wide';
+        try { localStorage.setItem('sl_of_price_span', state.priceSpan); } catch {}
         rerenderFirechartOnly();
         return;
       }

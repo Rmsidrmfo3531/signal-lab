@@ -516,3 +516,61 @@ test('Whale vs Retail CVD cohort divergence badge, L2 snapshot disk persistence,
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('FireCharts wide price span (tight/normal/wide/ultra), 6M/1Y ranges, and send-to-real-order handoff button', async () => {
+  const { FIRECHART_RANGES, buildLiquidityHeatmap, buildHistoricalCohortSeries } = await import('../firechart.mjs');
+  const { computeFirechartPriceBounds, firechartInspectBarHTML, orderflowHTML } = await import('../public/orderflow_ui.js');
+
+  assert.equal(FIRECHART_RANGES['6M'].interval, '1d');
+  assert.equal(FIRECHART_RANGES['6M'].limit, 180);
+  assert.equal(FIRECHART_RANGES['1Y'].interval, '1d');
+  assert.equal(FIRECHART_RANGES['1Y'].limit, 365);
+
+  // ORCA-like 1M swing ($1.05 .. $1.60 around $1.25)
+  const candles = makeCandles(30, i => ({
+    o: 1.25, h: i === 12 ? 1.60 : 1.32, l: i === 5 ? 1.05 : 1.18, c: 1.25,
+    v: 100_000, q: 125_000, buyVol: 65_000, sellVol: 60_000, delta: 5_000,
+  }));
+  const book = {
+    bids: [{ p: 0.72, usd: 420_000 }, { p: 1.02, usd: 600_000 }],
+    asks: [{ p: 1.85, usd: 750_000 }, { p: 2.25, usd: 510_000 }],
+  };
+  const hm = buildLiquidityHeatmap({ candles, orderbook: book, snapshots: [] });
+  assert.equal(hm.candleMinPrice, 1.05);
+  assert.equal(hm.candleMaxPrice, 1.6);
+  // Master collection span must capture far resting L2 walls like $0.72 and $2.25
+  assert.ok(hm.minPrice < 0.70, `expected wide master minPrice < 0.70, got ${hm.minPrice}`);
+  assert.ok(hm.maxPrice > 2.30, `expected wide master maxPrice > 2.30, got ${hm.maxPrice}`);
+
+  const data = {
+    symbol: 'ORCAUSDT',
+    range: '1M',
+    price: { mark: 1.25 },
+    series: candles,
+    firechart: { range: '1M', cohortMode: 'ESTIMATED_BY_BAR_SIZE', cohorts: buildHistoricalCohortSeries(candles), heatmap: hm },
+  };
+  const bTight = computeFirechartPriceBounds(data, 'tight');
+  const bNormal = computeFirechartPriceBounds(data, 'normal');
+  const bWide = computeFirechartPriceBounds(data, 'wide');
+  const bUltra = computeFirechartPriceBounds(data, 'ultra');
+  assert.ok((bTight.maxP - bTight.minP) < (bNormal.maxP - bNormal.minP));
+  assert.ok((bNormal.maxP - bNormal.minP) < (bWide.maxP - bWide.minP));
+  assert.ok((bWide.maxP - bWide.minP) < (bUltra.maxP - bUltra.minP));
+  assert.ok(bWide.minP < 0.75 && bWide.maxP > 2.0, `wide span should match Material Indicators 1M view: ${bWide.minP}..${bWide.maxP}`);
+
+  // Inspect banner carries one-click handoff button with symbol & limit price
+  const bar = firechartInspectBarHTML({ snapped: true, price: 1.02, usd: 600_000, side: 'BID', pctRank: 98, live: true, distPct: -18.4 }, 'ORCAUSDT');
+  assert.match(bar, /data-of-send-real-order/);
+  assert.match(bar, /data-symbol="ORCAUSDT"/);
+  assert.match(bar, /data-price="1\.02"/);
+  assert.match(bar, /실계좌 지정가 주문/);
+
+  // Full HTML includes 6M/1Y tabs and 4 price-span zoom buttons
+  const page = orderflowHTML({ ...data, ok: true, cvd: {}, oi: {}, ratios: {}, funding: {}, liquidations: {}, liquidationMap: { above: [], below: [] }, scalpSignal: {} }, { priceSpan: 'wide' });
+  assert.match(page, /data-of-range="6M"/);
+  assert.match(page, /data-of-range="1Y"/);
+  assert.match(page, /data-of-price-span="tight"/);
+  assert.match(page, /data-of-price-span="wide"/);
+  assert.match(page, /data-of-price-span="ultra"/);
+});
+

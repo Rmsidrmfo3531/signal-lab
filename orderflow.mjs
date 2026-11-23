@@ -11,8 +11,8 @@ import {
   fetchFirechartExtras,
 } from './firechart.mjs';
 
-const VALID_INTERVALS = Object.freeze({ '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000 });
-const GATE_INTERVALS = Object.freeze({ '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' });
+const VALID_INTERVALS = Object.freeze({ '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000 });
+const GATE_INTERVALS = Object.freeze({ '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h', '1d': '1d' });
 const CACHE_TTL_MS = 30_000;
 const BINANCE_BLOCK_TTL_MS = 10 * 60_000;
 
@@ -595,9 +595,10 @@ async function fetchFromGate(symbol, interval, limit, { fetcher, gateBase }) {
   const sym = normalizeOrderflowSymbol(symbol);
   const contract = gateContractFor(sym);
   const iv = GATE_INTERVALS[interval] || '5m';
+  const statsLimit = Math.min(200, limit);
   const [kl, stats, contractInfo] = await Promise.all([
     fetchJson(`${gateBase}/api/v4/futures/usdt/candlesticks?contract=${encodeURIComponent(contract)}&interval=${iv}&limit=${limit}`, { fetcher, timeoutMs: 5000 }),
-    fetchJson(`${gateBase}/api/v4/futures/usdt/contract_stats?contract=${encodeURIComponent(contract)}&interval=${iv}&limit=${limit}`, { fetcher, timeoutMs: 5000 }),
+    fetchJson(`${gateBase}/api/v4/futures/usdt/contract_stats?contract=${encodeURIComponent(contract)}&interval=${iv}&limit=${statsLimit}`, { fetcher, timeoutMs: 5000 }).catch(() => []),
     fetchJson(`${gateBase}/api/v4/futures/usdt/contracts/${encodeURIComponent(contract)}`, { fetcher, timeoutMs: 4000 }).catch(() => ({})),
   ]);
 
@@ -728,7 +729,7 @@ async function fetchFromBingX(symbol, interval, limit, { fetcher, bingxBase }) {
 export async function fetchOrderflow(symbol, opts = {}) {
   const sym = normalizeOrderflowSymbol(symbol);
   const interval = Object.hasOwn(VALID_INTERVALS, opts.interval) ? opts.interval : '5m';
-  const limit = Math.min(200, Math.max(24, Number(opts.limit) || 72));
+  const limit = Math.min(400, Math.max(24, Number(opts.limit) || 72));
   const fetcher = opts.fetcher || fetch;
   const binanceBase = opts.binanceBase || 'https://fapi.binance.com';
   const gateBase = opts.gateBase || 'https://api.gateio.ws';
@@ -942,7 +943,7 @@ export async function fetchOrderflowWithFirechart(symbol, opts = {}) {
     candles: base.series,
     orderbook: extras.orderbook,
     snapshots: extras.snapshots,
-    priceBins: 44,
+    priceBins: 96,
   });
 
   return {

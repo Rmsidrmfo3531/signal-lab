@@ -683,7 +683,7 @@ async function sendRealTradeTelegram(e){
  }catch(e){console.warn('[UPDATE NOTICE]',e.message)}
 }
 // Shared real-account position operator (used by Telegram /close+#confirm and dashboard one-click actions).
-async function executeRealPositionAction({symbol,direction=null,action,stopPrice=null,lossRoePct=null}={}){
+async function executeRealPositionAction({symbol,direction=null,action,stopPrice=null,lossRoePct=null,closePct=null}={}){
  if(COPY.mode!=='LIVE'||!realBingxClient)return {ok:false,status:409,error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'};
  if(!['CLOSE_ALL','CLOSE_HALF','BREAKEVEN_STOP','SET_STOP_LOSS'].includes(action))return {ok:false,status:400,error:'INVALID_ACTION',message:'지원하지 않는 포지션 작업입니다'};
  const mode=await readPositionMode(realBingxClient);
@@ -732,6 +732,7 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
   const label=action==='BREAKEVEN_STOP'?'본전 스탑':`손절 스탑${Number(lossRoePct)>0?` (-${Number(lossRoePct)}% ROE)`:''}`;
   return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
  }
+ const partPct=Number.isFinite(Number(closePct))&&Number(closePct)>0&&Number(closePct)<100?Math.round(Number(closePct)):50;
  const results=[];
  for(const p of targets){
   let qty=p.size;
@@ -739,8 +740,9 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
    const contracts=await venueQuotes.clients.BINGX.contractsFor(p.symbol).catch(()=>new Map());
    const c=resolveCopyContract(contracts,p.symbol)||contracts?.get?.(p.symbol)||[...(contracts?.values?.()||[])].find(x=>x?.venueSymbol===p.venueSymbol);
    const step=c?.quantityStep,minQ=Number(c?.minQuantityBase)||0;
-   qty=step?Number(roundDecimalToStep(p.size/2,step,'DOWN')):p.size/2;
-   if(!(qty>0)||qty<minQ||qty>=p.size)return {ok:false,status:409,error:'HALF_QTY_TOO_SMALL',message:`50% 분할 수량(${qty})이 최소 주문 단위 미만입니다`};
+   const rawQty=p.size*(partPct/100);
+   qty=step?Number(roundDecimalToStep(rawQty,step,'DOWN')):rawQty;
+   if(!(qty>0)||qty<minQ||qty>=p.size)return {ok:false,status:409,error:'HALF_QTY_TOO_SMALL',message:`${partPct}% 분할 수량(${qty})이 최소 주문 단위 미만입니다`};
   }
   const cid=('opcl'+Date.now().toString(36)+results.length).slice(0,32);
   await realBingxClient.placeOrder({
@@ -751,7 +753,7 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
   results.push(`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${qty}`);
  }
  void refreshRealTradeNotices();
- return {ok:true,action,closed:results,summary:`${action==='CLOSE_HALF'?'50% 부분 청산':'전량 청산'}: ${results.join(', ')}`};
+ return {ok:true,action,closePct:action==='CLOSE_HALF'?partPct:100,closed:results,summary:`${action==='CLOSE_HALF'?`${partPct}% 부분 청산`:'전량 청산'}: ${results.join(', ')}`};
 }
 if(COPY.mode==='LIVE'){
  const sendAccountAlertTelegram=async text=>{
@@ -2070,7 +2072,7 @@ const server=http.createServer(async(req,res)=>{
    const direction=['LONG','SHORT'].includes(String(body?.direction||'').toUpperCase())?String(body.direction).toUpperCase():null;
    if(!symbol||symbol==='ALL'||!direction)return response(res,400,{error:'POSITION_SPEC_REQUIRED',message:'종목과 방향(LONG/SHORT)을 지정해 주세요'});
    try{
-    const r=await executeRealPositionAction({symbol,direction,action,stopPrice:body?.stopPrice,lossRoePct:body?.lossRoePct});
+    const r=await executeRealPositionAction({symbol,direction,action,stopPrice:body?.stopPrice,lossRoePct:body?.lossRoePct,closePct:body?.closePct});
     if(r.ok)reportsDirty=true;
     return response(res,r.ok?200:(r.status||409),r);
    }catch(e){return response(res,502,{ok:false,error:e.code||'POSITION_ACTION_FAILED',message:e.message})}

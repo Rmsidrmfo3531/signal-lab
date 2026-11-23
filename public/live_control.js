@@ -210,7 +210,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
  const trBadge=p=>{
   const info=trInfo(p);if(!info)return '';
   if(info.excluded)return '<span class="vp-badge" title="자동 트레일링 제외 종목">트레일 제외</span>';
-  if(info.st?.partialTaken&&fin(info.st?.peakRoePct))return `<span class="vp-badge copy" title="50% 부분 익절 완료 · 잔여 50% 트레일링 중">50%확정·고점 +${Number(info.st.peakRoePct).toFixed(1)}%</span>`;
+  if(info.st?.partialTaken&&fin(info.st?.peakRoePct)){const pp=Math.round(Number(tr.partialClosePct)||50);return `<span class="vp-badge copy" title="${pp}% 부분 익절 완료 · 잔여 ${100-pp}% 트레일링 중">${pp}%확정·고점 +${Number(info.st.peakRoePct).toFixed(1)}%</span>`;}
   if(fin(info.st?.peakRoePct))return `<span class="vp-badge copy" title="고점 대비 ${esc(tr.trailPullbackRatio)}% 되돌림 시 자동 익절">트레일 고점 +${Number(info.st.peakRoePct).toFixed(1)}%</span>`;
   return '';
  };
@@ -531,15 +531,18 @@ export function copyHTML(c){
     <label class="ctrl-check"><input name="enabled" type="checkbox"${tr.enabled?' checked':''}> <b>자동 트레일링 익절 활성화</b> (실계좌 자동 청산 · 수수료 반영 순 ROE)</label>
     <label class="ctrl-check"><input name="applyToManual" type="checkbox"${tr.applyToManual!==false?' checked':''}> 수동 포지션 적용</label>
     <label class="ctrl-check"><input name="applyToCopy" type="checkbox"${tr.applyToCopy?' checked':''}> 카피 포지션 적용 (기본 OFF 권장)</label>
-    <label class="ctrl-check"><input name="autoBreakeven" type="checkbox"${tr.autoBreakeven!==false?' checked':''}> 50% 확정 후 잔여 물량 본전 스탑 자동 설정</label>
+    <label class="ctrl-check"><input name="autoBreakeven" type="checkbox"${tr.autoBreakeven!==false?' checked':''}> 부분 익절 확정 후 잔여 물량 본전 스탑 자동 설정</label>
     <label class="ctrl-check"><input name="skipTradfi" type="checkbox"${tr.skipTradfi!==false?' checked':''}> TradFi·주식 종목 자동 제외 (얇은 호가 보호)</label>
     <label>부분 익절 순 ROE (%) <input name="partialLockRoePct" type="number" min="2" max="200" step="0.5" value="${esc(tr.partialLockRoePct??15)}"></label>
-    <label>부분 청산 비율 (0=끄기, 50=절반) <input name="partialClosePct" type="number" min="0" max="100" step="50" value="${esc(tr.partialClosePct??50)}"></label>
+    <label>부분 청산 비율 (%, 0=끄기, 25/50 권장) <input name="partialClosePct" type="number" min="0" max="100" step="5" value="${esc(tr.partialClosePct??50)}"></label>
     <label>트레일링 시작 순 ROE (%) <input name="trailActivateRoePct" type="number" min="2" max="200" step="0.5" value="${esc(tr.trailActivateRoePct??15)}"></label>
     <label>고점 대비 되돌림 (%) <input name="trailPullbackRatio" type="number" min="5" max="70" step="1" value="${esc(tr.trailPullbackRatio??30)}"></label>
     <label>최소 확정 순 ROE (%) <input name="minLockRoePct" type="number" min="0.5" max="50" step="0.5" value="${esc(tr.minLockRoePct??5)}"></label>
     <label>제외 종목 (쉼표) <input name="excludedSymbols" type="text" placeholder="예: BTC, ETH" value="${esc((tr.excludedSymbols||[]).join(', '))}"></label>
-    <div class="ctrl-btn-row"><button type="submit" class="outline-btn small">트레일링 저장</button></div>
+    <div class="ctrl-btn-row">
+     <button type="submit" class="outline-btn small">트레일링 저장</button>
+     <button type="button" class="outline-btn small" data-real-trailing-preset title="120일 백테스트 최적 수익 파라미터 일괄 적용: +16% 순ROE에서 25% 부분익절 + 잔여 75% 고점대비 28% 트레일링 + 본전스탑">🔥 백테스트 최적 프리셋 (+16% · 25% · 28%)</button>
+    </div>
    </form>
    <span class="copy-msg" data-real-trailing-msg></span>
   </div></details>`:'';
@@ -1049,6 +1052,11 @@ function bindCopyButtons(el){
    if(!window.confirm('오늘 일일 손실 차단을 해제할까요? 해제 시 오늘 남은 시간 동안 신규 카피·수동 진입이 다시 허용됩니다.'))return;
    return call(safetyUnlock,'/api/real/safety',{unlockToday:true},'해제 중…','[data-real-safety-msg]');
   }
+  const trailPreset=e.target.closest('[data-real-trailing-preset]');
+  if(trailPreset){
+   if(!window.confirm('실계좌 트레일링에 백테스트 최적 프리셋을 적용할까요?\n· 부분 익절 시작: 순 ROE +16%\n· 부분 청산 비율: 25% (잔여 75% 러너 유지)\n· 고점 대비 되돌림: 28%\n· 최소 확정 순 ROE: +5% · 잔여 본전 스탑 ON\n(활성화 ON/OFF 상태는 현재 설정을 그대로 유지합니다)'))return;
+   return call(trailPreset,'/api/real/trailing',{applyPreset:true},'프리셋 적용 중…','[data-real-trailing-msg]');
+  }
   const trailBtn=e.target.closest('[data-trail-toggle]');
   if(trailBtn){
    return call(trailBtn,'/api/real/trailing',{toggleExcludeSymbol:trailBtn.dataset.trailToggle},'처리 중…','[data-real-trailing-msg]');
@@ -1197,6 +1205,10 @@ function render(o){
  for(const id of ['liveCopy','realCopy'])bindCopyButtons($(id));
  if(!realTradeCtrl&&$('realTradePanel'))realTradeCtrl=createRealTradeController($('realTradePanel'),{onOrderDone:()=>$('liveRefresh')?.click()});
  realTradeCtrl?.syncContext({visible:real,availableUSD:copy?.funds?.available??null,equityUSD:copy?.funds?.equity??null,heldPositions:copy?.venuePositions??[],safety:copy?.safety??null});
+ if(real&&realTradeCtrl&&typeof window!=='undefined'&&window.__signalLabPendingRealOrder){
+  const pending=window.__signalLabPendingRealOrder;window.__signalLabPendingRealOrder=null;
+  realTradeCtrl.prefill(pending);
+ }
  if($('liveCopySection')){$('liveCopySection').hidden=!copy||real||scalpOnly;if(copy&&!real&&!scalpOnly&&$('liveCopy')&&!copyActionBusy)$('liveCopy').innerHTML=copyHTML({...copy,followArmed:Boolean(o.armed&&!o.killSwitch)})}
  if($('realCopy')&&!copyActionBusy)$('realCopy').innerHTML=real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>';
  // The sidebar ON / OFF is a navigation hint; the page itself shows the state once, next to its button.
@@ -1384,5 +1396,16 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
  let fastBusy=false;
  setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy||copyActionBusy)return;fastBusy=true;
   try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'){realTradeCtrl?.syncContext({visible:true,availableUSD:c.funds?.available??null,heldPositions:c.venuePositions??[]});if(!copyActionBusy&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}}catch{}finally{fastBusy=false}},3000);
+ window.addEventListener('signal-lab:prefill-real-trade',e=>{
+  const detail=e?.detail||window.__signalLabPendingRealOrder;
+  if(!detail)return;
+  if(realTradeCtrl&&lastCopy?.mode==='LIVE'){
+   window.__signalLabPendingRealOrder=null;
+   setTimeout(()=>realTradeCtrl.prefill(detail),40);
+  }else{
+   window.__signalLabPendingRealOrder=detail;
+   void load().catch(fail);
+  }
+ });
  window.addEventListener('hashchange',()=>setTimeout(()=>{tick();void refreshBudget()},60));
 }

@@ -10,6 +10,8 @@ export const FIRECHART_RANGES = Object.freeze({
   '1D': { key: '1D', labelKo: '1D', interval: '15m', limit: 96, useRealTrades: false },
   '1W': { key: '1W', labelKo: '1W', interval: '1h', limit: 168, useRealTrades: false },
   '1M': { key: '1M', labelKo: '1M', interval: '4h', limit: 180, useRealTrades: false },
+  '6M': { key: '6M', labelKo: '6M', interval: '1d', limit: 180, useRealTrades: false },
+  '1Y': { key: '1Y', labelKo: '1Y', interval: '1d', limit: 365, useRealTrades: false },
 });
 
 export const FIRECHART_COHORTS = Object.freeze([
@@ -81,7 +83,7 @@ export function recordOrderbookSnapshot(symbol, book, now = Date.now(), { forceF
     .map(r => ({ p: num(r.p), usd: num(r.usd) }))
     .filter(r => r.p > 0 && r.usd > 0)
     .sort((a, b) => b.usd - a.usd)
-    .slice(0, 30);
+    .slice(0, 60);
   arr.push({ t: now, bids: topSide(book.bids), asks: topSide(book.asks) });
   if (arr.length > MAX_SNAPSHOTS_PER_SYM) arr.splice(0, arr.length - MAX_SNAPSHOTS_PER_SYM);
   flushSnapshotsToDisk(now, forceFlush);
@@ -343,9 +345,9 @@ export function buildHistoricalCohortSeries(candles = []) {
  * - Live L2 orderbook bid/ask walls on the right edge (100% real resting limit orders)
  * - Exact percentile rank (0..100) on every cell for instant client-side Volume Percentiles filtering!
  */
-export function buildLiquidityHeatmap({ candles = [], orderbook = null, snapshots = [], priceBins = 44 }) {
+export function buildLiquidityHeatmap({ candles = [], orderbook = null, snapshots = [], priceBins = 96 }) {
   if (!Array.isArray(candles) || candles.length < 3) {
-    return { minPrice: 0, maxPrice: 0, priceBins, minUsd: 0, maxUsd: 0, cells: [], liveWalls: [], snapshotCount: 0, hasLiveBook: false };
+    return { minPrice: 0, maxPrice: 0, candleMinPrice: 0, candleMaxPrice: 0, priceBins, minUsd: 0, maxUsd: 0, cells: [], liveWalls: [], snapshotCount: 0, hasLiveBook: false };
   }
 
   const n = candles.length;
@@ -354,11 +356,13 @@ export function buildLiquidityHeatmap({ candles = [], orderbook = null, snapshot
   const tSpan = Math.max(1, tEnd - tStart);
   const lastPx = num(candles.at(-1).c);
 
-  let minP = Math.min(...candles.map(c => num(c.l) || num(c.c)));
-  let maxP = Math.max(...candles.map(c => num(c.h) || num(c.c)));
-  const pad = Math.max((maxP - minP) * 0.14, lastPx * 0.012);
-  minP = Math.max(1e-12, minP - pad);
-  maxP = maxP + pad;
+  const candleMinP = Math.min(...candles.map(c => num(c.l) || num(c.c)));
+  const candleMaxP = Math.max(...candles.map(c => num(c.h) || num(c.c)));
+  const cSpan = Math.max(candleMaxP - candleMinP, lastPx * 0.02);
+  // Wide master collection span covering up to 'ultra' zoom (±60% / 1.65x range) so client zoom never loses L2 walls
+  const pad = Math.max(cSpan * 1.65, lastPx * 0.60);
+  let minP = Math.max(lastPx > 0 ? lastPx * 0.12 : 1e-12, candleMinP - pad);
+  let maxP = candleMaxP + pad;
   const pSpan = Math.max(1e-12, maxP - minP);
   const binOf = px => Math.max(0, Math.min(priceBins - 1, Math.floor(((px - minP) / pSpan) * priceBins)));
   const priceOfBin = b => minP + ((b + 0.5) / priceBins) * pSpan;
@@ -472,18 +476,20 @@ export function buildLiquidityHeatmap({ candles = [], orderbook = null, snapshot
     .filter(c => c.usd > 0)
     .map(c => ({ ...c, pctRank: rankOf(c.usd) }))
     .sort((a, b) => a.usd - b.usd)
-    .slice(-360);
+    .slice(-420);
 
   const liveWalls = cells
     .filter(c => c.live && c.x1 >= 0.99)
     .sort((a, b) => b.usd - a.usd)
-    .slice(0, 16);
+    .slice(0, 24);
 
   const pAt = q => sortedUsd.length ? sortedUsd[Math.min(sortedUsd.length - 1, Math.floor(sortedUsd.length * q))] : 0;
 
   return {
     minPrice: Number(minP.toPrecision(6)),
     maxPrice: Number(maxP.toPrecision(6)),
+    candleMinPrice: Number(candleMinP.toPrecision(6)),
+    candleMaxPrice: Number(candleMaxP.toPrecision(6)),
     priceBins,
     minUsd: sortedUsd[0] || 0,
     maxUsd: sortedUsd.at(-1) || 0,
@@ -528,11 +534,11 @@ export async function fetchFirechartExtras(symbol, {
   let trades = [];
   let source = null;
 
-  // 1) Try Binance Futures (500-level depth + 1000 aggTrades)
+  // 1) Try Binance Futures (1000-level depth + 1000 aggTrades)
   if (!skipBinance) {
     try {
       const [depth, agg] = await Promise.all([
-        fetchJson(`${binanceBase}/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=500`, { fetcher, timeoutMs: 3500 }),
+        fetchJson(`${binanceBase}/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`, { fetcher, timeoutMs: 3800 }),
         needTrades
           ? fetchJson(`${binanceBase}/fapi/v1/aggTrades?symbol=${encodeURIComponent(symbol)}&limit=1000`, { fetcher, timeoutMs: 4000 }).catch(() => [])
           : Promise.resolve([]),
@@ -555,11 +561,11 @@ export async function fetchFirechartExtras(symbol, {
     } catch {}
   }
 
-  // 2) Fallback: Gate.io Futures (100-level depth + 1000 signed trades)
+  // 2) Fallback: Gate.io Futures (200-level depth + 1000 signed trades)
   if (!orderbook && gateContract) {
     try {
       const [depth, rawTrades, contractInfo] = await Promise.all([
-        fetchJson(`${gateBase}/api/v4/futures/usdt/order_book?contract=${encodeURIComponent(gateContract)}&limit=100`, { fetcher, timeoutMs: 4000 }),
+        fetchJson(`${gateBase}/api/v4/futures/usdt/order_book?contract=${encodeURIComponent(gateContract)}&limit=200`, { fetcher, timeoutMs: 4200 }),
         needTrades
           ? fetchJson(`${gateBase}/api/v4/futures/usdt/trades?contract=${encodeURIComponent(gateContract)}&limit=1000`, { fetcher, timeoutMs: 4500 }).catch(() => [])
           : Promise.resolve([]),
@@ -588,11 +594,11 @@ export async function fetchFirechartExtras(symbol, {
     } catch {}
   }
 
-  // 3) Final Fallback: BingX Swap (100-level depth + 100 trades)
+  // 3) Final Fallback: BingX Swap (500-level depth + 100 trades)
   if (!orderbook && bingxSymbol) {
     try {
       const [depthRes, trRes] = await Promise.all([
-        fetchJson(`${bingxBase}/openApi/swap/v2/quote/depth?symbol=${encodeURIComponent(bingxSymbol)}&limit=100`, { fetcher, timeoutMs: 4000 }),
+        fetchJson(`${bingxBase}/openApi/swap/v2/quote/depth?symbol=${encodeURIComponent(bingxSymbol)}&limit=500`, { fetcher, timeoutMs: 4200 }),
         needTrades
           ? fetchJson(`${bingxBase}/openApi/swap/v2/quote/trades?symbol=${encodeURIComponent(bingxSymbol)}&limit=100`, { fetcher, timeoutMs: 4000 }).catch(() => ({}))
           : Promise.resolve({}),
