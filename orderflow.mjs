@@ -3,8 +3,16 @@
 // Automatic fallback: Gate.io Futures contract_stats (exact 5m taker buy/sell, OI, L/S, real liquidations)
 // and BingX Swap public endpoints (covers BingX-only altcoins & geo-restricted environments).
 
-const VALID_INTERVALS = Object.freeze({ '5m': 300_000, '15m': 900_000, '1h': 3_600_000 });
-const GATE_INTERVALS = Object.freeze({ '5m': '5m', '15m': '15m', '1h': '1h' });
+import {
+  FIRECHART_RANGES,
+  buildTradeCohortSeries,
+  buildHistoricalCohortSeries,
+  buildLiquidityHeatmap,
+  fetchFirechartExtras,
+} from './firechart.mjs';
+
+const VALID_INTERVALS = Object.freeze({ '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000 });
+const GATE_INTERVALS = Object.freeze({ '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' });
 const CACHE_TTL_MS = 30_000;
 const BINANCE_BLOCK_TTL_MS = 10 * 60_000;
 
@@ -278,6 +286,7 @@ export function analyzeOrderflowSeries({
       c: num(c.c),
       v: num(c.v),
       q: num(c.q),
+      trades: num(c.trades),
       buyVol: Math.round(buyVol),
       sellVol: Math.round(sellVol),
       delta: Math.round(delta),
@@ -540,6 +549,7 @@ async function fetchFromBinance(symbol, interval, limit, { fetcher, binanceBase,
       c: num(k[4]),
       v: num(k[5]),
       q: quoteVol,
+      trades: num(k[8]),
       buyVol: buyQuote,
       sellVol: sellQuote,
     };
@@ -718,7 +728,7 @@ async function fetchFromBingX(symbol, interval, limit, { fetcher, bingxBase }) {
 export async function fetchOrderflow(symbol, opts = {}) {
   const sym = normalizeOrderflowSymbol(symbol);
   const interval = Object.hasOwn(VALID_INTERVALS, opts.interval) ? opts.interval : '5m';
-  const limit = Math.min(120, Math.max(24, Number(opts.limit) || 72));
+  const limit = Math.min(200, Math.max(24, Number(opts.limit) || 72));
   const fetcher = opts.fetcher || fetch;
   const binanceBase = opts.binanceBase || 'https://fapi.binance.com';
   const gateBase = opts.gateBase || 'https://api.gateio.ws';
@@ -891,6 +901,62 @@ export async function scanOrderflowAnomalies(symbols = ORDERFLOW_RADAR_DEFAULTS,
   const data = { ok: true, at: Date.now(), totalRequested: list.length, ...ranked };
   radarCache = { key, at: Date.now(), data };
   return data;
+}
+
+/**
+ * Enrich standard orderflow data with Material Indicators FireCharts-style
+ * Liquidity Heatmap (live L2 walls + recorded snapshots + volume shelves) and
+ * 4-Cohort (Whale/Large/Mid/Retail) Normalized & Absolute CVD.
+ */
+export async function fetchOrderflowWithFirechart(symbol, opts = {}) {
+  const sym = normalizeOrderflowSymbol(symbol);
+  const requestedRange = String(opts.range || '').toUpperCase();
+  const rangeDef = Object.hasOwn(FIRECHART_RANGES, requestedRange)
+    ? FIRECHART_RANGES[requestedRange]
+    : (opts.interval === '4h' ? FIRECHART_RANGES['1M']
+      : opts.interval === '1h' ? FIRECHART_RANGES['1W']
+      : opts.interval === '15m' ? FIRECHART_RANGES['1D']
+      : FIRECHART_RANGES.LIVE);
+
+  const [base, extras] = await Promise.all([
+    fetchOrderflow(sym, { ...opts, interval: rangeDef.interval, limit: rangeDef.limit }),
+    fetchFirechartExtras(sym, {
+      gateContract: gateContractFor(sym),
+      bingxSymbol: bingxSymbolFor(sym),
+      needTrades: rangeDef.useRealTrades,
+      skipBinance: Boolean(opts.skipBinance) || Date.now() < binanceBlockedUntil,
+      fetcher: opts.fetcher,
+      binanceBase: opts.binanceBase,
+      gateBase: opts.gateBase,
+      bingxBase: opts.bingxBase,
+    }),
+  ]);
+
+  const useReal = rangeDef.useRealTrades && Array.isArray(extras.trades) && extras.trades.length >= 12;
+  const cohorts = useReal
+    ? buildTradeCohortSeries(extras.trades, { buckets: 64 })
+    : buildHistoricalCohortSeries(base.series);
+
+  // For LIVE real-trade view, build heatmap price bounds over the matching candle series
+  const heatmap = buildLiquidityHeatmap({
+    candles: base.series,
+    orderbook: extras.orderbook,
+    snapshots: extras.snapshots,
+    priceBins: 44,
+  });
+
+  return {
+    ...base,
+    range: rangeDef.key,
+    firechart: {
+      range: rangeDef.key,
+      labelKo: rangeDef.labelKo,
+      cohortMode: cohorts.cohortMode,
+      bookSource: extras.source || base.source,
+      cohorts,
+      heatmap,
+    },
+  };
 }
 
 export function clearOrderflowCache() {

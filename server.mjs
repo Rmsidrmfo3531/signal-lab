@@ -63,7 +63,7 @@ import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
 import {RealTrailingManager} from './real_trailing.mjs';
 import {RealAccountGuard,REAL_SAFETY_COPY_PRESET} from './real_safety.mjs';
-import {fetchOrderflow,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
+import {fetchOrderflow,fetchOrderflowWithFirechart,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
@@ -2363,13 +2363,15 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/orderflow'&&req.method==='GET'){
    const rawSym=url.searchParams.get('symbol')||'BTCUSDT';
+   const rangeParam=String(url.searchParams.get('range')||'').toUpperCase();
    const interval=url.searchParams.get('interval')||'5m';
    const force=url.searchParams.get('force')==='1';
    const symbol=normalizeOrderflowSymbol(rawSym);
    if(!/^[A-Z0-9]{4,25}$/.test(symbol))return response(res,400,{ok:false,error:'INVALID_SYMBOL'});
-   if(!['5m','15m','1h'].includes(interval))return response(res,400,{ok:false,error:'INVALID_INTERVAL'});
+   if(rangeParam&&!['LIVE','1D','1W','1M'].includes(rangeParam))return response(res,400,{ok:false,error:'INVALID_RANGE'});
+   if(!['5m','15m','1h','4h'].includes(interval))return response(res,400,{ok:false,error:'INVALID_INTERVAL'});
    try{
-    const data=await fetchOrderflow(symbol,{interval,force});
+    const data=await fetchOrderflowWithFirechart(symbol,{range:rangeParam||undefined,interval,force});
     const openHeld=[
      ...(copyTrader?.store?.open||[]).map(p=>p.symbol),
      ...(scalpExec?.store?.open||[]).map(p=>p.symbol),
