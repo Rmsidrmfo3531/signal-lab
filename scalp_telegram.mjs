@@ -56,7 +56,8 @@ export function scalpEventText(e){
   const trailPart=Number(e.peakRoePct)>0?` (트레일링 고점 +${Number(e.peakRoePct).toFixed(1)}%)`:'';
   const scorePart=Number.isFinite(Number(e.score))?` · ${e.score}점(${e.grade||''}급)`:'';
   const roePart=Number.isFinite(Number(e.roePct))?` (${Number(e.roePct)>=0?'+':''}${Number(e.roePct).toFixed(1)}% ROE)`:'';
-  return `${Number(e.netUSD)>0?'✅':Number(e.netUSD)<0?'🔻':'⚪'} ${head} ${side(e)} 청산 · ${scalpReasonKo(e.reason)}${trailPart}${scorePart}\n손익 ${usd(e.netUSD)}${roePart} (수수료 포함 추정) · 목표 ${e.tp||0}개 · 보유 ${mins(e.holdMs)}`;
+  const addPart=Number.isFinite(Number(e.adds))?` · 추매 ${Number(e.adds)}회`:'';
+  return `${Number(e.netUSD)>0?'✅':Number(e.netUSD)<0?'🔻':'⚪'} ${head} ${side(e)} 청산 · ${scalpReasonKo(e.reason)}${trailPart}${scorePart}\n손익 ${usd(e.netUSD)}${roePart} (수수료 포함 추정) · 목표 ${e.tp||0}개${addPart} · 보유 ${mins(e.holdMs)}`;
  }
  if(e.type==='DAILY_LOSS_LIMIT')return e.shared?`⛔ [테스트넷] 하루 손실 한도 도달 (신호+단타 ${usd(e.lossUSD)})\n오늘(한국 시간)은 신호 전략·단타 모두 신규 진입과 추매를 멈췄습니다.`
   :`⛔ ${SCALP_LABEL} 하루 손실 한도 도달 (${usd(e.lossUSD)})\n오늘은 신규 진입과 추매를 멈췄습니다.`;
