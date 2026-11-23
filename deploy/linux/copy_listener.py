@@ -5,7 +5,7 @@ Reads the followed private Telegram channel with the user's own Telegram account
 passes each new message to the local Signal Lab server, which copies it on the BingX TESTNET
 (copy_executor.mjs). Nothing is sent anywhere else. Settings come from /opt/signallab/data/.env:
   TELEGRAM_API_ID / TELEGRAM_API_HASH   from https://my.telegram.org (the user creates them)
-  COPY_CHANNEL_ID                        e.g. -1003995199859 (t.me/c/3995199859)
+  COPY_CHANNEL_ID                        e.g. -1001234567890 (t.me/c/1234567890)
   COPY_LISTENER_TOKEN                    shared with the server (copy.sh creates it)
   SIGNAL_LAB_PORT                        default 3000 (the server's PORT)
 The login session file (copy.session) stays in the data folder, readable only by signallab.

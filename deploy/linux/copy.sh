@@ -6,7 +6,6 @@
 set -euo pipefail
 umask 077
 BASE=/opt/signallab; APP=$BASE/app; DATA=$BASE/data; VENV=$BASE/copy-venv; ENVF=$DATA/.env
-CHANNEL_DEFAULT="${COPY_CHANNEL_ID:--1003995199859}"
 say(){ printf '\n== %s\n' "$*"; }
 setenv(){ # key value: replace or add one line in .env safely without sed metacharacter expansion
   [ -f "$ENVF" ] || install -o signallab -g signallab -m 600 /dev/null "$ENVF"
@@ -34,7 +33,11 @@ if ! grep -qE '^TELEGRAM_API_ID=[0-9]+' "$ENVF"; then
   read -r -p "api_id (숫자): " APIID; read -r -s -p "api_hash (입력은 화면에 보이지 않습니다): " APIHASH; echo
   setenv TELEGRAM_API_ID "$APIID"; setenv TELEGRAM_API_HASH "$APIHASH"
 else echo "이미 설정됨 (바꾸려면 nano $ENVF)"; fi
-grep -q '^COPY_CHANNEL_ID=' "$ENVF" || setenv COPY_CHANNEL_ID "$CHANNEL_DEFAULT"
+if ! grep -qE '^COPY_CHANNEL_ID=-?[0-9]+' "$ENVF"; then
+  CHID="${COPY_CHANNEL_ID:-}"
+  [ -n "$CHID" ] || read -r -p "카피 대상 텔레그램 채널 ID (예: -1001234567890): " CHID
+  [ -n "$CHID" ] && setenv COPY_CHANNEL_ID "$CHID"
+fi
 grep -qE '^COPY_LISTENER_TOKEN=.{24,}' "$ENVF" || setenv COPY_LISTENER_TOKEN "$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 40)"
 chown signallab:signallab "$ENVF"; chmod 600 "$ENVF"
 
