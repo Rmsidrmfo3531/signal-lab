@@ -511,7 +511,10 @@ export class AccountAlerts{
   if(cmd==='/resume'||cmd==='/재개'){
    const code=String(randomInt(1000,10000));
    this.pendingAction={kind:'RESUME',code,expiresAt:now+CONFIRM_TTL_MS};
-   return `⚠️ 실계좌 카피 재개 확인\n새 진입·추매가 다시 실행됩니다. (손실 한도 정지는 텔레그램으로 풀 수 없고 화면에서만 해제합니다)\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
+   // The resume also ends an active copy cooldown (연속 손실·하루 손실 휴식): said before /confirm (review 2026-11-23).
+   let cur=null;try{if(typeof this.onControls==='function')cur=await this.onControls(null)}catch{}
+   const cd=cur?.controls?.cooldownActive?`\n⚠️ 지금 카피 휴식 중입니다${cur.controls.cooldownReason?` (${cur.controls.cooldownReason})`:''}: 재개하면 휴식도 해제됩니다.`:'';
+   return `⚠️ 실계좌 카피 재개 확인\n새 진입·추매가 다시 실행됩니다. (손실 한도 정지는 텔레그램으로 풀 수 없고 화면에서만 해제합니다)${cd}\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
   }
 
   if(cmd==='/report'||cmd==='/리포트'){
