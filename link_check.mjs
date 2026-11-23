@@ -4,7 +4,7 @@
 import vm from 'node:vm';
 import fs from 'node:fs';
 import path from 'node:path';
-import {pathToFileURL} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 
 export async function linkCheck(entry){
  const cache=new Map(),context=vm.createContext({});
@@ -18,8 +18,9 @@ export async function linkCheck(entry){
    const real=await import(spec.startsWith('node:')?spec:'node:'+spec),names=Object.keys(real);
    return new vm.SyntheticModule(names,function(){for(const n of names)this.setExport(n,real[n])},{context});
   }
-  const file=path.resolve(path.dirname(new URL(ref.identifier).pathname),spec);
-  if(!fs.existsSync(file))throw Error(`${path.basename(new URL(ref.identifier).pathname)}: ${spec} 없음`);
+  const refPath=fileURLToPath(ref.identifier);
+  const file=path.resolve(path.dirname(refPath),spec);
+  if(!fs.existsSync(file))throw Error(`${path.basename(refPath)}: ${spec} 없음`);
   return load(file);
  };
  const root=await load(path.resolve(entry));
