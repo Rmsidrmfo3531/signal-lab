@@ -67,8 +67,8 @@ const SCREEN_CLOSED=100,I5=SCALP_TIMEFRAMES['5m'].intervalMs,FRACTIONS=[.4,.35,.
 const EARLY_TAKE_PROFIT_MS=45*60000,EARLY_EXIT_RETRY_MS=60000;
 const PROFIT_ONLY_EARLY_EXIT_MIN=0,PROFIT_ONLY_RETRY_MS=5000;
 export const SCALP_PROFIT_HOLD_TARGET_MIN=60;
-export const SCALP_MIN_PROFIT_ROE_PCT=15;
-export const SCALP_PARTIAL_TAKE_FRAC=0.35;
+export const SCALP_MIN_PROFIT_ROE_PCT=16;
+export const SCALP_PARTIAL_TAKE_FRAC=0.25;
 export const SCALP_AGAINST_TREND_RISK_SCALE=0.5;
 export const SCALP_SCALE_IN_MIN_ROE_PCT=5;
 export const SCALP_SCALE_IN_PARTIAL_ROE_PCT=6;
@@ -187,6 +187,11 @@ export function scalpExecConfig(env=process.env){
   sessionWeighting:!['off','false','0','no'].includes(String(env.SCALP_SESSION_WEIGHTING??'').trim().toLowerCase()),
   sessionEuMult:n('SCALP_SESSION_EU_MULT',0.5,0.25,1.5),
   sessionUsMult:n('SCALP_SESSION_US_MULT',1.15,0.5,1.5),
+  // Backtest-validated confirmed-bounce sizing (C7, 40 coins Train/OOS): retracedPct >=20% (WR 78.9%, PF 3.55) -> 1.35x; <20% (WR 63.9%, PF 1.64) -> 0.8x.
+  bounceSizing:!['off','false','0','no'].includes(String(env.SCALP_BOUNCE_SIZING??'').trim().toLowerCase()),
+  bounceThresholdPct:n('SCALP_BOUNCE_THRESHOLD_PCT',20,5,35),
+  bounceHighMult:n('SCALP_BOUNCE_HIGH_MULT',1.35,1,2),
+  bounceLowMult:n('SCALP_BOUNCE_LOW_MULT',0.8,0.3,1.2),
   // Unified 2.5%+ score gate (backtest: 2.5~3.5% setups scoring >=65 achieved 100% WR without requiring a 4H/1D zone touch).
   scoreUnifiedMove:!['off','false','0','no'].includes(String(env.SCALP_SCORE_UNIFIED_MOVE??'').trim().toLowerCase()),
   // 매물대 반전 (user 2026-11-17 23:12): on by default, SCALP_ZONE_SIGNALS=off turns it off.
@@ -206,6 +211,16 @@ export function scalpSessionMultiplier(now=Date.now(),config={}){
   return {session:'US',labelKo:'미국·야간장',mult};
  }
  return {session:'ASIA',labelKo:'아시아장',mult:1};
+}
+
+/** Backtest-validated confirmed-bounce sizing (C7): >=20% bounce -> 1.35x, <20% -> 0.8x (Train PF 2.29, OOS PF 3.36, MDD -10.3%). */
+export function scalpBounceMultiplier(retracedPct,config={}){
+ if(config?.bounceSizing===false||!Number.isFinite(Number(retracedPct)))return {active:false,confirmed:false,mult:1,retracedPct:null};
+ const thresh=Number.isFinite(Number(config?.bounceThresholdPct))?Number(config.bounceThresholdPct):20;
+ const hi=Number.isFinite(Number(config?.bounceHighMult))?Number(config.bounceHighMult):1.35;
+ const lo=Number.isFinite(Number(config?.bounceLowMult))?Number(config.bounceLowMult):0.8;
+ const r=Number(retracedPct),confirmed=r>=thresh;
+ return {active:true,confirmed,mult:confirmed?hi:lo,retracedPct:+r.toFixed(1)};
 }
 
 /** BingX USDT perpetuals by 24h quote volume (stock / fx 'NC*' contracts excluded), tradable via API. */
@@ -693,8 +708,11 @@ export class ScalpExecutor{
    // Data-calibrated 100-point setup score (40-coin BingX 5m Train/OOS): filter negative-EV (<minScore) & scale up A/S setups.
    const btcTrend4h=this.config.trendMode==='off'?null:await this.#btcTrend4h(u.symbol);
    let scalpScore=scoreScalpSetup({direction:det.direction,evidence:det.evidence,trend4h:this.cur?.trend4h??null,btcTrend4h,netRR:plan.netRR,config:this.config});
-   // Backtest-validated orderflow boost (FJ, 40 coins Train/OOS): +5pt on 30m OI flush <=-1%, 1.5x sizing on CVD strong flip >15%.
+   // Backtest-validated confirmed-bounce sizing (C7, 40 coins Train/OOS): >=20% bounce (PF 3.55) -> 1.35x, <20% (PF 1.64) -> 0.8x.
    const minSc=Number(this.config.minScore)||0,oiBonusCfg=Number(this.config.orderflowOiBonus??5);
+   const bounce=minSc>0?scalpBounceMultiplier(det.evidence?.retracedPct,this.config):{active:false,confirmed:false,mult:1,retracedPct:null};
+   if(bounce.active&&scalpScore.pass)scalpScore={...scalpScore,sizeMult:bounce.mult,bounce};
+   // Backtest-validated orderflow boost (FJ, 40 coins Train/OOS): +5pt on 30m OI flush <=-1%, 1.5x sizing on CVD strong flip >15%.
    if(this.config.orderflowBoost!==false&&typeof this.orderflow==='function'&&scalpScore.score>=Math.max(0,minSc-oiBonusCfg)){
     const ofSnap=await withTimeout(Promise.resolve().then(()=>this.orderflow(u.symbol)),3500).catch(()=>null);
     const boost=evaluateScalpOrderflowBoost(ofSnap,det.direction,{oiBonus:oiBonusCfg,cvdSizeMult:Number(this.config.orderflowCvdSizeMult??1.5)});
@@ -703,9 +721,9 @@ export class ScalpExecutor{
      const nextGrade=nextScore>=80?'S':nextScore>=70?'A':nextScore>=65?'B':nextScore>=50?'C':'D';
      const nextPass=minSc>0?nextScore>=minSc:true;
      const highScore=Number(this.config.highScore??SCALP_SCORE_DEFAULTS.highScore);
-     const baseMult=nextScore>=highScore?Number(this.config.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult):1;
+     const baseMult=bounce.active?bounce.mult:(nextScore>=highScore?Number(this.config.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult):1);
      const nextMult=boost.cvdBoost?Math.max(baseMult,boost.sizeMult):baseMult;
-     scalpScore={...scalpScore,score:nextScore,grade:nextGrade,pass:nextPass,sizeMult:nextMult,oiBonus:boost.oiBonus,orderflow:boost};
+     scalpScore={...scalpScore,score:nextScore,grade:nextGrade,pass:nextPass,sizeMult:nextMult,oiBonus:boost.oiBonus,orderflow:boost,...(bounce.active?{bounce}:{})};
     }
    }
    // Backtest-validated session asymmetry (EU 08-14 UTC -> 0.5x, US/Late 14-24 UTC -> 1.15x; only active when scoring is enabled).
@@ -1951,6 +1969,7 @@ export class ScalpExecutor{
     minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
     orderflowBoost:c.orderflowBoost!==false,orderflowOiBonus:c.orderflowOiBonus??5,orderflowCvdSizeMult:c.orderflowCvdSizeMult??1.5,
     sessionWeighting:c.sessionWeighting!==false,sessionEuMult:c.sessionEuMult??0.5,sessionUsMult:c.sessionUsMult??1.15,
+    bounceSizing:c.bounceSizing!==false,bounceThresholdPct:c.bounceThresholdPct??20,bounceHighMult:c.bounceHighMult??1.35,bounceLowMult:c.bounceLowMult??0.8,
     symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,
     scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,

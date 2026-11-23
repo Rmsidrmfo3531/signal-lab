@@ -304,7 +304,7 @@ test('config: TESTNET or OFF only — LIVE is refused; settings as the user set 
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
  assert.equal(c.stopLossEnabled,false);
  assert.equal(c.settings.minMovePct,3.5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,3.5);assert.equal(scalpExecConfig({SCALP_MIN_MOVE_PCT:'5'}).settings.minMovePct,5);
- assert.equal(c.minProfitRoePct,15);assert.equal(scalpExecConfig({SCALP_MIN_PROFIT_ROE_PCT:'20'}).minProfitRoePct,20);
+ assert.equal(c.minProfitRoePct,16);assert.equal(scalpExecConfig({SCALP_MIN_PROFIT_ROE_PCT:'20'}).minProfitRoePct,20);
  assert.deepEqual(c.settings.retracements,[.382,.5,.618]);assert.equal(c.settings.stopAtr,.25);assert.equal(c.settings.climaxVolume,2);assert.equal(c.settings.rsiExtreme,30);assert.equal(c.settings.wickShare,.35);assert.equal(c.settings.maxRetracedBeforeEntry,.35);
  assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.75);assert.equal(c.maxOpen,0);assert.equal(scalpExecConfig({SCALP_MAX_OPEN:'5'}).maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'record'}).trendMode,'record');
  assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:' On '}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'true'}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'off'}).trendMode,'off');

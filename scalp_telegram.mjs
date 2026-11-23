@@ -33,7 +33,7 @@ export function scalpEventText(e){
  if(e.type==='ARMED')return `${SCALP_LABEL} 활성화 — 5분봉 급락 후 반등 롱·급등 후 되돌림 숏을 테스트넷에서 주문합니다.`;
  if(e.type==='DISARMED')return ['DAILY_LOSS_LIMIT','NO_PROTECTIVE_STOP'].includes(e.reason)?null:`${SCALP_LABEL} 비활성화`;
  if(e.type==='OPENED'){
-  const scorePart=Number.isFinite(Number(e.score))?` · 점수 ${e.score}점(${e.grade||''}급${Number(e.sizeMult)>1?` · 비중 ${e.sizeMult}x`:''})`:'';
+  const scorePart=Number.isFinite(Number(e.score))?` · 점수 ${e.score}점(${e.grade||''}급${Number.isFinite(Number(e.sizeMult))&&Math.abs(Number(e.sizeMult)-1)>1e-4?` · 비중 ${e.sizeMult}x`:''})`:'';
   const sessPart=e.sessionLabel&&Number.isFinite(Number(e.sessionMult))&&Math.abs(Number(e.sessionMult)-1)>1e-4?` · ${e.sessionLabel} ${e.sessionMult}x`:'';
   const ofPart=e.orderflowSummary?` · 수급 ${e.orderflowSummary}`:'';
   const execPart=e.executionMode==='MAKER'?' · 메이커 체결':e.executionMode==='MAKER+MARKET'?' · 메이커+시장가':'';

@@ -665,6 +665,16 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       if (!state.data || Date.now() - (state.data.at || 0) > 25_000) void load();
       if (!state.radar || Date.now() - (state.radar.at || 0) > 55_000) void loadRadar();
     };
+    document.addEventListener('click', e => {
+      const btn = e.target.closest('[data-open-orderflow]');
+      if (!btn) return;
+      const raw = String(btn.dataset.openOrderflow || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!raw) return;
+      state.symbol = raw.endsWith('USDT') ? raw : `${raw}USDT`;
+      try { localStorage.setItem('sl_of_symbol', state.symbol); } catch {}
+      window.location.hash = '#orderflow';
+      void load({ force: true });
+    });
     window.addEventListener('hashchange', () => setTimeout(maybeLoadOnRoute, 10));
     setInterval(() => {
       if (!isVisible()) return;
