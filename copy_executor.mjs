@@ -136,12 +136,16 @@ export function copyConfig(env=process.env,liveMode='OFF'){
   minOrderMaxMarginUSD:n('COPY_MIN_ORDER_MAX_MARGIN_USD',COPY_DEFAULTS.minOrderMaxMarginUSD,.1,1000),
   // Enter late when the trader adds to a position we missed (user 2026-11-14); COPY_LATE_ENTRY=off disables.
   lateEntry:!/^(off|0|false|no)$/i.test(String(env.COPY_LATE_ENTRY||'on')),
-  // Post-Only maker-first entries on LIVE (0.02% vs 0.05% taker); falls back to MARKET after waitMs. COPY_MAKER_FIRST=off disables.
-  makerFirst:!/^(off|0|false|no)$/i.test(String(env.COPY_MAKER_FIRST??(mode==='LIVE'?'on':'off'))),
-  makerWaitMs:n('COPY_MAKER_WAIT_MS',2500,300,10000)};
+  // Instant MARKET execution by default for lowest copy latency; opt in to Post-Only maker-first via COPY_MAKER_FIRST=on or CopyControls UI.
+  makerFirst:/^(on|1|true|yes)$/i.test(String(env.COPY_MAKER_FIRST??'off')),
+  makerWaitMs:n('COPY_MAKER_WAIT_MS',1000,200,10000)};
 }
 
 export class CopyExecutor{
+ #modeCache=null;
+ #maxLevCache=new Map();
+ #marginSetCache=new Map();
+ #levSetCache=new Map();
  constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),entryGateRevision=()=>null,isBusy=()=>false,balance=async()=>null,controls=null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},auditOrders=false,retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
   Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,entryGateRevision,isBusy,balance,controls,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
@@ -161,6 +165,12 @@ export class CopyExecutor{
   }
  }
  #effectiveSizing(){return this.controls?.effectiveSizing?.(this.config.sizing)??this.config.sizing}
+ #effectiveMakerFirst(){
+  const ctrlMode=this.controls?.effectiveExecutionMode?.(null);
+  if(ctrlMode==='INSTANT')return false;
+  if(ctrlMode==='MAKER_FIRST')return true;
+  return this.config.makerFirst===true;
+ }
  #effectiveTraderBalanceUSD(){return this.controls?this.controls.effectiveTraderBalanceUSD(this.config.traderBalanceUSD):this.config.traderBalanceUSD}
  #balanceRatio(funds){
   const equity=pos(funds?.equity),free=availableMargin(funds),live=this.config.mode==='LIVE';
@@ -169,6 +179,35 @@ export class CopyExecutor{
   return {scale:(live?free:equity)/this.#effectiveTraderBalanceUSD()};
  }
  #effectiveMaxLeverage(){return this.controls?this.controls.effectiveMaxLeverage(this.config.maxLeverage):this.config.maxLeverage}
+ async #readPositionModeCached(){
+  const now=this.now();
+  if(this.#modeCache&&now-this.#modeCache.at<60000)return {ok:true,hedge:this.#modeCache.hedge};
+  const mode=await readPositionMode(this.client);
+  if(mode.ok)this.#modeCache={hedge:mode.hedge,at:this.now()};
+  return mode;
+ }
+ async #readMaxLeverage(venueSymbol){
+  const now=this.now(),cached=this.#maxLevCache.get(venueSymbol);
+  if(cached&&now-cached.at<600000)return cached.info;
+  try{
+   const info=await this.client.leverage(venueSymbol);
+   if(info)this.#maxLevCache.set(venueSymbol,{info,at:this.now()});
+   return info;
+  }catch{return null}
+ }
+ clearVenueCache(venueSymbol=null){
+  if(!venueSymbol){
+   this.#modeCache=null;this.#maxLevCache.clear();this.#marginSetCache.clear();this.#levSetCache.clear();
+   return;
+  }
+  this.#modeCache=null;
+  this.#maxLevCache.delete(venueSymbol);
+  this.#marginSetCache.delete(venueSymbol);
+  for(const k of this.#levSetCache.keys())if(k.startsWith(venueSymbol+'|'))this.#levSetCache.delete(k);
+ }
+ async warmCache(){
+  try{await this.#readPositionModeCached()}catch{}
+ }
  async #readFunds({cache=false}={}){
   const b=await this.balance().catch(()=>null);
   if(b)this.funds={equity:b.equity==null?null:num(b.equity),available:availableMargin(b),at:cache?this.now():(this.funds?.at??0)};
@@ -179,7 +218,7 @@ export class CopyExecutor{
   const r=this.controls.evaluateCooldown({closedTrades:this.store.closed,equityUSD:this.funds?.equity??null,now:this.now()});
   if(r?.triggered)this.#event('COPY_COOLDOWN_TRIGGERED',{reason:r.reason,until:r.until,minutes:r.minutes,detail:`${r.reason} · ${r.minutes}분간 신규 진입 휴식`});
  }
- arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});return this.status()}
+ arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});if(this.config.mode==='LIVE')void this.warmCache();return this.status()}
  disarm(){this.entryRevision++;this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
  resetTestnetHistory(){
   if(this.config.mode==='LIVE')throw Object.assign(Error('NOT_TESTNET'),{code:'NOT_TESTNET',httpStatus:409});
@@ -195,10 +234,10 @@ export class CopyExecutor{
  /** Symbols the copy ledger holds (the signal strategy skips them). */
  heldSymbols(){const s=new Set(this.reserved);for(const sym of this.reserved)if(sym.endsWith('USDT')&&!sym.includes('-'))s.add(sym.replace(/USDT$/,'-USDT'));for(const p of Object.values(this.store.positions))if(p.status==='OPEN'){s.add(p.symbol);if(p.venueSymbol)s.add(p.venueSymbol);if(p.venueAlias)s.add(p.venueAlias)}return s}
  status(){const closed=this.store.closed.filter(p=>!p.archivedFromHistory);
-  const sizing=this.#effectiveSizing(),traderBalanceUSD=this.#effectiveTraderBalanceUSD();
+  const sizing=this.#effectiveSizing(),traderBalanceUSD=this.#effectiveTraderBalanceUSD(),executionMode=this.#effectiveMakerFirst()?'MAKER_FIRST':'INSTANT';
   const basis=this.config.mode==='LIVE'?availableMargin(this.funds):pos(this.funds?.equity);
   const effectiveRatio=sizing==='BALANCE_RATIO'&&basis>0&&traderBalanceUSD>0?+(basis/traderBalanceUSD).toFixed(4):null;
-  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing,traderBalanceUSD,effectiveRatio,maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,deferredEntries:this.store.deferredEntries.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing,executionMode,traderBalanceUSD,effectiveRatio,maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,deferredEntries:this.store.deferredEntries.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:closed.slice().reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
   ...(this.controls?{controls:this.controls.status(this.now())}:{}),
   ...(this.audit?{audit:this.auditStatus()}:{})}}
@@ -456,12 +495,12 @@ export class CopyExecutor{
  async #market(p,side,quantity,{reduceOnly=false,tag,beforeSend,maker=null}){
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
   const positionSide=positionSideFor({hedge:p.hedge===true,direction:p.direction});
-  if(this.config.makerFirst===true&&!reduceOnly&&maker?.markPrice>0&&pos(p.tickSize)){
+  if(this.#effectiveMakerFirst()&&!reduceOnly&&maker?.markPrice>0&&pos(p.tickSize)){
    const r=await placeMakerThenMarket({
     client:this.client,symbol:p.venueSymbol,side,positionSide,quantity,
     quantityStep:maker.step??null,minQuantity:maker.minQty??0,tickSize:p.tickSize,
     markPrice:maker.markPrice,hedge:p.hedge===true,clientOrderId:this.#clientId(p,tag),
-    waitMs:this.config.makerWaitMs??2500,sleep:this.sleep,beforeSend,
+    waitMs:this.config.makerWaitMs??1000,pollMs:250,sleep:this.sleep,beforeSend,
    });
    const ids=[...new Set([r.makerOrderId,r.marketOrderId].filter(Boolean))];
    for(const id of ids){
@@ -475,7 +514,7 @@ export class CopyExecutor{
     this.#rememberFillOrder(p,id,side,true,notice);
     this.#notifyOrderReceipt(p,id);
    }
-   return {orderId:r.orderId??null,avg:r.avg??null,status:r.status??null,executionMode:r.executionMode};
+   return {orderId:r.orderId??null,avg:r.avg??null,status:r.status??null,executedQty:pos(r.filledQty),executionMode:r.executionMode};
   }
   const params={symbol:p.venueSymbol,side,positionSide,type:'MARKET',quantity:String(quantity),clientOrderId:this.#clientId(p,tag)};
   // Hedge mode: no reduceOnly (BingX refuses it); the side and positionSide make it a close.
@@ -738,52 +777,61 @@ export class CopyExecutor{
   try{return await this.#openReserved(m,at,key,entry)}finally{this.reserved.delete(m.symbol)}
  }
  async #openReserved(m,at,key,entry){
+  const execStart=performance.now();
   const c=await this.#contract(m.symbol),venueSymbol=c.venueSymbol||venueSymbolOf(m.symbol);
   // A '- → q' change has no leverage: the last one seen for the symbol (else 10).
   if(m.leverage)this.store.leverageOf[m.symbol]=m.leverage;
+  const sizing=this.#effectiveSizing();
+  // Run all independent read-only verification checks in parallel before any venue write (margin/leverage/order).
+  this.step='거래소 사전 확인';
+  const [venuePrice,levInfo,mode,rawPos,auditRes,funds]=await Promise.all([
+   Promise.race([this.markOf(venueSymbol),new Promise(r=>setTimeout(()=>r(null),3000).unref?.())]).catch(()=>null),
+   this.#readMaxLeverage(venueSymbol),
+   this.#readPositionModeCached(),
+   this.client.positions(venueSymbol).then(data=>({ok:true,data}),error=>({ok:false,error})),
+   this.audit?this.#auditOpenOrders(venueSymbol):Promise.resolve(null),
+   this.#readFunds(),
+  ]);
   // The venue contract must be the same thing at the same price: card price x unit multiplier within
   // 10 % of the venue's last price (a stock perpetual or a 1000-coin contract that is something else, or a
   // contract that is not 1 share / 1000 coins, is refused). A contract found under another name is not
   // traded without that check.
-  let venuePrice=null;
-  {venuePrice=await Promise.race([this.markOf(venueSymbol),new Promise(r=>setTimeout(()=>r(null),3000).unref?.())]).catch(()=>null);
-   const cardPrice=(pos(m.price)??pos(m.entry))*(Number(c.unitMultiplier)||1);
+  {const cardPrice=(pos(m.price)??pos(m.entry))*(Number(c.unitMultiplier)||1);
    if(!(venuePrice>0)){if(c.alias){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}}
    else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
   let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.#effectiveMaxLeverage()));
-  this.step='레버리지 조회';try{const info=await this.client.leverage(venueSymbol),maxL=Number((m.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLongLeverage??info?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}catch{}
+  {const maxL=Number((m.direction==='SHORT'?levInfo?.maxShortLeverage:levInfo?.maxLongLeverage)??levInfo?.maxLongLeverage??levInfo?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}
   // The account's position mode (one-way: positionSide BOTH; hedge: LONG / SHORT, user 2026-11-17), read
   // before every entry and kept on the position. Not readable or not stated: skipped before any setting or
   // order (never guessed: the wrong mode is refused by BingX with 109400, user 2026-11-14 AKEUSDT).
   this.step='포지션 모드 확인';
-  const mode=await readPositionMode(this.client);
   if(!mode.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:mode.reason,detail:mode.detail});return {ok:false,reason:mode.reason}}
   const hedge=mode.hedge;
   // Never add to a position already on the venue (a manual trade, or one the ledger lost): it would merge
   // with ours and the trader's close would then close it all (user 2026-11-14, BTC 0.005). Hedge mode: the
   // same side only (the other side is a separate position).
   this.step='거래소 포지션 확인';
-  {const list=checkedPositions(await this.client.positions(venueSymbol),venueSymbol),row=positionRow(list,venueSymbol,{hedge,direction:m.direction}),size=row?Math.abs(Number(row.positionAmt)):0;
+  if(!rawPos.ok)throw rawPos.error;
+  {const list=checkedPositions(rawPos.data,venueSymbol),row=positionRow(list,venueSymbol,{hedge,direction:m.direction}),size=row?Math.abs(Number(row.positionAmt)):0;
    if(size>0){this.#event('SKIPPED',{symbol:m.symbol,reason:'VENUE_POSITION_EXISTS',detail:`거래소에 이미 ${size} 보유`});return {ok:false,reason:'VENUE_POSITION_EXISTS'}}}
   if(this.audit){
-   const {orders,detail}=await this.#auditOpenOrders(venueSymbol);
+   const {orders,detail}=auditRes||{orders:null};
    const expected=positionSideFor({hedge,direction:m.direction});
    const reason=this.#auditBlock(m.symbol,venueSymbol)??(!orders?'COPY_ORDERS_UNREADABLE':
     orders.some(o=>!hedge||!o.positionSide||String(o.positionSide).toUpperCase()===expected||String(o.positionSide).toUpperCase()==='BOTH')?'COPY_OPEN_ORDERS_EXIST':null);
    if(reason){this.#event('SKIPPED',{symbol:m.symbol,reason,...(detail?{detail}:{})});return {ok:false,reason}}
   }
-  this.step='증거금 모드 설정';
-  try{await this.client.setMarginType(venueSymbol,'CROSSED')}catch{}
-  this.step='레버리지 설정';
-  await this.client.setLeverage(venueSymbol,leverageSideFor({hedge,direction:m.direction}),leverage);
+  // Check gate & entry revision after parallel reads (e.g. if disarmed or kill-switched while awaiting balance/positions).
+  {const preGate=this.gate();
+   if(!preGate?.ok){const reason=preGate?.reason||'GATE_CLOSED';this.#event('SKIPPED',{symbol:m.symbol,reason});return {ok:false,reason}}
+   if(entry&&(entry.revision!==this.entryRevision||entry.gateRevision!==this.entryGateRevision())){this.#event('SKIPPED',{symbol:m.symbol,reason:'ENTRY_INTERRUPTED'});return {ok:false,reason:'ENTRY_INTERRUPTED'}}}
   // unitMultiplier: venue contract of 1000 coins (1000PEPE) -> quantities / 1000, prices x 1000.
   const mult=Number(c.unitMultiplier)||1,price=(pos(m.price)??pos(m.entry))*mult;
   // BALANCE_RATIO: scale = live available margin (or testnet equity) / trader's baseline, refreshed from exchange.
-  const sizing=this.#effectiveSizing();
   let scale=null;
   if(sizing==='BALANCE_RATIO'){
    if(!(m.quantity>0))throw Object.assign(Error('TRADER_QUANTITY_MISSING'),{code:'TRADER_QUANTITY_MISSING'});
-   const ratio=this.#balanceRatio(await this.#readFunds());
+   const ratio=this.#balanceRatio(funds);
    if(ratio.reason){this.#event('SKIPPED',{symbol:m.symbol,reason:ratio.reason});return {ok:false,reason:ratio.reason}}
    scale=ratio.scale;
   }
@@ -812,11 +860,32 @@ export class CopyExecutor{
   // A venue minimum far above the planned size (an expensive stock perp, a low leverage) is not taken.
   if(minOrder&&qty*price/leverage>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   if(!(qty>0))throw Object.assign(Error('QUANTITY_INVALID'),{code:'QUANTITY_INVALID'});
+  // Skip redundant setMarginType / setLeverage calls when already configured within 30 min; run both in parallel on first entry.
+  const levSide=leverageSideFor({hedge,direction:m.direction});
+  const levKey=`${venueSymbol}|${levSide}`;
+  const setupNow=this.now();
+  const needMargin=!(this.#marginSetCache.get(venueSymbol)>setupNow-1800000);
+  const cachedLev=this.#levSetCache.get(levKey);
+  const needLev=!(cachedLev&&cachedLev.leverage===leverage&&cachedLev.at>setupNow-1800000);
+  if(needMargin||needLev){
+   this.step=needLev?'레버리지 설정':'증거금 모드 설정';
+   try{
+    await Promise.all([
+     needMargin?this.client.setMarginType(venueSymbol,'CROSSED').then(()=>{this.#marginSetCache.set(venueSymbol,this.now())},()=>{}):Promise.resolve(),
+     needLev?this.client.setLeverage(venueSymbol,levSide,leverage).then(()=>{this.#levSetCache.set(levKey,{leverage,at:this.now()})}):Promise.resolve(),
+    ]);
+   }catch(e){
+    if(/109400/.test(String(e?.code||e?.message||'')))this.clearVenueCache(venueSymbol);
+    throw e;
+   }
+  }
   const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,hedge,leverage,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),
    scale,mult,sizing,firstQty:qty,venueAlias:c.alias??null,minOrder,matchTraderQty,theirEntry:m.entry,theirQty:m.quantity??null,theirFirstQty:m.quantity??null,theirTotal:m.quantity??null,lastTheirEntry:m.entry??null,lastTheirQty:m.quantity??null,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,qty:0,avg:null,adds:0,reduces:0,stop:null,stopOrderId:null,steps:[],fillTracked:true};
-  // At most 3 s for the zones (the message queue must not wait on a slow profile); then the cap stop.
-  try{const zones=await Promise.race([this.zonesOf(m.symbol,{tickSize:c.tickSize}),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);
-   const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
+  // Only fetch 1h/4h volume zones when exchange/zone stops are actually enabled (saves 1.5~3.0s on default stops=off!).
+  if(this.config.stops){
+   try{const zones=await Promise.race([this.zonesOf(m.symbol,{tickSize:c.tickSize}),new Promise(r=>setTimeout(()=>r([]),3000).unref?.())]);
+    const zs=this.zoneStop({direction:m.direction,entry:price/mult,zones});if(zs){p.zoneStop=zs.stop;p.stopZone=zs.zone;p.stopDistPct=zs.distPct}}catch{}
+  }
   this.store.positions[key]=p;
   const skipBeforeSend=block=>{
    if(this.store.positions[key]===p)delete this.store.positions[key];
@@ -824,11 +893,12 @@ export class CopyExecutor{
    return {ok:false,reason:block.reason};
   };
   const sendOpen=()=>this.#send(p,m.direction==='LONG'?'BUY':'SELL',qty,{tag:this.#tag(p,'open')},
-   {event:'ENTRY_RETRY',before:0,step:c.quantityStep,entry,marginUSD:qty*Math.max(price,venuePrice||0)/leverage,markPrice:venuePrice||price,minQty:pos(c.minQuantityBase)??0});
+   {event:'ENTRY_RETRY',before:0,step:c.quantityStep,entry,marginUSD:qty*Math.max(price,venuePrice||0)/leverage,funds,markPrice:venuePrice||price,minQty:pos(c.minQuantityBase)??0});
   let fill;
   // The venue position was checked empty above: before = 0 for the retry check.
   try{fill=await sendOpen()}
   catch(error){
+   if(/109400/.test(String(error?.code||error?.message||'')))this.clearVenueCache(venueSymbol);
    if(error.orderBlock)return skipBeforeSend(error.orderBlock);
    // 101400 is a refusal (nothing filled). When it names the venue minimum, try 1x trader qty if BALANCE_RATIO
    // was scaled down (< 1), otherwise retry at the venue minimum if it still fits the margin limits.
@@ -850,11 +920,18 @@ export class CopyExecutor{
      if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(e2.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw e2}}
    // RETRY_ABANDONED comes only after BingX said the order does not exist: nothing to keep either.
    else{if(['VENUE_ERROR_101400','RETRY_ABANDONED'].includes(error.code)&&this.store.positions[key]===p)delete this.store.positions[key];throw error}}
-  p.steps.push({kind:'OPEN',at:this.now(),qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
-  await this.#protect(p,{ownFill:true});
+  p.steps.push({kind:'OPEN',at:this.now(),qty:pos(fill.executedQty)??qty,avg:fill.avg});this.#save(); // a real fill is on disk before anything else
+  // Fast path: when stops are OFF and BingX already returned an exact FILLED receipt (qty + avg), skip redundant post-fill positions() read.
+  if(!this.config.stops&&!p.stopOrderId&&String(fill.status).toUpperCase()==='FILLED'&&pos(fill.executedQty)&&pos(fill.avg)){
+   p.qty=fill.executedQty;p.avg=fill.avg;p.stopSource='NONE';p.stopStale=false;
+   if(this.audit)p.auditQty=fill.executedQty;
+  }else{
+   await this.#protect(p,{ownFill:true});
+  }
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null,scale:p.scale,minOrder:p.minOrder,matchTraderQty:p.matchTraderQty===true});
-  return {ok:true};
+  const execMs=Math.max(0,Math.round(performance.now()-execStart));
+  this.#event('OPENED',{symbol:m.symbol,direction:m.direction,late:m.late===true,...(m.refollow?{refollow:true,refollowAfter:m.refollowAfter??null}:{}),leverage,qty:p.qty,avg:p.avg,stop:p.stop,stopSource:p.stopSource,stopDistPct:p.stopDistPct??null,scale:p.scale,minOrder:p.minOrder,matchTraderQty:p.matchTraderQty===true,execMs});
+  return {ok:true,execMs};
  }
  /** The quantity a BingX 101400 message asks for ("minimum order amount is 149 AKE" / "minimum order
   * value is 2 USDT"), rounded up to the lot step; null when the message names neither. */
@@ -884,6 +961,7 @@ export class CopyExecutor{
   return {cause:'NO_ENTRY_RECEIVED'};
  }
  async #change(m,at,entry){
+  const execStart=performance.now();
   const key=this.#key(m),p=this.store.positions[key];
   if(m.to===0)return this.#close(m,'TRADER_CLOSE');
   if(m.from===0&&(!p||p.status!=='OPEN'))return this.#open({...m,kind:'OPEN',entry:m.price,leverage:m.leverage,quantity:m.to},at,entry);
@@ -902,12 +980,13 @@ export class CopyExecutor{
    if(m.to>m.from)this.#event('ADD_SKIPPED',{symbol:m.symbol,reason:'CLOSING'});
    return {ok:false,reason:'CLOSING'};
   }
-  const c=await this.#contract(m.symbol),ratio=m.to/m.from,now=await this.#recheck(p,await this.#position(p));p.qty=now.size;
+  const [c,firstPos]=await Promise.all([this.#contract(m.symbol),this.#position(p)]);
+  const ratio=m.to/m.from,now=await this.#recheck(p,firstPos);p.qty=now.size;
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   if(ratio>1){
    const prevTotal=p.theirTotal;
    p.theirTotal=m.to;
-   const res=await this.#buyMore(p,m,m.to-m.from,{price:pos(m.price),ratio,c,now,entry});
+   const res=await this.#buyMore(p,m,m.to-m.from,{price:pos(m.price),ratio,c,now,entry,execStart});
    if(res?.deferred)p.theirTotal=prevTotal;
    return res;
   }else{
@@ -922,9 +1001,11 @@ export class CopyExecutor{
     delete p.pendingCut;
     p.theirTotal=m.to;
     p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:filledCut,ratio});this.#save();
-    try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}
-    this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:filledCut,left:p.qty});
-    return {ok:true};
+    if(!this.config.stops&&!p.stopOrderId){if(this.audit)p.auditQty=p.qty}
+    else{try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}}
+    const execMs=Math.max(0,Math.round(performance.now()-execStart));
+    this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:filledCut,left:p.qty,execMs});
+    return {ok:true,execMs};
    }
    const cut=samePending?Number(Math.max(0,p.qty-targetLeft).toFixed(12)):totalWantCut;
    if(!(cut>0))return {ok:true,tooSmall:true};
@@ -936,40 +1017,53 @@ export class CopyExecutor{
    delete p.pendingCut;
    p.theirTotal=m.to; // set after our cut went through, so a retried cut uses the same from / to
    p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:filledCut,ratio});this.#save();
-   try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}
-   this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:filledCut,left:p.qty});
+   if(!this.config.stops&&!p.stopOrderId&&String(order?.status).toUpperCase()==='FILLED'&&pos(order?.executedQty)){
+    if(this.audit)p.auditQty=p.qty;
+   }else{
+    try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}
+   }
+   const execMs=Math.max(0,Math.round(performance.now()-execStart));
+   this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:filledCut,left:p.qty,execMs});
+   return {ok:true,execMs};
   }
-  return {ok:true};
  }
  // Copy only the quantity added by the trader, including for positions opened before live margin sizing.
- async #buyMore(p,m,theirQty,{price,ratio=null,c=null,now=null,entry}={}){
-  c??=await this.#contract(p.symbol);now??=await this.#recheck(p,await this.#position(p));p.qty=now.size;
+ async #buyMore(p,m,theirQty,{price,ratio=null,c=null,now=null,entry,execStart=performance.now()}={}){
+  if(!c||!now){
+   const [cRes,posRes]=await Promise.all([c?Promise.resolve(c):this.#contract(p.symbol),now?Promise.resolve(now):this.#position(p)]);
+   c=cRes;now=now??await this.#recheck(p,posRes);
+  }
+  p.qty=now.size;
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
   const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();
   if(!g.ok){if(g.reason==='UPDATING'&&this.#deferForUpdate({...m,symbol:p.symbol,direction:p.direction}))return {ok:false,reason:'UPDATING',deferred:true};this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   const symBlock=this.controls?.checkSymbol(p.symbol);if(symBlock){this.#event('ADD_SKIPPED',{symbol:p.symbol,...symBlock});return {ok:false,reason:symBlock.reason}}
+  price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
+  const activeSizing=this.#effectiveSizing();
+  const needFunds=!p.matchTraderQty&&activeSizing==='BALANCE_RATIO'&&(this.config.mode==='LIVE'||p.scale!=null);
+  const auditPreReason=this.audit?this.#auditBlock(p.symbol,p.venueSymbol):null;
+  const [checkedAudit,funds]=await Promise.all([
+   this.audit&&!auditPreReason?this.#auditOpenOrders(p.venueSymbol):Promise.resolve(null),
+   needFunds?this.#readFunds():Promise.resolve(undefined),
+  ]);
   if(this.audit){
-   let reason=this.#auditBlock(p.symbol,p.venueSymbol),detail;
+   let reason=auditPreReason,detail;
    if(!reason){
-    const checked=await this.#auditOpenOrders(p.venueSymbol);
-    detail=checked.detail;
-    const {issues}=this.#compareLane(p,now.size,checked.orders);
-    if(issues.length||!p.steps?.length||now.direction!==p.direction)reason=checked.orders?'COPY_AUDIT_BLOCKED':'COPY_ORDERS_UNREADABLE';
+    detail=checkedAudit?.detail;
+    const {issues}=this.#compareLane(p,now.size,checkedAudit?.orders??null);
+    if(issues.length||!p.steps?.length||now.direction!==p.direction)reason=checkedAudit?.orders?'COPY_AUDIT_BLOCKED':'COPY_ORDERS_UNREADABLE';
    }
    if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason,...(detail?{detail}:{})});return {ok:false,reason}}
   }
-  price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
   if(!(price>0)){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}
-  const activeSizing=this.#effectiveSizing();
-  let scale=p.scale,funds;
+  let scale=p.scale;
   if(p.matchTraderQty){
    scale=1;p.scale=1;
-  }else if(activeSizing==='BALANCE_RATIO'&&(this.config.mode==='LIVE'||p.scale!=null)){
-   funds=await this.#readFunds();
-   const ratio=this.#balanceRatio(funds),reason=this.#sendBlock(p,entry)??ratio.reason;
+  }else if(needFunds){
+   const ratioRes=this.#balanceRatio(funds),reason=this.#sendBlock(p,entry)??ratioRes.reason;
    if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason});return {ok:false,reason}}
-   scale=ratio.scale;
+   scale=ratioRes.scale;
    if(p.scale!=null)p.scale=scale;
   }
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
@@ -990,13 +1084,26 @@ export class CopyExecutor{
    this.#event('ADD_SKIPPED',{symbol:p.symbol,...e.orderBlock});
    return {ok:false,reason:e.orderBlock.reason};
   }
+  const prevQty=p.qty,prevAvg=p.avg;
+  const addedQty=pos(fill.executedQty)??fill.qty??buy;
   p.adds++;
-  p.steps.push({kind:'ADD',at:this.now(),qty:fill.qty??buy,avg:fill.avg,theirQty,marginUSD});this.#save();
-  await this.#protect(p,{ownFill:true});if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
-  this.#event('ADDED',{symbol:p.symbol,direction:p.direction,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null,scale,matchTraderQty:p.matchTraderQty===true});
-  return {ok:true};
+  p.steps.push({kind:'ADD',at:this.now(),qty:addedQty,avg:fill.avg,theirQty,marginUSD});this.#save();
+  if(!this.config.stops&&!p.stopOrderId&&String(fill.status).toUpperCase()==='FILLED'&&pos(fill.executedQty)&&pos(fill.avg)){
+   const newQty=Number((prevQty+fill.executedQty).toFixed(12));
+   p.qty=newQty;
+   if(prevQty>0&&prevAvg>0)p.avg=+((prevQty*prevAvg+fill.executedQty*fill.avg)/newQty).toPrecision(10);
+   else p.avg=fill.avg;
+   if(this.audit)p.auditQty=newQty;
+  }else{
+   await this.#protect(p,{ownFill:true});
+  }
+  if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
+  const execMs=Math.max(0,Math.round(performance.now()-execStart));
+  this.#event('ADDED',{symbol:p.symbol,direction:p.direction,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null,scale,matchTraderQty:p.matchTraderQty===true,execMs});
+  return {ok:true,execMs};
  }
  async #close(m,reason){
+  const execStart=performance.now();
   const key=this.#key(m),p=this.store.positions[key];
   if(!p||p.status!=='OPEN')return {ok:true,notOpen:true};
   // A 청산 card with a quantity below the trader's position is a partial close: the same share of ours.
@@ -1034,30 +1141,42 @@ export class CopyExecutor{
    if(error.code==='HTTP_429'||(/^VENUE_ERROR_\d+$/.test(error.code||'')&&!/duplicate|exist/i.test(error.message||'')))delete close.pending;
    this.#save();throw error;
   }
-  if(['FILLED','CANCELED','CANCELLED','REJECTED','EXPIRED','FAILED'].includes(String(order.status).toUpperCase()))delete close.pending;
+  const ordStatus=String(order.status||'').toUpperCase();
+  if(['FILLED','CANCELED','CANCELLED','REJECTED','EXPIRED','FAILED'].includes(ordStatus))delete close.pending;
   this.#save();
-  const after=await this.#recheck(p,await this.#position(p));
-  if(!(after.size>0)){await this.#completeClose(p,reason,now);return {ok:true}}
+  // Fast close confirmation: if BingX already returned FILLED for the full closing quantity, skip extra position poll & 1s recheck sleep!
+  if(ordStatus==='FILLED'&&pos(order.executedQty)&&sameSize(order.executedQty,now.size)){
+   const execMs=Math.max(0,Math.round(performance.now()-execStart));
+   await this.#completeClose(p,reason,now,null,execMs);
+   return {ok:true,execMs};
+  }
+  const afterRaw=await this.#position(p);
+  const after=ordStatus==='FILLED'&&!(afterRaw.size>0)?afterRaw:await this.#recheck(p,afterRaw);
+  if(!(after.size>0)){
+   const execMs=Math.max(0,Math.round(performance.now()-execStart));
+   await this.#completeClose(p,reason,now,null,execMs);
+   return {ok:true,execMs};
+  }
   if(after.size<now.size)close.partial=true;
   p.qty=after.size;p.unrealized=after.unrealized;this.#save();
   this.#event('CLOSE_RETRY',{symbol:p.symbol,reason:'CLOSE_PENDING',detail:`청산 중 · 거래소 잔여 ${after.size}`});
   return {ok:false,reason:'CLOSE_PENDING'};
  }
- async #completeClose(p,reason,now,theirPnlUSD=null){
+ async #completeClose(p,reason,now,theirPnlUSD=null,execMs=null){
   if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}
-  this.#closed(p,reason,now,p.closing?.theirPnlUSD??theirPnlUSD);
+  this.#closed(p,reason,now,p.closing?.theirPnlUSD??theirPnlUSD,execMs);
  }
  // Realized result: the venue's unrealized PnL just before the close (an estimate: fees not included).
  // A close of ours that was under way (p.closing) is booked under its own reason. Booked once per position; the
  // ledger slot is freed only when it still holds this position.
- #closed(p,reason,now,theirPnlUSD=null){
+ #closed(p,reason,now,theirPnlUSD=null,execMs=null){
   if(this.store.closed.some(x=>x.id===p.id))return;
   reason=p.closing?.reason??reason;
   p.status='CLOSED';p.closedAt=this.now();p.closeReason=reason;delete p.inflight;
   const estimate=p.closing?.partial?null:now?.unrealized??null;
   const row={...p,netUSD:estimate,netSource:estimate!=null?'ESTIMATE_BEFORE_FEES':'UNKNOWN',theirPnlUSD};
   this.store.closed.push(row);const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];
-  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds,...(p.closeEvidence?{evidence:p.closeEvidence.kind}:{})});
+  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,theirPnlUSD,adds:p.adds,...(execMs!=null?{execMs}:{}),...(p.closeEvidence?{evidence:p.closeEvidence.kind}:{})});
   this.#checkCooldown();
  }
  /** Per-position exchange settlement by exact order id, run outside the order queue. */

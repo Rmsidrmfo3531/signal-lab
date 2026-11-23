@@ -10,7 +10,7 @@ passes each new message to the local Signal Lab server, which copies it on the B
   SIGNAL_LAB_PORT                        default 3000 (the server's PORT)
 The login session file (copy.session) stays in the data folder, readable only by signallab.
 """
-import asyncio, json, os, sys, urllib.error, urllib.request
+import asyncio, http.client, json, os, sys, threading, urllib.error, urllib.request
 from telethon import TelegramClient, events
 
 # Ensure SQLite session files (-wal/-shm/-journal) are created 0600 only.
@@ -32,15 +32,45 @@ E = {**env(os.path.join(DATA, '.env')), **os.environ}
 API_ID, API_HASH = int(E.get('TELEGRAM_API_ID', '0') or 0), E.get('TELEGRAM_API_HASH', '')
 CHANNEL = int(E.get('COPY_CHANNEL_ID', '0') or 0)
 TOKEN = E.get('COPY_LISTENER_TOKEN', '')
-URL = f"http://127.0.0.1:{E.get('SIGNAL_LAB_PORT', E.get('PORT', '3000'))}/api/copy/message"
+PORT = int(E.get('SIGNAL_LAB_PORT', E.get('PORT', '3000')) or 3000)
+URL = f"http://127.0.0.1:{PORT}/api/copy/message"
 if not (API_ID and API_HASH and CHANNEL and len(TOKEN) >= 24):
     sys.exit('설정 누락: TELEGRAM_API_ID, TELEGRAM_API_HASH, COPY_CHANNEL_ID, COPY_LISTENER_TOKEN (copy.sh로 설정)')
 
+_conn_lock = threading.Lock()
+_conn = None
+
 def post(payload):
-    req = urllib.request.Request(URL, data=json.dumps(payload).encode(), method='POST',
-                                 headers={'Content-Type': 'application/json', 'X-Copy-Token': TOKEN})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode()[:300]
+    global _conn
+    body = json.dumps(payload).encode()
+    headers = {'Content-Type': 'application/json', 'X-Copy-Token': TOKEN, 'Connection': 'keep-alive'}
+    with _conn_lock:
+        for attempt in range(2):
+            try:
+                if _conn is None:
+                    _conn = http.client.HTTPConnection('127.0.0.1', PORT, timeout=20)
+                _conn.request('POST', '/api/copy/message', body=body, headers=headers)
+                resp = _conn.getresponse()
+                raw = resp.read().decode('utf-8', errors='replace')
+                if resp.status >= 400:
+                    raise urllib.error.HTTPError(URL, resp.status, resp.reason, resp.headers, None) if not raw else _http_err(resp.status, resp.reason, raw)
+                return raw[:300]
+            except urllib.error.HTTPError:
+                raise
+            except Exception:
+                try:
+                    if _conn is not None:
+                        _conn.close()
+                except Exception:
+                    pass
+                _conn = None
+                if attempt == 1:
+                    raise
+
+def _http_err(code, reason, body_text):
+    err = urllib.error.HTTPError(URL, code, reason, {}, None)
+    err.read = lambda: body_text.encode('utf-8', errors='replace')
+    return err
 
 client = TelegramClient(os.path.join(DATA, 'copy'), API_ID, API_HASH)
 delivery_queue = None
@@ -49,7 +79,7 @@ async def deliver(payload):
     msg_id = payload['id']
     # The server may be restarting (an update takes up to about a minute): retry for about 3 minutes.
     # The server ignores a message id it has already handled, so a retry never trades twice.
-    for wait in (0, 3, 5, 10, 15, 20, 30, 30, 30, 30):
+    for wait in (0, 1, 2, 5, 10, 15, 20, 30, 30, 30):
         if wait:
             await asyncio.sleep(wait)
         try:

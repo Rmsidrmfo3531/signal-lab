@@ -409,9 +409,13 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,controls:copyControls
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
  // A coin missing or suspended in the cached list re-reads the list (new listings / delistings, 2026-11-16).
  contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.contractsFor(symbol),symbol),
- // Last price on BingX (tickers cached 20 s) for the copy price check.
- // 3 s cache (user 2026-11-16: the real-account page should feel live); one request at a time.
- markOf:async venueSymbol=>{if(!copyTickers.at||Date.now()-copyTickers.at>3000){copyTickers.pending??=venueQuotes.clients.BINGX.tickers().then(rows=>{copyTickers={at:Date.now(),rows}},()=>{copyTickers.pending=null});await copyTickers.pending}
+ // Last price on BingX for the copy price check: return warm cache immediately (<15s) and refresh in background if >3s old
+ // so copy entries never stall waiting on a cold full-market ticker dump.
+ markOf:async venueSymbol=>{
+  const age=copyTickers.at?Date.now()-copyTickers.at:Infinity;
+  const refresh=()=>{copyTickers.pending??=venueQuotes.clients.BINGX.tickers().then(rows=>{copyTickers={at:Date.now(),rows}},()=>{}).finally(()=>{copyTickers.pending=null});return copyTickers.pending};
+  if(age>15000||!copyTickers.rows.length)await refresh();
+  else if(age>3000)void refresh();
   const t=copyTickers.rows.find(x=>x.symbol===venueSymbol);return Number(t?.lastPrice)||null},
  // Candles for the volume-confirmed zone break (Binance, or the venue for coins not on Binance).
  candlesOf:(symbol,interval,limit)=>state.activeSet.has(symbol)||!chartVenueFor(symbol)?klines(symbol,interval,limit):venueKlines(symbol,interval,limit),
@@ -548,6 +552,12 @@ try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy
 // First balance / positions read soon after start (the panel shows the copy account's balance).
 if(COPY.enabled)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{})},8000).unref?.();
 if(COPY.enabled)setInterval(()=>{void copyTrader.reconcile().catch(e=>console.error('[COPY RECONCILE]',e.message))},60000).unref?.();
+// Keep BingX tickers warm while copy trading is armed so markOf() returns in 0ms on incoming copy cards.
+if(COPY.enabled)setInterval(()=>{
+ if(!(copyTrader?.armed||(COPY.mode==='TESTNET'&&live?.armed)))return;
+ if(copyTickers.pending||(copyTickers.at&&Date.now()-copyTickers.at<3800))return;
+ copyTickers.pending=venueQuotes.clients.BINGX.tickers().then(rows=>{copyTickers={at:Date.now(),rows}},()=>{}).finally(()=>{copyTickers.pending=null});
+},4000).unref?.();
 let historyRefresh=null;
 function refreshTradeHistory({recheck=false}={}){
  if(historyRefresh)return historyRefresh;
