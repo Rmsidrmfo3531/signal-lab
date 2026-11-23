@@ -409,6 +409,22 @@ test('B7 relaxed pre-filters capture high-scoring setups with 2.4x volume & 40% 
  assert.equal(ex.store.open[0].evidence.climaxVolumeRatio,2.4);
 });
 
+test('120-coin default universe and scalpDetailsHTML hides unused retracement targets when SCALP_STOP_LOSS=off',()=>{
+ const cfg=scalpExecConfig({});
+ assert.equal(cfg.universeSize,120);
+
+ const base={
+  mode:'TESTNET',credentials:true,armed:true,
+  settings:{...cfg,...SCALP_EXEC_SETTINGS,minScore:65,repeatedScaleIn:true},
+  stats:{bySide:{},byKind:{},byGrade:{}},
+ };
+ const offHtml=scalpDetailsHTML({...base,settings:{...base.settings,stopLossEnabled:false}});
+ assert.doesNotMatch(offHtml,/목표 38\.2%\/50%\/61\.8% 되돌림/);
+
+ const onHtml=scalpDetailsHTML({...base,settings:{...base.settings,stopLossEnabled:true}});
+ assert.match(onHtml,/목표 38\.2%\/50%\/61\.8% 되돌림 \(40\/35\/25%\)/);
+});
+
 
 
 

@@ -20,6 +20,11 @@ test('RealTrailingManager defaults to OFF and dispatches no actions until explic
  });
  assert.equal(rt.status().enabled,false);
  assert.equal(REAL_TRAILING_DEFAULTS.enabled,false);
+ assert.equal(REAL_TRAILING_DEFAULTS.partialLockRoePct,15);
+ assert.equal(REAL_TRAILING_DEFAULTS.partialClosePct,50);
+ assert.equal(REAL_TRAILING_DEFAULTS.trailActivateRoePct,15);
+ assert.equal(REAL_TRAILING_DEFAULTS.trailPullbackRatio,30);
+ assert.equal(REAL_TRAILING_DEFAULTS.minLockRoePct,5);
  assert.equal(rt.status().applyToManual,true);
  assert.equal(rt.status().applyToCopy,false);
  const res=await rt.evaluate([pos({roePct:25})]);
@@ -129,13 +134,13 @@ test('RealTrailingManager handles HALF_QTY_TOO_SMALL fallback, excludedSymbols, 
   rt.configure({toggleExcludeSymbol:'ETHUSDT'});
   assert.deepEqual(rt.status().excludedSymbols,['BTCUSDT']);
 
-  // HALF_QTY_TOO_SMALL marks partialTaken=true and falls back to full trailing (10x -> -1% fee)
-  await rt.evaluate([pos({symbol:'ETHUSDT',roePct:13})],t);
+  // HALF_QTY_TOO_SMALL marks partialTaken=true and falls back to full trailing (10x -> -1% fee, default +15% trigger / 30% pullback)
+  await rt.evaluate([pos({symbol:'ETHUSDT',roePct:17})],t); // net 16% >= 15%
   assert.equal(rt.status().tracked['ETHUSDT|LONG'].partialTaken,true);
   t+=20_000;
-  await rt.evaluate([pos({symbol:'ETHUSDT',roePct:17})],t); // peak net ROE = 16%
+  await rt.evaluate([pos({symbol:'ETHUSDT',roePct:21})],t); // peak net ROE = 20% -> 30% pullback stop = 14%
   t+=20_000;
-  const res=await rt.evaluate([pos({symbol:'ETHUSDT',roePct:12.5})],t); // net 11.5% <= 12% stop
+  const res=await rt.evaluate([pos({symbol:'ETHUSDT',roePct:14.5})],t); // net 13.5% <= 14% stop
   assert.equal(res.length,1);
   assert.equal(res[0].action,'CLOSE_ALL');
 
