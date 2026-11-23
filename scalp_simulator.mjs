@@ -3,6 +3,8 @@
 // under alternate parameter combinations without placing orders or mutating ledgers.
 // Pure functions, zero network / I/O.
 
+import {scoreScalpSetup} from './scalp_reversal.mjs';
+
 const DAY_MS=86400000;
 const r2=v=>Math.round(Number(v)*100)/100;
 const r4=v=>Math.round(Number(v)*1e4)/1e4;
@@ -14,6 +16,7 @@ const SOFT_SKIP_REASONS=new Set([
  'SIDE_OFF',
  'SHORT_NOT_TRADED',
  'ZONE_NOT_TOUCHED',
+ 'SCORE_BELOW_MINIMUM',
 ]);
 
 export const SCALP_SIM_PRESETS=Object.freeze([
@@ -33,9 +36,10 @@ export function normalizeSimParams(raw={}){
  const zs=raw.zoneSignals;
  const zoneSignals=zs===undefined||zs===null||zs===''?true:!['off','false','0','no'].includes(String(zs).trim().toLowerCase());
  const minNetRR=+clamp(raw.minNetRR,0,0,3).toFixed(2);
+ const minScore=Math.round(clamp(raw.minScore,0,0,100));
  const rawSides=Array.isArray(raw.sides)?raw.sides:typeof raw.sides==='string'&&raw.sides.trim()?raw.sides.split(/[\s,]+/):['LONG','SHORT'];
  const sides=['LONG','SHORT'].filter(s=>rawSides.map(x=>String(x).toUpperCase()).includes(s));
- return {days,minMovePct,trendMode,zoneSignals,minNetRR,sides:sides.length?sides:['LONG','SHORT']};
+ return {days,minMovePct,trendMode,zoneSignals,minNetRR,minScore,sides:sides.length?sides:['LONG','SHORT']};
 }
 
 function tradeStats(rows){
@@ -58,6 +62,14 @@ function tradeStats(rows){
 
 function sigKey(x){return `${String(x?.symbol||'').toUpperCase()}|${String(x?.direction||'LONG').toUpperCase()}|${Number(x?.barAt)||0}`}
 
+function signalScoreOf(sig,dir,rr){
+ const saved=num(sig?.score?.score??sig?.scalpScore?.score);
+ if(saved!==null)return saved;
+ if(!sig?.evidence)return null;
+ const inferred4h=sig.trend4h??(sig.withTrend===true?(dir==='LONG'?'up':'down'):sig.withTrend===false?(dir==='LONG'?'down':'up'):null);
+ return scoreScalpSetup({direction:dir,evidence:sig.evidence,trend4h:inferred4h,btcTrend4h:sig.btcTrend4h??null,netRR:rr}).score;
+}
+
 function evaluateSignal(sig,params){
  const dir=String(sig.direction||'LONG').toUpperCase();
  if(!params.sides.includes(dir))return {pass:false,block:'SIM_SIDE_OFF'};
@@ -72,6 +84,11 @@ function evaluateSignal(sig,params){
  if(params.minNetRR>0){
   if(rr!==null&&rr<params.minNetRR)return {pass:false,block:'SIM_RR_BELOW_MIN'};
   if(rr===null&&sig.reason==='TP1_NET_RR_BELOW_MINIMUM')return {pass:false,block:'SIM_RR_BELOW_MIN'};
+ }
+ if(params.minScore>0){
+  const sc=signalScoreOf(sig,dir,rr);
+  if(sc!==null&&sc<params.minScore)return {pass:false,block:'SIM_SCORE_BELOW_MIN'};
+  if(sc===null&&sig.reason==='SCORE_BELOW_MINIMUM')return {pass:false,block:'SIM_SCORE_BELOW_MIN'};
  }
  return {pass:true,block:null};
 }
@@ -109,7 +126,8 @@ function runOne(dedupSignals,windowTrades,tradeByKey,params){
   if(filteredTradeKeys.has(key)){removedTrades.push(tr);continue}
   const ev=evaluateSignal({
    symbol:tr.symbol,direction:tr.direction,barAt:tr.barAt,kind:tr.kind||'MOVE_REVERSAL',
-   evidence:tr.evidence,trend4h:tr.trend4h,withTrend:tr.withTrend,plan:tr.plan,zone:tr.zone,entered:true,reason:null,
+   evidence:tr.evidence,trend4h:tr.trend4h,btcTrend4h:tr.btcTrend4h??null,withTrend:tr.withTrend,
+   score:tr.score??tr.scalpScore??null,plan:tr.plan,zone:tr.zone,entered:true,reason:null,
   },params);
   if(ev.pass)matchedTrades.push(tr);else removedTrades.push(tr);
  }
