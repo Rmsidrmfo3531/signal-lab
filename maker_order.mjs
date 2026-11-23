@@ -115,6 +115,10 @@ export async function placeMakerThenMarket({
   if(e?.code==='ENTRY_NOT_SENT'||!isPostOnlyReject(e)){
    // If blocked by pre-send safety gate, network/rate-limit, or margin/auth/position-limit error, rethrow cleanly.
    if(e?.code==='ENTRY_NOT_SENT'||e?.code==='NETWORK_UNREACHABLE'||e?.code==='HTTP_429'||/101429|insufficient|margin|balance|auth|key|leverage|limit|circuit/i.test(String(e?.code||'')+' '+String(e?.message||'')))throw e;
+   // Only a venue refusal (an error code in the answer, an HTTP 4xx) means the PostOnly order is not on the book.
+   // Anything else (HTTP 5xx, an unreadable answer) may have left it resting: a full MARKET order on top of it could
+   // double the position, so it is rethrown (review 2026-11-23).
+   if(!/^(?:VENUE_ERROR_|HTTP_4\d\d$)/.test(String(e?.code||'')))throw e;
   }
   const m=await sendMarket(qty,marketCid);
   return {executionMode:'MARKET',orderId:m.orderId,makerOrderId:null,marketOrderId:m.orderId,filledQty:m.filledQty,makerQty:0,marketQty:m.filledQty,avg:m.avg,status:m.status,receipt:m.res,makerFallbackReason:e?.code||'POST_ONLY_REJECTED'};
@@ -159,7 +163,8 @@ export async function placeMakerThenMarket({
  const makerQty=Math.max(0,confirmedQty??(status==='FILLED'?qty:0));
  const makerAvg=pos(latest?.avgPrice)??limitPx;
  const minQ=pos(minQuantity)??0;
- const remRaw=Math.max(0,qty-makerQty);
+ // toPrecision: 0.3 - 0.1 is 0.19999999999999998 in floating point, which rounds down a whole step (review 2026-11-23).
+ const remRaw=Math.max(0,Number((qty-makerQty).toPrecision(12)));
  const remQty=roundQtyDown(remRaw,quantityStep);
 
  if(remQty<=0||(minQ>0&&remQty<minQ)){
@@ -179,7 +184,16 @@ export async function placeMakerThenMarket({
  }
 
  // Fallback MARKET strictly for the remaining unfilled quantity.
- const m=await sendMarket(remQty,marketCid);
+ let m;
+ try{m=await sendMarket(remQty,marketCid)}
+ catch(e){
+  if(!(makerQty>0))throw e;
+  // The PostOnly part is filled: it is reported, never thrown away as "nothing filled" (a caller would drop a real
+  // position from its ledger, e.g. a remainder under the venue minimum value, review 2026-11-23). The remainder's
+  // own outcome (marketError) is left to the caller's position read.
+  return {executionMode:'MAKER',orderId:makerId,makerOrderId:makerId,marketOrderId:null,filledQty:makerQty,makerQty,marketQty:0,
+   avg:makerAvg,status:status||'CANCELED',limitPrice:limitPx,receipt:latest,marketError:e?.code||e?.message||'MARKET_FAILED',marketClientOrderId:marketCid};
+ }
  const totalFilled=makerQty+m.filledQty;
  const avg=makerQty>0&&m.avg&&makerAvg
   ?+((makerQty*makerAvg+m.filledQty*m.avg)/totalFilled).toFixed(10)
