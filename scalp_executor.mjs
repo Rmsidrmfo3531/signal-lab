@@ -40,8 +40,9 @@ import {placeMakerThenMarket} from './maker_order.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
 export const SCALP_EXEC_MODES=Object.freeze(['OFF','TESTNET']);
-// User 2026-11-20/23: move = 3.5 %, minMoveAtr = 3 (40-coin backtest: 3.0~4.5x ATR had highest PF while >6x blowoffs underperformed).
-export const SCALP_EXEC_SETTINGS=Object.freeze({minMovePct:3.5,minMoveAtr:3,retracements:Object.freeze([.382,.5,.618]),stopAtr:.25,climaxVolume:3});
+// 40-coin BingX 5m Train/OOS backtest (B7): relax hard pre-filters (vol 2x, RSI 30/70, wick 35%, retrace 35%, ATR 3x)
+// so high-scoring (>=65) reversals are filtered by the 100-point score gate instead of being hard-dropped (2.2x trades, +73% net, Ret/MDD 9.44).
+export const SCALP_EXEC_SETTINGS=Object.freeze({minMovePct:3.5,minMoveAtr:3,retracements:Object.freeze([.382,.5,.618]),stopAtr:.25,climaxVolume:2,rsiExtreme:30,wickShare:.35,maxRetracedBeforeEntry:.35});
 // The backtest's cost assumptions (backtest.mjs BACKTEST_COSTS), the venue's taker fee when higher.
 // Signal kinds (journal, screen badge, report): the 3.5 % move rule, and candidate B at a 4H / 1D volume zone.
 export const SCALP_KINDS=Object.freeze({MOVE:'MOVE_REVERSAL',ZONE:'ZONE_REVERSAL'});

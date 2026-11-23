@@ -377,7 +377,38 @@ test('Combo B profit-max suite: Post-Only maker entry, disabled 15m fallback, an
  assert.match(ui,/Post-Only 메이커 우선 진입/);
  assert.match(ui,/35% 확정 \+ 잔여 65% 러너 트레일링/);
  assert.match(ui,/조기 본전컷 없음/);
+ assert.match(ui,/거래량 2배 · RSI 30\/70 · 꼬리 35%\+/);
 });
+
+test('B7 relaxed pre-filters capture high-scoring setups with 2.4x volume & 40% wick behind the 100-point score gate',async()=>{
+ const cfg=scalpExecConfig({});
+ assert.equal(cfg.settings.climaxVolume,2);
+ assert.equal(cfg.settings.rsiExtreme,30);
+ assert.equal(cfg.settings.wickShare,0.35);
+ assert.equal(cfg.settings.maxRetracedBeforeEntry,0.35);
+
+ // 5.5% drop with 2.4x climax volume (previously hard-rejected by vol<3x) -> now enters with S/A score!
+ const rows=crash({move:5.5,volume:2.4,wick:0.65});
+ const close=Number(rows.at(-1)[4]);
+ const candles5m=[...rows,[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']];
+ const v=mockVenue(close,{fillMaker:true});
+ const ex=new ScalpExecutor({
+  config:{...cfg,scaleIn:false,stopLossEnabled:true},
+  client:v.client,
+  contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
+  tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
+  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?candles5m:[]):up4h(T0),
+  priceOf:async()=>close,markOf:async()=>close,
+  balance:async()=>({equity:3000,available:2900}),
+  now:()=>T0,
+ });
+ ex.arm();
+ await ex.scan();
+ assert.equal(ex.store.open.length,1,'2.4x volume 5.5% aligned reversal passes B7 detector + >=65 score gate');
+ assert.ok(ex.store.open[0].scalpScore.score>=70);
+ assert.equal(ex.store.open[0].evidence.climaxVolumeRatio,2.4);
+});
+
 
 
 
