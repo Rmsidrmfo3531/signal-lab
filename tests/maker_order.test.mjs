@@ -108,11 +108,11 @@ test('executeRealManualOrder uses makerFirst PostOnly when requested and reports
  assert.equal(placed[0].timeInForce,'PostOnly');
 });
 
-test('unprotected testnet scalp enforces emergency -40% ROE cut and 8h underwater max-hold exit',async()=>{
+test('unprotected testnet scalp enforces emergency -40% ROE cut and 4h underwater max-hold exit',async()=>{
  const cfg=scalpExecConfig({});
- assert.equal(cfg.profitOnlyMaxHoldMin,480);
+ assert.equal(cfg.profitOnlyMaxHoldMin,240);
  assert.equal(cfg.emergencyStopRoePct,40);
- assert.equal(cfg.maxScaleInAdds,3);
+ assert.equal(cfg.maxScaleInAdds,2);
  assert.equal(cfg.scanGapMs,120);
 
  const runCase=async({mark,advanceMs,expectedReason})=>{

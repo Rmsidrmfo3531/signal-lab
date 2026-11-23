@@ -864,10 +864,14 @@ export function scalpSimResultHTML(d){
 /** The scalp's own details, collapsed under "단타 신호·건너뜀": rules, 롱 / 숏 totals, last scan, skip reasons, journal. */
 function scalpExitRule(S){
  const hasScore=Number(S.minScore)>0;
- const protection=S.stopLossEnabled===false?`자동 손절·시간 만료 청산 없음${S.repeatedScaleIn?` · 점진 확대 추매(1R→2R→3.5R→5R · 1x/1x/1.5x/2x · 최대 ${esc(S.maxScaleInAdds??3)}회 · IOC 0.35~0.8%${hasScore?'':' · 4H 역추세 50%'} · BTC 급변 방어)`:''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유`;
- const roe=Number(S.minProfitRoePct),fallbackMin=S.earlyTakeProfitMin??15;
- return protection+(S.profitHoldTargetMin?(roe>0?` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 5초 주기 점검으로 순수익률(ROE) +${esc(roe)}% 도달 시 50% 확정 + 잔여 50% 트레일링 · 추매 포지션은 +6% 50% 확정 후 30% 트레일링(24시간+3회 추매 시 +2.5% 회전, 5% 미만 먼지 자동 정리) · 비추매 ${esc(fallbackMin)}분 경과 시 비용 충당 익절`:` · ${esc(S.profitHoldTargetMin)}분 내 익절 목표 · 조기 전량 익절은 진입 ${esc(fallbackMin)}분부터 · 예상 비용을 넘기는 가격에서 지정가 청산`):
-  S.earlyTakeProfitMin?` · ${esc(S.earlyTakeProfitMin)}분 경과 후 예상 비용을 충당하는 가격에 지정가 익절`:'');
+ const holdCut=Number(S.profitOnlyMaxHoldMin)>0?` · 물림 ${esc(S.profitOnlyMaxHoldMin)}분 컷`:'';
+ const makerTag=S.makerEntry?' · Post-Only 메이커 우선 진입':'';
+ const protection=S.stopLossEnabled===false?`자동 손절 없음${holdCut}${makerTag}${S.repeatedScaleIn?` · 점진 확대 추매(1R→2R · 1x/1x · 최대 ${esc(S.maxScaleInAdds??2)}회 · IOC 0.35~0.8%${hasScore?'':' · 4H 역추세 50%'} · BTC 급변 방어)`:''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유${makerTag}`;
+ const roe=Number(S.minProfitRoePct),fallbackMin=S.earlyTakeProfitMin??0;
+ const takePct=Math.round((Number(S.partialTakeFrac)||0.35)*100),runnerPct=100-takePct;
+ const fbText=fallbackMin>0?` · 비추매 ${esc(fallbackMin)}분 경과 시 비용 충당 익절`:' · 조기 본전컷 없음(러너 끝까지 추적)';
+ return protection+(S.profitHoldTargetMin?(roe>0?` · 5초 주기 점검으로 순수익률(ROE) +${esc(roe)}% 도달 시 ${esc(takePct)}% 확정 + 잔여 ${esc(runnerPct)}% 러너 트레일링 · 추매 포지션은 +6% 50% 확정 후 30% 트레일링${fbText}`:` · 조기 전량 익절은 진입 ${esc(fallbackMin)}분부터 · 예상 비용을 넘기는 가격에서 지정가 청산`):
+  fallbackMin>0?` · ${esc(fallbackMin)}분 경과 후 예상 비용을 충당하는 가격에 지정가 익절`:'');
 }
 
 export function scalpDetailsHTML(s){

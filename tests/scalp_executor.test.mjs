@@ -75,7 +75,7 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fi
   fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(Math.abs(amt));o.avgPrice=String(price??o.stopPrice);reduce(Number(o.executedQty))}};
 }
 function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash,budget=null,zone=null}={}){
- return new ScalpExecutor({config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,minScore:0,highScoreSizeMult:1,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
+ return new ScalpExecutor({config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,minScore:0,highScoreSizeMult:1,riskPct:.5,makerEntry:false,minProfitRoePct:10,partialTakeFrac:.5,earlyFallbackMin:15,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
   candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
   balance:async()=>typeof funds==='function'?funds():funds,gate,isBusy,directory:dir,now:()=>clock.t,budget,...(zone?{zoneCandles:zone}:{})});
 }
@@ -304,13 +304,13 @@ test('config: TESTNET or OFF only — LIVE is refused; settings as the user set 
  const c=scalpExecConfig({});assert.equal(c.mode,'TESTNET');assert.equal(c.refused,null);
  assert.equal(c.stopLossEnabled,false);
  assert.equal(c.settings.minMovePct,3.5);assert.equal(SCALP_EXEC_SETTINGS.minMovePct,3.5);assert.equal(scalpExecConfig({SCALP_MIN_MOVE_PCT:'5'}).settings.minMovePct,5);
- assert.equal(c.minProfitRoePct,10);assert.equal(scalpExecConfig({SCALP_MIN_PROFIT_ROE_PCT:'15'}).minProfitRoePct,15);
+ assert.equal(c.minProfitRoePct,15);assert.equal(scalpExecConfig({SCALP_MIN_PROFIT_ROE_PCT:'20'}).minProfitRoePct,20);
  assert.deepEqual(c.settings.retracements,[.382,.5,.618]);assert.equal(c.settings.stopAtr,.25);assert.equal(c.settings.climaxVolume,3);
- assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.5);assert.equal(c.maxOpen,0);assert.equal(scalpExecConfig({SCALP_MAX_OPEN:'5'}).maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'record'}).trendMode,'record');
+ assert.equal(c.maxHoldMs,2*3600000);assert.equal(c.riskPct,.75);assert.equal(c.maxOpen,0);assert.equal(scalpExecConfig({SCALP_MAX_OPEN:'5'}).maxOpen,5);assert.equal(c.dailyLossPct,3);assert.equal(c.trendMode,'record');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'record'}).trendMode,'record');
  assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:' On '}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'true'}).trendMode,'on');assert.equal(scalpExecConfig({SCALP_EXEC_TREND_FILTER:'off'}).trendMode,'off');
  for(const k of ['takerRate','slippageBps','fundingRate'])assert.equal(SCALP_EXEC_COSTS[k],BACKTEST_COSTS[k]);
  const live=scalpExecConfig({SCALP_EXEC_MODE:'LIVE'});assert.equal(live.mode,'OFF');assert.equal(live.refused,'LIVE_REFUSED');
- assert.equal(scalpExecConfig({SCALP_EXEC_MODE:'off'}).mode,'OFF');assert.equal(scalpExecConfig({SCALP_RISK_PCT:'50'}).riskPct,.5,'out-of-range values keep the default');
+ assert.equal(scalpExecConfig({SCALP_EXEC_MODE:'off'}).mode,'OFF');assert.equal(scalpExecConfig({SCALP_RISK_PCT:'50'}).riskPct,.75,'out-of-range values keep the default');
  const v=venue();
  assert.throws(()=>new ScalpExecutor({config:{...c,mode:'LIVE'},client:v.client}),/SCALP_TESTNET_ONLY/);
  assert.throws(()=>new ScalpExecutor({config:c,client:{...v.client,mode:'LIVE'}}),/SCALP_TESTNET_ONLY/);
@@ -334,7 +334,7 @@ test('detection on synthetic closed 5m candles -> plan: 38.2/50/61.8 % targets, 
  assert.equal(detectScalpReversal(crash({move:2.5,wick:.2}),{now:T0,interval:'5m',settings:cfg.settings}).ok,false,'a ~2.7 % drop is below the 3.5 % setting');
  const plan=planScalpOrder({det,price:det.entry+.02,contract:SOL,equity:10000,available:9000,leverage:10,config:cfg});
  assert.equal(plan.ok,true,JSON.stringify(plan));assert.ok(plan.stop<extreme&&plan.entry>plan.stop&&plan.targets[0]>plan.entry);
- assert.ok(Math.abs(plan.riskUSD-50)<.2,'0.5 % of 10,000 at the stop');assert.ok(plan.netRR>=1);
+ assert.ok(Math.abs(plan.riskUSD-75)<.3,'0.75 % of 10,000 at the stop');assert.ok(plan.netRR>=1);
  assert.ok(Math.abs(plan.parts.reduce((a,b)=>a+b,0)-plan.qty)<1e-9);assert.equal(plan.parts[0],Number((Math.floor(plan.qty*100*.4)/100).toFixed(2)));
  assert.deepEqual(planScalpOrder({det,price:det.entry*.994,contract:SOL,equity:10000,leverage:10,config:{...cfg,stopLossEnabled:true}}).reasons,['PRICE_DRIFT'],'0.6 % toward the stop with stop-loss on: skipped');
  assert.equal(planScalpOrder({det,price:det.entry*.994,contract:SOL,equity:10000,leverage:10,config:cfg}).ok,true,'stop-loss off: better price above extreme is allowed');
@@ -631,7 +631,7 @@ test('SHORT detection -> plan: stop above the high (rounded up), 38.2/50/61.8 % 
  assert.equal(plan.ok,true,JSON.stringify(plan));assert.ok(plan.stop>extreme&&plan.stop>=det.stop&&plan.entry<plan.stop);
  assert.ok(Math.abs(plan.stop*10-Math.round(plan.stop*10))<1e-9,'stop on the tick grid');
  assert.ok(plan.targets.every((t,i)=>t<plan.entry&&(i===0||t<plan.targets[i-1])&&t>=det.targets[i]-1e-9),'targets rounded up, toward the entry');
- assert.ok(Math.abs(plan.riskUSD-50)<.6);assert.ok(plan.netRR>=1);
+ assert.ok(Math.abs(plan.riskUSD-75)<.8);assert.ok(plan.netRR>=1);
  assert.deepEqual(planScalpOrder({det,price:PX_S*1.01,contract:SOL,equity:10000,leverage:10,config:{...cfg,stopKeepPct:0}}).reasons,['PRICE_DRIFT']);
  assert.deepEqual(planScalpOrder({det:{...det,stop:det.entry-.05},price:det.entry,contract:SOL,equity:10000,leverage:10,config:cfg}).reasons,['ENTRY_AT_OR_BEYOND_STOP'],'a short stop below the entry');
 });
@@ -913,7 +913,7 @@ const Z1_FAR=blocks([[60,119,121,1],[60,130,131,5]],DAY0,D1);
 const small=()=>crash({move:4,wick:.3}),PX_Z=+(Number(small().at(-1)[4])+.02).toFixed(2);
 function zoneFeed(h4=Z4_TOUCH,d1=Z1_FAR){const calls=[];const fn=async(s,iv,limit)=>{calls.push({iv,limit});const r=iv==='4h'?h4:iv==='1d'?d1:null;
  if(r instanceof Error)throw r;return typeof r==='function'?r():r};fn.calls=calls;return fn}
-const zoneMake=(v,opt={})=>make(v,{rows:small,price:PX_Z,...opt,config:{...scalpExecConfig({SCALP_MIN_MOVE_PCT:'5'}),stopLossEnabled:true,scaleIn:false,minScore:0,highScoreSizeMult:1,...opt.config},zone:opt.zone??zoneFeed()});
+const zoneMake=(v,opt={})=>make(v,{rows:small,price:PX_Z,...opt,config:{...scalpExecConfig({SCALP_MIN_MOVE_PCT:'5'}),stopLossEnabled:true,scaleIn:false,minScore:0,highScoreSizeMult:1,riskPct:.5,makerEntry:false,minProfitRoePct:10,partialTakeFrac:.5,earlyFallbackMin:15,...opt.config},zone:opt.zone??zoneFeed()});
 
 test('매물대 반전: a 2.5 %+ reversal whose low touched a 4H zone enters as ZONE_REVERSAL; the same signal off a zone is skipped',async()=>{
  // With the 3.5 % default minMovePct, a ~4.35 % drop enters directly as MOVE_REVERSAL without needing a zone read.

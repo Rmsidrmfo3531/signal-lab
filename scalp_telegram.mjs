@@ -34,7 +34,8 @@ export function scalpEventText(e){
  if(e.type==='DISARMED')return ['DAILY_LOSS_LIMIT','NO_PROTECTIVE_STOP'].includes(e.reason)?null:`${SCALP_LABEL} 비활성화`;
  if(e.type==='OPENED'){
   const scorePart=Number.isFinite(Number(e.score))?` · 점수 ${e.score}점(${e.grade||''}급${Number(e.sizeMult)>1?` · 비중 ${e.sizeMult}x`:''})`:'';
-  return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}`;
+  const execPart=e.executionMode==='MAKER'?' · 메이커 체결':e.executionMode==='MAKER+MARKET'?' · 메이커+시장가':'';
+  return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${execPart}`;
  }
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
  if(e.type==='SCALE_IN_FILLED'&&e.qty>0){
@@ -42,10 +43,11 @@ export function scalpEventText(e){
   return `➕ ${head} ${side(e)} 추가 진입${e.count>0?` ${e.count}회차`:''}\n수량 +${fmt(e.qty)} · 체결가 ${fmt(e.price)} · 잔여 ${fmt(e.left)}${avgLine}`;
  }
  if(e.type==='PARTIAL_TAKE_PROFIT'&&e.qty>0){
+  const takePct=Number.isFinite(Number(e.takePct))&&Number(e.takePct)>0?Math.round(Number(e.takePct)):50;
   const roePart=Number.isFinite(Number(e.netRoePct))?`현재 ROE ${Number(e.netRoePct)>=0?'+':''}${Number(e.netRoePct).toFixed(1)}%`:'';
   const estPart=Number.isFinite(Number(e.estProfitUSD))?`추정 수익 ${usd(e.estProfitUSD)}`:'';
   const extra=[roePart,estPart].filter(Boolean).join(' · ');
-  return `💰 ${head} ${side(e)} 50% 부분 익절 확정\n청산 ${fmt(e.qty)} · 잔여 ${fmt(e.left)} (러너 트레일링 중)${extra?`\n${extra}`:''}`;
+  return `💰 ${head} ${side(e)} ${takePct}% 부분 익절 확정\n청산 ${fmt(e.qty)} · 잔여 ${fmt(e.left)} (러너 트레일링 중)${extra?`\n${extra}`:''}`;
  }
  if(e.type==='PARTIAL_EXIT')return `🎯 ${head} ${side(e)} 부분 청산\n청산 수량 ${fmt(e.qty)} · 잔여 ${fmt(e.left)}`;
  if(e.type==='CLOSED'){

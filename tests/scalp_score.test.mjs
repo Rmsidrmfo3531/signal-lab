@@ -20,15 +20,28 @@ const ENTRY=Number(crash().at(-1)[4]),PX=+(ENTRY+.02).toFixed(2);
 const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
 const BTC={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',tickSize:'0.1',quantityStep:'0.001',minQuantityBase:'0.001',minNotionalUSDT:5,tradable:true};
 
-function mockVenue(fillAt=PX){
+function mockVenue(fillAt=PX,{fillMaker=true}={}){
  const calls=[];let amt=0,avg=0,id=1;
  const client={mode:'TESTNET',
   positionMode:async()=>({dualSidePosition:false}),marginType:async()=>({marginType:'CROSSED'}),setMarginType:async()=>({}),
   leverage:async()=>({maxLongLeverage:20,maxShortLeverage:20}),setLeverage:async(s,side,l)=>({leverage:l}),
   positions:async()=>amt!==0?[{symbol:'SOL-USDT',positionSide:'BOTH',positionAmt:String(amt),avgPrice:String(avg),markPrice:String(avg),unrealizedProfit:'0'}]:[],
   openOrders:async()=>({orders:[]}),getOrder:async()=>({order:null}),cancelOrder:async()=>({}),
-  placeOrder:async(p)=>{calls.push(p);if(p.type==='MARKET'){const q=Number(p.quantity);avg=fillAt;amt=p.side==='SELL'?-q:q;return {order:{orderId:String(id++),status:'FILLED',executedQty:String(q),avgPrice:String(avg)}}}return {order:{orderId:String(id++),status:'NEW'}}}};
- return {client,calls};
+  placeOrder:async(p)=>{calls.push(p);
+   if(p.type==='LIMIT'&&p.timeInForce==='PostOnly'){
+    if(!fillMaker)throw Object.assign(Error('would immediately match'),{code:'101415'});
+    const q=Number(p.quantity),px=Number(p.price)||fillAt;
+    avg=px;amt=p.side==='SELL'?-q:q;
+    return {order:{orderId:String(id++),status:'FILLED',executedQty:String(q),avgPrice:String(px)}};
+   }
+   if(p.type==='LIMIT'&&p.timeInForce==='IOC'&&p.reduceOnly){
+    const q=Number(p.quantity);
+    amt=amt>0?+Math.max(0,amt-q).toFixed(8):+Math.min(0,amt+q).toFixed(8);
+    return {order:{orderId:String(id++),status:'FILLED',executedQty:String(q),avgPrice:String(Number(p.price)||fillAt)}};
+   }
+   if(p.type==='MARKET'){const q=Number(p.quantity);avg=fillAt;amt=p.side==='SELL'?-q:q;return {order:{orderId:String(id++),status:'FILLED',executedQty:String(q),avgPrice:String(avg)}}}
+   return {order:{orderId:String(id++),status:'NEW'}}}};
+ return {client,calls,get amt(){return amt},set amt(v){amt=v}};
 }
 
 test('SCALP_SCORE_WEIGHTS sum strictly to 100 in 5-point increments and defaults match calibrated values',()=>{
@@ -308,5 +321,63 @@ test('per-symbol loss cooldown blocks rapid re-entry after recent loss or 2 same
  const det1=scalpDetailsHTML(st1);
  assert.match(det1,/점수 분포: 통과\(65점\+\) <b>1건<\/b> · 턱걸이 차단\(60점대\) <b>1건<\/b> · 하위 차단\(55점 이하\) <b>1건<\/b>/);
 });
+
+test('Combo B profit-max suite: Post-Only maker entry, disabled 15m fallback, and +15% ROE 35% partial TP / 65% runner',async()=>{
+ const cfg=scalpExecConfig({});
+ assert.equal(cfg.riskPct,0.75);
+ assert.equal(cfg.minProfitRoePct,15);
+ assert.equal(cfg.partialTakeFrac,0.35);
+ assert.equal(cfg.earlyFallbackMin,0);
+ assert.equal(cfg.profitOnlyMaxHoldMin,240);
+ assert.equal(cfg.maxScaleInAdds,2);
+ assert.equal(cfg.makerEntry,true);
+
+ let now=T0,mark=PX;
+ const v=mockVenue(PX,{fillMaker:true});
+ const ex=new ScalpExecutor({
+  config:{...cfg,scaleIn:true,stopLossEnabled:false},
+  client:v.client,
+  contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
+  tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
+  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:[]):up4h(now),
+  priceOf:async()=>mark,markOf:async()=>mark,
+  balance:async()=>({equity:3000,available:2900}),
+  now:()=>now,
+ });
+ ex.arm();
+ await ex.scan();
+ assert.equal(ex.store.open.length,1);
+ const p=ex.store.open[0];
+ assert.equal(p.executionMode,'MAKER','default Post-Only maker entry fills as MAKER');
+ const opened=ex.store.events.find(e=>e.type==='OPENED');
+ assert.match(scalpEventText(opened),/메이커 체결/);
+ const initialSize=p.size;
+
+ // Advance 25 minutes with +2% ROE: must NOT prematurely close (15m fallback is disabled!)
+ now+=25*60000;
+ mark=+(p.avg*1.0035).toFixed(4);
+ v.client.positions=async()=>[{symbol:'SOL-USDT',positionSide:'BOTH',positionAmt:String(v.amt),avgPrice:String(p.avg),markPrice:String(mark),unrealizedProfit:String((mark-p.avg)*v.amt)}];
+ await ex.reconcile();
+ assert.equal(ex.store.open.length,1,'must not exit at +2% ROE after 25m when earlyFallbackMin=0');
+ assert.equal(v.calls.filter(c=>c.type==='LIMIT'&&c.timeInForce==='IOC'&&c.reduceOnly==='true').length,0);
+
+ // Rally to +16% gross (~+15.6% Net ROE at 10x): must lock in 35% partial TP and keep 65% runner!
+ now+=60000;
+ mark=+(p.avg*1.017).toFixed(4);
+ await ex.reconcile();
+ const partialEvt=ex.store.events.find(e=>e.type==='PARTIAL_TAKE_PROFIT');
+ assert.ok(partialEvt,'+15% Net ROE triggers 35% partial take-profit');
+ assert.equal(partialEvt.takePct,35);
+ assert.ok(Math.abs(partialEvt.qty-initialSize*0.35)<0.05,`expected ~35% partial qty: ${partialEvt.qty} vs ${initialSize}`);
+ assert.match(scalpEventText(partialEvt),/35% 부분 익절 확정/);
+
+ // Verify UI rules reflect Combo B accurately
+ const ui=scalpDetailsHTML(ex.status());
+ assert.match(ui,/물림 240분 컷/);
+ assert.match(ui,/Post-Only 메이커 우선 진입/);
+ assert.match(ui,/35% 확정 \+ 잔여 65% 러너 트레일링/);
+ assert.match(ui,/조기 본전컷 없음/);
+});
+
 
 
