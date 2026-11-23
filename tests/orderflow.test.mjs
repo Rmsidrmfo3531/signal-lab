@@ -296,3 +296,87 @@ test('rankOrderflowAnomalies ranks OI flush, strong CVD flips, divergences and r
   assert.match(html, /data-of-radar-refresh/);
 });
 
+test('FireCharts engine builds 4-cohort real-trade CVD (Normalized & Absolute), liquidity heatmap, and FireCharts SVG', async () => {
+  const {
+    buildTradeCohortSeries,
+    buildHistoricalCohortSeries,
+    buildLiquidityHeatmap,
+    recordOrderbookSnapshot,
+    getOrderbookSnapshots,
+    clearFirechartHistory,
+  } = await import('../firechart.mjs');
+  const { firechartSvg } = await import('../public/orderflow_ui.js');
+
+  clearFirechartHistory();
+  // Real signed trade ticks spanning retail (<$1K), mid ($1K-$10K), large ($10K-$100K), whale ($100K+)
+  const trades = [];
+  for (let i = 0; i < 80; i++) {
+    const t = BASE_T + i * 5000;
+    trades.push({ t, price: 100 + i * 0.02, quoteUsd: 400, isBuy: i % 3 !== 0 }); // retail
+    trades.push({ t: t + 500, price: 100 + i * 0.02, quoteUsd: 3500, isBuy: i % 2 === 0 }); // mid
+    if (i % 4 === 0) trades.push({ t: t + 1000, price: 100 + i * 0.02, quoteUsd: 25_000, isBuy: true }); // large
+    if (i % 16 === 0) trades.push({ t: t + 1500, price: 100 + i * 0.02, quoteUsd: 180_000, isBuy: i > 30 }); // whale step
+  }
+  const realCohorts = buildTradeCohortSeries(trades, { buckets: 40 });
+  assert.equal(realCohorts.cohortMode, 'REAL_TRADES');
+  assert.equal(realCohorts.thresholds.mode, 'MAJOR');
+  assert.ok(realCohorts.series.length >= 12);
+  // Every normalized point must sit in [0, 1]
+  for (const pt of realCohorts.series) {
+    for (const k of ['retail', 'mid', 'large', 'whale']) {
+      assert.ok(pt.norm[k] >= 0 && pt.norm[k] <= 1, `${k} norm out of bounds: ${pt.norm[k]}`);
+    }
+  }
+  assert.ok(realCohorts.latest.abs.large > 0, 'large cohort net positive');
+
+  // Historical decomposition + live L2 orderbook heatmap + snapshot recorder
+  const candles = makeCandles(36, i => ({
+    o: 100 + i * 0.1, h: 101 + i * 0.1, l: 99 + i * 0.1, c: 100.2 + i * 0.1,
+    v: i === 20 ? 8000 : 1000, q: i === 20 ? 800_000 : 100_000,
+    trades: i === 20 ? 120 : 400,
+    buyVol: i === 20 ? 600_000 : 52_000, sellVol: i === 20 ? 200_000 : 48_000,
+    delta: i === 20 ? 400_000 : 4_000,
+  }));
+  const histCohorts = buildHistoricalCohortSeries(candles);
+  assert.equal(histCohorts.cohortMode, 'ESTIMATED_BY_BAR_SIZE');
+  assert.ok(histCohorts.latest.abs.whale > 0, 'whale impulse triggers on high-intensity bar');
+
+  const book = {
+    bids: [{ p: 101.5, usd: 450_000 }, { p: 100.5, usd: 920_000 }],
+    asks: [{ p: 104.2, usd: 1_100_000 }, { p: 105.0, usd: 600_000 }],
+  };
+  recordOrderbookSnapshot('ORCAUSDT', book, BASE_T + 30 * I5);
+  assert.equal(getOrderbookSnapshots('ORCAUSDT').length, 1);
+
+  const hm = buildLiquidityHeatmap({ candles, orderbook: book, snapshots: getOrderbookSnapshots('ORCAUSDT') });
+  assert.equal(hm.hasLiveBook, true);
+  assert.equal(hm.snapshotCount, 1);
+  assert.ok(hm.liveWalls.length >= 2);
+  assert.ok(hm.cells.length > 0);
+
+  // Render FireCharts SVG in both Normalized & Absolute modes
+  const mockData = {
+    symbol: 'ORCAUSDT',
+    range: 'LIVE',
+    source: 'GATEIO',
+    series: candles,
+    firechart: { range: 'LIVE', labelKo: '실시간', cohortMode: 'REAL_TRADES', bookSource: 'GATEIO', cohorts: realCohorts, heatmap: hm },
+  };
+  const svgNorm = firechartSvg(mockData, { cvdMode: 'normalized', minPct: 80, maxPct: 99 });
+  assert.match(svgNorm, /<svg class="of-fc-svg"/);
+  assert.match(svgNorm, /Normalized CVD \(0~1\)/);
+  assert.match(svgNorm, /fcFireScale/);
+  assert.match(svgNorm, /<path d="M /); // stepped whale red line
+
+  const svgAbs = firechartSvg(mockData, { cvdMode: 'absolute', minPct: 90, maxPct: 99 });
+  assert.match(svgAbs, /Absolute CVD \(USD\)/);
+
+  const page = orderflowHTML({ ...mockData, ok: true, price: { mark: 103.7 }, cvd: {}, oi: {}, ratios: {}, funding: {}, liquidations: {}, liquidationMap: { above: [], below: [] }, scalpSignal: {} }, { cvdMode: 'normalized', minPct: 93, maxPct: 99 });
+  assert.match(page, /Volume Percentiles:/);
+  assert.match(page, /Normalized CVD/);
+  assert.match(page, /Absolute CVD/);
+  assert.match(page, /data-of-range="1M"/);
+  clearFirechartHistory();
+});
+
+
