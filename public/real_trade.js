@@ -756,14 +756,28 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
     if(sum)sum.textContent=`${symDisplay()} ${fmtPx(state.info?.price)} · 전 종목 드롭다운 · 차트 직접 주문 · 미체결 ${state.openOrders.length}건 · 가용 ${fmtUsd(state.availableUSD)}`;
    }
   },
-  prefill({symbol,leverage,marginMode}={}){
+  prefill({symbol,leverage,marginMode,orderType,limitPrice,tpPrice,slPrice,note}={}){
    if(!state.visible)return;
    state.open=true;state.dropdownOpen=false;
    if(symbol)state.symbol=displaySymbol(symbol);
    if(Number(leverage)>=1)state.leverage=Math.round(Number(leverage));
    if(['CROSSED','ISOLATED'].includes(String(marginMode||'').toUpperCase()))state.marginMode=String(marginMode).toUpperCase();
-   state.limitPrice='';state.selectedPrice=null;state.candles=[];
-   state.msg='';state.msgErr=false;
+   const normType=String(orderType||'').toUpperCase();
+   if(['MARKET','LIMIT'].includes(normType))state.orderType=normType;
+   const lp=Number(limitPrice);
+   if(Number.isFinite(lp)&&lp>0){
+    state.orderType='LIMIT';
+    state.limitPrice=String(+lp.toPrecision(6));
+    state.selectedPrice=lp;
+   }else{
+    state.limitPrice='';state.selectedPrice=null;
+   }
+   const tp=Number(tpPrice);
+   if(Number.isFinite(tp)&&tp>0)state.tpPrice=String(+tp.toPrecision(6));
+   const sl=Number(slPrice);
+   if(Number.isFinite(sl)&&sl>0)state.slPrice=String(+sl.toPrecision(6));
+   state.candles=[];
+   state.msg=note?String(note):'';state.msgErr=false;
    render();
    if(!state.markets.length)void fetchMarkets();
    void fetchInfo(state.symbol);

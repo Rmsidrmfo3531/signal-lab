@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {RealTrailingManager,REAL_TRAILING_DEFAULTS} from '../real_trailing.mjs';
+import {RealTrailingManager,REAL_TRAILING_DEFAULTS,REAL_TRAILING_BACKTEST_PRESET} from '../real_trailing.mjs';
 import {copyHTML,venuePositionsHTML} from '../public/live_control.js';
 
 const pos=(overrides={})=>({
@@ -181,4 +181,40 @@ test('Real-account UI renders trailing panel, live peak badges, and per-symbol e
  assert.match(h,/data-trail-toggle="BTCUSDT"/);
  const vp=venuePositionsHTML(liveCopy,[]);
  assert.match(vp,/트레일 포함/);
+ assert.match(h,/data-real-trailing-preset/);
 });
+
+test('RealTrailingManager backtest preset applies +16% Net ROE, 25% partial close, and 28% runner pullback cleanly',async()=>{
+ let t=1_700_000_000_000;
+ const calls=[],msgs=[];
+ const rt=new RealTrailingManager({
+  now:()=>t,
+  executeAction:async a=>{
+   calls.push(a);
+   if(a.action==='BREAKEVEN_STOP')return {ok:true,stopPrice:3000};
+   return {ok:true};
+  },
+  sendText:async m=>{msgs.push(m)},
+ });
+ // Applying preset keeps enabled=false (never enables auto-closing silently)
+ const s0=rt.configure({applyPreset:true});
+ assert.equal(s0.enabled,false);
+ assert.equal(s0.partialLockRoePct,REAL_TRAILING_BACKTEST_PRESET.partialLockRoePct);
+ assert.equal(s0.partialClosePct,25);
+ assert.equal(s0.trailActivateRoePct,16);
+ assert.equal(s0.trailPullbackRatio,28);
+ assert.equal(s0.minLockRoePct,5);
+ assert.equal(s0.autoBreakeven,true);
+
+ // Enable and hit +17.5% gross (+16.5% net at 10x -> >= +16% trigger) -> 25% partial lock-in + 75% runner!
+ rt.configure({enabled:true});
+ const a1=await rt.evaluate([pos({roePct:17.5,unrealized:40})],t);
+ assert.equal(a1.length,1);
+ assert.equal(a1[0].action,'CLOSE_HALF');
+ assert.equal(a1[0].closePct,25);
+ assert.equal(calls[0].closePct,25);
+ assert.match(msgs[0],/25% 부분 익절 확정/);
+ assert.match(msgs[0],/잔여 75% 고점 대비 28% 트레일링 추적 중/);
+ assert.match(msgs[0],/추정 실현 \+\$10\.00/);
+});
+

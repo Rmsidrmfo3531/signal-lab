@@ -22,6 +22,16 @@ export const REAL_TRAILING_DEFAULTS=Object.freeze({
  excludedSymbols:Object.freeze([]),
 });
 
+// Backtest-validated runner maximization preset (+16% Net ROE · 25% partial lock · 28% runner pullback)
+export const REAL_TRAILING_BACKTEST_PRESET=Object.freeze({
+ partialLockRoePct:16,
+ partialClosePct:25,
+ trailActivateRoePct:16,
+ trailPullbackRatio:28,
+ minLockRoePct:5,
+ autoBreakeven:true,
+});
+
 const ACTION_COOLDOWN_MS=15000;
 const MIN_PULLBACK_ROE=2.0;
 const err=msg=>Object.assign(Error(msg),{code:'INVALID_REAL_TRAILING',httpStatus:400});
@@ -79,6 +89,7 @@ export class RealTrailingManager{
  configure(patch={}){
   if(!patch||typeof patch!=='object'||Array.isArray(patch))throw err('JSON object required');
   const next={...this.store};
+  if(patch.applyPreset===true)Object.assign(next,REAL_TRAILING_BACKTEST_PRESET);
   for(const k of ['enabled','applyToManual','applyToCopy','autoBreakeven','skipTradfi']){
    if(Object.hasOwn(patch,k)){
     if(typeof patch[k]!=='boolean')throw err(`${k} must be a boolean`);
@@ -159,10 +170,12 @@ export class RealTrailingManager{
     }
     if(now-st.lastActionAt<ACTION_COOLDOWN_MS)continue;
 
-    // Step 1: 50% partial profit lock-in + optional breakeven stop on remaining 50%
+    // Step 1: Partial profit lock-in (e.g. 25% or 50%) + optional breakeven stop on remaining runner
     if(cfg.partialClosePct>0&&!st.partialTaken&&roe>=cfg.partialLockRoePct){
      st.lastActionAt=now;
-     const res=await this.executeAction({symbol:p.symbol,direction:dir,action:'CLOSE_HALF'}).catch(e=>({ok:false,error:e?.code||e?.message}));
+     const partPct=Math.max(1,Math.min(99,Math.round(Number(cfg.partialClosePct)||50)));
+     const remPct=100-partPct;
+     const res=await this.executeAction({symbol:p.symbol,direction:dir,action:'CLOSE_HALF',closePct:partPct}).catch(e=>({ok:false,error:e?.code||e?.message}));
      if(res?.ok){
       st.partialTaken=true;
       let beLine='';
@@ -170,12 +183,12 @@ export class RealTrailingManager{
        const beRes=await this.executeAction({symbol:p.symbol,direction:dir,action:'BREAKEVEN_STOP'}).catch(()=>({ok:false}));
        if(beRes?.ok){st.breakevenPlaced=true;beLine=`\n🛡️ 잔여 물량 본전 스탑 자동 설정 (${beRes.stopPrice})`}
       }
-      const estHalf=Number.isFinite(Number(p.unrealized))?Number(p.unrealized)*0.5:null;
-      const msg=`💰 [실계좌 자동 익절] ${disp} ${sideKo(dir)} 50% 부분 익절 확정\n순 ROE +${roe.toFixed(1)}% (수수료 -${feeRoePct.toFixed(1)}% 반영) · 추정 실현 ${money(estHalf)}\n잔여 50% 고점 대비 ${cfg.trailPullbackRatio}% 트레일링 추적 중${beLine}`;
+      const estPart=Number.isFinite(Number(p.unrealized))?Number(p.unrealized)*(partPct/100):null;
+      const msg=`💰 [실계좌 자동 익절] ${disp} ${sideKo(dir)} ${partPct}% 부분 익절 확정\n순 ROE +${roe.toFixed(1)}% (수수료 -${feeRoePct.toFixed(1)}% 반영) · 추정 실현 ${money(estPart)}\n잔여 ${remPct}% 고점 대비 ${cfg.trailPullbackRatio}% 트레일링 추적 중${beLine}`;
       try{await this.sendText(msg)}catch{}
-      actions.push({key,action:'CLOSE_HALF',roePct:roe,grossRoePct:grossRoe,feeRoePct,breakeven:st.breakevenPlaced});
+      actions.push({key,action:'CLOSE_HALF',closePct:partPct,roePct:roe,grossRoePct:grossRoe,feeRoePct,breakeven:st.breakevenPlaced});
      }else if(res?.error==='HALF_QTY_TOO_SMALL'){
-      // Position too small to split in half -> skip partial lock-in and trail full position instead.
+      // Position too small to split -> skip partial lock-in and trail full position instead.
       st.partialTaken=true;
      }
      continue;
