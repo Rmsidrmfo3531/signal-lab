@@ -164,7 +164,7 @@ export function scalpExecConfig(env=process.env){
   driftMovePct:n('SCALP_DRIFT_MOVE_PCT',50,0,100),
   // Better price (toward the stop): enter while >= this % of the planned stop distance is left (0 = old 0.4 %).
   stopKeepPct:n('SCALP_STOP_KEEP_PCT',50,0,100),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
-  universeSize:n('SCALP_UNIVERSE_SIZE',80,10,200),
+  universeSize:n('SCALP_UNIVERSE_SIZE',120,10,250),
   // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
   watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanGapMs:n('SCALP_SCAN_GAP_MS',120,0,1000),scanDelayMs:3000,
   balanceCapUSD:n('SCALP_BALANCE_CAP_USD',0,0,1e7),
