@@ -103,8 +103,8 @@ export async function placeMakerThenMarket({
   },{beforeSend}));
  }catch(e){
   if(e?.code==='ENTRY_NOT_SENT'||!isPostOnlyReject(e)){
-   // If blocked by pre-send safety gate, rethrow; on non-PostOnly venue errors fall back only if order wasn't rejected for margin/auth.
-   if(e?.code==='ENTRY_NOT_SENT'||/insufficient|margin|balance|auth|key|leverage|limit|circuit/i.test(String(e?.code||'')+' '+String(e?.message||'')))throw e;
+   // If blocked by pre-send safety gate, network/rate-limit, or margin/auth/position-limit error, rethrow cleanly.
+   if(e?.code==='ENTRY_NOT_SENT'||e?.code==='NETWORK_UNREACHABLE'||e?.code==='HTTP_429'||/101429|insufficient|margin|balance|auth|key|leverage|limit|circuit/i.test(String(e?.code||'')+' '+String(e?.message||'')))throw e;
   }
   const m=await sendMarket(qty,marketCid);
   return {executionMode:'MARKET',orderId:m.orderId,makerOrderId:null,marketOrderId:m.orderId,filledQty:m.filledQty,makerQty:0,marketQty:m.filledQty,avg:m.avg,status:m.status,receipt:m.res,makerFallbackReason:e?.code||'POST_ONLY_REJECTED'};
