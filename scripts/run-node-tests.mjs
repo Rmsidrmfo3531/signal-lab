@@ -92,7 +92,8 @@ async function runFile(file,index,options,onStart,onFinish){
  };
  // A nested native test runner must bootstrap its own IPC context.
  for(const key of ['NODE_TEST_CONTEXT','NODE_CHANNEL_FD','NODE_UNIQUE_ID'])delete env[key];
- const child=spawn(options.nodePath,['--test','--test-reporter=tap','--test-timeout=60000',file],{
+ const testTimeoutMs=Math.max(60000,Math.min(options.fileTimeoutMs,115000));
+ const child=spawn(options.nodePath,['--test','--test-reporter=tap',`--test-timeout=${testTimeoutMs}`,file],{
   cwd:options.root,env,windowsHide:true,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
  const ended=new Promise(resolve=>child.once('close',(code,signal)=>{closed=true;resolve({code,signal})}));
  child.once('error',error=>{spawnError=error});

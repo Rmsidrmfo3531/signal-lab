@@ -67,12 +67,13 @@ test('link check finds a missing named export without running the module',async(
  const {linkCheck}=await import('../link_check.mjs').catch(()=>({}));
  if(!linkCheck)return;
  const {execFileSync}=await import('node:child_process');
+ const {fileURLToPath}=await import('node:url');
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'lc-'));
  fs.writeFileSync(path.join(dir,'a.mjs'),'import {nope} f'+"rom './b.mjs';\nthrow Error('must not run');");
  fs.writeFileSync(path.join(dir,'b.mjs'),'export const x=1;');
- const run=f=>{try{return execFileSync(process.execPath,['--no-warnings','--experimental-vm-modules',new URL('../link_check.mjs',import.meta.url).pathname,f],{encoding:'utf8',stdio:'pipe'})}catch(e){return 'FAIL '+e.stderr}};
+ const run=f=>{try{return execFileSync(process.execPath,['--no-warnings','--experimental-vm-modules',fileURLToPath(new URL('../link_check.mjs',import.meta.url)),f],{encoding:'utf8',stdio:'pipe'})}catch(e){return 'FAIL '+e.stderr}};
  assert.match(run(path.join(dir,'a.mjs')),/FAIL LINK_FAIL .*nope/);
- assert.match(run(new URL('../server.mjs',import.meta.url).pathname),/LINK_OK/);
+ assert.match(run(fileURLToPath(new URL('../server.mjs',import.meta.url))),/LINK_OK/);
 });
 
 test('formatUpdateCompletedNotice formats auto, manual, and restart version notices cleanly',()=>{
