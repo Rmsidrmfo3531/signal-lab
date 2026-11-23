@@ -241,5 +241,72 @@ test('redundant against-trend 50% sizing is omitted when 100-point scoring is ac
   stats:{bySide:{},byKind:{},byGrade:{}},
  });
  assert.doesNotMatch(details,/4H 역추세 50%/);
+ assert.match(details,/급변 2\.5%\+ \(통합\)/);
+ assert.match(details,/종목 손실 쿨다운\(손실 후 120분 · 당일 2패 시 자정까지 휴식\)/);
 });
+
+test('per-symbol loss cooldown blocks rapid re-entry after recent loss or 2 same-day losses, and CLOSED alerts/table show score',async()=>{
+ const {testnetClosedHTML,setTestnetPage}=await import('../public/live_control.js');
+ // 1) Recent losing close (30m ago) -> blocked for remaining 90m
+ const v1=mockVenue();
+ const ex1=new ScalpExecutor({
+  config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false},
+  client:v1.client,
+  contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
+  tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
+  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:[]):up4h(T0),
+  priceOf:async()=>PX,markOf:async()=>PX,
+  balance:async()=>({equity:10000,available:9000}),
+  now:()=>T0,
+ });
+ ex1.store.closed.push({id:'prev-loss',symbol:'SOLUSDT',direction:'LONG',closedAt:T0-30*60000,closeReason:'EMERGENCY_ROE_STOP',netUSD:-25,scalpScore:{score:75,grade:'A'}});
+ ex1.arm();
+ await ex1.scan();
+ assert.equal(ex1.store.open.length,0);
+ assert.equal(ex1.store.skips.at(-1).reason,'SYMBOL_LOSS_COOLDOWN');
+ assert.match(ex1.store.skips.at(-1).detail,/최근 손실 후 90분 남음/);
+
+ // 2) 2 same-KST-day losses (even >2h ago) -> blocked until KST midnight
+ const v2=mockVenue();
+ const ex2=new ScalpExecutor({
+  config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false},
+  client:v2.client,
+  contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
+  tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
+  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:[]):up4h(T0),
+  priceOf:async()=>PX,markOf:async()=>PX,
+  balance:async()=>({equity:10000,available:9000}),
+  now:()=>T0,
+ });
+ ex2.store.closed.push(
+  {id:'l1',symbol:'SOLUSDT',direction:'LONG',closedAt:T0-4*3600000,closeReason:'STOP',netUSD:-15},
+  {id:'l2',symbol:'SOLUSDT',direction:'LONG',closedAt:T0-3*3600000,closeReason:'STOP',netUSD:-18},
+ );
+ ex2.arm();
+ await ex2.scan();
+ assert.equal(ex2.store.open.length,0);
+ assert.equal(ex2.store.skips.at(-1).reason,'SYMBOL_LOSS_COOLDOWN');
+ assert.match(ex2.store.skips.at(-1).detail,/당일 2회 손실/);
+
+ // 3) CLOSED Telegram alert + testnetClosedHTML table display entry score/grade
+ const tgClosed=scalpEventText({type:'CLOSED',symbol:'SOLUSDT',direction:'LONG',reason:'EARLY_TAKE_PROFIT',netUSD:32.5,roePct:12.4,tp:1,holdMs:18*60000,score:80,grade:'S'});
+ assert.match(tgClosed,/80점\(S급\)/);
+ setTestnetPage(0);
+ const closedHtml=testnetClosedHTML({
+  closed:[],
+  scalp:{closed:[{id:'c1',symbol:'SOLUSDT',direction:'LONG',kind:'MOVE_REVERSAL',closedAt:T0,openedAt:T0-600000,netUSD:32.5,scalpScore:{score:80,grade:'S',summary:'80점(S급)'}}]},
+ });
+ assert.match(closedHtml,/80점 S급/);
+
+ // 4) scoreSummary tracks passed / nearMiss (60) / low (<=55) and renders in scalpDetailsHTML
+ ex1.store.skips.push(
+  {at:T0-1000,symbol:'XUSDT',reason:'SCORE_BELOW_MINIMUM',score:60,grade:'C'},
+  {at:T0-2000,symbol:'YUSDT',reason:'SCORE_BELOW_MINIMUM',score:45,grade:'D'},
+ );
+ const st1=ex1.status();
+ assert.deepEqual(st1.scoreSummary,{minScore:65,nearFloor:60,passed:1,nearMiss:1,low:1});
+ const det1=scalpDetailsHTML(st1);
+ assert.match(det1,/점수 분포: 통과\(65점\+\) <b>1건<\/b> · 턱걸이 차단\(60점대\) <b>1건<\/b> · 하위 차단\(55점 이하\) <b>1건<\/b>/);
+});
+
 

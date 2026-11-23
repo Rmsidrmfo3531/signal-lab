@@ -160,10 +160,12 @@ export function scalpExecConfig(env=process.env){
   // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
   watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanGapMs:n('SCALP_SCAN_GAP_MS',120,0,1000),scanDelayMs:3000,
   balanceCapUSD:n('SCALP_BALANCE_CAP_USD',0,0,1e7),
-  // Unprotected scalp safety rails (user 2026-11-23): cap underwater hold duration, emergency ROE cut, and max adds.
+  // Unprotected scalp safety rails (user 2026-11-23): cap underwater hold duration, emergency ROE cut, max adds, and per-symbol loss cooldown.
   profitOnlyMaxHoldMin:n('SCALP_MAX_HOLD_MIN',480,0,4320),
   emergencyStopRoePct:n('SCALP_EMERGENCY_STOP_ROE_PCT',40,0,95),
   maxScaleInAdds:n('SCALP_MAX_SCALE_IN_ADDS',3,0,10),
+  symbolLossCooldownMin:n('SCALP_SYMBOL_LOSS_COOLDOWN_MIN',120,0,1440),
+  symbolDailyMaxLosses:n('SCALP_SYMBOL_DAILY_MAX_LOSSES',2,0,10),
   // Data-calibrated 100-point setup scoring (40-coin BingX 5m Train/OOS backtest): >=65 entry floor, >=70 A/S-grade 1.25x sizing.
   minScore:n('SCALP_MIN_SCORE',SCALP_SCORE_DEFAULTS.minScore,0,100),
   highScore:n('SCALP_HIGH_SCORE',SCALP_SCORE_DEFAULTS.highScore,0,100),
@@ -330,7 +332,7 @@ export class ScalpExecutor{
  #save(){if(!this.file)return;const s=this.store;s.closed=s.closed.slice(-MAX_CLOSED);s.events=s.events.slice(-MAX_EVENTS);s.skips=s.skips.slice(-MAX_SKIPS);s.sent=s.sent.slice(-MAX_KEYS);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,strategy:SCALP_EXEC_STRATEGY,...s})}
  #event(type,detail={}){const e={type,at:this.now(),mode:'TESTNET',strategy:SCALP_EXEC_STRATEGY,...detail};this.store.events.push(e);this.log(`[SCALP] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
- #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null,kind:this.cur.kind||SCALP_KINDS.MOVE}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
+ #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null,kind:this.cur.kind||SCALP_KINDS.MOVE}:{}),...(this.cur?.symbol===symbol&&this.cur.score?{score:this.cur.score.score,grade:this.cur.score.grade}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
  #gate(){try{return this.gate()||{ok:true}}catch{return {ok:false,reason:'GATE_ERROR'}}}
  // With the shared budget only a stop written under it counts (review L2: a scalp-only 3 % stop saved before is ignored).
  #todayStopped(day=kstDay(this.now())){
@@ -696,7 +698,28 @@ export class ScalpExecutor{
   this.btcShockCache={b:bucket,v};
   return v;
  }
- /** The cheap entry checks: 4H trend (cached per 4H candle), BTC shock guard, position cap, one per symbol, another strategy's coin.
+ /** Per-symbol loss cooldown: rest after a recent losing close or after N same-KST-day losses on the same coin. */
+ #symbolLossCooldown(symbol,now=this.now()){
+  const coolMin=Number(this.config.symbolLossCooldownMin)||0;
+  const maxDay=Number(this.config.symbolDailyMaxLosses)||0;
+  if(!(coolMin>0)&&!(maxDay>0))return null;
+  const today=kstDay(now);
+  let dayLosses=0,lastLossAt=0;
+  for(const x of this.store.closed){
+   if(x?.symbol!==symbol||x.closeReason==='MANUAL')continue;
+   const net=Number(x.netUSD),at=Number(x.closedAt)||0;
+   if(!(net<0)||!(at>0))continue;
+   if(kstDay(at)===today)dayLosses++;
+   if(at>lastLossAt)lastLossAt=at;
+  }
+  if(maxDay>0&&dayLosses>=maxDay)return `당일 ${dayLosses}회 손실 · 내일(KST)까지 휴식`;
+  if(coolMin>0&&lastLossAt>0&&now-lastLossAt<coolMin*60000){
+   const leftMin=Math.max(1,Math.ceil((coolMin*60000-(now-lastLossAt))/60000));
+   return `최근 손실 후 ${leftMin}분 남음`;
+  }
+  return null;
+ }
+ /** The cheap entry checks: 4H trend (cached per 4H candle), BTC shock guard, position cap, one per symbol, another strategy's coin, per-symbol loss cooldown.
   * A skip result, or null. Used by #consider and, before any zone read, by #zoneCheck. */
  async #precheck(u,det){
   const skip=reason=>detail=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
@@ -715,6 +738,8 @@ export class ScalpExecutor{
   if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD')();
   let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
   if(busy)return skip('SYMBOL_HELD_BY_OTHER_STRATEGY')();
+  const cool=this.#symbolLossCooldown(u.symbol,this.now());
+  if(cool)return skip('SYMBOL_LOSS_COOLDOWN')(cool);
   return null;
  }
  /** Scale factor for legacy uncapped VST positions/closes when testnet capitalCapUSD is active (1 for $3k-capped trades). */
@@ -1804,7 +1829,7 @@ export class ScalpExecutor{
   this.store.closed.push(row);this.store.open=this.store.open.filter(x=>x!==p);
   const marginBase=p.avg>0&&p.filled>0?(p.avg*p.filled/(p.leverage||1)):0;
   const roePct=marginBase>0?+(row.netUSD/marginBase*100).toFixed(2):null;
-  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,holdMs:row.holdMs,entry:p.avg,roePct,peakRoePct:pos(p.trailPeakRoePct)??null});
+  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,holdMs:row.holdMs,entry:p.avg,roePct,peakRoePct:pos(p.trailPeakRoePct)??null,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade}:{})});
   return cleanupPending;
  }
  /** BingX fund flow (realized PnL + fees + funding) of this trade's symbol and lifetime, read after the close. */
@@ -1835,6 +1860,19 @@ export class ScalpExecutor{
   return {trades:n,wins:wins.length,grossProfitUSD:+gross.toFixed(2),grossLossUSD:+loss.toFixed(2),winRatePct:n?+(wins.length/n*100).toFixed(1):null,profitFactor:loss>0?+(gross/loss).toFixed(2):null,netUSD:+scaled.reduce((t,r)=>t+r.net,0).toFixed(2),
    todayNetUSD:+scaled.filter(r=>kstDay(r.x.closedAt)===today).reduce((t,r)=>t+r.net,0).toFixed(2),closeReasons:reasons};
  }
+ #scoreSummary(){
+  const minScore=Number(this.config.minScore??SCALP_SCORE_DEFAULTS.minScore)||65;
+  const nearFloor=Math.max(0,minScore-5);
+  let nearMiss=0,low=0;
+  for(const x of this.store.skips){
+   if(x?.reason!=='SCORE_BELOW_MINIMUM')continue;
+   const sc=num(x.score);
+   if(sc!==null&&sc>=nearFloor)nearMiss++;else low++;
+  }
+  const st=this.stats();
+  const passed=(st.byGrade?.S?.trades||0)+(st.byGrade?.A?.trades||0)+(st.byGrade?.B?.trades||0)+this.store.open.filter(p=>p?.scalpScore).length;
+  return {minScore,nearFloor,passed,nearMiss,low};
+ }
  status(){
   const c=this.config,g=this.#gate();
   return {strategy:SCALP_EXEC_STRATEGY,mode:c.mode,refused:c.refused,armed:this.armed,scanning:this.scanning===true,blocked:this.#blocked(),killSwitch:g.reason==='KILL_SWITCH',credentials:Boolean(this.client),
@@ -1844,10 +1882,12 @@ export class ScalpExecutor{
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,
     minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??3,
+    symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,
     scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,exchangePosition,...p})=>({...p,details:scalpPositionDetails({...p,steps,exchangePosition},this.now())})),
    closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,exchangePosition,...x})=>({...x,margin:scalpMargin(x),closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
+   scoreSummary:this.#scoreSummary(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),
    skips:this.store.skips.slice(-20).reverse().map(x=>({...x,label:scalpReasonKo(x.reason)})),events:this.store.events.slice(-30).reverse()};
  }
@@ -1859,6 +1899,7 @@ export class ScalpExecutor{
   return {
    mode:c.mode,armed:this.armed,blocked:this.#blocked(),scanning:this.scanning===true,
    trendMode:c.trendMode,minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,
+   symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,scoreSummary:this.#scoreSummary(),
    aiLensRecord:c.mode==='TESTNET'&&c.wyckoffRecord===true&&Boolean(this.signalsFile),scaleInEnabled:c.scaleIn,stopLossEnabled:c.stopLossEnabled,
    repeatedScaleIn:c.scaleIn&&!c.stopLossEnabled,open:this.store.open.length,
    ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0,earlyFallbackMin:PROFIT_ONLY_EARLY_EXIT_MIN,minProfitRoePct:c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT,minMovePct:c.settings?.minMovePct??null}:{}),
