@@ -879,8 +879,12 @@ export function scalpSimResultHTML(d){
 function scalpExitRule(S){
  const hasScore=Number(S.minScore)>0;
  const holdCut=Number(S.profitOnlyMaxHoldMin)>0?` · 물림 ${esc(S.profitOnlyMaxHoldMin)}분 컷`:'';
+ const defTag=Number(S.defensiveAddRoePct)>0?` · 방어추매 -${esc(S.defensiveAddRoePct)}%`:'';
+ const emTag=Number(S.emergencyStopRoePct)>0?` · 최후손절 -${esc(S.emergencyStopRoePct)}%`:'';
+ const steps=Array.isArray(S.scaleInSteps)&&S.scaleInSteps.length>=2?`${esc(S.scaleInSteps[0])}R→${esc(S.scaleInSteps[1])}R`:'1R→1.5R';
+ const mults=Array.isArray(S.scaleInMults)&&S.scaleInMults.length>=2?`${esc(S.scaleInMults[0])}x/${esc(S.scaleInMults[1])}x`:'0.75x/0.75x';
  const makerTag=S.makerEntry?' · Post-Only 메이커 우선 진입':'';
- const protection=S.stopLossEnabled===false?`자동 손절 없음${holdCut}${makerTag}${S.repeatedScaleIn?` · 점진 확대 추매(1R→2R · 1x/1x · 최대 ${esc(S.maxScaleInAdds??2)}회 · IOC 0.35~0.8%${hasScore?'':' · 4H 역추세 50%'} · BTC 급변 방어)`:''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유${makerTag}`;
+ const protection=S.stopLossEnabled===false?`자동 손절 없음${holdCut}${defTag}${emTag}${makerTag}${S.repeatedScaleIn?` · 점진 확대 추매(${steps} · ${mults} · 최대 ${esc(S.maxScaleInAdds??2)}회 · IOC 0.35~0.8%${hasScore?'':' · 4H 역추세 50%'} · BTC 급변 방어)`:''}`:`손절 저점(숏은 고점) 너머 ATR×${esc(S.stopAtr)} · 1차 목표 뒤 본전 · 최대 ${esc(S.maxHoldMin)}분 보유${makerTag}`;
  const roe=Number(S.minProfitRoePct),fallbackMin=S.earlyTakeProfitMin??0;
  const takePct=Math.round((Number(S.partialTakeFrac)||0.35)*100),runnerPct=100-takePct;
  const fbText=fallbackMin>0?` · 비추매 ${esc(fallbackMin)}분 경과 시 비용 충당 익절`:' · 조기 본전컷 없음(러너 끝까지 추적)';
@@ -898,7 +902,8 @@ export function scalpDetailsHTML(s){
  const recheck=S.reversalRecheckMin?` · 가격·손익비로 건너뛴 반전은 ${esc(S.reversalRecheckMin)}분 동안 재확인`:'';
  const unifiedMove=Number(S.minScore)>0&&S.scoreUnifiedMove!==false;
  const moveDesc=unifiedMove?`${esc(S.zoneMinMovePct??2.5)}% 이상 통합 점수 판별 (매물대 강제 해제)`:`${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''}`;
- const scoreRule=Number(S.minScore)>0?` · 100점 신호 점수 ${esc(S.minScore)}점 이상 진입${Number(S.highScoreSizeMult)>1&&Number(S.highScore)>0?` (${esc(S.highScore)}점+ 비중 ${esc(S.highScoreSizeMult)}배)`:''}`:'';
+ const scoreTierText=S.scoreTierSizing!==false?' · 점수배수 65~69 0.75x / 70~74 1x / 75~79 1.2x / 80+ 1.4x (초기캡 고정)':'';
+ const scoreRule=Number(S.minScore)>0?` · 100점 신호 점수 ${esc(S.minScore)}점 이상 진입${Number(S.highScoreSizeMult)>1&&Number(S.highScore)>0?` (${esc(S.highScore)}점+ 비중 ${esc(S.highScoreSizeMult)}배)`:''}${scoreTierText}`:'';
  const ofRule=S.orderflowBoost!==false&&Number(S.minScore)>0?` · 수급 부스트(30분 OI -1%↓ +${esc(S.orderflowOiBonus??5)}점 · CVD 강한반전 ${esc(S.orderflowCvdSizeMult??1.5)}배)`:'';
  const bounceRule=S.bounceSizing!==false&&Number(S.minScore)>0?` · 반등확인 비중(${esc(S.bounceThresholdPct??20)}%+ ${esc(S.bounceHighMult??1.35)}배 · 미만 ${esc(S.bounceLowMult??0.8)}배)`:'';
  const sessRule=S.sessionWeighting!==false&&Number(S.minScore)>0?` · 세션 비중(유럽 17~23시 ${esc(S.sessionEuMult??0.5)}배 · 미국·야간 23~09시 ${esc(S.sessionUsMult??1.15)}배)`:'';

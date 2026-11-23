@@ -33,7 +33,8 @@ export function scalpEventText(e){
  if(e.type==='ARMED')return `${SCALP_LABEL} 활성화 — 5분봉 급락 후 반등 롱·급등 후 되돌림 숏을 테스트넷에서 주문합니다.`;
  if(e.type==='DISARMED')return ['DAILY_LOSS_LIMIT','NO_PROTECTIVE_STOP'].includes(e.reason)?null:`${SCALP_LABEL} 비활성화`;
  if(e.type==='OPENED'){
-  const scorePart=Number.isFinite(Number(e.score))?` · 점수 ${e.score}점(${e.grade||''}급${Number.isFinite(Number(e.sizeMult))&&Math.abs(Number(e.sizeMult)-1)>1e-4?` · 비중 ${e.sizeMult}x`:''})`:'';
+  const tierPart=Number.isFinite(Number(e.scoreTierMult))&&Math.abs(Number(e.scoreTierMult)-1)>1e-4?` · 점수배수 ${e.scoreTierMult}x`:'';
+  const scorePart=Number.isFinite(Number(e.score))?` · 점수 ${e.score}점(${e.grade||''}급${Number.isFinite(Number(e.sizeMult))&&Math.abs(Number(e.sizeMult)-1)>1e-4?` · 비중 ${e.sizeMult}x`:''}${tierPart})`:'';
   const sessPart=e.sessionLabel&&Number.isFinite(Number(e.sessionMult))&&Math.abs(Number(e.sessionMult)-1)>1e-4?` · ${e.sessionLabel} ${e.sessionMult}x`:'';
   const ofPart=e.orderflowSummary?` · 수급 ${e.orderflowSummary}`:'';
   const execPart=e.executionMode==='MAKER'?' · 메이커 체결':e.executionMode==='MAKER+MARKET'?' · 메이커+시장가':'';
@@ -42,7 +43,8 @@ export function scalpEventText(e){
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
  if(e.type==='SCALE_IN_FILLED'&&e.qty>0){
   const avgLine=Number(e.prevAvg)>0&&Number(e.avg)>0?`\n평단 ${fmt(e.prevAvg)} → ${fmt(e.avg)}${Number(e.avgImprovePct)>0?` (${Number(e.avgImprovePct).toFixed(2)}% 개선)`:''}`:'';
-  return `➕ ${head} ${side(e)} 추가 진입${e.count>0?` ${e.count}회차`:''}\n수량 +${fmt(e.qty)} · 체결가 ${fmt(e.price)} · 잔여 ${fmt(e.left)}${avgLine}`;
+  const defTag=e.defensive?`${Number.isFinite(Number(e.defensiveRoePct))?` (${Number(e.defensiveRoePct).toFixed(1)}% ROE 방어)`:' (ROE 방어)'}`:'';
+  return `${e.defensive?'🛡️':'➕'} ${head} ${side(e)} ${e.defensive?'방어 추매':'추가 진입'}${e.count>0?` ${e.count}회차`:''}${defTag}\n수량 +${fmt(e.qty)} · 체결가 ${fmt(e.price)} · 잔여 ${fmt(e.left)}${avgLine}`;
  }
  if(e.type==='PARTIAL_TAKE_PROFIT'&&e.qty>0){
   const takePct=Number.isFinite(Number(e.takePct))&&Number(e.takePct)>0?Math.round(Number(e.takePct)):50;

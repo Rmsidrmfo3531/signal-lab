@@ -243,7 +243,8 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   assert.match(tg, /비중 1\.5x/);
   assert.match(tg, /유럽장 0\.5x/);
   assert.equal(exBoosted.store.open[0].scalpScore.session.session, 'EUROPE');
-  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.75);
+  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.mult, 0.75);
+  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.5625);
 });
 
 test('scalpSessionMultiplier applies backtest-validated EU 0.5x, US/Late 1.15x, Asia 1.0x', async () => {

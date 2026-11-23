@@ -128,7 +128,7 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  const makeHigh=(extraCfg={})=>{
   const v=mockVenue();
   const ex=new ScalpExecutor({
-   config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,bounceSizing:false,...extraCfg},
+   config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,bounceSizing:false,scoreTierSizing:false,...extraCfg},
    client:v.client,
    contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
    tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
@@ -462,6 +462,39 @@ test('C7 confirmed-bounce sizing (1.35x >=20%, 0.8x <20%), +16% / 25% partial TP
  assert.match(card,/data-open-orderflow="ETHUSDT"/);
  assert.match(card,/75점 A급 · 1\.35x/);
 });
+
+test('gentle forward score tier sizing (0.75/1.0/1.2/1.4x, fixed initial cap), Telegram notice, and 1B UI rules banner',async()=>{
+ const {scalpScoreTierMultiplier,SCALP_REPEAT_SCALE_IN}=await import('../scalp_executor.mjs');
+ const cfg=scalpExecConfig({});
+ assert.equal(cfg.scoreTierSizing,true);
+ assert.equal(cfg.defensiveAddRoePct,40);
+ assert.equal(cfg.emergencyStopRoePct,75);
+ assert.deepEqual(SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),[1.0,1.5]);
+ assert.deepEqual(SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),[0.75,0.75]);
+
+ assert.deepEqual(scalpScoreTierMultiplier(65,cfg),{active:true,tier:'B',mult:0.75});
+ assert.deepEqual(scalpScoreTierMultiplier(72,cfg),{active:true,tier:'A',mult:1.0});
+ assert.deepEqual(scalpScoreTierMultiplier(77,cfg),{active:true,tier:'A+',mult:1.2});
+ assert.deepEqual(scalpScoreTierMultiplier(85,cfg),{active:true,tier:'S',mult:1.4});
+ assert.deepEqual(scalpScoreTierMultiplier(85,{...cfg,scoreTierSizing:false}),{active:false,tier:null,mult:1});
+
+ const openTg=scalpEventText({type:'OPENED',symbol:'HUSDT',direction:'SHORT',leverage:10,entry:0.1,stop:0.105,stopLossEnabled:false,targets:[0.095],parts:[100],riskUSD:25,movePct:5.2,volumeX:3.4,score:75,grade:'A',sizeMult:1.35,scoreTierMult:1.2});
+ assert.match(openTg,/점수 75점\(A급 · 비중 1\.35x · 점수배수 1\.2x\)/);
+
+ const html=scalpDetailsHTML({
+  mode:'TESTNET',credentials:true,armed:true,stats:{},
+  settings:{
+   sides:['LONG','SHORT'],minMovePct:5,zoneMinMovePct:2.5,climaxVolume:2.5,stopLossEnabled:false,repeatedScaleIn:true,
+   profitOnlyMaxHoldMin:240,defensiveAddRoePct:40,emergencyStopRoePct:75,maxScaleInAdds:2,
+   scaleInSteps:[1,1.5],scaleInMults:[0.75,0.75],minScore:65,scoreTierSizing:true,scoreUnifiedMove:true,
+   riskPct:0.75,leverage:10,dailyLossPct:3,maxDriftPct:0.4,
+  },
+ });
+ assert.match(html,/방어추매 -40% · 최후손절 -75%/);
+ assert.match(html,/1R→1\.5R · 0\.75x\/0\.75x/);
+ assert.match(html,/점수배수 65~69 0\.75x \/ 70~74 1x \/ 75~79 1\.2x \/ 80\+ 1\.4x \(초기캡 고정\)/);
+});
+
 
 
 

@@ -108,10 +108,12 @@ test('executeRealManualOrder uses makerFirst PostOnly when requested and reports
  assert.equal(placed[0].timeInForce,'PostOnly');
 });
 
-test('unprotected testnet scalp enforces emergency -40% ROE cut and 4h underwater max-hold exit',async()=>{
+test('unprotected testnet scalp enforces -75% catastrophe ROE cut, -40% defensive 1st add, and 4h underwater max-hold exit',async()=>{
  const cfg=scalpExecConfig({});
  assert.equal(cfg.profitOnlyMaxHoldMin,240);
- assert.equal(cfg.emergencyStopRoePct,40);
+ assert.equal(cfg.emergencyStopRoePct,75);
+ assert.equal(cfg.defensiveAddRoePct,40);
+ assert.equal(cfg.scoreTierSizing,true);
  assert.equal(cfg.maxScaleInAdds,2);
  assert.equal(cfg.scanGapMs,120);
 
@@ -148,8 +150,8 @@ test('unprotected testnet scalp enforces emergency -40% ROE cut and 4h underwate
   assert.equal(closedOrders.some(o=>o.type==='MARKET'),true);
  };
 
- // 1) -45% ROE (-4.5% drop at 10x) -> immediate EMERGENCY_ROE_STOP
- await runCase({mark:0.955,advanceMs:10*60000,expectedReason:'EMERGENCY_ROE_STOP'});
+ // 1) -78% ROE (-7.8% drop at 10x) -> immediate catastrophe EMERGENCY_ROE_STOP (prevents liquidation)
+ await runCase({mark:0.922,advanceMs:10*60000,expectedReason:'EMERGENCY_ROE_STOP'});
  // 2) Underwater (-5% ROE) held for 8h -> MAX_HOLD_EXIT
  await runCase({mark:0.995,advanceMs:481*60000,expectedReason:'MAX_HOLD_EXIT'});
 });
