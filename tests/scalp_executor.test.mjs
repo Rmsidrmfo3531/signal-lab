@@ -402,34 +402,35 @@ test('scale-in uses equal entry margin after a closed retest on either side, res
  }
 });
 
-test('unprotected testnet scalps use progressive 1R->2R->3.5R->5R spacing and controlled 1x/1x/1.5x/2x adds on both sides',async()=>{
+test('unprotected testnet scalps use progressive 1R->1.5R->3R->4.5R spacing and controlled 0.75x/0.75x/1x/1.25x adds on both sides',async()=>{
  for(const direction of ['LONG','SHORT']){
   const sign=direction==='LONG'?1:-1,entry=sign===1?PX:PX_S,v=venue({fillAt:entry}),clock={t:T0};
   let price=entry;
-  const ex=make(v,{clock,price:()=>price,trend:sign===1?up4h:down4h,rows:sign===1?crash:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15,emergencyStopRoePct:0}});
+  const ex=make(v,{clock,price:()=>price,trend:sign===1?up4h:down4h,rows:sign===1?crash:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15,emergencyStopRoePct:0,defensiveAddRoePct:0}});
   ex.arm();assert.equal((await ex.scan()).entered,1);
   const p=ex.store.open[0],a=p.scaleIn,first=p.size,rDist=Math.abs(a.initialEntry-p.initialStop);
+  const expectedAdd=Math.floor(first*0.75*100)/100;
   assert.equal(placed(v,'MARKET')[0].stopLoss,undefined);
   const moves=async value=>{price=value;v.mark=value;await ex.reconcile()};
-  // Step 1: 1.0R adverse -> adds 1.0x initialQty via IOC
+  // Step 1: 1.0R adverse -> adds 0.75x initialQty via IOC
   clock.t+=I;await moves(a.anchor-sign*(rDist+.03));
   assert.equal(a.count,1);assert.equal(a.state,'WATCH');
   const afterFirst=a.anchor,afterFirstSize=p.size;
-  assert.equal(a.orders[0].qty,first);
-  assert.equal(afterFirstSize,first*2);
-  await moves(afterFirst-sign*(rDist*2+.06));assert.equal(a.count,1,'at most one attempt in a candle');
-  // Step 2: requires 2.0R from new anchor (1.0R is not enough)
-  clock.t+=I;await moves(afterFirst-sign*(rDist*2-.03));assert.equal(a.count,1,'progressive 2.0R level must be reached');
+  assert.ok(Math.abs(a.orders[0].qty-expectedAdd)<1e-6);
+  assert.ok(Math.abs(afterFirstSize-(first+expectedAdd))<1e-6);
+  await moves(afterFirst-sign*(rDist*1.5+.06));assert.equal(a.count,1,'at most one attempt in a candle');
+  // Step 2: requires 1.5R from new anchor (1.0R is not enough)
+  clock.t+=I;await moves(afterFirst-sign*(rDist*1.5-.03));assert.equal(a.count,1,'progressive 1.5R level must be reached');
   const [watch]=ex.runtimeSummary().scaleInPositions;
   assert.equal(watch.state,'WATCH');assert.equal(watch.mark,price);assert.equal(watch.positionCheckedAt,clock.t);
-  assert.ok(Math.abs(watch.trigger-(afterFirst-sign*rDist*2))<1e-9);
+  assert.ok(Math.abs(watch.trigger-(afterFirst-sign*rDist*1.5))<1e-9);
   assert.equal(watch.partialExit,false);
   assert.doesNotMatch(JSON.stringify(watch),/clientOrderId|orderId/);
-  await moves(afterFirst-sign*(rDist*2+.03));assert.equal(a.count,2);
+  await moves(afterFirst-sign*(rDist*1.5+.03));assert.equal(a.count,2);
   const adds=placed(v,'LIMIT');assert.equal(new Set(adds.map(o=>o.clientOrderId)).size,2);
   assert.ok(adds.every(o=>o.timeInForce==='IOC'),'repeat scale-in uses IOC');
-  assert.equal(a.orders[1].qty,first,'2nd add uses 1.0x initialQty (controlled multiplier)');
-  assert.equal(p.size,first*3);
+  assert.ok(Math.abs(a.orders[1].qty-expectedAdd)<1e-6,'2nd add uses 0.75x initialQty (controlled multiplier)');
+  assert.ok(Math.abs(p.size-(first+expectedAdd*2))<1e-6);
   const active=[...v.orders.values()].filter(o=>o.type==='TAKE_PROFIT'&&o.status==='NEW');
   assert.ok(Math.abs(active.reduce((n,o)=>n+Number(o.quantity),0)-p.filled)<1e-8);
   assert.ok(active.every(o=>sign*(Number(o.price)-p.avg)>0),'the conditional exits also enforce a profitable limit');
@@ -1250,7 +1251,7 @@ test('repeat scale-in IOC handles thin-book partial fills, 101429 auto-downsize,
   await ex.reconcile();
   assert.equal(p.scaleIn.count,1,'40% remaining position auto-reopened and scaled in');
   assert.equal(p.scaleIn.state,'WATCH');
-  assert.ok(Math.abs(p.size-rem*2)<0.05);
+  assert.ok(Math.abs(p.size-rem*1.75)<0.05);
  }
 });
 
@@ -1469,6 +1470,59 @@ test('closed testnet trades expose add count (추매) in status, UI table/list, 
  assert.match(html,/추매 2회/);
  assert.match(html,/비상 손절 \(-45\.0% \/ 한도 -40%\)/);
 });
+
+test('defensive 1st scale-in fires at -40% ROE (0.75x) instead of stopping out, while -75% catastrophe stop takes priority',async()=>{
+ // 1) Wide-1R SHORT hits -42% ROE (+4.2% move at 10x) before reaching 1R -> executes defensive 1st 0.75x add (no stop-out!)
+ {
+  const v=venue({fillAt:PX_S}),clock={t:T0};
+  let price=PX_S;
+  const ex=make(v,{clock,price:()=>price,trend:down4h,rows:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15,defensiveAddRoePct:40,emergencyStopRoePct:75}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],first=p.size;
+  // Widen initialStop so 1R is 6% (beyond +4.2% defensive trigger, like HUSDT)
+  p.initialStop=+(p.avg*1.06).toFixed(2);
+  const expectedAdd=Math.floor(first*0.75*100)/100;
+  // Move +4.2% against SHORT (-42% ROE) just 3 minutes after entry (same 5m candle!)
+  clock.t+=3*60000;
+  price=+(p.avg*1.042).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(ex.store.open.length,1,'position stays open via defensive scale-in instead of early stop');
+  assert.equal(ex.store.closed.length,0);
+  assert.equal(p.scaleIn.count,1);
+  assert.ok(Math.abs(p.scaleIn.orders[0].qty-expectedAdd)<1e-6);
+  assert.equal(p.scaleIn.orders[0].defensive,true);
+  assert.ok(p.scaleIn.orders[0].defensiveRoePct<=-40);
+  assert.ok(p.avg>PX_S,'short average improved upward after defensive add');
+  const addEv=ex.store.events.find(e=>e.type==='SCALE_IN_FILLED');
+  assert.equal(addEv?.defensive,true);
+  const tg=scalpEventText(addEv);
+  assert.match(tg,/🛡️.*방어 추매 1회차 \(-42\.0% ROE 방어\)/);
+  // 2) Further move to -78% ROE from new improved average -> catastrophe EMERGENCY_ROE_STOP closes position
+  clock.t+=I;
+  price=+(p.avg*1.078).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(ex.store.open.length,0);
+  assert.equal(ex.store.closed[0]?.closeReason,'EMERGENCY_ROE_STOP');
+  assert.equal(ex.store.closed[0]?.closeMeta?.limitPct,75);
+  assert.equal(ex.status().closed[0].adds,1);
+ }
+
+ // 3) Flash spike straight to -78% ROE with 0 adds -> catastrophe stop takes priority over defensive add (no add sent)
+ {
+  const v=venue({fillAt:PX_S}),clock={t:T0};
+  let price=PX_S;
+  const ex=make(v,{clock,price:()=>price,trend:down4h,rows:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15,defensiveAddRoePct:40,emergencyStopRoePct:75}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  clock.t+=2*60000;
+  price=+(p.avg*1.078).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(ex.store.open.length,0);
+  assert.equal(ex.store.closed[0]?.closeReason,'EMERGENCY_ROE_STOP');
+  assert.equal(placed(v,'LIMIT').length,0,'must not send defensive add when already past -75% catastrophe stop');
+ }
+});
+
 
 
 
