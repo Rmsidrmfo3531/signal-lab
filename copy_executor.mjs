@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
-import {placeMakerThenMarket} from './maker_order.mjs';
+import {placeMakerThenMarket,makerChildIds} from './maker_order.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {confirmedBingxFills,summarizeBalancedFills} from './live_clients.mjs';
 import {directionOf,venueRows} from './venue_positions.mjs';
@@ -91,6 +91,8 @@ const ARCHIVE_COPY_CLOSES=new Set([
 export function noVenueAnswer(e){return ['NETWORK_UNREACHABLE','TIMEOUT','ETIMEDOUT','ECONNRESET'].includes(e?.code)||['AbortError','TimeoutError'].includes(e?.name)}
 // BingX "order does not exist" for a lookup by clientOrderId (the only answer that proves the order is absent).
 const orderAbsent=e=>/80016/.test(String(e?.code||''))||/not exist/i.test(String(e?.message||''));
+const TERMINAL_ORDER=new Set(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED']);
+const RESTING_ORDER=new Set(['NEW','PENDING','PARTIALLY_FILLED']);
 
 /** BingX contract for a channel symbol: the same name, a 1000-coin contract (1000PEPEUSDT), or a stock
  * perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT). contracts: Map(symbol -> normalized contract). */
@@ -146,11 +148,13 @@ export class CopyExecutor{
  #maxLevCache=new Map();
  #marginSetCache=new Map();
  #levSetCache=new Map();
- constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),entryGateRevision=()=>null,isBusy=()=>false,balance=async()=>null,controls=null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},auditOrders=false,retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
-  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,entryGateRevision,isBusy,balance,controls,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
+ constructor({fileName='copy-store.json',config,client,contractOf,markOf=async()=>null,zonesOf=async()=>[],candlesOf=async()=>[],gate=()=>({ok:true}),breaker=()=>null,entryGateRevision=()=>null,isBusy=()=>false,balance=async()=>null,controls=null,directory=null,now=()=>Date.now(),log=()=>{},onEvent=()=>{},auditOrders=false,retryDelaysMs=[2000,5000],retryBudgetMs=30000,goneRecheckMs=1000,sleep=ms=>new Promise(r=>setTimeout(r,ms))}){
+  Object.assign(this,{config,client,contractOf,markOf,zonesOf,candlesOf,gate,breaker,entryGateRevision,isBusy,balance,controls,now,log,onEvent,retryDelaysMs,retryBudgetMs,goneRecheckMs,sleep});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
-  this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],deferredEntries:Array.isArray(saved?.deferredEntries)?saved.deferredEntries:[],killed:saved?.killed||false};
+  this.store={positions:saved?.positions||{},closed:saved?.closed||[],events:saved?.events||[],seen:saved?.seen||[],monitorStartAt:saved?.monitorStartAt||0,lastMsgAt:saved?.lastMsgAt||{},lastTraderCloseAt:saved?.lastTraderCloseAt||{},leverageOf:saved?.leverageOf||{},pending:saved?.pending||[],deferredEntries:Array.isArray(saved?.deferredEntries)?saved.deferredEntries:[],killed:saved?.killed||false,userPaused:saved?.userPaused===true,
+   // MAKER_FIRST PostOnly children whose end state was never seen (#market): cancelled by the next reconcile.
+   makerUnsettled:Array.isArray(saved?.makerUnsettled)?saved.makerUnsettled.filter(u=>typeof u?.clientOrderId==='string'&&typeof u?.venueSymbol==='string'):[]};
   // An order in flight does not survive a restart.
   for(const p of Object.values(this.store.positions))delete p.inflight;
   this.queue=Promise.resolve();this.reserved=new Set();this.armed=false;this.entryRevision=0;this.settling=null;this.settleAttempts=new Map();
@@ -218,8 +222,21 @@ export class CopyExecutor{
   const r=this.controls.evaluateCooldown({closedTrades:this.store.closed,equityUSD:this.funds?.equity??null,now:this.now()});
   if(r?.triggered)this.#event('COPY_COOLDOWN_TRIGGERED',{reason:r.reason,until:r.until,minutes:r.minutes,detail:`${r.reason} · ${r.minutes}분간 신규 진입 휴식`});
  }
- arm(){this.armed=true;this.#event('ARMED',{mode:this.config.mode});if(this.config.mode==='LIVE')void this.warmCache();return this.status()}
- disarm(){this.entryRevision++;this.armed=false;this.#event('DISARMED',{mode:this.config.mode});return this.status()}
+ /** The real-account daily loss circuit breaker (real_safety.mjs, server option `breaker`): a reason string while
+  * tripped, else null. New entries and adds are refused while it holds (closes and cuts never ask the gate). */
+ breakerReason(){let b;try{b=this.breaker?.()}catch{b='DAILY_LOSS_CIRCUIT_BREAKER'}return b?(typeof b==='string'?b:b.reason||'DAILY_LOSS_CIRCUIT_BREAKER'):null}
+ /** Entry / add gate: the breaker first, then the server gate (kill switch, update, armed). */
+ #gate(){const b=this.breakerReason();if(b)return {ok:false,reason:b};return this.gate()}
+ /** Arming is refused while the daily loss breaker holds (screen, Telegram /resume, post-update re-arm). */
+ arm(){
+  const b=this.breakerReason();
+  if(b)throw Object.assign(Error('오늘 실계좌 일일 손실 차단이 발동 중이라 카피를 켤 수 없습니다'),{code:b,httpStatus:409});
+  this.armed=true;if(this.store.userPaused){this.store.userPaused=false;try{this.#save()}catch{}}
+  this.#event('ARMED',{mode:this.config.mode});if(this.config.mode==='LIVE')void this.warmCache();return this.status()}
+ /** user:true = paused by the user (screen button or Telegram /pause): kept on disk so an update restart does not
+  * switch it back on (2026-11-23 audit). Other disarms (breaker, update) leave the flag as it is. */
+ disarm({user=false}={}){this.entryRevision++;this.armed=false;if(user&&!this.store.userPaused){this.store.userPaused=true;try{this.#save()}catch{}}
+  this.#event('DISARMED',{mode:this.config.mode,...(user?{by:'USER'}:{})});return this.status()}
  resetTestnetHistory(){
   if(this.config.mode==='LIVE')throw Object.assign(Error('NOT_TESTNET'),{code:'NOT_TESTNET',httpStatus:409});
   const removed=this.store.closed.length;
@@ -237,7 +254,7 @@ export class CopyExecutor{
   const sizing=this.#effectiveSizing(),traderBalanceUSD=this.#effectiveTraderBalanceUSD(),executionMode=this.#effectiveMakerFirst()?'MAKER_FIRST':'INSTANT';
   const basis=this.config.mode==='LIVE'?availableMargin(this.funds):pos(this.funds?.equity);
   const effectiveRatio=sizing==='BALANCE_RATIO'&&basis>0&&traderBalanceUSD>0?+(basis/traderBalanceUSD).toFixed(4):null;
-  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing,executionMode,traderBalanceUSD,effectiveRatio,maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,deferredEntries:this.store.deferredEntries.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
+  return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing,executionMode,traderBalanceUSD,effectiveRatio,maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,userPaused:this.store.userPaused===true,breaker:this.breakerReason(),pending:this.store.pending.length,deferredEntries:this.store.deferredEntries.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
   closed:closed.slice().reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
   ...(this.controls?{controls:this.controls.status(this.now())}:{}),
   ...(this.audit?{audit:this.auditStatus()}:{})}}
@@ -496,12 +513,24 @@ export class CopyExecutor{
   this.step=/^open/.test(tag)?'진입 주문':'시장가 주문';
   const positionSide=positionSideFor({hedge:p.hedge===true,direction:p.direction});
   if(this.#effectiveMakerFirst()&&!reduceOnly&&maker?.markPrice>0&&pos(p.tickSize)){
-   const r=await placeMakerThenMarket({
-    client:this.client,symbol:p.venueSymbol,side,positionSide,quantity,
-    quantityStep:maker.step??null,minQuantity:maker.minQty??0,tickSize:p.tickSize,
-    markPrice:maker.markPrice,hedge:p.hedge===true,clientOrderId:this.#clientId(p,tag),
-    waitMs:this.config.makerWaitMs??1000,pollMs:250,sleep:this.sleep,beforeSend,
-   });
+   const cid=this.#clientId(p,tag);
+   // On disk before the PostOnly child is sent (review 2026-11-23): after a crash the entry lookup must read the children.
+   if(!p.makerCids?.includes(cid)){(p.makerCids??=[]).push(cid);p.makerCids=p.makerCids.slice(-64);this.#save()}
+   let r;
+   try{
+    r=await placeMakerThenMarket({
+     client:this.client,symbol:p.venueSymbol,side,positionSide,quantity,
+     quantityStep:maker.step??null,minQuantity:maker.minQty??0,tickSize:p.tickSize,
+     markPrice:maker.markPrice,hedge:p.hedge===true,clientOrderId:cid,
+     waitMs:this.config.makerWaitMs??1000,pollMs:250,sleep:this.sleep,beforeSend,
+    });
+   }catch(e){
+    // The PostOnly child may still rest (no answer, MAKER_STATE_UNCONFIRMED, an unclear answer; open point (i) of the
+    // 2026-11-23 review): remembered on disk and cancelled by the next reconcile, so it cannot fill later into a
+    // position no ledger row follows. ENTRY_NOT_SENT: nothing on the book.
+    if(e?.code!=='ENTRY_NOT_SENT'){this.#noteUnsettled(p,makerChildIds(cid).limit);try{this.#save()}catch{}}
+    throw e;
+   }
    const ids=[...new Set([r.makerOrderId,r.marketOrderId].filter(Boolean))];
    for(const id of ids){
     const isMain=id===r.orderId;
@@ -597,7 +626,7 @@ export class CopyExecutor{
   if(this.store.positions[this.#key(p)]!==p||p.status!=='OPEN')return 'POSITION_NOT_OPEN';
   if(p.closing)return 'CLOSING';
   if(this.store.killed)return 'COPY_LOSS_LIMIT';
-  let g;try{g=this.gate()}catch{g={ok:false,reason:'GATE_ERROR'}}
+  let g;try{g=this.#gate()}catch{g={ok:false,reason:'GATE_ERROR'}}
   if(!g?.ok)return g?.reason||'GATE_CLOSED';
   if(entry.revision!==this.entryRevision||entry.gateRevision!==this.entryGateRevision())return 'ENTRY_INTERRUPTED';
   return this.#auditBlock(p.symbol,p.venueSymbol);
@@ -606,11 +635,10 @@ export class CopyExecutor{
   * position has not moved by a quantity step) / {} (cannot tell: never resent). */
  async #orderOutcome(p,clientOrderId,{before,step}){
   if(typeof this.client.getOrder!=='function')return {why:'NO_ORDER_LOOKUP'};
-  try{const o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId})),st=String(o?.status||'').toUpperCase(),exec=num(o?.executedQty)??0;
-   if(o&&(exec>0||st==='FILLED'||st==='PARTIALLY_FILLED'))return {filled:true,via:'ORDER',orderId:o.orderId??null,avg:pos(o.avgPrice),qty:exec>0?exec:null};
-   // Known to the venue and finished without a fill: absent; anything else (NEW / PENDING / no status): unknown.
-   if(!(o&&['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st)))return {why:'ORDER_STATE_'+(st||'UNKNOWN')};
-  }catch(e){if(!orderAbsent(e))return {why:'LOOKUP_'+(e.code||'FAILED')}}
+  // MAKER_FIRST sends child orders (cid[0..30]+'p' PostOnly, +'m' market remainder; audit C-2): all three are read.
+  const seen=await this.#lookupFamily(p,clientOrderId);
+  if(seen.filled)return {filled:true,via:'ORDER',orderId:seen.orderId,avg:seen.avg,qty:seen.qty};
+  if(!seen.absent)return {why:seen.why};
   try{const now=await this.#position(p),moved=Math.abs(now.size-(Number(before)||0)),unit=pos(step)??0;
    return moved>=(unit>0?unit:1e-12)*(1-1e-9)?{why:'SIZE_MOVED'}:{absent:true}}
   catch(e){return {why:'POSITION_'+(e.code||'FAILED')}}
@@ -727,14 +755,31 @@ export class CopyExecutor{
   * (cannot tell: no lookup call, no recorded order, or a failed lookup). */
  async #entryFill(p){
   const cids=p.entryCids||[];if(!cids.length||typeof this.client.getOrder!=='function')return {};
-  let absent=0;
+  let absent=0;const resting=[];
   for(const clientOrderId of cids){
-   try{const o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId})),st=String(o?.status||'').toUpperCase(),exec=num(o?.executedQty)??0;
-    if(o&&(exec>0||st==='FILLED'||st==='PARTIALLY_FILLED'))return {filled:true,qty:exec>0?exec:null,avg:pos(o.avgPrice)};
-    if(o&&['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st))absent++;}
-   catch(e){if(orderAbsent(e))absent++}
+   const f=await this.#lookupFamily(p,clientOrderId);
+   if(f.resting?.length)resting.push(...f.resting);
+   if(f.filled)return {filled:true,qty:f.qty,avg:f.avg,resting};
+   if(f.absent)absent++;
   }
-  return absent===cids.length?{absent:true}:{};
+  return absent===cids.length?{absent:true}:{resting};
+ }
+ /** One order id and its MAKER_FIRST children (maker_order.mjs makerChildIds): {filled, qty (summed), avg, orderId} /
+  * {absent} (each one "does not exist" or finished without a fill) / {why} (cannot tell). */
+ async #lookupFamily(p,clientOrderId){
+  // Children only for ids sent through the maker-first path (p.makerCids), so a plain market id costs one lookup.
+  const kids=makerChildIds(clientOrderId),ids=p.makerCids?.includes(clientOrderId)?[...new Set([clientOrderId,kids.limit,kids.market])]:[clientOrderId];
+  let qty=0,cost=0,orderId=null,anyFill=false,absent=0,why=null;const resting=[];
+  for(const id of ids){
+   try{const o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:id})),st=String(o?.status||'').toUpperCase(),exec=num(o?.executedQty)??0;
+    if(o&&RESTING_ORDER.has(st))resting.push(id); // still on the book (a PostOnly child left by a failed entry)
+    if(o&&(exec>0||st==='FILLED'||st==='PARTIALLY_FILLED')){anyFill=true;orderId??=o.orderId??null;if(exec>0){qty+=exec;const a=pos(o.avgPrice);if(a)cost+=a*exec}continue}
+    if(o&&['CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st)){absent++;continue}
+    why??='ORDER_STATE_'+(st||'UNKNOWN');
+   }catch(e){if(orderAbsent(e))absent++;else why??='LOOKUP_'+(e.code||'FAILED')}
+  }
+  if(anyFill)return {filled:true,orderId,qty:qty>0?+qty.toFixed(12):null,avg:qty>0&&cost>0?+(cost/qty).toPrecision(10):null,resting};
+  return absent===ids.length?{absent:true}:{why:why??'UNKNOWN',resting};
  }
  /** Our last close of this coin and side that did not follow the trader, with no trader close since. Unless it
   * was a confirmed manual close (externalClose), entering again would undo it (review 2026-11-14 / 2026-11-17). */
@@ -762,7 +807,7 @@ export class CopyExecutor{
    return res;
   }
   if(this.store.monitorStartAt&&at-this.store.monitorStartAt<this.config.snapshotMs){this.#event('SKIPPED',{symbol:m.symbol,reason:'MONITOR_RESTART_SNAPSHOT'});return {ok:false,reason:'SNAPSHOT'}}
-  const g=this.gate();if(!g.ok){if(g.reason==='UPDATING'&&this.#deferForUpdate(m))return {ok:false,reason:'UPDATING',deferred:true};this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
+  const g=this.#gate();if(!g.ok){if(g.reason==='UPDATING'&&this.#deferForUpdate(m))return {ok:false,reason:'UPDATING',deferred:true};this.#event('SKIPPED',{symbol:m.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   const symBlock=this.controls?.checkSymbol(m.symbol);if(symBlock){this.#event('SKIPPED',{symbol:m.symbol,...symBlock});return {ok:false,reason:symBlock.reason}}
   const cooldown=this.controls?.checkCooldown(this.now());if(cooldown){this.#event('SKIPPED',{symbol:m.symbol,...cooldown});return {ok:false,reason:cooldown.reason}}
   const audit=this.#auditBlock(m.symbol);if(audit){this.#event('SKIPPED',{symbol:m.symbol,reason:audit});return {ok:false,reason:audit}}
@@ -822,7 +867,7 @@ export class CopyExecutor{
    if(reason){this.#event('SKIPPED',{symbol:m.symbol,reason,...(detail?{detail}:{})});return {ok:false,reason}}
   }
   // Check gate & entry revision after parallel reads (e.g. if disarmed or kill-switched while awaiting balance/positions).
-  {const preGate=this.gate();
+  {const preGate=this.#gate();
    if(!preGate?.ok){const reason=preGate?.reason||'GATE_CLOSED';this.#event('SKIPPED',{symbol:m.symbol,reason});return {ok:false,reason}}
    if(entry&&(entry.revision!==this.entryRevision||entry.gateRevision!==this.entryGateRevision())){this.#event('SKIPPED',{symbol:m.symbol,reason:'ENTRY_INTERRUPTED'});return {ok:false,reason:'ENTRY_INTERRUPTED'}}}
   // unitMultiplier: venue contract of 1000 coins (1000PEPE) -> quantities / 1000, prices x 1000.
@@ -852,6 +897,10 @@ export class CopyExecutor{
    }
    if(qty<minQ||qty*minPrice<minN){qty=this.#qty(c,Math.max(minQ,minN/minPrice*1.05),'UP');minOrder=!minOnly}
   }
+  // A 1x trader-quantity match (user decision 2026-11-23 (b)): its margin is capped at COPY_MIN_ORDER_MAX_MARGIN_USD
+  // (5 $), measured at the higher of the card and venue prices; above it the entry is skipped.
+  if(matchTraderQty&&!minOrder){const need=qty*Math.max(price,venuePrice||0)/leverage;
+   if(need>this.config.minOrderMaxMarginUSD){this.#event('SKIPPED',{symbol:m.symbol,reason:'MATCH_TRADER_QTY_TOO_LARGE',need:+need.toFixed(2),cap:this.config.minOrderMaxMarginUSD,detail:`트레이더 1배 수량 증거금 $${need.toFixed(2)} > 한도 $${this.config.minOrderMaxMarginUSD}`});return {ok:false,reason:'MATCH_TRADER_QTY_TOO_LARGE'}}}
   if(minOnly&&qty*price/leverage>Math.max(this.config.minOrderMaxMarginUSD,this.config.firstMarginUSD*1.05)){this.#event('SKIPPED',{symbol:m.symbol,reason:'MIN_ORDER_TOO_LARGE',need:+(qty*price/leverage).toFixed(2)});return {ok:false,reason:'MIN_ORDER_TOO_LARGE'}}
   // The card's quantity must be coins: with a 마진 line, quantity x price must match margin x leverage
   // (within 30 %), else it may be a contract count and is not traded.
@@ -909,7 +958,12 @@ export class CopyExecutor{
    // The same limits as the first order (5 $ minimum-order margin, the copy margin cap, 90 % of the free
    // margin), measured at the higher of the card and venue prices.
    const margin=retryQty?retryQty*Math.max(price,venuePrice||0)/leverage:Infinity;
-   if(retryQty>qty&&(retryMatch||margin<=this.config.minOrderMaxMarginUSD)){
+   if(retryMatch&&retryQty>qty&&margin>this.config.minOrderMaxMarginUSD){
+    if(this.store.positions[key]===p)delete this.store.positions[key];
+    this.#event('SKIPPED',{symbol:m.symbol,reason:'MATCH_TRADER_QTY_TOO_LARGE',need:+margin.toFixed(2),cap:this.config.minOrderMaxMarginUSD,detail:`트레이더 1배 수량 증거금 $${margin.toFixed(2)} > 한도 $${this.config.minOrderMaxMarginUSD}`});
+    return {ok:false,reason:'MATCH_TRADER_QTY_TOO_LARGE'};
+   }
+   if(retryQty>qty&&margin<=this.config.minOrderMaxMarginUSD){
     this.#event('ENTRY_RETRY_MIN',{symbol:m.symbol,from:qty,to:retryQty,...(retryMatch?{matchTraderQty:true}:{})});
     qty=retryQty;p.firstQty=retryQty;
     if(retryMatch){scale=1;p.scale=1;p.matchTraderQty=true;p.minOrder=false}
@@ -1036,12 +1090,13 @@ export class CopyExecutor{
   p.qty=now.size;
   if(!(p.qty>0))return this.#gone(p,'POSITION_GONE',now);
   // A position we are closing (p.closing: loss limit, emergency) is never added to (review 2026-11-17).
-  const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.gate();
+  const g=p.closing?{ok:false,reason:'CLOSING'}:this.store.killed?{ok:false,reason:'COPY_LOSS_LIMIT'}:p.adds>=this.config.maxAdds?{ok:false,reason:'COPY_MAX_ADDS'}:this.#gate();
   if(!g.ok){if(g.reason==='UPDATING'&&this.#deferForUpdate({...m,symbol:p.symbol,direction:p.direction}))return {ok:false,reason:'UPDATING',deferred:true};this.#event(['COPY_MAX_ADDS','CLOSING'].includes(g.reason)?'ADD_SKIPPED':'SKIPPED',{symbol:p.symbol,reason:g.reason});return {ok:false,reason:g.reason}}
   const symBlock=this.controls?.checkSymbol(p.symbol);if(symBlock){this.#event('ADD_SKIPPED',{symbol:p.symbol,...symBlock});return {ok:false,reason:symBlock.reason}}
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
   const activeSizing=this.#effectiveSizing();
-  const needFunds=!p.matchTraderQty&&activeSizing==='BALANCE_RATIO'&&(this.config.mode==='LIVE'||p.scale!=null);
+  // A 1x-matched entry's adds follow the normal balance ratio with carry-over (user decision 2026-11-23 (b)).
+  const needFunds=p.matchTraderQty===true||activeSizing==='BALANCE_RATIO'&&(this.config.mode==='LIVE'||p.scale!=null);
   const auditPreReason=this.audit?this.#auditBlock(p.symbol,p.venueSymbol):null;
   const [checkedAudit,funds]=await Promise.all([
    this.audit&&!auditPreReason?this.#auditOpenOrders(p.venueSymbol):Promise.resolve(null),
@@ -1058,13 +1113,11 @@ export class CopyExecutor{
   }
   if(!(price>0)){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}
   let scale=p.scale;
-  if(p.matchTraderQty){
-   scale=1;p.scale=1;
-  }else if(needFunds){
+  if(needFunds){
    const ratioRes=this.#balanceRatio(funds),reason=this.#sendBlock(p,entry)??ratioRes.reason;
    if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason});return {ok:false,reason}}
    scale=ratioRes.scale;
-   if(p.scale!=null)p.scale=scale;
+   if(p.scale!=null||p.matchTraderQty)p.scale=scale;
   }
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
   const byFirst=scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
@@ -1273,6 +1326,8 @@ export class CopyExecutor{
   for(let sequence=1;sequence<=Math.min(128,Number(p.orderSeq)||0);sequence++)
    for(const tag of ['open','add','close','emergency'])owned.add(this.#clientId(p,`${tag}.${sequence}`));
   for(let cut=1;cut<=Math.min(64,Number(p.reduces)||0);cut++)owned.add(this.#clientId(p,'cut'+cut));
+  // MAKER_FIRST child orders of every id above (PostOnly 'p' and market remainder 'm').
+  for(const id of [...owned]){const k=makerChildIds(id);owned.add(k.limit);owned.add(k.market)}
   const rows=rowsOf(await this.client.allOrders({symbol:p.venueSymbol,startTime:startTs,endTime:endTs,limit:500}));
   for(const row of rows){
    const id=row?.orderId==null?null:String(row.orderId),side=String(row?.side).toUpperCase();
@@ -1334,6 +1389,10 @@ export class CopyExecutor{
  async #gone(p,reason,now){
   const key=this.#key(p);
   if(!p.steps?.length&&!p.closing){const f=await this.#entryFill(p);
+   // An entry PostOnly child still on the book (review 2026-11-23): not booked while it can still fill; the next
+   // reconcile cancels it first, then it is looked up again.
+   if(f.resting?.length){for(const id of f.resting)this.#noteUnsettled(p,id);this.#save();
+    this.#event('ENTRY_ORDER_RESTING',{symbol:p.symbol,reason,detail:'진입 PostOnly 주문이 아직 거래소에 남아 있음 — 취소 후 다시 확인'});return {ok:false,reason:'ENTRY_RESTING'}}
    if(f.absent){if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
     this.#event('ENTRY_NOT_FILLED',{symbol:p.symbol,reason,detail:'진입 주문이 거래소에 없음(80016) — 원장에서 지움'});return {ok:false,reason:'POSITION_GONE'}}
    p.steps=[{kind:f.filled?'OPEN':'ENTRY_UNVERIFIED',at:this.now(),qty:f.qty??null,avg:f.avg??null}]}
@@ -1375,6 +1434,7 @@ export class CopyExecutor{
  }
  async #reconcile(){
   if(this.audit)for(const p of Object.values(this.store.positions))if(p.auditQty==null)p.auditQty=pos(p.qty);
+  await this.#settleUnsettled();
   const inflight=job=>this.store.positions[this.#key(job.m)]?.inflight===true;
   const retried=new Set();
   for(const job of this.store.pending.splice(0)){
@@ -1404,6 +1464,8 @@ export class CopyExecutor{
     // An entry whose answer was lost: taken over only when its order shows filled; "does not exist" or a failed
     // lookup -> not ours to manage: dropped from the ledger, the venue position left alone (UNCONFIRMED_ADOPT).
     if(!p.steps?.length){const f=await this.#entryFill(p);
+     if(f.resting?.length)for(const id of f.resting)this.#noteUnsettled(p,id); // cancelled by the next reconcile
+     if(!f.filled&&f.resting?.length){this.#save();continue}
      if(!f.filled){const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
       this.#event('UNCONFIRMED_ADOPT',{symbol:p.symbol,reason:f.absent?'ENTRY_ORDER_NOT_FOUND':'ENTRY_LOOKUP_FAILED',size:now.size,detail:`거래소에 ${now.size} 보유 — 우리 진입 체결이 확인되지 않아 원장에 넣지 않음(직접 확인 필요)`});continue}
      p.steps=[{kind:'ADOPTED',at:this.now(),qty:now.size}];if(this.audit)p.auditQty=now.size}
@@ -1435,6 +1497,30 @@ export class CopyExecutor{
   const beyond=dir*(edge-close)>0,heavy=avgVol>0&&Number(last[5])>=avgVol*this.config.breakVolumeMult;
   if(beyond&&heavy)this.#event('ZONE_BREAK',{symbol:p.symbol,close,edge,volumeX:+(Number(last[5])/avgVol).toFixed(2)});
   return beyond&&heavy;
+ }
+ #noteUnsettled(p,clientOrderId){
+  const list=this.store.makerUnsettled;
+  if(!list.some(u=>u.clientOrderId===clientOrderId))list.push({symbol:p.symbol,venueSymbol:p.venueSymbol,clientOrderId,at:this.now()});
+  if(list.length>200)list.splice(0,list.length-200);
+ }
+ /** PostOnly children whose end state was never seen (#market, #gone): each is read by its clientOrderId; one still on
+  * the book is cancelled and read again next time; a finished one, or one the venue does not know, is dropped. */
+ async #settleUnsettled(){
+  const list=this.store.makerUnsettled;
+  if(!list.length||typeof this.client.getOrder!=='function')return;
+  const keep=[];
+  for(const u of list){
+   let o;
+   try{o=orderOf(await this.client.getOrder(u.venueSymbol,{clientOrderId:u.clientOrderId}))}
+   catch(e){if(!orderAbsent(e))keep.push(u);continue}
+   const st=String(o?.status||'').toUpperCase();
+   if(TERMINAL_ORDER.has(st))continue;
+   keep.push(u);
+   try{await this.client.cancelOrder(u.venueSymbol,o?.orderId!=null?String(o.orderId):undefined,{clientOrderId:u.clientOrderId});
+    this.#event('MAKER_REST_CANCELLED',{symbol:u.symbol,clientOrderId:u.clientOrderId,status:st||'UNKNOWN',detail:'확인되지 않은 PostOnly 주문 취소'})}
+   catch{}
+  }
+  this.store.makerUnsettled=keep;this.#save();
  }
  /** After the loss limit: copying resumes only when asked. */
  resume(){this.store.killed=false;this.#save();return this.status()}

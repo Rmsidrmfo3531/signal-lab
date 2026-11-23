@@ -979,7 +979,9 @@ export class ScalpExecutor{
    // Never sent blindly again: the client id is looked up first; an unknown outcome blocks new entries.
    let found=null;try{found=await cl.getOrder(vs,{clientOrderId:id})}catch{}
    if(!orderId(found)){
-    if(e?.code==='NETWORK_UNREACHABLE'||e?.code==='HTTP_429'){p.status='UNKNOWN';this.#event('ENTRY_OUTCOME_UNKNOWN',{symbol:p.symbol,reason:e.code});this.#save();return {entered:false,reason:'UNKNOWN'}}
+    // MAKER_STATE_UNCONFIRMED (maker_order.mjs): the PostOnly child may still rest; never dropped as rejected.
+    // HTTP 5xx: an answer that does not say the order was refused (maker_order.mjs rethrows it, review 2026-11-23).
+    if(e?.code==='NETWORK_UNREACHABLE'||e?.code==='HTTP_429'||e?.code==='MAKER_STATE_UNCONFIRMED'||/^HTTP_5\d\d$/.test(String(e?.code||''))){p.status='UNKNOWN';this.#event('ENTRY_OUTCOME_UNKNOWN',{symbol:p.symbol,reason:e.code});this.#save();return {entered:false,reason:'UNKNOWN'}}
     this.store.open=this.store.open.filter(x=>x!==p);this.#save();
     if(e?.code===POSITION_LIMIT_ERROR)return skip('VENUE_POSITION_LIMIT',`${e.code} · 주문 ${plan.qty}개 · 가용 ${venueAvailableQty??'미확인'}`);
     return skip('ENTRY_REJECTED',e?.code||e?.message)}

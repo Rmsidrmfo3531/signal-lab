@@ -31,6 +31,19 @@ function parseRange(v,lo,hi,name,int=false){
  return int?n:+n.toFixed(2);
 }
 
+/** Update marker (rearm-after-update.json, server.mjs): may the copy be switched back on after the update restart?
+ * Not after a user pause (screen / Telegram /pause), the copy loss-limit stop, or while the daily loss breaker holds
+ * (audit 2026-11-23: COPY.enabled alone re-armed a breaker-stopped copy at the next 2-minute auto update). */
+export function copyRearmable({copyEnabled=false,userPaused=false,killed=false,breakerTripped=false}={}){
+ return copyEnabled===true&&!userPaused&&!killed&&!breakerTripped;
+}
+/** At start-up: re-arm the copy from the update marker only when it was rearmable when written, it is fresh (15 min),
+ * the copy mode is the same, and none of the stops holds now. */
+export function copyRearmOnBoot({marker,now=Date.now(),copyMode,copyEnabled,killSwitch=false,killed=false,userPaused=false,breakerTripped=false}={}){
+ const fresh=Number.isFinite(Number(marker?.at))&&now-Number(marker.at)<15*60000&&!killSwitch;
+ return Boolean(fresh&&marker?.copyArmed===true&&marker?.copyMode===copyMode&&copyRearmable({copyEnabled,userPaused,killed,breakerTripped}));
+}
+
 export class RealAccountGuard{
  constructor({directory=null,fileName='real-safety.json',now=()=>Date.now(),
   onTrip=async()=>{},sendText=async()=>{},log=()=>{}}={}){

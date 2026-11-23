@@ -389,25 +389,38 @@ test('copy BALANCE_RATIO: the trader quantity x our equity / 20,000 $, no 1 $ fl
  assert.equal(ex3.status().positions[0].matchTraderQty,true);
 });
 
-test('live BALANCE_RATIO falls back to 1x trader quantity when scaled entry is below venue minimum and keeps 1x across adds and restarts',async()=>{
+test('live BALANCE_RATIO: a 1x trader-quantity match is capped at COPY_MIN_ORDER_MAX_MARGIN_USD; adds go back to the ratio with carry-over (decision 2026-11-23 b)',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'copy-live-1x-'));
  try{
   const openSmall=`📌 포지션 진입\n━━━━━━━━━━━━━━━━\nTNSRUSDT 🔴 Short ×7\n━━━━━━━━━━━━━━━━\n진입가 0.05100 USDT\n현재가 0.05100 USDT\n수량 200`;
   const v=venue(),config=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'});
+  assert.equal(config.minOrderMaxMarginUSD,5);
   const makeEx=()=>new CopyExecutor({config,client:v.client,contractOf:async()=>contract,directory:dir,
    balance:async()=>({equity:3081,available:2921}),now:()=>1e12});
-  // 200 * (2921 / 20000) = 29 coins = $1.48 < $2 venue min -> enters exact 1x trader qty (200) instead of venue minimum.
+  // 200 * (2921 / 20000) = 29 coins = $1.48 < $2 venue min -> enters exact 1x trader qty (200): margin 200*0.051/7 = $1.46 <= $5.
   let ex=makeEx();
   assert.equal((await ex.handle({id:1,date:1e12,text:openSmall})).ok,true);
   assert.equal(v.size,200,'entered exact 1x trader quantity');
   assert.equal(ex.status().positions[0].matchTraderQty,true);
-  assert.equal(ex.status().positions[0].scale,1);
-  // Reload from disk and verify subsequent adds stay 1x (not scaled back down to 14.6%).
+  // Reload from disk: adds use the balance ratio (2921/20000 = 0.14605) with carry-over, never 1x.
   ex=makeEx();
   assert.equal((await ex.handle({id:2,date:1e12+1000,text:CHANGE(200,500)})).ok,true);
-  assert.equal(v.size,500,'added exact 1x (+300) matching trader total');
-  assert.equal((await ex.handle({id:3,date:1e12+2000,text:CHANGE(500,700)})).ok,true);
-  assert.equal(v.size,700,'added exact 1x (+200) again');
+  assert.equal(v.size,243,'+300 x 0.14605 = 43.8 -> 43 (carry 0.8)');
+  const r2=await ex.handle({id:3,date:1e12+2000,text:CHANGE(500,700)});
+  assert.equal(r2.carried,true,'+200 x 0.14605 + 0.8 = 30 coins = $1.59 < $2 minimum -> carried');
+  assert.equal(v.size,243);
+  assert.equal((await ex.handle({id:4,date:1e12+3000,text:CHANGE(700,1000)})).ok,true);
+  assert.equal(v.size,316,'+300 x 0.14605 + 30.0 carried = 73.8 -> 73');
+  // A larger trader quantity whose 1x match needs more than $5 of margin is skipped with a reason.
+  const v2=venue(),ex2=new CopyExecutor({config,client:v2.client,contractOf:async()=>contract,balance:async()=>({equity:3081,available:2921}),now:()=>1e12});
+  const openBig=openSmall.replace('수량 200','수량 1000').replace('TNSRUSDT 🔴 Short ×7','TNSRUSDT 🔴 Short ×1');
+  // 1000 x 0.14605 = 146 coins x 0.051 = $7.4 >= $2: the plain ratio, no match needed.
+  assert.equal((await ex2.handle({id:1,date:1e12,text:openBig})).ok,true);assert.equal(v2.size,146);
+  const v3=venue(),ex3=new CopyExecutor({config,client:v3.client,contractOf:async()=>contract,balance:async()=>({equity:300,available:100}),now:()=>1e12});
+  // 1000 x 100/20000 = 5 coins ($0.26 < $2) -> 1x would be 1000 x 0.051 / 1 = $51 margin > $5 -> skipped.
+  const r3=await ex3.handle({id:1,date:1e12,text:openBig});
+  assert.equal(r3.reason,'MATCH_TRADER_QTY_TOO_LARGE');assert.equal(v3.size,0);
+  assert.ok(ex3.status().events.some(e=>e.reason==='MATCH_TRADER_QTY_TOO_LARGE'&&e.need>5));
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
@@ -555,7 +568,7 @@ test('copy MIN_ORDER (selectable): first buy = venue minimum, adds in proportion
 });
 
 test('copy: the screen gets PnL from the last price and a fresh balance',async()=>{
- const v=venue();let mark=0.05,eq=400,reads=0;const ex=new CopyExecutor({config:copyConfig({},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>mark,balance:async()=>{reads++;return {equity:eq,available:300}},now:()=>1e12});
+ const v=venue();let mark=0.05,eq=400,reads=0;const ex=new CopyExecutor({config:copyConfig({COPY_MIN_ORDER_MAX_MARGIN_USD:'20'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>mark,balance:async()=>{reads++;return {equity:eq,available:300}},now:()=>1e12});
  await ex.handle({id:1,date:1e12,text:OPEN});const p=ex.status().positions[0];
  mark=p.avg*0.9;eq=412;const s=await ex.liveStatus(),q=s.positions[0];
  // A short gains 10 % of avg x qty when the price falls 10 %.

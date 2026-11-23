@@ -1528,3 +1528,14 @@ test('defensive 1st scale-in fires at -40% ROE (0.75x) instead of stopping out, 
 
 
 
+
+test('maker entry: an unclear PostOnly answer (HTTP 5xx) is an unknown outcome, never dropped as rejected nor followed by a market order (review 2026-11-23)',async()=>{
+ const v=venue(),ex=make(v,{config:{makerEntry:true,makerWaitMs:10,makerPollMs:50}});
+ const place=v.client.placeOrder;
+ // The PostOnly order reaches the book, but the answer is a gateway error.
+ v.client.placeOrder=async(p,o)=>{const r=await place(p,o);if(p.type==='LIMIT'&&p.timeInForce==='PostOnly')throw Object.assign(Error('bad gateway'),{code:'HTTP_502'});return r};
+ ex.arm();await ex.scan();
+ assert.equal(placed(v,'MARKET').length,0,'no market order on top of a PostOnly order that may rest');
+ assert.equal(ex.store.open.length,1);assert.equal(ex.store.open[0].status,'UNKNOWN');
+ assert.ok(ex.store.events.some(e=>e.type==='ENTRY_OUTCOME_UNKNOWN'&&e.reason==='HTTP_502'));
+});

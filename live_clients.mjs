@@ -111,7 +111,8 @@ export class BingXTradeClient{
  testOrder(params){return this.request('POST','/openApi/swap/v2/trade/order/test',params)}
  openOrders(symbol){return this.request('GET','/openApi/swap/v2/trade/openOrders',symbol?{symbol}:{})}
  getOrder(symbol,{orderId,clientOrderId}){return this.request('GET','/openApi/swap/v2/trade/order',{symbol,...(orderId?{orderId}:{clientOrderId})})}
- cancelOrder(symbol,orderId){return this.request('DELETE','/openApi/swap/v2/trade/order',{symbol,orderId})}
+ // By orderId, or by clientOrderId when the orderId is not known (maker_order.mjs cancel after a lost answer).
+ cancelOrder(symbol,orderId,{clientOrderId}={}){return this.request('DELETE','/openApi/swap/v2/trade/order',{symbol,...(orderId!=null||!clientOrderId?{orderId}:{clientOrderId})})}
  // Read only (copy: why a position vanished, review 2026-11-17): liquidation / ADL orders, and the order history.
  forceOrders({symbol,autoCloseType,startTime,endTime,limit=50}={}){return this.request('GET','/openApi/swap/v2/trade/forceOrders',defined({symbol,autoCloseType,startTime,endTime,limit}))}
  allOrders({symbol,startTime,endTime,limit=500}={}){return this.request('GET','/openApi/swap/v2/trade/allOrders',defined({symbol,startTime,endTime,limit}))}

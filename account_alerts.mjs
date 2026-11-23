@@ -2,6 +2,8 @@
 //  - #2 Combined manual + copy real-time risk alerts (margin usage % & unrealized loss %)
 //  - #5 Daily closing summary report (00:00 KST, plus on-demand /report)
 //  - #6 Private-chat Telegram bot commands (/status, /pause, /resume, /close + /confirm, /report, /help)
+//    2026-11-23 (user decision (c)): /resume and /size are 2-step too (/confirm within 60 s); /resume never releases
+//    the copy loss-limit stop (screen COPY_RESUME only); commands older than the process start or 2 minutes are dropped.
 //  - #7 Position ROI milestone alerts (manual + copy)
 //  - #8 Copy entry/add skip alert toggle + 5-min deduplication
 // Never emits scan signals; only operates on confirmed real-account state & authorized private chat.
@@ -31,6 +33,7 @@ const KST_MS=9*3600000;
 const RISK_COOLDOWN_MS=30*60000;
 const SKIP_DEDUP_MS=5*60000;
 const CONFIRM_TTL_MS=60000;
+const COMMAND_MAX_AGE_MS=120000;
 const NOISY_SKIPS=new Set(['NOT_COPIED','COPY_OFF','MONITOR_RESTART_SNAPSHOT','STALE_MESSAGE']);
 
 export const kstDay=t=>new Date(Number(t)+KST_MS).toISOString().slice(0,10);
@@ -193,7 +196,7 @@ export class AccountAlerts{
   this.riskSent=new Map(); // key -> {at, armed}
   this.positionTiers=new Map(); // posKey -> {profit:number, loss:number}
   this.skipDedup=new Map(); // skipKey -> at
-  this.pendingClose=null; // {code, symbol, direction, expiresAt}
+  this.pendingAction=null; // {kind:'CLOSE'|'RESUME'|'SIZE', code, expiresAt, ...}
   this.polling=false;
   this.getUpdatesRequest=typeof post==='function'
    ?createTelegramNetworkRecovery((payload,options)=>post(payload,{...options,method:'getUpdates'}))
@@ -415,9 +418,9 @@ export class AccountAlerts{
     '/size [금액|0.5x|1x|2x] — 카피 기준 잔고 조회·변경',
     '/block [종목] — 카피 제외 목록 조회·추가',
     '/unblock 종목 — 카피 제외 목록에서 제거',
-    '/pause · /resume — 실계좌 카피 일시정지·재개',
+    '/pause · /resume — 실계좌 카피 일시정지·재개 (재개는 2단계 확인, 손실 한도 정지는 화면에서만 해제)',
     '/close 종목 [LONG|SHORT] 또는 /close ALL — 청산 (2단계 확인)',
-    '/confirm 코드 — 청산 실행 확인',
+    '/confirm 코드 — /close · /resume · /size 실행 확인 (60초 안)',
    ].join('\n');
   }
 
@@ -460,11 +463,15 @@ export class AccountAlerts{
     next=km?Math.round(Number(km[1])*1000):Number(arg);
    }
    if(!Number.isFinite(next)||next<1000||next>1000000)return '⚠️ 기준 잔고는 1,000 ~ 1,000,000 USD 사이로 입력하세요. (예: /size 20000 또는 /size 0.5x)';
-   try{
-    const res=await this.onControls({sizing:'BALANCE_RATIO',traderBalanceUSD:Math.round(next)});
-    const tb=res?.traderBalanceUSD??Math.round(next);
-    return `✅ 카피 기준 잔고를 $${Number(tb).toLocaleString()}로 변경했습니다.\n(잔고 비례 모드 · 내 순자산 ÷ $${Number(tb).toLocaleString()} 비율 자동 적용)`;
-   }catch(e){return `⚠️ 변경 실패: ${e?.message||'ERROR'}`}
+   next=Math.round(next);
+   // 2-step (user decision 2026-11-23 (c)): shows the before / after copy size before anything changes.
+   let cur=null;try{cur=await this.onControls(null)}catch{}
+   const before=Number(cur?.traderBalanceUSD)||null;
+   const factor=before?before/next:null;
+   const code=String(randomInt(1000,10000));
+   this.pendingAction={kind:'SIZE',code,traderBalanceUSD:next,before,expiresAt:now+CONFIRM_TTL_MS};
+   const big=factor&&(factor>3||factor<1/3)?`\n⚠️ 한 번에 ${factor>1?factor.toFixed(1)+'배로 커지는':(1/factor).toFixed(1)+'분의 1로 줄어드는'} 큰 변경입니다.`:'';
+   return `⚠️ 카피 기준 잔고 변경 확인\n변경 전: ${before?'$'+before.toLocaleString():'확인 불가'} → 변경 후: $${next.toLocaleString()}\n카피 수량: ${factor?`지금의 ${factor.toFixed(2)}배`:'확인 불가'} (내 가용 증거금 ÷ 기준 잔고, 진입·추매마다 다시 계산)${big}\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
   }
 
   if(cmd==='/block'||cmd==='/제외'){
@@ -496,13 +503,18 @@ export class AccountAlerts{
   }
 
   if(cmd==='/pause'||cmd==='/정지'){
+   this.pendingAction=null;
    await this.onPause();
    return '⏸ 실계좌 카피 매매를 일시정지(비활성화)했습니다.\n기존 포지션은 유지되며 새 진입만 멈춥니다.';
   }
 
   if(cmd==='/resume'||cmd==='/재개'){
-   await this.onResume();
-   return '▶️ 실계좌 카피 매매를 재개(활성화)했습니다.';
+   const code=String(randomInt(1000,10000));
+   this.pendingAction={kind:'RESUME',code,expiresAt:now+CONFIRM_TTL_MS};
+   // The resume also ends an active copy cooldown (연속 손실·하루 손실 휴식): said before /confirm (review 2026-11-23).
+   let cur=null;try{if(typeof this.onControls==='function')cur=await this.onControls(null)}catch{}
+   const cd=cur?.controls?.cooldownActive?`\n⚠️ 지금 카피 휴식 중입니다${cur.controls.cooldownReason?` (${cur.controls.cooldownReason})`:''}: 재개하면 휴식도 해제됩니다.`:'';
+   return `⚠️ 실계좌 카피 재개 확인\n새 진입·추매가 다시 실행됩니다. (손실 한도 정지는 텔레그램으로 풀 수 없고 화면에서만 해제합니다)${cd}\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
   }
 
   if(cmd==='/report'||cmd==='/리포트'){
@@ -527,20 +539,38 @@ export class AccountAlerts{
    const target=rawSym==='ALL'?'ALL':displaySymbol(rawSym.endsWith('USDT')?rawSym:`${rawSym}USDT`);
    if(target!=='ALL'&&!/^[A-Z0-9]{4,30}$/.test(target))return '⚠️ 종목 형식이 올바르지 않습니다.';
    const code=String(randomInt(1000,10000));
-   this.pendingClose={code,symbol:target,direction,expiresAt:now+CONFIRM_TTL_MS};
+   this.pendingAction={kind:'CLOSE',code,symbol:target,direction,expiresAt:now+CONFIRM_TTL_MS};
    const label=target==='ALL'?'전체 보유 포지션':`${target}${direction?` ${sideKo(direction)}`:' (전체 방향)'}`;
    return `⚠️ 실계좌 시장가 청산 확인\n대상: ${label}\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
   }
 
   if(cmd==='/confirm'||cmd==='/확인'){
    const code=String(parts[1]||'').trim();
-   const pending=this.pendingClose;
+   const pending=this.pendingAction;
    if(!pending||now>pending.expiresAt){
-    this.pendingClose=null;
-    return '⚠️ 유효한 청산 확인 요청이 없거나 만료되었습니다. /close 명령부터 다시 입력하세요.';
+    this.pendingAction=null;
+    return '⚠️ 유효한 확인 요청이 없거나 만료되었습니다. /close · /resume · /size 명령부터 다시 입력하세요.';
    }
    if(code!==pending.code)return '⚠️ 확인 코드가 일치하지 않습니다.';
-   this.pendingClose=null;
+   this.pendingAction=null;
+   if(pending.kind==='RESUME'){
+    try{
+     const res=await this.onResume();
+     if(res?.ok===false){
+      if(res.reason==='COPY_LOSS_LIMIT')return '⛔ 카피 손실 한도 정지 상태라 텔레그램으로 재개할 수 없습니다.\n실계좌 화면(#real)의 "손실 한도 해제"(COPY_RESUME) 확인 버튼으로만 풀 수 있습니다.';
+      if(res.reason==='DAILY_LOSS_CIRCUIT_BREAKER')return '⛔ 오늘 실계좌 일일 손실 차단이 발동 중이라 카피를 켤 수 없습니다. (한국 시간 자정에 풀리며, 화면의 계좌 안전 가드에서만 해제할 수 있습니다)';
+      return `⚠️ 재개 실패: ${res.message||res.reason||'알 수 없는 오류'}`;
+     }
+     return '▶️ 실계좌 카피 매매를 재개(활성화)했습니다.';
+    }catch(e){return `⚠️ 재개 오류: ${e?.message||'ERROR'}`}
+   }
+   if(pending.kind==='SIZE'){
+    try{
+     const res=await this.onControls({sizing:'BALANCE_RATIO',traderBalanceUSD:pending.traderBalanceUSD});
+     const tb=res?.traderBalanceUSD??pending.traderBalanceUSD;
+     return `✅ 카피 기준 잔고를 $${Number(tb).toLocaleString()}로 변경했습니다.\n(잔고 비례 모드 · 내 가용 증거금 ÷ $${Number(tb).toLocaleString()} 비율 자동 적용)`;
+    }catch(e){return `⚠️ 변경 실패: ${e?.message||'ERROR'}`}
+   }
    try{
     const res=await this.onClose({symbol:pending.symbol,direction:pending.direction});
     if(res?.ok===false)return `⚠️ 청산 실패: ${res.message||res.error||'알 수 없는 오류'}`;
@@ -564,16 +594,19 @@ export class AccountAlerts{
    if(!response?.ok)return;
    const body=await response.json().catch(()=>null);
    if(!body?.ok||!Array.isArray(body.result)||!body.result.length)return;
-   const initial=this.store.lastUpdateId==null;
    let maxId=this.store.lastUpdateId??-1;
    for(const u of body.result){
     if(Number.isSafeInteger(u?.update_id)&&u.update_id>maxId)maxId=u.update_id;
     const msg=u?.message;
     if(!msg||typeof msg.text!=='string')continue;
     if(msg.forward_date||msg.forward_origin)continue;
-    const msgAt=Number(msg.date)*1000;
-    // On very first boot without saved offset, skip commands older than 60s before boot.
-    if(initial&&Number.isFinite(msgAt)&&msgAt<this.bootAt-60000)continue;
+    // Always (not only on the first boot, audit 2026-11-23): a command sent before this process started or more
+    // than 2 minutes ago is dropped (Telegram dates are whole seconds); one without a date is dropped too.
+    const msgSec=Number(msg.date);
+    if(!Number.isFinite(msgSec)||msgSec<Math.floor(this.bootAt/1000)||msgSec*1000<this.now()-COMMAND_MAX_AGE_MS){
+     this.log('[ALERTS] stale command dropped',String(msg.text).split(/\s+/)[0].slice(0,20));
+     continue;
+    }
     const reply=await this.handleCommand(msg.text,msg.chat?.id,this.now());
     if(reply){
      const isHtml=isHtmlMessage(reply);

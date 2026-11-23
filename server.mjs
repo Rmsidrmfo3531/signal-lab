@@ -61,8 +61,8 @@ import {createVenuePositionsReader,venueRows,normalizeVenuePosition} from './ven
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
-import {RealTrailingManager} from './real_trailing.mjs';
-import {RealAccountGuard,REAL_SAFETY_COPY_PRESET} from './real_safety.mjs';
+import {RealTrailingManager,REAL_TRAILING_DEFAULTS,feeNetBreakevenPrice} from './real_trailing.mjs';
+import {RealAccountGuard,REAL_SAFETY_COPY_PRESET,copyRearmable as copyRearmableNow,copyRearmOnBoot} from './real_safety.mjs';
 import {fetchOrderflow,fetchOrderflowWithFirechart,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
 import {configureFirechartPersistence} from './firechart.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
@@ -339,6 +339,13 @@ const venuePositionsReader=realBingxClient?.mode==='LIVE'
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
 let accountAlerts=null,realTrailing=null,realSafety=null;
+// Built before the post-update re-arm below reads it (audit 2026-11-23: it was still null there).
+if(COPY.mode==='LIVE')realSafety=new RealAccountGuard({
+ directory:storage.dir,
+ onTrip:()=>{if(copyTrader?.armed)copyTrader.disarm()},
+ sendText:text=>sendTradeTelegram(text),
+ log:(...a)=>console.log('[REAL_SAFETY]',...a),
+});
 const realOpenStops={at:0,pending:null,byKey:new Map(),ready:false};
 async function readRealOpenStops(positions){
  if(!realBingxClient||realBingxClient.mode!=='LIVE'||typeof realBingxClient.openOrders!=='function'||!Array.isArray(positions)||!positions.length)return realOpenStops;
@@ -425,6 +432,9 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,controls:copyControls
   return out},
  // Testnet copy follows the signal strategy's switch; real-money copy has its own (off after every restart).
  entryGateRevision:()=>COPY.mode==='LIVE'?live.killRevision:live.entryRevision,
+ // Real-account daily loss circuit breaker (real_safety.mjs, -8 %): new entries and adds refused while tripped,
+ // closes and cuts still go through (audit 2026-11-23: a re-armed copy was never stopped again the same day).
+ breaker:()=>COPY.mode==='LIVE'&&realSafety?.isTripped()?'DAILY_LOSS_CIRCUIT_BREAKER':null,
  gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:live.updating||live.paused?{ok:false,reason:'UPDATING'}:COPY.mode==='LIVE'?(copyTrader.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'}):LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
  // Also a symbol the live executor is entering right now (busy), not only recorded positions.
  isBusy:symbol=>COPY_ON_SAME_ACCOUNT()&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol))||COPY.mode==='TESTNET'&&Boolean(scalpExec?.heldSymbols().has(symbol)),
@@ -681,7 +691,9 @@ async function sendRealTradeTelegram(e){
   if(fresh&&m.signalArmed!==false&&m?.mode==='TESTNET'&&LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY){live.arm();restored.push('신호 전략 ●');console.log('[LIVE] 업데이트 후 자동 활성화 (테스트넷)')}
   // Copy, real account included (user 2026-11-16 "실계좌도 알아서 켜주고"): only after the one-tap update,
   // only if it was on when the update started, same mode, copy enabled, its loss limit not hit.
-  if(fresh&&m.copyArmed===true&&m.copyMode===COPY.mode&&COPY.enabled&&!copyTrader.store.killed){
+  // Not when the user paused it (screen / Telegram /pause) or the real-account daily loss breaker holds (2026-11-23).
+  if(copyRearmOnBoot({marker:m,now:Date.now(),copyMode:COPY.mode,copyEnabled:COPY.enabled,killSwitch:live.store.killSwitch,killed:copyTrader.store.killed,
+   userPaused:copyTrader.store.userPaused,breakerTripped:COPY.mode==='LIVE'&&Boolean(realSafety?.isTripped())})){
    copyTrader.arm();restored.push(`${COPY.mode==='LIVE'?'실계좌':'테스트넷'} 카피 ●`);console.log(`[COPY] 업데이트 후 자동 활성화 (${COPY.mode==='LIVE'?'실계좌':'테스트넷'})`);
    if(copyTrader.store.deferredEntries.length)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{}).then(()=>copyTrader.replayDeferred()).catch(e=>console.warn('[COPY REPLAY]',e.message))},2000).unref?.();
   }
@@ -693,9 +705,16 @@ async function sendRealTradeTelegram(e){
  }catch(e){console.warn('[UPDATE NOTICE]',e.message)}
 }
 // Shared real-account position operator (used by Telegram /close+#confirm and dashboard one-click actions).
-async function executeRealPositionAction({symbol,direction=null,action,stopPrice=null,lossRoePct=null,closePct=null}={}){
+// TRAIL_STOP / CANCEL_STOP are internal (real_trailing.mjs): the exchange lock stop and its clean-up; the HTTP route
+// below accepts only the four screen actions.
+async function executeRealPositionAction({symbol,direction=null,action,stopPrice=null,lossRoePct=null,closePct=null,feePct=null,replaceOrderId=null,venueSymbol=null,orderId=null}={}){
  if(COPY.mode!=='LIVE'||!realBingxClient)return {ok:false,status:409,error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'};
- if(!['CLOSE_ALL','CLOSE_HALF','BREAKEVEN_STOP','SET_STOP_LOSS'].includes(action))return {ok:false,status:400,error:'INVALID_ACTION',message:'지원하지 않는 포지션 작업입니다'};
+ if(!['CLOSE_ALL','CLOSE_HALF','BREAKEVEN_STOP','SET_STOP_LOSS','TRAIL_STOP','CANCEL_STOP'].includes(action))return {ok:false,status:400,error:'INVALID_ACTION',message:'지원하지 않는 포지션 작업입니다'};
+ if(action==='CANCEL_STOP'){
+  if(!venueSymbol||orderId==null)return {ok:false,status:400,error:'ORDER_REQUIRED',message:'취소할 스탑 주문이 없습니다'};
+  try{await realBingxClient.cancelOrder(venueSymbol,String(orderId))}catch(e){return {ok:false,status:502,error:e?.code||'CANCEL_FAILED',message:e?.message||'스탑 주문 취소 실패'}}
+  realOpenStops.at=0;return {ok:true,action,orderId:String(orderId)};
+ }
  const mode=await readPositionMode(realBingxClient);
  if(!mode.ok)return {ok:false,status:502,error:mode.reason,message:'포지션 모드(단방향/헤지)를 확인하지 못했습니다'};
  const hedge=mode.hedge;
@@ -709,7 +728,7 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
   ?(action==='CLOSE_ALL'?open:[])
   :open.filter(p=>(p.symbol===normSym||displaySymbol(p.symbol)===normDisp)&&(!direction||p.direction===direction));
  if(!targets.length)return {ok:false,status:404,error:'POSITION_NOT_FOUND',message:'해당 조건의 보유 포지션이 없습니다'};
- if(action==='BREAKEVEN_STOP'||action==='SET_STOP_LOSS'){
+ if(action==='BREAKEVEN_STOP'||action==='SET_STOP_LOSS'||action==='TRAIL_STOP'){
   if(targets.length!==1)return {ok:false,status:400,error:'SINGLE_POSITION_REQUIRED',message:'손절 설정은 방향을 지정한 단일 포지션에만 적용됩니다'};
   const p=targets[0],dir=p.direction==='LONG'?1:-1;
   const mark=p.mark||markOf(p.venueSymbol);
@@ -718,8 +737,17 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
   const c=resolveCopyContract(contracts,p.symbol)||contracts?.get?.(p.symbol)||[...(contracts?.values?.()||[])].find(x=>x?.venueSymbol===p.venueSymbol);
   let targetStop=null;
   if(action==='BREAKEVEN_STOP'){
-   if(!(dir*(mark-p.avg)>0))return {ok:false,status:409,error:'NOT_IN_PROFIT',message:'현재가가 평균 진입가보다 수익 구간에 있을 때만 본전 스탑을 걸 수 있습니다'};
-   targetStop=c?.tickSize?roundDecimalToStep(p.avg,c.tickSize,p.direction==='LONG'?'UP':'DOWN'):String(p.avg);
+   // Entry plus round-trip fees (audit 2026-11-23): a fill at the stop does not lose the fees.
+   const fee=feePct!=null&&Number.isFinite(Number(feePct))&&Number(feePct)>=0?Number(feePct):(realTrailing?.status().roundTripFeePct??REAL_TRAILING_DEFAULTS.roundTripFeePct);
+   const be=feeNetBreakevenPrice({avg:p.avg,direction:p.direction,feePct:fee});
+   const beStop=c?.tickSize?roundDecimalToStep(be,c.tickSize,p.direction==='LONG'?'UP':'DOWN'):String(+be.toPrecision(8));
+   if(!(dir*(mark-Number(beStop))>0))return {ok:false,status:409,error:'NOT_IN_PROFIT',message:'현재가가 평균 진입가+수수료보다 수익 구간에 있을 때만 본전 스탑을 걸 수 있습니다'};
+   targetStop=beStop;
+  }else if(action==='TRAIL_STOP'){
+   const raw=Number(stopPrice);
+   if(!(raw>0))return {ok:false,status:400,error:'INVALID_STOP_PRICE',message:'잠금 스탑 가격이 없습니다'};
+   targetStop=c?.tickSize?roundDecimalToStep(raw,c.tickSize,p.direction==='LONG'?'DOWN':'UP'):String(+raw.toPrecision(8));
+   if(!(dir*(mark-Number(targetStop))>0))return {ok:false,status:409,error:'STOP_PASSED',message:'현재가가 이미 잠금 스탑 가격을 지났습니다'};
   }else{
    const roe=Number(lossRoePct),explicit=Number(stopPrice);
    let rawStop=Number.isFinite(explicit)&&explicit>0?explicit:null;
@@ -731,16 +759,21 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
    if(!(rawStop>0)||!(dir*(mark-rawStop)>0))return {ok:false,status:400,error:'INVALID_STOP_PRICE',message:'손절가는 현재가보다 손실 방향에 위치해야 합니다'};
    targetStop=c?.tickSize?roundDecimalToStep(rawStop,c.tickSize,p.direction==='LONG'?'DOWN':'UP'):String(+rawStop.toPrecision(6));
   }
-  const cid=((action==='BREAKEVEN_STOP'?'opbe':'opsl')+Date.now().toString(36)).slice(0,32);
-  await realBingxClient.placeOrder({
+  const cid=((action==='BREAKEVEN_STOP'?'opbe':action==='TRAIL_STOP'?'optr':'opsl')+Date.now().toString(36)).slice(0,32);
+  const placed=await realBingxClient.placeOrder({
    symbol:p.venueSymbol,side:p.direction==='LONG'?'SELL':'BUY',
    positionSide:positionSideFor({hedge,direction:p.direction}),
    type:'STOP_MARKET',quantity:String(p.size),stopPrice:String(targetStop),
    closePosition:'true',workingType:'MARK_PRICE',clientOrderId:cid,
   });
   realOpenStops.at=0;
-  const label=action==='BREAKEVEN_STOP'?'본전 스탑':`손절 스탑${Number(lossRoePct)>0?` (-${Number(lossRoePct)}% ROE)`:''}`;
-  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
+  const newOrderId=(placed?.order??placed)?.orderId;
+  // The lock stop moves up: the new one is in first, then the old one is cancelled (never without a stop). A failed
+  // cancel is reported (staleOrderId) so real_trailing.mjs cancels it with the others when the position is gone.
+  let staleOrderId=null;
+  if(action==='TRAIL_STOP'&&replaceOrderId&&String(replaceOrderId)!==String(newOrderId??'')){try{await realBingxClient.cancelOrder(p.venueSymbol,String(replaceOrderId))}catch(e){staleOrderId=String(replaceOrderId);console.warn('[REAL_TRAIL] old stop cancel',e?.code||e?.message)}}
+  const label=action==='BREAKEVEN_STOP'?'본전 스탑(수수료 포함)':action==='TRAIL_STOP'?'트레일링 잠금 스탑':`손절 스탑${Number(lossRoePct)>0?` (-${Number(lossRoePct)}% ROE)`:''}`;
+  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),orderId:newOrderId!=null?String(newOrderId):null,venueSymbol:p.venueSymbol,...(staleOrderId?{staleOrderId}:{}),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
  }
  const partPct=Number.isFinite(Number(closePct))&&Number(closePct)>0&&Number(closePct)<100?Math.round(Number(closePct)):50;
  const results=[];
@@ -794,11 +827,15 @@ if(COPY.mode==='LIVE'){
    if(patch){copyControls.configure(patch);reportsDirty=true}
    return {controls:copyControls.status(),traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD)};
   },
-  onPause:()=>copyTrader.disarm(),
+  onPause:()=>copyTrader.disarm({user:true}),
+  // /resume (after /confirm): never releases the copy loss-limit stop (`killed`, screen COPY_RESUME only) and never
+  // arms while the daily loss breaker holds (user decision 2026-11-23 (c)).
   onResume:()=>{
-   if(copyTrader.store.killed)copyTrader.resume();
+   if(copyTrader.store.killed)return {ok:false,reason:'COPY_LOSS_LIMIT'};
+   if(realSafety?.isTripped())return {ok:false,reason:'DAILY_LOSS_CIRCUIT_BREAKER'};
    if(copyControls.status().cooldownActive)copyControls.configure({clearCooldown:true});
-   return copyTrader.arm();
+   try{copyTrader.arm()}catch(e){return {ok:false,reason:e.code||'ARM_REFUSED'}}
+   return {ok:true};
   },
   onClose:({symbol,direction})=>executeRealPositionAction({symbol,direction,action:'CLOSE_ALL'}),
  });
@@ -807,12 +844,6 @@ if(COPY.mode==='LIVE'){
   executeAction:executeRealPositionAction,
   sendText:sendTradeTelegram,
   log:(...a)=>console.log('[REAL_TRAIL]',...a),
- });
- realSafety=new RealAccountGuard({
-  directory:storage.dir,
-  onTrip:()=>{if(copyTrader?.armed)copyTrader.disarm()},
-  sendText:sendTradeTelegram,
-  log:(...a)=>console.log('[REAL_SAFETY]',...a),
  });
  const checkRiskAndRoi=async()=>{
   if(!venuePositionsReader||!accountAlerts)return;
@@ -824,7 +855,8 @@ if(COPY.mode==='LIVE'){
    await accountAlerts.checkPositions({positions});
    await accountAlerts.checkPositionSummary({positions});
    if(realSafety)await realSafety.evaluateDailyLoss({equityUSD:eq,dailyByDay:dailyPnl?.status()?.byDay??null,positions});
-   if(realTrailing)await realTrailing.evaluate(positions);
+   // Only a fresh, successful venue read (a failed read must not look like "all positions closed").
+   if(realTrailing&&Array.isArray(v?.venuePositions)&&!v.venuePositionsError)await realTrailing.evaluate(v.venuePositions);
   }catch(e){console.warn('[ALERTS]',e.message)}
  };
  const checkDaily=async()=>{
@@ -1042,13 +1074,17 @@ async function runGitUpdate(source='button'){
   // User 2026-11-16 "업데이트 후 항상 전부 켜기": after an update everything is switched on, whatever it
   // was before (the guards at start-up still apply: kill switch, loss limit, mode, 15 min). Written just
   // before the restart, so a crash or manual restart before that finds no marker (review 2026-11-16).
-  const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY,copyArmed:COPY.enabled===true,scalpArmed:!!scalpExec};
+  // Copy: not after a user pause (screen / Telegram /pause) and not while the real-account daily loss breaker holds
+  // (audit 2026-11-23: COPY.enabled alone re-armed a breaker-stopped copy at the next 2-minute auto update).
+  const copyRearmable=()=>copyRearmableNow({copyEnabled:COPY.enabled,userPaused:copyTrader.store.userPaused,killed:copyTrader.store.killed,
+   breakerTripped:COPY.mode==='LIVE'&&Boolean(realSafety?.isTripped())});
+  const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY,copyArmed:copyRearmable(),scalpArmed:!!scalpExec};
    try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to,fromDisplayVersion:result.fromDisplayVersion||appVersion.displayVersion,toDisplayVersion:result.toDisplayVersion||null,changes:(result.changes||[]).slice(0,8).map(c=>c.subject),source}))}catch{}};
   console.log('[UPDATE]',source,result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
   (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
    // Paused only once idle; if never idle in 10 minutes the restart waits for the next try.
    if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;updateJob={...updateJob,active:false,state:'postponed',label:'주문 완료 후 자동 재시작 예정',at:Date.now()};emitUpdateProgress();pendingRestart={writeMarker,from:result.from,to:result.to,toDisplayVersion:result.toDisplayVersion||null,source};if(wasArmed)live.arm();try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
-  return {status:200,body:{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:COPY.enabled===true,rearmScalp:!!scalpExec}};
+  return {status:200,body:{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:copyRearmable(),rearmScalp:!!scalpExec}};
  }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,source,at:Date.now()};emitUpdateProgress();live.updating=false;if(wasArmed)live.arm();if(source==='auto')updateNotice(`⚠️ 자동 업데이트 실패: ${e.message}`);return {status:502,body:{error:e.message}}}
 }
 function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text,disable_web_page_preview:true}).catch(()=>{})}catch{}}
@@ -2019,8 +2055,8 @@ const server=http.createServer(async(req,res)=>{
    const running=Boolean(historyRefresh);void refreshTradeHistory({recheck:true});return response(res,202,{running:true,started:!running});
   }
   if(pathname==='/api/copy/resume'&&req.method==='POST'){if(COPY.mode==='LIVE'){const body=await bodyJson(req);if(body.confirm!=='COPY_RESUME')return response(res,400,{error:'CONFIRM_REQUIRED'})}return response(res,200,copyTrader.resume())}
-  if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});if(COPY.mode==='LIVE'&&realSafety?.isTripped())return response(res,409,{error:'DAILY_LOSS_CIRCUIT_BREAKER',message:'오늘 일일 손실 차단이 발동 중입니다. 계좌 안전 가드에서 차단 해제 후 다시 시도하세요'});return response(res,200,copyTrader.arm())}
-  if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm());
+  if(pathname==='/api/copy/arm'&&req.method==='POST'){const body=await bodyJson(req);if(body.confirm!=='COPY_ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});if(COPY.mode==='LIVE'&&realSafety?.isTripped())return response(res,409,{error:'DAILY_LOSS_CIRCUIT_BREAKER',message:'오늘 일일 손실 차단이 발동 중입니다. 계좌 안전 가드에서 차단 해제 후 다시 시도하세요'});try{return response(res,200,copyTrader.arm())}catch(e){return response(res,e.httpStatus||409,{error:e.code||'ARM_REFUSED',message:e.message})}}
+  if(pathname==='/api/copy/disarm'&&req.method==='POST')return response(res,200,copyTrader.disarm({user:true}));
   if(pathname==='/api/copy/controls'&&req.method==='GET')return response(res,200,{controls:copyControls.status(),traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD),maxLeverage:copyControls.effectiveMaxLeverage(COPY.maxLeverage)});
   if(pathname==='/api/copy/controls'&&req.method==='POST'){
    const body=await bodyJson(req);
@@ -2174,12 +2210,19 @@ const server=http.createServer(async(req,res)=>{
      contractsFor:sym=>venueQuotes.clients.BINGX.contractsFor(sym),
      markOf,
      safety:realSafety?.orderGuard({equityUSD:copyTrader.funds?.equity??realWallet.last?.equity??null})??null,
+     // Copy lanes (audit C-5): the manual panel may not change leverage / margin mode under an open copy position.
+     copyPositions:COPY.mode==='LIVE'?Object.values(copyTrader.store.positions):[],
     });
+    // The copy executor caches margin-mode / leverage settings for 30 min: drop them for this contract (C-5).
+    try{copyTrader.clearVenueCache(r?.plan?.venueSymbol||null)}catch{}
     reportsDirty=true;
     void refreshRealTradeNotices();
     void readRealWallet().catch(()=>{});
     return response(res,200,r);
-   }catch(e){return response(res,e.httpStatus||502,{ok:false,error:e.code||'MANUAL_ORDER_FAILED',message:e.message})}
+   }catch(e){
+    // A failed order may still have changed the leverage / margin mode: drop the whole copy settings cache.
+    try{copyTrader.clearVenueCache()}catch{}
+    return response(res,e.httpStatus||502,{ok:false,error:e.code||'MANUAL_ORDER_FAILED',message:e.message})}
   }
   if(pathname==='/api/real/trade/cancel-order'&&req.method==='POST'){
    if(COPY.mode!=='LIVE'||!realBingxClient)return response(res,409,{error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'});

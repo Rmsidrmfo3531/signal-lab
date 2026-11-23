@@ -205,11 +205,21 @@ export async function lookupRealTradeSymbol({
  };
 }
 
+/** Open copy-ledger positions sharing this contract: symbol (any side, margin mode is per symbol) and the side lane
+ * whose leverage the order would set (one-way: every side shares it; hedge: the same direction only). */
+export function copyLaneOf({copyPositions=[],contract,side,hedge}){
+ const vs=String(contract?.venueSymbol||''),sym=String(contract?.symbol||''),disp=displaySymbol(sym);
+ const symbol=(Array.isArray(copyPositions)?copyPositions:[]).filter(p=>p&&p.status==='OPEN'
+  &&((vs&&(p.venueSymbol===vs||p.venueAlias===vs))||p.symbol===sym||displaySymbol(p.symbol)===disp));
+ const laneSide=symbol.filter(p=>!hedge||p.hedge!==true||p.direction===String(side||'').toUpperCase());
+ return {symbol,side:hedge?laneSide:symbol};
+}
+
 /** Execute a confirmed real-account manual order on BingX. */
 export async function executeRealManualOrder({
  confirm,symbol,side,orderType='MARKET',amountMode='MARGIN_USDT',amount,price=null,
  leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,makerFirst=false,makerWaitMs=2500,sleep,
- client,contractsFor,markOf,safety=null,
+ client,contractsFor,markOf,safety=null,copyPositions=[],
 }){
  if(confirm!=='REAL_MANUAL_ORDER')throw err('CONFIRM_REQUIRED','실계좌 수동 주문 확인 문구가 필요합니다');
  if(!client||client.mode!=='LIVE')throw err('LIVE_ACCOUNT_UNAVAILABLE','실계좌 BingX 클라이언트가 연결되어 있지 않습니다',409);
@@ -246,8 +256,24 @@ export async function executeRealManualOrder({
   contract,markPrice,availableUSD,maxLeverage:effectiveMaxLev,maxMarginUSD:safeMaxMarginUSD,
  });
 
+ // Copy lane guard (audit C-5, 2026-11-23): where the copy holds an open position on this symbol (one-way: any side;
+ // hedge: the same side for leverage, any side for the symbol-wide margin mode) the manual panel never changes the
+ // leverage or the margin mode under it. The order itself is refused rather than sent at other settings.
+ const lane=copyLaneOf({copyPositions,contract,side:plan.side,hedge});
+ const curLev=plan.side==='SHORT'?(levInfo.currentLeverage.short??levInfo.currentLeverage.long):(levInfo.currentLeverage.long??levInfo.currentLeverage.short);
+ let keepLeverage=false,keepMargin=false;
+ if(lane.symbol.length){
+  const copyLev=lane.side[0]?.leverage??null;
+  if(lane.side.length){
+   const ref=pos(curLev)??pos(copyLev);
+   if(!ref||Math.round(ref)!==Math.round(plan.leverage))throw err('COPY_LANE_LEVERAGE',`카피가 ${plan.displaySymbol} ${plan.side==='LONG'?'롱':'숏'} 포지션을 보유 중이라 레버리지를 바꿀 수 없습니다 (현재 ${ref?Math.round(ref)+'배':'확인 불가'}, 요청 ${plan.leverage}배). 같은 레버리지로 주문하거나 카피 청산 후 다시 시도하세요`,409);
+   keepLeverage=true;
+  }
+  if(plan.marginMode!=='CROSSED')throw err('COPY_LANE_MARGIN_MODE',`카피가 ${plan.displaySymbol} 포지션을 보유 중이라 마진 모드를 ${plan.marginMode==='ISOLATED'?'격리':plan.marginMode}로 바꿀 수 없습니다 (카피는 교차)`,409);
+  keepMargin=true;
+ }
  // Switch margin mode only when needed (BingX returns 80001 if already set to the same mode).
- if(typeof client.setMarginType==='function'){
+ if(!keepMargin&&typeof client.setMarginType==='function'){
   let curMargin=null;
   if(typeof client.marginType==='function'){
    try{const cur=await client.marginType(plan.venueSymbol);curMargin=String(cur?.marginType||'').toUpperCase()||null}catch{}
@@ -261,7 +287,7 @@ export async function executeRealManualOrder({
   }
  }
 
- await client.setLeverage(plan.venueSymbol,leverageSideFor({hedge,direction:plan.side}),plan.leverage);
+ if(!keepLeverage)await client.setLeverage(plan.venueSymbol,leverageSideFor({hedge,direction:plan.side}),plan.leverage);
 
  const cid=('man'+Date.now().toString(36)+Math.random().toString(36).slice(2,6)).slice(0,32);
  const extraTpSl={
