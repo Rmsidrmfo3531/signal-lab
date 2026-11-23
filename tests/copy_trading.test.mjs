@@ -266,8 +266,11 @@ test('copy: ledger survives a restart; notices read well',async()=>{
  await a.handle({id:1,date:1e12,text:OPEN});
  const b=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'on'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),directory:dir,now:()=>1e12});
  assert.equal(b.status().positions.length,1);assert.equal((await b.handle({id:1,date:1e12,text:OPEN})).duplicate,true);
- assert.match(copyEventText({type:'OPENED',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:98,avg:.051,stop:1.07}),/📋 카피 · TNSRUSDT 숏 5배 진입 \(테스트넷\)/);
- assert.match(copyEventText({type:'CLOSED',symbol:'TNSRUSDT',reason:'TRADER_CLOSE',netUSD:-.12,theirPnlUSD:1.72,adds:1}),/손익 −\$0\.12 .* 트레이더 \+\$1\.72/);
+ assert.match(copyEventText({type:'OPENED',symbol:'TNSRUSDT',direction:'SHORT',leverage:5,qty:98,avg:.051,stop:1.07}),/^\[카피\] · TNSRUSDT 숏 5배 진입 \(테스트넷\)/);
+ assert.match(copyEventText({type:'CLOSED',symbol:'TNSRUSDT',reason:'TRADER_CLOSE',netUSD:-.12,theirPnlUSD:1.72,adds:1}),/^\[카피\][\s\S]+손익 −\$0\.12 .* 트레이더 \+\$1\.72/);
+ for(const ev of [{type:'ARMED'},{type:'COPY_COOLDOWN_TRIGGERED',reason:'연속 손실'},{type:'DEFERRED_FOR_UPDATE',symbol:'BTCUSDT'},{type:'ERROR',symbol:'BTCUSDT',kind:'OPEN',reason:'ERR'},{type:'COPY_LOSS_LIMIT'},{type:'STOP_NOT_SET',symbol:'BTCUSDT',reason:'HTTP_429'}]){
+  assert.match(copyEventText(ev),/^\[카피\]/,`${ev.type} must start with [카피]`);
+ }
  fs.rmSync(dir,{recursive:true,force:true});
 });
 

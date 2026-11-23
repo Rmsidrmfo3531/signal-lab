@@ -557,7 +557,7 @@ function scalpNotice(e){
 // A copy ledger of the other mode with open positions is no longer managed: say so once at start.
 try{const other=path.join(storage.dir,COPY.mode==='LIVE'?'copy-store.json':'copy-store-live.json');
  if(fs.existsSync(other)){const o=JSON.parse(fs.readFileSync(other,'utf8'));const n=Object.values(o.positions||{}).filter(x=>x.status==='OPEN');
-  if(n.length){const text=`⚠️ 카피 모드가 ${COPY.mode==='LIVE'?'실계좌':'테스트넷'}로 바뀌었습니다. ${COPY.mode==='LIVE'?'테스트넷':'실계좌'} 카피 포지션 ${n.length}개(${n.map(x=>displaySymbol(x.symbol)).join(', ')})는 더 이상 따라가지 않습니다. 거래소에서 직접 정리해 주세요.`;
+  if(n.length){const text=`[카피] ⚠️ 카피 모드가 ${COPY.mode==='LIVE'?'실계좌':'테스트넷'}로 바뀌었습니다. ${COPY.mode==='LIVE'?'테스트넷':'실계좌'} 카피 포지션 ${n.length}개(${n.map(x=>displaySymbol(x.symbol)).join(', ')})는 더 이상 따라가지 않습니다. 거래소에서 직접 정리해 주세요.`;
    console.warn('[COPY]',text);setTimeout(()=>{try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text}).catch(()=>{})}catch{}},5000)}}}catch{}
 // First balance / positions read soon after start (the panel shows the copy account's balance).
 if(COPY.enabled)setTimeout(()=>{void copyTrader.reconcile().catch(()=>{})},8000).unref?.();

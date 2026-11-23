@@ -30,19 +30,20 @@ function realCopyTradeText(e){
 export function copyEventText(e){
  if(!e)return null;
  if(e.mode==='LIVE'){const trade=realCopyTradeText(e);if(trade)return trade}
- const head=['📋 카피',displaySymbol(e.symbol),e.mode==='LIVE'?LIVE_SIDE[e.direction]:null].filter(Boolean).join(' · ');
- if(e.type==='ARMED'||e.type==='DISARMED')return `📋 카피 ${e.type==='ARMED'?'활성화':'비활성화'}`;
- if(e.type==='COPY_COOLDOWN_TRIGGERED')return `⏸ 카피 자동 쿨다운 시작${e.mode==='LIVE'?'':' (테스트넷)'}\n${e.detail||e.reason||''}\n기존 포지션 청산·축소는 그대로 유지되며, 신규 진입만 일시 중지합니다.`;
- if(e.type==='DEFERRED_FOR_UPDATE')return `⏳ ${head} 업데이트 중 신호 대기열 저장 — 재시작 직후 가격 확인 후 이어서 처리합니다.`;
+ const symHead=[displaySymbol(e.symbol),e.mode==='LIVE'?LIVE_SIDE[e.direction]:null].filter(Boolean).join(' · ');
+ const head=['[카피]',symHead].filter(Boolean).join(' · ');
+ if(e.type==='ARMED'||e.type==='DISARMED')return `[카피] 📋 ${e.type==='ARMED'?'활성화':'비활성화'}`;
+ if(e.type==='COPY_COOLDOWN_TRIGGERED')return `[카피] ⏸ 자동 쿨다운 시작${e.mode==='LIVE'?'':' (테스트넷)'}\n${e.detail||e.reason||''}\n기존 포지션 청산·축소는 그대로 유지되며, 신규 진입만 일시 중지합니다.`;
+ if(e.type==='DEFERRED_FOR_UPDATE')return `[카피] ⏳ ${symHead?symHead+' ':''}업데이트 중 신호 대기열 저장 — 재시작 직후 가격 확인 후 이어서 처리합니다.`;
  if(e.type==='OPENED')return `${head} ${SIDE[e.direction]||''} ${e.leverage}배 ${e.refollow?'다시 진입(우리 카피가 거래소에서 바깥 청산된 뒤 트레이더를 다시 따라감) ':e.late?'늦은 진입(진입 알림을 놓쳐 추매 시점에 들어감) ':'진입 '}${e.mode==='LIVE'?'(실계좌)':'(테스트넷)'}\n수량 ${e.qty} · 평균 ${e.avg??'—'}${e.stopDistPct!=null?` · 매물대 손절 기준 진입가에서 ${e.stopDistPct}% (거래량 동반 이탈 시)`:''}${e.stop?` · 거래소 보호 손절 ${e.stop}`:''}`;
  if(e.type==='ADDED')return `${head} 추매 ${e.n}차 ${e.mode==='LIVE'?'(실계좌)':'(테스트넷)'}\n+${e.qty} → 총 ${e.total} · 평균 ${e.avg??'—'}${e.stop?` · 보호 손절 ${e.stop}`:''}`;
  if(e.type==='REDUCED')return `${head} 일부 청산 ${e.mode==='LIVE'?'(실계좌)':'(테스트넷)'}\n−${e.qty} → 남은 ${e.left}`;
  if(e.type==='CLOSED')return `${head} 청산 ${e.mode==='LIVE'?'(실계좌)':'(테스트넷)'} · ${why(e.reason)}${e.evidence==='MANUAL_CLOSE'?' · 수동 청산 확인(트레이더 추매·진입 시 다시 따라감)':e.evidence==='UNCONFIRMED'?' · 확인 불가로 다시 따라가지 않음':''}\n손익 ${money(e.netUSD)} (수수료 전 추정)${e.theirPnlUSD!=null&&Number.isFinite(Number(e.theirPnlUSD))?` · 트레이더 ${money(e.theirPnlUSD)}`:''} · 추매 ${e.adds||0}회`;
  if(e.type==='ADD_SKIPPED')return `${head} 추매 건너뜀 · ${why(e.reason)}${e.need!=null&&Number.isFinite(Number(e.free))?` (필요 $${e.need} / 여유 $${Number(e.free).toFixed(2)})`:''}${e.detail?` (${e.detail})`:''}`;
  if(e.type==='SKIPPED'&&!['NOT_COPIED','COPY_OFF'].includes(e.reason))return `${head} 진입 안 함 · ${why(e.reason)}${e.detail?` (${e.detail})`:''}`;
- if(e.type==='UNCONFIRMED_ADOPT')return `⚠️ ${head} 거래소 포지션을 카피 원장에 넣지 않았습니다 (${e.reason==='ENTRY_ORDER_NOT_FOUND'?'우리 진입 주문이 거래소에 없음':'진입 체결 확인 실패'})\n거래소에 ${e.size??''} 보유 중 — 직접 확인해 주세요.`;
- if(e.type==='ERROR')return `⚠️ ${head} 주문 문제 (${e.kind||''}) · ${e.reason||''}\n실매매 화면에서 확인해 주세요.`;
- if(e.type==='COPY_LOSS_LIMIT')return `⛔ 카피 손실 한도 도달${e.mode==='LIVE'?'':' (테스트넷)'}\n카피 포지션을 모두 청산하고 새 카피를 멈췄습니다. 실매매 화면의 '카피 다시 시작'으로 재개합니다.`;
- if(e.type==='STOP_NOT_SET')return `⚠️ ${head} 보호 손절을 걸지 못했습니다 (${e.reason||''}${e.detail?` · ${e.detail}`:''})${e.reason==='HTTP_429'?'\n1분 뒤 다시 겁니다.':''}`;
+ if(e.type==='UNCONFIRMED_ADOPT')return `[카피] ⚠️ ${symHead?symHead+' ':''}거래소 포지션을 카피 원장에 넣지 않았습니다 (${e.reason==='ENTRY_ORDER_NOT_FOUND'?'우리 진입 주문이 거래소에 없음':'진입 체결 확인 실패'})\n거래소에 ${e.size??''} 보유 중 — 직접 확인해 주세요.`;
+ if(e.type==='ERROR')return `[카피] ⚠️ ${symHead?symHead+' ':''}주문 문제 (${e.kind||''}) · ${e.reason||''}\n실매매 화면에서 확인해 주세요.`;
+ if(e.type==='COPY_LOSS_LIMIT')return `[카피] ⛔ 손실 한도 도달${e.mode==='LIVE'?'':' (테스트넷)'}\n카피 포지션을 모두 청산하고 새 카피를 멈췄습니다. 실매매 화면의 '카피 다시 시작'으로 재개합니다.`;
+ if(e.type==='STOP_NOT_SET')return `[카피] ⚠️ ${symHead?symHead+' ':''}보호 손절을 걸지 못했습니다 (${e.reason||''}${e.detail?` · ${e.detail}`:''})${e.reason==='HTTP_429'?'\n1분 뒤 다시 겁니다.':''}`;
  return null;
 }

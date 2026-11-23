@@ -34,7 +34,7 @@ function copyTradeMessage(e,action,closing,at,available){
  };
  const add=e.type==='MANUAL_ADD',fill=e.fillPrice??e.avg,qty=e.size??Math.abs(Number(e.to)-Number(e.from));
  const icon=e.netUSD>0?'🎯':e.netUSD<0?'🛑':'⚪';
- line('',closing?`${icon} ${action}`:add?'➕ 포지션 추매':'📌 포지션 진입');
+ line('',closing?`[카피] ${icon} ${action}`:add?'[카피] ➕ 포지션 추매':'[카피] 📌 포지션 진입');
  line(RULE);
  const side=[tradeSide[e.direction],e.leverage>0?`×${e.leverage}`:null].filter(Boolean).join('  ');
  line('',displaySymbol(e.symbol),side?`  ${side}`:'');
