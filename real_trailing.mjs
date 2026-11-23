@@ -257,8 +257,9 @@ export class RealTrailingManager{
        const beRes=await this.executeAction({symbol:p.symbol,direction:dir,action:'BREAKEVEN_STOP',feePct:cfg.roundTripFeePct}).catch(()=>({ok:false}));
        if(beRes?.ok){st.breakevenPlaced=true;st.breakevenOrderId=beRes.orderId!=null?String(beRes.orderId):null;dirty=true;beLine=`\n🛡️ 잔여 물량 본전 스탑 자동 설정 (${beRes.stopPrice}, 수수료 포함)`}
       }
+      const copyPrefix=isCopy?'[카피] ':'';
       const estPart=Number.isFinite(Number(p.unrealized))?Number(p.unrealized)*(partPct/100):null;
-      const msg=`💰 [실계좌 자동 익절] ${disp} ${sideKo(dir)} ${partPct}% 부분 익절 확정\n순 ROE +${roe.toFixed(1)}% (수수료 -${feeRoePct.toFixed(1)}% 반영) · 추정 실현 ${money(estPart)}\n잔여 ${remPct}% 고점 대비 ${cfg.trailPullbackRatio}% 트레일링 추적 중${beLine}`;
+      const msg=`${copyPrefix}💰 [실계좌 자동 익절] ${disp} ${sideKo(dir)} ${partPct}% 부분 익절 확정\n순 ROE +${roe.toFixed(1)}% (수수료 -${feeRoePct.toFixed(1)}% 반영) · 추정 실현 ${money(estPart)}\n잔여 ${remPct}% 고점 대비 ${cfg.trailPullbackRatio}% 트레일링 추적 중${beLine}`;
       try{await this.sendText(msg)}catch{}
       actions.push({key,action:'CLOSE_HALF',closePct:partPct,roePct:roe,grossRoePct:grossRoe,feeRoePct,breakeven:st.breakevenPlaced});
      }else if(res?.error==='HALF_QTY_TOO_SMALL'){
@@ -273,11 +274,12 @@ export class RealTrailingManager{
     if(st.peakRoePct!==null&&st.peakRoePct>=cfg.trailActivateRoePct){
      const pullback=Math.max(MIN_PULLBACK_ROE,st.peakRoePct*(cfg.trailPullbackRatio/100));
      const stopRoe=+Math.max(cfg.minLockRoePct,st.peakRoePct-pullback).toFixed(2);
+     const copyPrefix=isCopy?'[카피] ':'';
      if(roe<=stopRoe){
       st.lastActionAt=now;dirty=true;
       const res=await this.executeAction({symbol:p.symbol,direction:dir,action:'CLOSE_ALL'}).catch(e=>({ok:false,error:e?.code||e?.message}));
       if(res?.ok){
-       const msg=`🎯 [실계좌 자동 트레일링] ${disp} ${sideKo(dir)} ${roe>0?'익절':'보호'} 청산 완료\n고점 순 ROE +${st.peakRoePct.toFixed(1)}% → 청산 순 ROE ${roe>=0?'+':''}${roe.toFixed(1)}% (${money(p.unrealized)})`;
+       const msg=`${copyPrefix}🎯 [실계좌 자동 트레일링] ${disp} ${sideKo(dir)} ${roe>0?'익절':'보호'} 청산 완료\n고점 순 ROE +${st.peakRoePct.toFixed(1)}% → 청산 순 ROE ${roe>=0?'+':''}${roe.toFixed(1)}% (${money(p.unrealized)})`;
        try{await this.sendText(msg)}catch{}
        actions.push({key,action:'CLOSE_ALL',peakRoePct:st.peakRoePct,roePct:roe,grossRoePct:grossRoe,feeRoePct});
        await this.#cancelStops(st);
@@ -298,7 +300,7 @@ export class RealTrailingManager{
         if(res.staleOrderId!=null)st.staleStopIds=[...(st.staleStopIds||[]),String(res.staleOrderId)].slice(-10);
         st.lockStopOrderId=res.orderId!=null?String(res.orderId):null;
         st.lockStopPrice=Number(res.stopPrice)||stopPrice;st.lockStopRoe=stopRoe;
-        if(first){try{await this.sendText(`🛡️ [실계좌 트레일링] ${disp} ${sideKo(dir)} 거래소 잠금 스탑 설정 ${st.lockStopPrice} (순 ROE +${stopRoe.toFixed(1)}% 지점, 서버가 꺼져도 유지)`)}catch{}}
+        if(first){try{await this.sendText(`${copyPrefix}🛡️ [실계좌 트레일링] ${disp} ${sideKo(dir)} 거래소 잠금 스탑 설정 ${st.lockStopPrice} (순 ROE +${stopRoe.toFixed(1)}% 지점, 서버가 꺼져도 유지)`)}catch{}}
         actions.push({key,action:'TRAIL_STOP',stopPrice:st.lockStopPrice,lockRoePct:stopRoe});
        }else{st.lockRetryAt=now+60000;this.log?.('TRAIL_STOP failed',key,res?.error||'ERROR')}
       }

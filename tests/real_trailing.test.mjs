@@ -221,5 +221,26 @@ test('RealTrailingManager backtest preset applies +16% Net ROE, 25% partial clos
  assert.match(msgs[0],/25% 부분 익절 확정/);
  assert.match(msgs[0],/잔여 75% 고점 대비 28% 트레일링 추적 중/);
  assert.match(msgs[0],/추정 실현 \+\$10\.00/);
+ assert.doesNotMatch(msgs[0],/^\[카피\]/);
 });
+
+test('RealTrailingManager prepends [카피] at the start of line 1 for copy-origin positions',async()=>{
+ let t=1_700_000_000_000;
+ const msgs=[];
+ const rt=new RealTrailingManager({
+  now:()=>t,
+  executeAction:async a=>({ok:true,orderId:'ord1',stopPrice:a.stopPrice||3000}),
+  sendText:async m=>{msgs.push(m)},
+ });
+ rt.configure({enabled:true,applyToManual:false,applyToCopy:true,partialLockRoePct:8,trailActivateRoePct:8,trailPullbackRatio:25,minLockRoePct:2,autoBreakeven:false});
+ await rt.evaluate([pos({origin:'copy',roePct:10,unrealized:20})],t);
+ assert.match(msgs[0],/^\[카피\] 💰 \[실계좌 자동 익절\]/);
+ t+=25_000;
+ await rt.evaluate([pos({origin:'copy',roePct:21,unrealized:40})],t);
+ assert.match(msgs[1],/^\[카피\] 🛡️ \[실계좌 트레일링\]/);
+ t+=25_000;
+ await rt.evaluate([pos({origin:'copy',roePct:14,unrealized:28})],t);
+ assert.match(msgs[2],/^\[카피\] 🎯 \[실계좌 자동 트레일링\]/);
+});
+
 

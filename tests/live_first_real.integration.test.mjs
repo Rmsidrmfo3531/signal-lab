@@ -124,7 +124,7 @@ test('Chrome and the scanner channel receive the same confirmed copy trade even 
   TELEGRAM_BOT_TOKEN:'mock-bot-token',TELEGRAM_CHAT_ID:'-123456',TELEGRAM_SCANNER_CHAT_ID:'@scanner_fixture',PAPER_TRADING:'off',
  }});
  const read=async()=>{const records=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse);
-  return records.filter(r=>r.host==='api.telegram.org'&&r.text?.startsWith('📌 포지션 진입'))};
+  return records.filter(r=>r.host==='api.telegram.org'&&r.text?.startsWith('[카피] 📌 포지션 진입'))};
  try{
   await fs.writeFile(`${app.data}/store.json`,JSON.stringify({notifySettings:{telegramLive:false,telegramSignals:false,scannerAlertsOffV1:true}}));
   await fs.writeFile(`${app.data}/copy-store-live.json`,JSON.stringify({positions:{},closed:[late,position]}));
@@ -142,8 +142,8 @@ test('Chrome and the scanner channel receive the same confirmed copy trade even 
   assert.ok(notices.every(n=>n.chatId===-1001234567890));
   const lookups=(await fs.readFile(app.requests,'utf8')).trim().split('\n').map(JSON.parse).filter(r=>r.path==='/getChat');
   assert.deepEqual(lookups.map(r=>r.chatId),['@scanner_fixture']);
-  assert.match(notice.text,/^📌 포지션 진입\n━+\nBTCUSDT  🟢 롱  ×10\n━+\n진입가 50,000 USDT\n현재가 50,000 USDT\n수량 0\.02\n증거금 약 100\.00 USDT\n가용 증거금 137\.25 USDT/);
-  assert.deepEqual(notice.entities.map(e=>notice.text.slice(e.offset,e.offset+e.length)),['📌 포지션 진입','BTCUSDT','50,000 USDT']);
+  assert.match(notice.text,/^\[카피\] 📌 포지션 진입\n━+\nBTCUSDT  🟢 롱  ×10\n━+\n진입가 50,000 USDT\n현재가 50,000 USDT\n수량 0\.02\n증거금 약 100\.00 USDT\n가용 증거금 137\.25 USDT/);
+  assert.deepEqual(notice.entities.map(e=>notice.text.slice(e.offset,e.offset+e.length)),['[카피] 📌 포지션 진입','BTCUSDT','50,000 USDT']);
   assert.equal((await app.get('/api/copy')).manual.open.length,0);
   const file=async()=>JSON.parse(await fs.readFile(`${app.data}/manual-trades-live.json`,'utf8'));
   const ledger=await until(file,x=>x.telegramSent===2);assert.equal(ledger.telegramByOrigin.COPY,2);assert.equal(ledger.telegramChatType,'channel');assert.deepEqual(ledger.telegramQueue,[]);

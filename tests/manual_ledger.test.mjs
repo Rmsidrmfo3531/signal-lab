@@ -223,7 +223,7 @@ test('real managed copy fills send all position actions, including a reduction a
  m.observe(snap(c.add(15000),[]));m.observe(snap(c.add(15000),[]));
  c.add(45000);await m.settle();await m.recoverFastTrades();await m.settle();
  const labels=events.sort((a,b)=>a.observedAt-b.observedAt).map(e=>manualTradeText(e).split('\n')[0]);
- assert.deepEqual(labels,['📌 포지션 진입','➕ 포지션 추매','🎯 부분 익절','➕ 포지션 추매','🛑 부분 손절','⚪ 전량 본전']);
+ assert.deepEqual(labels,['[카피] 📌 포지션 진입','[카피] ➕ 포지션 추매','[카피] 🎯 부분 익절','[카피] ➕ 포지션 추매','[카피] 🛑 부분 손절','[카피] ⚪ 전량 본전']);
  assert.equal(m.status().closedTotal,0);assert.deepEqual(m.alertStatus().byOrigin,{COPY:6});
 });
 
@@ -252,13 +252,13 @@ test('copy order receipts drive alerts without usable position snapshots, and re
   // It is already open by the time polling first sees it, and the next successful read is much later.
   m.observe(snap(at,[row({size:1,positionSide:'LONG'})],[owner]));
   await m.settle();await m.deliverAlerts();
-  assert.deepEqual(events.map(e=>manualTradeText(e).split('\n')[0]),['📌 포지션 진입','➕ 포지션 추매','🎯 부분 익절']);
+  assert.deepEqual(events.map(e=>manualTradeText(e).split('\n')[0]),['[카피] 📌 포지션 진입','[카피] ➕ 포지션 추매','[카피] 🎯 부분 익절']);
   assert.match(manualTradeText(events[2]),/진입가 9 USDT\n청산가 10 USDT\n청산 수량 1 · 잔여 1\n손익 \+0\.90 USDT \(\+100\.00%\)/);
   assert.equal(m.telegramStatus().pending,3);assert.equal(m.telegramStatus().error,'HTTP_429');assert.equal(m.telegramStatus().sent,0);
   const recovered=new ManualLedger({...options,sendTelegram:async e=>{sent.push(e);return {ok:true}}});
   c.add(61000);receipts.get('4').commission=-.1;
   await recovered.settle();await recovered.deliverAlerts();
-  assert.deepEqual(sent.map(e=>manualTradeText(e).split('\n')[0]),['📌 포지션 진입','➕ 포지션 추매','🎯 부분 익절','⚪ 전량 본전']);
+  assert.deepEqual(sent.map(e=>manualTradeText(e).split('\n')[0]),['[카피] 📌 포지션 진입','[카피] ➕ 포지션 추매','[카피] 🎯 부분 익절','[카피] ⚪ 전량 본전']);
   assert.equal(events.length,4);assert.equal(recovered.telegramStatus().pending,0);assert.deepEqual(recovered.telegramStatus().byOrigin,{COPY:4});
   await recovered.settle();await recovered.deliverAlerts();assert.equal(sent.length,4);
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
@@ -273,7 +273,7 @@ test('live copy entry confirms from the signed filled reply immediately and is n
  await Promise.all([m.confirmCopyOrder(orderId),m.confirmCopyOrder(orderId)]);
  await m.settle();
  assert.equal(reads,0);assert.equal(events.length,1);assert.equal(events[0].observedAt,at);
- assert.match(manualTradeText(events[0]),/^📌 포지션 진입/);
+ assert.match(manualTradeText(events[0]),/^\[카피\] 📌 포지션 진입/);
 });
 
 test('copy alert cards show signed close return and Telegram bold spans without altering Chrome text',()=>{
@@ -282,22 +282,22 @@ test('copy alert cards show signed close return and Telegram bold spans without 
  const entry={...trade,type:'MANUAL_OPEN',size:90,avg:.2299};
  const message=realTradeMessage(entry,{availableMargin:137.25});
  assert.equal(message.text,[
-  '📌 포지션 진입','━━━━━━━━━━━━━━━━','MMTUSDT  🔴 숏  ×10','━━━━━━━━━━━━━━━━',
+  '[카피] 📌 포지션 진입','━━━━━━━━━━━━━━━━','MMTUSDT  🔴 숏  ×10','━━━━━━━━━━━━━━━━',
   '진입가 0.2299 USDT','현재가 0.2299 USDT','수량 90','증거금 약 2.0691 USDT','가용 증거금 137.25 USDT','체결 2026-11-18 17:04:28 KST',
  ].join('\n'));
  assert.equal(manualTradeText(entry),message.text.replace('가용 증거금 137.25 USDT','가용 증거금 조회 불가'));
  const bold=message.entities.map(e=>{assert.equal(e.type,'bold');return message.text.slice(e.offset,e.offset+e.length)});
- assert.deepEqual(bold,['📌 포지션 진입','MMTUSDT','0.2299 USDT']);
+ assert.deepEqual(bold,['[카피] 📌 포지션 진입','MMTUSDT','0.2299 USDT']);
  assert.equal(message.entities[0].offset,0);
  const add={...trade,direction:'LONG',type:'MANUAL_ADD',fillPrice:.23,size:30,to:120};
- assert.match(manualTradeText(add),/^➕ 포지션 추매[\s\S]+MMTUSDT  🟢 롱  ×10[\s\S]+수량 \+30 · 잔여 120\n증거금 약 0\.69 USDT/);
+ assert.match(manualTradeText(add),/^\[카피\] ➕ 포지션 추매[\s\S]+MMTUSDT  🟢 롱  ×10[\s\S]+수량 \+30 · 잔여 120\n증거금 약 0\.69 USDT/);
  assert.match(manualTradeText({...add,leverage:undefined}),/증거금 —/);
  const exit={...trade,type:'MANUAL_REDUCE',size:30,to:60,fillPrice:.22,pnlUSD:.297,netUSD:.29,netSource:'EXCHANGE_FILLS'};
- assert.match(manualTradeText(exit),/^🎯 부분 익절[\s\S]+진입가 0\.2299 USDT\n청산가 0\.22 USDT\n청산 수량 30 · 잔여 60\n손익 \+0\.29 USDT \(\+42\.05%\)/);
+ assert.match(manualTradeText(exit),/^\[카피\] 🎯 부분 익절[\s\S]+진입가 0\.2299 USDT\n청산가 0\.22 USDT\n청산 수량 30 · 잔여 60\n손익 \+0\.29 USDT \(\+42\.05%\)/);
  const closed=realTradeMessage(exit,{availableMargin:0});
  assert.match(closed.text,/\n가용 증거금 0\.00 USDT\n/);
- assert.equal(closed.text.slice(0,closed.entities[0].length),'🎯 부분 익절');
- assert.match(manualTradeText({...exit,type:'MANUAL_SETTLED',size:60,to:0,fillPrice:.24,pnlUSD:-.606,netUSD:-.62}),/^🛑 전량 손절[\s\S]+손익 −0\.62 USDT \(−44\.95%\)/);
+ assert.equal(closed.text.slice(0,closed.entities[0].length),'[카피] 🎯 부분 익절');
+ assert.match(manualTradeText({...exit,type:'MANUAL_SETTLED',size:60,to:0,fillPrice:.24,pnlUSD:-.606,netUSD:-.62}),/^\[카피\] 🛑 전량 손절[\s\S]+손익 −0\.62 USDT \(−44\.95%\)/);
  assert.match(manualTradeText({...exit,fillPrice:undefined,pnlUSD:undefined}),/손익 \+0\.29 USDT \(수익률 —\)/);
 });
 
