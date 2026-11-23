@@ -128,7 +128,7 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  const makeHigh=(extraCfg={})=>{
   const v=mockVenue();
   const ex=new ScalpExecutor({
-   config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,...extraCfg},
+   config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,bounceSizing:false,...extraCfg},
    client:v.client,
    contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
    tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
@@ -322,11 +322,11 @@ test('per-symbol loss cooldown blocks rapid re-entry after recent loss or 2 same
  assert.match(det1,/점수 분포: 통과\(65점\+\) <b>1건<\/b> · 턱걸이 차단\(60점대\) <b>1건<\/b> · 하위 차단\(55점 이하\) <b>1건<\/b>/);
 });
 
-test('Combo B profit-max suite: Post-Only maker entry, disabled 15m fallback, and +15% ROE 35% partial TP / 65% runner',async()=>{
+test('Combo B / C7 profit-max suite: Post-Only maker entry, disabled 15m fallback, and +16% ROE 25% partial TP / 75% runner',async()=>{
  const cfg=scalpExecConfig({});
  assert.equal(cfg.riskPct,0.75);
- assert.equal(cfg.minProfitRoePct,15);
- assert.equal(cfg.partialTakeFrac,0.35);
+ assert.equal(cfg.minProfitRoePct,16);
+ assert.equal(cfg.partialTakeFrac,0.25);
  assert.equal(cfg.earlyFallbackMin,0);
  assert.equal(cfg.profitOnlyMaxHoldMin,240);
  assert.equal(cfg.maxScaleInAdds,2);
@@ -361,21 +361,22 @@ test('Combo B profit-max suite: Post-Only maker entry, disabled 15m fallback, an
  assert.equal(ex.store.open.length,1,'must not exit at +2% ROE after 25m when earlyFallbackMin=0');
  assert.equal(v.calls.filter(c=>c.type==='LIMIT'&&c.timeInForce==='IOC'&&c.reduceOnly==='true').length,0);
 
- // Rally to +16% gross (~+15.6% Net ROE at 10x): must lock in 35% partial TP and keep 65% runner!
+ // Rally to +18.5% gross (~+16.9% Net ROE at 10x): must lock in 25% partial TP and keep 75% runner!
  now+=60000;
- mark=+(p.avg*1.017).toFixed(4);
+ mark=+(p.avg*1.0185).toFixed(4);
  await ex.reconcile();
  const partialEvt=ex.store.events.find(e=>e.type==='PARTIAL_TAKE_PROFIT');
- assert.ok(partialEvt,'+15% Net ROE triggers 35% partial take-profit');
- assert.equal(partialEvt.takePct,35);
- assert.ok(Math.abs(partialEvt.qty-initialSize*0.35)<0.05,`expected ~35% partial qty: ${partialEvt.qty} vs ${initialSize}`);
- assert.match(scalpEventText(partialEvt),/35% 부분 익절 확정/);
+ assert.ok(partialEvt,'+16% Net ROE triggers 25% partial take-profit');
+ assert.equal(partialEvt.takePct,25);
+ assert.ok(Math.abs(partialEvt.qty-initialSize*0.25)<0.05,`expected ~25% partial qty: ${partialEvt.qty} vs ${initialSize}`);
+ assert.match(scalpEventText(partialEvt),/25% 부분 익절 확정/);
 
- // Verify UI rules reflect Combo B accurately
+ // Verify UI rules reflect C7 defaults accurately
  const ui=scalpDetailsHTML(ex.status());
  assert.match(ui,/물림 240분 컷/);
  assert.match(ui,/Post-Only 메이커 우선 진입/);
- assert.match(ui,/35% 확정 \+ 잔여 65% 러너 트레일링/);
+ assert.match(ui,/25% 확정 \+ 잔여 75% 러너 트레일링/);
+ assert.match(ui,/반등확인 비중\(20%\+ 1\.35배 · 미만 0\.8배\)/);
  assert.match(ui,/조기 본전컷 없음/);
  assert.match(ui,/거래량 2배 · RSI 30\/70 · 꼬리 35%\+/);
 });
@@ -424,6 +425,44 @@ test('120-coin default universe and scalpDetailsHTML hides unused retracement ta
  const onHtml=scalpDetailsHTML({...base,settings:{...base.settings,stopLossEnabled:true}});
  assert.match(onHtml,/목표 38\.2%\/50%\/61\.8% 되돌림 \(40\/35\/25%\)/);
 });
+
+test('C7 confirmed-bounce sizing (1.35x >=20%, 0.8x <20%), +16% / 25% partial TP defaults, and one-click 수급/CVD buttons',async()=>{
+ const {scalpBounceMultiplier,SCALP_MIN_PROFIT_ROE_PCT,SCALP_PARTIAL_TAKE_FRAC}=await import('../scalp_executor.mjs');
+ const {venuePositionsHTML}=await import('../public/live_control.js');
+ const cfg=scalpExecConfig({});
+ assert.equal(SCALP_MIN_PROFIT_ROE_PCT,16);
+ assert.equal(SCALP_PARTIAL_TAKE_FRAC,0.25);
+ assert.equal(cfg.bounceSizing,true);
+ assert.equal(cfg.bounceThresholdPct,20);
+ assert.equal(cfg.bounceHighMult,1.35);
+ assert.equal(cfg.bounceLowMult,0.8);
+
+ const hi=scalpBounceMultiplier(24.5,cfg);
+ assert.equal(hi.confirmed,true);
+ assert.equal(hi.mult,1.35);
+
+ const lo=scalpBounceMultiplier(14.2,cfg);
+ assert.equal(lo.confirmed,false);
+ assert.equal(lo.mult,0.8);
+
+ const off=scalpBounceMultiplier(14.2,{...cfg,bounceSizing:false});
+ assert.equal(off.active,false);
+ assert.equal(off.mult,1);
+
+ // One-click 수급/CVD button rendered on both Real venue positions and Testnet scalp cards
+ const vp=venuePositionsHTML({
+  mode:'LIVE',credentials:true,
+  venuePositions:[{symbol:'SOLUSDT',direction:'LONG',origin:'manual',size:10,avg:180,mark:185,leverage:10,margin:180,unrealized:50,roePct:27.8}],
+  positions:[],
+ },[]);
+ assert.match(vp,/data-open-orderflow="SOLUSDT"/);
+ assert.match(vp,/>수급\/CVD</);
+
+ const card=scalpPositionCardHTML({symbol:'ETHUSDT',direction:'SHORT',leverage:10,size:1,avg:3000,mark:2950,status:'OPEN',scalpScore:{score:75,grade:'A',sizeMult:1.35}});
+ assert.match(card,/data-open-orderflow="ETHUSDT"/);
+ assert.match(card,/75점 A급 · 1\.35x/);
+});
+
 
 
 
