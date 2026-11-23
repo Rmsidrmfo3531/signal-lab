@@ -34,8 +34,9 @@ export function scalpEventText(e){
  if(e.type==='DISARMED')return ['DAILY_LOSS_LIMIT','NO_PROTECTIVE_STOP'].includes(e.reason)?null:`${SCALP_LABEL} 비활성화`;
  if(e.type==='OPENED'){
   const scorePart=Number.isFinite(Number(e.score))?` · 점수 ${e.score}점(${e.grade||''}급${Number(e.sizeMult)>1?` · 비중 ${e.sizeMult}x`:''})`:'';
+  const ofPart=e.orderflowSummary?` · 수급 ${e.orderflowSummary}`:'';
   const execPart=e.executionMode==='MAKER'?' · 메이커 체결':e.executionMode==='MAKER+MARKET'?' · 메이커+시장가':'';
-  return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${execPart}`;
+  return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${ofPart}${execPart}`;
  }
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
  if(e.type==='SCALE_IN_FILLED'&&e.qty>0){

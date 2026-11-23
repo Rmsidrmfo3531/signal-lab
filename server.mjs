@@ -63,6 +63,7 @@ import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
 import {RealTrailingManager} from './real_trailing.mjs';
 import {RealAccountGuard,REAL_SAFETY_COPY_PRESET} from './real_safety.mjs';
+import {fetchOrderflow,normalizeOrderflowSymbol} from './orderflow.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
@@ -509,6 +510,8 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  // 매물대 반전 zones (4H 542 / 1D 182 candles): BingX public klines on the same paced queue (SCALP_KLINE_GAP_MS), read only
  // for coins whose 2.5 % detection fired, cached per coin until the next 4H / 1D candle closes.
  zoneCandles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
+ // Backtest-validated 5m orderflow (OI flush +5pt / CVD strong flip 1.5x), read only for >=60pt candidates (30s cache).
+ orderflow:symbol=>fetchOrderflow(symbol,{interval:'5m'}),
  // Entry price check: the BingX book mid, else a fresh BingX last price.
  priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
  markOf:venueSymbol=>scalpLast(venueSymbol,20000),
@@ -2343,6 +2346,28 @@ const server=http.createServer(async(req,res)=>{
    return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,updating:updateJob.active===true,updateJob:updateJob.active?{...updateJob}:null,bootId:SERVER_BOOT_ID,configured:Boolean(CONFIG.updateManifestURL),...appVersion,runtime,pending:pendingInfo(__dirname)?.version||null});
   }
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
+  if(pathname==='/api/orderflow'&&req.method==='GET'){
+   const rawSym=url.searchParams.get('symbol')||'BTCUSDT';
+   const interval=url.searchParams.get('interval')||'5m';
+   const force=url.searchParams.get('force')==='1';
+   const symbol=normalizeOrderflowSymbol(rawSym);
+   if(!/^[A-Z0-9]{4,25}$/.test(symbol))return response(res,400,{ok:false,error:'INVALID_SYMBOL'});
+   if(!['5m','15m','1h'].includes(interval))return response(res,400,{ok:false,error:'INVALID_INTERVAL'});
+   try{
+    const data=await fetchOrderflow(symbol,{interval,force});
+    const openHeld=[
+     ...(copyTrader?.store?.open||[]).map(p=>p.symbol),
+     ...(scalpExec?.store?.open||[]).map(p=>p.symbol),
+     ...(live?.store?.records||[]).filter(r=>r.status==='OPEN').map(r=>r.symbol),
+    ].filter(s=>/^[A-Z0-9]{4,25}$/.test(String(s||'')));
+    const topMarket=(state.ranked||[]).slice(0,25).map(m=>m.symbol);
+    const defaults=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','SUIUSDT','AVAXUSDT','LINKUSDT','ADAUSDT','1000PEPEUSDT'];
+    const quickSymbols=[...new Set([...openHeld,...defaults,...topMarket])].slice(0,30);
+    return response(res,200,{...data,quickSymbols,openSymbols:[...new Set(openHeld)]});
+   }catch(e){
+    return response(res,502,{ok:false,symbol,interval,error:e?.message||'ORDERFLOW_FETCH_FAILED'});
+   }
+  }
   if(pathname==='/api/market-commentary'){
    try{await refreshMarketStats()}catch{}
    return response(res,200,buildMarketCommentary(rawMarketTickers,{now:Date.now(),receivedAt:marketStatsReceivedAt,eligibleSymbols:state.activeSymbols,dataSource:'BINANCE_FUTURES_PUBLIC_24H'}));
