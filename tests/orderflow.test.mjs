@@ -457,3 +457,62 @@ test('FireCharts wall touch inspection snaps to liquidity wall lines, renders cr
   assert.match(svgWithCrosshair, /105\.25/);
   assert.match(svgWithCrosshair, /class="of-fc-wall"/);
 });
+
+test('Whale vs Retail CVD cohort divergence badge, L2 snapshot disk persistence, and backtest-validated 0.28 runner trail ratio', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const {
+    normalizeCohortSeries,
+    configureFirechartPersistence,
+    recordOrderbookSnapshot,
+    getOrderbookSnapshots,
+    clearFirechartHistory,
+  } = await import('../firechart.mjs');
+  const { SCALP_TRAIL_RUNNER_PULLBACK_RATIO } = await import('../scalp_executor.mjs');
+
+  assert.equal(SCALP_TRAIL_RUNNER_PULLBACK_RATIO, 0.28);
+
+  // 1) Whale accumulation against retail selling
+  const accumPts = Array.from({ length: 10 }, (_, i) => ({
+    t: BASE_T + i * 60_000,
+    price: 100 + i * 0.1,
+    retail: -50_000 * (i + 1),
+    mid: -10_000 * (i + 1),
+    large: 120_000 * (i + 1),
+    whale: 350_000 * (i + 1),
+  }));
+  const accum = normalizeCohortSeries(accumPts);
+  assert.equal(accum.divergence.type, 'WHALE_ACCUMULATION');
+  assert.match(accum.divergence.badgeKo, /고래 매집 · 개미 투매 역행/);
+
+  // 2) Whale distribution into retail buying
+  const distPts = Array.from({ length: 10 }, (_, i) => ({
+    t: BASE_T + i * 60_000,
+    price: 100 - i * 0.1,
+    retail: 60_000 * (i + 1),
+    mid: 15_000 * (i + 1),
+    large: -100_000 * (i + 1),
+    whale: -400_000 * (i + 1),
+  }));
+  const dist = normalizeCohortSeries(distPts);
+  assert.equal(dist.divergence.type, 'WHALE_DISTRIBUTION');
+  assert.match(dist.divergence.badgeKo, /고래 매도 · 개미 추격 역행/);
+
+  // 3) Disk persistence of L2 orderbook snapshots across restarts
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-snap-'));
+  try {
+    clearFirechartHistory();
+    configureFirechartPersistence(tmpDir);
+    recordOrderbookSnapshot('SOLUSDT', { bids: [{ p: 180, usd: 500_000 }], asks: [{ p: 182, usd: 700_000 }] }, BASE_T, { forceFlush: true });
+    assert.equal(getOrderbookSnapshots('SOLUSDT').length, 1);
+    clearFirechartHistory();
+    assert.equal(getOrderbookSnapshots('SOLUSDT').length, 0);
+    configureFirechartPersistence(tmpDir);
+    assert.equal(getOrderbookSnapshots('SOLUSDT').length, 1, 'reloaded L2 orderbook snapshots from disk');
+  } finally {
+    configureFirechartPersistence(null);
+    clearFirechartHistory();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

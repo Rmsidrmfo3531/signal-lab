@@ -31,7 +31,7 @@ import {parseCopyMessage} from './copy_parser.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,positionRow} from './bingx_position_mode.mjs';
 
 export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
-const MAX_CLOSED=300,MAX_EVENTS=200,MAX_SEEN=1000;
+const MAX_CLOSED=2000,MAX_EVENTS=200,MAX_SEEN=1000;
 const AUDIT_MAX_AGE=135000,CLOSE_DELAY=120000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
@@ -199,7 +199,7 @@ export class CopyExecutor{
   const basis=this.config.mode==='LIVE'?availableMargin(this.funds):pos(this.funds?.equity);
   const effectiveRatio=sizing==='BALANCE_RATIO'&&basis>0&&traderBalanceUSD>0?+(basis/traderBalanceUSD).toFixed(4):null;
   return {funds:this.funds??null,firstMarginUSD:this.config.firstMarginUSD,maxAdds:this.config.maxAdds,mode:this.config.mode,armed:this.armed,stops:this.config.stops,breakVolumeMult:this.config.breakVolumeMult,sizing,traderBalanceUSD,effectiveRatio,maxLeverage:this.#effectiveMaxLeverage(),stopMinPct:this.config.stopMinPct,enabled:this.config.enabled,killed:this.store.killed,pending:this.store.pending.length,deferredEntries:this.store.deferredEntries.length,maxTotalMarginPct:this.config.maxTotalMarginPct,ledgerLossPct:this.config.ledgerLossPct,marginUSD:this.config.marginUSD,maxLossPct:this.config.maxLossPct,positions:Object.values(this.store.positions),
-  closed:closed.slice(-200).reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
+  closed:closed.slice().reverse().map(p=>({...p,settlement:this.settlementStatus(p)})),closedTotal:closed.length,events:this.store.events.slice(-200).reverse(),monitorStartAt:this.store.monitorStartAt||null,
   ...(this.controls?{controls:this.controls.status(this.now())}:{}),
   ...(this.audit?{audit:this.auditStatus()}:{})}}
 
@@ -488,7 +488,7 @@ export class CopyExecutor{
   }
   this.#rememberFillOrder(p,res?.orderId,side,Number(res?.executedQty)>0||res?.status==='FILLED',notice);
   this.#notifyOrderReceipt(p,res?.orderId);
-  return {orderId:res?.orderId??null,avg:pos(res?.avgPrice),status:res?.status??null};
+  return {orderId:res?.orderId??null,avg:pos(res?.avgPrice),status:res?.status??null,executedQty:pos(res?.executedQty)};
  }
  #clientId(p,tag){return ('cp'+createHash('sha256').update(p.id+'|'+tag).digest('hex')).slice(0,32)}
  /** Entry / add market order with a bounded retry when the request got no venue answer (user 2026-11-17: three
@@ -505,7 +505,7 @@ export class CopyExecutor{
   const blocked=this.#sendBlock(p,entry),orderBlock=blocked?{reason:blocked}:margin;
   if(orderBlock)throw Object.assign(Error(orderBlock.reason),{code:orderBlock.reason,orderBlock});
   const cid=this.#clientId(p,tag),started=Date.now(),delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[];
-  if(event==='ENTRY_RETRY')p.entryCids=[...(p.entryCids||[]),cid]; // looked up again before the ledger drops or adopts it
+  if(event==='ENTRY_RETRY'){p.entryCids=[...(p.entryCids||[]),cid];this.#save()} // looked up again before the ledger drops or adopts it
   const maker=markPrice>0?{markPrice,step,minQty}:null;
   const sendMarket=async()=>{
    try{return await this.#market(p,side,quantity,{tag,beforeSend:()=>this.#sendBlock(p,entry),maker})}
@@ -911,14 +911,33 @@ export class CopyExecutor{
    if(res?.deferred)p.theirTotal=prevTotal;
    return res;
   }else{
-   const down=this.#qty(c,p.qty*(1-ratio)),up=this.#qty(c,p.qty*(1-ratio),'UP'),want=p.qty*(1-ratio);
-   const cut=Math.min(p.qty,want-down<=up-want?down:up);if(!(cut>0))return {ok:true,tooSmall:true};
+   if(p.theirTotal===m.to&&!p.pendingCut)return {ok:true,already:true};
+   const samePending=p.pendingCut&&p.pendingCut.from===m.from&&p.pendingCut.to===m.to;
+   const baseQty=samePending?p.pendingCut.beforeQty:p.qty;
+   const down=this.#qty(c,baseQty*(1-ratio)),up=this.#qty(c,baseQty*(1-ratio),'UP'),want=baseQty*(1-ratio);
+   const totalWantCut=Math.min(baseQty,want-down<=up-want?down:up);
+   const targetLeft=Number(Math.max(0,baseQty-totalWantCut).toFixed(12));
+   if(samePending&&p.qty<=targetLeft+1e-9){
+    const filledCut=Number(Math.max(0,baseQty-p.qty).toFixed(12))||totalWantCut;
+    delete p.pendingCut;
+    p.theirTotal=m.to;
+    p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:filledCut,ratio});this.#save();
+    try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}
+    this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:filledCut,left:p.qty});
+    return {ok:true};
+   }
+   const cut=samePending?Number(Math.max(0,p.qty-targetLeft).toFixed(12)):totalWantCut;
+   if(!(cut>0))return {ok:true,tooSmall:true};
    if(cut>=p.qty)return this.#close(m,'TRADER_CUT_ALL');
-   await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});
+   p.pendingCut={from:m.from,to:m.to,beforeQty:baseQty,wantCut:totalWantCut,targetLeft};this.#save();
+   const order=await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});
+   const filledCut=pos(order?.executedQty)?Math.min(cut,order.executedQty):cut;
+   p.qty=Number(Math.max(0,p.qty-filledCut).toFixed(12));
+   delete p.pendingCut;
    p.theirTotal=m.to; // set after our cut went through, so a retried cut uses the same from / to
-   p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:cut,ratio});this.#save();
+   p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:filledCut,ratio});this.#save();
    try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}
-   this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:cut,left:p.qty});
+   this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:filledCut,left:p.qty});
   }
   return {ok:true};
  }
@@ -1279,8 +1298,12 @@ export class CopyExecutor{
   const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity);
   if(bal)this.funds={equity:bal.equity==null?null:num(bal.equity),available:availableMargin(bal),at:this.now()};
   if(eq&&!this.store.killed&&unrealized<=-eq*this.config.ledgerLossPct/100){
-   this.store.killed=true;this.#event('COPY_LOSS_LIMIT',{reason:`open loss ${unrealized.toFixed(2)} ≤ -${this.config.ledgerLossPct}% of ${eq.toFixed(2)}`});this.#save(); // on disk before any order
+   this.store.killed=true;
+   for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'))p.closing??={reason:'COPY_LOSS_LIMIT',at:this.now()};
+   this.#event('COPY_LOSS_LIMIT',{reason:`open loss ${unrealized.toFixed(2)} ≤ -${this.config.ledgerLossPct}% of ${eq.toFixed(2)}`});this.#save(); // on disk before any order
    for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'&&!x.closing?.pending))await this.#emergency(p,'COPY_LOSS_LIMIT');
+  }else if(this.store.killed){
+   for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'&&!x.inflight&&!x.closing))await this.#emergency(p,'COPY_LOSS_LIMIT');
   }
   this.#save();
  }

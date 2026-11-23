@@ -1138,3 +1138,111 @@ test('hedge-mode copy settlement recovers manual adds and closes on the isolated
  }
 });
 
+test('Astra audit regressions: idempotent partial reduce, exact partial fill qty, entry/kill restart recovery, 201+ trade PnL, and LiveExecutor mode isolation',async()=>{
+ const {copyStats}=await import('../public/live_control.js');
+ const {LiveExecutor}=await import('../live_executor.mjs');
+
+ // 1) Partial reduce idempotency & partial fill exact executedQty
+ {
+  const v=venue();
+  const ex=make(v,{config:{stops:true}});
+  await ex.handle({id:1,date:1e12,text:OPEN}); // opens 98
+  assert.equal(v.size,98);
+  // Make the post-cut #protect position read fail once, then retry the same reduction message
+  const origPos=v.client.positions;
+  let posCalls=0;
+  v.client.positions=async(...a)=>{
+   posCalls++;
+   if(posCalls===2)throw Object.assign(Error('timeout'),{code:'NETWORK_UNREACHABLE'});
+   return origPos(...a);
+  };
+  await ex.handle({id:2,date:1e12+1000,text:CHANGE(880,440)});
+  v.client.positions=origPos;
+  //Even if the same reduction is retried, it must NOT sell another half
+  await ex.handle({id:3,date:1e12+2000,text:CHANGE(880,440)});
+  assert.equal(v.size,49,'position stays at 49, never double-reduced');
+
+  // Partial fill: 49 requested, only 24 filled -> step records 24
+  const v2=venue();
+  const origPlace=v2.client.placeOrder;
+  v2.client.placeOrder=async p=>{
+   if(p.type==='MARKET'&&p.reduceOnly){
+    v2.setSize(v2.size-24);
+    return {order:{orderId:'partial-24',avgPrice:'0.051',executedQty:'24',status:'PARTIALLY_FILLED'}};
+   }
+   return origPlace(p);
+  };
+  const ex2=make(v2,{config:{stops:false}});
+  await ex2.handle({id:10,date:1e12,text:OPEN});
+  await ex2.handle({id:11,date:1e12+1000,text:CHANGE(880,440)});
+  const redStep=ex2.store.positions['TNSRUSDT|SHORT'].steps.find(s=>s.kind==='REDUCE');
+  assert.equal(redStep.qty,24,'records actual filled 24 rather than requested 49');
+ }
+
+ // 2) Entry crash before response & COPY_LOSS_LIMIT restart with 2 open positions
+ {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'copy-audit-'));
+  try{
+   const v=venue();
+   v.client.positionMode=async()=>({dualSidePosition:false});
+   const origPlace=v.client.placeOrder;
+   let lastCid=null;
+   v.client.placeOrder=async p=>{
+    lastCid=p.clientOrderId;
+    await origPlace(p);
+    throw Object.assign(Error('simulated crash before response'),{code:'NETWORK_UNREACHABLE'});
+   };
+   const ex1=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),directory:dir,retryDelaysMs:[],now:()=>1e12});
+   await ex1.handle({id:1,date:1e12,text:OPEN});
+   // Restart from disk: entryCids is persisted on disk even though placeOrder threw before returning!
+   v.client.placeOrder=origPlace;
+   v.client.getOrder=async(s,{clientOrderId})=>clientOrderId===lastCid?{order:{orderId:'1',clientOrderId,status:'FILLED',executedQty:'98',avgPrice:'0.051'}}:null;
+   const ex2=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,balance:async()=>({equity:400,available:300}),directory:dir,now:()=>1e12+5000});
+   await ex2.reconcile();
+   assert.equal(ex2.status().positions.length,1);
+   await ex2.handle({id:2,date:1e12+6000,text:CLOSE});
+   assert.equal(v.size,0,'restarted executor adopts filled entry from disk entryCids and closes it on trader CLOSE');
+  }finally{fs.rmSync(dir,{recursive:true,force:true})}
+ }
+
+ // 3) 201 closed trades (-$500 first, then 200 x +$1 = -$300 net)
+ {
+  const v=venue(),ex=make(v);
+  ex.store.closed=[
+   {id:'c0',symbol:'BTCUSDT',direction:'LONG',openedAt:1000,closedAt:2000,netUSD:-500,netSource:'EXCHANGE_FILLS'},
+   ...Array.from({length:200},(_,i)=>({id:'c'+(i+1),symbol:'BTCUSDT',direction:'LONG',openedAt:3000+i*10,closedAt:3005+i*10,netUSD:1,netSource:'EXCHANGE_FILLS'})),
+  ];
+  const st=copyStats(ex.status(),{confirmedOnly:true});
+  assert.equal(st.all.n,201);
+  assert.equal(st.all.net,-300,'cumulative PnL includes trade #1 (-$500) + 200*(+$1) = -$300');
+ }
+
+ // 4) LiveExecutor: TESTNET records never touch LIVE client, {positions:[...]} is unwrapped, and 300 closed trades never prune an old OPEN record
+ {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'live-audit-'));
+  try{
+   fs.writeFileSync(path.join(dir,'live-orders.json'),JSON.stringify({
+    version:1,killSwitch:false,deletedKeys:[],archived:[],
+    records:[
+     {signalKey:'tn-open',symbol:'BTCUSDT',venueSymbol:'BTC-USDT',venue:'BINGX',mode:'TESTNET',direction:'LONG',status:'OPEN',stop:90,targets:[110,115,120],quantity:{total:10,parts:[4,3.5,2.5],riskUSD:10},plannedRiskUSD:10,events:[]},
+     ...Array.from({length:305},(_,i)=>({signalKey:'c'+i,symbol:'ETHUSDT',venueSymbol:'ETH-USDT',venue:'BINGX',mode:'TESTNET',direction:'LONG',status:'CLOSED',closedAt:1000+i,plannedRiskUSD:5,events:[]})),
+    ],
+   }));
+   let liveOrdersSent=0;
+   const liveClient={positions:async()=>({positions:[{symbol:'BTC-USDT',positionAmt:'4',avgPrice:'100'}]}),openOrders:async()=>({orders:[]}),placeOrder:async()=>{liveOrdersSent++;return {order:{orderId:'1'}}},cancelOrder:async()=>({})};
+   const exLive=new LiveExecutor({config:{mode:'LIVE',liveConfirmed:false,venues:['BINGX']},clients:{BINGX:liveClient},directory:dir});
+   await exLive.reconcile();
+   assert.equal(liveOrdersSent,0,'TESTNET records never trigger orders on LIVE client');
+
+   // On TESTNET, the old OPEN record is preserved across 305 closed records and {positions:[...]} keeps it open
+   let cancelled=0;
+   const tnClient={positions:async()=>({positions:[{symbol:'BTC-USDT',positionAmt:'10',avgPrice:'100'}]}),openOrders:async()=>({orders:[]}),placeOrder:async()=>({order:{orderId:'s1'}}),cancelOrder:async()=>{cancelled++;return {}}};
+   const exTn=new LiveExecutor({config:{mode:'TESTNET',venues:['BINGX']},clients:{BINGX:tnClient},directory:dir});
+   exTn.store.records[0].stopOrderId='stop-1';
+   exTn.store.records[0].recovery='DONE';
+   await exTn.reconcile();
+   assert.equal(cancelled,0,'{positions:[...]} payload is unwrapped and never treated as size 0');
+   assert.equal(exTn.budgetSource().openRisk(),10,'old OPEN record is never pruned by 300+ newer CLOSED records');
+  }finally{fs.rmSync(dir,{recursive:true,force:true})}
+ }
+});

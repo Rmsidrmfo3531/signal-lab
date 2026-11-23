@@ -80,20 +80,35 @@ export function atomicWriteStore(storePath,value){
   flushDirectory(path.dirname(storePath));
  }finally{try{fs.rmSync(tmp,{force:true})}catch{}}
 }
+const COMPANION_LEDGERS=['live-orders.json','copy-store.json','copy-store-live.json','scalp-store.json','manual-trades-live.json'];
 export function backupStore(storePath,{maxBackups=30}={}){
  if(!fs.existsSync(storePath))return null;
  readStore(storePath);
- const backupDir=path.join(path.dirname(storePath),'backups');fs.mkdirSync(backupDir,{recursive:true,mode:0o700});
+ const dataDir=path.dirname(storePath);
+ const backupDir=path.join(dataDir,'backups');fs.mkdirSync(backupDir,{recursive:true,mode:0o700});
  const target=path.join(backupDir,`store-${stamp()}-${randomBytes(3).toString('hex')}.json`);
  fs.copyFileSync(storePath,target,fs.constants.COPYFILE_EXCL);
+ const ledgers={};
+ for(const name of COMPANION_LEDGERS){
+  const fp=path.join(dataDir,name);
+  if(fs.existsSync(fp)){try{const parsed=readStore(fp);if(parsed)ledgers[name]=parsed}catch{}}
+ }
+ if(Object.keys(ledgers).length){
+  try{atomicWriteStore(target.replace(/\.json$/,'.ledgers.json'),ledgers)}catch{}
+ }
  // Never touch personal data in other directories. Keep latest N backups.
- const files=fs.readdirSync(backupDir).filter(x=>/^store-.*\.json$/.test(x)).sort().reverse();
- for(const file of files.slice(Math.max(1,maxBackups)))fs.rmSync(path.join(backupDir,file),{force:true});
+ const files=fs.readdirSync(backupDir).filter(x=>/^store-.*(?<!\.ledgers)\.json$/.test(x)).sort().reverse();
+ for(const file of files.slice(Math.max(1,maxBackups))){
+  fs.rmSync(path.join(backupDir,file),{force:true});
+  fs.rmSync(path.join(backupDir,file.replace(/\.json$/,'.ledgers.json')),{force:true});
+ }
  return target;
 }
 export function restoreStore(sourcePath,dir){
  const source=path.resolve(sourcePath),record=readStore(source);
  if(!record)throw Error('백업 파일을 찾지 못했습니다.');
+ const ledgerFile=source.replace(/\.json$/,'.ledgers.json');
+ const ledgers=fs.existsSync(ledgerFile)?readStore(ledgerFile):null;
  fs.mkdirSync(dir,{recursive:true,mode:0o700});
  // Hold the same exclusive lock as the server during preservation and restore.
  const release=acquireDataLock(dir);
@@ -112,22 +127,37 @@ export function restoreStore(sourcePath,dir){
    }else previous=backupStore(storePath);
   }
   atomicWriteStore(storePath,record);
-  return {storePath,previous,preservedCorrupt};
+  const restoredLedgers=[];
+  if(ledgers&&isObject(ledgers)){
+   for(const name of COMPANION_LEDGERS){
+    if(isObject(ledgers[name])){atomicWriteStore(path.join(dir,name),ledgers[name]);restoredLedgers.push(name)}
+   }
+  }
+  return {storePath,previous,preservedCorrupt,...(restoredLedgers.length?{restoredLedgers}:{})};
  }finally{release()}
 }
 export function hasTradeRecords(store){
  return Boolean((store?.journal?.length||0)||(store?.alerts?.length||0)||(store?.paper?.open?.length||0)||(store?.paper?.pending?.length||0)||(store?.paper?.closed?.length||0)||(store?.paper?.skipped?.length||0));
 }
-export function importLegacy(sourcePath,dir,{replace=false}={}){
+export function importLegacy(sourcePath,dir,{replace=false,env=process.env}={}){
  const source=path.resolve(sourcePath);
  const srcFile=fs.statSync(source).isDirectory()?path.join(source,'store.json'):source;
+ const srcDir=path.dirname(srcFile);
  const incoming=readStore(srcFile);if(!incoming)throw Error('이전 기록 파일 store.json을 찾지 못했습니다: '+srcFile);
  fs.mkdirSync(dir,{recursive:true,mode:0o700});
  const dst=path.join(dir,'store.json');const existing=readStore(dst);
  if(existing&&hasTradeRecords(existing)&&!replace)throw Error('공용 폴더에 이미 거래·신호 기록이 있습니다. 덮어쓰지 않았습니다. 백업 후 별도로 복원하세요.');
  const backup=existing?backupStore(dst):null;
  atomicWriteStore(dst,incoming);
- const srcEnv=path.join(path.dirname(srcFile),'.env');const migratedEnv=copyExclusive(srcEnv,path.join(dir,'.env'));
+ for(const name of COMPANION_LEDGERS){
+  const s=path.join(srcDir,name),t=path.join(dir,name);
+  if(fs.existsSync(s)&&(!fs.existsSync(t)||replace)){try{const d=readStore(s);if(d)atomicWriteStore(t,d)}catch{}}
+ }
+ const srcEnv=path.join(srcDir,'.env');
+ const envOverride=env?.SIGNAL_LAB_ENV_DIR?.trim();
+ const dstEnv=envOverride?path.join(path.resolve(envOverride),'.env'):path.join(dir,'.env');
+ if(envOverride)fs.mkdirSync(path.dirname(dstEnv),{recursive:true,mode:0o700});
+ const migratedEnv=copyExclusive(srcEnv,dstEnv);
  return {dataDir:dir,backup,imported:srcFile,migratedEnv,recordCounts:{paperOpen:incoming.paper?.open?.length||0,paperClosed:incoming.paper?.closed?.length||0,paperPending:incoming.paper?.pending?.length||0,journal:incoming.journal?.length||0,alerts:incoming.alerts?.length||0}};
 }
 

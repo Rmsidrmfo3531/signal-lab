@@ -64,6 +64,7 @@ import {AccountAlerts} from './account_alerts.mjs';
 import {RealTrailingManager} from './real_trailing.mjs';
 import {RealAccountGuard,REAL_SAFETY_COPY_PRESET} from './real_safety.mjs';
 import {fetchOrderflow,fetchOrderflowWithFirechart,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
+import {configureFirechartPersistence} from './firechart.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
@@ -74,6 +75,7 @@ const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const appPackage=JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8'));
 const appVersion={version:appPackage.version,displayVersion:displayVersionOf(appPackage)};
 const storage=prepareData(__dirname);
+configureFirechartPersistence(storage.dir);
 const releaseDataLock=acquireDataLock(storage.dir);
 // Heartbeat so a second PC sharing this data folder (OneDrive etc.) sees the server is running.
 setInterval(()=>releaseDataLock.heartbeat?.(),30000).unref?.();
@@ -2283,6 +2285,7 @@ const server=http.createServer(async(req,res)=>{
     }catch(e){return response(res,e.httpStatus||500,{error:e.code||'TESTNET_RESET_PNL_FAILED',message:e.message})}
    }
    if(pathname==='/api/live/arm'){if(body.confirm!=='ARM')return response(res,400,{error:'CONFIRM_REQUIRED'});
+    if(body.mode&&body.mode!==LIVE.mode)return response(res,409,{error:'MODE_MISMATCH'});
     if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATE_IN_PROGRESS'});
     // TESTNET / OFF: one switch for the signal strategy and the reversal scalp (user 2026-11-17). LIVE: unchanged.
     let status;
