@@ -1362,3 +1362,73 @@ test('copy loss limit is off by default (user 2026-11-23 "다 없애 필요없�
  assert.equal(copyConfigRaw({},'TESTNET').ledgerLossPct,0);
  assert.equal(copyConfigRaw({COPY_LEDGER_LOSS_PCT:'50'},'TESTNET').ledgerLossPct,50);
 });
+
+test('live copy enters and adds when only unfilled resting manual LIMIT orders exist (Signal Lab or BingX app), while still blocking copy-owned or filled orders',async()=>{
+ // 1) One-way mode: Signal Lab manual LIMIT ('man...') and BingX app LIMIT / TRIGGER_LIMIT do not block entry or adds
+ const v=venue();
+ let orders=[
+  {symbol:'TNSR-USDT',orderId:'m1',clientOrderId:'manm9abc123',type:'LIMIT',side:'SELL',positionSide:'BOTH',price:'0.06',origQty:'50',executedQty:'0',status:'NEW',reduceOnly:'false'},
+  {symbol:'TNSR-USDT',orderId:'m2',type:'TRIGGER_LIMIT',side:'BUY',positionSide:'BOTH',price:'0.04',origQty:'50',executedQty:'0',status:'NEW'},
+ ];
+ v.client.openOrders=async()=>({orders});
+ const ex=make(v,{config:{mode:'LIVE',stops:false},auditOrders:true});
+ await ex.reconcile();
+ const openRes=await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(openRes.ok,true,'resting unfilled manual LIMIT orders must not block live copy entry');
+ await ex.reconcile();
+ assert.deepEqual(ex.auditStatus().lanes[0].issues,[],'resting unfilled manual LIMIT orders must not trigger UNEXPECTED_OPEN_ORDER');
+ assert.equal(ex.auditStatus().lanes[0].blocked,false);
+ const addRes=await ex.handle({id:2,date:1e12+1000,text:CHANGE(880,1760)});
+ assert.equal(addRes.ok,true,'copy add must succeed while manual LIMIT order remains unfilled');
+
+ // 2) Copy's own orphaned PostOnly LIMIT order (clientOrderId starting with 'cp') STILL blocks adds and new entries
+ orders=[{symbol:'TNSR-USDT',orderId:'c1',clientOrderId:'cp1234567890p',type:'LIMIT',side:'SELL',positionSide:'BOTH',executedQty:'0',status:'NEW'}];
+ await ex.reconcile();
+ assert.ok(ex.auditStatus().lanes[0].issues.includes('UNEXPECTED_OPEN_ORDER'),'copy-owned resting LIMIT must still flag UNEXPECTED_OPEN_ORDER');
+ const blockedAdd=await ex.handle({id:3,date:1e12+2000,text:CHANGE(1760,2640)});
+ assert.equal(blockedAdd.reason,'COPY_AUDIT_BLOCKED');
+
+ // Close out and verify pre-entry checks for copy-owned LIMIT vs partially filled manual LIMIT vs filled position
+ orders=[];
+ await ex.reconcile();
+ assert.equal((await ex.handle({id:4,date:1e12+3000,text:CLOSE})).ok,true);
+ assert.equal(v.size,0);
+
+ orders=[{symbol:'TNSR-USDT',orderId:'c2',clientOrderId:'cp9999p',type:'LIMIT',side:'SELL',positionSide:'BOTH',executedQty:'0',status:'NEW'}];
+ assert.equal((await ex.handle({id:5,date:1e12+4000,text:OPEN})).reason,'COPY_OPEN_ORDERS_EXIST','copy-owned resting LIMIT must still block new entry');
+
+ orders=[{symbol:'TNSR-USDT',orderId:'m3',clientOrderId:'manpartial1',type:'LIMIT',side:'SELL',positionSide:'BOTH',executedQty:'10',status:'PARTIALLY_FILLED'}];
+ assert.equal((await ex.handle({id:6,date:1e12+5000,text:OPEN})).reason,'COPY_OPEN_ORDERS_EXIST','partially filled manual LIMIT must still block entry');
+
+ v.setSize(10);
+ orders=[{symbol:'TNSR-USDT',orderId:'m4',type:'LIMIT',side:'SELL',positionSide:'BOTH',executedQty:'0',status:'NEW'}];
+ assert.equal((await ex.handle({id:7,date:1e12+6000,text:OPEN})).reason,'VENUE_POSITION_EXISTS','filled manual position must still block entry');
+});
+
+test('live copy in hedge mode handles resting manual LIMIT order and venue setLeverage refusal safely within maxLeverage',async()=>{
+ const v=venue({hedge:true});
+ const orders=[{symbol:'TNSR-USDT',orderId:'h1',clientOrderId:'',type:'LIMIT',side:'SELL',positionSide:'SHORT',price:'0.06',origQty:'50',executedQty:'0',status:'NEW'}];
+ v.client.openOrders=async()=>({orders});
+ let shortLev=10;
+ v.client.leverage=async()=>({maxLongLeverage:20,maxShortLeverage:20,longLeverage:10,shortLeverage:shortLev});
+ v.client.setLeverage=async()=>{throw Object.assign(Error('cannot change leverage while open orders exist'),{code:'VENUE_ERROR_101400'})};
+
+ // Within maxLeverage (10 <= 125): keeps current venue leverage and enters cleanly
+ const ex=make(v,{config:{mode:'LIVE',stops:false,maxLeverage:20},auditOrders:true});
+ await ex.reconcile();
+ const okRes=await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(okRes.ok,true,'copy entry succeeds using current leverage when BingX rejects leverage change due to resting manual LIMIT');
+ assert.equal(ex.status().positions[0].leverage,10);
+
+ // Exceeding maxLeverage (25 > 20): still refuses rather than silently exceeding configured max leverage
+ const v2=venue({hedge:true});
+ v2.client.openOrders=async()=>({orders});
+ v2.client.leverage=async()=>({maxLongLeverage:50,maxShortLeverage:50,longLeverage:25,shortLeverage:25});
+ v2.client.setLeverage=async()=>{throw Object.assign(Error('cannot change leverage while open orders exist'),{code:'VENUE_ERROR_101400'})};
+ const ex2=make(v2,{config:{mode:'LIVE',stops:false,maxLeverage:20},auditOrders:true});
+ await ex2.reconcile();
+ const failRes=await ex2.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(failRes.ok,false,'must not enter if existing venue leverage exceeds maxLeverage');
+ assert.equal(failRes.reason,'VENUE_ERROR_101400');
+});
+

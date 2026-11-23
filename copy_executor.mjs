@@ -93,6 +93,7 @@ export function noVenueAnswer(e){return ['NETWORK_UNREACHABLE','TIMEOUT','ETIMED
 const orderAbsent=e=>/80016/.test(String(e?.code||''))||/not exist/i.test(String(e?.message||''));
 const TERMINAL_ORDER=new Set(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED']);
 const RESTING_ORDER=new Set(['NEW','PENDING','PARTIALLY_FILLED']);
+const MANUAL_RESTING_LIMIT_TYPES=new Set(['LIMIT','TRIGGER_LIMIT']);
 
 /** BingX contract for a channel symbol: the same name, a 1000-coin contract (1000PEPEUSDT), or a stock
  * perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT). contracts: Map(symbol -> normalized contract). */
@@ -432,6 +433,25 @@ export class CopyExecutor{
    }
   }
  }
+ #isCopyOwnedOrder(o){
+  const cid=String(o?.clientOrderId??o?.clientOrderID??'').trim().toLowerCase();
+  if(cid.startsWith('cp'))return true;
+  if(cid&&this.store.makerUnsettled?.some(u=>String(u.clientOrderId||'').toLowerCase()===cid))return true;
+  return false;
+ }
+ /** Unfilled resting manual LIMIT / TRIGGER_LIMIT order (Signal Lab manual panel or BingX app):
+  * does not block live copy entry or adds while still unfilled (executedQty = 0). Copy's own
+  * orphaned orders (cp* / makerUnsettled), partially filled orders, and non-limit orders still block. */
+ #isUnfilledManualLimit(o){
+  if(!o||this.#isCopyOwnedOrder(o))return false;
+  const type=String(o.type||'').toUpperCase();
+  if(!MANUAL_RESTING_LIMIT_TYPES.has(type))return false;
+  const st=String(o.status||'').toUpperCase();
+  if(st&&(TERMINAL_ORDER.has(st)||st==='PARTIALLY_FILLED'))return false;
+  if((num(o.executedQty)??0)>0)return false;
+  if(String(o.reduceOnly).toLowerCase()==='true'||String(o.closePosition).toLowerCase()==='true')return false;
+  return true;
+ }
  #compareLane(p,qty,orders){
   const issues=[],expected=p.auditQty??pos(p.qty);
   if(p.closing){if(this.now()-p.closing.at>=CLOSE_DELAY)issues.push('CLOSE_DELAYED')}
@@ -442,7 +462,8 @@ export class CopyExecutor{
   const onSide=o=>!p.hedge||!o.positionSide||String(o.positionSide).toUpperCase()===p.direction;
   const opening=p.direction==='LONG'?'BUY':'SELL';
   if(orders?.some(o=>onSide(o)&&String(o.side).toUpperCase()===opening&&
-   String(o.reduceOnly).toLowerCase()!=='true'&&String(o.closePosition).toLowerCase()!=='true'))issues.push('UNEXPECTED_OPEN_ORDER');
+   String(o.reduceOnly).toLowerCase()!=='true'&&String(o.closePosition).toLowerCase()!=='true'&&
+   !this.#isUnfilledManualLimit(o)))issues.push('UNEXPECTED_OPEN_ORDER');
   if(orders&&this.config.stops&&qty>0){
    const o=p.stopOrderId==null?null:orders.find(o=>String(o.orderId)===String(p.stopOrderId));
    if(!o){stop='MISSING';issues.push('STOP_MISSING')}
@@ -859,11 +880,15 @@ export class CopyExecutor{
   if(!rawPos.ok)throw rawPos.error;
   {const list=checkedPositions(rawPos.data,venueSymbol),row=positionRow(list,venueSymbol,{hedge,direction:m.direction}),size=row?Math.abs(Number(row.positionAmt)):0;
    if(size>0){this.#event('SKIPPED',{symbol:m.symbol,reason:'VENUE_POSITION_EXISTS',detail:`거래소에 이미 ${size} 보유`});return {ok:false,reason:'VENUE_POSITION_EXISTS'}}}
+  let hasManualRestingLimit=false;
   if(this.audit){
    const {orders,detail}=auditRes||{orders:null};
    const expected=positionSideFor({hedge,direction:m.direction});
-   const reason=this.#auditBlock(m.symbol,venueSymbol)??(!orders?'COPY_ORDERS_UNREADABLE':
-    orders.some(o=>!hedge||!o.positionSide||String(o.positionSide).toUpperCase()===expected||String(o.positionSide).toUpperCase()==='BOTH')?'COPY_OPEN_ORDERS_EXIST':null);
+   const onLane=o=>!hedge||!o.positionSide||String(o.positionSide).toUpperCase()===expected||String(o.positionSide).toUpperCase()==='BOTH';
+   const laneOrders=orders?orders.filter(onLane):null;
+   hasManualRestingLimit=Boolean(laneOrders?.some(o=>this.#isUnfilledManualLimit(o)));
+   const blockingOrders=laneOrders?laneOrders.filter(o=>!this.#isUnfilledManualLimit(o)):null;
+   const reason=this.#auditBlock(m.symbol,venueSymbol)??(!orders?'COPY_ORDERS_UNREADABLE':blockingOrders.length?'COPY_OPEN_ORDERS_EXIST':null);
    if(reason){this.#event('SKIPPED',{symbol:m.symbol,reason,...(detail?{detail}:{})});return {ok:false,reason}}
   }
   // Check gate & entry revision after parallel reads (e.g. if disarmed or kill-switched while awaiting balance/positions).
@@ -921,7 +946,19 @@ export class CopyExecutor{
    try{
     await Promise.all([
      needMargin?this.client.setMarginType(venueSymbol,'CROSSED').then(()=>{this.#marginSetCache.set(venueSymbol,this.now())},()=>{}):Promise.resolve(),
-     needLev?this.client.setLeverage(venueSymbol,levSide,leverage).then(()=>{this.#levSetCache.set(levKey,{leverage,at:this.now()})}):Promise.resolve(),
+     needLev?this.client.setLeverage(venueSymbol,levSide,leverage).then(()=>{this.#levSetCache.set(levKey,{leverage,at:this.now()})},async e=>{
+      if(hasManualRestingLimit&&/^VENUE_ERROR_\d+/.test(String(e?.code||''))&&!/109400/.test(String(e?.code||e?.message||''))){
+       this.#maxLevCache.delete(venueSymbol);
+       const curInfo=await this.#readMaxLeverage(venueSymbol)??levInfo;
+       const curLev=pos(m.direction==='SHORT'?(curInfo?.shortLeverage??curInfo?.leverage):(curInfo?.longLeverage??curInfo?.leverage));
+       if(!(curLev>this.#effectiveMaxLeverage())){
+        if(curLev)leverage=curLev;
+        this.log(`[COPY] ${m.symbol} 수동 미체결 지정가로 레버리지 변경 생략 (현재 ${leverage}배 유지: ${e.code})`);
+        return;
+       }
+      }
+      throw e;
+     }):Promise.resolve(),
     ]);
    }catch(e){
     if(/109400/.test(String(e?.code||e?.message||'')))this.clearVenueCache(venueSymbol);
