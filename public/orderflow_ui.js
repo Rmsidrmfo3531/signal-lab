@@ -191,9 +191,40 @@ export function orderflowLiqMapHTML(liqMap) {
 }
 
 /**
+ * Render clickable "실시간 수급 이상치 레이더" strip (Top OI flush / CVD strong flip / divergence / funding).
+ */
+export function orderflowRadarHTML(radar, activeSymbol = '', loading = false) {
+  const items = radar?.anomalies || [];
+  const meta = radar?.scanned
+    ? `${radar.scanned}종목 스캔 · 이상치 ${radar.flaggedCount ?? 0}건 · ${fmtKst(radar.at)} KST`
+    : loading ? '상위 20종목 5분봉 수급 스캔 중…' : '스캔 대기 중';
+  const cards = items.length
+    ? items.slice(0, 8).map(x => {
+      const short = String(x.symbol || '').replace(/USDT$/, '');
+      const active = x.symbol === activeSymbol ? ' active' : '';
+      const tags = (x.tags || []).slice(0, 2).map(t => `<span class="of-tag ${esc(t.tone || 'neutral')}">${esc(t.text)}</span>`).join('')
+        || `<span class="of-tag neutral">매수 ${esc(x.lastBuySharePct ?? 50)}%</span>`;
+      return `<button type="button" class="of-radar-card${active}" data-of-symbol="${esc(x.symbol)}">
+        <div class="of-rc-top"><b>${esc(short)}</b><span>${esc(fmtPx(x.markPrice))}</span></div>
+        <div class="of-rc-tags">${tags}</div>
+        <div class="of-rc-meta">30m OI ${esc(fmtPct(x.oiChange30mPct))} · 매수 ${esc(x.lastBuySharePct ?? 50)}%</div>
+      </button>`;
+    }).join('')
+    : `<div class="empty-small" style="padding:8px 0">${loading ? '상위 종목의 OI·CVD·다이버전스를 스캔하고 있습니다…' : '표시할 수급 레이더 데이터가 없습니다.'}</div>`;
+
+  return `<section class="of-radar" aria-label="전 종목 수급 이상치 레이더">
+    <div class="of-radar-head">
+      <div><b>실시간 수급 이상치 레이더</b><small>${esc(meta)}</small></div>
+      <button type="button" class="outline-btn small" data-of-radar-refresh>${loading ? '스캔 중…' : '↻ 레이더 스캔'}</button>
+    </div>
+    <div class="of-radar-grid">${cards}</div>
+  </section>`;
+}
+
+/**
  * Full "수급 · 청산" screen HTML renderer (pure, unit-testable).
  */
-export function orderflowHTML(data, { symbol = 'BTCUSDT', interval = '5m', loading = false, error = '' } = {}) {
+export function orderflowHTML(data, { symbol = 'BTCUSDT', interval = '5m', loading = false, error = '', radar = null, radarLoading = false } = {}) {
   const activeSym = data?.symbol || symbol;
   const activeIv = data?.interval || interval;
   const quick = data?.quickSymbols?.length ? data.quickSymbols : ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT', 'SUIUSDT', 'AVAXUSDT', 'LINKUSDT', 'ADAUSDT', '1000PEPEUSDT'];
@@ -223,11 +254,13 @@ export function orderflowHTML(data, { symbol = 'BTCUSDT', interval = '5m', loadi
   </div>
   <div class="of-chips" aria-label="빠른 종목 선택">${chips}</div>`;
 
+  const radarBox = orderflowRadarHTML(radar, activeSym, radarLoading);
+
   if (error && !data) {
-    return `${controls}<div class="venues-status warn" style="margin:14px 18px">수급 데이터 조회 실패: ${esc(error)}</div>`;
+    return `${controls}${radarBox}<div class="venues-status warn" style="margin:14px 18px">수급 데이터 조회 실패: ${esc(error)}</div>`;
   }
   if (!data) {
-    return `${controls}<div class="empty-small" style="padding:36px">종목 수급·청산 데이터를 불러오는 중입니다…</div>`;
+    return `${controls}${radarBox}<div class="empty-small" style="padding:36px">종목 수급·청산 데이터를 불러오는 중입니다…</div>`;
   }
 
   const px = data.price || {}, cvd = data.cvd || {}, oi = data.oi || {}, ratios = data.ratios || {}, fund = data.funding || {}, liq = data.liquidations || {}, sig = data.scalpSignal || {};
@@ -306,7 +339,7 @@ export function orderflowHTML(data, { symbol = 'BTCUSDT', interval = '5m', loadi
     </div>
   </div>`;
 
-  return `${controls}${error ? `<div class="venues-status warn" style="margin:8px 18px">${esc(error)}</div>` : ''}${verdictBanner}${kpis}${mainGrid}`;
+  return `${controls}${radarBox}${error ? `<div class="venues-status warn" style="margin:8px 18px">${esc(error)}</div>` : ''}${verdictBanner}${kpis}${mainGrid}`;
 }
 
 // Browser controller (lazy-loaded when #orderflow tab is shown; auto-refreshes every 30s while open)
@@ -315,7 +348,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
   if (host) {
     const savedSym = (() => { try { return localStorage.getItem('sl_of_symbol') || 'BTCUSDT'; } catch { return 'BTCUSDT'; } })();
     const savedIv = (() => { try { return localStorage.getItem('sl_of_interval') || '5m'; } catch { return '5m'; } })();
-    const state = { symbol: savedSym, interval: savedIv, data: null, loading: false, error: '' };
+    const state = { symbol: savedSym, interval: savedIv, data: null, loading: false, error: '', radar: null, radarLoading: false };
 
     const render = () => { host.innerHTML = orderflowHTML(state.data, state); };
     const isVisible = () => {
@@ -347,6 +380,21 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       }
     }
 
+    async function loadRadar({ force = false } = {}) {
+      if (state.radarLoading) return;
+      state.radarLoading = true;
+      render();
+      try {
+        const res = await fetch(`/api/orderflow/radar${force ? '?force=1' : ''}`, { cache: 'no-store' });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body.ok) state.radar = body;
+      } catch {}
+      finally {
+        state.radarLoading = false;
+        render();
+      }
+    }
+
     host.addEventListener('click', e => {
       const chip = e.target.closest('[data-of-symbol]');
       if (chip) {
@@ -358,6 +406,10 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       if (ivBtn) {
         state.interval = ivBtn.dataset.ofInterval;
         void load();
+        return;
+      }
+      if (e.target.closest('[data-of-radar-refresh]')) {
+        void loadRadar({ force: true });
         return;
       }
       if (e.target.closest('[data-of-refresh]')) {
@@ -377,10 +429,16 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     });
 
     const maybeLoadOnRoute = () => {
-      if (isVisible() && (!state.data || Date.now() - (state.data.at || 0) > 25_000)) void load();
+      if (!isVisible()) return;
+      if (!state.data || Date.now() - (state.data.at || 0) > 25_000) void load();
+      if (!state.radar || Date.now() - (state.radar.at || 0) > 55_000) void loadRadar();
     };
     window.addEventListener('hashchange', () => setTimeout(maybeLoadOnRoute, 10));
-    setInterval(() => { if (isVisible()) void load(); }, 30_000);
+    setInterval(() => {
+      if (!isVisible()) return;
+      void load();
+      if (!state.radar || Date.now() - (state.radar.at || 0) > 55_000) void loadRadar();
+    }, 30_000);
     render();
     setTimeout(maybeLoadOnRoute, 50);
   }

@@ -762,7 +762,140 @@ export async function fetchOrderflow(symbol, opts = {}) {
   throw new Error(`ORDERFLOW_UNAVAILABLE (${errors.join(', ')})`);
 }
 
+export const ORDERFLOW_RADAR_DEFAULTS = Object.freeze([
+  'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT',
+  'SUIUSDT', 'AVAXUSDT', 'LINKUSDT', 'ADAUSDT', '1000PEPEUSDT',
+  'BNBUSDT', 'AAVEUSDT', 'NEARUSDT', 'ARBUSDT', 'OPUSDT',
+  'APTUSDT', 'INJUSDT', 'SEIUSDT', 'WIFUSDT', 'ENAUSDT',
+]);
+
+const RADAR_CACHE_TTL_MS = 60_000;
+let radarCache = null;
+
+/**
+ * Pure anomaly ranker across multiple orderflow snapshots.
+ * Scores each coin for OI flush (<= -0.8%), strong CVD flip (> 15%), CVD divergence, and funding crowding.
+ */
+export function rankOrderflowAnomalies(snapshots = [], { limit = 10 } = {}) {
+  const scored = [];
+  for (const d of snapshots) {
+    if (!d || !d.ok) continue;
+    const oi30 = Number.isFinite(Number(d.oi?.change30mPct)) ? Number(d.oi.change30mPct) : null;
+    const delta = Number.isFinite(Number(d.cvd?.lastDeltaNorm)) ? Number(d.cvd.lastDeltaNorm) : 0;
+    const absDelta = Math.abs(delta);
+    const divType = d.cvd?.divergence?.type || 'NONE';
+    const fund = Number.isFinite(Number(d.funding?.ratePct)) ? Number(d.funding.ratePct) : null;
+    const tags = [];
+    let score = 0;
+
+    if (oi30 != null && oi30 <= -0.8) {
+      score += 40 + Math.min(35, Math.abs(oi30) * 10);
+      tags.push({ kind: 'OI_FLUSH', tone: 'pos', text: `OI ${oi30}% 소진${oi30 <= -1.0 ? '(+5점)' : ''}` });
+    } else if (oi30 != null && oi30 >= 2.0) {
+      score += 18 + Math.min(20, oi30 * 4);
+      tags.push({ kind: 'OI_PILE', tone: 'warn', text: `OI +${oi30}% 유입` });
+    }
+
+    if (absDelta > 0.15) {
+      score += 35 + Math.min(35, absDelta * 60);
+      const isBuy = delta > 0;
+      tags.push({
+        kind: isBuy ? 'CVD_LONG' : 'CVD_SHORT',
+        tone: isBuy ? 'pos' : 'neg',
+        text: `${isBuy ? '매수' : '매도'} CVD ${isBuy ? '+' : ''}${Math.round(delta * 100)}%(1.5x)`,
+      });
+    }
+
+    if (divType === 'BULLISH' || divType === 'BEARISH') {
+      score += 30;
+      tags.push({
+        kind: divType === 'BULLISH' ? 'DIV_BULL' : 'DIV_BEAR',
+        tone: divType === 'BULLISH' ? 'pos' : 'neg',
+        text: divType === 'BULLISH' ? '강세 다이버전스' : '약세 다이버전스',
+      });
+    }
+
+    if (fund != null && Math.abs(fund) >= 0.015) {
+      score += 15 + Math.min(20, Math.abs(fund) * 400);
+      tags.push({
+        kind: 'FUND_HOT',
+        tone: fund > 0 ? 'neg' : 'pos',
+        text: `펀딩 ${fund > 0 ? '+' : ''}${fund.toFixed(3)}%`,
+      });
+    }
+
+    scored.push({
+      symbol: d.symbol,
+      source: d.source,
+      markPrice: d.price?.mark ?? null,
+      windowChangePct: d.price?.windowChangePct ?? null,
+      oiChange30mPct: oi30,
+      lastDeltaNorm: round(delta, 4) ?? 0,
+      lastBuySharePct: d.cvd?.lastBuySharePct ?? 50,
+      fundingRatePct: fund,
+      divergenceType: divType,
+      tags,
+      anomalyScore: round(score, 1) ?? 0,
+    });
+  }
+
+  const flagged = scored.filter(x => x.tags.length > 0).sort((a, b) => b.anomalyScore - a.anomalyScore);
+  const topActive = scored
+    .slice()
+    .sort((a, b) => (Math.abs(b.lastDeltaNorm) * 100 + Math.abs(b.oiChange30mPct || 0) * 10) - (Math.abs(a.lastDeltaNorm) * 100 + Math.abs(a.oiChange30mPct || 0) * 10));
+  const anomalies = (flagged.length >= 4 ? flagged : [...flagged, ...topActive.filter(x => !flagged.includes(x))]).slice(0, limit);
+
+  const topOiFlush = scored
+    .filter(x => x.oiChange30mPct != null)
+    .sort((a, b) => a.oiChange30mPct - b.oiChange30mPct)
+    .slice(0, 4);
+  const topCvdFlip = scored
+    .slice()
+    .sort((a, b) => Math.abs(b.lastDeltaNorm) - Math.abs(a.lastDeltaNorm))
+    .slice(0, 4);
+
+  return {
+    scanned: scored.length,
+    flaggedCount: flagged.length,
+    anomalies,
+    topOiFlush,
+    topCvdFlip,
+  };
+}
+
+/**
+ * Scan up to 20 active perpetuals concurrently (60s cache) for OI flush, strong CVD flips, and divergences.
+ */
+export async function scanOrderflowAnomalies(symbols = ORDERFLOW_RADAR_DEFAULTS, opts = {}) {
+  const list = [...new Set((Array.isArray(symbols) && symbols.length ? symbols : ORDERFLOW_RADAR_DEFAULTS).map(normalizeOrderflowSymbol))].slice(0, 20);
+  const key = list.join(',');
+  if (!opts.force && radarCache && radarCache.key === key && Date.now() - radarCache.at < RADAR_CACHE_TTL_MS) {
+    return radarCache.data;
+  }
+
+  const queue = [...list];
+  const results = [];
+  const workers = Math.min(6, queue.length);
+  const runWorker = async () => {
+    while (queue.length) {
+      const sym = queue.shift();
+      try {
+        const snap = await fetchOrderflow(sym, { ...opts, interval: '5m', limit: 24, force: Boolean(opts.force) });
+        if (snap?.ok) results.push(snap);
+      } catch {}
+    }
+  };
+  await Promise.all(Array.from({ length: workers }, runWorker));
+
+  const ranked = rankOrderflowAnomalies(results, { limit: opts.limit || 10 });
+  const data = { ok: true, at: Date.now(), totalRequested: list.length, ...ranked };
+  radarCache = { key, at: Date.now(), data };
+  return data;
+}
+
 export function clearOrderflowCache() {
   cache.clear();
+  radarCache = null;
   binanceBlockedUntil = 0;
 }
+
