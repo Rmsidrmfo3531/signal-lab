@@ -796,13 +796,18 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
 export function testnetCloses(o){
  // Only the testnet's own signal trades, tests left out (the testnetStats filter, review L3).
  const sig=(o?.testnet?.scalpOnly?[]:o?.closed||[]).filter(c=>c.mode==='TESTNET'&&c.test!==true).map(c=>({kind:'signal',key:c.signalKey,symbol:c.symbol,direction:c.direction,openedAt:c.createdAt,closedAt:c.closedAt,reason:c.closeReasonKo||c.closeReason,
+  adds:fin(c.adds?.filled)?Number(c.adds.filled):fin(c.adds)?Number(c.adds):null,
   netUSD:c.realized?.netUSD??null,source:c.realized?.source||'PENDING',test:c.test===true,deletable:c.deletable===true}));
- const sc=(o?.scalp?.closed||[]).map(x=>({kind:'scalp',scalpKind:x.kind||'MOVE_REVERSAL',key:x.id,symbol:x.symbol,direction:x.direction||'LONG',openedAt:x.openedAt||x.createdAt,closedAt:x.closedAt,reason:x.closeReasonKo||x.closeReason,
-  netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',r:x.rMultiple??null,leverage:x.leverage,margin:x.margin,scalpScore:x.scalpScore??x.score??null,capitalBasisUSD:x.capitalBasisUSD??null,initialRiskUSD:x.initialRiskUSD??x.riskUSD??null,initialMarginUSD:x.initialMarginUSD??x.margin?.initialUSD??x.marginUSD??null}));
+ const sc=(o?.scalp?.closed||[]).map(x=>{
+  const adds=fin(x.adds)?Math.max(0,Number(x.adds)):x.scaleIn?.version===2?Math.max(0,Number(x.scaleIn.count)||0):x.scaleIn?.fillQty>0?1:Array.isArray(x.addTargets)?x.addTargets.length:0;
+  return {kind:'scalp',scalpKind:x.kind||'MOVE_REVERSAL',key:x.id,symbol:x.symbol,direction:x.direction||'LONG',openedAt:x.openedAt||x.createdAt,closedAt:x.closedAt,reason:x.closeReasonKo||x.closeReason,adds,
+   netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',r:x.rMultiple??null,leverage:x.leverage,margin:x.margin,scalpScore:x.scalpScore??x.score??null,capitalBasisUSD:x.capitalBasisUSD??null,initialRiskUSD:x.initialRiskUSD??x.riskUSD??null,initialMarginUSD:x.initialMarginUSD??x.margin?.initialUSD??x.marginUSD??null};
+ });
  return [...sig,...sc].sort((a,b)=>(Number(b.closedAt)||0)-(Number(a.closedAt)||0));
 }
 let tnPage=0,lastTestnet=null;
 const tnLeverage=v=>fin(v)&&Number(v)>0?`${esc(v)}배`:'—';
+const tnAdds=v=>!fin(v)?'—':Number(v)>0?`<b>${esc(Number(v))}회</b>`:'<span class="muted">0회</span>';
 function tnScalpMargin(m){
  if(!fin(m?.initialUSD)&&!fin(m?.totalUSD))return '—';
  return `첫 ${tnUsd(m?.initialUSD)} · 누적 ${tnUsd(m?.totalUSD)}`;
@@ -830,8 +835,8 @@ export function testnetClosedHTML(o){
  const del=x=>x.kind==='signal'&&x.deletable?` <button type="button" class="ghost small" data-live-delete="${esc(x.key)}">삭제</button>`:'';
  const scoreTag=x=>fin(x.scalpScore?.score)?` <small class="vp-badge" title="${esc(x.scalpScore.summary||'')}">${esc(x.scalpScore.score)}점 ${esc(x.scalpScore.grade||'')}급</small>`:'';
  const tag=x=>`${x.kind==='scalp'?scalpBadge(x.scalpKind):TN_BADGE[x.kind]}${scoreTag(x)}${x.test?' <small class="muted">시험(합계 제외)</small>':''}`;
- const li=x=>`<li class="tn-${x.kind}"><span class="muted">${tnWhen(x.closedAt)}</span><b>${esc(x.symbol)}</b>${tag(x)}${side(x.direction)}<span>${esc(x.reason||'')}</span><span class="muted">${tnHeld(x.openedAt,x.closedAt)}</span>${x.kind==='scalp'?`<span>${tnLeverage(x.leverage)}</span><small>증거금 ${tnScalpMargin(x.margin)}</small>`:''}<b class="${tnCls(x.netUSD)} end">${tnResult(x)}</b>${del(x)}</li>`;
- const table=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>구분</th><th>종목</th><th>방향</th><th>보유</th><th>배율</th><th class="num">증거금</th><th>사유</th><th class="num">손익</th></tr></thead><tbody>${shown.map(x=>`<tr class="tn-${x.kind}"><td class="muted">${tnWhen(x.closedAt)}</td><td>${tag(x)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="muted">${tnHeld(x.openedAt,x.closedAt)}</td><td>${tnLeverage(x.leverage)}</td><td class="num">${tnScalpMargin(x.margin)}</td><td class="tn-reason">${esc(x.reason||'')}</td><td class="num"><b class="${tnCls(x.netUSD)}">${tnResult(x)}</b>${del(x)}</td></tr>`).join('')}</tbody></table>`;
+ const li=x=>`<li class="tn-${x.kind}"><span class="muted">${tnWhen(x.closedAt)}</span><b>${esc(x.symbol)}</b>${tag(x)}${side(x.direction)}<span>${esc(x.reason||'')}</span><span class="muted">${tnHeld(x.openedAt,x.closedAt)}</span>${x.kind==='scalp'?`<span>${tnLeverage(x.leverage)}</span><span>추매 ${esc(x.adds??0)}회</span><small>증거금 ${tnScalpMargin(x.margin)}</small>`:fin(x.adds)?`<span>추매 ${esc(x.adds)}회</span>`:''}<b class="${tnCls(x.netUSD)} end">${tnResult(x)}</b>${del(x)}</li>`;
+ const table=`<table class="copy-table only-desk"><thead><tr><th>종료</th><th>구분</th><th>종목</th><th>방향</th><th>보유</th><th>배율</th><th class="num">증거금</th><th class="num">추매</th><th>사유</th><th class="num">손익</th></tr></thead><tbody>${shown.map(x=>`<tr class="tn-${x.kind}"><td class="muted">${tnWhen(x.closedAt)}</td><td>${tag(x)}</td><td><b>${esc(x.symbol)}</b></td><td>${side(x.direction)}</td><td class="muted">${tnHeld(x.openedAt,x.closedAt)}</td><td>${tnLeverage(x.leverage)}</td><td class="num">${tnScalpMargin(x.margin)}</td><td class="num">${tnAdds(x.adds)}</td><td class="tn-reason">${esc(x.reason||'')}</td><td class="num"><b class="${tnCls(x.netUSD)}">${tnResult(x)}</b>${del(x)}</td></tr>`).join('')}</tbody></table>`;
  return `<ul class="copy-list only-mob">${shown.map(li).join('')}</ul>${scrollCopyTable(table,'테스트넷 종료 거래')}${pager}`;
 }
 /** Totals over both strategies (server testnetStats) and the 신호 / 단타 breakdown line. */

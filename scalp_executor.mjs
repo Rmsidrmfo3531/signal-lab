@@ -343,6 +343,28 @@ function scalpPositionDetails(p,now){
   adds:{filled:repeat?a.count??0:a?.fillQty>0?1:0,max:a?1:0,repeat}};
 }
 
+export function scalpAddCount(x){
+ const a=x?.scaleIn;
+ if(a?.version===SCALP_REPEAT_SCALE_IN.version)return Math.max(0,Number(a.count)||0);
+ if(a?.fillQty>0)return 1;
+ if(Array.isArray(x?.addTargets)&&x.addTargets.length)return x.addTargets.length;
+ if(Array.isArray(x?.steps))return x.steps.filter(s=>s?.kind==='SCALE_IN').length;
+ return 0;
+}
+
+function scalpCloseReasonLabel(x){
+ const base=scalpReasonKo(x?.closeReason);
+ const m=x?.closeMeta;
+ if(!m)return base;
+ if(x.closeReason==='EMERGENCY_ROE_STOP'&&Number.isFinite(Number(m.roePct))&&Number.isFinite(Number(m.limitPct))){
+  return `비상 손절 (${Number(m.roePct).toFixed(1)}% / 한도 -${Number(m.limitPct)}%)`;
+ }
+ if(x.closeReason==='MAX_HOLD_EXIT'&&Number.isFinite(Number(m.roePct))&&Number.isFinite(Number(m.holdMin))){
+  return `보유시간 컷 (${Number(m.roePct).toFixed(1)}% · ${Math.round(Number(m.holdMin))}분)`;
+ }
+ return base;
+}
+
 export class ScalpExecutor{
  constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,zoneCandles=null,orderflow=null,priceOf=async()=>null,markOf=async()=>null,
   balance=async()=>null,isBusy=()=>false,gate=()=>({ok:true}),directory=null,fileName='scalp-store.json',now=()=>Date.now(),log=()=>{},onEvent=()=>{},budget=null}){
@@ -1820,6 +1842,7 @@ export class ScalpExecutor{
        p.exitTries=(p.exitTries||0)+1;
        const r=await this.#market(p,'em'+p.exitTries);
        p.exitReason='EMERGENCY_ROE_STOP';
+       p.closeMeta={roePct:+roePct.toFixed(1),limitPct:emLimit};
        this.#event('EMERGENCY_ROE_STOP',{symbol:p.symbol,direction:p.direction,roePct:+roePct.toFixed(1),limitPct:emLimit});
        if(!(r.size>0))await this.#finish(p,'EMERGENCY_ROE_STOP');
        continue;
@@ -1829,8 +1852,10 @@ export class ScalpExecutor{
       if(maxHoldMin>0&&opened>0&&this.now()-opened>=maxHoldMin*60000&&roePct!==null&&roePct<0){
        p.exitTries=(p.exitTries||0)+1;
        const r=await this.#market(p,'mh'+p.exitTries);
+       const holdMin=Math.round((this.now()-opened)/60000);
        p.exitReason='MAX_HOLD_EXIT';
-       this.#event('MAX_HOLD_EXIT',{symbol:p.symbol,direction:p.direction,holdMin:Math.round((this.now()-opened)/60000),maxHoldMin,roePct:+roePct.toFixed(1)});
+       p.closeMeta={holdMin,maxHoldMin,roePct:+roePct.toFixed(1)};
+       this.#event('MAX_HOLD_EXIT',{symbol:p.symbol,direction:p.direction,holdMin,maxHoldMin,roePct:+roePct.toFixed(1)});
        if(!(r.size>0))await this.#finish(p,'MAX_HOLD_EXIT');
        continue;
       }
@@ -1914,7 +1939,8 @@ export class ScalpExecutor{
   this.store.closed.push(row);this.store.open=this.store.open.filter(x=>x!==p);
   const marginBase=p.avg>0&&p.filled>0?(p.avg*p.filled/(p.leverage||1)):0;
   const roePct=marginBase>0?+(row.netUSD/marginBase*100).toFixed(2):null;
-  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,holdMs:row.holdMs,entry:p.avg,roePct,peakRoePct:pos(p.trailPeakRoePct)??null,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade}:{})});
+  const adds=scalpAddCount(p);
+  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,adds,holdMs:row.holdMs,entry:p.avg,roePct,peakRoePct:pos(p.trailPeakRoePct)??null,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade}:{})});
   return cleanupPending;
  }
  /** BingX fund flow (realized PnL + fees + funding) of this trade's symbol and lifetime, read after the close. */
@@ -1974,7 +2000,7 @@ export class ScalpExecutor{
     scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
    blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,exchangePosition,...p})=>({...p,details:scalpPositionDetails({...p,steps,exchangePosition},this.now())})),
-   closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,exchangePosition,...x})=>({...x,margin:scalpMargin(x),closeReasonKo:scalpReasonKo(x.closeReason)})),stats:this.stats(),
+   closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,exchangePosition,...x})=>({...x,adds:scalpAddCount({steps,...x}),margin:scalpMargin(x),closeReasonKo:scalpCloseReasonLabel(x)})),stats:this.stats(),
    scoreSummary:this.#scoreSummary(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),
    skips:this.store.skips.slice(-20).reverse().map(x=>({...x,label:scalpReasonKo(x.reason)})),events:this.store.events.slice(-30).reverse()};

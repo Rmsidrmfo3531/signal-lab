@@ -1424,6 +1424,52 @@ test('scalpEventText includes avg improvement on scale-in, partial profit lock-i
  assert.equal(ex.store.open[0].capitalBasisUSD,3000,'new $3k trade tagged with capitalBasisUSD=3000');
 });
 
+test('closed testnet trades expose add count (추매) in status, UI table/list, Telegram CLOSED notice, and exact EMERGENCY_ROE_STOP detail',async()=>{
+ const {scalpAddCount}=await import('../scalp_executor.mjs');
+ const {testnetClosedHTML,setTestnetPage}=await import('../public/live_control.js');
+
+ assert.equal(scalpAddCount({scaleIn:{version:2,count:2}}),2);
+ assert.equal(scalpAddCount({scaleIn:{version:1,fillQty:5}}),1);
+ assert.equal(scalpAddCount({scaleIn:{version:2,count:0}}),0);
+
+ // Trigger EMERGENCY_ROE_STOP on a 10x position dropping -4.5% (-45% ROE <= -40% limit)
+ const v=venue(),clock={t:T0};
+ const ex=make(v,{clock,price:()=>PX,config:{stopLossEnabled:false,scaleIn:true,emergencyStopRoePct:40}});
+ ex.arm();assert.equal((await ex.scan()).entered,1);
+ const p=ex.store.open[0];
+ clock.t+=60000;
+ v.mark=+(p.avg*0.955).toFixed(4); // -4.5% price -> -45% ROE at 10x
+ await ex.reconcile();
+
+ const closed=ex.status().closed;
+ assert.equal(closed.length,1);
+ assert.equal(closed[0].adds,0);
+ assert.match(closed[0].closeReasonKo,/비상 손절 \(-45\.0% \/ 한도 -40%\)/);
+
+ // CLOSED Telegram alert includes 추매 count
+ const closeEv=ex.store.events.find(e=>e.type==='CLOSED');
+ assert.equal(closeEv.adds,0);
+ assert.match(scalpEventText(closeEv),/추매 0회/);
+ assert.match(scalpEventText({...closeEv,adds:2}),/추매 2회/);
+
+ // testnetClosedHTML renders 추매 column & mobile label for both 0 adds and 2 adds
+ setTestnetPage(0);
+ const html=testnetClosedHTML({
+  closed:[],
+  scalp:{
+   closed:[
+    closed[0],
+    {...closed[0],id:'added2',symbol:'SOLUSDT',closedAt:T0+120000,adds:2,scaleIn:{version:2,count:2},closeReasonKo:'조기 익절',netUSD:25},
+   ],
+  },
+ });
+ assert.match(html,/<th class="num">증거금<\/th><th class="num">추매<\/th>/);
+ assert.match(html,/<b>2회<\/b>/);
+ assert.match(html,/<span class="muted">0회<\/span>/);
+ assert.match(html,/추매 2회/);
+ assert.match(html,/비상 손절 \(-45\.0% \/ 한도 -40%\)/);
+});
+
 
 
 
