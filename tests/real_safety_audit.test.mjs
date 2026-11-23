@@ -257,6 +257,8 @@ test('R3 real trailing: the lock stop only moves up (new first, old replaced) an
  const stops=calls.filter(c=>c.action==='TRAIL_STOP');
  assert.equal(stops.length,2);assert.equal(stops[1].replaceOrderId,'O1');assert.ok(stops[1].stopPrice>stops[0].stopPrice);
  t+=15_000;await m.evaluate([],t);
+ assert.notEqual(calls.at(-1).action,'CANCEL_STOP','one empty list is not enough (review 2026-11-23)');
+ t+=15_000;await m.evaluate([],t);
  assert.deepEqual(calls.at(-1),{action:'CANCEL_STOP',venueSymbol:'BTC-USDT',orderId:'O2'});
 });
 

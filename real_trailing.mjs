@@ -84,7 +84,9 @@ const trackedFrom=raw=>{
   out.set(k,{peakRoePct:n(v.peakRoePct),partialTaken:v.partialTaken===true,breakevenPlaced:v.breakevenPlaced===true,
    breakevenOrderId:v.breakevenOrderId!=null?String(v.breakevenOrderId):null,avg:n(v.avg)??0,lastActionAt:n(v.lastActionAt)??0,
    lockStopOrderId:v.lockStopOrderId!=null?String(v.lockStopOrderId):null,lockStopPrice:n(v.lockStopPrice),lockStopRoe:n(v.lockStopRoe),
-   venueSymbol:typeof v.venueSymbol==='string'?v.venueSymbol:null});
+   venueSymbol:typeof v.venueSymbol==='string'?v.venueSymbol:null,
+   staleStopIds:Array.isArray(v.staleStopIds)?v.staleStopIds.filter(x=>x!=null).map(String).slice(-10):[],
+   missing:n(v.missing)??0,lockRetryAt:n(v.lockRetryAt)??0});
  }
  return out;
 };
@@ -183,7 +185,8 @@ export class RealTrailingManager{
  }
 
  async #cancelStops(st){
-  for(const id of [st?.lockStopOrderId,st?.breakevenOrderId]){
+  // staleStopIds: older lock stops whose cancel failed when the stop moved up (still on the book, review 2026-11-23).
+  for(const id of [st?.lockStopOrderId,st?.breakevenOrderId,...(st?.staleStopIds||[])]){
    if(!id||!st?.venueSymbol)continue;
    try{await this.executeAction({action:'CANCEL_STOP',venueSymbol:st.venueSymbol,orderId:id})}catch{}
   }
@@ -224,10 +227,11 @@ export class RealTrailingManager{
      // A different position (or a large add): our old exchange stops would close it at the old levels.
      if(st)await this.#cancelStops(st);
      st={peakRoePct:null,partialTaken:false,breakevenPlaced:false,breakevenOrderId:null,avg,lastActionAt:0,
-      lockStopOrderId:null,lockStopPrice:null,lockStopRoe:null,venueSymbol:p.venueSymbol||null};
+      lockStopOrderId:null,lockStopPrice:null,lockStopRoe:null,venueSymbol:p.venueSymbol||null,staleStopIds:[],missing:0,lockRetryAt:0};
      this.tracked.set(key,st);dirty=true;
     }
     if(p.venueSymbol&&st.venueSymbol!==p.venueSymbol){st.venueSymbol=p.venueSymbol;dirty=true}
+    if(st.missing){st.missing=0;dirty=true}
     const armThreshold=Math.min(cfg.partialLockRoePct,cfg.trailActivateRoePct);
     if(roe>=armThreshold&&(st.peakRoePct===null||roe>st.peakRoePct)){
      st.peakRoePct=+roe.toFixed(2);dirty=true;
@@ -277,27 +281,34 @@ export class RealTrailingManager{
       }
       continue;
      }
-     // Exchange STOP_MARKET at the locked level (survives server downtime); moved up as the peak climbs.
-     if(st.lockStopRoe===null||stopRoe>=st.lockStopRoe+LOCK_STOP_STEP_ROE){
+     // Exchange STOP_MARKET at the locked level (survives server downtime); moved up as the peak climbs. A stop order
+     // does not change the position, so it never starts the action cooldown (the exit check above keeps running every
+     // pass); a failed placement waits 60 s before the next try (review 2026-11-23).
+     if((st.lockStopRoe===null||stopRoe>=st.lockStopRoe+LOCK_STOP_STEP_ROE)&&!(now<(st.lockRetryAt||0))){
       const stopPrice=priceForNetRoe({avg,direction:dir,leverage:lev,netRoePct:stopRoe,feeRoePct});
       if(stopPrice){
-       st.lastActionAt=now;dirty=true;
+       dirty=true;
        const res=await this.executeAction({symbol:p.symbol,direction:dir,action:'TRAIL_STOP',stopPrice,replaceOrderId:st.lockStopOrderId}).catch(e=>({ok:false,error:e?.code||e?.message}));
        if(res?.ok){
-        const first=st.lockStopRoe===null;
+        const first=st.lockStopRoe===null;st.lockRetryAt=0;
+        if(res.staleOrderId!=null)st.staleStopIds=[...(st.staleStopIds||[]),String(res.staleOrderId)].slice(-10);
         st.lockStopOrderId=res.orderId!=null?String(res.orderId):null;
         st.lockStopPrice=Number(res.stopPrice)||stopPrice;st.lockStopRoe=stopRoe;
         if(first){try{await this.sendText(`🛡️ [실계좌 트레일링] ${disp} ${sideKo(dir)} 거래소 잠금 스탑 설정 ${st.lockStopPrice} (순 ROE +${stopRoe.toFixed(1)}% 지점, 서버가 꺼져도 유지)`)}catch{}}
         actions.push({key,action:'TRAIL_STOP',stopPrice:st.lockStopPrice,lockRoePct:stopRoe});
-       }else this.log?.('TRAIL_STOP failed',key,res?.error||'ERROR');
+       }else{st.lockRetryAt=now+60000;this.log?.('TRAIL_STOP failed',key,res?.error||'ERROR')}
       }
      }
     }
    }
    for(const [k,st] of [...this.tracked]){
     if(openKeys.has(k))continue;
+    // Two lists in a row without it (review 2026-11-23): a venue list can come back empty for a moment, and dropping
+    // the state then would cancel the exchange stops and take a second partial when the position shows again.
+    st.missing=(st.missing||0)+1;dirty=true;
+    if(st.missing<2)continue;
     await this.#cancelStops(st);
-    this.tracked.delete(k);dirty=true;
+    this.tracked.delete(k);
    }
   }finally{
    if(dirty){try{this.#save()}catch(e){this.log?.('save failed',e?.message)}}

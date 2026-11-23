@@ -768,10 +768,12 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
   });
   realOpenStops.at=0;
   const newOrderId=(placed?.order??placed)?.orderId;
-  // The lock stop moves up: the new one is in first, then the old one is cancelled (never without a stop).
-  if(action==='TRAIL_STOP'&&replaceOrderId&&String(replaceOrderId)!==String(newOrderId??'')){try{await realBingxClient.cancelOrder(p.venueSymbol,String(replaceOrderId))}catch(e){console.warn('[REAL_TRAIL] old stop cancel',e?.code||e?.message)}}
+  // The lock stop moves up: the new one is in first, then the old one is cancelled (never without a stop). A failed
+  // cancel is reported (staleOrderId) so real_trailing.mjs cancels it with the others when the position is gone.
+  let staleOrderId=null;
+  if(action==='TRAIL_STOP'&&replaceOrderId&&String(replaceOrderId)!==String(newOrderId??'')){try{await realBingxClient.cancelOrder(p.venueSymbol,String(replaceOrderId))}catch(e){staleOrderId=String(replaceOrderId);console.warn('[REAL_TRAIL] old stop cancel',e?.code||e?.message)}}
   const label=action==='BREAKEVEN_STOP'?'본전 스탑(수수료 포함)':action==='TRAIL_STOP'?'트레일링 잠금 스탑':`손절 스탑${Number(lossRoePct)>0?` (-${Number(lossRoePct)}% ROE)`:''}`;
-  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),orderId:newOrderId!=null?String(newOrderId):null,venueSymbol:p.venueSymbol,summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
+  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),orderId:newOrderId!=null?String(newOrderId):null,venueSymbol:p.venueSymbol,...(staleOrderId?{staleOrderId}:{}),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
  }
  const partPct=Number.isFinite(Number(closePct))&&Number(closePct)>0&&Number(closePct)<100?Math.round(Number(closePct)):50;
  const results=[];
