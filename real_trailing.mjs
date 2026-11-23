@@ -194,7 +194,10 @@ export class RealTrailingManager{
 
  /** positions: the venue's current list. Anything but an array (a failed read) does nothing and keeps the state. */
  async evaluate(positions=[],now=this.now()){
-  if(!this.store.enabled||this.busy||!Array.isArray(positions))return [];
+  if(this.busy||!Array.isArray(positions))return [];
+  // Switched off: no action, but tracked positions still get the clean-up below, so an exchange lock / break-even
+  // stop is cancelled once its position is gone instead of resting on the book (review 2026-11-23).
+  if(!this.store.enabled&&!this.tracked.size)return [];
   const list=positions;
   this.busy=true;
   const actions=[];
@@ -209,6 +212,7 @@ export class RealTrailingManager{
     if(!disp||!['LONG','SHORT'].includes(dir))continue;
     const key=`${disp}|${dir}`;
     openKeys.add(key);
+    if(!cfg.enabled){const st=this.tracked.get(key);if(st?.missing){st.missing=0;dirty=true}continue}
     const isCopy=p.origin==='copy';
     if(isCopy&&!cfg.applyToCopy)continue;
     if(!isCopy&&!cfg.applyToManual)continue;

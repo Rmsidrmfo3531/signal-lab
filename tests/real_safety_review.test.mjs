@@ -214,3 +214,18 @@ test('Telegram /resume: the confirmation says that an active copy cooldown will 
  const r=await a.handleCommand('/resume','1',1795000000000);
  assert.match(r,/휴식[\s\S]*해제/);
 });
+
+test('real trailing: switched off while a lock stop rests, the stop is still cancelled once the position is gone',async()=>{
+ const calls=[];const exec=async a=>{calls.push(a);return {ok:true,orderId:'O'+calls.length,stopPrice:a.stopPrice}};
+ let t=1_000_000;
+ const m=new RealTrailingManager({now:()=>t,executeAction:exec});
+ m.configure({enabled:true,applyToManual:true,partialClosePct:0,autoBreakeven:false});
+ await m.evaluate([tpos({roePct:22})],t);
+ assert.deepEqual(calls.map(c=>c.action),['TRAIL_STOP']);
+ m.configure({enabled:false});
+ t+=15_000;assert.deepEqual(await m.evaluate([tpos({roePct:5})],t),[],'no action while off (the stop stays as protection)');
+ assert.equal(calls.length,1);
+ t+=15_000;await m.evaluate([],t);t+=15_000;await m.evaluate([],t);
+ assert.deepEqual(calls.at(-1),{action:'CANCEL_STOP',venueSymbol:'BTC-USDT',orderId:'O1'},'orphan closePosition stop removed');
+ assert.equal(m.status().tracked['BTCUSDT|LONG'],undefined);
+});
