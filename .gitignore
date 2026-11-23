@@ -1,3 +1,27 @@
+# Secrets, credentials, and private runtime data (NEVER commit to a public repo)
+.env
+.env.*
+!.env.issue6.example
+*.session
+*.session-*
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+data/
+.updates/
+.update-staging/
+store.json
+store*.json
+*ledger*.json
+scalp-journal*.jsonl
+scalp-signals-*.jsonl
+*.bak
+*.log
+node_modules/
+
+# Backtest artifacts and caches
 backtest-cache/
 backtest-results/
 backtest_output.txt
