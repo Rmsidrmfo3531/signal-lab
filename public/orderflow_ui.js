@@ -88,11 +88,130 @@ function buildSteppedPath(coords) {
 }
 
 /**
+ * Find the nearest visible liquidity wall to a touched/hovered (xNorm, yNorm) coordinate
+ * inside the FireCharts upper heatmap canvas, or fall back to the exact touched price level.
+ */
+export function findFirechartWallAt(data, { xNorm = 0.5, yNorm = 0.5, minPct = 93, maxPct = 99 } = {}) {
+  const hm = data?.firechart?.heatmap;
+  const candles = data?.series || [];
+  if (!hm || !candles.length) return null;
+  const minP = hm.minPrice || Math.min(...candles.map(c => c.l || c.c));
+  const maxP = hm.maxPrice || Math.max(...candles.map(c => c.h || c.c));
+  const pSpan = maxP - minP || 1;
+  const mark = Number(data?.price?.mark) || Number(candles.at(-1)?.c) || 0;
+  const loPct = Math.min(minPct, maxPct);
+  const hiPct = Math.max(minPct, maxPct);
+  const yClamped = Math.max(0, Math.min(1, Number(yNorm)));
+  const xClamped = Math.max(0, Math.min(1, Number(xNorm)));
+  const touchedPrice = maxP - yClamped * pSpan;
+
+  const visible = (hm.cells || []).filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99);
+  const bins = hm.priceBins || 44;
+  let best = null;
+  let bestScore = -Infinity;
+
+  for (const c of visible) {
+    const wallYNorm = 1 - (c.yBin + 0.5) / bins;
+    const dy = Math.abs(wallYNorm - yClamped);
+    const inX = xClamped >= c.x0 - 0.045 && xClamped <= c.x1 + 0.045;
+    const maxDy = inX ? 0.06 : 0.032; // generous touch tolerance on overlapping horizontal bar
+    if (dy > maxDy) continue;
+    // Prefer closer vertically, overlapping horizontally, and larger liquidity size
+    const score = (inX ? 100 : 0) - dy * 1200 + Math.log10(Math.max(10, c.usd)) * 4;
+    if (score > bestScore) {
+      bestScore = score;
+      best = c;
+    }
+  }
+
+  if (best) {
+    const distPct = mark > 0 ? +(((best.price - mark) / mark) * 100).toFixed(2) : null;
+    return {
+      snapped: true,
+      price: best.price,
+      usd: best.usd,
+      side: best.side,
+      pctRank: best.pctRank,
+      live: Boolean(best.live),
+      distPct,
+    };
+  }
+
+  const px = Number(touchedPrice.toPrecision(6));
+  const distPct = mark > 0 ? +(((px - mark) / mark) * 100).toFixed(2) : null;
+  return {
+    snapped: false,
+    price: px,
+    usd: null,
+    side: mark > 0 && px < mark ? 'BID' : 'ASK',
+    pctRank: null,
+    live: false,
+    distPct,
+  };
+}
+
+/**
+ * Render the touched/selected liquidity wall price readout banner.
+ */
+export function firechartInspectBarHTML(inspected) {
+  if (!inspected || !fin(inspected.price)) {
+    return '<div class="of-fc-inspect idle" data-of-fc-inspect><span>💡 차트의 매물대 줄을 터치(클릭)하면 정확한 가격대와 유동성 규모가 표시됩니다.</span></div>';
+  }
+  const isAsk = inspected.side === 'ASK';
+  const sideTag = inspected.snapped
+    ? (isAsk ? '<span class="of-tag neg">매도벽 (저항)</span>' : '<span class="of-tag pos">매수벽 (지지)</span>')
+    : '<span class="of-tag neutral">선택 가격대</span>';
+  const distTxt = fin(inspected.distPct) ? `<span class="${inspected.distPct >= 0 ? 'paper-loss' : 'paper-profit'}">(${esc(fmtPct(inspected.distPct, 2))})</span>` : '';
+  const wallMeta = inspected.snapped
+    ? `<span class="of-fc-insp-meta">규모 <b>${esc(fmtUsdCompact(inspected.usd))}</b> · 상위 ${esc(inspected.pctRank)}% · ${inspected.live ? '실시간 L2 호가벽' : '거래량 매물대'}</span>`
+    : '<span class="of-fc-insp-meta">현재가 대비 위치 확인</span>';
+  return `<div class="of-fc-inspect active ${isAsk ? 'ask' : 'bid'}" data-of-fc-inspect>
+    <div class="of-fc-insp-main">${sideTag}<b class="of-fc-insp-px">$${esc(fmtPx(inspected.price))}</b>${distTxt}${wallMeta}</div>
+    <button type="button" class="of-fc-insp-close" data-of-inspect-clear aria-label="가격 표시 닫기">✕</button>
+  </div>`;
+}
+
+/**
+ * Render tappable major ASK/BID wall price chips under the FireCharts heatmap for quick mobile inspection.
+ */
+export function firechartWallSummaryHTML(data, { minPct = 93, maxPct = 99, inspected = null } = {}) {
+  const hm = data?.firechart?.heatmap;
+  const mark = Number(data?.price?.mark) || Number(data?.series?.at(-1)?.c) || 0;
+  if (!hm?.cells?.length || !(mark > 0)) return '';
+  const loPct = Math.min(minPct, maxPct);
+  const hiPct = Math.max(minPct, maxPct);
+  const vis = hm.cells.filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99);
+  if (!vis.length) return '';
+
+  // Deduplicate by yBin keeping strongest wall per price shelf
+  const byBin = new Map();
+  for (const c of vis) {
+    const prev = byBin.get(c.yBin);
+    if (!prev || c.usd > prev.usd) byBin.set(c.yBin, c);
+  }
+  const unique = [...byBin.values()];
+  const asks = unique.filter(c => c.price >= mark).sort((a, b) => b.usd - a.usd).slice(0, 3).sort((a, b) => a.price - b.price);
+  const bids = unique.filter(c => c.price < mark).sort((a, b) => b.usd - a.usd).slice(0, 3).sort((a, b) => b.price - a.price);
+
+  const chip = c => {
+    const isAsk = c.price >= mark;
+    const dist = +(((c.price - mark) / mark) * 100).toFixed(2);
+    const active = inspected && Math.abs(Number(inspected.price) - c.price) / mark < 0.0005 ? ' active' : '';
+    return `<button type="button" class="of-wall-chip ${isAsk ? 'ask' : 'bid'}${active}" data-fc-wall-pick data-wall-price="${esc(c.price)}" data-wall-usd="${esc(c.usd)}" data-wall-side="${isAsk ? 'ASK' : 'BID'}" data-wall-pct="${esc(c.pctRank)}" data-wall-live="${c.live ? '1' : '0'}"><b>$${esc(fmtPx(c.price))}</b><small>${esc(fmtPct(dist, 1))} · ${esc(fmtUsdCompact(c.usd))}</small></button>`;
+  };
+  if (!asks.length && !bids.length) return '';
+  return `<div class="of-wall-strip" data-of-wall-strip>
+    ${asks.length ? `<div class="of-wall-group"><span class="of-wg-lbl neg">상단 매도벽</span>${asks.map(chip).join('')}</div>` : ''}
+    ${bids.length ? `<div class="of-wall-group"><span class="of-wg-lbl pos">하단 매수벽</span>${bids.map(chip).join('')}</div>` : ''}
+  </div>`;
+}
+
+/**
  * Pure SVG Material Indicators FireCharts-style Dual Pane:
- * - Upper Pane: Pitch-black canvas with Fire Colorbar + Orderbook/Liquidity Wall Heatmap + Price Line
+ * - Upper Pane: Pitch-black canvas with Fire Colorbar + Orderbook/Liquidity Wall Heatmap + Price Line + Touch Crosshair
  * - Lower Pane: 4-Cohort Multi-Line CVD (Normalized 0..1 OR Absolute USD) with Stepped Red Whale Line
  */
-export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct = 99 } = {}) {
+export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct = 99, inspected = null } = {}) {
   const fc = data?.firechart;
   const candles = data?.series || [];
   const cohortPts = fc?.cohorts?.series || [];
@@ -118,19 +237,32 @@ export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct
   const visibleCells = (hm?.cells || []).filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99);
   const maxVisUsd = Math.max(1, ...visibleCells.map(c => c.usd));
   const minVisUsd = visibleCells.length ? Math.min(...visibleCells.map(c => c.usd)) : 0;
-  const cellH = Math.max(2.6, topH / (hm?.priceBins || 44));
+  const cellH = Math.max(2.8, topH / (hm?.priceBins || 44));
 
   const heatmapRects = visibleCells.map(c => {
     const x = PL + c.x0 * PW;
     const w = Math.max(4, (c.x1 - c.x0) * PW);
     const y = topY + topH - ((c.yBin + 1) / (hm?.priceBins || 44)) * topH;
     const intensity = maxVisUsd > minVisUsd ? (c.usd - minVisUsd) / (maxVisUsd - minVisUsd) : 0.7;
-    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${cellH.toFixed(1)}" fill="${fireColor(intensity)}" rx="1"/>`;
+    return `<rect class="of-fc-wall" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${cellH.toFixed(1)}" fill="${fireColor(intensity)}" rx="1" data-wall-price="${esc(c.price)}" data-wall-usd="${esc(c.usd)}" data-wall-side="${esc(c.side)}" data-wall-pct="${esc(c.pctRank)}" data-wall-live="${c.live ? '1' : '0'}"/>`;
   }).join('');
 
   // Price line overlaid on heatmap
   const pricePts = candles.map((c, i) => `${pxOf(i, candles.length).toFixed(1)},${py(c.c).toFixed(1)}`).join(' ');
   const lastPx = candles.at(-1).c;
+
+  // Touched/inspected horizontal price guide line + right-axis badge
+  let inspectSvg = '';
+  if (inspected && fin(inspected.price) && Number(inspected.price) >= minP && Number(inspected.price) <= maxP) {
+    const iy = py(Number(inspected.price));
+    const lineColor = inspected.snapped ? '#ffd166' : '#7dd3fc';
+    const boxFill = inspected.snapped ? (inspected.side === 'ASK' ? '#7a1f2d' : '#115e49') : '#1c3e63';
+    inspectSvg = `<g class="of-fc-crosshair" data-fc-crosshair>
+      <line x1="${PL}" y1="${iy.toFixed(1)}" x2="${W - PR}" y2="${iy.toFixed(1)}" stroke="${lineColor}" stroke-width="1.4" stroke-dasharray="5 3"/>
+      <rect x="${W - PR + 2}" y="${(iy - 9).toFixed(1)}" width="74" height="18" rx="3" fill="${boxFill}" stroke="${lineColor}" stroke-width="1"/>
+      <text x="${W - PR + 6}" y="${(iy + 3.5).toFixed(1)}" fill="#fff" font-size="10" font-weight="800">${esc(fmtPx(inspected.price))}</text>
+    </g>`;
+  }
 
   // Upper grid & price ticks
   const pTicks = [0, 0.25, 0.5, 0.75, 1].map(f => {
@@ -200,7 +332,7 @@ export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct
       <text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#7c96b0" font-size="9.5">${esc(fmtKst(cohortPts[idx].t, withDate))}</text>`;
   }).join('');
 
-  return `<svg class="of-fc-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="FireCharts 호가 유동성 히트맵 및 금액대별 코호트 CVD">
+  return `<svg class="of-fc-svg" data-fc-svg data-w="${W}" data-h="${H}" data-pl="${PL}" data-pw="${PW}" data-top-y="${topY}" data-top-h="${topH}" viewBox="0 0 ${W} ${H}" role="img" aria-label="FireCharts 호가 유동성 히트맵 및 금액대별 코호트 CVD">
     <defs>
       <linearGradient id="fcFireScale" x1="0" y1="1" x2="0" y2="0">
         <stop offset="0%" stop-color="#140404"/>
@@ -222,10 +354,11 @@ export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct
     ${pTicks}
     ${heatmapRects}
     <!-- Price Line Overlay -->
-    <polyline fill="none" stroke="#45b3ff" stroke-width="2" points="${pricePts}"/>
-    <circle cx="${pxOf(candles.length - 1, candles.length).toFixed(1)}" cy="${py(lastPx).toFixed(1)}" r="3.4" fill="#9fe3ff"/>
+    <polyline fill="none" stroke="#45b3ff" stroke-width="2" points="${pricePts}" style="pointer-events:none"/>
+    <circle cx="${pxOf(candles.length - 1, candles.length).toFixed(1)}" cy="${py(lastPx).toFixed(1)}" r="3.4" fill="#9fe3ff" style="pointer-events:none"/>
     <rect x="${W - PR + 3}" y="${(py(lastPx) - 8).toFixed(1)}" width="72" height="16" rx="3" fill="#184775" stroke="#45b3ff" stroke-width="0.8"/>
     <text x="${W - PR + 7}" y="${(py(lastPx) + 3.5).toFixed(1)}" fill="#fff" font-size="10" font-weight="700">${esc(fmtPx(lastPx))}</text>
+    ${inspectSvg}
     <!-- Lower Cohort CVD Canvas -->
     <rect x="${PL}" y="${botY}" width="${PW}" height="${botH}" fill="#070b12" stroke="#1d2c3e" stroke-width="1"/>
     ${cTicks}
@@ -384,6 +517,7 @@ export function orderflowHTML(data, {
   cvdMode = 'normalized',
   minPct = 93,
   maxPct = 99,
+  inspected = null,
   loading = false,
   error = '',
   radar = null,
@@ -459,7 +593,9 @@ export function orderflowHTML(data, {
       <div class="of-fc-legends">${cohortLegend}</div>
       <small class="of-fc-mode-note">${modeNote}</small>
     </div>
-    <div class="of-fc-canvas" data-of-fc-canvas>${firechartSvg(data, { cvdMode, minPct, maxPct })}</div>
+    <div data-of-fc-inspect-wrap>${firechartInspectBarHTML(inspected)}</div>
+    <div class="of-fc-canvas" data-of-fc-canvas>${firechartSvg(data, { cvdMode, minPct, maxPct, inspected })}</div>
+    <div data-of-wall-strip-wrap>${firechartWallSummaryHTML(data, { minPct, maxPct, inspected })}</div>
   </section>`;
 
   const buyPct = fin(cvd.lastBuySharePct) ? Number(cvd.lastBuySharePct) : 50;
@@ -550,6 +686,8 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       cvdMode: readLS('sl_of_cvd_mode', 'normalized'),
       minPct: Number(readLS('sl_of_min_pct', '93')) || 93,
       maxPct: Number(readLS('sl_of_max_pct', '99')) || 99,
+      inspected: null,
+      inspectLocked: false,
       data: null,
       loading: false,
       error: '',
@@ -561,8 +699,52 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     const rerenderFirechartOnly = () => {
       const box = host.querySelector('[data-of-fc-canvas]');
       const lbl = host.querySelector('[data-of-pct-label]');
+      const inspWrap = host.querySelector('[data-of-fc-inspect-wrap]');
+      const stripWrap = host.querySelector('[data-of-wall-strip-wrap]');
       if (lbl) lbl.textContent = `${Math.min(state.minPct, state.maxPct)} .. ${Math.max(state.minPct, state.maxPct)}`;
+      if (inspWrap) inspWrap.innerHTML = firechartInspectBarHTML(state.inspected);
       if (box && state.data) box.innerHTML = firechartSvg(state.data, state);
+      if (stripWrap && state.data) stripWrap.innerHTML = firechartWallSummaryHTML(state.data, state);
+    };
+
+    const wallFromElement = el => {
+      if (!el || !state.data) return null;
+      const price = Number(el.dataset.wallPrice);
+      if (!Number.isFinite(price) || price <= 0) return null;
+      const mark = Number(state.data?.price?.mark) || Number(state.data?.series?.at(-1)?.c) || 0;
+      const distPct = mark > 0 ? +(((price - mark) / mark) * 100).toFixed(2) : null;
+      return {
+        snapped: true,
+        price,
+        usd: Number(el.dataset.wallUsd) || 0,
+        side: el.dataset.wallSide || (mark > 0 && price < mark ? 'BID' : 'ASK'),
+        pctRank: Number(el.dataset.wallPct) || 95,
+        live: el.dataset.wallLive === '1',
+        distPct,
+      };
+    };
+
+    const inspectFromPointer = (e, svg) => {
+      if (!svg || !state.data) return null;
+      const directWall = e.target?.closest?.('.of-fc-wall');
+      if (directWall) {
+        const hit = wallFromElement(directWall);
+        if (hit) return hit;
+      }
+      const rect = svg.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) return null;
+      const W = Number(svg.dataset.w) || 920;
+      const H = Number(svg.dataset.h) || 470;
+      const PL = Number(svg.dataset.pl) || 86;
+      const PW = Number(svg.dataset.pw) || 756;
+      const topY = Number(svg.dataset.topY) || 16;
+      const topH = Number(svg.dataset.topH) || 212;
+      const svgX = ((e.clientX - rect.left) / rect.width) * W;
+      const svgY = ((e.clientY - rect.top) / rect.height) * H;
+      if (svgX < PL - 12 || svgX > PL + PW + 65 || svgY < topY - 8 || svgY > topY + topH + 8) return null;
+      const xNorm = Math.max(0, Math.min(1, (svgX - PL) / PW));
+      const yNorm = Math.max(0, Math.min(1, (svgY - topY) / topH));
+      return findFirechartWallAt(state.data, { xNorm, yNorm, minPct: state.minPct, maxPct: state.maxPct });
     };
     const isVisible = () => {
       const sec = document.getElementById('orderflow');
@@ -609,15 +791,45 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     }
 
     host.addEventListener('click', e => {
+      if (e.target.closest('[data-of-inspect-clear]')) {
+        state.inspected = null;
+        state.inspectLocked = false;
+        rerenderFirechartOnly();
+        return;
+      }
+      const wallPick = e.target.closest('[data-fc-wall-pick]');
+      if (wallPick) {
+        const hit = wallFromElement(wallPick);
+        if (hit) {
+          state.inspected = hit;
+          state.inspectLocked = true;
+          rerenderFirechartOnly();
+        }
+        return;
+      }
+      const svg = e.target.closest('[data-fc-svg]');
+      if (svg) {
+        const hit = inspectFromPointer(e, svg);
+        if (hit) {
+          state.inspected = hit;
+          state.inspectLocked = true;
+          rerenderFirechartOnly();
+        }
+        return;
+      }
       const chip = e.target.closest('[data-of-symbol]');
       if (chip) {
         state.symbol = chip.dataset.ofSymbol;
+        state.inspected = null;
+        state.inspectLocked = false;
         void load();
         return;
       }
       const rBtn = e.target.closest('[data-of-range]');
       if (rBtn) {
         state.range = rBtn.dataset.ofRange;
+        state.inspected = null;
+        state.inspectLocked = false;
         void load();
         return;
       }
@@ -634,6 +846,25 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       }
       if (e.target.closest('[data-of-refresh]')) {
         void load({ force: true });
+      }
+    });
+
+    host.addEventListener('pointermove', e => {
+      if (e.pointerType && e.pointerType !== 'mouse') return;
+      if (state.inspectLocked) return;
+      const svg = e.target.closest?.('[data-fc-svg]');
+      if (!svg) return;
+      const hit = inspectFromPointer(e, svg);
+      if (!hit && !state.inspected) return;
+      if (hit && state.inspected && hit.price === state.inspected.price && hit.snapped === state.inspected.snapped) return;
+      state.inspected = hit;
+      rerenderFirechartOnly();
+    });
+
+    host.addEventListener('pointerleave', () => {
+      if (!state.inspectLocked && state.inspected) {
+        state.inspected = null;
+        rerenderFirechartOnly();
       }
     });
 
@@ -657,6 +888,8 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       const raw = String(input?.value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
       if (!raw) return;
       state.symbol = raw.endsWith('USDT') ? raw : `${raw}USDT`;
+      state.inspected = null;
+      state.inspectLocked = false;
       void load({ force: true });
     });
 
@@ -671,6 +904,8 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       const raw = String(btn.dataset.openOrderflow || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
       if (!raw) return;
       state.symbol = raw.endsWith('USDT') ? raw : `${raw}USDT`;
+      state.inspected = null;
+      state.inspectLocked = false;
       try { localStorage.setItem('sl_of_symbol', state.symbol); } catch {}
       window.location.hash = '#orderflow';
       void load({ force: true });
