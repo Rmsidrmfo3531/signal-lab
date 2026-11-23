@@ -23,8 +23,8 @@ test('RealAccountGuard trips combined daily loss circuit breaker, disarms copy, 
    sendText:m=>{msgs.push(m)},
   });
   // Breaker off by default (user 2026-11-23 "이거는 없애줘"); this test turns it on at 8 % from the screen setting.
-  assert.deepEqual([guard.status().dailyLossLimitPct,guard.status().manualMaxLeverage,guard.status().manualMaxMarginPct],[0,20,15]);
-  guard.configure({dailyLossLimitPct:8});
+  assert.deepEqual([guard.status().dailyLossLimitPct,guard.status().manualMaxLeverage,guard.status().manualMaxMarginPct],[0,0,0]);
+  guard.configure({dailyLossLimitPct:8,manualMaxLeverage:20,manualMaxMarginPct:15});
   assert.equal(guard.isTripped(),false);
 
   // Realized -$100 + unrealized -$100 = -$200 (-6.67% of $3,000) -> below -8% threshold
@@ -57,7 +57,7 @@ test('RealAccountGuard trips combined daily loss circuit breaker, disarms copy, 
 });
 
 test('RealAccountGuard blocks high-leverage and oversized manual orders via executeRealManualOrder and surfaces UI warnings',async()=>{
- const guard=new RealAccountGuard({now:()=>NOW});guard.configure({dailyLossLimitPct:8});
+ const guard=new RealAccountGuard({now:()=>NOW});guard.configure({dailyLossLimitPct:8,manualMaxLeverage:20,manualMaxMarginPct:15});
  const og=guard.orderGuard({equityUSD:3000});
  assert.equal(og.maxLeverage,20);
  assert.equal(og.maxMarginUSD,450); // 15% of $3,000
@@ -91,13 +91,13 @@ test('RealAccountGuard blocks high-leverage and oversized manual orders via exec
  const pLev=computeOrderPreview({
   info:{price:3000,quantityStep:'0.01',minQuantityBase:0.01,minNotionalUSDT:5},
   leverage:50,orderType:'MARKET',amountMode:'MARGIN_USDT',amount:'100',availableUSD:2500,equityUSD:3000,
-  safety:{...REAL_SAFETY_DEFAULTS,tripped:false},
+  safety:{...REAL_SAFETY_DEFAULTS,manualMaxLeverage:20,manualMaxMarginPct:15,tripped:false},
  });
  assert.match(pLev.warn,/수동 안전 레버리지 상한\(20배\) 초과/);
  const pMargin=computeOrderPreview({
   info:{price:3000,quantityStep:'0.01',minQuantityBase:0.01,minNotionalUSDT:5},
   leverage:10,orderType:'MARKET',amountMode:'MARGIN_USDT',amount:'600',availableUSD:2500,equityUSD:3000,
-  safety:{...REAL_SAFETY_DEFAULTS,tripped:false},
+  safety:{...REAL_SAFETY_DEFAULTS,manualMaxLeverage:20,manualMaxMarginPct:15,tripped:false},
  });
  assert.match(pMargin.warn,/단일 증거금 안전 한도/);
 
@@ -121,6 +121,8 @@ test('daily loss breaker is off by default and a saved 8 % from before 2026-11-2
   fs.writeFileSync(file,JSON.stringify({version:1,dailyLossLimitPct:8,manualMaxLeverage:20,manualMaxMarginPct:15,trippedDay:kstDay(NOW),trippedAt:NOW}));
   const g=new RealAccountGuard({directory:dir,now:()=>NOW});
   assert.equal(g.status().dailyLossLimitPct,0);
+  assert.equal(g.status().manualMaxLeverage,0);assert.equal(g.status().manualMaxMarginPct,0);
+  assert.equal(g.orderGuard({equityUSD:3000}).maxLeverage,null);assert.equal(g.orderGuard({equityUSD:3000}).maxMarginUSD,null);
   assert.equal(g.isTripped(),false,'an old trip of today no longer blocks');
   const r=await g.evaluateDailyLoss({equityUSD:3000,dailyByDay:{[kstDay(NOW)]:-2000},positions:[],now:NOW});
   assert.equal(r.tripped,false);assert.equal(g.orderGuard({equityUSD:3000}).blocked,false);

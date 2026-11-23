@@ -30,7 +30,7 @@ import {directionOf,venueRows} from './venue_positions.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,positionRow} from './bingx_position_mode.mjs';
 
-export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:50,minOrderMaxMarginUSD:5});
+export const COPY_DEFAULTS=Object.freeze({stops:false,backstopPct:50,sizing:'BALANCE_RATIO',traderBalanceUSD:20000,maxAdds:100,breakVolumeMult:1.5,stopMinPct:20,stopMaxPct:40,stopBufferPct:.3,marginUSD:1,firstMarginUSD:0.3,maxLossPct:25,snapshotMs:120000,maxLeverage:125,maxTotalMarginPct:100,ledgerLossPct:0,minOrderMaxMarginUSD:5});
 const MAX_CLOSED=2000,MAX_EVENTS=200,MAX_SEEN=1000;
 const AUDIT_MAX_AGE=135000,CLOSE_DELAY=120000;
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
@@ -133,7 +133,7 @@ export function copyConfig(env=process.env,liveMode='OFF'){
   backstopPct:n('COPY_BACKSTOP_PCT',COPY_DEFAULTS.backstopPct,5,90),
   maxAdds:n('COPY_MAX_ADDS',COPY_DEFAULTS.maxAdds,0,100),breakVolumeMult:n('COPY_BREAK_VOLUME_MULT',COPY_DEFAULTS.breakVolumeMult,1,10),
   stopMinPct:n('COPY_STOP_MIN_PCT',COPY_DEFAULTS.stopMinPct,.5,80),stopMaxPct:n('COPY_STOP_MAX_PCT',COPY_DEFAULTS.stopMaxPct,1,95),stopBufferPct:n('COPY_STOP_BUFFER_PCT',COPY_DEFAULTS.stopBufferPct,0,5),
-  maxTotalMarginPct:n('COPY_MAX_TOTAL_MARGIN_PCT',COPY_DEFAULTS.maxTotalMarginPct,1,100),ledgerLossPct:n('COPY_LEDGER_LOSS_PCT',COPY_DEFAULTS.ledgerLossPct,1,90),
+  maxTotalMarginPct:n('COPY_MAX_TOTAL_MARGIN_PCT',COPY_DEFAULTS.maxTotalMarginPct,1,100),ledgerLossPct:n('COPY_LEDGER_LOSS_PCT',COPY_DEFAULTS.ledgerLossPct,0,90),
   // The venue-minimum bump may raise the first margin to at most this much (user 2026-11-14: start at 1 $).
   minOrderMaxMarginUSD:n('COPY_MIN_ORDER_MAX_MARGIN_USD',COPY_DEFAULTS.minOrderMaxMarginUSD,.1,1000),
   // Enter late when the trader adds to a position we missed (user 2026-11-14); COPY_LATE_ENTRY=off disables.
@@ -1478,7 +1478,8 @@ export class CopyExecutor{
   }
   const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity);
   if(bal)this.funds={equity:bal.equity==null?null:num(bal.equity),available:availableMargin(bal),at:this.now()};
-  if(eq&&!this.store.killed&&unrealized<=-eq*this.config.ledgerLossPct/100){
+  // 0 = off (user 2026-11-23 17:20 "다 없애 필요없어"): no automatic full close / stop on the copy's open loss.
+  if(this.config.ledgerLossPct>0&&eq&&!this.store.killed&&unrealized<=-eq*this.config.ledgerLossPct/100){
    this.store.killed=true;
    for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'))p.closing??={reason:'COPY_LOSS_LIMIT',at:this.now()};
    this.#event('COPY_LOSS_LIMIT',{reason:`open loss ${unrealized.toFixed(2)} ≤ -${this.config.ledgerLossPct}% of ${eq.toFixed(2)}`});this.#save(); // on disk before any order
