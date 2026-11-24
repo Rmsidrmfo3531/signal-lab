@@ -138,3 +138,25 @@ test('summary: empty and partial books',()=>{
  const t=summarizePumpAlerts([{at:1,symbol:'A',dir:'UP',pct:11,scalp:{entered:true}},{at:2,symbol:'B',dir:'DOWN',pct:12,bingx:{listed:true},scalp:{entered:false,reason:'PUMP_NOT_ON_BINGX'}}],{now:3});
  assert.deepEqual([t.bingxListed,t.scalp.entered,t.scalp.evaluated,t.recent[0].scalp,t.recent[1].scalp],[1,1,2,'PUMP_NOT_ON_BINGX','ENTERED']);
 });
+
+test('tracking: a coin no source lists is closed at its first due time without a read; unknown listings are still read (review)',async()=>{
+ const m0=Date.parse('2026-11-24T00:00:00Z'),clock={t:m0+2*M+20000},reads=[];
+ const fail=name=>async s=>{reads.push([name,s]);throw Object.assign(Error('x'),{code:'VENUE_ERROR_109400'})};
+ let binanceList=()=>false;
+ const sources=[{name:'BINGX',lists:s=>s==='AAAUSDT',klines:fail('BINGX')},{name:'BINANCE',lists:s=>binanceList(s),klines:fail('BINANCE')}];
+ const book=new PumpAlertBook({now:()=>clock.t,sources});
+ book.record({id:1,date:m0+10000,text:text({sym:'NVDAUSDT',pct:11,dir:'UP',low:90,high:100,now:100},1)});
+ book.record({id:2,date:m0+10000,text:text({sym:'AAAUSDT',pct:11,dir:'UP',low:90,high:100,now:100},2)});
+ await book.track();
+ assert.deepEqual(reads,[['BINGX','AAAUSDT']],'nothing read for the coin neither venue lists');
+ assert.deepEqual([book.records[0].trackDone,book.records[0].trackError],[true,'NOT_LISTED']);
+ assert.deepEqual([book.records[1].trackDone,book.records[1].trackError],[undefined,'VENUE_ERROR_109400']);
+ clock.t+=M;reads.length=0;await book.track();
+ assert.deepEqual(reads,[['BINGX','AAAUSDT']],'the listed coin is retried, the closed one never again');
+ // A listing that is not known yet (null) or a check that throws: the source is read as before.
+ binanceList=()=>{throw Error('boom')};
+ const b2=new PumpAlertBook({now:()=>clock.t,sources:[{name:'BINGX',lists:()=>null,klines:fail('BINGX')},sources[1]]});
+ b2.record({id:3,date:m0+10000,text:text({sym:'CCCUSDT',pct:11,dir:'UP',low:90,high:100,now:100},3)});
+ reads.length=0;await b2.track();
+ assert.deepEqual(reads,[['BINGX','CCCUSDT'],['BINANCE','CCCUSDT']]);assert.equal(b2.records[0].trackDone,undefined);
+});

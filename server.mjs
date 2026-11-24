@@ -554,8 +554,9 @@ if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick
 // +1/+5/+15/+60 min from public 1m klines (BingX first; Binance only for coins Binance lists, so an unknown symbol never
 // marks the Binance feed offline). Read only. The testnet scalp evaluates each alert's coin (scalp_executor.mjs pumpAlert).
 const pumpBook=new PumpAlertBook({directory:storage.dir,log:(...a)=>console.warn(...a),
- sources:[{name:'BINGX',klines:(symbol,limit)=>venueQuotes.clients.BINGX.klines(symbol,'1m',limit)},
-  {name:'BINANCE',klines:(symbol,limit)=>{if(!state.activeSet.has(symbol))throw Object.assign(Error('NOT_ON_BINANCE'),{code:'NOT_ON_BINANCE'});return klines(symbol,'1m',Math.min(1500,limit))}}],
+ // lists: from the cached BingX contract list / Binance listing only (no read); null while not loaded yet.
+ sources:[{name:'BINGX',lists:symbol=>{const m=venueQuotes.clients.BINGX.contracts;return m?.size?m.has(symbol):null},klines:(symbol,limit)=>venueQuotes.clients.BINGX.klines(symbol,'1m',limit)},
+  {name:'BINANCE',lists:symbol=>state.activeSet?.size?state.activeSet.has(symbol):null,klines:(symbol,limit)=>{if(!state.activeSet.has(symbol))throw Object.assign(Error('NOT_ON_BINANCE'),{code:'NOT_ON_BINANCE'});return klines(symbol,'1m',Math.min(1500,limit))}}],
  listed:async symbol=>{const c=(await venueQuotes.clients.BINGX.contractsFor(symbol))?.get?.(symbol);return c?c.tradable===true:false}});
 scalpExec.onPumpResult=(key,result)=>{if(key)pumpBook.attachScalp(key,result)};
 setInterval(()=>{void pumpBook.track().catch(e=>console.warn('[PUMP]',e.message))},60000).unref?.();

@@ -104,8 +104,11 @@ export function pumpAlertEndpoint({token,want,body,book,onAlert=null}){
  return {status:200,body:{ok:true,recorded:true,symbol:r.alert.symbol,dir:r.alert.dir}};
 }
 
+// A source's own listing check: true / false / null (unknown, the source is read). Never throws.
+const listedOn=(s,symbol)=>{try{return typeof s?.lists==='function'?s.lists(symbol):null}catch{return null}};
 export class PumpAlertBook{
- /** sources: [{name, klines:(symbol, limit) => rows}] tried in order (BingX first, Binance as fallback).
+ /** sources: [{name, klines:(symbol, limit) => rows, lists?:symbol => true | false | null}] tried in order (BingX
+  * first, Binance as fallback); a source whose lists() is false is skipped.
   * listed: async symbol => true | false | null (BingX lists the perpetual). */
  constructor({directory=null,fileName=PUMP_ALERT_FILE,now=()=>Date.now(),max=PUMP_ALERT_MAX,sources=[],listed=null,log=()=>{}}={}){
   Object.assign(this,{now,max,sources,listed,log});
@@ -154,10 +157,13 @@ export class PumpAlertBook{
     if(!missing.length){rec.trackDone=true;changed=true;continue}
     // Due when the candle closing the first missing horizon has closed; retried at most once a minute.
     if(now<m0+(missing[0]+1)*MIN+GRACE_MS||now-(rec.trackTriedAt||0)<MIN-GRACE_MS)continue;
+    // A source that says it does not list the coin (lists() === false) is not read; with none left the alert is closed
+    // (review 2026-11-24: a stock perpetual neither venue lists was read once a minute for 23 h on the shared BingX queue).
+    const chosen=rec.track?.source,order=(chosen?[...this.sources].sort((a,b)=>(b.name===chosen)-(a.name===chosen)):this.sources).filter(s=>listedOn(s,rec.symbol)!==false);
+    if(!order.length){rec.trackDone=true;rec.trackError='NOT_LISTED';changed=true;continue}
     rec.trackTriedAt=now;read++;changed=true;
     const limit=Math.min(1440,Math.ceil((now-m0)/MIN)+3);
     let result=null,source=null,error=null;
-    const chosen=rec.track?.source,order=chosen?[...this.sources].sort((a,b)=>(b.name===chosen)-(a.name===chosen)):this.sources;
     for(const s of order){
      try{const rows=await s.klines(rec.symbol,limit);const o=pumpOutcome({at:rec.at,dir:rec.dir,rows,now});
       if(o.refPrice){result=o;source=s.name;break}error=error||'NO_CANDLES'}
