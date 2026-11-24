@@ -701,7 +701,8 @@ export class ScalpExecutor{
   // The scan's lock: #consider and the journal context (this.cur) are shared with the 5m scan.
   this.scanning=true;w.lastBucket=bucket;w.tries++;
   const revision=this.entryRevision,st={at:now,bucket,checked:0};
-  const done=(r,{stop=false}={})=>{w.lastReason=r?.entered?'ENTERED':r?.reason??null;if(stop||r?.entered||PUMP_STOP_REASONS.has(r?.reason))this.pumpWatch.delete(symbol);
+  // Only this watch: a newer alert for the coin that came during the evaluation keeps its own (and gets its own result).
+  const done=(r,{stop=false}={})=>{w.lastReason=r?.entered?'ENTERED':r?.reason??null;if((stop||r?.entered||PUMP_STOP_REASONS.has(r?.reason))&&this.pumpWatch.get(symbol)===w)this.pumpWatch.delete(symbol);
    // The alert's record (pump-alerts.json) keeps the latest decision for it (server: PumpAlertBook.attachScalp).
    try{this.onPumpResult?.(w.alert.key,{...r,tries:w.tries})}catch{}
    return r};

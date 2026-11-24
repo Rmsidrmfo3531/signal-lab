@@ -1817,3 +1817,16 @@ test('pump alert: not before this candle\'s scan — an alert right after the cl
  assert.equal(reads.filter(([s,iv])=>s==='SOLUSDT'&&iv==='5m').length,2,'read by the scan, then by the alert');
  assert.equal(placed(v,'MARKET').length,1);assert.equal(ex.store.open[0].trigger,'PUMP_ALERT');assert.equal(ex.pumpWatch.size,0);
 });
+
+test('pump alert: a second alert for the coin during an evaluation keeps its own watch and gets its own result (review)',async()=>{
+ const {v,ex}=pumpMake();ex.arm();
+ const results=[];ex.onPumpResult=(key,r)=>results.push([key,r.entered,r.reason]);
+ const base=ex.candles;let second=null;
+ ex.candles=async(s,iv,l)=>{if(s==='SOLUSDT'&&iv==='5m'&&!second)second=ex.pumpAlert({...ALERT_DOWN,key:'777:3'});return base(s,iv,l)};
+ assert.equal((await ex.pumpAlert(ALERT_DOWN)).entered,true);
+ assert.equal((await second).reason,'QUEUED_AFTER_SCAN');
+ assert.equal(ex.pumpWatch.get('SOLUSDT')?.alert.key,'777:3','the newer watch is not removed by the first one\'s entry');
+ await ex.tick(T0+2000);
+ assert.deepEqual(results,[['777:2',true,undefined],['777:3',false,'ALREADY_SENT']]); // same coin, same candle
+ assert.equal(ex.pumpWatch.size,0);assert.equal(placed(v,'MARKET').length,1,'one entry for the coin');
+});
