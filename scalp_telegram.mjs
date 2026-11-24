@@ -43,6 +43,9 @@ export function scalpEventText(e){
   const view={step:e.step,of:e.of,avg:e.avg,nextAdd:e.nextAdd>0?{price:e.nextAdd}:null};
   return `➕ ${head} ${side(e)} 카피식 추매 ${e.step}/${e.of}단계${z}${e.adopted?' · 늦게 확인된 체결':''}\n수량 +${fmt(e.qty)} · 체결가 ${fmt(e.price)} · 평단 ${fmt(e.prevAvg)} → ${fmt(e.avg)}\n${ladderStepText(view,{fmt})} · 익절 ${fmt(e.tpPrice)}`;
  }
+ // Manual first (user 2026-11-25, real account): a manual position shares the lane / our own size is unknown.
+ if(e.type==='MANUAL_FIRST')return `🛡 ${head} ${side(e)} 수동 포지션 우선 — 단타는 자기 수량만 관리${e.detail?` (${e.detail})`:''}`;
+ if(e.type==='MANUAL_PROTECT_HOLD')return `🛡 ${head} ${side(e)} 단타 몫 불명 — 수동 보호로 청산 보류`;
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
  if(e.type==='SCALE_IN_FILLED'&&e.qty>0){
   const avgLine=Number(e.prevAvg)>0&&Number(e.avg)>0?`\n평단 ${fmt(e.prevAvg)} → ${fmt(e.avg)}${Number(e.avgImprovePct)>0?` (${Number(e.avgImprovePct).toFixed(2)}% 개선)`:''}`:'';

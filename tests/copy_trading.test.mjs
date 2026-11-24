@@ -52,15 +52,18 @@ test('real copy audit checks startup and orders, locks repeated mismatches and l
  assert.equal((await msg(2,OPEN)).reason,'COPY_OPEN_ORDERS_EXIST');
  orders=[];assert.equal((await msg(3,OPEN)).ok,true);
  await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].stop,'OK');
+ // Manual first (2026-11-25): 7 more on the lane than our fills is a manual position, so our whole-position stop is
+ // replaced by a stop for our own 98 (the old one cancelled); the audit still flags the lane size.
  const stop=orders[0];v.setSize(105);orders=[];
- await ex.reconcile();assert.deepEqual(ex.auditStatus().lanes[0].issues,['SIZE_MISMATCH','STOP_MISSING']);
+ await ex.reconcile();assert.deepEqual(ex.auditStatus().lanes[0].issues,['SIZE_MISMATCH']);
+ const ownStop=orders[0];assert.equal(ownStop.quantity,'98');assert.equal(ownStop.closePosition,undefined);assert.equal(ownStop.reduceOnly,'true');
  assert.equal(ex.auditStatus().lanes[0].blocked,false);
  await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].blocked,true);
  assert.equal(ex.auditStatus().lanes[0].expectedQty,98,'routine display refresh does not accept the different venue size');
  assert.equal((await msg(4,CHANGE(880,1760))).reason,'COPY_AUDIT_BLOCKED');
  assert.equal(v.calls.filter(c=>c.type==='MARKET').length,1);
- v.setSize(98);orders=[stop];await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].blocked,false);
- orders=[{...stop,side:'SELL'}];await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].stop,'MISMATCH');
+ v.setSize(98);orders=[ownStop];await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].blocked,false);
+ orders=[{...ownStop,side:'SELL'}];await ex.reconcile();assert.equal(ex.auditStatus().lanes[0].stop,'MISMATCH');
  positionUnavailable=true;now+=136000;await ex.reconcile();assert.equal(ex.auditStatus().ready,false);
  assert.equal((await msg(5,CHANGE(1760,3520))).reason,'COPY_AUDIT_UNAVAILABLE');
  positionUnavailable=false;
@@ -1402,7 +1405,7 @@ test('live copy enters and adds when only unfilled resting manual LIMIT orders e
 
  v.setSize(10);
  orders=[{symbol:'TNSR-USDT',orderId:'m4',type:'LIMIT',side:'SELL',positionSide:'BOTH',executedQty:'0',status:'NEW'}];
- assert.equal((await ex.handle({id:7,date:1e12+6000,text:OPEN})).reason,'VENUE_POSITION_EXISTS','filled manual position must still block entry');
+ assert.equal((await ex.handle({id:7,date:1e12+6000,text:OPEN})).reason,'MANUAL_FIRST','filled manual position must still block entry (manual first, real account)');
 });
 
 test('live copy in hedge mode handles resting manual LIMIT order and venue setLeverage refusal safely within maxLeverage',async()=>{

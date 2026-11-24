@@ -6,6 +6,12 @@ import path from 'node:path';
 import {RealTrailingManager,REAL_TRAILING_DEFAULTS,REAL_TRAILING_BACKTEST_PRESET} from '../real_trailing.mjs';
 import {copyHTML,venuePositionsHTML} from '../public/live_control.js';
 
+// Manual first (user 2026-11-25): a manual position is managed only when this pass read the open orders and its lane has
+// no user TP / SL. These tests are about the trailing rules themselves, so each pass sees an empty open-order list
+// unless a test passes its own (tests/manual_first.test.mjs covers the protection).
+{const evaluate=RealTrailingManager.prototype.evaluate;
+ RealTrailingManager.prototype.evaluate=function(positions,now,opts){return evaluate.call(this,positions,now,opts??{openOrders:[]})}}
+
 const pos=(overrides={})=>({
  symbol:'ETHUSDT',venueSymbol:'ETH-USDT',direction:'LONG',origin:'manual',
  size:1,avg:3000,mark:3060,leverage:10,margin:300,unrealized:30,roePct:10,

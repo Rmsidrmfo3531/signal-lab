@@ -1256,9 +1256,19 @@ export class ScalpExecutor{
   const mode=await readPositionMode(cl);if(!mode.ok)return skip(mode.reason,mode.detail);
   const hedge=mode.hedge;
   // otherSide: a position on the other side of this coin (hedge mode) shares the symbol's fund-flow rows.
-  let otherSide=false;{const now=await this.#position(vs,d,hedge);if(now.any>0)return skip('VENUE_POSITION_EXISTS',`${now.signed}`);otherSide=now.other>0}
+  // Manual first on the real account (user 2026-11-25 "수동이 먼저야"): any position of the coin that is not ours is the
+  // user's -> MANUAL_FIRST (testnet keeps VENUE_POSITION_EXISTS); so is a user TP / SL / reduce-only order on the coin.
+  const live=this.config.mode==='LIVE';
+  let otherSide=false;{const now=await this.#position(vs,d,hedge);if(now.any>0)return skip(live?'MANUAL_FIRST':'VENUE_POSITION_EXISTS',`${now.signed}`);otherSide=now.other>0}
+  if(live&&typeof cl.openOrders==='function'){
+   let orders;try{orders=await this.#openOrders(vs)}catch{return skip('MANUAL_ORDERS_UNREADABLE')}
+   const userOrder=(Array.isArray(orders)?orders:[]).find(o=>o?.symbol===vs&&(String(o.reduceOnly).toLowerCase()==='true'||String(o.closePosition).toLowerCase()==='true'||/STOP|TAKE_PROFIT|TRAILING/i.test(String(o.type||''))));
+   if(userOrder)return skip('MANUAL_FIRST',`사용자 ${String(userOrder.type||'').toUpperCase()} 주문`);
+  }
   try{
    const m=await cl.marginType(vs).catch(()=>null);
+   // Hedge: a position on the other side shares the symbol's margin mode; it is never switched under it.
+   if(live&&otherSide&&m?.marginType!=='CROSSED')return skip('MANUAL_FIRST','반대쪽 포지션의 마진 모드를 바꾸지 않음');
    if(m?.marginType!=='CROSSED'){await cl.setMarginType(vs,'CROSSED');const again=await cl.marginType(vs);if(again?.marginType!=='CROSSED')throw err('CROSS_NOT_CONFIRMED')}
    const set=await cl.setLeverage(vs,leverageSideFor({hedge,direction:d}),plan.leverage);
    if(set?.leverage!==undefined&&Number(set.leverage)!==plan.leverage)throw err('LEVERAGE_NOT_CONFIRMED');
@@ -2119,7 +2129,12 @@ export class ScalpExecutor{
  }
  async #market(p,tag,now=null){
   now??=await this.#position(p.venueSymbol,p.direction,p.hedge===true);if(!(now.size>0))return now;
-  const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(now.size),reduceOnly:'true',clientOrderId:(p.id+tag).slice(0,40)},p.hedge===true));
+  // Manual first (real account): at most our own size, never the whole lane; our own size unknown -> nothing is sent.
+  let qty=now.size;
+  if(this.config.mode==='LIVE'){const own=pos(p.size);
+   if(!own){this.#event('MANUAL_PROTECT_HOLD',{symbol:p.symbol,direction:p.direction,reason:'OWN_QTY_UNKNOWN'});throw err('OWN_QTY_UNKNOWN')}
+   qty=Math.min(now.size,own)}
+  const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(qty),reduceOnly:'true',clientOrderId:(p.id+tag).slice(0,40)},p.hedge===true));
   const id=orderId(o);if(id)p.exitIds.push(id);return {...now,size:0,exitAvg:pos(orderOf(o)?.avgPrice)};
  }
  /** User-initiated exit for one tracked scalp position (testnet or opt-in live). */
@@ -2135,8 +2150,12 @@ export class ScalpExecutor{
    const mode=await readPositionMode(this.client);
    if(!mode.ok)return refuse(mode.reason,502);
    if(mode.hedge!==(p.hedge===true))return refuse('POSITION_MODE_CHANGED');
-   const read=()=>this.#position(p.venueSymbol,p.direction,p.hedge===true,{strict:true});
-   const held=await read();
+   const raw=()=>this.#position(p.venueSymbol,p.direction,p.hedge===true,{strict:true});
+   const first=await raw();
+   // Manual first (real account): a manual part of the lane stays; only our own part has to go.
+   const manualPart=this.config.mode==='LIVE'&&pos(p.size)?Math.max(0,first.size-p.size):0;
+   const read=async()=>{const r=await raw();return manualPart>0?{...r,size:Math.max(0,+(r.size-manualPart).toFixed(12))}:r};
+   const held=manualPart>0?{...first,size:Math.max(0,+(first.size-manualPart).toFixed(12))}:first;
    let forced=null;
    if(held.other>0)p.otherSideSeen=true;
    if(held.size>0){
@@ -2685,7 +2704,7 @@ export class ScalpExecutor{
       if(this.config.stopLossEnabled===false&&!(Number(this.config.hardStopRoePct)>0))await this.#retireStop(p);
       await this.#recoverAdd(p);continue;
      }
-     const {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true),mark=pos(row?.markPrice);
+     let {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true);const mark=pos(row?.markPrice);
      if(p.earlyTakeProfit){
       try{this.#recordEarlyTakeProfit(p,await this.client.getOrder(p.venueSymbol,{clientOrderId:p.earlyTakeProfit.clientOrderId}))}
       catch(e){if(e?.code!=='VENUE_ERROR_80016')throw e;delete p.earlyTakeProfit}
@@ -2739,11 +2758,19 @@ export class ScalpExecutor{
      }
      if(!(size>0)){if((p.zeroSeen=(p.zeroSeen||0)+1)>=2)await this.#finish(p);continue}
      p.zeroSeen=0;
+     // Manual first (real account): a lane that grew beyond our own size holds a manual position: never adopted as ours
+     // (closes stay at our own size, adds see POSITION_CHANGED), told once.
+     if(this.config.mode==='LIVE'&&pos(p.size)&&size>p.size+(Number(p.quantityStep)||0)/2){
+      const manualQty=+(size-p.size).toFixed(12);
+      if(!(p.manualQty>0))this.#event('MANUAL_FIRST',{symbol:p.symbol,direction:p.direction,reason:'MANUAL_ON_LANE',qty:manualQty,detail:`같은 자리에 수동 ${manualQty} — 단타는 자기 수량만 관리`});
+      p.manualQty=manualQty;size=p.size;
+     }else if(p.manualQty>0)p.manualQty=0;
      if(size<p.size-1e-12){
       const qty=+(p.size-size).toFixed(12);p.everReduced=true;p.steps.push({kind:'REDUCE',at:this.now(),qty,mark});
       this.#event('PARTIAL_EXIT',{symbol:p.symbol,direction:p.direction,qty,left:size});
      }
-     p.size=size;p.avg=pos(row.avgPrice)??p.avg;p.mark=mark??p.mark;p.unrealized=num(row.unrealizedProfit)??(mark&&p.avg?dirOf(p.direction)*(mark-p.avg)*size:null);unrealized+=p.unrealized||0;
+     p.size=size;if(!(p.manualQty>0))p.avg=pos(row.avgPrice)??p.avg;p.mark=mark??p.mark;
+     p.unrealized=p.manualQty>0?(mark&&p.avg?dirOf(p.direction)*(mark-p.avg)*size:null):num(row.unrealizedProfit)??(mark&&p.avg?dirOf(p.direction)*(mark-p.avg)*size:null);unrealized+=p.unrealized||0;
      p.exchangePosition={size,entryPrice:p.avg,markPrice:mark,unrealizedPnLUSD:row.unrealizedProfit??null,
       marginUSD:pos(row.initialMargin)??pos(row.margin),realizedPnLUSD:row.realisedProfit??row.realizedProfit??null,at:this.now()};
      const parts=p.parts.map((q,i)=>q+(p.addTargets||[]).reduce((n,g)=>n+g.parts[i],0));

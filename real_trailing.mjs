@@ -59,6 +59,28 @@ const isTradfiPos=p=>{
  return Boolean(disp&&!isCoinSymbol(disp));
 };
 const sideKo=d=>d==='SHORT'?'🔴 숏':'🟢 롱';
+// Manual first (user 2026-11-25 01:37 "만약 수동으로 매매를 했고 tp와 sl이 설정되어 있는 경우 어떠한 경우라도 강제 청산을 하지
+// 않도록 해줘"): a manual position is managed only when applyToManual is on AND its lane carries no TP / SL order of the
+// user (open orders read this pass; unreadable -> protected). A copy row sharing its lane with a manual position
+// (manualQty > 0, or null = unknown) is never managed either: these actions close the whole lane.
+const PROTECT_TYPE=/STOP|TAKE_PROFIT|TRAILING/i;
+/** true: a user TP / SL order on the lane of p; false: none; null: the open orders could not be read. */
+export function userTpSlOnLane(p,orders,ownIds=new Set()){
+ if(!Array.isArray(orders))return null;
+ const dir=String(p?.direction||'').toUpperCase(),vs=String(p?.venueSymbol||''),closeSide=dir==='LONG'?'SELL':'BUY';
+ return orders.some(o=>{
+  if(!o||String(o.venueSymbol??o.symbol??'')!==vs)return false;
+  const id=o.orderId!=null?String(o.orderId):null;if(id&&ownIds.has(id))return false;
+  const cid=String(o.clientOrderId||'').toLowerCase();if(cid.startsWith('cp')||cid.startsWith('optr'))return false; // copy's own / our lock stop
+  const lane=String(o.positionSide||'BOTH').toUpperCase();
+  if(lane!=='BOTH'&&lane!==dir)return false;
+  // A TP / SL of this position sits on its closing side (an order that states no side is counted: fail safe). A limit
+  // take-profit counts too (review 2026-11-25): reduce-only / closePosition, or in hedge mode any order of this side.
+  const side=String(o.side||'').toUpperCase(),flag=v=>v===true||String(v).toLowerCase()==='true';
+  const closing=flag(o.reduceOnly)||flag(o.closePosition)||lane===dir;
+  return (PROTECT_TYPE.test(String(o.type||''))||closing)&&(!side||side===closeSide);
+ });
+}
 const money=v=>{const n=Number(v);return v==null||!Number.isFinite(n)?'—':`${n>=0?'+':'−'}$${Math.abs(n).toFixed(2)}`};
 
 /** Break-even stop net of fees: entry +/- the round-trip fee (feePct, e.g. 0.10 = 0.10 %), so a fill at the stop
@@ -192,8 +214,10 @@ export class RealTrailingManager{
   }
  }
 
- /** positions: the venue's current list. Anything but an array (a failed read) does nothing and keeps the state. */
- async evaluate(positions=[],now=this.now()){
+ /** positions: the venue's current list. Anything but an array (a failed read) does nothing and keeps the state.
+  * openOrders: the account's open orders read for this pass (anything but an array = unreadable: manual positions are
+  * then left alone, manual first). */
+ async evaluate(positions=[],now=this.now(),{openOrders=null}={}){
   if(this.busy||!Array.isArray(positions))return [];
   // Switched off: no action, but tracked positions still get the clean-up below, so an exchange lock / break-even
   // stop is cancelled once its position is gone instead of resting on the book (review 2026-11-23).
@@ -217,6 +241,20 @@ export class RealTrailingManager{
     const isCopy=p.origin==='copy';
     if(isCopy&&!cfg.applyToCopy)continue;
     if(!isCopy&&!cfg.applyToManual)continue;
+    // Manual first: a copy row that shares its lane with a manual position, or a manual position with the user's own
+    // TP / SL (or orders that cannot be read), is never acted on. Our own earlier stops on it are cancelled once.
+    {const prior=this.tracked.get(key);
+     const ownIds=new Set([prior?.lockStopOrderId,prior?.breakevenOrderId,...(prior?.staleStopIds||[])].filter(Boolean).map(String));
+     const shared=isCopy&&(p.manualQty===null||Number(p.manualQty)>0);
+     const userTpSl=isCopy?false:userTpSlOnLane(p,openOrders,ownIds);
+     if(shared||userTpSl!==false){
+      if(prior&&(shared||userTpSl===true)){
+       await this.#cancelStops(prior);this.tracked.delete(key);dirty=true;
+       this.log?.('MANUAL_PROTECTED',key,shared?'copy lane shared with manual':'user TP/SL on lane');
+       try{await this.sendText(`🛡 [실계좌 트레일링] ${disp} ${sideKo(dir)} ${shared?'같은 자리에 수동 포지션':'사용자 TP/SL 주문'} 확인 — 수동 우선으로 자동 트레일링을 해제했습니다`)}catch{}
+      }
+      continue;
+     }}
     if(excluded.has(disp))continue;
     if(cfg.skipTradfi&&isTradfiPos(p))continue;
     const grossRoe=Number(p.roePct);

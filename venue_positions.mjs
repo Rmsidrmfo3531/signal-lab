@@ -46,14 +46,34 @@ export function normalizeVenuePosition(row,{markOf=()=>null}={}){
   updatedAt:pos(row.updateTime)};
 }
 
+/** The copy ledger's OWN quantity of one copy position (manual first, user 2026-11-25 01:37 / 01:39): p.ownQty, kept
+ * by copy_executor.mjs from its own fills only, or for a position recorded before it the sum of its steps (OPEN / ADD /
+ * ADOPTED minus REDUCE). null when it cannot be told (a step without a quantity, or no steps). Never the venue size. */
+export function ledgerOwnQty(p){
+ if(!p||typeof p!=='object')return null;
+ if(Number.isFinite(p.ownQty)&&p.ownQty>=0)return p.ownQty;
+ const steps=Array.isArray(p.steps)?p.steps:[];if(!steps.length)return null;
+ let q=0;
+ for(const s of steps){const n=Number(s?.qty);
+  if(['OPEN','ADD','ADOPTED'].includes(s?.kind)){if(!(n>0))return null;q+=n}
+  else if(s?.kind==='REDUCE'){if(!(n>=0))return null;q-=n}
+  else return null;
+ }
+ q=Number(q.toFixed(12));return q>=0?q:null;
+}
+
 /** Marks each venue row copy (an OPEN copy-ledger position), scalp (an OPEN live scalp position),
- * or manual (anything else). A one-way row holding a copy and a manual entry in the same direction counts as copy. */
+ * or manual (anything else). A one-way row holding a copy and a manual entry in the same direction counts as copy;
+ * such a row carries manualQty (venue size minus the copy ledger's own quantity, at least half a lot step) so the
+ * automated tools leave it alone (manual first, user 2026-11-25). manualQty null: the copy's own quantity is unknown. */
 export function tagOrigins(rows,copyPositions=[],scalpPositions=[]){
  const openCopy=(Array.isArray(copyPositions)?copyPositions:[]).filter(p=>p?.status==='OPEN');
  const openScalp=(Array.isArray(scalpPositions)?scalpPositions:[]).filter(p=>p?.status==='OPEN');
  return (rows||[]).map(r=>{
   const c=r.direction?openCopy.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
-  if(c)return {...r,origin:'copy',...(c.symbol?{symbol:c.symbol}:{})};
+  if(c){const own=ledgerOwnQty(c),step=Number(c.qtyStep)>0?Number(c.qtyStep):0;
+   const extra=own==null?null:Math.max(0,r.size-own),manualQty=extra==null?null:extra>=(step?step/2:Math.max(1e-10,r.size*1e-8))?Number(extra.toFixed(12)):0;
+   return {...r,origin:'copy',...(c.symbol?{symbol:c.symbol}:{}),manualQty}}
   const s=r.direction?openScalp.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
   if(s)return {...r,origin:'scalp',...(s.symbol?{symbol:s.symbol}:{})};
   return {...r,origin:'manual'};

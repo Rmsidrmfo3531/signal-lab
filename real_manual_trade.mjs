@@ -366,6 +366,8 @@ export async function listRealOpenOrders({client,symbol=null}={}){
    origQty:pos(o?.origQty??o?.quantity),
    executedQty:num(o?.executedQty)??0,
    reduceOnly:o?.reduceOnly===true||String(o?.reduceOnly).toLowerCase()==='true',
+   closePosition:o?.closePosition===true||String(o?.closePosition).toLowerCase()==='true',
+   clientOrderId:o?.clientOrderId!=null?String(o.clientOrderId).slice(0,64):null,
    workingType:o?.workingType??null,
    time:num(o?.time??o?.updateTime),
   };
