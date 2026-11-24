@@ -13,6 +13,7 @@ import {randomInt} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {createTelegramNetworkRecovery} from './telegram_transport.mjs';
 import {displaySymbol} from './public/symbol_display.js';
+import {reasonLabel} from './public/scalp_reasons.js';
 
 export const ACCOUNT_ALERTS_DEFAULTS=Object.freeze({
  riskAlerts:true,
@@ -133,7 +134,7 @@ export function formatStatusReply({equityUSD,availableUSD,positions=[],copy}){
 
 export function formatScalpStatusReply(rt,{now=Date.now()}={}){
  if(!rt)return '⚠️ 테스트넷 단타 상태를 조회하지 못했습니다.';
- const state=rt.mode!=='TESTNET'?'○ 꺼짐 (TESTNET 아님)':!rt.armed?'○ 비활성':rt.blocked?`■ 진입 중지 (${rt.blocked})`:rt.scanning?'● 5분봉 스캔 진행 중':'● 활성화 (5분 감시 중)';
+ const state=rt.mode!=='TESTNET'?'○ 꺼짐 (TESTNET 아님)':!rt.armed?'○ 비활성':rt.blocked?`■ 진입 중지 (${reasonLabel(rt.blocked)})`:rt.scanning?'● 5분봉 스캔 진행 중':'● 활성화 (5분 감시 중)';
  const rules=[
   `4H 추세: ${rt.trendMode==='on'?'역추세 차단':rt.trendMode==='off'?'미사용':'기록만'}`,
   `손절: ${rt.stopLossEnabled?'ON':'무손절'}`,

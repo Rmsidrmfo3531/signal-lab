@@ -578,7 +578,7 @@ test('reconcile: TP1 -> stop to the entry (new stop first, old cancelled); flat 
  assert.equal(x.closeReason,'BREAKEVEN_STOP');assert.equal(x.tpHits,1);assert.ok(Number.isFinite(x.netUSD)&&x.netUSD>0,'TP1 profit minus fees');
  assert.ok(v.calls.some(c=>c.op==='cancel'&&c.oid===p.tpOrderIds[1]),'leftover targets cancelled');
  assert.equal(ex.stats().trades,1);assert.equal(ex.stats().winRatePct,100);
- assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/청산 · 1차 목표 뒤 본전 손절/);
+ assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/청산 · 본전 손절/);
 });
 
 test('reconcile: time exit at entry + 2 h with a reduce-only market close',async()=>{
@@ -613,7 +613,7 @@ test('testnet page: the scalp details (collapsed "단타 신호·건너뜀") —
  assert.doesNotMatch(h,/상태 (꺼짐|켜짐)/,'on / off is the testnet switch\'s (user 2026-11-18: one place per fact)');assert.doesNotMatch(h,/data-scalp-arm|data-scalp-disarm/,'one testnet switch: the scalp has no button of its own');
  ex.arm();await ex.scan();ex.store.skips.push({at:T0,symbol:'XUSDT',reason:'PRICE_DRIFT'});ex.store.skipCounts.PRICE_DRIFT=1;
  h=scalpDetailsHTML(ex.status());assert.doesNotMatch(h,/상태 켜짐/);assert.match(h,/XUSDT/);
- assert.match(h,/진입가에서 가격이 이미 벗어남 1회/);assert.match(h,/api\/scalp\/journal/);
+ assert.match(h,/>가격이 벌어짐<\/span> 1회/);assert.match(h,/title="현재가가 신호 진입가에서 0\.4%/);assert.match(h,/api\/scalp\/journal/);
  const off=new ScalpExecutor({config:scalpExecConfig({SCALP_EXEC_MODE:'LIVE'})});assert.match(scalpDetailsHTML(off.status()),/실계좌 모드는 거부됨/);
 });
 
@@ -662,7 +662,7 @@ test('SHORT: TP1 -> break-even BUY stop at the entry (rounded down), then the st
  assert.ok(v.calls.some(c=>c.op==='cancel'&&c.oid===oldStop));
  v.fill(v.orders.get(p.stopOrderId),p.stop);clock.t+=60000;await ex.reconcile();clock.t+=20000;await ex.reconcile();
  const x=ex.store.closed[0];assert.equal(x.closeReason,'BREAKEVEN_STOP');assert.equal(x.direction,'SHORT');assert.ok(x.netUSD>0,'TP1 below the entry is a short profit');
- assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/SOLUSDT 숏 청산 · 1차 목표 뒤 본전 손절/);
+ assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/SOLUSDT 숏 청산 · 본전 손절/);
 });
 
 test('SHORT: price already back above the entry at TP1 -> closed at market (BUY reduce-only)',async()=>{
@@ -1741,7 +1741,7 @@ test('pump alert: a coin BingX does not list is skipped with a recorded reason; 
   const r=await ex.pumpAlert({...ALERT_DOWN,symbol:'NVDAUSDT'});
   assert.equal(r.reason,'PUMP_NOT_ON_BINGX');assert.equal(placed(v,'MARKET').length,0);
   const s=ex.store.skips.at(-1);assert.deepEqual([s.symbol,s.reason,s.trigger],['NVDAUSDT','PUMP_NOT_ON_BINGX','PUMP_ALERT']);
-  assert.equal(scalpReasonKo('PUMP_NOT_ON_BINGX'),'급변 알림 — BingX에 없는 종목')}
+  assert.equal(scalpReasonKo('PUMP_NOT_ON_BINGX'),'BingX에 없는 종목')}
  {const NC={...SOL,symbol:'NVDAUSDT',venueSymbol:'NCSKNVDA2USD-USDT'};
   const {v,ex}=pumpMake({contracts:new Map([['SOLUSDT',SOL],['BTCUSDT',BTC_C],['NVDAUSDT',NC]])});ex.arm();
   assert.equal((await ex.pumpAlert({...ALERT_DOWN,symbol:'NVDAUSDT'})).reason,'PUMP_NOT_ON_BINGX');assert.equal(placed(v,'MARKET').length,0)}
