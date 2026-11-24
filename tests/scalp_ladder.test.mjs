@@ -185,8 +185,8 @@ test('entry: same gates, first ladder unit, whole ladder reserved; the card and 
  assert.match(card,/카피식 추매 1\/6 단계 · 평단 [\d.]+ · 다음 추매 [\d.]+/);assert.match(card,/익절/);assert.doesNotMatch(card,/자동 손절/);
  const opened_=ex.store.events.find(e=>e.type==='OPENED');
  const text=scalpEventText(opened_);
- assert.match(text,/카피식 추매/);assert.match(text,/1\/6 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 24시간/);
- assert.equal(s.settings.management,'TRADER_LADDER');assert.equal(s.settings.ladderTpNetPct,.6);assert.equal(s.settings.ladderMaxHoldMin,1440);
+ assert.match(text,/카피식 추매/);assert.match(text,/1\/6 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 48시간/);
+ assert.equal(s.settings.management,'TRADER_LADDER');assert.equal(s.settings.ladderTpNetPct,.6);assert.equal(s.settings.ladderMaxHoldMin,2880);
 });
 
 test('adds: at the spacing from the LAST fill, one per step, unique client ids; no 240-min cut, no -40 % defensive add',async()=>{
@@ -242,12 +242,12 @@ test('take profit: the whole position at the average + 0.6 % net of fees, booked
  assert.equal(summarizeJournal([line]).byManagement.TRADER_LADDER.trades,1);
 });
 
-test('max hold: closed after 24 hours whatever the result',async()=>{
+test('max hold: closed after 48 hours whatever the result (user 2026-11-25)',async()=>{
  const {v,clock,ex,p}=await opened();
- setMark(v,'SOLUSDT',+(p.avg*1.001).toFixed(2));clock.t+=(24*60-1)*60000;await ex.reconcile();assert.equal(ex.store.open.length,1);
+ setMark(v,'SOLUSDT',+(p.avg*1.001).toFixed(2));clock.t+=(48*60-1)*60000;await ex.reconcile();assert.equal(ex.store.open.length,1);
  clock.t+=2*60000;await ex.reconcile();
  assert.equal(ex.store.open.length,0);assert.equal(ex.store.closed[0].closeReason,'LADDER_MAX_HOLD');
- assert.ok(reasonInfo('LADDER_MAX_HOLD',ex.status().settings).desc.includes('24시간'));
+ assert.ok(reasonInfo('LADDER_MAX_HOLD',ex.status().settings).desc.includes('48시간'));
 });
 
 test('final line: after the last step -75 % ROE closes as LADDER_FINAL_LINE; before it the emergency line still protects',async()=>{

@@ -21,13 +21,13 @@ export const TRADER_LADDER=Object.freeze({
  // A strong zone counts as the add level when it lies at least this share of the spacing away from the last fill.
  zoneMinFrac:.5,zoneTouchPct:.3,zoneMinRejections:3,zoneBoost:2,
  tpNetPct:.6,
- maxHoldMin:1440,
+ maxHoldMin:2880, // 48 h (user 2026-11-25 01:10 "48시간까지 해보자 또 생기면 상한없음으로"; measured trader 99 % ≤ 24 h)
  // Spacing cap so the next add comes before the emergency line: the price distance from the average to the next add
  // is at most ~1.94 spacings on this ladder, kept under 90 % of the final line: spacing <= 0.45 x line / leverage.
  spacingCapShare:.45,
  // A raised unit keeps 10 % over the venue minimum (a SHORT add at a higher price buys a little less per margin).
  minQtyHeadroom:1.1,
- source:Object.freeze({steps:'USER',spacing:'FALLBACK',tpNetPct:'FALLBACK',fullClose:'MEASURED',maxHoldMin:'MEASURED',finalLine:'USER'})
+ source:Object.freeze({steps:'USER',spacing:'FALLBACK',tpNetPct:'FALLBACK',fullClose:'MEASURED',maxHoldMin:'USER',finalLine:'USER'})
 });
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
 const sum=a=>a.reduce((s,v)=>s+v,0);
