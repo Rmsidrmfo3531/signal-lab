@@ -69,6 +69,8 @@ const PROFIT_ONLY_EARLY_EXIT_MIN=0,PROFIT_ONLY_RETRY_MS=5000;
 export const SCALP_PROFIT_HOLD_TARGET_MIN=60;
 export const SCALP_MIN_PROFIT_ROE_PCT=16;
 export const SCALP_PARTIAL_TAKE_FRAC=0.25;
+export const SCALP_PROFIT_PROTECT_ARM_ROE_PCT=10;
+export const SCALP_PROFIT_PROTECT_FLOOR_ROE_PCT=2.5;
 export const SCALP_AGAINST_TREND_RISK_SCALE=0.5;
 export const SCALP_SCALE_IN_MIN_ROE_PCT=5;
 export const SCALP_SCALE_IN_PARTIAL_ROE_PCT=6;
@@ -139,6 +141,8 @@ export function scalpExecConfig(env=process.env){
   settings:{...SCALP_EXEC_SETTINGS,minMovePct,retracements:[...SCALP_EXEC_SETTINGS.retracements]},
   minProfitRoePct:n('SCALP_MIN_PROFIT_ROE_PCT',SCALP_MIN_PROFIT_ROE_PCT,0,100),
   partialTakeFrac:n('SCALP_PARTIAL_TAKE_FRAC',SCALP_PARTIAL_TAKE_FRAC,.1,.9),
+  profitProtectArmRoePct:n('SCALP_PROFIT_PROTECT_ARM_ROE_PCT',SCALP_PROFIT_PROTECT_ARM_ROE_PCT,0,50),
+  profitProtectFloorRoePct:n('SCALP_PROFIT_PROTECT_FLOOR_ROE_PCT',SCALP_PROFIT_PROTECT_FLOOR_ROE_PCT,0,20),
   earlyFallbackMin:n('SCALP_EARLY_FALLBACK_MIN',PROFIT_ONLY_EARLY_EXIT_MIN,0,240),
   // TP1 net RR floor (was 0.7 on the testnet, user 2026-11-17 "해결 방법 찾아봐 테스트넷인데": ICP/ARIA skipped at RR 0.78-0.83);
   // the backtest default is SCALP_DEFAULTS.minNetRR (1). Each trade keeps plan.netRR, so the 0.7-1 band is judged apart.
@@ -1334,7 +1338,7 @@ export class ScalpExecutor{
    const avgImprovePct=prevAvg>0?+(Math.abs(nextAvg-prevAvg)/prevAvg*100).toFixed(2):0;
    Object.assign(a,{fillQty:added,fillPrice:fill,fillMarginUSD:fill*added/p.leverage,filledAt:this.now(),prevAvg,avgImprovePct});
    p.avg=nextAvg;p.filled=total;p.size=newSize;p.marginUSD=p.avg*newSize/p.leverage;
-   p.trailPeakRoePct=null;p.scaleInPartialTaken=false;
+   p.trailPeakRoePct=null;p.profitProtectPeakRoePct=null;p.scaleInPartialTaken=false;
    p.steps.push({kind:'ADD',at:a.filledAt,qty:added,avg:p.avg});
    a.state='RESIZE';this.#save();
   }
@@ -1787,6 +1791,12 @@ export class ScalpExecutor{
     const grossMove=direction*(mark-p.avg)/p.avg;
     const lossMove=bookedLoss>0?bookedLoss/(qty*p.avg):0;
     const netRoePct=(grossMove-2*fee-reserve-lossMove)*lev*100;
+    const armRoe=Number(this.config.profitProtectArmRoePct??SCALP_PROFIT_PROTECT_ARM_ROE_PCT);
+    const floorRoe=Number(this.config.profitProtectFloorRoePct??SCALP_PROFIT_PROTECT_FLOOR_ROE_PCT);
+    if(armRoe>0&&armRoe<minRoe&&netRoePct>=armRoe){
+     const prevArm=Number(p.profitProtectPeakRoePct);
+     if(!Number.isFinite(prevArm)||netRoePct>prevArm){p.profitProtectPeakRoePct=+netRoePct.toFixed(2);this.#save()}
+    }
     if(netRoePct>=minRoe){
      const prevPeak=Number(p.trailPeakRoePct);
      if(!Number.isFinite(prevPeak)||netRoePct>prevPeak){p.trailPeakRoePct=+netRoePct.toFixed(2);this.#save()}
@@ -1807,6 +1817,10 @@ export class ScalpExecutor{
       const pullback=Math.max(SCALP_TRAIL_RUNNER_MIN_PULLBACK_ROE,peak*SCALP_TRAIL_PULLBACK_RATIO);
       const trailStopRoe=Math.max(minRoe,peak-pullback);
       if(netRoePct>trailStopRoe)return false;
+      limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
+      if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
+     }else if(armRoe>0&&armRoe<minRoe&&Number(p.profitProtectPeakRoePct)>=armRoe&&netRoePct<=floorRoe){
+      // Free-roll profit protection: peaked >= +10% Net ROE without reaching +16%, pulled back to <= +2.5% -> lock in net profit.
       limit=profitLimit(p,bookedLoss/qty,{minNetRoePct:0});
       if(!(Number(limit)>0&&direction*(mark-Number(limit))>=0))return false;
      }else{

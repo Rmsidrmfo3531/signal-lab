@@ -1612,3 +1612,43 @@ test('ticker prefilter limits 5m candle fetches to scanMaxSymbols + active mover
  assert.ok(fetched.length<=12,'dead-flat symbols skipped to keep scan fast');
 });
 
+test('Free-Roll profit protection arms at +10% Net ROE and exits in profit at <= +2.5% pullback without capping +16% upside',async()=>{
+ // 1) Armed at +12% Net ROE -> holds at +6% -> closes in profit at +2.0% pullback
+ {
+  const v=venue({fillAt:PX_S}),clock={t:T0};
+  const ex=make(v,{clock,price:PX_S,trend:down4h,rows:rise,config:{stopLossEnabled:false,scaleIn:false,minProfitRoePct:16,earlyFallbackMin:0,partialTakeFrac:0.25,profitProtectArmRoePct:10,profitProtectFloorRoePct:2.5}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  // Move +1.36% in favor (~+12% Net ROE at 10x after 0.16% cost) -> arms Free-Roll, does NOT close yet
+  v.mark=+(p.avg*0.9864).toFixed(2);
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(ex.store.open.length,1,'stays open to seek +16% partial take');
+  assert.ok(p.profitProtectPeakRoePct>=10,'Free-Roll protection armed');
+  // Pull back to +0.76% (~+6% Net ROE > +2.5% floor) -> still holds
+  v.mark=+(p.avg*0.9924).toFixed(2);
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(ex.store.open.length,1,'holds above +2.5% floor');
+  // Pull back to +0.36% (~+2.0% Net ROE <= +2.5% floor, still > 0% net) -> exits cleanly in profit!
+  v.mark=+(p.avg*0.9964).toFixed(2);
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(v.size,0,'closed in profit via Free-Roll protection floor');
+  clock.t+=10000;await ex.reconcile();clock.t+=10000;await ex.reconcile();
+  assert.equal(ex.store.closed[0]?.closeReason,'EARLY_TAKE_PROFIT');
+  assert.ok(ex.store.closed[0]?.netUSD>0,'guaranteed net positive close');
+ }
+ // 2) Peaked only at +7% Net ROE (< +10% arm) -> pullback to +2.0% does NOT exit early
+ {
+  const v=venue({fillAt:PX_S}),clock={t:T0};
+  const ex=make(v,{clock,price:PX_S,trend:down4h,rows:rise,config:{stopLossEnabled:false,scaleIn:false,minProfitRoePct:16,earlyFallbackMin:0,partialTakeFrac:0.25,profitProtectArmRoePct:10,profitProtectFloorRoePct:2.5}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  v.mark=+(p.avg*0.9914).toFixed(2); // ~+7% Net ROE
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(p.profitProtectPeakRoePct,undefined,'not armed below +10% Net ROE');
+  v.mark=+(p.avg*0.9964).toFixed(2); // ~+2.0% Net ROE
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(ex.store.open.length,1,'must not close early when Free-Roll was never armed');
+ }
+});
+
+
