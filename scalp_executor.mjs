@@ -516,7 +516,8 @@ export class ScalpExecutor{
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={open:Array.isArray(saved?.open)?saved.open:[],closed:Array.isArray(saved?.closed)?saved.closed:[],events:Array.isArray(saved?.events)?saved.events:[],
-   skipCounts:saved?.skipCounts||{},skips:Array.isArray(saved?.skips)?saved.skips:[],sent:Array.isArray(saved?.sent)?saved.sent:[],dailyStop:saved?.dailyStop||null};
+   skipCounts:saved?.skipCounts||{},skips:Array.isArray(saved?.skips)?saved.skips:[],sent:Array.isArray(saved?.sent)?saved.sent:[],dailyStop:saved?.dailyStop||null,
+   autoRearm:saved?.autoRearm===true,userPaused:saved?.userPaused===true};
   // An entry cut off by a restart: its outcome is read from the venue by the next check.
   for(const p of this.store.open)if(p.status==='SUBMITTING')p.status='UNKNOWN';
   // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the daily loss, open risk and margin shared with the
@@ -585,6 +586,7 @@ export class ScalpExecutor{
   if(this.cooldownUntil>this.now())return 'RATE_LIMIT_COOLDOWN';
   return null;
  }
+ isDailyStopped(){return this.#todayStopped()}
  arm(){
   const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
   if(!activeMode)throw err(this.config.refused||'SCALP_MODE_OFF');
@@ -593,9 +595,14 @@ export class ScalpExecutor{
   const g=this.#gate();if(!g.ok)throw err(g.reason==='KILL_SWITCH'?'KILL_SWITCH_ON':g.reason||'GATE_CLOSED');
   // Shared budget (one testnet switch): the switch may stay on through a day stop; entries wait for the next KST day.
   if(this.#todayStopped()&&!this.budget)throw err('DAILY_LOSS_LIMIT');
-  this.armed=true;this.#event('ARMED');this.#save();return this.status();
+  this.armed=true;this.store.autoRearm=true;this.store.userPaused=false;this.#event('ARMED');this.#save();return this.status();
  }
- disarm(reason='MANUAL'){const was=this.armed;this.entryRevision++;this.armed=false;this.reversalWatch.clear();this.pumpWatch.clear();if(was)this.#event('DISARMED',{reason});this.#save();return this.status()}
+ disarm(reason='MANUAL'){
+  const was=this.armed;this.entryRevision++;this.armed=false;this.reversalWatch.clear();this.pumpWatch.clear();
+  if(reason==='MANUAL'){this.store.userPaused=true;this.store.autoRearm=false}
+  else if(reason==='NO_PROTECTIVE_STOP'){this.store.autoRearm=false}
+  if(was)this.#event('DISARMED',{reason});this.#save();return this.status();
+ }
  /** Symbols (and venue symbols) this ledger holds or is entering: other strategies on the account skip them. */
  heldSymbols(){const s=new Set();for(const sym of this.reserved){s.add(sym);if(sym.endsWith('USDT')&&!sym.includes('-'))s.add(sym.replace(/USDT$/,'-USDT'))}for(const p of this.store.open){s.add(p.symbol);s.add(p.venueSymbol)}return s}
  // Reading candles (the scan) does not block a restart: only orders being placed (reserved) or a position

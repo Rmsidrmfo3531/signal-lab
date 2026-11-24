@@ -45,6 +45,17 @@ export function copyRearmOnBoot({marker,now=Date.now(),copyMode,copyEnabled,kill
  const fresh=Number.isFinite(Number(marker?.at))&&now-Number(marker.at)<15*60000&&!killSwitch;
  return Boolean(fresh&&marker?.copyArmed===true&&marker?.copyMode===copyMode&&copyRearmable({copyEnabled,userPaused,killed,breakerTripped}));
 }
+/** Opt-in live scalp auto-rearm guard (user request: stay ON across frequent updates & restarts once enabled,
+ * while strictly respecting initial OFF standby, manual disarm, NO_PROTECTIVE_STOP, daily stop, breaker, and kill switch). */
+export function scalpLiveRearmable({liveEnabled=false,autoRearm=false,userPaused=false,dailyStopped=false,breakerTripped=false,killSwitch=false}={}){
+ return liveEnabled===true&&autoRearm===true&&!userPaused&&!dailyStopped&&!breakerTripped&&!killSwitch;
+}
+export function scalpLiveRearmOnBoot({marker=null,now=Date.now(),liveEnabled=false,autoRearm=false,userPaused=false,dailyStopped=false,breakerTripped=false,killSwitch=false}={}){
+ if(!scalpLiveRearmable({liveEnabled,autoRearm,userPaused,dailyStopped,breakerTripped,killSwitch}))return false;
+ if(marker&&marker.scalpLiveArmed===false)return false;
+ if(marker&&marker.scalpLiveArmed===true&&!(Number.isFinite(Number(marker.at))&&now-Number(marker.at)<15*60000))return false;
+ return true;
+}
 
 export class RealAccountGuard{
  constructor({directory=null,fileName='real-safety.json',now=()=>Date.now(),

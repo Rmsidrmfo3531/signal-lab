@@ -246,3 +246,43 @@ test('origin:scalp tagging, cachedRows(), #real 단타 badge & pilot panel, and 
  await tm.evaluate([tagged[1]]); // SOLUSDT origin:'scalp' at +50% ROE
  assert.equal(actions.length,0,'RealTrailingManager never acts on origin:scalp');
 });
+
+test('LIVE scalp auto-rearm persists ON across updates & restarts while respecting initial OFF, manual disarm, and safety stops',async()=>{
+ const {scalpLiveRearmable,scalpLiveRearmOnBoot}=await import('../real_safety.mjs');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'scalp-live-rearm-'));
+ const v=liveVenue();
+ const config=scalpLiveExecConfig({SCALP_LIVE_MODE:'LIVE',SCALP_LIVE_CONFIRM:SCALP_LIVE_CONFIRM_TOKEN});
+
+ // 1) Fresh install before ever clicking arm: autoRearm is false -> stays OFF on boot.
+ const fresh=new ScalpExecutor({config,client:v.client,fileName:'scalp-store-live.json',directory:dir,log:()=>{}});
+ assert.equal(fresh.store.autoRearm,false);
+ assert.equal(scalpLiveRearmOnBoot({liveEnabled:true,autoRearm:fresh.store.autoRearm,userPaused:fresh.store.userPaused}),false);
+
+ // 2) After arm(), autoRearm persists to disk -> next instance re-arms automatically on both update and normal restart.
+ fresh.arm();
+ assert.equal(fresh.store.autoRearm,true);
+ assert.equal(fresh.store.userPaused,false);
+ const reloaded=new ScalpExecutor({config,client:v.client,fileName:'scalp-store-live.json',directory:dir,log:()=>{}});
+ assert.equal(reloaded.store.autoRearm,true);
+ assert.equal(reloaded.store.userPaused,false);
+ assert.equal(scalpLiveRearmOnBoot({liveEnabled:true,autoRearm:reloaded.store.autoRearm,userPaused:reloaded.store.userPaused}),true,'normal restart restores ON');
+ assert.equal(scalpLiveRearmOnBoot({marker:{scalpLiveArmed:true,at:1000},now:2000,liveEnabled:true,autoRearm:reloaded.store.autoRearm,userPaused:reloaded.store.userPaused}),true,'update restart restores ON');
+ assert.equal(scalpLiveRearmOnBoot({marker:{scalpLiveArmed:true,at:1000},now:1000+16*60000,liveEnabled:true,autoRearm:reloaded.store.autoRearm,userPaused:reloaded.store.userPaused}),false,'stale update marker refused');
+ assert.equal(scalpLiveRearmable({liveEnabled:true,autoRearm:true,breakerTripped:true}),false,'circuit breaker blocks rearm');
+ assert.equal(scalpLiveRearmable({liveEnabled:true,autoRearm:true,dailyStopped:true}),false,'daily loss stop blocks rearm');
+ assert.equal(scalpLiveRearmable({liveEnabled:true,autoRearm:true,killSwitch:true}),false,'kill switch blocks rearm');
+
+ // 3) Manual disarm turns autoRearm off & sets userPaused -> stays OFF across updates and restarts.
+ reloaded.arm();
+ reloaded.disarm('MANUAL');
+ assert.equal(reloaded.store.autoRearm,false);
+ assert.equal(reloaded.store.userPaused,true);
+ const afterPause=new ScalpExecutor({config,client:v.client,fileName:'scalp-store-live.json',directory:dir,log:()=>{}});
+ assert.equal(scalpLiveRearmOnBoot({liveEnabled:true,autoRearm:afterPause.store.autoRearm,userPaused:afterPause.store.userPaused}),false,'manual pause stays OFF');
+
+ // 4) NO_PROTECTIVE_STOP clears autoRearm so broken exchange stops never re-arm in a loop.
+ afterPause.arm();
+ afterPause.disarm('NO_PROTECTIVE_STOP');
+ assert.equal(afterPause.store.autoRearm,false);
+ assert.equal(scalpLiveRearmOnBoot({liveEnabled:true,autoRearm:afterPause.store.autoRearm,userPaused:afterPause.store.userPaused}),false);
+});

@@ -64,7 +64,7 @@ import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
 import {evaluateReadiness,ReadinessNotifier,readyReplyText} from './ready_check.mjs';
 import {RealTrailingManager,REAL_TRAILING_DEFAULTS,feeNetBreakevenPrice} from './real_trailing.mjs';
-import {RealAccountGuard,REAL_SAFETY_COPY_PRESET,copyRearmable as copyRearmableNow,copyRearmOnBoot} from './real_safety.mjs';
+import {RealAccountGuard,REAL_SAFETY_COPY_PRESET,copyRearmable as copyRearmableNow,copyRearmOnBoot,scalpLiveRearmable as scalpLiveRearmableNow,scalpLiveRearmOnBoot} from './real_safety.mjs';
 import {fetchOrderflow,fetchOrderflowWithFirechart,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
 import {configureFirechartPersistence} from './firechart.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
@@ -558,8 +558,8 @@ if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',withTestnetResetRisk(scalpE
 if(hasTestnetBingx)setInterval(()=>{void testnetAccountFunds().catch(()=>{})},TESTNET_BALANCE_REFRESH_MS).unref?.();
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
 // Opt-in real-money reversal scalp (default OFF; requires SCALP_LIVE_MODE=LIVE + SCALP_LIVE_CONFIRM=REAL_MONEY_SCALP).
-// Runs in a completely separate executor/ledger from testnet scalpExec, never auto-rearms on restart/update,
-// and stays 100% inactive until explicitly enabled and armed from #real.
+// Runs in a completely separate executor/ledger from testnet scalpExec; starts OFF until first armed from #real,
+// then automatically restores ON across updates & restarts unless manually disarmed or blocked by a safety stop.
 if(SCALP_LIVE_EXEC.refused)console.warn('[SCALP:LIVE] SCALP_LIVE_MODE refused:',SCALP_LIVE_EXEC.refused,'— live scalp stays OFF');
 if(SCALP_LIVE_EXEC.mode==='LIVE'&&realBingxClient?.mode==='LIVE'){
  scalpLiveExec=new ScalpExecutor({config:SCALP_LIVE_EXEC,client:realBingxClient,
@@ -765,6 +765,9 @@ async function sendRealTradeTelegram(e){
   }
   if(fresh&&m.scalpArmed===true){try{scalpExec.arm();restored.push('테스트넷 단타 ●');console.log('[SCALP] 업데이트 후 자동 활성화 (테스트넷)')}catch(e){console.warn('[SCALP] 복원 안 함:',e.message)}}
  }catch{}
+ if(scalpLiveExec&&SCALP_LIVE_EXEC.mode==='LIVE'&&scalpLiveRearmOnBoot({marker:updateMarker,now:Date.now(),liveEnabled:true,autoRearm:scalpLiveExec.store.autoRearm,userPaused:scalpLiveExec.store.userPaused,dailyStopped:scalpLiveExec.isDailyStopped(),breakerTripped:Boolean(realSafety?.isTripped()),killSwitch:live.store.killSwitch})){
+  try{scalpLiveExec.arm();restored.push('실계좌 단타 ●');console.log(`[SCALP:LIVE] ${updateMarker?'업데이트':'재시작'} 후 자동 활성화 (실계좌)`)}catch(e){console.warn('[SCALP:LIVE] 복원 안 함:',e.message)}
+ }
  try{
   const postUpdateMsg=checkPostUpdateNotice({dir:storage.dir,appVersion,marker:updateMarker,restored});
   if(postUpdateMsg)setTimeout(()=>{updateNotice(postUpdateMsg)},3000).unref?.();
@@ -1145,13 +1148,14 @@ async function runGitUpdate(source='button'){
   // (audit 2026-11-23: COPY.enabled alone re-armed a breaker-stopped copy at the next 2-minute auto update).
   const copyRearmable=()=>copyRearmableNow({copyEnabled:COPY.enabled,userPaused:copyTrader.store.userPaused,killed:copyTrader.store.killed,
    breakerTripped:COPY.mode==='LIVE'&&Boolean(realSafety?.isTripped())});
-  const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY,copyArmed:copyRearmable(),scalpArmed:!!scalpExec};
+  const scalpLiveRearmable=()=>Boolean(scalpLiveExec&&scalpLiveRearmableNow({liveEnabled:SCALP_LIVE_EXEC.mode==='LIVE',autoRearm:scalpLiveExec.store.autoRearm,userPaused:scalpLiveExec.store.userPaused,dailyStopped:scalpLiveExec.isDailyStopped(),breakerTripped:Boolean(realSafety?.isTripped()),killSwitch:live.store.killSwitch}));
+  const writeMarker=()=>{const st={signalArmed:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY,copyArmed:copyRearmable(),scalpArmed:!!scalpExec,scalpLiveArmed:scalpLiveRearmable()};
    try{fs.writeFileSync(path.join(storage.dir,'rearm-after-update.json'),JSON.stringify({mode:LIVE.mode,...st,copyMode:COPY.mode,at:Date.now(),from:result.from,to:result.to,fromDisplayVersion:result.fromDisplayVersion||appVersion.displayVersion,toDisplayVersion:result.toDisplayVersion||null,changes:(result.changes||[]).slice(0,8).map(c=>c.subject),source}))}catch{}};
   console.log('[UPDATE]',source,result.from,'→',result.to,'waiting for idle, then restarting');step(88,'진행 중인 주문 작업이 끝나기를 기다리는 중');
   (async()=>{for(let i=0;i<1200&&!allIdle();i++)await new Promise(r=>setTimeout(r,500));live.paused=true;
    // Paused only once idle; if never idle in 10 minutes the restart waits for the next try.
    if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;updateJob={...updateJob,active:false,state:'postponed',label:'주문 완료 후 자동 재시작 예정',at:Date.now()};emitUpdateProgress();pendingRestart={writeMarker,from:result.from,to:result.to,toDisplayVersion:result.toDisplayVersion||null,source};if(wasArmed)live.arm();try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
-  return {status:200,body:{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:copyRearmable(),rearmScalp:!!scalpExec}};
+  return {status:200,body:{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:copyRearmable(),rearmScalp:!!scalpExec,rearmScalpLive:scalpLiveRearmable()}};
  }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,source,at:Date.now()};emitUpdateProgress();live.updating=false;if(wasArmed)live.arm();if(source==='auto')updateNotice(`⚠️ 자동 업데이트 실패: ${e.message}`);return {status:502,body:{error:e.message}}}
 }
 function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text,disable_web_page_preview:true}).catch(()=>{})}catch{}}
@@ -1162,7 +1166,7 @@ const AUTO_UPDATE=!/^(off|0|false|no)$/i.test(String(process.env.AUTO_UPDATE||'o
 const AUTO_UPDATE_EVERY_MS=Math.max(1,Math.min(60,Number(process.env.AUTO_UPDATE_EVERY_MIN)||2))*60000;
 let autoUpdateFailedAt=null,pendingRestart=null;
 if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
- try{if(updateJob.active||!allIdle()||scalpExec?.scanning)return;
+ try{if(updateJob.active||!allIdle()||scalpExec?.scanning||scalpLiveExec?.scanning)return;
   // A restart postponed earlier (never idle for 10 minutes): the new code is on disk; restart now when idle.
   if(pendingRestart){const was=live.armed;live.updating=true;live.disarm();live.paused=true;if(allIdle()){console.log('[UPDATE] postponed restart',pendingRestart.from,'→',pendingRestart.to);updateJob={active:true,pct:92,label:'서버 재시작',source:pendingRestart.source||'auto',fromDisplayVersion:appVersion.displayVersion,toDisplayVersion:pendingRestart.toDisplayVersion||null,at:Date.now()};emitUpdateProgress();pendingRestart.writeMarker();process.kill(process.pid,'SIGTERM');return}live.paused=false;live.updating=false;if(was)live.arm();return}
   const c=await gitCheck(__dirname);if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;

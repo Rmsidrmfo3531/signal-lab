@@ -621,7 +621,7 @@ export function copyHTML(c){
  const liveScalpPanel=ls?`<details class="copy-controls-fold"${liveScalpOpen?' open':''}><summary data-live-scalp-toggle>되돌림 단타 · 실계좌 파일럿 <small>${ls.armed?`ON · 보유 ${(ls.positions||[]).length}/${esc(lsSet.maxOpen||3)}개`:'OFF (안전 대기)'}</small></summary>
   <div class="copy-controls-form">
    <p class="copy-stamp">자본 상한 <b>$${esc(lsSet.balanceCapUSD??500)}</b> · 거래소 비상스탑 <b>−${esc(lsSet.hardStopRoePct??85)}% ROE</b> · 여유 마진 <b>${esc(lsSet.minFreeAccountMarginPct??40)}%</b> 보호</p>
-   <p class="copy-stamp">최대 <b>${esc(lsSet.maxOpen??3)}종목</b> (같은 방향 ${esc(lsSet.maxSameSide??2)}종목) · 스프레드 ≤ <b>${esc(lsSet.maxSpreadPct??0.25)}%</b> · 일일 한도 <b>−${esc(lsSet.dailyLossPct??3)}%</b> · 재시작 시 자동 꺼짐</p>
+   <p class="copy-stamp">최대 <b>${esc(lsSet.maxOpen??3)}종목</b> (같은 방향 ${esc(lsSet.maxSameSide??2)}종목) · 스프레드 ≤ <b>${esc(lsSet.maxSpreadPct??0.25)}%</b> · 일일 한도 <b>−${esc(lsSet.dailyLossPct??3)}%</b> · 업데이트·재시작 시 자동 복원</p>
    ${ls.blocked&&ls.blocked!=='NOT_ARMED'?`<p class="copy-stamp">상태: <b>${esc(ls.blockedKo||ls.blocked)}</b></p>`:''}
    <p class="copy-stamp">오늘 실현 <b class="${cls(ls.stats?.todayNetUSD)}">${money(ls.stats?.todayNetUSD)}</b> · 누적 ${esc(ls.stats?.trades||0)}건 (${ls.stats?.winRatePct!=null?`${esc(ls.stats.winRatePct)}%`:'—'})</p>
    <div class="copy-controls-actions">
@@ -1095,7 +1095,7 @@ function bindCopyButtons(el){
   if(lsArm){
    const cap=lastCopy?.liveScalp?.settings?.balanceCapUSD??500;
    const hs=lastCopy?.liveScalp?.settings?.hardStopRoePct??85;
-   if(!window.confirm(`실계좌 되돌림 단타를 켤까요?\n· 실제 BingX USDT 잔고로 주문이 나갑니다 (자본 상한 $${cap})\n· 거래소 비상스탑 −${hs}% ROE 자동 설정 · 서버 재시작 시 자동 꺼짐\n· 카피/수동 보유 종목은 자동으로 건너뜁니다`))return;
+   if(!window.confirm(`실계좌 되돌림 단타를 켤까요?\n· 실제 BingX USDT 잔고로 주문이 나갑니다 (자본 상한 $${cap})\n· 거래소 비상스탑 −${hs}% ROE 자동 설정 · 업데이트·재시작 시 ON 자동 복원\n· 카피/수동 보유 종목은 자동으로 건너뜁니다`))return;
    return call(lsArm,'/api/scalp/live/arm',{confirm:'SCALP_LIVE_ARM'},'켜는 중…','[data-live-scalp-msg]');
   }
   const lsDisarm=e.target.closest('[data-live-scalp-disarm]');
