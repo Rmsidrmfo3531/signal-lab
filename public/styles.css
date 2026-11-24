@@ -903,3 +903,31 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 
 
 
+/* 사유 설명 (user 2026-11-24): Korean reason labels with a hover title / tap bubble, and the collapsed glossary. */
+.rz{border-bottom:1px dotted var(--dim);cursor:help;color:var(--text)}.rz.rz-sub{color:var(--muted)}.rz:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.rz-badge{display:inline-block;font-size:10.5px;padding:1px 6px;border-radius:6px;border:1px solid var(--line);color:var(--muted);cursor:help}
+.rz-in{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--accent-soft,rgba(110,168,255,.12));color:var(--accent)}
+.rz-list li.rz-row{display:block;line-height:1.7;color:var(--muted)}.rz-list li.rz-row>b,.rz-list li.rz-row>.muted{margin-right:5px}
+/* Colours (user 2026-11-24 12:01 "중요도에 따라 점수의 색도 달라지면 좋을듯하다"): numbers and words stay, colour only adds.
+   The app is dark; :root[data-theme="light"] below keeps the same scale readable on a light page. */
+:root{--rz-entry:var(--cyan);--rz-score:var(--warn);--rz-limit:var(--down);--rz-pump:#c9a2ff;--rz-venue:var(--muted);--rz-position:var(--accent);
+ --rz-pass:var(--up);--rz-pass-soft:var(--up-soft);--rz-mid:var(--cyan);--rz-b:#b9dea0;--rz-warn:var(--warn);--rz-warn-soft:var(--warn-soft);--rz-fail:var(--down);--rz-fail-soft:var(--down-soft);--rz-zero-lo:var(--muted)}
+:root[data-theme="light"]{--rz-entry:#0b6e69;--rz-score:#8a5a00;--rz-limit:#b3261e;--rz-pump:#6b3fb5;--rz-venue:#4a5568;--rz-position:#1f5fbf;
+ --rz-pass:#13774f;--rz-pass-soft:rgba(19,119,79,.12);--rz-mid:#0b6e69;--rz-b:#3f6d1f;--rz-warn:#8a5a00;--rz-warn-soft:rgba(138,90,0,.12);--rz-fail:#b3261e;--rz-fail-soft:rgba(179,38,30,.1);--rz-zero-lo:#4a5568}
+.rz.rz-c-entry,dt.rz-c-entry{color:var(--rz-entry)}.rz.rz-c-score,dt.rz-c-score{color:var(--rz-score)}.rz.rz-c-limit,dt.rz-c-limit{color:var(--rz-limit)}
+.rz.rz-c-pump,dt.rz-c-pump{color:var(--rz-pump)}.rz.rz-c-venue,dt.rz-c-venue{color:var(--rz-venue)}.rz.rz-c-position,dt.rz-c-position{color:var(--rz-position)}
+.rz.rz-sub{opacity:.92}.rz[class*="rz-c-"]{border-bottom-color:currentColor}
+.rz-score{font-size:11.5px}.rz-score .rz{border-bottom-color:currentColor}
+.rz-i{padding:0 3px;border-radius:4px;white-space:nowrap}
+.rz-i-full{color:var(--rz-pass)}.rz-i-full.rz-w-hi{font-weight:700;background:var(--rz-pass-soft)}.rz-i-full.rz-w-mid{font-weight:600}
+.rz-i-part{color:var(--rz-mid)}.rz-i-part.rz-w-hi{font-weight:600}
+.rz-i-zero{color:var(--rz-fail)}.rz-i-zero.rz-w-hi{font-weight:700;background:var(--rz-fail-soft);outline:1px solid var(--rz-fail)}.rz-i-zero.rz-w-mid{font-weight:600}
+.rz-i-zero.rz-w-lo{color:var(--rz-zero-lo);font-weight:400}
+.rz-total{display:inline-block;padding:0 7px;border-radius:6px;border:1px solid currentColor;white-space:nowrap}.rz-total b{color:inherit;font-size:12.5px}
+.rz-total.rz-pass{border-style:solid}.rz-total.rz-fail{border:2px dashed currentColor;font-weight:600}
+.rz-g-S{color:var(--rz-pass);background:var(--rz-pass-soft);font-weight:700}.rz-g-Ap{color:var(--rz-pass)}.rz-g-A{color:var(--rz-mid)}.rz-g-B{color:var(--rz-b)}
+.rz-g-C{color:var(--rz-warn);background:var(--rz-warn-soft)}.rz-g-D{color:var(--rz-fail);background:var(--rz-fail-soft)}
+.rz-tip{position:fixed;z-index:200;background:var(--panel-raise,#152031);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.55;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.rz-cat{border-top:1px solid var(--line-soft,var(--line))}.rz-cat summary{cursor:pointer;padding:7px 0;font-size:12px;color:var(--text)}.rz-cat summary small{color:var(--dim)}.rz-cat[open]{padding-bottom:8px}
+.rz-gloss{display:grid;grid-template-columns:minmax(110px,max-content) 1fr;gap:3px 12px;margin:0;font-size:11.5px}.rz-gloss dt{color:var(--text);font-weight:600}.rz-gloss dd{margin:0;color:var(--muted);line-height:1.5}
+@media (max-width:640px){.rz-gloss{grid-template-columns:1fr;gap:0}.rz-gloss dd{margin-bottom:6px}}

@@ -506,8 +506,8 @@ test('extreme funding + surging 30m OI squeeze guard blocks counter-squeeze entr
  assert.equal(evaluateScalpSqueezeGuard({ok:true,funding:{ratePct:0.15},oi:{change30mPct:2.5}},'SHORT').blocked,false,'with-squeeze SHORT is allowed');
  assert.equal(evaluateScalpSqueezeGuard({ok:true,funding:{ratePct:-0.20},oi:{change30mPct:-1.5}},'SHORT').blocked,false,'OI flushing means squeeze is exhausted');
  assert.equal(evaluateScalpSqueezeGuard(null,'SHORT').blocked,false,'fail-open when orderflow snapshot is unavailable');
- assert.match(scalpReasonKo('SHORT_SQUEEZE_GUARD'),/숏 스퀴즈/);
- assert.match(scalpReasonKo('LONG_SQUEEZE_GUARD'),/롱 스퀴즈/);
+ assert.match(scalpReasonKo('SHORT_SQUEEZE_GUARD'),/스퀴즈/);
+ assert.equal(scalpReasonKo('LONG_SQUEEZE_GUARD'),scalpReasonKo('SHORT_SQUEEZE_GUARD'),'one entry for both sides (the row shows the side)');
 
  // 2) ScalpExecutor integration: blocks LONG on extreme positive funding + surging OI, allows when OI is normal
  const v=mockVenue();

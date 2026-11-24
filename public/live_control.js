@@ -3,6 +3,7 @@
 import {priceFmt} from './price_format.js';
 import {displaySymbol} from './symbol_display.js';
 import {createRealTradeController} from './real_trade.js';
+import {reasonHTML,skipRowHTML,enteredRowHTML,reasonGlossaryHTML,bindReasonTips} from './scalp_reasons.js';
 
 const LABEL={BINGX:'BingX',GATEIO:'Gate.io'};
 const MODE={OFF:{badge:'OFF',text:'주문 없음',title:'실매매 (꺼짐)',cls:'off'},TESTNET:{badge:'TESTNET',text:'모의 자금',title:'실매매 (테스트넷)',cls:'testnet'},
@@ -149,9 +150,6 @@ function recordsRows(records){
 
 const SERIOUS_KO={ENTRY_OUTCOME_UNKNOWN:'진입 결과 불명',STATUS_UNKNOWN:'확인 필요 상태',STOP_FAILED:'손절 주문 실패',TARGET_FAILED:'목표 주문 실패',CANCEL_FAILED:'주문 취소 실패',EMERGENCY_CLOSED:'긴급 청산',LATE_ADD_CLOSE_FAILED:'청산 뒤 추매 정리 실패',RESTART_WHILE_SUBMITTING:'주문 중 서버 재시작'};
 /** Real-money readiness checklist (measured on testnet trades under the current rules). */
-// Skip details in words (2026-11-16: 'up' after the 4H reason was unclear).
-const TREND_KO={up:'4시간 상승 추세',down:'4시간 하락 추세',flat:'4시간 횡보',LONG:'롱',SHORT:'숏'};
-function skipDetail(x){if(!x.detail)return '';const d=String(x.detail);return ` <small>(${esc(TREND_KO[d]||d)})</small>`}
 /** Copy-trading ledger (copy_executor.mjs): open copies, recent closes, recent skips/problems. */
 const COPY_WHY={BINGX_HEDGE_MODE:'BingX 양방향(헤지) 모드라 건너뜀 — 이전 버전 기록(지금은 헤지 모드도 지원)',BINGX_POSITION_MODE_UNKNOWN:'BingX 포지션 모드(단방향/헤지) 확인 실패',VENUE_POSITION_EXISTS:'거래소에 같은 코인 포지션이 이미 있음(수동 매매 등) — 합쳐지지 않게 건너뜀',MARGIN_SHORT:'여유 증거금 부족',SYMBOL_BUSY:'같은 종목 보유 중',SYMBOL_HELD_BY_SIGNAL_STRATEGY:'신호 전략이 같은 종목 보유 중',OPPOSITE_COPY_OPEN:'반대 방향 보유 중',
  COPY_AUDIT_UNAVAILABLE:'최신 거래소 포지션 조회가 없어 신규 주문 보류',COPY_AUDIT_BLOCKED:'거래소 대조 확인 필요 · 진입·추매 보류',COPY_ORDERS_UNREADABLE:'거래소 미체결 주문 조회 실패',COPY_OPEN_ORDERS_EXIST:'거래소에 같은 종목의 미체결 주문이 있음',
@@ -625,6 +623,15 @@ export function copyHTML(c){
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
 
+// Entries and skips of the reversal scalp in one list, newest first, with the Korean reason labels of
+// public/scalp_reasons.js (hover / tap = the explanation; user 2026-11-24 "진입 이유에 대한 설명을 어디에다가 정리해줬으면 해").
+function scalpReasonListHTML(s,S,when,scoreDist=''){
+ const counts=(s.skipCounts||[]).slice(0,8),skips=(s.skips||[]).slice(0,10);
+ const entered=(s.events||[]).filter(e=>e?.type==='OPENED').map(e=>({...e,_in:true}));
+ const recent=[...entered,...skips].sort((a,b)=>(Number(b.at)||0)-(Number(a.at)||0)).slice(0,12);
+ if(!counts.length&&!entered.length)return scoreDist?`${scoreDist}<p class="empty-small">건너뛴 신호가 없습니다.</p>`:'';
+ return `<h5 class="copy-sub">진입·건너뜀 이유 <small>이름을 누르면 설명</small></h5>${scoreDist}${counts.length?`<p class="copy-rules">${counts.map(c=>`${reasonHTML(c.reason,S)} ${esc(c.count)}회`).join(' · ')}</p>`:''}<ul class="copy-list rz-list">${recent.map(x=>x._in?enteredRowHTML(x,S,when):skipRowHTML(x,S,when)).join('')}</ul>`;
+}
 /** Testnet reversal scalps (scalp_executor.mjs) on their own: on/off, the switch, stats, open / closed tables, skip reasons.
  * Shown when the signal strategy is not on the testnet (LIVE mode, review M3); on the testnet one shared screen replaces it. */
 export function scalpHTML(s){
@@ -654,8 +661,7 @@ export function scalpHTML(s){
  const tgt=p=>(p.targets||[]).map((t,i)=>p.parts?.[i]>0?`<span class="${p.tpDone?.[i]?'paper-profit':''}">${px(t)}</span>`:null).filter(Boolean).join(' / ');
  const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">진입</th><th class="num">현재가</th><th class="num">손절</th><th>목표</th><th>보유</th><th class="num">위험</th><th class="num">미실현</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b> ${scalpBadge(p.kind)}${p.status!=='OPEN'?` <small class="paper-loss">${esc(p.status)}</small>`:''}</td><td>${side(p.direction||'LONG')}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.size||p.qty)}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td><td class="num">${px(p.stop)}${p.breakevenMoved?' <small>본전</small>':''}</td><td>${tgt(p)}</td><td class="muted">${held(p.openedAt||p.createdAt,Date.now())}</td><td class="num">${usdv(p.riskUSD)}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td></tr>`).join('')}</tbody></table>`;
  const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>진입</th><th>종료</th><th>보유</th><th>배율</th><th class="num">증거금</th><th>사유</th><th class="num">목표 도달</th><th class="num">R</th><th class="num">최대 이익/손실(R)</th><th class="num">손익</th></tr></thead><tbody>${closed.slice(0,20).map(x=>`<tr><td><b>${esc(x.symbol)}</b> ${scalpBadge(x.kind)}</td><td>${side(x.direction||'LONG')}</td><td class="muted">${when(x.openedAt||x.createdAt)}</td><td class="muted">${when(x.closedAt)}</td><td class="muted">${held(x.openedAt||x.createdAt,x.closedAt)}</td><td>${tnLeverage(x.leverage)}</td><td class="num">${tnScalpMargin(x.margin)}</td><td>${esc(x.closeReasonKo||x.closeReason)}</td><td class="num">${esc(x.tpHits??0)}개</td><td class="num ${cls(x.rMultiple)}">${rTxt(x.rMultiple)}</td><td class="num">${ex(x)}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b>${x.netSource==='EXCHANGE'?'':' <small>추정</small>'}</td></tr>`).join('')}</tbody></table>`;
- const counts=(s.skipCounts||[]).slice(0,8),skips=(s.skips||[]).slice(0,10);
- const skipBox=counts.length?`<h5 class="copy-sub">진입 안 한 이유</h5><p class="copy-rules">${counts.map(c=>`${esc(c.label)} ${esc(c.count)}회`).join(' · ')}</p><ul class="copy-list muted">${skips.map(x=>`<li><span class="muted">${when(x.at)}</span>${esc(x.symbol||'')}${x.direction?` <b class="${x.direction==='LONG'?'pos':'neg'}">${x.direction==='LONG'?'롱(급락 후 반등)':'숏(급등 후 되돌림)'}</b>`:''}${x.movePct!=null?` <small>${esc(Number(x.movePct).toFixed(1))}% 움직임</small>`:''} · ${esc(x.label||x.reason)}${skipDetail(x)}</li>`).join('')}</ul>`:'';
+ const skipBox=scalpReasonListHTML(s,S,when);
  const side_=`<div class="copy-side">${modeLine}${stats}${bySide}${rules}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">보유 중인 단타가 없습니다.${s.armed?' 5분봉 마감마다 급락 후 반등·급등 후 되돌림을 찾습니다.':''}</p>`)+
   (closed.length?`<h5 class="copy-sub">최근 종료 <small>최근 ${Math.min(20,closed.length)}건 · 전체 기록은 단타 기록 파일</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}`:'')+skipBox+'</div>';
@@ -911,14 +917,13 @@ export function scalpDetailsHTML(s){
  const detectorExtra=fin(S.rsiExtreme)&&fin(S.wickShare)?` · RSI ${esc(S.rsiExtreme)}/${esc(100-Number(S.rsiExtreme))} · 꼬리 ${esc(Math.round(Number(S.wickShare)*100))}%+`:'';
  const targetRule=noStop?'':` · 목표 ${(S.retracements||[]).map(r=>+(r*100).toFixed(1)+'%').join('/')} 되돌림 (40/35/25%)`;
  const rules=`<p class="copy-rules">${mode?`상태 ${mode} · `:''}거래 방향 ${sides.length?sides.map(d=>SK[d]).join('·'):'없음'} · 5분봉 급락(롱)·급등(숏) ${moveDesc} · 거래량 ${esc(S.climaxVolume)}배${detectorExtra} · 반전 캔들 확인 뒤 진입${scoreRule}${bounceRule}${ofRule}${sessRule}${cooldownRule}${targetRule} · ${exitRule} · ${S.trendMode==='on'?'4시간 추세 반대 제외(하락 중 롱·상승 중 숏)':S.trendMode==='off'?'4시간 추세 미사용':'4시간 추세 기록만(진입 막지 않음)'} · ${noStop?'진입 규모 계산 위험':'거래당 위험'} 잔고 ${esc(S.riskPct)}% · ${esc(S.leverage)}배 교차 · 하루 손실 ${esc(S.dailyLossPct)}%${S.sharedBudget?'(신호 전략과 공동)':''}에서 새 주문 정지 · 진입가와 ${esc(S.maxDriftPct)}%${S.driftMovePct>0?`(유리한 쪽은 급변 폭의 ${esc(S.driftMovePct)}%까지)`:''}${S.stopKeepPct>0?`(더 좋은 가격은 ${noStop?'기준':'손절'} 거리 ${esc(S.stopKeepPct)}% 이상 남으면 진입)`:''} 넘게 벌어지면 건너뜀${s.universe?.count?` · 대상 ${esc(s.universe.count)}종목`:''}${s.lastScan?.at?` · 마지막 검사 ${tnWhen(s.lastScan.at)} (${esc(s.lastScan.checked)}종목${s.lastScan.failed>0?`, 실패 ${esc(s.lastScan.failed)}`:''}${s.lastScan.error?`, 오류 ${esc(s.lastScan.error)}`:''})`:''}</p>`;
- const counts=(s.skipCounts||[]).slice(0,8),skips=(s.skips||[]).slice(0,10);
  const KK={MOVE_REVERSAL:unifiedMove?`급변 ${S.zoneMinMovePct??2.5}%+ (통합)`:'급변 5%',ZONE_REVERSAL:'매물대 반전'};
  const byKind=`<div class="copy-stats tn-kind-stats">${['MOVE_REVERSAL','ZONE_REVERSAL'].map(k=>{const b=st.byKind?.[k]||{};return stat(`${KK[k]}${k==='ZONE_REVERSAL'&&S.zoneSignals===false?' (꺼짐)':''}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${KK[k]} 손익`,tnMoney(b.trades?b.netUSD:null),`class="${tnCls(b.netUSD)}"`)}).join('')}</div>`;
  const GK={S:'S급 (80+)',A:'A급 (70~75)',B:'B급 (65)'};
  const byGrade=st.byGrade?`<div class="copy-stats tn-grade-stats">${['S','A','B'].map(g=>{const b=st.byGrade?.[g]||{};return stat(GK[g],`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'} · <i class="${tnCls(b.netUSD)}">${b.trades?tnMoney(b.netUSD):'—'}</i>`)}).join('')}</div>`:'';
  const ss=s.scoreSummary;
  const scoreDist=ss&&(ss.passed>0||ss.nearMiss>0||ss.low>0)?`<p class="copy-rules tn-score-dist">점수 분포: 통과(${esc(ss.minScore??65)}점+) <b>${esc(ss.passed)}건</b> · 턱걸이 차단(${esc(ss.nearFloor??60)}점대) <b>${esc(ss.nearMiss)}건</b> · 하위 차단(${esc((ss.nearFloor??60)-5)}점 이하) <b>${esc(ss.low)}건</b></p>`:'';
- const skipBox=counts.length?`<h5 class="copy-sub">진입 안 한 이유</h5>${scoreDist}<p class="copy-rules">${counts.map(c=>`${esc(c.label)} ${esc(c.count)}회`).join(' · ')}</p><ul class="copy-list muted">${skips.map(x=>`<li><span class="muted">${tnWhen(x.at)}</span>${esc(x.symbol||'')}${x.kind==='ZONE_REVERSAL'?' <small>매물대 후보</small>':''}${x.direction?` <b class="${x.direction==='LONG'?'pos':'neg'}">${x.direction==='LONG'?'롱(급락 후 반등)':'숏(급등 후 되돌림)'}</b>`:''}${x.movePct!=null?` <small>${esc(Number(x.movePct).toFixed(1))}% 움직임</small>`:''} · ${esc(x.label||x.reason)}${skipDetail(x)}</li>`).join('')}</ul>`:`${scoreDist}<p class="empty-small">건너뛴 신호가 없습니다.</p>`;
+ const skipBox=scalpReasonListHTML(s,S,tnWhen,scoreDist);
  const journal=`<p class="copy-rules">전체 기록: <a href="/api/scalp/journal?limit=200" target="_blank" rel="noopener">단타 거래 기록</a> · <a href="/api/scalp/journal?kind=signals&amp;limit=200" target="_blank" rel="noopener">감지된 신호</a> (JSON)</p>`;
  const experiment=S.repeatedScaleIn&&st.repeatedScaleIn?`<p class="copy-rules">반복 추매 실험 종료 ${esc(st.repeatedScaleIn.closed)}건 · 추매 ${esc(st.repeatedScaleIn.adds)}회</p>`:st.scaleIn&&S.scaleIn?`<p class="copy-rules">추매 실험 종료 ${esc(st.scaleIn.closed)}건 · 추매 체결 ${esc(st.scaleIn.filled)}건</p>`:'';
  const sp=scalpSimCustomized?lastScalpSimParams:{
@@ -1240,6 +1245,8 @@ function render(o){
  // Signal strategy not on the testnet (LIVE): the scalp keeps its own panel and buttons as before (review M3).
  if($('livePumpSection')){$('livePumpSection').hidden=!(tn&&o.pumpAlerts);if(tn&&o.pumpAlerts&&$('livePump'))$('livePump').innerHTML=pumpAlertsHTML(o.pumpAlerts)}
  if($('liveScalpSection')){$('liveScalpSection').hidden=!(tn&&o.scalp);if(tn&&o.scalp&&$('liveScalp')&&!$('liveScalp').contains(document.activeElement))$('liveScalp').innerHTML=scalpDetailsHTML(o.scalp)}
+ // 사유 설명 보기 (user 2026-11-24): a static fold, rewritten only when the thresholds change so it stays open.
+ if($('liveReasonSection')){$('liveReasonSection').hidden=!(tn&&o.scalp);const g=tn&&o.scalp?reasonGlossaryHTML(o.scalp.settings):'';if(g&&$('liveReasons')&&$('liveReasons').dataset.html!==g){$('liveReasons').innerHTML=g;$('liveReasons').dataset.html=g}bindReasonTips(document)}
  bindScalpButtons($('liveScalpOwn'));
  if($('liveScalpPanel')){$('liveScalpPanel').hidden=Boolean(tn)||!o.scalp;if(!tn&&o.scalp&&$('liveScalpOwn')&&!scalpActionBusy)$('liveScalpOwn').innerHTML=scalpHTML(o.scalp)}
  const closedBox=$('liveClosed');
