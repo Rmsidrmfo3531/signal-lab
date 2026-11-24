@@ -1667,6 +1667,8 @@ function pumpMake({direction='LONG',config={},btc=null,contracts=null,clock={t:T
  const base=ex.candles;
  // BTC: flat unless a shock is given (the scan's BTC shock guard reads its last closed 5m candles).
  ex.candles=async(sym,iv,lim)=>sym==='BTCUSDT'&&iv==='5m'?(btc??[[ (BUCKET-1)*I,'60000','60010','59990','60000','100',BUCKET*I-1,'0']]):base(sym,iv,lim);
+ // This candle's 5m scan has run (an alert is evaluated only after it; see 'not before this candle's scan').
+ ex.lastScanBucket=Math.floor(clock.t/I);
  return {v,ex,clock};
 }
 const ALERT_DOWN={symbol:'SOLUSDT',dir:'DOWN',pct:11.6,low:96,high:100,price:96.5,ticks:492,key:'777:2'};
@@ -1800,4 +1802,18 @@ test('pump alert: the window runs from the alert time — a late relay keeps wha
  // A server clock a little behind Telegram's: the window starts at the delivery.
  {const {ex}=pumpMake({direction:'SHORT'});ex.arm();await ex.pumpAlert({...ALERT_DOWN,at:T0+3000});
   assert.equal(ex.pumpWatch.get('SOLUSDT').until,T0+15*60000)}
+});
+
+test('pump alert: not before this candle\'s scan — an alert right after the close waits for the scan, then is evaluated (review)',async()=>{
+ const clock={t:BUCKET*I+1000};
+ const {v,ex}=pumpMake({clock});ex.lastScanBucket=BUCKET-1;ex.arm();
+ const reads=[],base=ex.candles;ex.candles=async(s,iv,l)=>{reads.push([s,iv]);return base(s,iv,l)};
+ const r=await ex.pumpAlert(ALERT_DOWN);
+ assert.deepEqual([r.entered,r.queued,r.reason],[false,true,'QUEUED_AFTER_SCAN']);
+ assert.equal(reads.length,0,'no candle read 1 s after the close (the scan waits 3 s for it to settle)');
+ await ex.tick(clock.t);assert.equal(reads.length,0);assert.equal(placed(v,'MARKET').length,0);
+ clock.t=T0;await ex.tick(T0); // the scan of this candle, then the alert
+ assert.equal(ex.lastScanBucket,BUCKET);
+ assert.equal(reads.filter(([s,iv])=>s==='SOLUSDT'&&iv==='5m').length,2,'read by the scan, then by the alert');
+ assert.equal(placed(v,'MARKET').length,1);assert.equal(ex.store.open[0].trigger,'PUMP_ALERT');assert.equal(ex.pumpWatch.size,0);
 });

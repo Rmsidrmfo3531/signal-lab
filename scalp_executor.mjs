@@ -695,7 +695,9 @@ export class ScalpExecutor{
   const w=this.pumpWatch.get(symbol);if(!w)return null;
   const now=this.now(),bucket=Math.floor(now/I5);
   if(now>w.until){this.pumpWatch.delete(symbol);return {entered:false,reason:'PUMP_WATCH_EXPIRED'}}
-  if(w.lastBucket===bucket||this.scanning)return null;
+  // Not before this candle's scan (review 2026-11-24): the scan waits scanDelayMs for the just-closed candle to settle
+  // and keeps its turn; an alert that comes first is evaluated by the tick right after the scan (#pumpTick).
+  if(w.lastBucket===bucket||this.scanning||this.lastScanBucket!==bucket)return null;
   // The scan's lock: #consider and the journal context (this.cur) are shared with the 5m scan.
   this.scanning=true;w.lastBucket=bucket;w.tries++;
   const revision=this.entryRevision,st={at:now,bucket,checked:0};
