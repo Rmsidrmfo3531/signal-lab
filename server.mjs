@@ -62,6 +62,8 @@ import {createVenuePositionsReader,venueRows,normalizeVenuePosition} from './ven
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
+import {RealMarginAlert,marginFieldsOfBingxRow} from './real_margin_alert.mjs';
+import {CopyListenerHealth,listenerHeartbeatEndpoint} from './copy_listener_health.mjs';
 import {evaluateReadiness,ReadinessNotifier,readyReplyText} from './ready_check.mjs';
 import {RealTrailingManager,REAL_TRAILING_DEFAULTS,feeNetBreakevenPrice} from './real_trailing.mjs';
 import {RealAccountGuard,REAL_SAFETY_COPY_PRESET,copyRearmable as copyRearmableNow,copyRearmOnBoot,scalpLiveRearmable as scalpLiveRearmableNow,scalpLiveRearmOnBoot} from './real_safety.mjs';
@@ -344,6 +346,20 @@ const venuePositionsReader=realBingxClient?.mode==='LIVE'
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
 let accountAlerts=null,realTrailing=null,realSafety=null;
+// Real-account margin usage alert (real_margin_alert.mjs, user decision 2026-11-24 17:34 "1번은 교차로 진행할건데"): the
+// last BingX balance read of the real copy client (equity, availableMargin, usedMargin, unrealizedProfit). Alert only.
+// Copy listener liveness (copy_listener_health.mjs, same decision "2번은 그대로 진행"): built below when the copy is on.
+let realMarginAlert=null,copyListenerHealth=null;
+const realFunds={fields:null,at:0,pending:null};
+function noteRealFunds(row){const f=marginFieldsOfBingxRow(row);if(f&&f.equity!=null){realFunds.fields=f;realFunds.at=Date.now()}}
+/** The copy's own balance read when it is fresh; otherwise one read-only GET (shared by concurrent callers). */
+async function readRealFunds(maxAgeMs=30000){
+ if(realFunds.fields&&Date.now()-realFunds.at<maxAgeMs)return realFunds.fields;
+ if(COPY.mode!=='LIVE'||copyClient?.mode!=='LIVE')return null;
+ realFunds.pending??=copyClient.balance().then(data=>noteRealFunds(bingxBalanceRows(data).find(r=>r?.asset==='USDT'))).catch(()=>{}).finally(()=>{realFunds.pending=null});
+ await realFunds.pending;
+ return realFunds.fields&&Date.now()-realFunds.at<maxAgeMs*2?realFunds.fields:null;
+}
 // Built before the post-update re-arm below reads it (audit 2026-11-23: it was still null there).
 if(COPY.mode==='LIVE'||SCALP_LIVE_EXEC.mode==='LIVE')realSafety=new RealAccountGuard({
  directory:storage.dir,
@@ -373,7 +389,7 @@ const realScalpPositions=()=>SCALP_LIVE_EXEC.mode==='LIVE'&&scalpLiveExec?scalpL
 async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;
  const analytics=buildCopyAnalytics({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:s0.funds?.equity??null,confirmedOnly:COPY.mode==='LIVE',exchangeCosts:dailyPnl?.costSummary?.()??null});
  const liveScalp=scalpLiveExec&&SCALP_LIVE_EXEC.mode==='LIVE'?await scalpLiveExec.liveStatus():null;
- const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{}),...(realTrailing?{trailing:realTrailing.status()}:{}),...(realSafety?{safety:realSafety.status()}:{}),...(liveScalp?{liveScalp}:{})};
+ const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{}),...(realMarginAlert?{marginAlert:realMarginAlert.status()}:{}),...(copyListenerHealth?{listener:copyListenerHealth.status()}:{}),...(realTrailing?{trailing:realTrailing.status()}:{}),...(realSafety?{safety:realSafety.status()}:{}),...(liveScalp?{liveScalp}:{})};
  if(!venuePositionsReader)return {...s,...extra};
  const v0=await venuePositionsReader.snapshot(realCopyPositions(),realScalpPositions());
  const stStops=await readRealOpenStops(v0.venuePositions);
@@ -451,6 +467,7 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,controls:copyControls
   const data=await copyClient.balance();
   if(COPY.mode==='LIVE'){
    const usdt=bingxBalanceRows(data).find(row=>row?.asset==='USDT'),funds=balanceOf(usdt);
+   noteRealFunds(usdt);
    return {equity:funds?.equity??null,available:funds?.available==null?null:Math.max(0,funds.available)};
   }
   const funds=bingxFunds(data,{requireAvailable:true});
@@ -607,6 +624,14 @@ const readyNotifier=new ReadinessNotifier({directory:storage.dir,log:(...a)=>con
   if(!CONFIG.tgToken||!CONFIG.tgChat.trim())throw Error('TELEGRAM_NOT_CONFIGURED');
   const res=await telegramPost({chat_id:CONFIG.tgChat.trim(),text});if(!res?.ok)throw Error(`HTTP_${res?.status}`);return true}});
 async function readyCheck(){try{await readyNotifier.check(readySummary(),{lossLimits:readyLossLimits()})}catch(e){console.warn('[READY]',e.message)}}
+// Copy listener liveness (copy_listener_health.mjs, user decision 2026-11-24 17:34 "2번은 그대로 진행"): heartbeats from
+// deploy/linux/copy_listener.py; one "카피 수신 끊김" / "카피 수신 복구" to the allowed chat. Off with the copy mode OFF.
+if(COPY.enabled){
+ copyListenerHealth=new CopyListenerHealth({directory:storage.dir,log:(...a)=>console.warn(...a),
+  // The same allowed-chat path as the readiness notice (account alerts when built, else the configured chat).
+  send:text=>readyNotifier.send(text)});
+ setInterval(()=>{void copyListenerHealth.check().catch(e=>console.warn('[COPY LISTENER]',e.message))},30000).unref?.();
+}
 setInterval(()=>{void readyCheck()},3600000).unref?.();setTimeout(()=>{void readyCheck()},180000).unref?.();
 function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
@@ -886,7 +911,7 @@ if(COPY.mode==='LIVE'){
    const st=await copyLiveStatus();
    return {
     equityUSD:st.funds?.equity??null,availableUSD:st.funds?.available??null,
-    positions:st.venuePositions??[],copy:st,
+    positions:st.venuePositions??[],copy:st,marginUsage:realMarginAlert?.status()??null,
     copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],
     dailyByDay:dailyPnl?.status()?.byDay??null,
    };
@@ -909,6 +934,9 @@ if(COPY.mode==='LIVE'){
   },
   onClose:({symbol,direction})=>executeRealPositionAction({symbol,direction,action:'CLOSE_ALL'}),
  });
+ // Margin usage alert (real_margin_alert.mjs): only with the real copy client; read only, alert only.
+ if(copyClient?.mode==='LIVE')realMarginAlert=new RealMarginAlert({directory:storage.dir,env:process.env,
+  send:text=>accountAlerts.sendToAllowedChat(text),log:(...a)=>console.warn(...a)});
  realTrailing=new RealTrailingManager({
   directory:storage.dir,
   executeAction:executeRealPositionAction,
@@ -920,6 +948,9 @@ if(COPY.mode==='LIVE'){
   try{
    const v=await venuePositionsReader.snapshot(realCopyPositions(),realScalpPositions());
    const positions=Array.isArray(v?.venuePositions)?v.venuePositions:[];
+   // In the background, never awaited (review 2026-11-24): a slow balance read or Telegram send must not hold up the
+   // daily-loss breaker and the trailing below; refresh() never runs twice at once and never rejects.
+   if(realMarginAlert)void realMarginAlert.refresh(()=>readRealFunds(),{openCount:Array.isArray(v?.venuePositions)&&!v.venuePositionsError?positions.length:null});
    const eq=copyTrader.funds?.equity??null;
    await accountAlerts.checkRisk({equityUSD:eq,positions});
    await accountAlerts.checkPositions({positions});
@@ -2354,6 +2385,7 @@ const server=http.createServer(async(req,res)=>{
    if(COPY.mode!=='LIVE'||!realSafety)return response(res,404,{error:'REAL_SAFETY_UNAVAILABLE',message:'실계좌 안전 가드가 활성화되어 있지 않습니다'});
    const body=await bodyJson(req);
    try{
+    const marginAlert=realMarginAlert&&body&&Object.hasOwn(body,'marginAlertLevels')?realMarginAlert.configure({marginAlertLevels:body.marginAlertLevels}):null;
     const safety=realSafety.configure(body);
     let controls=null;
     if(body?.applyPreset===true){
@@ -2363,7 +2395,7 @@ const server=http.createServer(async(req,res)=>{
     const summary=body?.applyPreset===true?'실계좌 권장 안전 프리셋 일괄 적용 완료 (최대 20배 · 증거금 15% · 일일한도 -8%)'
      :body?.unlockToday===true?'오늘 일일 손실 차단이 해제되었습니다'
      :'계좌 안전 가드 설정 저장됨';
-    return response(res,200,{ok:true,safety,...(controls?{controls}:{}),summary});
+    return response(res,200,{ok:true,safety,...(controls?{controls}:{}),...(marginAlert?{marginAlert}:{}),summary});
    }catch(e){return response(res,e.httpStatus||400,{ok:false,error:e.code||'INVALID_REAL_SAFETY',message:e.message})}
   }
   if(pathname==='/api/manual/note'&&req.method==='POST'){
@@ -2383,6 +2415,13 @@ const server=http.createServer(async(req,res)=>{
    const body=await bodyJson(req);
    if(typeof body?.text!=='string'||body.text.length>4000)return response(res,400,{error:'TEXT_REQUIRED'});
    return response(res,200,await copyTrader.handle({id:body.id,date:Number(body.date)||Date.now(),text:body.text}));
+  }
+  // Listener liveness (copy_listener_health.mjs): the same token; the token is checked before the body is read.
+  if(pathname==='/api/copy/heartbeat'&&req.method==='POST'){
+   const token=String(req.headers['x-copy-token']||''),want=String(process.env.COPY_LISTENER_TOKEN||'');
+   if(!(want.length>=24&&safeTokenEqual(token,want)))return response(res,403,{error:'FORBIDDEN'});
+   const r=await listenerHeartbeatEndpoint({token,want,body:await bodyJson(req),health:copyListenerHealth,copyEnabled:COPY.enabled});
+   return response(res,r.status,r.body);
   }
   // 급변 알림 from the same listener (PUMP_ALERT_CHATS), same token. Only SCALP_EXEC_MODE=TESTNET hands it to the scalp.
   if(pathname==='/api/pump-alert'&&req.method==='POST'){
