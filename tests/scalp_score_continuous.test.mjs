@@ -1,9 +1,9 @@
 // 1-point scalp score curves (user 2026-11-25 "테스트넷 점수 조건을 더 세분화시켜줘 5점 단위말고 1점 단위로"):
-// each item is linear between the old step edges, rounded to a whole point; max per item, total 100, minScore 65,
-// grades and size multipliers unchanged.
+// each item is linear between the old step edges, rounded to a whole point; max per item and total 100 unchanged.
+// Gate and grades from the user decision 2026-11-25 08:28 (70 / 75 / 80 / 85 / 90 = B / B+ / A / A+ / S).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {scoreScalpSetup,scoreCurve,SCALP_SCORE_CURVES,SCALP_SCORE_WEIGHTS,SCALP_SCORE_DEFAULTS,SCALP_REJECTION_FLOOR} from '../scalp_reversal.mjs';
+import {scoreScalpSetup,scoreCurve,SCALP_SCORE_CURVES,SCALP_SCORE_WEIGHTS,SCALP_SCORE_DEFAULTS,SCALP_SCORE_TIERS,SCALP_SCORE_TIER_MULTS,SCALP_REJECTION_FLOOR} from '../scalp_reversal.mjs';
 
 const item=(key,evidence,extra={})=>scoreScalpSetup({direction:'LONG',evidence,...extra}).breakdown[key];
 
@@ -82,17 +82,19 @@ test('scoreCurve: linear between anchors, flat outside, null for non-numbers',()
  assert.equal(item('moveAtr',{moveAtr:7.5}),8,'7.5 points -> 8');
 });
 
-test('gate unchanged: minScore 65, grades and size multipliers on the new totals',()=>{
- assert.equal(SCALP_SCORE_DEFAULTS.minScore,65);assert.equal(SCALP_SCORE_DEFAULTS.highScore,70);
- assert.equal(SCALP_SCORE_DEFAULTS.topScore,80);assert.equal(SCALP_SCORE_DEFAULTS.highSizeMult,1.25);
- // 64 / 65 / 69 / 70 / 79 / 80 built from the curves: base = move 25 + range 10 + range 10 + vol 5 + rsi 5 = 55.
- const at=(atr,retracedPct,rr)=>scoreScalpSetup({direction:'SHORT',evidence:{movePct:5.2,moveAtr:atr,retracedPct,climaxVolumeRatio:6,rsiPeak:85},trend4h:'range',btcTrend4h:'range',netRR:rr});
- const s64=at(9,6,0.8);assert.equal(s64.score,64);assert.equal(s64.pass,false);assert.equal(s64.grade,'C');assert.equal(s64.sizeMult,0);
- const s65=at(9,7.5,0.8);assert.equal(s65.score,65);assert.equal(s65.pass,true);assert.equal(s65.grade,'B');assert.equal(s65.sizeMult,1);
- const s69=at(7.5,9,0.8);assert.equal(s69.score,69);assert.equal(s69.grade,'B');assert.equal(s69.sizeMult,1);
- const s70=at(7.5,9,0.9);assert.equal(s70.score,70);assert.equal(s70.grade,'A');assert.equal(s70.sizeMult,1.25);
- const s79=at(6,20,1.3);assert.equal(s79.score,79);assert.equal(s79.grade,'A');
- const s80=at(6,20,1.4);assert.equal(s80.score,80);assert.equal(s80.grade,'S');assert.equal(s80.sizeMult,1.25);
+test('gate 70 and grades B 70 / B+ 75 / A 80 / A+ 85 / S 90 on the new totals (user 2026-11-25 08:28)',()=>{
+ assert.equal(SCALP_SCORE_DEFAULTS.minScore,70);assert.equal(SCALP_SCORE_DEFAULTS.highScore,80);assert.equal(SCALP_SCORE_DEFAULTS.highSizeMult,1.25);
+ assert.deepEqual({...SCALP_SCORE_TIERS},{'B+':75,A:80,'A+':85,S:90});
+ assert.deepEqual({...SCALP_SCORE_TIER_MULTS},{B:0.75,'B+':0.9,A:1,'A+':1.2,S:1.4});
+ // Built from the curves: base = move 25 + 4H 10 (20 when aligned) + BTC 10 + vol 5 + rsi 5.
+ const at=(atr,retracedPct,rr,coin='range')=>scoreScalpSetup({direction:'SHORT',evidence:{movePct:5.2,moveAtr:atr,retracedPct,climaxVolumeRatio:6,rsiPeak:85},trend4h:coin,btcTrend4h:'range',netRR:rr});
+ const g=(r,score,grade,pass=true)=>{assert.equal(r.score,score);assert.equal(r.grade,grade,`${score}`);assert.equal(r.pass,pass,`${score}`)};
+ const s64=at(9,6,0.8);g(s64,64,'C',false);assert.equal(s64.sizeMult,0);
+ g(at(7.5,9,0.8),69,'C',false);
+ const s70=at(7.5,9,0.9);g(s70,70,'B');assert.equal(s70.sizeMult,1,'legacy highSizeMult only from highScore 80');
+ g(at(6,9,1.1),74,'B');g(at(6,10.5,1.1),75,'B+');g(at(6,20,1.3),79,'B+');
+ const s80=at(6,20,1.4);g(s80,80,'A');assert.equal(s80.sizeMult,1.25);
+ g(at(4,20,1.3),84,'A');g(at(4,20,1.4),85,'A+');g(at(6,20,1.3,'down'),89,'A+');g(at(6,20,1.4,'down'),90,'S');
  assert.match(s64.summary,/^64점\(C급\) · 급변25·4H10·BTC10·ATR5·반등4·거래량5·RR0·RSI5$/);
  assert.equal(s64.shortBreakdown,'급변25·4H10·BTC10·ATR5·반등4·거래량5·RR0·RSI5');
 });

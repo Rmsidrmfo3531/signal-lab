@@ -188,11 +188,32 @@ export function trendAllows(direction,trend){return trend!==null&&!(direction===
  * outside them, then rounded to a whole point (user 2026-11-25 "5점 단위말고 1점 단위로").
  */
 export const SCALP_SCORE_DEFAULTS=Object.freeze({
- minScore:65,      // B-grade entry floor (<65 blocked as negative EV in Train & OOS)
- highScore:70,     // A/S-grade size boost threshold
- topScore:80,      // S-grade display threshold
- highSizeMult:1.25 // Risk sizing multiplier for A/S-grade setups
+ minScore:70,      // B-grade entry floor (user 2026-11-25 08:28 "70,75,80,85,90 ... B, B+, A, A+, S"; was 65)
+ highScore:80,     // A grade; the legacy highSizeMult below (only when tier and bounce sizing are both off)
+ highSizeMult:1.25 // Legacy risk multiplier at highScore+
 });
+/** Grade edges above the gate (user 2026-11-25 08:28 "차라리 70,75,80,85,90으로 넣고 B, B+, A, A+,S 이렇게 구분하자"):
+ * B from the gate (minScore 70), B+ 75, A 80, A+ 85, S 90; below the gate C (50+) or D. SCALP_SCORE_TIERS="B+,A,A+,S". */
+export const SCALP_SCORE_TIERS=Object.freeze({'B+':75,A:80,'A+':85,S:90});
+/** Size multiplier per grade (score-tier sizing; initial margin cap stays fixed). */
+export const SCALP_SCORE_TIER_MULTS=Object.freeze({B:0.75,'B+':0.9,A:1.0,'A+':1.2,S:1.4});
+export const SCALP_GRADES=Object.freeze(['S','A+','A','B+','B']);
+const TIER_KEYS=['B+','A','A+','S'];
+/** Edges are whole points 1..100, B+ <= A <= A+ <= S. */
+export function validScoreTiers(t){const v=TIER_KEYS.map(k=>t?.[k]);return v.every(x=>Number.isInteger(x)&&x>=1&&x<=100)&&v.every((x,i)=>i===0||v[i-1]<=x)}
+/** SCALP_SCORE_TIERS = "B+,A,A+,S" lower edges (default "75,80,85,90"); anything else keeps the defaults. */
+export function parseScalpScoreTiers(raw){
+ if(raw===undefined||raw===null||String(raw).trim()==='')return {...SCALP_SCORE_TIERS};
+ const v=String(raw).trim().split(/[\s,/]+/).map(Number),t=Object.fromEntries(TIER_KEYS.map((k,i)=>[k,v[i]]));
+ return v.length===4&&validScoreTiers(t)?t:{...SCALP_SCORE_TIERS};
+}
+/** Grade of a total: below the gate C (50+) / D; from the gate B, then B+ / A / A+ / S at the tier edges. One rule for the
+ * base score, the orderflow-boosted total, the size tier and the stats. */
+export function scalpScoreGrade(score,{minScore=SCALP_SCORE_DEFAULTS.minScore,scoreTiers=SCALP_SCORE_TIERS}={}){
+ const s=Number(score),t=validScoreTiers(scoreTiers)?scoreTiers:SCALP_SCORE_TIERS,min=Number.isFinite(Number(minScore))?Number(minScore):SCALP_SCORE_DEFAULTS.minScore;
+ if(!(s>=Math.max(1,min)))return s>=50?'C':'D';
+ return s>=t.S?'S':s>=t['A+']?'A+':s>=t.A?'A':s>=t['B+']?'B+':'B';
+}
 export const SCALP_SCORE_WEIGHTS=Object.freeze({
  movePct:25,
  trend4h:20,
@@ -227,13 +248,6 @@ export function scoreCurve(x,points){
 // Whole points; toFixed(9) first so 7.4999999999 from float error rounds like 7.5.
 const pts=(x,points,max)=>{const y=scoreCurve(x,points);return y===null?0:Math.max(0,Math.min(max,Math.round(Number(y.toFixed(9)))))};
 
-/** Grade letter of a total: S >= topScore, A >= highScore, B >= minScore (at least 1), C >= 50, else D. One rule for
- * the base score and the orderflow-boosted total. */
-export function scalpScoreGrade(score,{minScore=SCALP_SCORE_DEFAULTS.minScore,highScore=SCALP_SCORE_DEFAULTS.highScore,topScore=SCALP_SCORE_DEFAULTS.topScore}={}){
- const s=Number(score);
- return s>=topScore?'S':s>=highScore?'A':s>=Math.max(1,minScore)?'B':s>=50?'C':'D';
-}
-
 function trendRelation(direction,trend){
  if(trend!=='up'&&trend!=='down')return 'range';
  return trendAllows(direction,trend)?'aligned':'against';
@@ -242,8 +256,8 @@ function trendRelation(direction,trend){
 export function scoreScalpSetup({direction='LONG',evidence={},trend4h=null,btcTrend4h=null,netRR=null,config={}}={}){
  const dir=direction==='SHORT'?'SHORT':'LONG';
  const minScore=Number.isFinite(Number(config.minScore))?Number(config.minScore):SCALP_SCORE_DEFAULTS.minScore;
- const highScore=Number.isFinite(Number(config.highScore))?Number(config.highScore):SCALP_SCORE_DEFAULTS.highScore;
- const topScore=Number.isFinite(Number(config.topScore))?Number(config.topScore):SCALP_SCORE_DEFAULTS.topScore;
+ const scoreTiers=validScoreTiers(config.scoreTiers)?{...config.scoreTiers}:{...SCALP_SCORE_TIERS};
+ const highScore=Number.isFinite(Number(config.highScore))?Number(config.highScore):scoreTiers.A;
  const highSizeMult=Number.isFinite(Number(config.highScoreSizeMult??config.highSizeMult))&&Number(config.highScoreSizeMult??config.highSizeMult)>=1
   ?Number(config.highScoreSizeMult??config.highSizeMult):SCALP_SCORE_DEFAULTS.highSizeMult;
 
@@ -279,11 +293,11 @@ export function scoreScalpSetup({direction='LONG',evidence={},trend4h=null,btcTr
 
  const breakdown={movePct,trend4h:trend4hPts,btcTrend4h:btcTrend4hPts,moveAtr,retracedPct,climaxVolume,netRR:netRRPts,rsiExtreme};
  const score=movePct+trend4hPts+btcTrend4hPts+moveAtr+retracedPct+climaxVolume+netRRPts+rsiExtreme;
- const grade=scalpScoreGrade(score,{minScore,highScore,topScore});
+ const grade=scalpScoreGrade(score,{minScore,scoreTiers});
  const pass=minScore<=0||score>=minScore;
  const sizeMult=pass?(score>=highScore?highSizeMult:1):0;
  const shortBreakdown=`급변${movePct}·4H${trend4hPts}·BTC${btcTrend4hPts}·ATR${moveAtr}·반등${retracedPct}·거래량${climaxVolume}·RR${netRRPts}·RSI${rsiExtreme}`;
  const summary=`${score}점(${grade}급) · ${shortBreakdown}`;
- return {score,maxScore:100,grade,pass,minScore,highScore,topScore,sizeMult,breakdown,shortBreakdown,summary};
+ return {score,maxScore:100,grade,pass,minScore,highScore,scoreTiers,sizeMult,breakdown,shortBreakdown,summary};
 }
 

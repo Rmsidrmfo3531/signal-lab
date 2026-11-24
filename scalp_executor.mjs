@@ -37,7 +37,8 @@ import {evaluateScalpOrderflowBoost,evaluateScalpSqueezeGuard} from './orderflow
 import {waitForFlat} from './live_orders.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,scalpMargin,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
-import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows,scoreScalpSetup,scalpScoreGrade,SCALP_SCORE_DEFAULTS} from './scalp_reversal.mjs';
+import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows,scoreScalpSetup,scalpScoreGrade,parseScalpScoreTiers,SCALP_SCORE_DEFAULTS,SCALP_SCORE_TIERS,SCALP_SCORE_TIER_MULTS,SCALP_GRADES} from './scalp_reversal.mjs';
+export {SCALP_SCORE_TIERS,SCALP_SCORE_TIER_MULTS,parseScalpScoreTiers} from './scalp_reversal.mjs';
 import {closedScalpBars,observeScalpStructure,WYCKOFF_CANDLES,WYCKOFF_INTERVAL_MS} from './scalp_wyckoff.mjs';
 import {vsaStatus} from './scalp_vsa.mjs';
 import {aiLensHigherTimeframe,aiLensRiskMap,aiLensStatus,LENS_HIGHER_INTERVAL_MS} from './scalp_ai_lens.mjs';
@@ -228,11 +229,10 @@ export function scalpExecConfig(env=process.env){
   maxScaleInAdds:n('SCALP_MAX_SCALE_IN_ADDS',2,0,10),
   symbolLossCooldownMin:n('SCALP_SYMBOL_LOSS_COOLDOWN_MIN',120,0,1440),
   symbolDailyMaxLosses:n('SCALP_SYMBOL_DAILY_MAX_LOSSES',2,0,10),
-  // Data-calibrated 100-point setup scoring (40-coin BingX 5m Train/OOS backtest): >=65 entry floor, gentle forward score tier sizing (0.75/1.0/1.2/1.4x, initial margin cap fixed).
+  // 100-point setup score: entry from 70 (B), grades B / B+ 75 / A 80 / A+ 85 / S 90 sized 0.75 / 0.9 / 1.0 / 1.2 / 1.4x
+  // (user 2026-11-25 08:28; initial margin cap fixed). SCALP_SCORE_TIERS="B+,A,A+,S" moves the edges above the gate.
   minScore:n('SCALP_MIN_SCORE',SCALP_SCORE_DEFAULTS.minScore,0,100),
-  // Tier edges SCALP_SCORE_TIERS="S,A+,A" (default 80,75,70); grade S follows tier S, grade A follows tier A unless
-  // SCALP_HIGH_SCORE is set (review 2026-11-25: one place for the edges the size tiers and the grades use).
-  scoreTiers:scoreTiers,topScore:scoreTiers.S,
+  scoreTiers,
   highScore:n('SCALP_HIGH_SCORE',scoreTiers.A,0,100),
   highScoreSizeMult:n('SCALP_HIGH_SCORE_SIZE_MULT',SCALP_SCORE_DEFAULTS.highSizeMult,1,2),
   scoreTierSizing:!['off','false','0','no'].includes(String(env.SCALP_SCORE_TIER_SIZING??'').trim().toLowerCase()),
@@ -340,24 +340,12 @@ export function scalpBounceMultiplier(retracedPct,config={}){
  return {active:true,confirmed,mult:confirmed?hi:lo,retracedPct:+r.toFixed(1)};
 }
 
-/** Score tier lower edges and size multipliers (40 coins 120d Train/OOS): S 80+ 1.4x, A+ 75+ 1.2x, A 70+ 1.0x, below 0.75x. */
-export const SCALP_SCORE_TIERS=Object.freeze({S:80,'A+':75,A:70});
-export const SCALP_SCORE_TIER_MULTS=Object.freeze({S:1.4,'A+':1.2,A:1.0,B:0.75});
-const validTiers=t=>[t?.S,t?.['A+'],t?.A].every(x=>Number.isInteger(x)&&x>=1&&x<=100)&&t.S>=t['A+']&&t['A+']>=t.A;
-/** SCALP_SCORE_TIERS = "S,A+,A" lower edges in whole points (e.g. "86,81,76"), 1..100 with S >= A+ >= A; else the defaults. */
-export function parseScalpScoreTiers(raw){
- if(raw===undefined||raw===null||String(raw).trim()==='')return {...SCALP_SCORE_TIERS};
- const v=String(raw).trim().split(/[\s,/]+/).map(Number),t={S:v[0],'A+':v[1],A:v[2]};
- return v.length===3&&validTiers(t)?t:{...SCALP_SCORE_TIERS};
-}
-/** Backtest-validated gentle forward score tier sizing: config.scoreTiers edges (default 80 / 75 / 70; initial margin cap stays fixed). */
+/** Score-tier sizing by grade (user 2026-11-25 08:28): B 0.75x, B+ 0.9x, A 1.0x, A+ 1.2x, S 1.4x (initial margin cap fixed).
+ * Below the gate it never sizes a trade (the gate skips first); it reads as B. */
 export function scalpScoreTierMultiplier(score,config={}){
  if(config?.scoreTierSizing===false||!Number.isFinite(Number(score)))return {active:false,tier:null,mult:1};
- const s=Number(score),t=validTiers(config?.scoreTiers)?config.scoreTiers:SCALP_SCORE_TIERS,M=SCALP_SCORE_TIER_MULTS;
- if(s>=t.S)return {active:true,tier:'S',mult:M.S};
- if(s>=t['A+'])return {active:true,tier:'A+',mult:M['A+']};
- if(s>=t.A)return {active:true,tier:'A',mult:M.A};
- return {active:true,tier:'B',mult:M.B};
+ const g=scalpScoreGrade(score,{minScore:config?.minScore??SCALP_SCORE_DEFAULTS.minScore,scoreTiers:config?.scoreTiers}),tier=SCALP_SCORE_TIER_MULTS[g]!=null?g:'B';
+ return {active:true,tier,mult:SCALP_SCORE_TIER_MULTS[tier]};
 }
 
 /** Pillar 1 — Volatility-targeted leverage (5m ATR%): <1.2% -> base (10x), 1.2~2.0% -> min(base, 7x), >=2.0% -> min(base, 5x). */
@@ -569,7 +557,7 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,journalFileName):null;this.signalsFile=directory?path.join(directory,signalsFileName):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
+  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,scoreTotal:x.score?.score??x.scalpScore?.score??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
@@ -1081,7 +1069,7 @@ export class ScalpExecutor{
      scalpScore={...scalpScore,score:nextScore,grade:nextGrade,pass:nextPass,sizeMult:nextMult,oiBonus:boost.oiBonus,cvdBonus:boost.cvdBonus||0,orderflow:boost,...(bounce.active?{bounce}:{})};
     }
    }
-   // Backtest-validated gentle forward score tier sizing (65~69: 0.75x, 70~74: 1.0x, 75~79: 1.2x, 80+: 1.4x; initial margin cap stays fixed).
+   // Score-tier sizing by grade (user 2026-11-25 08:28): B 70~74 0.75x, B+ 75~79 0.9x, A 80~84 1.0x, A+ 85~89 1.2x, S 90+ 1.4x (initial margin cap fixed).
    const scoreTier=minSc>0?scalpScoreTierMultiplier(scalpScore.score,this.config):{active:false,tier:null,mult:1};
    // Backtest-validated session asymmetry (EU 08-14 UTC -> 0.5x, US/Late 14-24 UTC -> 1.15x; only active when scoring is enabled).
    const sess=minSc>0?scalpSessionMultiplier(this.now(),this.config):{session:'OFF',labelKo:'',mult:1};
@@ -1438,7 +1426,7 @@ export class ScalpExecutor{
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
    x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
-   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.openedAt??null,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,scoreGrade:line.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
+   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.openedAt??null,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,scoreGrade:line.score?.grade??x.scalpScore?.grade??null,scoreTotal:line.score?.score??x.scalpScore?.score??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
   }
  }
  /** The newest `limit` journal lines (oldest first). */
@@ -2949,7 +2937,9 @@ export class ScalpExecutor{
  stats(){const list=[...this.journalRows,...this.store.closed.filter(x=>!x.journaled)];const all=this.#stats(list);all.bySide=Object.fromEntries(SCALP_SIDES.map(d=>[d,this.#stats(list.filter(x=>(x.direction||'LONG')===d))]));
   all.byKind=Object.fromEntries(Object.values(SCALP_KINDS).map(k=>[k,this.#stats(list.filter(x=>(x.kind||SCALP_KINDS.MOVE)===k))]));
   all.byTrigger=Object.fromEntries(Object.values(SCALP_TRIGGERS).map(k=>[k,this.#stats(list.filter(x=>(x.trigger||SCALP_TRIGGERS.SCAN)===k))]));
-  all.byGrade=Object.fromEntries(['S','A','B'].map(g=>[g,this.#stats(list.filter(x=>(x.scoreGrade??x.scalpScore?.grade??x.score?.grade)===g))]));
+  // By grade of the entry total on today's edges (B 70 / B+ 75 / A 80 / A+ 85 / S 90, 2026-11-25); the saved letter when no total.
+  const gradeOf=x=>{const t=num(x.scoreTotal??x.scalpScore?.score??x.score?.score);return t!==null?scalpScoreGrade(t,this.config):(x.scoreGrade??x.scalpScore?.grade??x.score?.grade)};
+  all.byGrade=Object.fromEntries(SCALP_GRADES.map(g=>[g,this.#stats(list.filter(x=>gradeOf(x)===g))]));
   // TRADER_LADDER (from 2026-11-24) and the management before it, apart.
   all.byManagement=Object.fromEntries(Object.values(SCALP_MANAGEMENTS).map(k=>[k,this.#stats(list.filter(x=>(x.management||SCALP_MANAGEMENTS.CURRENT)===k))]));
   const experiment=list.filter(x=>x.scaleIn?.version===SCALP_SCALE_IN.version);
@@ -2966,7 +2956,7 @@ export class ScalpExecutor{
    todayNetUSD:+scaled.filter(r=>kstDay(r.x.closedAt)===today).reduce((t,r)=>t+r.net,0).toFixed(2),closeReasons:reasons};
  }
  #scoreSummary(){
-  const minScore=Number(this.config.minScore??SCALP_SCORE_DEFAULTS.minScore)||65;
+  const minScore=Number(this.config.minScore??SCALP_SCORE_DEFAULTS.minScore)||SCALP_SCORE_DEFAULTS.minScore;
   const nearFloor=Math.max(0,minScore-5);
   let nearMiss=0,low=0;
   for(const x of this.store.skips){
@@ -2975,7 +2965,7 @@ export class ScalpExecutor{
    if(sc!==null&&sc>=nearFloor)nearMiss++;else low++;
   }
   const st=this.stats();
-  const passed=(st.byGrade?.S?.trades||0)+(st.byGrade?.A?.trades||0)+(st.byGrade?.B?.trades||0)+this.store.open.filter(p=>p?.scalpScore).length;
+  const passed=SCALP_GRADES.reduce((t,g)=>t+(st.byGrade?.[g]?.trades||0),0)+this.store.open.filter(p=>p?.scalpScore).length;
   return {minScore,nearFloor,passed,nearMiss,low};
  }
  status(){
@@ -2987,7 +2977,7 @@ export class ScalpExecutor{
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,pumpAlerts:c.pumpAlerts!==false&&(c.mode==='TESTNET'||(c.mode==='LIVE'&&c.allowLive===true)),pumpWatchMin:PUMP_WATCH_MIN,
-    minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,topScore:c.topScore??SCALP_SCORE_DEFAULTS.topScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreTierSizing:c.scoreTierSizing!==false,scoreTiers:{...(c.scoreTiers??SCALP_SCORE_TIERS)},scoreTierMults:{...SCALP_SCORE_TIER_MULTS},scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
+    minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreTierSizing:c.scoreTierSizing!==false,scoreTiers:{...(c.scoreTiers??SCALP_SCORE_TIERS)},scoreTierMults:{...SCALP_SCORE_TIER_MULTS},scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
     emergencyStopRoePct:c.emergencyStopRoePct??75,hardStopRoePct:c.hardStopRoePct??0,minFreeAccountMarginPct:c.minFreeAccountMarginPct??0,maxSpreadPct:c.maxSpreadPct??0,preFundingWindowMin:c.preFundingWindowMin??0,preFundingExtremePct:c.preFundingExtremePct??0,scaleInRetrySlippagePct:c.scaleInRetrySlippagePct??SCALP_REPEAT_SCALE_IN.retrySlippagePct,scaleInMarketFallback:c.scaleInMarketFallback!==false,
     defensiveAddRoePct:c.defensiveAddRoePct??40,defensiveBouncePct:c.defensiveBouncePct??0.4,defensiveForceRoePct:c.defensiveForceRoePct??55,scaleInMinStepPct:c.scaleInMinStepPct??SCALP_REPEAT_SCALE_IN.minStepPct,scaleInMaxStepPct:c.scaleInMaxStepPct??SCALP_REPEAT_SCALE_IN.maxStepPct,scaleInSteps:SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),scaleInMults:SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),
     orderflowBoost:c.orderflowBoost!==false,orderflowOiBonus:c.orderflowOiBonus??5,orderflowCvdBonus:c.orderflowCvdBonus??5,orderflowCvdSizeMult:c.orderflowCvdSizeMult??1.5,

@@ -248,8 +248,11 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   assert.match(tg, /비중 1\.5x/);
   assert.match(tg, /유럽장 0\.5x/);
   assert.equal(exBoosted.store.open[0].scalpScore.session.session, 'EUROPE');
-  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.mult, 1.0);
-  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.75);
+  // 70 is grade B (70~74) since 2026-11-25 08:28 -> tier 0.75x (was A 1.0x); 1.5 (CVD) x 0.75 x 0.5 (EU) = 0.5625.
+  assert.equal(exBoosted.store.open[0].scalpScore.grade, 'B');
+  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.tier, 'B');
+  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.mult, 0.75);
+  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.5625);
 
   // CVD strong flip ALONE (without OI flush) rescues a 60pt setup to 65pt (A-3)
   const v3 = mkVenue(close);

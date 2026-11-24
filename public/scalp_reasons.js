@@ -39,7 +39,7 @@ const G={
  ALREADY_SENT:['entry','이미 주문한 신호',()=>'같은 종목·같은 5분봉·같은 방향 신호는 한 번만 주문합니다.'],
  SPREAD_TOO_WIDE:['entry','호가 스프레드 큼',S=>`매수·매도 호가 차이가 기준 ${n(S.maxSpreadPct)}%보다 넓어 실거래 슬리피지 위험이 큽니다.`],
  // 점수 항목 — scoreScalpSetup (items are in SCORE_ITEMS below)
- SCORE_BELOW_MINIMUM:['score','점수 미달',S=>`8개 항목 100점 만점 점수가 기준 ${n(S.minScore)}점보다 낮아 진입하지 않았습니다(${n(S.highScore)}점 이상은 비중을 키웁니다).`],
+ SCORE_BELOW_MINIMUM:['score','점수 미달',S=>`8개 항목 100점 만점 점수가 기준 ${n(S.minScore)}점(B급)보다 낮아 진입하지 않았습니다(등급별 비중 ${scoreTierRangesText(S)}).`],
  // 한도·차단 — #blocked / #precheck / testnet_budget.mjs
  NOT_ARMED:['limit','단타 꺼짐',()=>'테스트넷 스위치가 꺼져 있거나 켜고 끄는 사이에 들어온 신호라 새로 진입하지 않습니다.'],
  SCALP_MODE_OFF:['limit','단타 모드 꺼짐',()=>'서버 설정(SCALP_EXEC_MODE)이 OFF라 단타 주문을 하지 않습니다.'],
@@ -202,25 +202,24 @@ export function tipHTML(label,desc,cls='rz'){return desc?`<span class="${cls}" t
 // Category colour (user 2026-11-24 12:01 "중요도에 따라 점수의 색도 달라지면 좋을듯하다"): rz-c-entry / score / limit / pump / venue / position.
 export function reasonHTML(code,S={}){const i=reasonInfo(code,S);return i?tipHTML(i.label,i.desc,`rz rz-c-${i.cat}`):esc(code)}
 
-/** Tier lower edges from the screen settings: S.scoreTiers (SCALP_SCORE_TIERS, default 80 / 75 / 70) and the gate S.minScore (65). */
+/** Grade edges from the screen settings: B = the gate S.minScore (70), B+ / A / A+ / S = S.scoreTiers (SCALP_SCORE_TIERS,
+ * default 75 / 80 / 85 / 90; user 2026-11-25 08:28 "70,75,80,85,90 ... B, B+, A, A+, S"). */
 export function scoreTierEdges(S={}){
- const t=S?.scoreTiers,ok=t&&[t.S,t['A+'],t.A].every(fin);
- return {S:ok?Number(t.S):80,'A+':ok?Number(t['A+']):75,A:ok?Number(t.A):70,B:fin(S?.minScore)&&Number(S.minScore)>0?Number(S.minScore):65};
+ const t=S?.scoreTiers,ok=t&&['B+','A','A+','S'].every(k=>fin(t[k]));
+ return {B:fin(S?.minScore)&&Number(S.minScore)>0?Number(S.minScore):70,'B+':ok?Number(t['B+']):75,A:ok?Number(t.A):80,'A+':ok?Number(t['A+']):85,S:ok?Number(t.S):90};
 }
-/** Score tier by total (S, A+, A, B from the gate, C 50 up to the gate, D below; the tiers of the score-tier sizing). */
-export function scoreTier(score,S={}){const s=Number(score),e=scoreTierEdges(S);return !Number.isFinite(s)?null:s>=e.S?'S':s>=e['A+']?'A+':s>=e.A?'A':s>=e.B?'B':s>=50?'C':'D'}
+/** Grade of a total (as scalpScoreGrade): below the gate C (50+) / D, from the gate B, B+, A, A+, S. */
+export function scoreTier(score,S={}){const s=Number(score),e=scoreTierEdges(S);return !Number.isFinite(s)?null:s<Math.max(1,e.B)?(s>=50?'C':'D'):s>=e.S?'S':s>=e['A+']?'A+':s>=e.A?'A':s>=e['B+']?'B+':'B'}
 const span=(lo,hi)=>lo>hi?'':lo===hi?`${lo}`:`${lo}~${hi}`;
-/** "65~69 0.75x / 70~74 1x / 75~79 1.2x / 80+ 1.4x": size tiers from the gate up, empty ones left out. */
+const GRADE_ROWS=e=>[['B',e.B,e['B+']-1],['B+',Math.max(e['B+'],e.B),e.A-1],['A',Math.max(e.A,e.B),e['A+']-1],['A+',Math.max(e['A+'],e.B),e.S-1],['S',Math.max(e.S,e.B),Infinity]];
+/** "70~74 0.75x / 75~79 0.9x / 80~84 1x / 85~89 1.2x / 90+ 1.4x": size by grade from the gate up, empty grades left out. */
 export function scoreTierRangesText(S={}){
- const e=scoreTierEdges(S),M={S:1.4,'A+':1.2,A:1,B:0.75,...(S?.scoreTierMults||{})};
- return [['B',e.B,e.A-1],['A',Math.max(e.A,e.B),e['A+']-1],['A+',Math.max(e['A+'],e.B),e.S-1],['S',Math.max(e.S,e.B),Infinity]]
-  .filter(([,lo,hi])=>lo<=hi).map(([k,lo,hi])=>`${hi===Infinity?`${lo}+`:span(lo,hi)} ${M[k]}x`).join(' / ');
+ const M={B:0.75,'B+':0.9,A:1,'A+':1.2,S:1.4,...(S?.scoreTierMults||{})};
+ return GRADE_ROWS(scoreTierEdges(S)).filter(([,lo,hi])=>lo<=hi).map(([k,lo,hi])=>`${hi===Infinity?`${lo}+`:span(lo,hi)} ${M[k]}x`).join(' / ');
 }
-/** Grade labels of the stats rows: S topScore+, A highScore..topScore-1, B gate..highScore-1 (no range when empty). */
+/** Grade labels of the stats rows, e.g. "B+급 (75~79)" (no range when the grade is empty under the gate). */
 export function scoreGradeLabels(S={}){
- const min=fin(S?.minScore)&&Number(S.minScore)>0?Number(S.minScore):65,hi=fin(S?.highScore)?Number(S.highScore):70,top=fin(S?.topScore)?Number(S.topScore):80;
- const lab=(g,r)=>`${g}급${r?` (${r})`:''}`;
- return {S:lab('S',`${Math.max(top,min)}+`),A:lab('A',span(Math.max(hi,min),top-1)),B:lab('B',span(min,hi-1))};
+ return Object.fromEntries(GRADE_ROWS(scoreTierEdges(S)).map(([k,lo,hi])=>{const r=hi===Infinity?`${lo}+`:span(lo,hi);return [k,`${k}급${r?` (${r})`:''}`]}));
 }
 /** Item colour class: how much of its max it earned (full / part / zero) and how heavy the item is (hi 20+, mid 15, lo <=10). */
 export function scoreItemClass(points,max){
@@ -249,7 +248,7 @@ export function scoreItemsHTML(x,S={}){
  const min=sp.min??(fin(S?.minScore)?Number(S.minScore):null),tier=scoreTier(sp.score,{...S,minScore:min});
  // The pass / fail line (the minimum score) is said in words too, not by colour alone.
  const pass=sp.score!=null&&min!=null?sp.score>=min:null;
- const total=sp.score!=null?`<span class="rz-total rz-g-${tier==='A+'?'Ap':tier}${pass===false?' rz-fail':pass?' rz-pass':''}">합계 <b>${esc(sp.score)}</b> ${esc(tier)}급${pass!=null?` · ${pass?'통과':'미달'}`:''}</span>${min!=null?` <small>(기준 ${esc(min)})</small>`:''}`:'';
+ const total=sp.score!=null?`<span class="rz-total rz-g-${String(tier).replace('+','p')}${pass===false?' rz-fail':pass?' rz-pass':''}">합계 <b>${esc(sp.score)}</b> ${esc(tier)}급${pass!=null?` · ${pass?'통과':'미달'}`:''}</span>${min!=null?` <small>(기준 ${esc(min)})</small>`:''}`:'';
  return `<span class="rz-score">${items}${items&&total?' / ':''}${total}</span>`;
 }
 

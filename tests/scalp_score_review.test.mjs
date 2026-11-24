@@ -6,60 +6,61 @@ import {scoreScalpSetup,scalpScoreGrade} from '../scalp_reversal.mjs';
 import {simulateScalpSignals} from '../scalp_simulator.mjs';
 import {ScalpExecutor,scalpExecConfig,scalpLiveExecConfig,scalpScoreTierMultiplier,parseScalpScoreTiers,SCALP_SCORE_TIERS} from '../scalp_executor.mjs';
 
-test('screen labels follow the gate and tier edges and 1-point totals (no 5-point "55점 이하" / "B급 (65)")',async()=>{
+test('screen labels follow the gate and grade edges and 1-point totals (no 5-point "55점 이하" / "B급 (65)")',async()=>{
  const {scalpDetailsHTML}=await import('../public/live_control.js');
- const {scoreTier,scoreItemsHTML}=await import('../public/scalp_reasons.js');
+ const {scoreTier,scoreItemsHTML,reasonInfo}=await import('../public/scalp_reasons.js');
  const html=(env,skips=[])=>{const ex=new ScalpExecutor({config:{...scalpExecConfig(env),management:'CURRENT'}});ex.store.skips.push(...skips);return scalpDetailsHTML(ex.status())};
- const skips=[{at:1,symbol:'XUSDT',reason:'SCORE_BELOW_MINIMUM',score:62},{at:2,symbol:'YUSDT',reason:'SCORE_BELOW_MINIMUM',score:57}];
+ const skips=[{at:1,symbol:'XUSDT',reason:'SCORE_BELOW_MINIMUM',score:67},{at:2,symbol:'YUSDT',reason:'SCORE_BELOW_MINIMUM',score:62}];
  const d=html({},skips);
- assert.match(d,/점수배수 65~69 0\.75x \/ 70~74 1x \/ 75~79 1\.2x \/ 80\+ 1\.4x/);
- assert.match(d,/턱걸이 차단\(60~64점\) <b>1건<\/b> · 하위 차단\(59점 이하\) <b>1건<\/b>/,'57 is below 60, not "55점 이하"');
- assert.match(d,/S급 \(80\+\)/);assert.match(d,/A급 \(70~79\)/);assert.match(d,/B급 \(65~69\)/);
- // Gate 71, default tiers: no 0.75x tier left; B grade is empty.
- const g71=html({SCALP_MIN_SCORE:'71'},skips);
- assert.match(g71,/점수배수 71~74 1x \/ 75~79 1\.2x \/ 80\+ 1\.4x/);
- assert.match(g71,/턱걸이 차단\(66~70점\)/);
- assert.match(g71,/A급 \(71~79\)/);assert.doesNotMatch(g71,/B급 \(/);
- // Gate 71 with tiers 86/81/76.
- const t=html({SCALP_MIN_SCORE:'71',SCALP_SCORE_TIERS:'86,81,76'});
- assert.match(t,/점수배수 71~75 0\.75x \/ 76~80 1x \/ 81~85 1\.2x \/ 86\+ 1\.4x/);
- assert.match(t,/S급 \(86\+\)/);assert.match(t,/A급 \(76~85\)/);assert.match(t,/B급 \(71~75\)/);
- // Record tier labels.
- assert.equal(scoreTier(78),'A+');assert.equal(scoreTier(66),'B');
- const S={minScore:71,scoreTiers:{S:86,'A+':81,A:76}};
- assert.equal(scoreTier(78,S),'A');assert.equal(scoreTier(86,S),'S');assert.equal(scoreTier(72,S),'B');assert.equal(scoreTier(70,S),'C');
- assert.match(scoreItemsHTML({score:78,minScore:71},S),/합계 <b>78<\/b> A급 · 통과/);
+ assert.match(d,/점수배수 70~74 0\.75x \/ 75~79 0\.9x \/ 80~84 1x \/ 85~89 1\.2x \/ 90\+ 1\.4x/);
+ assert.match(d,/턱걸이 차단\(65~69점\) <b>1건<\/b> · 하위 차단\(64점 이하\) <b>1건<\/b>/,'62 is below 65, not "60점 이하"');
+ for(const l of ['S급 \\(90\\+\\)','A\\+급 \\(85~89\\)','A급 \\(80~84\\)','B\\+급 \\(75~79\\)','B급 \\(70~74\\)'])assert.match(d,new RegExp(l));
+ assert.match(reasonInfo('SCORE_BELOW_MINIMUM',scalpExecConfig({})).desc,/기준 70점\(B급\).*70~74 0\.75x/);
+ // Gate 77: B is empty and B+ starts at the gate.
+ const g77=html({SCALP_MIN_SCORE:'77'},skips);
+ assert.match(g77,/점수배수 77~79 0\.9x \/ 80~84 1x \/ 85~89 1\.2x \/ 90\+ 1\.4x/);
+ assert.match(g77,/턱걸이 차단\(72~76점\)/);
+ assert.match(g77,/B\+급 \(77~79\)/);assert.doesNotMatch(g77,/B급 \(/);
+ // Edges moved with SCALP_SCORE_TIERS.
+ const t=html({SCALP_SCORE_TIERS:'76,82,88,94'});
+ assert.match(t,/점수배수 70~75 0\.75x \/ 76~81 0\.9x \/ 82~87 1x \/ 88~93 1\.2x \/ 94\+ 1\.4x/);
+ assert.match(t,/S급 \(94\+\)/);assert.match(t,/B급 \(70~75\)/);
+ // Record grade labels and colour classes.
+ assert.deepEqual([90,85,80,75,70,69,49].map(x=>scoreTier(x)),['S','A+','A','B+','B','C','D']);
+ const S={minScore:77,scoreTiers:{'B+':76,A:82,'A+':88,S:94}};
+ assert.equal(scoreTier(76,S),'C','below the gate');assert.equal(scoreTier(77,S),'B+');assert.equal(scoreTier(94,S),'S');
+ assert.match(scoreItemsHTML({score:78,minScore:70}),/rz-g-Bp rz-pass">합계 <b>78<\/b> B\+급 · 통과/);
 });
 
-test('score tier edges: defaults 80/75/70, SCALP_SCORE_TIERS overrides, invalid input keeps the defaults',()=>{
+test('grade edges: defaults 75/80/85/90 above the 70 gate, SCALP_SCORE_TIERS overrides, invalid input keeps the defaults',()=>{
  const d=scalpExecConfig({});
- assert.deepEqual(d.scoreTiers,{S:80,'A+':75,A:70});
- assert.equal(d.topScore,80);assert.equal(d.highScore,70);assert.equal(d.minScore,65);
+ assert.deepEqual(d.scoreTiers,{'B+':75,A:80,'A+':85,S:90});
+ assert.equal(d.highScore,80);assert.equal(d.minScore,70);
  const tier=(s,c=d)=>{const t=scalpScoreTierMultiplier(s,c);return `${t.tier}${t.mult}`};
- assert.deepEqual([64,65,69,70,74,75,79,80,100].map(s=>tier(s)),['B0.75','B0.75','B0.75','A1','A1','A+1.2','A+1.2','S1.4','S1.4']);
- const c=scalpExecConfig({SCALP_SCORE_TIERS:'86,81,76',SCALP_MIN_SCORE:'71'});
- assert.deepEqual(c.scoreTiers,{S:86,'A+':81,A:76});
- assert.equal(c.topScore,86,'grade S follows tier S');
- assert.equal(c.highScore,76,'grade A follows tier A when SCALP_HIGH_SCORE is not set');
- assert.equal(c.minScore,71);
- assert.deepEqual([71,75,76,80,81,85,86].map(s=>tier(s,c)),['B0.75','B0.75','A1','A1','A+1.2','A+1.2','S1.4']);
- assert.equal(scalpExecConfig({SCALP_SCORE_TIERS:'86,81,76',SCALP_HIGH_SCORE:'72'}).highScore,72,'an explicit SCALP_HIGH_SCORE wins');
- for(const bad of ['70,75,80','80,75','80,75,70,65','80,75,x','80,75,0','101,75,70','80.5,75,70'])
+ assert.deepEqual([70,74,75,79,80,84,85,89,90,100].map(s=>tier(s)),['B0.75','B0.75','B+0.9','B+0.9','A1','A1','A+1.2','A+1.2','S1.4','S1.4']);
+ const c=scalpExecConfig({SCALP_SCORE_TIERS:'76,82,88,94',SCALP_MIN_SCORE:'72'});
+ assert.deepEqual(c.scoreTiers,{'B+':76,A:82,'A+':88,S:94});
+ assert.equal(c.highScore,82,'highScore (legacy sizing) follows grade A when SCALP_HIGH_SCORE is not set');
+ assert.equal(c.minScore,72);
+ assert.deepEqual([72,75,76,81,82,87,88,93,94].map(s=>tier(s,c)),['B0.75','B0.75','B+0.9','B+0.9','A1','A1','A+1.2','A+1.2','S1.4']);
+ assert.equal(scalpExecConfig({SCALP_SCORE_TIERS:'76,82,88,94',SCALP_HIGH_SCORE:'78'}).highScore,78,'an explicit SCALP_HIGH_SCORE wins');
+ for(const bad of ['90,85,80,75','75,80,85','75,80,85,90,95','75,80,x,90','0,80,85,90','75,80,85,101','75.5,80,85,90'])
   assert.deepEqual(parseScalpScoreTiers(bad),{...SCALP_SCORE_TIERS},bad);
- assert.deepEqual(parseScalpScoreTiers(' 90 / 85 / 85 '),{S:90,'A+':85,A:85},'equal edges allowed (empty A tier)');
+ assert.deepEqual(parseScalpScoreTiers(' 75 / 80 / 80 / 90 '),{'B+':75,A:80,'A+':80,S:90},'equal edges allowed (empty A grade)');
  // A malformed object passed straight in falls back to the defaults instead of NaN comparisons.
- assert.equal(scalpScoreTierMultiplier(78,{scoreTiers:{S:'x'}}).tier,'A+');
- // The grade of the score follows the same edges.
+ assert.equal(scalpScoreTierMultiplier(86,{scoreTiers:{S:'x'}}).tier,'A+');
+ // One grade rule: score, size tier and stats.
  const r=scoreScalpSetup({direction:'SHORT',evidence:{movePct:5.2,moveAtr:3.5,retracedPct:20,climaxVolumeRatio:6,rsiPeak:85},trend4h:'range',btcTrend4h:'range',netRR:1.4,config:c});
- assert.equal(r.score,85);assert.equal(r.grade,'A');assert.equal(r.topScore,86);
- assert.equal(scalpScoreGrade(86,c),'S');assert.equal(scalpScoreGrade(70,c),'C');assert.equal(scalpScoreGrade(71,c),'B');
+ assert.equal(r.score,85);assert.equal(r.grade,'A');assert.deepEqual(r.scoreTiers,c.scoreTiers);
+ assert.equal(scalpScoreGrade(94,c),'S');assert.equal(scalpScoreGrade(71,c),'C');assert.equal(scalpScoreGrade(72,c),'B');assert.equal(scalpScoreGrade(40,c),'D');
  // Status carries the edges for the screen.
  const S=new ScalpExecutor({config:c}).status().settings;
- assert.deepEqual(S.scoreTiers,{S:86,'A+':81,A:76});assert.equal(S.topScore,86);assert.equal(S.minScore,71);
- assert.deepEqual(S.scoreTierMults,{S:1.4,'A+':1.2,A:1,B:0.75});
+ assert.deepEqual(S.scoreTiers,{'B+':76,A:82,'A+':88,S:94});assert.equal(S.minScore,72);
+ assert.deepEqual(S.scoreTierMults,{B:0.75,'B+':0.9,A:1,'A+':1.2,S:1.4});
  // The opt-in live scalp inherits the same score settings (one SCALP_MIN_SCORE / SCALP_SCORE_TIERS for both).
- const L=scalpLiveExecConfig({SCALP_SCORE_TIERS:'86,81,76',SCALP_MIN_SCORE:'71'});
- assert.equal(L.mode,'OFF');assert.equal(L.minScore,71);assert.deepEqual(L.scoreTiers,{S:86,'A+':81,A:76});
+ const L=scalpLiveExecConfig({SCALP_SCORE_TIERS:'76,82,88,94',SCALP_MIN_SCORE:'72'});
+ assert.equal(L.mode,'OFF');assert.equal(L.minScore,72);assert.deepEqual(L.scoreTiers,{'B+':76,A:82,'A+':88,S:94});
+ assert.equal(scalpLiveExecConfig({}).minScore,70);
 });
 
 test('simulator re-scores recorded signals on the current curves (+ recorded OI/CVD bonus), not the saved 5-point total',()=>{

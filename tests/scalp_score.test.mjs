@@ -50,15 +50,17 @@ test('SCALP_SCORE_WEIGHTS sum strictly to 100 in 5-point increments and defaults
  assert.ok(values.every(v=>v>0&&v%5===0));
  const cfg=scalpExecConfig({});
  assert.equal(cfg.minScore,SCALP_SCORE_DEFAULTS.minScore);
- assert.equal(cfg.minScore,65);
- assert.equal(cfg.highScore,70);
+ // Gate 70 and grades B 70 / B+ 75 / A 80 / A+ 85 / S 90 (user 2026-11-25 08:28; was 65 and S 80 / A 70).
+ assert.equal(cfg.minScore,70);
+ assert.equal(cfg.highScore,80);
+ assert.deepEqual(cfg.scoreTiers,{'B+':75,A:80,'A+':85,S:90});
  assert.equal(cfg.highScoreSizeMult,1.25);
  assert.equal(SCALP_EXEC_SETTINGS.minMoveAtr,3);
  assert.equal(scalpExecConfig({SCALP_MIN_SCORE:'0',SCALP_HIGH_SCORE:'75',SCALP_HIGH_SCORE_SIZE_MULT:'1.4'}).minScore,0);
  assert.equal(scalpExecConfig({SCALP_HIGH_SCORE:'75',SCALP_HIGH_SCORE_SIZE_MULT:'1.4'}).highScoreSizeMult,1.4);
 });
 
-test('scoreScalpSetup scores perfect S-grade (100), B-grade (65), and blocked D-grade setups accurately (1-point curves)',()=>{
+test('scoreScalpSetup scores perfect S-grade (100), B-grade (70), and blocked C/D-grade setups accurately (1-point curves)',()=>{
  const perfect=scoreScalpSetup({
   direction:'LONG',
   evidence:{movePct:5.5,moveAtr:3.8,retracedPct:20,climaxVolumeRatio:6.5,rsiPeak:19},
@@ -70,7 +72,7 @@ test('scoreScalpSetup scores perfect S-grade (100), B-grade (65), and blocked D-
  assert.equal(perfect.sizeMult,1.25);
  assert.deepEqual(perfect.breakdown,{movePct:25,trend4h:20,btcTrend4h:15,moveAtr:15,retracedPct:10,climaxVolume:5,netRR:5,rsiExtreme:5});
 
- // SHORT mirror with a 7.1x ATR spike & neutral range trends -> A-grade 77 (1.25x).
+ // SHORT mirror with a 7.1x ATR spike & neutral range trends -> B+ 77 (75~79; legacy sizeMult 1 below highScore 80).
  // Was 75 under 5-point steps (ATR >=6x 5, RR >=1.2 5); on the 1-point curves ATR 7.1x = 10-(1.1/3)*5 -> 8, RR 1.3 -> 4.
  const aGrade=scoreScalpSetup({
   direction:'SHORT',
@@ -79,20 +81,29 @@ test('scoreScalpSetup scores perfect S-grade (100), B-grade (65), and blocked D-
  });
  // 25 (move) + 10 (4h range) + 10 (btc null->range) + 8 (atr 7.1x) + 10 (retrace) + 5 (vol) + 4 (rr 1.3) + 5 (rsi 82) = 77
  assert.equal(aGrade.score,77);
- assert.equal(aGrade.grade,'A');
- assert.equal(aGrade.sizeMult,1.25);
+ assert.equal(aGrade.grade,'B+');
+ assert.equal(aGrade.sizeMult,1);
  assert.equal(aGrade.breakdown.moveAtr,8);
  assert.equal(aGrade.breakdown.netRR,4);
 
- // Exactly 65점 B-grade (1.0x sizing): move 25 + 4h 10 + btc 10 + atr 5 (>=9x) + retrace 5 (WICK floor at 3%) + vol 5 + rr 0 + rsi 5 = 65.
- // Inputs changed from (ATR 7.1x, retraced 7%, RR 1.0) which now score 8 / 5 / 2 = 70: kept the test at exactly 65.
- const exactB=scoreScalpSetup({
+ // 65 is now below the 70 gate (C): move 25 + 4h 10 + btc 10 + atr 5 (>=9x) + retrace 5 (WICK floor at 3%) + vol 5 + rr 0 + rsi 5.
+ const at65=scoreScalpSetup({
   direction:'SHORT',
   evidence:{movePct:5.2,moveAtr:10,retracedPct:3,rejection:'WICK',climaxVolumeRatio:5.5,rsiPeak:82},
   trend4h:'range',btcTrend4h:'range',netRR:0.8,
  });
- assert.equal(exactB.score,65);
- assert.equal(exactB.breakdown.retracedPct,5,'confirmed rejection candle gives at least 5pts even when 3% retraced alone gives 2');
+ assert.equal(at65.score,65);
+ assert.equal(at65.breakdown.retracedPct,5,'confirmed rejection candle gives at least 5pts even when 3% retraced alone gives 2');
+ assert.equal(at65.grade,'C');
+ assert.equal(at65.pass,false);
+ assert.equal(at65.sizeMult,0);
+ // Exactly 70점 B-grade (1.0x legacy sizing): ATR 7.1x 8 + retraced 7% 5 (WICK floor 5) + RR 1.0 2 -> 25+10+10+8+5+5+2+5 = 70.
+ const exactB=scoreScalpSetup({
+  direction:'SHORT',
+  evidence:{movePct:5.2,moveAtr:7.1,retracedPct:7,rejection:'WICK',climaxVolumeRatio:5.5,rsiPeak:82},
+  trend4h:'range',btcTrend4h:'range',netRR:1.0,
+ });
+ assert.equal(exactB.score,70);
  assert.equal(exactB.grade,'B');
  assert.equal(exactB.pass,true);
  assert.equal(exactB.sizeMult,1);
@@ -117,7 +128,7 @@ test('scoreScalpSetup scores perfect S-grade (100), B-grade (65), and blocked D-
 });
 
 test('ScalpExecutor default score gate blocks low-score against-trend setup and scales up A/S setups by 1.25x',async()=>{
- // 1) Low score (<65): LONG against 4H downtrend & BTC downtrend -> blocked with SCORE_BELOW_MINIMUM
+ // 1) Low score (<70): LONG against 4H downtrend & BTC downtrend -> blocked with SCORE_BELOW_MINIMUM
  const vLow=mockVenue();
  const exLow=new ScalpExecutor({
   config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false},
@@ -133,7 +144,7 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  await exLow.scan();
  assert.equal(exLow.store.open.length,0);
  assert.equal(exLow.store.skips.at(-1).reason,'SCORE_BELOW_MINIMUM');
- assert.match(exLow.store.skips.at(-1).detail,/점\/65점/);
+ assert.match(exLow.store.skips.at(-1).detail,/점\/70점/);
  assert.ok(scalpReasonKo('SCORE_BELOW_MINIMUM').includes('점수 미달'));
 
  // 2) High score (>=70): LONG with 4H uptrend + BTC uptrend -> enters with 1.25x risk boost vs flat 1.0x
@@ -156,9 +167,9 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  assert.equal(a.ex.store.open.length,1);
  assert.equal(b.ex.store.open.length,1);
  const pA=a.ex.store.open[0],pB=b.ex.store.open[0];
- // 25+20+15+5(atr 27.6x)+9(retraced 13%)+5+4(RR 1.33)+5 = 88 (S-grade with BTC up4h). Was 85 under the 5-point steps.
+ // 25+20+15+5(atr 27.6x)+9(retraced 13%)+5+4(RR 1.33)+5 = 88 (A+ 85~89 with BTC up4h). Was 85 under the 5-point steps.
  assert.equal(pA.scalpScore.score,88);
- assert.equal(pA.scalpScore.grade,'S');
+ assert.equal(pA.scalpScore.grade,'A+');
  assert.equal(pA.scalpScore.sizeMult,1.25);
  assert.equal(pA.btcTrend4h,'up');
  assert.ok(pA.qty>pB.qty*1.20&&pA.qty<pB.qty*1.30,`expected ~1.25x qty boost: ${pA.qty} vs ${pB.qty}`);
@@ -166,25 +177,29 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  // Verify Telegram OPENED notice, journal line, status, runtimeSummary, and UI badges
  const opened=a.ex.store.events.find(e=>e.type==='OPENED');
  const tg=scalpEventText(opened);
- assert.match(tg,/점수 88점\(S급 · 비중 1\.25x\)/);
+ assert.match(tg,/점수 88점\(A\+급 · 비중 1\.25x\)/);
  const jl=journalLine({...pA,closedAt:T0+60000,closeReason:'EARLY_TAKE_PROFIT',netUSD:20});
  assert.equal(jl.score.score,88);
  assert.equal(jl.btcTrend4h,'up');
  const card=scalpPositionCardHTML(pA);
- assert.match(card,/88점 S급 · 1\.25x/);
+ assert.match(card,/88점 A\+급 · 1\.25x/);
  const st=a.ex.status();
- assert.equal(st.settings.minScore,65);
- assert.equal(st.settings.highScore,70);
+ assert.equal(st.settings.minScore,70);
+ assert.equal(st.settings.highScore,80);
  assert.equal(st.settings.highScoreSizeMult,1.25);
- assert.equal(a.ex.runtimeSummary().minScore,65);
+ assert.equal(a.ex.runtimeSummary().minScore,70);
  const details=scalpDetailsHTML(st);
- assert.match(details,/100점 신호 점수 65점 이상 진입 \(70점\+ 비중 1\.25배\)/);
+ // The legacy "highScore+ 1.25배" clause shows only with tier sizing off (as in this executor).
+ assert.match(details,/100점 신호 점수 70점 이상 진입 \(80점\+ 비중 1\.25배\)/);
+ assert.doesNotMatch(scalpDetailsHTML({...st,settings:{...st.settings,scoreTierSizing:true}}),/80점\+ 비중 1\.25배/);
  assert.match(details,/2\.5% 이상 통합 점수 판별 \(매물대 강제 해제\)/);
  assert.match(details,/name="minScore"/);
- assert.match(details,/S급 \(80\+\)/);
- // 1-point totals (2026-11-25): A is 70~79 and B 65~69 (the 5-point labels were "70~75" / "65").
- assert.match(details,/A급 \(70~79\)/);
- assert.match(details,/B급 \(65~69\)/);
+ // Grades B / B+ / A / A+ / S from 70 / 75 / 80 / 85 / 90 (user 2026-11-25 08:28; the 5-point labels were "S 80+ / A 70~75 / B 65").
+ assert.match(details,/S급 \(90\+\)/);
+ assert.match(details,/A\+급 \(85~89\)/);
+ assert.match(details,/A급 \(80~84\)/);
+ assert.match(details,/B\+급 \(75~79\)/);
+ assert.match(details,/B급 \(70~74\)/);
 });
 
 test('unified 2.5%+ score gate enters high-confluence 3% move without 4H/1D zone reads and tracks byGrade stats',async()=>{
@@ -215,21 +230,27 @@ test('unified 2.5%+ score gate enters high-confluence 3% move without 4H/1D zone
  ex.arm();
  await ex.scan();
  assert.equal(zoneCalls,0,'unified 2.5%+ score gate must not call 4H/1D zoneCandles');
- assert.equal(ex.store.open.length,1,'high-confluence 3% move passes >=65 unified score gate');
+ assert.equal(ex.store.open.length,1,'high-confluence 3% move passes >=70 unified score gate');
  assert.equal(ex.store.open[0].kind,'MOVE_REVERSAL');
  assert.ok(ex.store.open[0].evidence.movePct>=2.5&&ex.store.open[0].evidence.movePct<3.5);
- // 14 (move 3.35%) + 20 + 15 + 15 (ATR 4.48x) + 7 (retraced 10.7%) + 5 + 2 (RR 1.03) + 4 (RSI 20.3) = 82: S-grade
+ // 14 (move 3.35%) + 20 + 15 + 15 (ATR 4.48x) + 7 (retraced 10.7%) + 5 + 2 (RR 1.03) + 4 (RSI 20.3) = 82: A (80~84)
  // (was 70, A-grade, under the 5-point steps: a 3.35% move scored 5, now 14).
  assert.equal(ex.store.open[0].scalpScore.score,82);
- assert.equal(ex.store.open[0].scalpScore.grade,'S');
+ assert.equal(ex.store.open[0].scalpScore.grade,'A');
 
- // Close trade and verify stats().byGrade tracks S/A/B accurately
+ // Close trade and verify stats().byGrade tracks S/A+/A/B+/B accurately
  ex.store.closed.push({...ex.store.open.pop(),status:'CLOSED',closedAt:T0+60000,closeReason:'EARLY_TAKE_PROFIT',netUSD:25.5});
  const st=ex.stats();
- assert.equal(st.byGrade.S.trades,1);
- assert.equal(st.byGrade.S.netUSD,25.5);
- assert.equal(st.byGrade.A.trades,0);
- assert.equal(st.byGrade.B.trades,0);
+ assert.deepEqual(Object.keys(st.byGrade),['S','A+','A','B+','B']);
+ assert.equal(st.byGrade.A.trades,1);
+ assert.equal(st.byGrade.A.netUSD,25.5);
+ for(const g of ['S','A+','B+','B'])assert.equal(st.byGrade[g].trades,0,g);
+ // The stats grade comes from the entry total on today's edges, not the saved letter (a pre-2026-11-25 'S' at 82 is A now).
+ ex.store.closed.push({id:'old',symbol:'XUSDT',direction:'LONG',closedAt:T0,closeReason:'EARLY_TAKE_PROFIT',netUSD:3,scalpScore:{score:76,grade:'A'}},
+  {id:'old2',symbol:'YUSDT',direction:'LONG',closedAt:T0,closeReason:'EARLY_TAKE_PROFIT',netUSD:1,scalpScore:{grade:'S'}});
+ const st2=ex.stats();
+ assert.equal(st2.byGrade['B+'].trades,1,'76 -> B+');
+ assert.equal(st2.byGrade.S.trades,1,'no total: the saved letter');
 });
 
 test('What-If simulator filters by minScore, retroactively scores legacy rows, and unlocks SCORE_BELOW_MINIMUM',async()=>{
@@ -330,15 +351,15 @@ test('per-symbol loss cooldown blocks rapid re-entry after recent loss or 2 same
  });
  assert.match(closedHtml,/80점 S급/);
 
- // 4) scoreSummary tracks passed / nearMiss (60~64) / low (<=59, 1-point totals) and renders in scalpDetailsHTML
+ // 4) scoreSummary tracks passed / nearMiss (65~69 under the 70 gate) / low (<=64, 1-point totals) and renders in scalpDetailsHTML
  ex1.store.skips.push(
-  {at:T0-1000,symbol:'XUSDT',reason:'SCORE_BELOW_MINIMUM',score:60,grade:'C'},
+  {at:T0-1000,symbol:'XUSDT',reason:'SCORE_BELOW_MINIMUM',score:66,grade:'C'},
   {at:T0-2000,symbol:'YUSDT',reason:'SCORE_BELOW_MINIMUM',score:45,grade:'D'},
  );
  const st1=ex1.status();
- assert.deepEqual(st1.scoreSummary,{minScore:65,nearFloor:60,passed:1,nearMiss:1,low:1});
+ assert.deepEqual(st1.scoreSummary,{minScore:70,nearFloor:65,passed:1,nearMiss:1,low:1});
  const det1=scalpDetailsHTML(st1);
- assert.match(det1,/점수 분포: 통과\(65점\+\) <b>1건<\/b> · 턱걸이 차단\(60~64점\) <b>1건<\/b> · 하위 차단\(59점 이하\) <b>1건<\/b>/);
+ assert.match(det1,/점수 분포: 통과\(70점\+\) <b>1건<\/b> · 턱걸이 차단\(65~69점\) <b>1건<\/b> · 하위 차단\(64점 이하\) <b>1건<\/b>/);
 });
 
 test('Combo B / C7 profit-max suite: Post-Only maker entry, disabled 15m fallback, and +16% ROE 25% partial TP / 75% runner',async()=>{
@@ -482,7 +503,7 @@ test('C7 confirmed-bounce sizing (1.35x >=20%, 0.8x <20%), +16% / 25% partial TP
  assert.match(card,/75점 A급 · 1\.35x/);
 });
 
-test('gentle forward score tier sizing (0.75/1.0/1.2/1.4x, fixed initial cap), Telegram notice, and 1B UI rules banner',async()=>{
+test('score tier sizing by grade (B 0.75 / B+ 0.9 / A 1.0 / A+ 1.2 / S 1.4x, fixed initial cap), Telegram notice, and 1B UI rules banner',async()=>{
  const {scalpScoreTierMultiplier,SCALP_REPEAT_SCALE_IN}=await import('../scalp_executor.mjs');
  const cfg=scalpExecConfig({});
  assert.equal(cfg.scoreTierSizing,true);
@@ -491,27 +512,35 @@ test('gentle forward score tier sizing (0.75/1.0/1.2/1.4x, fixed initial cap), T
  assert.deepEqual(SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),[1.0,1.5]);
  assert.deepEqual(SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),[0.75,0.75]);
 
+ // User 2026-11-25 08:28: B 70~74 0.75x, B+ 75~79 0.9x, A 80~84 1.0x, A+ 85~89 1.2x, S 90+ 1.4x (below the gate reads B; it never trades).
  assert.deepEqual(scalpScoreTierMultiplier(65,cfg),{active:true,tier:'B',mult:0.75});
- assert.deepEqual(scalpScoreTierMultiplier(72,cfg),{active:true,tier:'A',mult:1.0});
- assert.deepEqual(scalpScoreTierMultiplier(77,cfg),{active:true,tier:'A+',mult:1.2});
- assert.deepEqual(scalpScoreTierMultiplier(85,cfg),{active:true,tier:'S',mult:1.4});
+ assert.deepEqual(scalpScoreTierMultiplier(70,cfg),{active:true,tier:'B',mult:0.75});
+ assert.deepEqual(scalpScoreTierMultiplier(74,cfg),{active:true,tier:'B',mult:0.75});
+ assert.deepEqual(scalpScoreTierMultiplier(75,cfg),{active:true,tier:'B+',mult:0.9});
+ assert.deepEqual(scalpScoreTierMultiplier(79,cfg),{active:true,tier:'B+',mult:0.9});
+ assert.deepEqual(scalpScoreTierMultiplier(80,cfg),{active:true,tier:'A',mult:1.0});
+ assert.deepEqual(scalpScoreTierMultiplier(84,cfg),{active:true,tier:'A',mult:1.0});
+ assert.deepEqual(scalpScoreTierMultiplier(85,cfg),{active:true,tier:'A+',mult:1.2});
+ assert.deepEqual(scalpScoreTierMultiplier(89,cfg),{active:true,tier:'A+',mult:1.2});
+ assert.deepEqual(scalpScoreTierMultiplier(90,cfg),{active:true,tier:'S',mult:1.4});
+ assert.deepEqual(scalpScoreTierMultiplier(100,cfg),{active:true,tier:'S',mult:1.4});
  assert.deepEqual(scalpScoreTierMultiplier(85,{...cfg,scoreTierSizing:false}),{active:false,tier:null,mult:1});
 
- const openTg=scalpEventText({type:'OPENED',symbol:'HUSDT',direction:'SHORT',leverage:10,entry:0.1,stop:0.105,stopLossEnabled:false,targets:[0.095],parts:[100],riskUSD:25,movePct:5.2,volumeX:3.4,score:75,grade:'A',sizeMult:1.35,scoreTierMult:1.2});
- assert.match(openTg,/점수 75점\(A급 · 비중 1\.35x · 점수배수 1\.2x\)/);
+ const openTg=scalpEventText({type:'OPENED',symbol:'HUSDT',direction:'SHORT',leverage:10,entry:0.1,stop:0.105,stopLossEnabled:false,targets:[0.095],parts:[100],riskUSD:25,movePct:5.2,volumeX:3.4,score:87,grade:'A+',sizeMult:1.35,scoreTierMult:1.2});
+ assert.match(openTg,/점수 87점\(A\+급 · 비중 1\.35x · 점수배수 1\.2x\)/);
 
  const html=scalpDetailsHTML({
   mode:'TESTNET',credentials:true,armed:true,stats:{},
   settings:{
    sides:['LONG','SHORT'],minMovePct:5,zoneMinMovePct:2.5,climaxVolume:2.5,stopLossEnabled:false,repeatedScaleIn:true,
    profitOnlyMaxHoldMin:240,defensiveAddRoePct:40,emergencyStopRoePct:75,maxScaleInAdds:2,
-   scaleInSteps:[1,1.5],scaleInMults:[0.75,0.75],minScore:65,scoreTierSizing:true,scoreUnifiedMove:true,
+   scaleInSteps:[1,1.5],scaleInMults:[0.75,0.75],minScore:70,scoreTierSizing:true,scoreUnifiedMove:true,
    riskPct:0.75,leverage:10,dailyLossPct:3,maxDriftPct:0.4,
   },
  });
  assert.match(html,/방어추매 -40% · 최후손절 -75%/);
  assert.match(html,/1R→1\.5R · 0\.75x\/0\.75x/);
- assert.match(html,/점수배수 65~69 0\.75x \/ 70~74 1x \/ 75~79 1\.2x \/ 80\+ 1\.4x \(초기캡 고정\)/);
+ assert.match(html,/점수배수 70~74 0\.75x \/ 75~79 0\.9x \/ 80~84 1x \/ 85~89 1\.2x \/ 90\+ 1\.4x \(초기캡 고정\)/);
 });
 
 test('extreme funding + surging 30m OI squeeze guard blocks counter-squeeze entries while allowing with-squeeze and OI-flushing setups',async()=>{
