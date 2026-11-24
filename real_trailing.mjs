@@ -74,9 +74,11 @@ export function userTpSlOnLane(p,orders,ownIds=new Set()){
   const cid=String(o.clientOrderId||'').toLowerCase();if(cid.startsWith('cp')||cid.startsWith('optr'))return false; // copy's own / our lock stop
   const lane=String(o.positionSide||'BOTH').toUpperCase();
   if(lane!=='BOTH'&&lane!==dir)return false;
-  // A TP / SL of this position sits on its closing side (an order that states no side is counted: fail safe).
-  const side=String(o.side||'').toUpperCase();
-  return PROTECT_TYPE.test(String(o.type||''))&&(!side||side===closeSide);
+  // A TP / SL of this position sits on its closing side (an order that states no side is counted: fail safe). A limit
+  // take-profit counts too (review 2026-11-25): reduce-only / closePosition, or in hedge mode any order of this side.
+  const side=String(o.side||'').toUpperCase(),flag=v=>v===true||String(v).toLowerCase()==='true';
+  const closing=flag(o.reduceOnly)||flag(o.closePosition)||lane===dir;
+  return (PROTECT_TYPE.test(String(o.type||''))||closing)&&(!side||side===closeSide);
  });
 }
 const money=v=>{const n=Number(v);return v==null||!Number.isFinite(n)?'—':`${n>=0?'+':'−'}$${Math.abs(n).toFixed(2)}`};

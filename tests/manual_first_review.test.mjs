@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {CopyExecutor,copyConfig} from '../copy_executor.mjs';
 import {copyEventText} from '../copy_telegram.mjs';
+import {userTpSlOnLane} from '../real_trailing.mjs';
 
 const OPEN='📌 포지션 진입\n━━━━━━━━━━━━━━━━\n🪙 TNSRUSDT  🔴 Short  ×5\n━━━━━━━━━━━━━━━━\n진입가　0.05296 USDT\n현재가　0.05100 USDT\n수량　　880　마진 9.01 USDT\n손익　　🟢 +1.72 USDT';
 const CHANGE=(a,b)=>`📊 포지션 변경\n━━━━━━━━━━━━━━━━\n🪙 TNSRUSDT  🔴 Short\n━━━━━━━━━━━━━━━━\n수량　　${a} → ${b}\n현재가　0.05300 USDT\n손익　　🔴 -0.51 USDT`;
@@ -201,6 +202,13 @@ test('a real-trailing lock stop (optr) on the copy\'s own lane does not block th
  assert.equal((await ex.msg(CHANGE(1760,2640))).reason,'MANUAL_FIRST','a user stop still blocks');
 });
 
+test('real trailing: a limit take-profit of the user (reduce-only, or a hedge close order) protects the manual position too',async()=>{
+ const p={venueSymbol:'ETH-USDT',direction:'LONG'};
+ assert.equal(userTpSlOnLane(p,[{venueSymbol:'ETH-USDT',orderId:'1',clientOrderId:'m1',type:'LIMIT',side:'SELL',positionSide:'BOTH',reduceOnly:true}]),true);
+ assert.equal(userTpSlOnLane(p,[{venueSymbol:'ETH-USDT',orderId:'2',clientOrderId:'m2',type:'LIMIT',side:'SELL',positionSide:'LONG',reduceOnly:false}]),true);
+ assert.equal(userTpSlOnLane(p,[{venueSymbol:'ETH-USDT',orderId:'3',clientOrderId:'m3',type:'LIMIT',side:'SELL',positionSide:'BOTH',reduceOnly:false}]),false,'a one-way opening order is not a TP');
+ assert.equal(userTpSlOnLane(p,[{venueSymbol:'ETH-USDT',orderId:'4',clientOrderId:'m4',type:'LIMIT',side:'BUY',positionSide:'LONG'}]),false,'a hedge add is not a TP');
+});
 
 test('an entry whose answer was lost is taken over at its own fill, not at a lane that a manual position joined meanwhile',async()=>{
  const v=laneVenue();const ex=copy(v);
