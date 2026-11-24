@@ -73,7 +73,10 @@ export class CopyListenerHealth{
  }
  /** Why the listener counts as down right now, or null. */
  problem(now=this.now()){
-  const since=Math.max(this.store.lastBeatAt||0,this.bootAt);
+  // Never a heartbeat yet (review 2026-11-24): no listener here (copy is on with the testnet mode, also on Windows or
+  // without copy.sh), or the one from before this update still runs without heartbeats. Waiting, not "끊김".
+  if(!this.store.lastBeatAt)return null;
+  const since=Math.max(this.store.lastBeatAt,this.bootAt);
   if(now-since>=this.staleMs)return {code:'NO_HEARTBEAT',minutes:Math.floor((now-since)/60000)};
   if(this.store.disconnectedSince&&now-this.store.disconnectedSince>=this.disconnectMs)
    return {code:'TELEGRAM_DISCONNECTED',minutes:Math.floor((now-this.store.disconnectedSince)/60000)};

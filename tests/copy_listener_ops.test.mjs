@@ -176,8 +176,21 @@ test('listener health: an old heartbeat from before a server restart does not al
  fail=false;t+=30000;await h.check();assert.equal(sent.length,1,'sent on the next check');
  // A recovery after a down notice that never went out is not announced.
  const quiet=new CopyListenerHealth({now:()=>t,send:async()=>{throw Error('x')}});
- t+=6*60000;await quiet.check();const s2=[];quiet.send=async x=>{s2.push(x);return true};
+ await quiet.record({connected:true});
+ t+=6*60000;await quiet.check();assert.equal(quiet.status().state,'DOWN');const s2=[];quiet.send=async x=>{s2.push(x);return true};
  await quiet.record({connected:true});assert.equal(s2.length,0);assert.equal(quiet.status().state,'OK');
+});
+
+// Review 2026-11-24: COPY is on with the testnet signal mode, also where no listener runs (Windows, no copy.sh) and right
+// after this update while the old listener (no heartbeat) still runs. No heartbeat ever seen = waiting, not "끊김".
+test('listener health: no "끊김" before the first heartbeat ever (no listener, or the old one without heartbeats)',async()=>{
+ const dir=tmp(),sent=[];let t=1e12;
+ let h=new CopyListenerHealth({directory:dir,now:()=>t,send:async x=>{sent.push(x);return true}});
+ t+=30*60000;await h.check();assert.equal(sent.length,0);assert.equal(h.status().state,'WAITING');
+ h=new CopyListenerHealth({directory:dir,now:()=>t,send:async x=>{sent.push(x);return true}});
+ t+=30*60000;await h.check();assert.equal(sent.length,0,'not after a server restart either');
+ await h.record({connected:true});t+=6*60000;await h.check();
+ assert.equal(sent.length,1,'once a heartbeat was seen, silence alerts');assert.match(sent[0],/카피 수신 끊김/);
 });
 
 // ---- Dedupe on /api/copy/message (copyTrader.handle) ------------------------------------------------------------------
