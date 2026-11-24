@@ -56,10 +56,11 @@ const G={
  TESTNET_BUDGET_UNAVAILABLE:['limit','한도 계산 실패',()=>'공동 위험 한도를 계산할 자료(잔고·손익)를 읽지 못해 안전하게 건너뜁니다.'],
  NO_BALANCE:['limit','잔고 확인 실패',()=>'테스트넷 잔고를 읽지 못했거나 오래된 값이라 주문 크기를 정할 수 없습니다.'],
  MAX_OPEN_POSITIONS:['limit','동시 보유 한도',S=>`동시에 가질 수 있는 단타 포지션 수(${fin(S.maxOpen)&&Number(S.maxOpen)>0?n(S.maxOpen)+'개':'제한 없음'})를 채웠습니다.`],
+ MAX_SAME_SIDE:['limit','같은 방향 한도',S=>`같은 방향(롱 또는 숏)으로 동시에 보유할 수 있는 최대 종목 수(${n(S.maxSameSide)}개)를 채웠습니다.`],
  SYMBOL_ALREADY_HELD:['limit','같은 종목 보유 중',()=>'이 종목을 이미 단타로 갖고 있거나 진입 중입니다(종목당 1개).'],
  SYMBOL_HELD_BY_OTHER_STRATEGY:['limit','다른 전략 보유',()=>'신호 전략이나 카피가 같은 종목을 갖고 있어 겹치지 않게 건너뜁니다.'],
  SYMBOL_LOSS_COOLDOWN:['limit','종목 손실 휴식',S=>`이 종목에서 손실 뒤 ${n(S.symbolLossCooldownMin)}분 동안, 또는 오늘 ${n(S.symbolDailyMaxLosses)}번 지면 자정까지 쉽니다.`],
- BTC_DUMP_GUARD:['limit','BTC 급변 방어',S=>`BTC가 5분에 ${n(S.btcGuard5mPct)}% 또는 15분에 ${n(S.btcGuard15mPct)}% 넘게 급락(롱 보류)·급등(숏 보류)했습니다.`],
+ BTC_DUMP_GUARD:['limit','BTC 급변 방어',S=>`BTC가 5분에 ${n(S.btcGuard5mPct)}% 또는 15분에 ${n(S.btcGuard15mPct)}% 넘게 급락(롱 보류)·급등(숏 보류)했습니다(직전 5분봉이 ${n(S.btcGuardRelease5mPct)}% 이상 반전하면 해제).`],
  SHORT_SQUEEZE_GUARD:['limit','스퀴즈 위험 보류',S=>`펀딩비가 ±${n(S.squeezeFundingPct)}% 넘게 쏠리고 30분 미결제약정이 ${n(S.squeezeOiChange30mPct)}% 넘게 늘어 반대로 튈 위험이 큽니다.`],
  UNRESOLVED_ORDER_STATE:['limit','확인 안 된 주문',()=>'결과를 아직 확인하지 못한 주문이 있어 새 진입을 잠시 멈춥니다.'],
  RATE_LIMIT_COOLDOWN:['limit','요청 과다 휴식',()=>'거래소 요청 한도에 닿아 1분 동안 쉬고 있습니다.'],
@@ -148,17 +149,18 @@ export const REASON_ALIASES=Object.freeze({
  UNKNOWN:'ENTRY_OUTCOME_UNKNOWN',ENTRY_FILL_UNCONFIRMED:'ENTRY_OUTCOME_UNKNOWN',LEVERAGE_NOT_CONFIRMED:'MARGIN_SETUP_FAILED',CROSS_NOT_CONFIRMED:'MARGIN_SETUP_FAILED',
  VENUE_ERROR_101429:'VENUE_POSITION_LIMIT',VENUE_ERROR_100410:'HTTP_429',NO_PROTECTIVE_STOP:'NO_STOP'});
 
-/** The 8 items of scoreScalpSetup (scalp_reversal.mjs; max = SCALP_SCORE_WEIGHTS) and the orderflow OI bonus. */
+/** The 8 items of scoreScalpSetup (scalp_reversal.mjs; max = SCALP_SCORE_WEIGHTS) and the orderflow OI/CVD bonuses. */
 export const SCORE_ITEMS=Object.freeze([
  ['movePct','급변',25,()=>'급변 폭 — 5% 이상 25점 · 3.5% 이상 15점 · 2.5% 이상 5점'],
  ['trend4h','4H 추세',20,()=>'코인 4시간 추세 — 진입 방향과 같으면 20점 · 횡보 10점 · 반대 0점'],
  ['btcTrend4h','BTC',15,()=>'BTC 4시간 추세 — 진입 방향과 같으면 15점 · 횡보 10점 · 반대 0점'],
- ['moveAtr','ATR',15,()=>'급변 크기 ÷ 평소 변동폭(ATR) — 3~4.5배 15점 · 4.5~6배 10점 · 그 밖 0점(6배 이상은 뉴스·청산성 급변)'],
- ['retracedPct','반등',10,()=>'진입 전 되돌림 — 15~30% 10점 · 10~15% 5점 · 10% 이하 0점(떨어지는 칼날)'],
+ ['moveAtr','ATR',15,()=>'급변 크기 ÷ 평소 변동폭(ATR) — 3~4.5배 15점 · 4.5~6배 10점 · 6배 이상 5점'],
+ ['retracedPct','반등',10,()=>'진입 전 되돌림 — 15~30% 10점 · 10~15%·30~35%·거부캔들 확인 시 5점 · 그 밖 0점'],
  ['climaxVolume','거래량',5,()=>'급변 봉 거래량이 평소의 5배 이상이면 5점'],
  ['netRR','손익비',5,()=>'비용을 뺀 1차 목표 손익비가 1.2 이상이면 5점'],
  ['rsiExtreme','RSI',5,()=>'RSI(14)가 롱은 22 이하, 숏은 78 이상까지 가면 5점'],
- ['oiBonus','수급',null,S=>`30분 미결제약정(OI)이 1% 넘게 줄면(청산 소진) +${n(S.orderflowOiBonus)}점 보너스`]]);
+ ['oiBonus','수급',null,S=>`30분 미결제약정(OI)이 1% 넘게 줄면(청산 소진) +${n(S.orderflowOiBonus)}점 보너스`],
+ ['cvdBonus','CVD',null,S=>`5분 CVD가 진입 방향으로 15% 넘게 강하게 반전하면 +${n(S.orderflowCvdBonus)}점 보너스`]]);
 
 const entry=code=>{const c=REASON_ALIASES[code]||code,g=G[c];return g?{code:c,cat:g[0],label:g[1],desc:g[2]}:null};
 /** Every glossary code (canonical, each once). */
@@ -200,13 +202,15 @@ export function scoreParts(x){
  if(!parts){const p=/급변(\d+)·4H(\d+)·BTC(\d+)·ATR(\d+)·반등(\d+)·거래량(\d+)·RR(\d+)·RSI(\d+)/.exec(d);
   if(p)parts=Object.fromEntries(SCORE_ITEMS.slice(0,8).map(([k],i)=>[k,Number(p[i+1])]))}
  if(parts&&fin(x?.oiBonus)&&Number(x.oiBonus)>0)parts.oiBonus=Number(x.oiBonus);
+ if(parts&&fin(x?.cvdBonus)&&Number(x.cvdBonus)>0)parts.cvdBonus=Number(x.cvdBonus);
  return parts||score!=null?{parts,score,min,grade}:null;
 }
 /** "급변 5 · 4H 추세 0 · … / 합계 30 (기준 65 · D급)" with a tooltip per item (what it measures, max points). */
 export function scoreItemsHTML(x,S={}){
  const sp=scoreParts(x);if(!sp)return '';
- const items=sp.parts?SCORE_ITEMS.filter(([k])=>k!=='oiBonus'||fin(sp.parts[k])&&sp.parts[k]>0).map(([k,label,max,rule])=>
-  tipHTML(`${label} ${fin(sp.parts[k])?(k==='oiBonus'?'+':'')+Number(sp.parts[k]):'—'}`,`${rule(S||{})}${max?` (최대 ${max}점)`:''}`,max?scoreItemClass(sp.parts[k],max):'rz-i rz-i-full rz-w-lo')).join(' · '):'';
+ const isBonus=k=>k==='oiBonus'||k==='cvdBonus';
+ const items=sp.parts?SCORE_ITEMS.filter(([k])=>!isBonus(k)||fin(sp.parts[k])&&sp.parts[k]>0).map(([k,label,max,rule])=>
+  tipHTML(`${label} ${fin(sp.parts[k])?(isBonus(k)?'+':'')+Number(sp.parts[k]):'—'}`,`${rule(S||{})}${max?` (최대 ${max}점)`:''}`,max?scoreItemClass(sp.parts[k],max):'rz-i rz-i-full rz-w-lo')).join(' · '):'';
  const min=sp.min??(fin(S?.minScore)?Number(S.minScore):null),tier=scoreTier(sp.score);
  // The pass / fail line (the minimum score) is said in words too, not by colour alone.
  const pass=sp.score!=null&&min!=null?sp.score>=min:null;

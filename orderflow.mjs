@@ -458,12 +458,13 @@ export function analyzeOrderflowSeries({
  */
 export function evaluateScalpOrderflowBoost(snapshot, direction, opts = {}) {
   const oiBonusPts = Number.isFinite(Number(opts.oiBonus)) ? Number(opts.oiBonus) : 5;
+  const cvdBonusPts = Number.isFinite(Number(opts.cvdBonus)) ? Number(opts.cvdBonus) : 5;
   const oiFlushPct = Number.isFinite(Number(opts.oiFlushThresholdPct)) ? Number(opts.oiFlushThresholdPct) : -1.0;
   const cvdThresh = Number.isFinite(Number(opts.cvdFlipThreshold)) ? Number(opts.cvdFlipThreshold) : 0.15;
   const cvdSizeMult = Number.isFinite(Number(opts.cvdSizeMult)) ? Number(opts.cvdSizeMult) : 1.5;
 
   if (!snapshot || !snapshot.ok) {
-    return { available: false, oiBonus: 0, cvdBoost: false, sizeMult: 1, oiChange30mPct: null, dirDeltaNorm: null, summaryKo: '' };
+    return { available: false, oiBonus: 0, cvdBonus: 0, totalBonus: 0, cvdBoost: false, sizeMult: 1, oiChange30mPct: null, dirDeltaNorm: null, summaryKo: '' };
   }
   const dir = direction === 'LONG' ? 1 : direction === 'SHORT' ? -1 : 0;
   const oi30 = snapshot.oi?.change30mPct;
@@ -472,15 +473,18 @@ export function evaluateScalpOrderflowBoost(snapshot, direction, opts = {}) {
 
   const oiBonus = Number.isFinite(Number(oi30)) && Number(oi30) <= oiFlushPct ? oiBonusPts : 0;
   const cvdBoost = dirDeltaNorm != null && dirDeltaNorm > cvdThresh;
+  const cvdBonus = cvdBoost && cvdBonusPts > 0 ? cvdBonusPts : 0;
   const sizeMult = cvdBoost ? cvdSizeMult : 1;
 
   const tags = [];
   if (oiBonus > 0) tags.push(`OI 소진 ${oi30}%(+${oiBonus}점)`);
-  if (cvdBoost) tags.push(`CVD 강한반전 +${Math.round(dirDeltaNorm * 100)}%(${cvdSizeMult}x)`);
+  if (cvdBoost) tags.push(`CVD 강한반전 +${Math.round(dirDeltaNorm * 100)}%(${cvdBonus > 0 ? `+${cvdBonus}점·` : ''}${cvdSizeMult}x)`);
   return {
     available: true,
     source: snapshot.source || null,
     oiBonus,
+    cvdBonus,
+    totalBonus: oiBonus + cvdBonus,
     cvdBoost,
     sizeMult,
     oiChange30mPct: Number.isFinite(Number(oi30)) ? Number(oi30) : null,

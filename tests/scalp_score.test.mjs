@@ -70,35 +70,43 @@ test('scoreScalpSetup scores perfect S-grade (100), B-grade (65), and blocked D-
  assert.equal(perfect.sizeMult,1.25);
  assert.deepEqual(perfect.breakdown,{movePct:25,trend4h:20,btcTrend4h:15,moveAtr:15,retracedPct:10,climaxVolume:5,netRR:5,rsiExtreme:5});
 
- // SHORT mirror with extreme >=6x ATR blowoff (0 pts for ATR) & neutral range trends -> B-grade 65 (1.0x)
- const bGrade=scoreScalpSetup({
+ // SHORT mirror with >=6x ATR spike (5 pts under A-3) & neutral range trends -> A-grade 75 (1.25x)
+ const aGrade=scoreScalpSetup({
   direction:'SHORT',
   evidence:{movePct:5.2,moveAtr:7.1,retracedPct:18,climaxVolumeRatio:5.5,rsiPeak:82},
   trend4h:'range',btcTrend4h:null,netRR:1.3,
  });
- // 25 (move) + 10 (4h range) + 10 (btc null->range) + 0 (atr>=6) + 10 (retrace) + 5 (vol) + 5 (rr) + 5 (rsi>=78) = 70
- assert.equal(bGrade.score,70);
- assert.equal(bGrade.grade,'A');
- assert.equal(bGrade.sizeMult,1.25);
+ // 25 (move) + 10 (4h range) + 10 (btc null->range) + 5 (atr>=6) + 10 (retrace) + 5 (vol) + 5 (rr) + 5 (rsi>=78) = 75
+ assert.equal(aGrade.score,75);
+ assert.equal(aGrade.grade,'A');
+ assert.equal(aGrade.sizeMult,1.25);
+ assert.equal(aGrade.breakdown.moveAtr,5);
 
- // Exactly 65점 B-grade (1.0x sizing)
+ // Exactly 65점 B-grade (1.0x sizing): move 25 + 4h 10 + btc 10 + atr 5 + retrace 5 (confirmed WICK at <=10%) + vol 5 + rr 0 + rsi 5 = 65
  const exactB=scoreScalpSetup({
   direction:'SHORT',
-  evidence:{movePct:5.2,moveAtr:7.1,retracedPct:12,climaxVolumeRatio:5.5,rsiPeak:82},
-  trend4h:'range',btcTrend4h:'range',netRR:1.3,
+  evidence:{movePct:5.2,moveAtr:7.1,retracedPct:7,rejection:'WICK',climaxVolumeRatio:5.5,rsiPeak:82},
+  trend4h:'range',btcTrend4h:'range',netRR:1.0,
  });
  assert.equal(exactB.score,65);
+ assert.equal(exactB.breakdown.retracedPct,5,'confirmed rejection candle awards 5pts even when retracedPct <= 10%');
  assert.equal(exactB.grade,'B');
  assert.equal(exactB.pass,true);
  assert.equal(exactB.sizeMult,1);
 
- // Against-trend small move + blowoff ATR + falling knife -> D-grade blocked
+ // Strong B7 bounce (30~35% retraced) also awards 5pts instead of 0
+ const strongBounce=scoreScalpSetup({direction:'LONG',evidence:{movePct:4.0,moveAtr:4.0,retracedPct:33}});
+ assert.equal(strongBounce.breakdown.retracedPct,5);
+
+ // Against-trend small move + blowoff ATR + bare falling knife (no rejection) -> D-grade blocked
  const weak=scoreScalpSetup({
   direction:'LONG',
   evidence:{movePct:2.7,moveAtr:6.5,retracedPct:6,climaxVolumeRatio:3.2,rsiPeak:24},
   trend4h:'down',btcTrend4h:'down',netRR:0.9,
  });
- assert.equal(weak.score,5);
+ assert.equal(weak.score,10);
+ assert.equal(weak.breakdown.moveAtr,5);
+ assert.equal(weak.breakdown.retracedPct,0,'bare falling knife without rejection still scores 0');
  assert.equal(weak.grade,'D');
  assert.equal(weak.pass,false);
  assert.equal(weak.sizeMult,0);
@@ -144,7 +152,7 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  assert.equal(a.ex.store.open.length,1);
  assert.equal(b.ex.store.open.length,1);
  const pA=a.ex.store.open[0],pB=b.ex.store.open[0];
- assert.equal(pA.scalpScore.score,80); // 25+20+15+0+5+5+5+5 = 80 (S-grade with BTC up4h!)
+ assert.equal(pA.scalpScore.score,85); // 25+20+15+5(atr>=6)+5+5+5+5 = 85 (S-grade with BTC up4h!)
  assert.equal(pA.scalpScore.grade,'S');
  assert.equal(pA.scalpScore.sizeMult,1.25);
  assert.equal(pA.btcTrend4h,'up');
@@ -153,12 +161,12 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  // Verify Telegram OPENED notice, journal line, status, runtimeSummary, and UI badges
  const opened=a.ex.store.events.find(e=>e.type==='OPENED');
  const tg=scalpEventText(opened);
- assert.match(tg,/점수 80점\(S급 · 비중 1\.25x\)/);
+ assert.match(tg,/점수 85점\(S급 · 비중 1\.25x\)/);
  const jl=journalLine({...pA,closedAt:T0+60000,closeReason:'EARLY_TAKE_PROFIT',netUSD:20});
- assert.equal(jl.score.score,80);
+ assert.equal(jl.score.score,85);
  assert.equal(jl.btcTrend4h,'up');
  const card=scalpPositionCardHTML(pA);
- assert.match(card,/80점 S급 · 1\.25x/);
+ assert.match(card,/85점 S급 · 1\.25x/);
  const st=a.ex.status();
  assert.equal(st.settings.minScore,65);
  assert.equal(st.settings.highScore,70);
