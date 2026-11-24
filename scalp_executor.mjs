@@ -2392,7 +2392,8 @@ export class ScalpExecutor{
   if(L.zones?.bucket===b||L.zones?.retryAt>this.now())return L.zones.list||[];
   const st={},b4=await this.zoneBookOf(p.symbol,'4h',p.tickSize,st),b1=st.error?null:await this.zoneBookOf(p.symbol,'1d',p.tickSize,st);
   const now=this.now(),rows4h=this.zoneCache.get(p.symbol+'|4h')?.rows||null;
-  const list=strongZones({zones4h:b4?b4(now):null,zones1d:b1?b1(now):null,rows4h:Array.isArray(rows4h)?rows4h.slice(-180):null,direction:p.direction});
+  // Rejections from closed 4H candles only (the cached rows end with the candle still open; review 2026-11-24).
+  const list=strongZones({zones4h:b4?b4(now):null,zones1d:b1?b1(now):null,rows4h:Array.isArray(rows4h)?rows4h.filter(r=>Number(r?.[6])<now).slice(-180):null,direction:p.direction});
   // Nothing read: no zones now, read again in 5 minutes (not cached for the candle).
   L.zones={bucket:b4||b1?b:null,at:now,list,...(b4||b1?{}:{retryAt:now+5*60000})};
   return list;
@@ -2501,7 +2502,13 @@ export class ScalpExecutor{
   if(L.retryAfterAt&&nowTs<L.retryAfterAt)return;
   // Adds pause while new entries are blocked (switch off, day loss stop, kill switch), as the earlier adds did.
   if(this.#blocked(p.id))return;
-  const zones=await this.#ladderZones(p);
+  // No add before the price is zoneMinFrac of the spacing from the last fill (a nearer zone is never used), so nothing is
+  // read before that. The 4H / 1D read shares the scan's paced candle queue: the routine check waits at most 5 s for it
+  // and tries again next time (review 2026-11-24: it held the final-line checks of the other positions behind the scan).
+  const minLevel=Number(L.lastFill)*(1-dir*Number(L.spacingPct)*TRADER_LADDER.zoneMinFrac/100);
+  if(!(mark>0)||!(minLevel>0)||dir*(mark-minLevel)>0)return;
+  const zones=await withTimeout(this.#ladderZones(p),5000,null);
+  if(!Array.isArray(zones))return;
   const next=ladderNextAdd({direction:p.direction,lastFill:L.lastFill,spacingPct:L.spacingPct,zones});
   L.next=next;
   if(!next||!(mark>0)||dir*(mark-next.level)>0)return;
