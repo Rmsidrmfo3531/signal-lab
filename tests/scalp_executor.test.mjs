@@ -1830,3 +1830,35 @@ test('pump alert: a second alert for the coin during an evaluation keeps its own
  assert.deepEqual(results,[['777:2',true,undefined],['777:3',false,'ALREADY_SENT']]); // same coin, same candle
  assert.equal(ex.pumpWatch.size,0);assert.equal(placed(v,'MARKET').length,1,'one entry for the coin');
 });
+
+test('pump alert: a burst of 17 alerts — one evaluation at a time, one position per coin, total margin within the cap (review)',async()=>{
+ const syms=Array.from({length:17},(_,i)=>`P${String(i+1).padStart(2,'0')}USDT`);
+ // One fake venue per coin behind one TESTNET client (the shared fake reports SOL-USDT rows: renamed per coin).
+ const vs=new Map(syms.map(s=>[s.replace('USDT','-USDT'),venue({fillAt:SMALL_PX})])),pick=s=>vs.get(String(s));
+ const client={mode:'TESTNET',positionMode:async()=>({dualSidePosition:false}),
+  marginType:async s=>pick(s).client.marginType(s),setMarginType:async(...a)=>pick(a[0]).client.setMarginType(...a),
+  leverage:async s=>pick(s).client.leverage(s),setLeverage:async(...a)=>pick(a[0]).client.setLeverage(...a),
+  positions:async s=>s?(await pick(s).client.positions(s)).map(r=>({...r,symbol:s})):[],
+  openOrders:async s=>pick(s).client.openOrders(s),getOrder:async(s,q)=>pick(s).client.getOrder(s,q),cancelOrder:async(s,o)=>pick(s).client.cancelOrder(s,o),
+  placeOrder:async(p,o)=>pick(p.symbol).client.placeOrder(p,o)};
+ const {ex}=pumpMake({config:{maxMarginPct:1,maxTotalMarginPct:3}});
+ ex.client=client;ex.lastReconcileAt=Number.MAX_SAFE_INTEGER; // no position check in this test
+ ex.contracts=async()=>new Map([['BTCUSDT',BTC_C],...syms.map(s=>[s,{...SOL,symbol:s,venueSymbol:s.replace('USDT','-USDT')}])]);
+ let inflight=0,peak=0;const slow=async v=>{inflight++;peak=Math.max(peak,inflight);await new Promise(r=>setTimeout(r,2));inflight--;return v};
+ const base=ex.candles;ex.candles=async(s,iv,l)=>syms.includes(s)?slow(await base('SOLUSDT',iv,l)):base(s,iv,l);
+ ex.priceOf=async()=>slow(SMALL_PX);
+ ex.arm();
+ const first=await Promise.all(syms.map((s,i)=>ex.pumpAlert({...ALERT_DOWN,symbol:s,key:`777:${i}`})));
+ assert.equal(first.filter(r=>r.queued).length,16,'one evaluated at once, the others queued');
+ // Several ticks at the same moment (setInterval does not wait): still one evaluation at a time.
+ for(let k=0;k<3&&ex.pumpWatch.size;k++)await Promise.all([ex.tick(T0+1000+k),ex.tick(T0+1000+k),ex.tick(T0+1000+k)]);
+ assert.equal(peak,1,'never two evaluations at once');
+ const open=ex.store.open,margin=open.reduce((t,p)=>t+(p.size||p.qty)*(p.avg||p.entry)/p.leverage,0);
+ assert.ok(open.length>=1,JSON.stringify(ex.store.skips.slice(-3)));
+ assert.equal(new Set(open.map(p=>p.symbol)).size,open.length,'one position per coin');
+ assert.ok(margin<=10000*.03+1e-6,`margin ${margin} within 3 % of equity`);
+ const orders=[...vs.values()].flatMap(v=>placed(v,'MARKET'));
+ assert.equal(orders.length,open.length,'one entry order per position');
+ assert.ok(open.every(p=>p.trigger==='PUMP_ALERT'));
+ assert.deepEqual([open.length,ex.store.skipCounts.MARGIN_CAP],[3,14],'three fit under the 3 % cap, the other 14 refused');
+});
