@@ -28,7 +28,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {scalpReasonKo} from './scalp_telegram.mjs';
 import {livePositionView} from './live_overview.mjs';
-import {evaluateScalpOrderflowBoost} from './orderflow.mjs';
+import {evaluateScalpOrderflowBoost,evaluateScalpSqueezeGuard} from './orderflow.mjs';
 import {waitForFlat} from './live_orders.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,scalpMargin,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
@@ -190,6 +190,10 @@ export function scalpExecConfig(env=process.env){
   orderflowBoost:!['off','false','0','no'].includes(String(env.SCALP_ORDERFLOW_BOOST??'').trim().toLowerCase()),
   orderflowOiBonus:n('SCALP_ORDERFLOW_OI_BONUS',5,0,15),
   orderflowCvdSizeMult:n('SCALP_ORDERFLOW_CVD_SIZE_MULT',1.5,1,2),
+  // Extreme funding + surging 30m OI squeeze guard: block SHORT on <=-0.10% funding + >=+2% OI, LONG on >=+0.10% + >=+2% OI.
+  squeezeGuard:!['off','false','0','no'].includes(String(env.SCALP_SQUEEZE_GUARD??'').trim().toLowerCase()),
+  squeezeFundingPct:n('SCALP_SQUEEZE_FUNDING_PCT',0.10,0.01,2),
+  squeezeOiChange30mPct:n('SCALP_SQUEEZE_OI_30M_PCT',2.0,0,50),
   // Backtest-validated session asymmetry (40 coins, Train/OOS): EU(08-14 UTC / 17-23 KST) PF 0.96 -> 0.5x; US+Late(14-24 UTC / 23-09 KST) PF 2.25+ -> 1.15x.
   sessionWeighting:!['off','false','0','no'].includes(String(env.SCALP_SESSION_WEIGHTING??'').trim().toLowerCase()),
   sessionEuMult:n('SCALP_SESSION_EU_MULT',0.5,0.25,1.5),
@@ -778,8 +782,13 @@ export class ScalpExecutor{
    if(bounce.active&&scalpScore.pass)scalpScore={...scalpScore,sizeMult:bounce.mult,bounce};
    else if(tierEnabled&&scalpScore.pass)scalpScore={...scalpScore,sizeMult:1};
    // Backtest-validated orderflow boost (FJ, 40 coins Train/OOS): +5pt on 30m OI flush <=-1%, 1.5x sizing on CVD strong flip >15%.
-   if(this.config.orderflowBoost!==false&&typeof this.orderflow==='function'&&scalpScore.score>=Math.max(0,minSc-oiBonusCfg)){
-    const ofSnap=await withTimeout(Promise.resolve().then(()=>this.orderflow(u.symbol)),3500).catch(()=>null);
+   const wantOrderflowBoost=this.config.orderflowBoost!==false&&scalpScore.score>=Math.max(0,minSc-oiBonusCfg);
+   const wantSqueezeGuard=this.config.squeezeGuard!==false&&(minSc<=0||scalpScore.score>=Math.max(0,minSc-oiBonusCfg));
+   let ofSnap=null;
+   if((wantOrderflowBoost||wantSqueezeGuard)&&typeof this.orderflow==='function'){
+    ofSnap=await withTimeout(Promise.resolve().then(()=>this.orderflow(u.symbol)),3500).catch(()=>null);
+   }
+   if(wantOrderflowBoost&&ofSnap){
     const boost=evaluateScalpOrderflowBoost(ofSnap,det.direction,{oiBonus:oiBonusCfg,cvdSizeMult:Number(this.config.orderflowCvdSizeMult??1.5)});
     if(boost.available){
      const nextScore=Math.min(100,scalpScore.score+boost.oiBonus);
@@ -800,6 +809,10 @@ export class ScalpExecutor{
    if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=scalpScore}
    if(minSc>0&&!scalpScore.pass){
     return skip('SCORE_BELOW_MINIMUM',`${scalpScore.score}점/${this.config.minScore}점 (${scalpScore.grade}급 · ${scalpScore.shortBreakdown})`);
+   }
+   if(wantSqueezeGuard&&ofSnap){
+    const sq=evaluateScalpSqueezeGuard(ofSnap,det.direction,{fundingPct:this.config.squeezeFundingPct,oiChange30mPct:this.config.squeezeOiChange30mPct});
+    if(sq.blocked)return skip(sq.reason,sq.detail);
    }
    if(!againstTrend&&Math.abs(effectiveMult-1)>1e-6){
     const scaled=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,

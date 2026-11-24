@@ -490,6 +490,41 @@ export function evaluateScalpOrderflowBoost(snapshot, direction, opts = {}) {
   };
 }
 
+/**
+ * Guard against entering into an active short/long squeeze:
+ * - SHORT blocked (SHORT_SQUEEZE_GUARD) when fundingRatePct <= -fundingPct AND 30m OI >= +oiChange30mPct
+ * - LONG blocked (LONG_SQUEEZE_GUARD) when fundingRatePct >= +fundingPct AND 30m OI >= +oiChange30mPct
+ * Fail-open when orderflow data is unavailable; allows with-squeeze entries and OI-flushing setups.
+ */
+export function evaluateScalpSqueezeGuard(snapshot, direction, opts = {}) {
+  const fundingThresh = Number.isFinite(Number(opts.fundingPct)) ? Math.abs(Number(opts.fundingPct)) : 0.10;
+  const oiThresh = Number.isFinite(Number(opts.oiChange30mPct)) ? Number(opts.oiChange30mPct) : 2.0;
+  if (!snapshot || !snapshot.ok || !(fundingThresh > 0)) {
+    return { blocked: false, reason: null, detail: null };
+  }
+  const funding = snapshot.funding?.ratePct;
+  const oi30 = snapshot.oi?.change30mPct;
+  if (!Number.isFinite(Number(funding)) || !Number.isFinite(Number(oi30))) {
+    return { blocked: false, reason: null, detail: null };
+  }
+  const f = Number(funding), o = Number(oi30);
+  if (direction === 'SHORT' && f <= -fundingThresh && o >= oiThresh) {
+    return {
+      blocked: true,
+      reason: 'SHORT_SQUEEZE_GUARD',
+      detail: `펀딩 ${f.toFixed(4)}% (≤ -${fundingThresh}%) · 30분 OI +${o.toFixed(2)}% (≥ +${oiThresh}%)`,
+    };
+  }
+  if (direction === 'LONG' && f >= fundingThresh && o >= oiThresh) {
+    return {
+      blocked: true,
+      reason: 'LONG_SQUEEZE_GUARD',
+      detail: `펀딩 +${f.toFixed(4)}% (≥ +${fundingThresh}%) · 30분 OI +${o.toFixed(2)}% (≥ +${oiThresh}%)`,
+    };
+  }
+  return { blocked: false, reason: null, detail: null };
+}
+
 async function fetchJson(url, { fetcher = fetch, timeoutMs = 4500 } = {}) {
   const res = await fetcher(url, {
     signal: AbortSignal.timeout(timeoutMs),
