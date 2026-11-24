@@ -62,12 +62,15 @@ function tradeStats(rows){
 
 function sigKey(x){return `${String(x?.symbol||'').toUpperCase()}|${String(x?.direction||'LONG').toUpperCase()}|${Number(x?.barAt)||0}`}
 
+// The current rules on the recorded inputs, plus the recorded OI/CVD bonus (0 when orderflow was not read). Totals saved
+// before 2026-11-25 are on the old 5-point steps, so a 1-point gate is not compared with them; a saved total is used only
+// when the record has no inputs.
 function signalScoreOf(sig,dir,rr){
- const saved=num(sig?.score?.score??sig?.scalpScore?.score);
- if(saved!==null)return saved;
- if(!sig?.evidence)return null;
+ const saved=sig?.score??sig?.scalpScore??null;
+ if(!sig?.evidence)return num(saved?.score);
  const inferred4h=sig.trend4h??(sig.withTrend===true?(dir==='LONG'?'up':'down'):sig.withTrend===false?(dir==='LONG'?'down':'up'):null);
- return scoreScalpSetup({direction:dir,evidence:sig.evidence,trend4h:inferred4h,btcTrend4h:sig.btcTrend4h??null,netRR:rr}).score;
+ const bonus=Math.max(0,num(saved?.oiBonus)??0)+Math.max(0,num(saved?.cvdBonus)??0);
+ return Math.min(100,scoreScalpSetup({direction:dir,evidence:sig.evidence,trend4h:inferred4h,btcTrend4h:sig.btcTrend4h??null,netRR:rr}).score+bonus);
 }
 
 function evaluateSignal(sig,params){

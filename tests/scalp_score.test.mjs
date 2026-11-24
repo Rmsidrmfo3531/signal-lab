@@ -239,9 +239,12 @@ test('What-If simulator filters by minScore, retroactively scores legacy rows, a
   {at:now-100000,barAt:now-120000,symbol:'AUSDT',direction:'LONG',kind:'MOVE_REVERSAL',entered:true,reason:null,evidence:{movePct:5.5,moveAtr:3.8,retracedPct:20,climaxVolumeRatio:6,rsiPeak:19},trend4h:'up',btcTrend4h:'up',withTrend:true,plan:{netRR:1.4}},
   // Low score legacy trade (30점): loss -$20
   {at:now-200000,barAt:now-220000,symbol:'BUSDT',direction:'LONG',kind:'MOVE_REVERSAL',entered:true,reason:null,evidence:{movePct:3.0,moveAtr:7.0,retracedPct:8,climaxVolumeRatio:3.2,rsiPeak:24},trend4h:'down',btcTrend4h:'down',withTrend:false,plan:{netRR:0.9}},
-  // Previously blocked by SCORE_BELOW_MINIMUM at 60점 (unlocks when minScore=60)
-  {at:now-300000,barAt:now-320000,symbol:'CUSDT',direction:'SHORT',kind:'MOVE_REVERSAL',entered:false,reason:'SCORE_BELOW_MINIMUM',score:{score:60,grade:'C'},evidence:{movePct:4.2,moveAtr:5.0,retracedPct:16,climaxVolumeRatio:5.5,rsiPeak:80},trend4h:'range',withTrend:null,plan:{netRR:1.2}},
+  // Previously blocked by SCORE_BELOW_MINIMUM at 60점 (unlocks when minScore=60). The simulator re-scores the recorded inputs
+  // (review 2026-11-25), so they must give 60: 20 (4.2%) + 10 + 10 + 13 (ATR 5x) + 4 (6%) + 3 (3.5x) + 0 (RR 0.8) + 0 (RSI 70).
+  // (The earlier inputs scored 70 on the 5-point steps and 75 on the curves; only the saved 60 kept them blocked.)
+  {at:now-300000,barAt:now-320000,symbol:'CUSDT',direction:'SHORT',kind:'MOVE_REVERSAL',entered:false,reason:'SCORE_BELOW_MINIMUM',score:{score:60,grade:'C'},evidence:{movePct:4.2,moveAtr:5.0,retracedPct:6,climaxVolumeRatio:3.5,rsiPeak:70},trend4h:'range',withTrend:null,plan:{netRR:0.8}},
  ];
+ assert.equal(scoreScalpSetup({direction:'SHORT',evidence:signals[2].evidence,trend4h:'range',netRR:0.8}).score,60);
  const trades=[
   {symbol:'AUSDT',direction:'LONG',barAt:now-120000,kind:'MOVE_REVERSAL',evidence:signals[0].evidence,trend4h:'up',btcTrend4h:'up',withTrend:true,plan:{tp1NetR:1.4},exit:{at:now-50000},pnl:{netUSD:30,r:2.0}},
   {symbol:'BUSDT',direction:'LONG',barAt:now-220000,kind:'MOVE_REVERSAL',evidence:signals[1].evidence,trend4h:'down',btcTrend4h:'down',withTrend:false,plan:{tp1NetR:0.9},exit:{at:now-150000},pnl:{netUSD:-20,r:-1.3}},
