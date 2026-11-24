@@ -57,7 +57,7 @@ test('closed trades and summary: venue settlement, estimates marked, pending and
   {trades:4,settled:2,wins:1,losses:1,winRatePct:50,netUSD:1.65,estimated:1,pending:1,unknown:1,tests:1});
  const views=records.slice(0,5).map(r=>liveClosedView(r,NOW));
  assert.match(closedCardHTML(views[0]),/\+\$2\.75[\s\S]*거래소 정산[\s\S]*수수료 −\$0\.20/);
- assert.match(closedCardHTML(views[1]),/−\$1\.10 추정[\s\S]*0\.06% 가정/);
+ assert.match(closedCardHTML(views[1]),/−\$1\.10[\s\S]*0\.06% 가정/);assert.doesNotMatch(closedCardHTML(views[1]),/추정/);
  assert.match(closedCardHTML(views[2]),/정산 확인 중/);assert.match(closedCardHTML(views[3]),/확인 불가/);assert.match(closedCardHTML(views[4]),/시험 주문/);
  assert.match(summaryHTML(s),/4건/);assert.match(summaryHTML(s),/50\.0%/);assert.match(summaryHTML(s),/\+\$1\.65/);assert.match(summaryHTML(s),/추정 1건 포함/);
  const o=liveOverview({status:{mode:'TESTNET',armed:true,killSwitch:false,venues:['BINGX'],credentialsConfigured:{BINGX:true,GATEIO:false},limits:{},records:[],

@@ -106,7 +106,7 @@ function realizedHTML(r){
  if(!r||r.source==='PENDING')return '<b>—</b><small>거래소 정산 확인 중</small>';
  if(r.source==='UNKNOWN'||!fin(r.netUSD))return '<b>—</b><small>확인 불가 (거래소 기록 없음)</small>';
  if(r.source==='EXCHANGE')return `<b class="${pnlClass(r.netUSD)}">${usd(r.netUSD)}</b><small>거래소 정산 · 손익 ${usd(r.pnlUSD)} · 수수료 ${usd(r.feeUSD)}${fin(r.fundingUSD)&&Number(r.fundingUSD)!==0?' · 펀딩 '+usd(r.fundingUSD):''}</small>`;
- return `<b class="${pnlClass(r.netUSD)}">${usd(r.netUSD)} 추정</b><small>추정 · 시세 기준 청산가 · 수수료 ${fin(r.takerRate)?(r.takerRate*100).toFixed(2)+'% 가정':'가정'} · 펀딩 미반영</small>`;
+ return `<b class="${pnlClass(r.netUSD)}">${usd(r.netUSD)}</b><small>시세 기준 청산가 · 수수료 ${fin(r.takerRate)?(r.takerRate*100).toFixed(2)+'% 가정':'가정'} · 펀딩 미반영</small>`;
 }
 /** One closed live trade. */
 export function closedCardHTML(c){
@@ -585,10 +585,8 @@ export function copyHTML(c){
  const row=p=>`<li>${symTag(p.symbol)}${p.closing?'<small>청산 중</small>':''}${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회 · 부분청산 ${p.reduces==null?'—':esc(p.reduces)+'회'}</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
  // Manual closes: the yellow 수동 badge; the result is BingX's own (income) unless marked 추정 / 정산 중.
  const isMan=x=>x.origin==='manual',manBadge=x=>isMan(x)?'<span class="vp-badge manual">수동</span>':'';
- const SRC={MIXED_WITH_COPY:'추정 · 같은 코인 카피와 겹쳐 거래소 내역을 나눌 수 없음',MIXED_WITH_MANUAL:'추정 · 같은 코인 수동 포지션과 겹침',
-   ESTIMATE:'추정 · 거래소 내역 없음',ESTIMATE_BEFORE_FEES:'수수료 반영 전 추정'};
- const result=x=>isLive&&!confirmedCopyResult(x)?'<span class="muted">정산 미확정</span>':x.netSource==='PENDING'?`<span class="muted" title="거래소 손익 내역을 기다리는 중${fin(x.estimateUSD)?` · 추정 ${money(Number(x.estimateUSD))}`:''}">정산 중</span>`
-  :x.netUSD==null?'<span class="muted">확인 불가</span>':`${money(x.netUSD)}${SRC[x.netSource]?` <small class="muted" title="${esc(SRC[x.netSource])}">추정</small>`:''}`;
+ const result=x=>isLive&&!confirmedCopyResult(x)?'<span class="muted">정산 미확정</span>':x.netSource==='PENDING'?`<span class="muted" title="거래소 손익 내역을 기다리는 중">정산 중</span>`
+  :x.netUSD==null?'<span class="muted">확인 불가</span>':money(x.netUSD);
  const settlement=x=>{const s=x.settlement,state=s?.state??(confirmedCopyResult(x)?'CONFIRMED':SETTLEMENT_STATES[x.netSource]?x.netSource:'WAITING'),label=SETTLEMENT_STATES[state];
   return isLive&&label?`<small class="muted"${s?.error?` title="${esc(s.error)}"`:''}>${esc(label)}${s?.checkedAt?` · ${esc(when(s.checkedAt))} 조회`:''}</small>`:''};
  const manualMemo=x=>{
@@ -672,10 +670,10 @@ export function scalpHTML(s){
  const row=p=>`<li><b>${esc(p.symbol)}</b>${scalpBadge(p.kind)}${side(p.direction||'LONG')}<span>${esc(p.leverage)}배</span><span>진입 ${px(p.avg)} · 손절 ${px(p.stop)}${p.breakevenMoved?' (본전)':''}</span><span class="muted">${held(p.openedAt||p.createdAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
  // Closed trades (the newest 20; the stats above cover every trade): side, entry / exit time, hold, reason, R, PnL, MFE / MAE.
  const rTxt=v=>fin(v)?`${Number(v)>=0?'+':'−'}${Math.abs(Number(v)).toFixed(2)}R`:'—',ex=x=>fin(x.mfeR)||fin(x.maeR)?`${rTxt(x.mfeR)} / ${rTxt(x.maeR)}`:'—';
- const done=x=>`<li><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${scalpBadge(x.kind)}${side(x.direction||'LONG')}<span>${esc(x.closeReasonKo||x.closeReason)}</span><span class="muted">${held(x.openedAt||x.createdAt,x.closedAt)}</span><span>${tnLeverage(x.leverage)}</span>${x.margin?`<small>증거금 ${tnScalpMargin(x.margin)}</small>`:''}<span class="${cls(x.rMultiple)}">${rTxt(x.rMultiple)}</span><small class="muted">최대 ${ex(x)}</small><b class="${cls(x.netUSD)} end">${money(x.netUSD)}${x.netSource==='EXCHANGE'?'':' <small>추정</small>'}</b></li>`;
+ const done=x=>`<li><span class="muted">${when(x.closedAt)}</span><b>${esc(x.symbol)}</b>${scalpBadge(x.kind)}${side(x.direction||'LONG')}<span>${esc(x.closeReasonKo||x.closeReason)}</span><span class="muted">${held(x.openedAt||x.createdAt,x.closedAt)}</span><span>${tnLeverage(x.leverage)}</span>${x.margin?`<small>증거금 ${tnScalpMargin(x.margin)}</small>`:''}<span class="${cls(x.rMultiple)}">${rTxt(x.rMultiple)}</span><small class="muted">최대 ${ex(x)}</small><b class="${cls(x.netUSD)} end">${money(x.netUSD)}</b></li>`;
  const tgt=p=>(p.targets||[]).map((t,i)=>p.parts?.[i]>0?`<span class="${p.tpDone?.[i]?'paper-profit':''}">${px(t)}</span>`:null).filter(Boolean).join(' / ');
  const openTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">진입</th><th class="num">현재가</th><th class="num">손절</th><th>목표</th><th>보유</th><th class="num">위험</th><th class="num">미실현</th></tr></thead><tbody>${open.map(p=>`<tr><td><b>${esc(p.symbol)}</b> ${scalpBadge(p.kind)}${p.status!=='OPEN'?` <small class="paper-loss">${esc(p.status)}</small>`:''}</td><td>${side(p.direction||'LONG')}</td><td>${esc(p.leverage)}배</td><td class="num">${esc(p.size||p.qty)}</td><td class="num">${px(p.avg)}</td><td class="num">${px(p.mark)}</td><td class="num">${px(p.stop)}${p.breakevenMoved?' <small>본전</small>':''}</td><td>${tgt(p)}</td><td class="muted">${held(p.openedAt||p.createdAt,Date.now())}</td><td class="num">${usdv(p.riskUSD)}</td><td class="num"><b class="${cls(p.unrealized)}">${money(p.unrealized)}</b></td></tr>`).join('')}</tbody></table>`;
- const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>진입</th><th>종료</th><th>보유</th><th>배율</th><th class="num">증거금</th><th>사유</th><th class="num">목표 도달</th><th class="num">R</th><th class="num">최대 이익/손실(R)</th><th class="num">손익</th></tr></thead><tbody>${closed.slice(0,20).map(x=>`<tr><td><b>${esc(x.symbol)}</b> ${scalpBadge(x.kind)}</td><td>${side(x.direction||'LONG')}</td><td class="muted">${when(x.openedAt||x.createdAt)}</td><td class="muted">${when(x.closedAt)}</td><td class="muted">${held(x.openedAt||x.createdAt,x.closedAt)}</td><td>${tnLeverage(x.leverage)}</td><td class="num">${tnScalpMargin(x.margin)}</td><td>${esc(x.closeReasonKo||x.closeReason)}</td><td class="num">${esc(x.tpHits??0)}개</td><td class="num ${cls(x.rMultiple)}">${rTxt(x.rMultiple)}</td><td class="num">${ex(x)}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b>${x.netSource==='EXCHANGE'?'':' <small>추정</small>'}</td></tr>`).join('')}</tbody></table>`;
+ const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>진입</th><th>종료</th><th>보유</th><th>배율</th><th class="num">증거금</th><th>사유</th><th class="num">목표 도달</th><th class="num">R</th><th class="num">최대 이익/손실(R)</th><th class="num">손익</th></tr></thead><tbody>${closed.slice(0,20).map(x=>`<tr><td><b>${esc(x.symbol)}</b> ${scalpBadge(x.kind)}</td><td>${side(x.direction||'LONG')}</td><td class="muted">${when(x.openedAt||x.createdAt)}</td><td class="muted">${when(x.closedAt)}</td><td class="muted">${held(x.openedAt||x.createdAt,x.closedAt)}</td><td>${tnLeverage(x.leverage)}</td><td class="num">${tnScalpMargin(x.margin)}</td><td>${esc(x.closeReasonKo||x.closeReason)}</td><td class="num">${esc(x.tpHits??0)}개</td><td class="num ${cls(x.rMultiple)}">${rTxt(x.rMultiple)}</td><td class="num">${ex(x)}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b></td></tr>`).join('')}</tbody></table>`;
  const skipBox=scalpReasonListHTML(s,S,when);
  const side_=`<div class="copy-side">${modeLine}${stats}${bySide}${rules}</div>`;
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">보유 중인 단타가 없습니다.${s.armed?' 5분봉 마감마다 급락 후 반등·급등 후 되돌림을 찾습니다.':''}</p>`)+
@@ -835,7 +833,7 @@ function tnScalpMargin(m){
 }
 export const TESTNET_PAGE_SIZE=10;
 export function setTestnetPage(p){tnPage=Math.max(0,p|0)}
-const tnResult=x=>x.source==='PENDING'?'<span class="muted">정산 중</span>':x.source==='UNKNOWN'||!fin(x.netUSD)?'<span class="muted">확인 불가</span>':`${tnMoney(x.netUSD)}${x.source==='ESTIMATE'?' <small class="muted">추정</small>':''}`;
+const tnResult=x=>x.source==='PENDING'?'<span class="muted">정산 중</span>':x.source==='UNKNOWN'||!fin(x.netUSD)?'<span class="muted">확인 불가</span>':tnMoney(x.netUSD);
 /** The merged 종료된 거래 list, 10 per page (the copy page's pager), desktop table / phone list. */
 export function testnetClosedHTML(o){
  lastTestnet=o;
