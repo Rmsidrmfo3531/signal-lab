@@ -148,7 +148,17 @@ export async function placeMakerThenMarket({
   // Cancel, then confirm a terminal state before anything is sent at market (a cancel that failed or a read
   // that failed leaves the PostOnly order possibly resting: sending the remainder could double-fill).
   for(let attempt=0;attempt<CONFIRM_TRIES&&!TERMINAL.has(status);attempt++){
-   if(attempt===0||attempt===2){try{await client.cancelOrder(symbol,makerId??undefined,{clientOrderId:makerCid})}catch{}}
+   if(attempt===0||attempt===2){
+    try{
+     const cancelRes=orderOf(await client.cancelOrder(symbol,makerId??undefined,{clientOrderId:makerCid}));
+     const cSt=String(cancelRes?.status||'').toUpperCase();
+     if(TERMINAL.has(cSt)&&(num(cancelRes?.executedQty)!==null||cSt==='FILLED')){
+      latest=cancelRes;status=cSt;
+      if(!makerId&&cancelRes?.orderId!=null)makerId=String(cancelRes.orderId);
+      break;
+     }
+    }catch{}
+   }
    if(attempt>0)await sleep(poll);
    try{await readMaker()}catch{}
   }

@@ -2084,3 +2084,131 @@ test('Pillar 4: PostOnly-first profit exits (full fill, timeout->IOC, partial->I
  }
 });
 
+test('A-1: BTC 15m shock guard releases when latest closed BTC 5m candle already reversed >= 0.15%, while active 5m shock still blocks',async()=>{
+ const BTC={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',tickSize:'0.1',quantityStep:'0.001',minQuantityBase:'0.001',minNotionalUSDT:5,tradable:true};
+ const run=async({btcBars,direction='LONG'})=>{
+  const v=venue({fillAt:direction==='LONG'?PX:PX_S}),clock={t:T0};
+  const ex=make(v,{clock,price:direction==='LONG'?PX:PX_S,trend:direction==='LONG'?up4h:down4h,rows:direction==='LONG'?crash:rise,config:{stopLossEnabled:false,scaleIn:false}});
+  ex.contracts=async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]);
+  ex.tickers=async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}];
+  const baseCandles=ex.candles;
+  ex.candles=async(sym,iv,n)=>sym==='BTCUSDT'&&iv==='5m'?btcBars:baseCandles(sym,iv,n);
+  ex.arm();
+  return {st:await ex.scan(),skips:ex.store.skips,open:ex.store.open};
+ };
+ const t3=(BUCKET-3)*I,t2=(BUCKET-2)*I,t1=(BUCKET-1)*I;
+ // 1) BTC dumped -3.0% over 15m AND latest 5m bar is STILL red (-0.5%) -> LONG blocked (BTC_DUMP_GUARD)
+ const stillDumping=[
+  [t3,'100000','100000','98000','98200','100',t3+I-1,'1'],
+  [t2,'98200','98300','97400','97500','100',t2+I-1,'1'],
+  [t1,'97500','97500','96900','97000','100',t1+I-1,'1'], // 5m -0.51%, 15m -3.0%
+ ];
+ const r1=await run({btcBars:stillDumping,direction:'LONG'});
+ assert.equal(r1.open.length,0);
+ assert.equal(r1.skips.at(-1)?.reason,'BTC_DUMP_GUARD');
+
+ // 2) BTC dumped -2.7% over 15m BUT latest closed 5m bar already bounced +0.4% green -> LONG UNLOCKED!
+ const bouncedGreen=[
+  [t3,'100000','100000','97000','97500','100',t3+I-1,'1'],
+  [t2,'97500','97600','96800','96900','100',t2+I-1,'1'],
+  [t1,'96900','97400','96850','97300','100',t1+I-1,'1'], // 5m +0.41% >= +0.15%, 15m -2.70%
+ ];
+ const r2=await run({btcBars:bouncedGreen,direction:'LONG'});
+ assert.equal(r2.open.length,1,'BTC 5m green reversal (+0.41%) releases stale 15m BTC_DUMP_GUARD');
+
+ // 3) Mirror SHORT: BTC pumped +2.7% over 15m BUT latest 5m bar pulled back -0.4% red -> SHORT UNLOCKED!
+ const pulledRed=[
+  [t3,'100000','103000','100000','102500','100',t3+I-1,'1'],
+  [t2,'102500','103200','102400','103100','100',t2+I-1,'1'],
+  [t1,'103100','103150','102600','102700','100',t1+I-1,'1'], // 5m -0.39% <= -0.15%, 15m +2.70%
+ ];
+ const r3=await run({btcBars:pulledRed,direction:'SHORT'});
+ assert.equal(r3.open.length,1,'BTC 5m red pullback (-0.39%) releases stale 15m BTC_PUMP_GUARD');
+});
+
+test('A-2: planScalpOrder auto-shifts targets along [50/61.8/78.6] -> [61.8/78.6/100] when favorable live drift crosses 38.2% TP1',()=>{
+ const cfg=scalpExecConfig({});
+ const det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ assert.equal(det.ok,true);
+ const {extreme,origin}=det.evidence,move=origin-extreme;
+ // Live price drifted favorably past 38.2% TP1 (to 42% retracement, still within driftMovePct 50%)
+ const driftedPast382=+(extreme+move*0.42).toFixed(2);
+ assert.ok(driftedPast382>det.targets[0],'live price is already past initial 38.2% TP1');
+ const plan=planScalpOrder({det,price:driftedPast382,contract:SOL,equity:3000,available:3000,leverage:10,config:cfg});
+ assert.equal(plan.ok,true,JSON.stringify(plan));
+ assert.ok(plan.targets[0]>plan.entry,'shifted TP1 (50%) is beyond executable entry');
+ assert.ok(Math.abs(plan.targets[0]-(extreme+move*0.5))<0.02,'shifted to 50% retracement');
+ assert.ok(Math.abs(plan.targets[1]-(extreme+move*0.618))<0.02,'shifted TP2 to 61.8%');
+ // When autoShiftTargets is off, crossing 38.2% fails with TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY
+ const off=planScalpOrder({det,price:driftedPast382,contract:SOL,equity:3000,available:3000,leverage:10,config:{...cfg,autoShiftTargets:false}});
+ assert.deepEqual(off.reasons,['TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY']);
+});
+
+test('A-4: PostOnly UNKNOWN lock actively cancels & clears in 1 reconcile pass and does not freeze remaining symbols in a multi-symbol scan',async()=>{
+ const B={symbol:'BONKUSDT',venueSymbol:'BONK-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
+ const v=venue(),clock={t:T0};
+ // SOLUSDT PostOnly hits HTTP_502 while order rests as NEW on venue; BONKUSDT enters cleanly after mid-scan reconcile cancels & clears SOLUSDT!
+ const basePlace=v.client.placeOrder,basePos=v.client.positions;
+ let bonkAmt=0;
+ v.client.positions=async(s)=>{
+  const rows=await basePos(s);
+  if(bonkAmt>0&&(!s||s==='BONK-USDT'))rows.push({symbol:'BONK-USDT',positionSide:'BOTH',positionAmt:String(bonkAmt),avgPrice:String(PX),markPrice:String(PX),unrealizedProfit:'0'});
+  return rows;
+ };
+ v.client.placeOrder=async(p,opt)=>{
+  if(p.symbol==='SOL-USDT'&&p.type==='LIMIT'&&p.timeInForce==='PostOnly'){
+   await basePlace(p,opt); // rests as NEW on v.orders
+   throw Object.assign(Error('bad gateway'),{code:'HTTP_502'});
+  }
+  if(p.symbol==='BONK-USDT'&&p.type==='LIMIT'&&p.timeInForce==='PostOnly'){
+   bonkAmt=Number(p.quantity);
+   const o={orderId:'bk1',...p,status:'FILLED',executedQty:p.quantity,avgPrice:p.price};
+   v.orders.set(o.orderId,o);v.calls.push({op:'order',...p});
+   return {order:o};
+  }
+  return basePlace(p,opt);
+ };
+ const ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:false,makerEntry:true,makerWaitMs:20,makerPollMs:10}});
+ ex.contracts=async()=>new Map([['SOLUSDT',SOL],['BONKUSDT',B]]);
+ ex.tickers=async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BONK-USDT',quoteVolume:'80000000'}];
+ ex.arm();
+ const st=await ex.scan();
+ assert.equal(st.entered,1,'mid-scan reconcile cleared SOLUSDT UNKNOWN and scan continued to enter BONKUSDT');
+ assert.equal(ex.store.open.length,1);
+ assert.equal(ex.store.open[0].symbol,'BONKUSDT');
+ assert.equal(ex.status().blocked,null,'UNRESOLVED_ORDER_STATE cleared cleanly');
+ assert.ok([...v.orders.values()].some(o=>o.symbol==='SOL-USDT'&&o.timeInForce==='PostOnly'&&o.status==='CANCELED'),'orphaned PostOnly was actively canceled');
+ assert.ok(ex.store.events.some(e=>e.type==='ENTRY_NOT_FILLED'&&e.symbol==='SOLUSDT'));
+});
+
+test('B-4: maxSameSide (default 4) caps correlated same-direction positions while still allowing opposite-side entries',async()=>{
+ const syms=['C1USDT','C2USDT','C3USDT','C4USDT','C5USDT'];
+ const v=venue(),clock={t:T0};
+ const ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:false,maxMarginPct:5,maxTotalMarginPct:80,maxSameSide:4}});
+ ex.contracts=async()=>new Map(syms.map(s=>[s,{...SOL,symbol:s,venueSymbol:s.replace('USDT','-USDT')}]));
+ ex.tickers=async()=>syms.map((s,i)=>({symbol:s.replace('USDT','-USDT'),quoteVolume:String(9e7-i*1e6)}));
+ // Pre-populate 4 open LONG positions -> 5th LONG (C5USDT) must be blocked with MAX_SAME_SIDE, while a SHORT is still allowed!
+ for(let i=0;i<4;i++){
+  ex.store.open.push({id:`p${i}`,symbol:syms[i],venueSymbol:syms[i].replace('USDT','-USDT'),direction:'LONG',status:'OPEN',size:1,filled:1,avg:100,entry:100,stop:98,leverage:10});
+ }
+ ex.arm();
+ await ex.scan();
+ assert.equal(ex.store.open.length,4,'5th simultaneous LONG blocked by MAX_SAME_SIDE=4');
+ assert.equal(ex.store.skips.at(-1)?.reason,'MAX_SAME_SIDE');
+ assert.equal(ex.store.skips.at(-1)?.symbol,'C5USDT');
+
+ // Opposite direction (SHORT) on C5USDT is still permitted!
+ const vShort=venue({fillAt:PX_S});
+ const exShort=make(vShort,{clock,price:PX_S,trend:down4h,rows:rise,config:{stopLossEnabled:false,scaleIn:false,maxMarginPct:5,maxTotalMarginPct:80,maxSameSide:4}});
+ exShort.contracts=async()=>new Map(syms.map(s=>[s,{...SOL,symbol:s,venueSymbol:s.replace('USDT','-USDT')}]));
+ exShort.tickers=async()=>[{symbol:'C5-USDT',quoteVolume:'90000000'}];
+ for(let i=0;i<4;i++){
+  exShort.store.open.push({id:`p${i}`,symbol:syms[i],venueSymbol:syms[i].replace('USDT','-USDT'),direction:'LONG',status:'OPEN',size:1,filled:1,avg:100,entry:100,stop:98,leverage:10});
+ }
+ exShort.arm();
+ const stS=await exShort.scan();
+ assert.equal(stS.entered,1,'SHORT entry allowed even when 4 LONG positions are open');
+ assert.equal(exShort.store.open.at(-1)?.direction,'SHORT');
+});
+
+

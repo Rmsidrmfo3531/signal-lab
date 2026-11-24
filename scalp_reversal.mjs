@@ -102,8 +102,11 @@ export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={},inte
   if(!(retraced<=s.maxRetracedBeforeEntry))reasons.push('MOVE_ALREADY_RETRACED');
   const entry=last.close,stop=extreme-dir*s.stopAtr*baseAtr;
   let levels=s.retracements.map(f=>extreme+dir*f*move);
-  // Entry already beyond the first level: shift to the next ones.
-  if(dir*(levels[0]-entry)<=0)levels=[.618,.786,1].map(f=>extreme+dir*f*move);
+  // Entry already beyond the first level: shift up the Fibonacci ladder ([50/61.8/78.6] -> [61.8/78.6/100]).
+  if(dir*(levels[0]-entry)<=0){
+   const step1=[.5,.618,.786].map(f=>extreme+dir*f*move);
+   levels=dir*(step1[0]-entry)>0?step1:[.618,.786,1].map(f=>extreme+dir*f*move);
+  }
   if(levels.some(p=>dir*(p-entry)<=0))reasons.push('TARGETS_BEHIND_ENTRY');
   results.push({direction,ok:reasons.length===0,reasons,entry,stop,targets:levels,atr:baseAtr,
    pattern:scalpPatterns(interval)[direction],barAt:last.closeTime,interval,entryTimeoutMs:s.entryTimeoutMs,maxHoldMs:s.maxHoldMs,
@@ -227,10 +230,13 @@ export function scoreScalpSetup({direction='LONG',evidence={},trend4h=null,btcTr
  // 3. BTC 4H Trend (15 pts)
  const btcRel=trendRelation(dir,btcTrend4h);
  const btcTrend4hPts=btcRel==='aligned'?15:btcRel==='range'?10:0;
- // 4. Move ATR Sweet Spot (15 pts) — 3.0~4.5x healthy mean reversion; >=6.0x news/liquidation blowoffs score 0
- const moveAtr=Number.isFinite(moveAtrVal)?(moveAtrVal>=3.0&&moveAtrVal<4.5?15:moveAtrVal>=4.5&&moveAtrVal<6.0?10:0):0;
- // 5. Retraced Before Entry (10 pts) — confirmed bounce 15~30% beats catching falling knives (<=10%)
- const retracedPct=Number.isFinite(retracedVal)?(retracedVal>=15&&retracedVal<=30?10:retracedVal>10&&retracedVal<15?5:0):0;
+ // 4. Move ATR Sweet Spot (15 pts) — 3.0~4.5x: 15, 4.5~6.0x: 10, >=6.0x: 5 (A-3: remove 0-pt cliff on genuine capitulation spikes)
+ const moveAtr=Number.isFinite(moveAtrVal)?(moveAtrVal>=3.0&&moveAtrVal<4.5?15:moveAtrVal>=4.5&&moveAtrVal<6.0?10:moveAtrVal>=6.0?5:0):0;
+ // 5. Retraced Before Entry / Rejection Candle (10 pts) — 15~30%: 10; 10~15%, 30~35%, or confirmed rejection wick/close: 5 (A-3)
+ const hasRejection=evidence?.rejection==='WICK'||evidence?.rejection==='CLOSE_BEYOND_PREVIOUS';
+ const retracedPct=Number.isFinite(retracedVal)
+  ?(retracedVal>=15&&retracedVal<=30?10:((retracedVal>10&&retracedVal<15)||(retracedVal>30&&retracedVal<=35)||hasRejection)?5:0)
+  :(hasRejection?5:0);
  // 6. Climax Volume (5 pts)
  const climaxVolume=Number.isFinite(volVal)&&volVal>=5.0?5:0;
  // 7. TP1 Net RR (5 pts)

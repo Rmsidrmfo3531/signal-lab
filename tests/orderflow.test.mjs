@@ -82,16 +82,19 @@ test('analyzeOrderflowSeries computes CVD, bullish divergence, OI flush, ratios,
   assert.ok(snap.liquidationMap.nearestShortMagnet.price > 95.8);
   assert.ok(snap.liquidationMap.nearestLongMagnet.price < 95.8);
 
-  // Boost evaluator matches backtest FJ rules
+  // Boost evaluator matches backtest FJ + A-3 rules (+5pt OI flush + +5pt & 1.5x CVD flip)
   const longBoost = evaluateScalpOrderflowBoost(snap, 'LONG');
   assert.equal(longBoost.oiBonus, 5);
+  assert.equal(longBoost.cvdBonus, 5);
+  assert.equal(longBoost.totalBonus, 10);
   assert.equal(longBoost.cvdBoost, true);
   assert.equal(longBoost.sizeMult, 1.5);
   assert.match(longBoost.summaryKo, /OI 소진 -2%\(\+5점\)/);
-  assert.match(longBoost.summaryKo, /CVD 강한반전 \+60%\(1\.5x\)/);
+  assert.match(longBoost.summaryKo, /CVD 강한반전 \+60%\(\+5점·1\.5x\)/);
 
   const shortBoost = evaluateScalpOrderflowBoost(snap, 'SHORT');
   assert.equal(shortBoost.oiBonus, 5);
+  assert.equal(shortBoost.cvdBonus, 0);
   assert.equal(shortBoost.cvdBoost, false);
   assert.equal(shortBoost.sizeMult, 1);
 
@@ -233,18 +236,39 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   });
   exBoosted.arm();
   await exBoosted.scan();
-  assert.equal(exBoosted.store.open.length, 1, '60pt setup rescued to 65pt by OI flush bonus');
-  assert.equal(exBoosted.store.open[0].scalpScore.score, 65);
+  assert.equal(exBoosted.store.open.length, 1, '60pt setup rescued to 70pt by OI (+5) + CVD (+5) bonuses');
+  assert.equal(exBoosted.store.open[0].scalpScore.score, 70);
   assert.equal(exBoosted.store.open[0].scalpScore.oiBonus, 5);
+  assert.equal(exBoosted.store.open[0].scalpScore.cvdBonus, 5);
   assert.equal(exBoosted.store.open[0].scalpScore.sizeMult, 1.5);
   const opened = exBoosted.store.events.find(e => e.type === 'OPENED');
   const tg = scalpEventText(opened);
-  assert.match(tg, /수급 OI 소진 -2\.2%\(\+5점\) · CVD 강한반전 \+32%\(1\.5x\)/);
+  assert.match(tg, /수급 OI 소진 -2\.2%\(\+5점\) · CVD 강한반전 \+32%\(\+5점·1\.5x\)/);
   assert.match(tg, /비중 1\.5x/);
   assert.match(tg, /유럽장 0\.5x/);
   assert.equal(exBoosted.store.open[0].scalpScore.session.session, 'EUROPE');
-  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.mult, 0.75);
-  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.5625);
+  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.mult, 1.0);
+  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.75);
+
+  // CVD strong flip ALONE (without OI flush) rescues a 60pt setup to 65pt (A-3)
+  const v3 = mkVenue(close);
+  const exCvdOnly = new ScalpExecutor({
+    config: { ...scalpExecConfig({}), stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 65 },
+    client: v3.client,
+    contracts: async () => new Map([['SOLUSDT', SOL], ['BTCUSDT', BTC]]),
+    tickers: async () => [{ symbol: 'SOL-USDT', quoteVolume: '90000000' }, { symbol: 'BTC-USDT', quoteVolume: '500000000' }],
+    candles: async (s, iv) => iv === '5m' ? (s === 'SOLUSDT' ? candles5m : []) : range4h,
+    orderflow: async () => ({ ok: true, source: 'BINANCE', oi: { change30mPct: 0.2 }, cvd: { lastDeltaNorm: 0.28 }, funding: { ratePct: 0.01 } }),
+    priceOf: async () => close, markOf: async () => close,
+    balance: async () => ({ equity: 3000, available: 2900 }),
+    now: () => T0,
+  });
+  exCvdOnly.arm();
+  await exCvdOnly.scan();
+  assert.equal(exCvdOnly.store.open.length, 1, '60pt setup rescued to 65pt by CVD strong flip +5pt bonus alone');
+  assert.equal(exCvdOnly.store.open[0].scalpScore.score, 65);
+  assert.equal(exCvdOnly.store.open[0].scalpScore.oiBonus ?? 0, 0);
+  assert.equal(exCvdOnly.store.open[0].scalpScore.cvdBonus, 5);
 });
 
 test('scalpSessionMultiplier applies backtest-validated EU 0.5x, US/Late 1.15x, Asia 1.0x', async () => {

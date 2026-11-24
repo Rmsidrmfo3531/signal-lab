@@ -171,3 +171,26 @@ test('real-account open position cards show no-SL warning badge and one-click -1
  assert.match(html,/🛡 -15% 손절/);
  assert.match(html,/🛡 손절 0\.021/);
 });
+
+test('A-4: placeMakerThenMarket accepts terminal CANCELED response directly from cancelOrder when getOrder lags',async()=>{
+ const placed=[];
+ const client={
+  placeOrder:async p=>{
+   placed.push(p);
+   if(p.type==='LIMIT')return {order:{orderId:'mk-lag',status:'NEW',executedQty:'0',avgPrice:'0'}};
+   return {order:{orderId:'mkt-lag',status:'FILLED',executedQty:p.quantity,avgPrice:'100.0'}};
+  },
+  getOrder:async()=>({order:{orderId:'mk-lag',status:'NEW',executedQty:'0'}}), // lagging getOrder
+  cancelOrder:async()=>({order:{orderId:'mk-lag',status:'CANCELED',executedQty:'0',avgPrice:'0'}}), // BingX DELETE returns terminal state
+ };
+ const r=await placeMakerThenMarket({
+  client,symbol:'SOL-USDT',side:'BUY',positionSide:'BOTH',quantity:1,
+  quantityStep:'0.01',minQuantity:0.01,tickSize:'0.01',markPrice:100,
+  clientOrderId:'c-lag',waitMs:20,pollMs:10,sleep:noSleep,
+ });
+ assert.equal(r.executionMode,'MARKET');
+ assert.equal(placed.length,2);
+ assert.equal(placed[1].type,'MARKET');
+ assert.equal(placed[1].quantity,'1');
+});
+
