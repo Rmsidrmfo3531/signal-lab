@@ -45,6 +45,7 @@ import {aiLensHigherTimeframe,aiLensRiskMap,aiLensStatus,LENS_HIGHER_INTERVAL_MS
 import {zoneBook,zoneTouches,zoneTagFields,zoneSpanMs,ZONE_PROFILES,ZONE_TOUCH_PCT} from './backtest.mjs';
 import {placeMakerThenMarket,makerLimitPrice,makerChildIds} from './maker_order.mjs';
 import {SCALP_MANAGEMENTS,TRADER_LADDER,scalpManagementOf,atrPct,ladderSpacing,planLadder,ladderZoneBoost,ladderReserve,strongZones,ladderNextAdd,ladderTpPrice} from './scalp_ladder.mjs';
+export const SCALP_SCORE_RULES_SINCE=Date.parse('2026-11-24T23:44:31Z');
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
 export const SCALP_EXEC_MODES=Object.freeze(['OFF','TESTNET']);
@@ -566,7 +567,10 @@ export class ScalpExecutor{
  /** The management a new entry gets: TRADER_LADDER only on the TESTNET, without the automatic stop; else CURRENT. */
  #management(){return this.execMode==='TESTNET'&&this.config?.mode==='TESTNET'&&this.config.management===SCALP_MANAGEMENTS.LADDER&&this.config.stopLossEnabled===false?SCALP_MANAGEMENTS.LADDER:SCALP_MANAGEMENTS.CURRENT}
  /** For 실계좌 준비 점검: which trades count (TRADER_LADDER from its switch time). */
- managementScope(){return {management:SCALP_MANAGEMENTS.LADDER,since:Number(this.store.managementSince?.[SCALP_MANAGEMENTS.LADDER])||null,active:this.#management()===SCALP_MANAGEMENTS.LADDER}}
+ // The live-readiness sample starts again when the score rules changed (1-point scoring, gate 70, PR #314 merged
+ // 2026-11-24T23:44:31Z; user 2026-11-25 08:47 "진행해" to re-counting from that point), so it never mixes rule sets.
+ managementScope(){const s=Number(this.store.managementSince?.[SCALP_MANAGEMENTS.LADDER])||null;
+  return {management:SCALP_MANAGEMENTS.LADDER,since:s&&this.now()>=SCALP_SCORE_RULES_SINCE?Math.max(s,SCALP_SCORE_RULES_SINCE):s,active:this.#management()===SCALP_MANAGEMENTS.LADDER}}
  #save(){if(!this.file)return;const s=this.store;s.closed=s.closed.slice(-MAX_CLOSED);s.events=s.events.slice(-MAX_EVENTS);s.skips=s.skips.slice(-MAX_SKIPS);s.sent=s.sent.slice(-MAX_KEYS);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,strategy:SCALP_EXEC_STRATEGY,...s})}
  #event(type,detail={}){const e={type,at:this.now(),mode:this.execMode,strategy:SCALP_EXEC_STRATEGY,...detail};this.store.events.push(e);this.log(`[SCALP${this.execMode==='LIVE'?':LIVE':''}] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}

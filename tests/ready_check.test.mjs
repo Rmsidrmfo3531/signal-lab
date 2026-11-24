@@ -189,3 +189,9 @@ test('scalp executor exposes the stats() rows read only',async()=>{
  assert.match(server,/report\.liveReadiness=readyNotifier\.status\(readySummary\(\)\)/);
  assert.match(server,/setInterval\(\(\)=>\{void readyCheck\(\)\},3600000\)/);
 });
+
+test('readiness sample restarts at the score-rules change (user 2026-11-25 "진행해")',async()=>{
+ const {SCALP_SCORE_RULES_SINCE}=await import('../scalp_executor.mjs');
+ assert.equal(new Date(SCALP_SCORE_RULES_SINCE).toISOString(),'2026-11-24T23:44:31.000Z');
+});
+
