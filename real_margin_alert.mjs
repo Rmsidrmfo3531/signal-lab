@@ -79,6 +79,7 @@ export class RealMarginAlert{
   };
   this.current=null; // last computed usage (memory only; /status and the screen)
   this.failLoggedAt=0;
+  this.checking=null; // one check at a time: a second one during a slow send would send the same level again
  }
  levels(){return this.store.levelsCustom?[...this.store.levels]:[...(this.envLevels??REAL_MARGIN_DEFAULT_LEVELS)]}
  #save(){
@@ -104,8 +105,25 @@ export class RealMarginAlert{
    return false;
   }
  }
- /** One balance read ({equity, available, used, unrealized}) and the open position count. Never throws. */
- async check({equity,available,used,unrealized,openCount=null}={}){
+ /** One balance read ({equity, available, used, unrealized}) and the open position count. Never throws. While a check
+  * is running (e.g. its Telegram send is slow) another call gets that same check instead of starting a second one. */
+ check(reading={}){
+  if(this.checking)return this.checking;
+  this.checking=this.#check(reading).finally(()=>{this.checking=null});
+  return this.checking;
+ }
+ /** For the safety loop (review 2026-11-24): `read()` gives the balance fields; read and check run in the background so
+  * the caller never waits on them (`void refresh(...)`), never two at once, and nothing is thrown. */
+ refresh(read,{openCount=null}={}){
+  if(this.checking)return this.checking;
+  this.checking=(async()=>{
+   // Never rejects: the caller does not await it, and an unhandled rejection would stop the server.
+   try{const f=await read();return f?await this.#check({...f,openCount}):{sent:null,reason:'NO_BALANCE'}}
+   catch(e){this.log('[MARGIN ALERT] 확인 실패',e?.message||'ERROR');return {sent:null,reason:'ERROR'}}
+  })().finally(()=>{this.checking=null});
+  return this.checking;
+ }
+ async #check({equity,available,used,unrealized,openCount=null}={}){
   const usage=marginUsageOf({equity,available,used,unrealized});
   if(!usage)return {sent:null,reason:'NO_BALANCE'};
   this.current={...usage,openCount:Number.isFinite(Number(openCount))?Number(openCount):null,at:this.now()};

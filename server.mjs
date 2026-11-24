@@ -948,10 +948,9 @@ if(COPY.mode==='LIVE'){
   try{
    const v=await venuePositionsReader.snapshot(realCopyPositions(),realScalpPositions());
    const positions=Array.isArray(v?.venuePositions)?v.venuePositions:[];
-   if(realMarginAlert){
-    try{const f=await readRealFunds();if(f)await realMarginAlert.check({...f,openCount:Array.isArray(v?.venuePositions)&&!v.venuePositionsError?positions.length:null})}
-    catch(e){console.warn('[MARGIN ALERT]',e.message)}
-   }
+   // In the background, never awaited (review 2026-11-24): a slow balance read or Telegram send must not hold up the
+   // daily-loss breaker and the trailing below; refresh() never runs twice at once and never rejects.
+   if(realMarginAlert)void realMarginAlert.refresh(()=>readRealFunds(),{openCount:Array.isArray(v?.venuePositions)&&!v.venuePositionsError?positions.length:null});
    const eq=copyTrader.funds?.equity??null;
    await accountAlerts.checkRisk({equityUSD:eq,positions});
    await accountAlerts.checkPositions({positions});

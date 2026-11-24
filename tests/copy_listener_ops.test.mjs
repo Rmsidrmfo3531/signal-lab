@@ -86,6 +86,36 @@ test('margin alert: a failed send is tried again, and the levels can be turned o
  m.configure({marginAlertLevels:''});const r=await m.check({equity:100,used:99});assert.equal(r.reason,'OFF');assert.equal(n,2);
 });
 
+// Review 2026-11-24: checkRiskAndRoi runs every 15 s with no overlap guard and awaited this check BEFORE the daily-loss
+// breaker and the trailing stop; a slow Telegram send let a second check send the same level again, and delayed both.
+test('margin alert: overlapping checks send one message; refresh runs in the background and never throws',async()=>{
+ let release,sent=0;const gate=new Promise(r=>{release=r});
+ const m=new RealMarginAlert({env:{},send:async()=>{sent++;await gate;return true}});
+ const a=m.check({equity:100,used:80}),b=m.check({equity:100,used:81});
+ release();await Promise.all([a,b]);
+ assert.equal(sent,1,'one message for 70 while the first send was still pending');
+ assert.deepEqual(m.status().alerted,[70]);
+ // refresh: one balance read at a time, errors stay inside.
+ let reads=0,hold;const slow=new Promise(r=>{hold=r});
+ const m2=new RealMarginAlert({env:{},send:async()=>true});
+ const p1=m2.refresh(async()=>{reads++;await slow;return {equity:100,used:90}},{openCount:2});
+ const p2=m2.refresh(async()=>{reads++;return {equity:100,used:90}});
+ assert.equal(reads,1,'second refresh while the first runs does not read again');
+ hold();const [r1]=await Promise.all([p1,p2]);
+ assert.deepEqual(r1.sent,{kind:'ALERT',level:85});assert.equal(m2.status().current.openCount,2);
+ assert.deepEqual(await m2.refresh(async()=>{throw Error('balance read failed')}),{sent:null,reason:'ERROR'});
+ assert.deepEqual(await m2.refresh(async()=>null),{sent:null,reason:'NO_BALANCE'});
+});
+
+test('server: the margin alert is never awaited in the real-account safety loop',()=>{
+ const src=fs.readFileSync(path.join(ROOT,'server.mjs'),'utf8');
+ const loop=src.slice(src.indexOf('const checkRiskAndRoi=async()=>{'),src.indexOf('const checkDaily=async()=>{'));
+ assert.ok(loop.length>100);
+ assert.doesNotMatch(loop,/await\s+(?:realMarginAlert\.|readRealFunds\()/);
+ assert.match(loop,/void realMarginAlert\.refresh\(/);
+ assert.ok(loop.indexOf('realMarginAlert')<loop.indexOf('evaluateDailyLoss'));
+});
+
 test('/status shows the exchange margin usage line (alert only)',()=>{
  const text=formatStatusReply({equityUSD:1000,availableUSD:300,positions:[],copy:{enabled:true,armed:true},
   marginUsage:{levels:[70,85,95],current:{pct:71.25}}});
