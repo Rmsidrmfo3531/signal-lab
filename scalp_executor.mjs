@@ -132,6 +132,11 @@ const POSITION_LIMIT_ERROR='VENUE_ERROR_101429';
 const isLadder=p=>p?.management===SCALP_MANAGEMENTS.LADDER&&Boolean(p.ladder);
 const ladderHeldMargin=p=>Math.max((p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1),Number(p.ladder?.reserveMarginUSD)||0);
 const ladderHeldRisk=p=>Number(p.ladder?.reserveRiskUSD)||0;
+// An order read back by client id: {order:null} (or an empty answer) is no order at all.
+const ladderOrderOf=d=>d&&typeof d==='object'&&'order' in d?d.order:d;
+const LADDER_TERMINAL=new Set(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED']);
+// An add whose orders cannot be confirmed finished is waited for this long, then the ladder stops adding (no retry).
+const LADDER_PENDING_MAX_MS=10*60000;
 // Tick rounding by side: a stop away from the entry (LONG down / SHORT up), a target or a break-even stop
 // on the safe side (target toward the entry, break-even at or beyond the entry in the profit direction).
 const awayMode=d=>d==='SHORT'?'UP':'DOWN',towardMode=d=>d==='SHORT'?'UP':'DOWN',beMode=d=>d==='SHORT'?'DOWN':'UP';
@@ -2502,10 +2507,12 @@ export class ScalpExecutor{
   if(guard())return;
   L.attempt=(L.attempt||0)+1;
   const id=(p.id+'L'+(index+1)+'n'+L.attempt).slice(0,31);
-  L.pending={step:index+1,index,units,plannedUnits:boosted.units,boost:boosted.boost,zone:next.zone,level:next.level,clientOrderId:id,attemptedAt:nowTs,preSize:fresh.size,preAvg:fresh.avg,requestedQty:qty,prevLastFill:L.lastFill};
+  // maker: a PostOnly child (id 'p') may rest on the book; it is cancelled and confirmed finished before a retry.
+  const maker=this.config.makerEntry!==false&&typeof cl.getOrder==='function'&&typeof cl.cancelOrder==='function';
+  L.pending={step:index+1,index,units,plannedUnits:boosted.units,boost:boosted.boost,zone:next.zone,level:next.level,clientOrderId:id,maker,attemptedAt:nowTs,preSize:fresh.size,preAvg:fresh.avg,requestedQty:qty,prevLastFill:L.lastFill};
   this.#save();
   try{
-   if(this.config.makerEntry!==false&&typeof cl.getOrder==='function'&&typeof cl.cancelOrder==='function'){
+   if(maker){
     const exec=await placeMakerThenMarket({client:cl,symbol:vs,side:openSide(p.direction),positionSide:positionSideFor({hedge,direction:p.direction}),
      quantity:qty,quantityStep:p.quantityStep,minQuantity:L.minQty,tickSize:p.tickSize,markPrice:price,hedge,clientOrderId:id,
      waitMs:this.config.makerWaitMs??2500,pollMs:this.config.makerPollMs??400,beforeSend:guard});
@@ -2532,17 +2539,56 @@ export class ScalpExecutor{
   const fresh=await this.#position(p.venueSymbol,p.direction,p.hedge===true).catch(()=>null);
   if(!fresh)return;
   const stepQ=Number(p.quantityStep)||0,added=+(fresh.size-a.preSize).toFixed(12);
-  if(added>stepQ/2)return this.#ladderBook(p,{qty:added,size:fresh.size,avg:pos(fresh.avg),prevAvg:pos(a.preAvg),prevSize:a.preSize,pending:a});
+  if(added>stepQ/2){
+   // An outcome never read: a PostOnly child may still rest; cancelled so no more of it fills (what still does is a
+   // late fill, booked from the position and bounded by this attempt's quantity).
+   if(a.unknown)await this.#ladderCancelAttempt(p,a);
+   return this.#ladderBook(p,{qty:added,size:fresh.size,avg:pos(fresh.avg),prevAvg:pos(a.preAvg),prevSize:a.preSize,pending:a});
+  }
   const age=this.now()-(a.attemptedAt||0);
   // Any add not yet seen in the position (an answer lost, a restart between sending and booking, a slow position read)
   // is waited for; only after that is the step given back.
-  if(age<120000){
-   const maker=a.makerClientOrderId||makerChildIds(a.clientOrderId).limit;
-   if(typeof this.client.cancelOrder==='function')try{await this.client.cancelOrder(p.venueSymbol,undefined,{clientOrderId:maker})}catch{}
-   return;
+  if(age<120000){await this.#ladderCancelAttempt(p,a);return}
+  // Given back (and tried again under a new id) only when every order of this attempt is known to be finished
+  // (review 2026-11-24): after an outage the old code gave the step back without a cancel, and a PostOnly child still
+  // resting filled on top of the retry — two fills for one step, past the per-symbol cap and the reserved budget.
+  const done=await this.#ladderAttemptDone(p,a);
+  if(!done.ok&&age<LADDER_PENDING_MAX_MS)return;
+  delete L.pending;
+  if(!done.ok||done.filledQty>stepQ/2){
+   // Still not known after 10 minutes, or filled per the venue but not in the position: this ladder adds no more,
+   // so no retry can double the step (a late fill is booked from the position).
+   L.state='STOPPED';L.lastReason=done.ok?'ORDER_OUTCOME_UNKNOWN':'MAKER_STATE_UNCONFIRMED';
+   this.#event('SCALE_IN_PENDING',{symbol:p.symbol,reason:L.lastReason});this.#save();return;
   }
-  delete L.pending;L.lastReason=a.unknown?'ORDER_OUTCOME_UNKNOWN':'NOT_FILLED';L.retryAfterAt=this.now()+15000;
+  L.lastReason='NOT_FILLED';L.retryAfterAt=this.now()+15000;
   this.#save();
+ }
+ /** Best effort: the PostOnly child of an add attempt cancelled (a market order cannot rest). */
+ async #ladderCancelAttempt(p,a){
+  if(a?.maker===false||typeof this.client.cancelOrder!=='function')return;
+  const cid=a.makerClientOrderId||makerChildIds(a.clientOrderId).limit;
+  try{await this.client.cancelOrder(p.venueSymbol,undefined,{clientOrderId:cid})}catch{}
+ }
+ /** Is every order of one add attempt finished? {ok, filledQty}. ok false while one still rests (it is cancelled) or
+  * cannot be read. Client ids: the attempt's own (a plain market order) and, with the maker entry, its children. */
+ async #ladderAttemptDone(p,a){
+  const cl=this.client;
+  if(typeof cl.getOrder!=='function')return {ok:true,filledQty:0};
+  const kids=a.maker===false?[]:[a.makerClientOrderId||makerChildIds(a.clientOrderId).limit,makerChildIds(a.clientOrderId).market];
+  let filledQty=0;
+  for(const cid of new Set([a.clientOrderId,...kids])){
+   let o;
+   try{o=ladderOrderOf(await cl.getOrder(p.venueSymbol,{clientOrderId:cid}))}
+   catch(e){if(orderAbsent(e))continue;return {ok:false}}
+   if(!o)continue;
+   if(!LADDER_TERMINAL.has(String(o.status||'').toUpperCase())){
+    if(typeof cl.cancelOrder==='function')try{await cl.cancelOrder(p.venueSymbol,undefined,{clientOrderId:cid})}catch{}
+    return {ok:false};
+   }
+   filledQty+=num(o.executedQty)||0;
+  }
+  return {ok:true,filledQty};
  }
  /** Books one ladder fill (from a pending add, or adopted from the position). */
  #ladderBook(p,{qty,size,avg,prevAvg=null,prevSize=0,pending=null,adopted=false}){
