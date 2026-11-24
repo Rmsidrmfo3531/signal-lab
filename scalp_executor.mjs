@@ -2381,7 +2381,7 @@ export class ScalpExecutor{
   const next=L.state==='WATCH'&&L.filled<L.units.length?(L.next??ladderNextAdd({direction:p.direction,lastFill:L.lastFill,spacingPct:L.spacingPct,zones:L.zones?.list||[]})):null;
   const opened=p.openedAt??p.createdAt;
   return {step:L.filled,of:L.units.length,units:[...L.units],avg:pos(p.avg),lastFill:pos(L.lastFill),spacingPct:L.spacingPct,atrPct:L.atrPct??null,
-   nextAdd:next?{price:pos(next.level),zone:next.zone?{tf:next.zone.tf,low:next.zone.low,high:next.zone.high,why:[...(next.zone.why||[])],at:next.zone.at}:null,units:next.zone?ladderZoneBoost(L.units,L.filled).units[L.filled]:L.units[L.filled]}:null,
+   nextAdd:next?{price:pos(next.level),zone:next.zone&&ladderZoneBoost(L.units,L.filled).boost>0?{tf:next.zone.tf,low:next.zone.low,high:next.zone.high,why:[...(next.zone.why||[])],at:next.zone.at}:null,units:next.zone?ladderZoneBoost(L.units,L.filled).units[L.filled]:L.units[L.filled]}:null,
    tpPrice:pos(L.tpPrice)??this.#ladderTp(p),tpNetPct:L.tpNetPct,finalLineRoePct:L.finalLineRoePct,maxHoldMin:L.maxHoldMin,closeBy:opened>0&&L.maxHoldMin>0?opened+L.maxHoldMin*60000:null,
    state:L.state,lastReason:L.lastReason??null,pending:Boolean(L.pending),unitMarginUSD:L.unitMarginUSD,reserveMarginUSD:L.reserveMarginUSD,reserveRiskUSD:L.reserveRiskUSD,
    fills:(L.fills||[]).map(f=>({step:f.step,units:f.units,qty:f.qty,price:f.price,at:f.at,zone:f.zone?{tf:f.zone.tf,why:[...(f.zone.why||[])]}:null,boost:f.boost||0}))};

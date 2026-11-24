@@ -618,7 +618,7 @@ setInterval(()=>{void pumpBook.track().catch(e=>console.warn('[PUMP]',e.message)
 // chat per group when it first meets the criteria (live-readiness.json). Never changes a setting, never arms, no orders.
 const readyLossLimits=()=>({dailyLossPct:Number(realSafety?.store?.dailyLossLimitPct)||0,copyLedgerLossPct:COPY.mode==='LIVE'?Number(copyTrader?.config?.ledgerLossPct)||0:0});
 // Only TRADER_LADDER scalp trades from its switch time count (user 2026-11-24, 카피식 추매).
-const readySummary=()=>evaluateReadiness({scalpRows:scalpExec.readinessRows(),pumpRecords:pumpBook.records,scalpScope:scalpExec.managementScope()});
+const readySummary=()=>evaluateReadiness({scalpRows:scalpExec.readinessRows(),pumpRecords:pumpBook.records,scalpScope:(s=>s?.active?s:null)(scalpExec.managementScope())});
 const readyNotifier=new ReadinessNotifier({directory:storage.dir,log:(...a)=>console.warn(...a),
  send:async text=>{
   if(accountAlerts)return accountAlerts.sendToAllowedChat(text);

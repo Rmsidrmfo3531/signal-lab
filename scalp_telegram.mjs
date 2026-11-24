@@ -39,7 +39,7 @@ export function scalpEventText(e){
   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.trigger==='PUMP_ALERT'?' · 급변 알림':''}${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${stopText} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${sessPart}${ofPart}${execPart}`;
  }
  if(e.type==='LADDER_ADD'&&e.qty>0){
-  const z=e.zone?` · 강한 매물대 2배 (${(e.zone.why||[]).map(c=>scalpReasonKo(c)).join('·')})`:'';
+  const z=e.zone&&Number(e.boost)>0?` · 강한 매물대 2배 (${(e.zone.why||[]).map(c=>scalpReasonKo(c)).join('·')})`:'';
   const view={step:e.step,of:e.of,avg:e.avg,nextAdd:e.nextAdd>0?{price:e.nextAdd}:null};
   return `➕ ${head} ${side(e)} 카피식 추매 ${e.step}/${e.of}단계${z}${e.adopted?' · 늦게 확인된 체결':''}\n수량 +${fmt(e.qty)} · 체결가 ${fmt(e.price)} · 평단 ${fmt(e.prevAvg)} → ${fmt(e.avg)}\n${ladderStepText(view,{fmt})} · 익절 ${fmt(e.tpPrice)}`;
  }
