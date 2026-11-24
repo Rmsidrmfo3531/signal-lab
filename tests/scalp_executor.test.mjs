@@ -1787,3 +1787,17 @@ test('pump alert: stats count PUMP_ALERT trades apart (byTrigger) and the journa
  assert.equal(journalLine({symbol:'X',direction:'LONG'}).trigger,'SCAN');
  assert.equal(summarizeJournal([{...line,exit:{reason:'ALL_TARGETS'}},{...journalLine({symbol:'X',direction:'LONG'}),exit:{reason:'STOP'}}]).byTrigger.PUMP_ALERT.trades,1);
 });
+
+test('pump alert: the window runs from the alert time — a late relay keeps what is left, one older than 15 min is not traded (review)',async()=>{
+ {const {v,ex}=pumpMake();ex.arm();const results=[];ex.onPumpResult=(k,r)=>results.push(r.reason);
+  const r=await ex.pumpAlert({...ALERT_DOWN,at:T0-16*60000});
+  assert.equal(r.reason,'PUMP_ALERT_STALE');assert.equal(ex.pumpWatch.size,0);assert.equal(placed(v,'MARKET').length,0);
+  assert.deepEqual(results,[]);assert.match(scalpReasonKo('PUMP_ALERT_STALE'),/늦게/)}
+ // A DOWN alert on a rise (no reversal) stays watched until 15 min after the alert, not after its delivery.
+ {const {ex}=pumpMake({direction:'SHORT'});ex.arm();
+  const r=await ex.pumpAlert({...ALERT_DOWN,at:T0-10*60000});
+  assert.equal(r.reason,'PUMP_NO_REVERSAL');assert.equal(ex.pumpWatch.get('SOLUSDT').until,T0+5*60000)}
+ // A server clock a little behind Telegram's: the window starts at the delivery.
+ {const {ex}=pumpMake({direction:'SHORT'});ex.arm();await ex.pumpAlert({...ALERT_DOWN,at:T0+3000});
+  assert.equal(ex.pumpWatch.get('SOLUSDT').until,T0+15*60000)}
+});

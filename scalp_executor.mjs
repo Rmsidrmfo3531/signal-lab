@@ -674,7 +674,12 @@ export class ScalpExecutor{
   if(!/^[A-Z0-9]{1,30}USDT$/.test(symbol)||!direction)return {entered:false,reason:'PUMP_ALERT_INVALID'};
   if(!this.armed)return {entered:false,reason:'NOT_ARMED'};
   const now=this.now();
-  this.pumpWatch.set(symbol,{symbol,direction,since:now,until:now+PUMP_WATCH_MIN*60000,lastBucket:null,tries:0,lastReason:null,
+  // The window runs from the alert's own time, not from its delivery (review 2026-11-24): an alert relayed late (listener
+  // retries while the server restarts, a Telegram reconnect catch-up) keeps only what is left of it, and one older than
+  // the window is not traded — the waived move-size rule stands for the alert's move, which must still be in view.
+  const at=Number(alert.at),until=(Number.isFinite(at)&&at>0?Math.min(at,now):now)+PUMP_WATCH_MIN*60000;
+  if(now>=until)return {entered:false,reason:'PUMP_ALERT_STALE'};
+  this.pumpWatch.set(symbol,{symbol,direction,since:now,until,lastBucket:null,tries:0,lastReason:null,
    alert:{key:typeof alert.key==='string'?alert.key.slice(0,100):null,at:Number(alert.at)||now,dir:alert.dir,pct:Number(alert.pct)||null,low:Number(alert.low)||null,high:Number(alert.high)||null,price:Number(alert.price)||null,ticks:Number.isFinite(Number(alert.ticks))?Number(alert.ticks):null}});
   if(this.scanning)return {entered:false,queued:true,reason:'QUEUED_AFTER_SCAN'};
   return await this.#pumpEvaluate(symbol)??{entered:false,queued:true,reason:'QUEUED_AFTER_SCAN'};
