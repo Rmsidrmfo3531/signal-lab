@@ -375,5 +375,5 @@ test('listener: exits with code 0 after its file changed (systemd Restart=always
 
 test('copy.sh unit restarts on a clean exit (Restart=always)',()=>{
  const sh=fs.readFileSync(path.join(ROOT,'deploy/linux/copy.sh'),'utf8');
- assert.match(sh,/\nRestart=always\n/);
+ assert.match(sh,/\r?\nRestart=always\r?\n/);
 });
