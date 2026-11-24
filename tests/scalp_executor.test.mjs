@@ -1652,3 +1652,138 @@ test('Free-Roll profit protection arms at +10% Net ROE and exits in profit at <=
 });
 
 
+// ---- 급변 알림 trigger (user 2026-11-24 "@ggangalt2_bot ... 바로 매매 진행이 가능할까") ----------------------
+const BTC_C={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',tickSize:'0.1',quantityStep:'0.001',minQuantityBase:'0.001',minNotionalUSDT:2,tradable:true};
+// A 2.9 % drop / rise: under the scan's 3.5 % move rule (and with zone signals off, no scan signal at all).
+// The testnet's default exits (no exchange stop, TP1 only has to pay its costs: SCALP_STOP_LOSS off).
+const smallCrash=o=>crash({move:2.5,wick:.3,...o}),smallRise=o=>rise({move:2.5,wick:.3,...o});
+const SMALL_PX=+(Number(smallCrash().at(-1)[4])+.01).toFixed(2),SMALL_PX_S=+(Number(smallRise().at(-1)[4])-.01).toFixed(2);
+function pumpMake({direction='LONG',config={},btc=null,contracts=null,clock={t:T0},rows=null,price=null}={}){
+ const isShort=direction==='SHORT',px=price??(isShort?SMALL_PX_S:SMALL_PX);
+ const v=venue({fillAt:px});
+ const ex=make(v,{clock,price:px,trend:isShort?down4h:up4h,rows:rows??(isShort?smallRise:smallCrash),config:{zoneSignals:false,stopLossEnabled:false,...config}});
+ ex.contracts=async()=>contracts??new Map([['SOLUSDT',SOL],['BTCUSDT',BTC_C]]);
+ ex.tickers=async()=>[{symbol:'BTC-USDT',quoteVolume:'900000000',lastPrice:'60000'},{symbol:'SOL-USDT',quoteVolume:'90000000',lastPrice:String(px)}];
+ const base=ex.candles;
+ // BTC: flat unless a shock is given (the scan's BTC shock guard reads its last closed 5m candles).
+ ex.candles=async(sym,iv,lim)=>sym==='BTCUSDT'&&iv==='5m'?(btc??[[ (BUCKET-1)*I,'60000','60010','59990','60000','100',BUCKET*I-1,'0']]):base(sym,iv,lim);
+ return {v,ex,clock};
+}
+const ALERT_DOWN={symbol:'SOLUSDT',dir:'DOWN',pct:11.6,low:96,high:100,price:96.5,ticks:492,key:'777:2'};
+
+test('pump alert: DOWN enters a LONG bounce the scan would not take; trade, event and journal tagged PUMP_ALERT',async()=>{
+ const dir=tmp(),{v,ex}=pumpMake({config:{}});
+ ex.signalsFile=null;ex.arm();
+ assert.equal((await ex.scan()).entered,0,'the 2.9 % move is under the scan rule');
+ assert.equal(placed(v,'MARKET').length,0);
+ const results=[];ex.onPumpResult=(key,r)=>results.push([key,r.entered,r.reason]);
+ const r=await ex.pumpAlert(ALERT_DOWN);
+ assert.equal(r.entered,true,JSON.stringify(r));
+ const [p]=ex.store.open;
+ assert.equal(p.direction,'LONG');assert.equal(p.trigger,'PUMP_ALERT');assert.equal(p.pumpAlert.pct,11.6);assert.equal(p.kind,'MOVE_REVERSAL');
+ assert.ok(p.stop<p.avg,'the scan\'s stop and sizing');
+ assert.equal(placed(v,'MARKET').length,1);
+ assert.equal(ex.store.events.find(e=>e.type==='OPENED').trigger,'PUMP_ALERT');
+ assert.match(scalpEventText(ex.store.events.find(e=>e.type==='OPENED')),/급변 알림/);
+ assert.deepEqual(results,[['777:2',true,undefined]]);
+ const line=ex.signals().at(-1);assert.equal(line.trigger,'PUMP_ALERT');assert.equal(line.entered,true);
+ assert.equal(ex.pumpWatch.size,0,'done after an entry');
+ fs.rmSync(dir,{recursive:true,force:true});
+});
+
+test('pump alert: UP enters a SHORT fade; a second alert on a held coin is refused (one per symbol)',async()=>{
+ const {v,ex}=pumpMake({direction:'SHORT'});ex.arm();
+ const r=await ex.pumpAlert({...ALERT_DOWN,dir:'UP'});
+ assert.equal(r.entered,true,JSON.stringify(r));
+ assert.equal(ex.store.open[0].direction,'SHORT');assert.equal(ex.store.open[0].trigger,'PUMP_ALERT');
+ assert.equal(placed(v,'MARKET')[0].side,'SELL');
+ const again=await ex.pumpAlert({...ALERT_DOWN,dir:'UP'});
+ assert.equal(again.entered,false);assert.ok(['SYMBOL_ALREADY_HELD','ALREADY_SENT'].includes(again.reason),again.reason);
+ assert.equal(placed(v,'MARKET').length,1);
+});
+
+test('pump alert: only the move size is waived — the other rules, the score gate and the BTC guard still block',async()=>{
+ // Opposite side: a DOWN alert on a rise has no LONG reversal.
+ {const {v,ex}=pumpMake({direction:'SHORT'});ex.arm();
+  const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'PUMP_NO_REVERSAL');assert.equal(placed(v,'MARKET').length,0);
+  assert.equal(ex.store.skips.at(-1).trigger,'PUMP_ALERT');assert.equal(ex.pumpWatch.size,1,'kept for the next 5m closes')}
+ // No volume climax: still refused.
+ {const {v,ex}=pumpMake({rows:()=>smallCrash({volume:1})});ex.arm();
+  const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'PUMP_NO_REVERSAL');assert.match(ex.store.skips.at(-1).detail,/NO_VOLUME_CLIMAX/);assert.equal(placed(v,'MARKET').length,0)}
+ // Score gate.
+ {const {v,ex}=pumpMake({config:{minScore:100}});ex.arm();
+  const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'SCORE_BELOW_MINIMUM');assert.equal(placed(v,'MARKET').length,0)}
+ // BTC shock guard: BTC -2 % in the last 5m candle blocks the LONG bounce.
+ {const t=(BUCKET-1)*I,{v,ex}=pumpMake({btc:[[t-2*I,'60000','60000','60000','60000','100',t-I-1,'0'],[t-I,'60000','60000','60000','60000','100',t-1,'0'],[t,'60000','60000','58800','58800','1000',t+I-1,'0']]});ex.arm();
+  const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'BTC_DUMP_GUARD');assert.equal(placed(v,'MARKET').length,0)}
+ // Shared budget / balance: no balance, no order.
+ {const {v,ex}=pumpMake();ex.balance=async()=>null;ex.arm();
+  const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'NO_BALANCE');assert.equal(placed(v,'MARKET').length,0)}
+});
+
+test('pump alert: a coin BingX does not list is skipped with a recorded reason; stock contracts too',async()=>{
+ {const {v,ex}=pumpMake();ex.arm();
+  const r=await ex.pumpAlert({...ALERT_DOWN,symbol:'NVDAUSDT'});
+  assert.equal(r.reason,'PUMP_NOT_ON_BINGX');assert.equal(placed(v,'MARKET').length,0);
+  const s=ex.store.skips.at(-1);assert.deepEqual([s.symbol,s.reason,s.trigger],['NVDAUSDT','PUMP_NOT_ON_BINGX','PUMP_ALERT']);
+  assert.equal(scalpReasonKo('PUMP_NOT_ON_BINGX'),'급변 알림 — BingX에 없는 종목')}
+ {const NC={...SOL,symbol:'NVDAUSDT',venueSymbol:'NCSKNVDA2USD-USDT'};
+  const {v,ex}=pumpMake({contracts:new Map([['SOLUSDT',SOL],['BTCUSDT',BTC_C],['NVDAUSDT',NC]])});ex.arm();
+  assert.equal((await ex.pumpAlert({...ALERT_DOWN,symbol:'NVDAUSDT'})).reason,'PUMP_NOT_ON_BINGX');assert.equal(placed(v,'MARKET').length,0)}
+});
+
+test('pump alert: kept for the next 5m closes — an alert before the rejection candle enters on the next close',async()=>{
+ const clock={t:T0},shift=I;
+ // At T0 the last closed candle is still part of the drop (no rejection yet); one candle later the hammer has closed.
+ let late=false;
+ const rows=()=>late?smallCrash({lastOpen:BUCKET*I}):smallCrash().slice(0,-1).map(r=>[r[0]+I,...r.slice(1,6),r[6]+I,r[7]]);
+ const {v,ex}=pumpMake({clock,rows});ex.arm();
+ const base=ex.candles,openBar=t=>[t,'100','100','100','100','1',t+I-1,'1'];
+ ex.candles=async(sym,iv,lim)=>sym==='SOLUSDT'&&iv==='5m'?[...rows(),openBar(late?(BUCKET+1)*I:BUCKET*I)]:base(sym,iv,lim);
+ const first=await ex.pumpAlert(ALERT_DOWN);
+ assert.equal(first.entered,false);assert.equal(first.reason,'PUMP_NO_REVERSAL');assert.equal(ex.pumpWatch.size,1);
+ // Same candle again: not evaluated twice.
+ assert.equal(await ex.tick(T0+1000),undefined);assert.equal(placed(v,'MARKET').length,0);
+ late=true;clock.t=T0+shift;
+ ex.priceOf=async()=>SMALL_PX;
+ await ex.tick(clock.t);
+ assert.equal(placed(v,'MARKET').length,1,JSON.stringify(ex.store.skips.slice(-3)));
+ assert.equal(ex.store.open[0].trigger,'PUMP_ALERT');assert.equal(ex.pumpWatch.size,0);
+ // A watch past PUMP_WATCH_MIN is dropped without an evaluation.
+ const {ex:ex2}=pumpMake({direction:'SHORT'});ex2.arm();await ex2.pumpAlert(ALERT_DOWN);
+ ex2.now=()=>T0+16*60000;await ex2.tick(T0+16*60000);assert.equal(ex2.pumpWatch.size,0);
+});
+
+test('pump alert: never in LIVE or OFF, never unarmed, SCALP_PUMP_ALERTS=off turns it off, disarm clears the watch',async()=>{
+ assert.equal(scalpExecConfig({}).pumpAlerts,true,'default on (testnet)');
+ assert.equal(scalpExecConfig({SCALP_PUMP_ALERTS:'off'}).pumpAlerts,false);
+ const liveCfg=scalpExecConfig({SCALP_EXEC_MODE:'LIVE'});assert.equal(liveCfg.mode,'OFF');assert.equal(liveCfg.refused,'LIVE_REFUSED');
+ assert.throws(()=>new ScalpExecutor({config:{...scalpExecConfig({}),mode:'LIVE'}}),/SCALP_TESTNET_ONLY/);
+ assert.throws(()=>new ScalpExecutor({config:scalpExecConfig({}),client:{mode:'LIVE'}}),/SCALP_TESTNET_ONLY/);
+ {const {v,ex}=pumpMake({config:{mode:'OFF'}});
+  assert.equal((await ex.pumpAlert(ALERT_DOWN)).entered,false);assert.equal(placed(v,'MARKET').length,0)}
+ {const {v,ex}=pumpMake({config:{pumpAlerts:false}});ex.arm();
+  assert.equal((await ex.pumpAlert(ALERT_DOWN)).reason,'PUMP_ALERTS_OFF');assert.equal(placed(v,'MARKET').length,0)}
+ {const {v,ex}=pumpMake();
+  assert.equal((await ex.pumpAlert(ALERT_DOWN)).reason,'NOT_ARMED');assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.pumpWatch.size,0)}
+ {const {v,ex}=pumpMake({direction:'SHORT'});ex.arm();await ex.pumpAlert(ALERT_DOWN);assert.equal(ex.pumpWatch.size,1);
+  ex.disarm();assert.equal(ex.pumpWatch.size,0);assert.equal(placed(v,'MARKET').length,0)}
+ {const {v,ex}=pumpMake({config:{sides:['SHORT']}});ex.arm();
+  assert.equal((await ex.pumpAlert(ALERT_DOWN)).reason,'SIDE_OFF');assert.equal(placed(v,'MARKET').length,0)}
+});
+
+test('pump alert: stats count PUMP_ALERT trades apart (byTrigger) and the journal carries the trigger',async()=>{
+ const {ex}=pumpMake();ex.arm();
+ await ex.pumpAlert(ALERT_DOWN);
+ const p=ex.store.open[0];
+ ex.store.closed.push({...p,status:'CLOSED',closedAt:T0+60000,closeReason:'ALL_TARGETS',netUSD:4.2});
+ ex.store.closed.push({symbol:'ETHUSDT',direction:'LONG',kind:'MOVE_REVERSAL',closedAt:T0,closeReason:'STOP',netUSD:-1});
+ const st=ex.stats();
+ assert.equal(st.byTrigger.PUMP_ALERT.trades,1);assert.equal(st.byTrigger.PUMP_ALERT.netUSD,4.2);
+ assert.equal(st.byTrigger.SCAN.trades,1);assert.equal(st.trades,2);
+ const {journalLine,summarizeJournal}=await import('../scalp_journal.mjs');
+ const line=journalLine({...p,closedAt:T0+60000,closeReason:'ALL_TARGETS',netUSD:4.2});
+ assert.equal(line.trigger,'PUMP_ALERT');assert.equal(line.pumpAlert.pct,11.6);
+ assert.equal(journalLine({symbol:'X',direction:'LONG'}).trigger,'SCAN');
+ assert.equal(summarizeJournal([{...line,exit:{reason:'ALL_TARGETS'}},{...journalLine({symbol:'X',direction:'LONG'}),exit:{reason:'STOP'}}]).byTrigger.PUMP_ALERT.trades,1);
+});

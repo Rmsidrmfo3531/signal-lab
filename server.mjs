@@ -13,6 +13,7 @@ import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
 import {scalpReportFiles} from './scalp_journal.mjs';
+import {PumpAlertBook,pumpAlertEndpoint} from './pump_alert.mjs';
 import {simulateScalpSignals} from './scalp_simulator.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
 import {liveEventText,realTradeMessage} from './live_telegram.mjs';
@@ -549,6 +550,15 @@ if(LIVE.mode==='TESTNET')testnetBudget.register('signal',withTestnetResetRisk(li
 if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',withTestnetResetRisk(scalpExec.budgetSource(),testnetHistoryReset,'scalp'));
 if(hasTestnetBingx)setInterval(()=>{void testnetAccountFunds().catch(()=>{})},TESTNET_BALANCE_REFRESH_MS).unref?.();
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
+// 급변 알림 (crimepump 공습경보 via @ggangalt2_bot, user 2026-11-24): every alert in pump-alerts.json with its outcome at
+// +1/+5/+15/+60 min from public 1m klines (BingX first; Binance only for coins Binance lists, so an unknown symbol never
+// marks the Binance feed offline). Read only. The testnet scalp evaluates each alert's coin (scalp_executor.mjs pumpAlert).
+const pumpBook=new PumpAlertBook({directory:storage.dir,log:(...a)=>console.warn(...a),
+ sources:[{name:'BINGX',klines:(symbol,limit)=>venueQuotes.clients.BINGX.klines(symbol,'1m',limit)},
+  {name:'BINANCE',klines:(symbol,limit)=>{if(!state.activeSet.has(symbol))throw Object.assign(Error('NOT_ON_BINANCE'),{code:'NOT_ON_BINANCE'});return klines(symbol,'1m',Math.min(1500,limit))}}],
+ listed:async symbol=>{const c=(await venueQuotes.clients.BINGX.contractsFor(symbol))?.get?.(symbol);return c?c.tradable===true:false}});
+scalpExec.onPumpResult=(key,result)=>{if(key)pumpBook.attachScalp(key,result)};
+setInterval(()=>{void pumpBook.track().catch(e=>console.warn('[PUMP]',e.message))},60000).unref?.();
 function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
  const text=scalpEventText(e);if(!text)return;
@@ -1186,6 +1196,8 @@ async function uploadReport(force=false){
   }
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime=scalpExec.runtimeSummary();
+  // 급변 알림: count, fade / follow averages after costs by horizon, and the testnet scalp trades it triggered.
+  try{report.pumpAlerts={...pumpBook.summary(),scalpTrades:scalpExec.stats().byTrigger?.PUMP_ALERT??null}}catch(e){console.warn('[REPORTS] pump',e.message)}
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});
   reportsDay=day;reportsHour=hourKey;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
  }catch(e){console.error('[REPORTS]',e.message)}finally{reportsBusy=false}
@@ -2287,6 +2299,15 @@ const server=http.createServer(async(req,res)=>{
    if(typeof body?.text!=='string'||body.text.length>4000)return response(res,400,{error:'TEXT_REQUIRED'});
    return response(res,200,await copyTrader.handle({id:body.id,date:Number(body.date)||Date.now(),text:body.text}));
   }
+  // 급변 알림 from the same listener (PUMP_ALERT_CHATS), same token. Only SCALP_EXEC_MODE=TESTNET hands it to the scalp.
+  if(pathname==='/api/pump-alert'&&req.method==='POST'){
+   const token=String(req.headers['x-copy-token']||''),want=String(process.env.COPY_LISTENER_TOKEN||'');
+   if(!(want.length>=24&&safeTokenEqual(token,want)))return response(res,403,{error:'FORBIDDEN'});
+   const r=pumpAlertEndpoint({token,want,body:await bodyJson(req),book:pumpBook,
+    onAlert:SCALP_EXEC.mode==='TESTNET'&&scalpClient?.mode==='TESTNET'?alert=>scalpExec.pumpAlert(alert):null});
+   if(r.body?.recorded)reportsDirty=true;
+   return response(res,r.status,r.body);
+  }
   if(pathname==='/api/live'&&req.method==='GET')return response(res,200,live.status());
   if(pathname==='/api/live/testnet-budget'&&req.method==='GET'){
    if(!hasTestnetBingx)return response(res,404,{error:'BINGX_TESTNET_UNAVAILABLE'});
@@ -2301,7 +2322,8 @@ const server=http.createServer(async(req,res)=>{
    const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(rawBalance?.usd)>0?Math.min(Number(rawBalance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
     return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
    const b=testnet?.budget,balance=hasTestnetBingx&&rawBalance?.venue==='BINGX'&&b?{...rawBalance,usd:b.balanceError?null:b.accountEquityUSD,at:b.balanceAt,error:b.balanceError}:rawBalance;
-   return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+   const pumpAlerts=testnet?{...pumpBook.summary(),scalpTrades:scalp?.stats?.byTrigger?.PUMP_ALERT??null}:null;
+   return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,pumpAlerts,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance,paperTrading:CONFIG.paperTrading})})}
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);

@@ -64,7 +64,7 @@ function rsiSeries(closes,period=14){
 }
 
 /** Evaluate the latest closed candles (1m / 5m / 15m) for a reversal entry. */
-export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={},interval='5m'}={}){
+export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={},interval='5m',only=null}={}){
  const tf=SCALP_TIMEFRAMES[interval];if(!tf)return {ok:false,reasons:['SCALP_INTERVAL_UNSUPPORTED']};
  const s={...SCALP_DEFAULTS,minMovePct:tf.minMovePct,entryTimeoutMs:tf.entryTimeoutMs,maxHoldMs:tf.maxHoldMs,...settings},candles=parse(rows,now,tf.intervalMs);
  if(!candles)return {ok:false,reasons:['KLINE_SCHEMA_OR_SEQUENCE_INVALID']};
@@ -77,7 +77,8 @@ export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={},inte
  const rsi=rsiSeries(candles.map(c=>c.close)).slice(-s.moveWindow-1);
  if(!positive(baseAtr))return {ok:false,reasons:['ATR_UNAVAILABLE']};
  const results=[];
- for(const direction of ['LONG','SHORT']){
+ // only: one side (a 급변 알림 names its side; scalp_executor.mjs pumpAlert). Default both, as before.
+ for(const direction of only==='LONG'||only==='SHORT'?[only]:['LONG','SHORT']){
   const dir=direction==='LONG'?1:-1,reasons=[];
   // Extreme = lowest low (LONG) / highest high (SHORT) of the window, in the last few candles.
   let ex=0;window.forEach((c,i)=>{if(dir===1?c.low<window[ex].low:c.high>window[ex].high)ex=i});
