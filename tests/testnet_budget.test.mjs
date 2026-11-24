@@ -8,7 +8,7 @@ import {LiveExecutor} from '../live_executor.mjs';
 import {ScalpExecutor,scalpExecConfig} from '../scalp_executor.mjs';
 import {liveConfig} from '../live_orders.mjs';
 import {testnetStats} from '../live_overview.mjs';
-import {testnetCloses,testnetClosedHTML,testnetSummaryHTML,testnetBudgetHTML,setTestnetPage,TN_BADGE,positionCardHTML,scalpPositionCardHTML} from '../public/live_control.js';
+import {testnetCloses,testnetClosedHTML,closedCountText,testnetSummaryHTML,testnetBudgetHTML,setTestnetPage,TN_BADGE,positionCardHTML,scalpPositionCardHTML} from '../public/live_control.js';
 
 const NOW=Date.parse('2026-11-17T03:00:00Z'); // 12:00 KST
 const liveCfg=(extra={})=>({mode:'TESTNET',liveConfirmed:false,venues:['BINGX'],maxRiskUSD:2,dailyMaxRiskUSD:6,maxOpen:8,maxPerDirection:4,...extra});
@@ -139,12 +139,15 @@ test('merged 종료된 거래: both strategies newest first, badges 신호 / 단
  const all=testnetCloses(o);assert.equal(all.length,23);
  assert.ok(all.every((x,i)=>i===0||x.closedAt<=all[i-1].closedAt),'newest first');assert.deepEqual(new Set(all.map(x=>x.kind)),new Set(['signal','scalp']));
  setTestnetPage(0);let h=testnetClosedHTML(o);
- assert.match(h,/class="copy-pager"/);assert.match(h,/1 \/ 3쪽/);assert.match(h,/data-tn-page="-1" disabled/);assert.match(h,/data-tn-page="1"/);
+ assert.match(h,/class="copy-pager"/);assert.match(h,/총 23건 · 1 \/ 3쪽/);assert.match(h,/data-tn-page="-1" disabled/);assert.match(h,/data-tn-page="1"/);
+ assert.equal(closedCountText(o,{tn:true}),'총 23건 · 시험 주문 제외');
+ assert.equal(closedCountText({...o,testnet:{stats:{all:{trades:142}}}},{tn:true}),'총 142건 (최근 23건 표시) · 시험 주문 제외');
+ assert.equal(closedCountText({closed:[{test:false},{test:true},{test:false}]},{tn:false}),'총 2건 · 시험 주문 제외');
  assert.match(h,new RegExp(TN_BADGE.signal));assert.match(h,new RegExp(TN_BADGE.scalp));
  assert.equal((h.match(/<tr class="tn-/g)||[]).length,10,'10 rows on the desktop table');assert.equal((h.match(/<li class="tn-/g)||[]).length,10,'10 rows on the phone list');
  assert.match(h,/<table class="copy-table only-desk">/);assert.match(h,/<ul class="copy-list only-mob">/);
  assert.ok(h.indexOf(all[0].symbol)<h.indexOf(all[1].symbol));
- setTestnetPage(2);h=testnetClosedHTML(o);assert.match(h,/3 \/ 3쪽/);assert.equal((h.match(/<tr class="tn-/g)||[]).length,3);assert.match(h,/data-tn-page="1" disabled/);
+ setTestnetPage(2);h=testnetClosedHTML(o);assert.match(h,/총 23건 · 3 \/ 3쪽/);assert.equal((h.match(/<tr class="tn-/g)||[]).length,3);assert.match(h,/data-tn-page="1" disabled/);
  setTestnetPage(9);assert.match(testnetClosedHTML(o),/3 \/ 3쪽/,'a page past the end shows the last one');setTestnetPage(0);
  assert.match(testnetClosedHTML({closed:[{...sigClosed(4),closedAt:NOW}]}),/data-live-delete="s4"/,'a deletable signal record keeps its delete button');
  assert.match(testnetClosedHTML({closed:[],scalp:{closed:[]}}),/아직 종료된 테스트넷 거래가 없습니다/);
