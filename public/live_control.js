@@ -676,8 +676,9 @@ export function scalpHTML(s){
  const closedTable=`<table class="copy-table only-desk"><thead><tr><th>종목</th><th>방향</th><th>진입</th><th>종료</th><th>보유</th><th>배율</th><th class="num">증거금</th><th>사유</th><th class="num">목표 도달</th><th class="num">R</th><th class="num">최대 이익/손실(R)</th><th class="num">손익</th></tr></thead><tbody>${closed.slice(0,20).map(x=>`<tr><td><b>${esc(x.symbol)}</b> ${scalpBadge(x.kind)}</td><td>${side(x.direction||'LONG')}</td><td class="muted">${when(x.openedAt||x.createdAt)}</td><td class="muted">${when(x.closedAt)}</td><td class="muted">${held(x.openedAt||x.createdAt,x.closedAt)}</td><td>${tnLeverage(x.leverage)}</td><td class="num">${tnScalpMargin(x.margin)}</td><td>${esc(x.closeReasonKo||x.closeReason)}</td><td class="num">${esc(x.tpHits??0)}개</td><td class="num ${cls(x.rMultiple)}">${rTxt(x.rMultiple)}</td><td class="num">${ex(x)}</td><td class="num"><b class="${cls(x.netUSD)}">${money(x.netUSD)}</b></td></tr>`).join('')}</tbody></table>`;
  const skipBox=scalpReasonListHTML(s,S,when);
  const side_=`<div class="copy-side">${modeLine}${stats}${bySide}${rules}</div>`;
+ const totalClosed=Math.max(closed.length,Number(s.stats?.trades)||0);
  const main=`<div class="copy-main"><h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">보유 중인 단타가 없습니다.${s.armed?' 5분봉 마감마다 급락 후 반등·급등 후 되돌림을 찾습니다.':''}</p>`)+
-  (closed.length?`<h5 class="copy-sub">최근 종료 <small>최근 ${Math.min(20,closed.length)}건 · 전체 기록은 단타 기록 파일</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}`:'')+skipBox+'</div>';
+  (closed.length?`<h5 class="copy-sub">최근 종료 <small>총 ${esc(totalClosed)}건 · 최근 ${Math.min(20,closed.length)}건 표시</small></h5><ul class="copy-list only-mob">${closed.slice(0,20).map(done).join('')}</ul>${scrollCopyTable(closedTable,'최근 종료 거래')}`:'')+skipBox+'</div>';
  return `<div class="copy-layout">${side_}${main}</div>`;
 }
 let scalpActionBusy=false;
@@ -834,6 +835,15 @@ function tnScalpMargin(m){
 export const TESTNET_PAGE_SIZE=10;
 export function setTestnetPage(p){tnPage=Math.max(0,p|0)}
 const tnResult=x=>x.source==='PENDING'?'<span class="muted">정산 중</span>':x.source==='UNKNOWN'||!fin(x.netUSD)?'<span class="muted">확인 불가</span>':tnMoney(x.netUSD);
+export function closedCountText(o,{tn=false}={}){
+ if(tn){
+  const shown=testnetCloses(o).length;
+  const total=Math.max(shown,Number(o?.testnet?.stats?.all?.trades)||0);
+  return total>shown?`총 ${total}건 (최근 ${shown}건 표시) · 시험 주문 제외`:`총 ${total}건 · 시험 주문 제외`;
+ }
+ const total=(o?.closed||[]).filter(c=>c?.test!==true).length;
+ return `총 ${total}건 · 시험 주문 제외`;
+}
 /** The merged 종료된 거래 list, 10 per page (the copy page's pager), desktop table / phone list. */
 export function testnetClosedHTML(o){
  lastTestnet=o;
@@ -850,7 +860,7 @@ export function testnetClosedHTML(o){
  });
  if(!all.length)return '<p class="empty-small">아직 종료된 테스트넷 거래가 없습니다.</p>';
  const pages=Math.max(1,Math.ceil(all.length/TESTNET_PAGE_SIZE)),page=Math.min(tnPage,pages-1),shown=all.slice(page*TESTNET_PAGE_SIZE,page*TESTNET_PAGE_SIZE+TESTNET_PAGE_SIZE);
- const pager=pages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-tn-page="-1"${page===0?' disabled':''}>‹ 이전</button><span class="muted">${page+1} / ${pages}쪽</span><button type="button" class="outline-btn small" data-tn-page="1"${page>=pages-1?' disabled':''}>다음 ›</button></div>`:'';
+ const pager=pages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-tn-page="-1"${page===0?' disabled':''}>‹ 이전</button><span class="muted">총 ${all.length}건 · ${page+1} / ${pages}쪽</span><button type="button" class="outline-btn small" data-tn-page="1"${page>=pages-1?' disabled':''}>다음 ›</button></div>`:'';
  const del=x=>x.kind==='signal'&&x.deletable?` <button type="button" class="ghost small" data-live-delete="${esc(x.key)}">삭제</button>`:'';
  const scoreTag=x=>fin(x.scalpScore?.score)?` <small class="vp-badge" title="${esc(x.scalpScore.summary||'')}">${esc(x.scalpScore.score)}점 ${esc(x.scalpScore.grade||'')}급</small>`:'';
  const tag=x=>`${x.kind==='scalp'?scalpBadge(x.scalpKind):TN_BADGE[x.kind]}${scoreTag(x)}${x.test?' <small class="muted">시험(합계 제외)</small>':''}`;
@@ -1282,6 +1292,7 @@ function render(o){
  if($('liveReasonSection')){$('liveReasonSection').hidden=!(tn&&o.scalp);const g=tn&&o.scalp?reasonGlossaryHTML(o.scalp.settings):'';if(g&&$('liveReasons')&&$('liveReasons').dataset.html!==g){$('liveReasons').innerHTML=g;$('liveReasons').dataset.html=g}bindReasonTips(document)}
  bindScalpButtons($('liveScalpOwn'));
  if($('liveScalpPanel')){$('liveScalpPanel').hidden=Boolean(tn)||!o.scalp;if(!tn&&o.scalp&&$('liveScalpOwn')&&!scalpActionBusy)$('liveScalpOwn').innerHTML=scalpHTML(o.scalp)}
+ if($('liveClosedCount'))$('liveClosedCount').textContent=closedCountText(o,{tn:Boolean(tn)});
  const closedBox=$('liveClosed');
  if(closedBox&&!liveDeleteBusy.size){closedBox.classList.toggle('tn-closed',Boolean(tn));
   if(tn){bindTestnetPager(closedBox);closedBox.innerHTML=testnetClosedHTML(o)}
