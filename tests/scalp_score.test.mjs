@@ -58,7 +58,7 @@ test('SCALP_SCORE_WEIGHTS sum strictly to 100 in 5-point increments and defaults
  assert.equal(scalpExecConfig({SCALP_HIGH_SCORE:'75',SCALP_HIGH_SCORE_SIZE_MULT:'1.4'}).highScoreSizeMult,1.4);
 });
 
-test('scoreScalpSetup scores perfect S-grade (100), B-grade (65), and blocked D-grade setups accurately',()=>{
+test('scoreScalpSetup scores perfect S-grade (100), B-grade (65), and blocked D-grade setups accurately (1-point curves)',()=>{
  const perfect=scoreScalpSetup({
   direction:'LONG',
   evidence:{movePct:5.5,moveAtr:3.8,retracedPct:20,climaxVolumeRatio:6.5,rsiPeak:19},
@@ -70,43 +70,47 @@ test('scoreScalpSetup scores perfect S-grade (100), B-grade (65), and blocked D-
  assert.equal(perfect.sizeMult,1.25);
  assert.deepEqual(perfect.breakdown,{movePct:25,trend4h:20,btcTrend4h:15,moveAtr:15,retracedPct:10,climaxVolume:5,netRR:5,rsiExtreme:5});
 
- // SHORT mirror with >=6x ATR spike (5 pts under A-3) & neutral range trends -> A-grade 75 (1.25x)
+ // SHORT mirror with a 7.1x ATR spike & neutral range trends -> A-grade 77 (1.25x).
+ // Was 75 under 5-point steps (ATR >=6x 5, RR >=1.2 5); on the 1-point curves ATR 7.1x = 10-(1.1/3)*5 -> 8, RR 1.3 -> 4.
  const aGrade=scoreScalpSetup({
   direction:'SHORT',
   evidence:{movePct:5.2,moveAtr:7.1,retracedPct:18,climaxVolumeRatio:5.5,rsiPeak:82},
   trend4h:'range',btcTrend4h:null,netRR:1.3,
  });
- // 25 (move) + 10 (4h range) + 10 (btc null->range) + 5 (atr>=6) + 10 (retrace) + 5 (vol) + 5 (rr) + 5 (rsi>=78) = 75
- assert.equal(aGrade.score,75);
+ // 25 (move) + 10 (4h range) + 10 (btc null->range) + 8 (atr 7.1x) + 10 (retrace) + 5 (vol) + 4 (rr 1.3) + 5 (rsi 82) = 77
+ assert.equal(aGrade.score,77);
  assert.equal(aGrade.grade,'A');
  assert.equal(aGrade.sizeMult,1.25);
- assert.equal(aGrade.breakdown.moveAtr,5);
+ assert.equal(aGrade.breakdown.moveAtr,8);
+ assert.equal(aGrade.breakdown.netRR,4);
 
- // Exactly 65점 B-grade (1.0x sizing): move 25 + 4h 10 + btc 10 + atr 5 + retrace 5 (confirmed WICK at <=10%) + vol 5 + rr 0 + rsi 5 = 65
+ // Exactly 65점 B-grade (1.0x sizing): move 25 + 4h 10 + btc 10 + atr 5 (>=9x) + retrace 5 (WICK floor at 3%) + vol 5 + rr 0 + rsi 5 = 65.
+ // Inputs changed from (ATR 7.1x, retraced 7%, RR 1.0) which now score 8 / 5 / 2 = 70: kept the test at exactly 65.
  const exactB=scoreScalpSetup({
   direction:'SHORT',
-  evidence:{movePct:5.2,moveAtr:7.1,retracedPct:7,rejection:'WICK',climaxVolumeRatio:5.5,rsiPeak:82},
-  trend4h:'range',btcTrend4h:'range',netRR:1.0,
+  evidence:{movePct:5.2,moveAtr:10,retracedPct:3,rejection:'WICK',climaxVolumeRatio:5.5,rsiPeak:82},
+  trend4h:'range',btcTrend4h:'range',netRR:0.8,
  });
  assert.equal(exactB.score,65);
- assert.equal(exactB.breakdown.retracedPct,5,'confirmed rejection candle awards 5pts even when retracedPct <= 10%');
+ assert.equal(exactB.breakdown.retracedPct,5,'confirmed rejection candle gives at least 5pts even when 3% retraced alone gives 2');
  assert.equal(exactB.grade,'B');
  assert.equal(exactB.pass,true);
  assert.equal(exactB.sizeMult,1);
 
- // Strong B7 bounce (30~35% retraced) also awards 5pts instead of 0
+ // Strong B7 bounce past the 15~30% plateau falls off linearly: 33% -> 10-(3/15)*10 = 8 (was a 5-point step)
  const strongBounce=scoreScalpSetup({direction:'LONG',evidence:{movePct:4.0,moveAtr:4.0,retracedPct:33}});
- assert.equal(strongBounce.breakdown.retracedPct,5);
+ assert.equal(strongBounce.breakdown.retracedPct,8);
 
- // Against-trend small move + blowoff ATR + bare falling knife (no rejection) -> D-grade blocked
+ // Against-trend small move + blowoff ATR + bare falling knife (no rejection) -> D-grade blocked.
+ // Was 10 under the steps; the curves give partial points: move 2.7% 7, ATR 6.5x 9, retraced 6% 4, vol 3.2x 2, RR 0.9 1, RSI 24 3 = 26.
  const weak=scoreScalpSetup({
   direction:'LONG',
   evidence:{movePct:2.7,moveAtr:6.5,retracedPct:6,climaxVolumeRatio:3.2,rsiPeak:24},
   trend4h:'down',btcTrend4h:'down',netRR:0.9,
  });
- assert.equal(weak.score,10);
- assert.equal(weak.breakdown.moveAtr,5);
- assert.equal(weak.breakdown.retracedPct,0,'bare falling knife without rejection still scores 0');
+ assert.equal(weak.score,26);
+ assert.deepEqual(weak.breakdown,{movePct:7,trend4h:0,btcTrend4h:0,moveAtr:9,retracedPct:4,climaxVolume:2,netRR:1,rsiExtreme:3});
+ assert.equal(weak.breakdown.retracedPct,4,'no rejection candle: the 5-point floor does not apply');
  assert.equal(weak.grade,'D');
  assert.equal(weak.pass,false);
  assert.equal(weak.sizeMult,0);
@@ -152,7 +156,8 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  assert.equal(a.ex.store.open.length,1);
  assert.equal(b.ex.store.open.length,1);
  const pA=a.ex.store.open[0],pB=b.ex.store.open[0];
- assert.equal(pA.scalpScore.score,85); // 25+20+15+5(atr>=6)+5+5+5+5 = 85 (S-grade with BTC up4h!)
+ // 25+20+15+5(atr 27.6x)+9(retraced 13%)+5+4(RR 1.33)+5 = 88 (S-grade with BTC up4h). Was 85 under the 5-point steps.
+ assert.equal(pA.scalpScore.score,88);
  assert.equal(pA.scalpScore.grade,'S');
  assert.equal(pA.scalpScore.sizeMult,1.25);
  assert.equal(pA.btcTrend4h,'up');
@@ -161,12 +166,12 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  // Verify Telegram OPENED notice, journal line, status, runtimeSummary, and UI badges
  const opened=a.ex.store.events.find(e=>e.type==='OPENED');
  const tg=scalpEventText(opened);
- assert.match(tg,/점수 85점\(S급 · 비중 1\.25x\)/);
+ assert.match(tg,/점수 88점\(S급 · 비중 1\.25x\)/);
  const jl=journalLine({...pA,closedAt:T0+60000,closeReason:'EARLY_TAKE_PROFIT',netUSD:20});
- assert.equal(jl.score.score,85);
+ assert.equal(jl.score.score,88);
  assert.equal(jl.btcTrend4h,'up');
  const card=scalpPositionCardHTML(pA);
- assert.match(card,/85점 S급 · 1\.25x/);
+ assert.match(card,/88점 S급 · 1\.25x/);
  const st=a.ex.status();
  assert.equal(st.settings.minScore,65);
  assert.equal(st.settings.highScore,70);
@@ -212,15 +217,17 @@ test('unified 2.5%+ score gate enters high-confluence 3% move without 4H/1D zone
  assert.equal(ex.store.open.length,1,'high-confluence 3% move passes >=65 unified score gate');
  assert.equal(ex.store.open[0].kind,'MOVE_REVERSAL');
  assert.ok(ex.store.open[0].evidence.movePct>=2.5&&ex.store.open[0].evidence.movePct<3.5);
- assert.ok(ex.store.open[0].scalpScore.score>=70);
- assert.equal(ex.store.open[0].scalpScore.grade,'A');
+ // 14 (move 3.35%) + 20 + 15 + 15 (ATR 4.48x) + 7 (retraced 10.7%) + 5 + 2 (RR 1.03) + 4 (RSI 20.3) = 82: S-grade
+ // (was 70, A-grade, under the 5-point steps: a 3.35% move scored 5, now 14).
+ assert.equal(ex.store.open[0].scalpScore.score,82);
+ assert.equal(ex.store.open[0].scalpScore.grade,'S');
 
  // Close trade and verify stats().byGrade tracks S/A/B accurately
  ex.store.closed.push({...ex.store.open.pop(),status:'CLOSED',closedAt:T0+60000,closeReason:'EARLY_TAKE_PROFIT',netUSD:25.5});
  const st=ex.stats();
- assert.equal(st.byGrade.A.trades,1);
- assert.equal(st.byGrade.A.netUSD,25.5);
- assert.equal(st.byGrade.S.trades,0);
+ assert.equal(st.byGrade.S.trades,1);
+ assert.equal(st.byGrade.S.netUSD,25.5);
+ assert.equal(st.byGrade.A.trades,0);
  assert.equal(st.byGrade.B.trades,0);
 });
 

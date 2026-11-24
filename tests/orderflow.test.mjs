@@ -160,12 +160,13 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   const I = 300_000;
   const T0 = Date.parse('2026-11-22T10:05:10Z');
   const BUCKET = Math.floor(T0 / I);
-  // Build a 60pt setup (move 4.3% -> 15pt, 4h range -> 10pt, btc 4h range -> 10pt, moveAtr ~4.5 -> 15pt, retraced ~18% -> 5pt, vol 5x -> 5pt = 60pt!)
+  // Build a 60pt setup under the 1-point curves (user 2026-11-25): move ~3.6% -> 16, 4h range 10, btc 4h range 10, moveAtr ~5.4x -> 12,
+  // retraced ~12% -> 8, vol 2.2x -> 0, netRR ~0.9 -> 1, RSI ~22.6 -> 3 = 60. (The old fixture, 4.1% / 5.5x volume, now scores 68 and would pass alone.)
   const rows = []; let p = 100;
   for (let i = 0; i < 45; i++) { const o = p, c = p + (i % 2 ? 0.2 : -0.2); rows.push([0, o, Math.max(o, c) + 0.25, Math.min(o, c) - 0.25, c, 100]); p = c; }
-  for (let i = 0; i < 4; i++) { const o = p, c = p - 0.75; rows.push([0, o, o + 0.05, c - 0.05, c, 100 * (i === 3 ? 5.5 : 2)]); p = c; }
-  const low = p - 0.65, close = p - 0.12;
-  rows.push([0, p - 0.20, close + 0.05, low, close, 550]);
+  for (let i = 0; i < 4; i++) { const o = p, c = p - 0.65; rows.push([0, o, o + 0.05, c - 0.05, c, 100 * (i === 3 ? 2.2 : 2)]); p = c; }
+  const low = p - 0.65, close = p - 0.18;
+  rows.push([0, p - 0.20, close + 0.05, low, close, 220]);
   const lastOpen = (BUCKET - 1) * I;
   const candles5m = [...rows.map((r, i) => {
     const t = lastOpen - (rows.length - 1 - i) * I;

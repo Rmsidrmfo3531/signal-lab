@@ -980,7 +980,7 @@ export function scalpDetailsHTML(s){
    <form class="ctrl-form sim-form" data-scalp-sim-form>
     <label>분석 기간 (일) <input name="days" type="number" min="1" max="30" step="1" value="${esc(sp.days)}"></label>
     <label>최소 급변 (%) <input name="minMovePct" type="number" min="2.5" max="15" step="0.5" value="${esc(sp.minMovePct)}"></label>
-    <label>최소 점수 (100점) <input name="minScore" type="number" min="0" max="100" step="5" value="${esc(sp.minScore)}" title="0 = 점수 제한 없음"></label>
+    <label>최소 점수 (100점) <input name="minScore" type="number" min="0" max="100" step="1" value="${esc(sp.minScore)}" title="0 = 점수 제한 없음"></label>
     <label>4H 추세 필터 <select name="trendMode"><option value="on"${sp.trendMode==='on'?' selected':''}>ON (역추세 제외)</option><option value="off"${sp.trendMode==='off'?' selected':''}>OFF (모두 허용)</option></select></label>
     <label>매물대 반전 <select name="zoneSignals"><option value="true"${sp.zoneSignals?' selected':''}>ON (2.5%+매물대)</option><option value="false"${!sp.zoneSignals?' selected':''}>OFF (급변만)</option></select></label>
     <label>최소 손익비 (RR) <input name="minNetRR" type="number" min="0" max="3" step="0.1" value="${esc(sp.minNetRR)}" title="0 = 제한 없음"></label>
