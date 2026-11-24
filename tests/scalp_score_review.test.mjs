@@ -6,6 +6,31 @@ import {scoreScalpSetup,scalpScoreGrade} from '../scalp_reversal.mjs';
 import {simulateScalpSignals} from '../scalp_simulator.mjs';
 import {ScalpExecutor,scalpExecConfig,scalpLiveExecConfig,scalpScoreTierMultiplier,parseScalpScoreTiers,SCALP_SCORE_TIERS} from '../scalp_executor.mjs';
 
+test('screen labels follow the gate and tier edges and 1-point totals (no 5-point "55점 이하" / "B급 (65)")',async()=>{
+ const {scalpDetailsHTML}=await import('../public/live_control.js');
+ const {scoreTier,scoreItemsHTML}=await import('../public/scalp_reasons.js');
+ const html=(env,skips=[])=>{const ex=new ScalpExecutor({config:{...scalpExecConfig(env),management:'CURRENT'}});ex.store.skips.push(...skips);return scalpDetailsHTML(ex.status())};
+ const skips=[{at:1,symbol:'XUSDT',reason:'SCORE_BELOW_MINIMUM',score:62},{at:2,symbol:'YUSDT',reason:'SCORE_BELOW_MINIMUM',score:57}];
+ const d=html({},skips);
+ assert.match(d,/점수배수 65~69 0\.75x \/ 70~74 1x \/ 75~79 1\.2x \/ 80\+ 1\.4x/);
+ assert.match(d,/턱걸이 차단\(60~64점\) <b>1건<\/b> · 하위 차단\(59점 이하\) <b>1건<\/b>/,'57 is below 60, not "55점 이하"');
+ assert.match(d,/S급 \(80\+\)/);assert.match(d,/A급 \(70~79\)/);assert.match(d,/B급 \(65~69\)/);
+ // Gate 71, default tiers: no 0.75x tier left; B grade is empty.
+ const g71=html({SCALP_MIN_SCORE:'71'},skips);
+ assert.match(g71,/점수배수 71~74 1x \/ 75~79 1\.2x \/ 80\+ 1\.4x/);
+ assert.match(g71,/턱걸이 차단\(66~70점\)/);
+ assert.match(g71,/A급 \(71~79\)/);assert.doesNotMatch(g71,/B급 \(/);
+ // Gate 71 with tiers 86/81/76.
+ const t=html({SCALP_MIN_SCORE:'71',SCALP_SCORE_TIERS:'86,81,76'});
+ assert.match(t,/점수배수 71~75 0\.75x \/ 76~80 1x \/ 81~85 1\.2x \/ 86\+ 1\.4x/);
+ assert.match(t,/S급 \(86\+\)/);assert.match(t,/A급 \(76~85\)/);assert.match(t,/B급 \(71~75\)/);
+ // Record tier labels.
+ assert.equal(scoreTier(78),'A+');assert.equal(scoreTier(66),'B');
+ const S={minScore:71,scoreTiers:{S:86,'A+':81,A:76}};
+ assert.equal(scoreTier(78,S),'A');assert.equal(scoreTier(86,S),'S');assert.equal(scoreTier(72,S),'B');assert.equal(scoreTier(70,S),'C');
+ assert.match(scoreItemsHTML({score:78,minScore:71},S),/합계 <b>78<\/b> A급 · 통과/);
+});
+
 test('score tier edges: defaults 80/75/70, SCALP_SCORE_TIERS overrides, invalid input keeps the defaults',()=>{
  const d=scalpExecConfig({});
  assert.deepEqual(d.scoreTiers,{S:80,'A+':75,A:70});

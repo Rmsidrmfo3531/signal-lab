@@ -3,7 +3,7 @@
 import {priceFmt} from './price_format.js';
 import {displaySymbol} from './symbol_display.js';
 import {createRealTradeController} from './real_trade.js';
-import {reasonHTML,skipRowHTML,enteredRowHTML,reasonGlossaryHTML,bindReasonTips,ladderStepText,reasonLabel} from './scalp_reasons.js';
+import {reasonHTML,skipRowHTML,enteredRowHTML,reasonGlossaryHTML,bindReasonTips,ladderStepText,reasonLabel,scoreTierRangesText,scoreGradeLabels} from './scalp_reasons.js';
 
 const LABEL={BINGX:'BingX',GATEIO:'Gate.io'};
 const MODE={OFF:{badge:'OFF',text:'주문 없음',title:'실매매 (꺼짐)',cls:'off'},TESTNET:{badge:'TESTNET',text:'모의 자금',title:'실매매 (테스트넷)',cls:'testnet'},
@@ -946,7 +946,7 @@ export function scalpDetailsHTML(s){
  const recheck=S.reversalRecheckMin?` · 가격·손익비로 건너뛴 반전은 ${esc(S.reversalRecheckMin)}분 동안 재확인`:'';
  const unifiedMove=Number(S.minScore)>0&&S.scoreUnifiedMove!==false;
  const moveDesc=unifiedMove?`${esc(S.zoneMinMovePct??2.5)}% 이상 통합 점수 판별 (매물대 강제 해제)`:`${esc(S.minMovePct)}% 이상${S.zoneSignals?` (또는 ${esc(S.zoneMinMovePct)}% 이상 + 극값이 4H/1D 매물대 ±${esc(S.zoneTouchPct)}% 안 = 매물대 반전)`:''}`;
- const scoreTierText=S.scoreTierSizing!==false?' · 점수배수 65~69 0.75x / 70~74 1x / 75~79 1.2x / 80+ 1.4x (초기캡 고정)':'';
+ const scoreTierText=S.scoreTierSizing!==false?` · 점수배수 ${esc(scoreTierRangesText(S))} (초기캡 고정)`:'';
  const scoreRule=Number(S.minScore)>0?` · 100점 신호 점수 ${esc(S.minScore)}점 이상 진입${Number(S.highScoreSizeMult)>1&&Number(S.highScore)>0?` (${esc(S.highScore)}점+ 비중 ${esc(S.highScoreSizeMult)}배)`:''}${scoreTierText}`:'';
  const ofRule=S.orderflowBoost!==false&&Number(S.minScore)>0?` · 수급 부스트(30분 OI -1%↓ +${esc(S.orderflowOiBonus??5)}점 · CVD 강한반전 ${esc(S.orderflowCvdSizeMult??1.5)}배)`:'';
  const bounceRule=S.bounceSizing!==false&&Number(S.minScore)>0?` · 반등확인 비중(${esc(S.bounceThresholdPct??20)}%+ ${esc(S.bounceHighMult??1.35)}배 · 미만 ${esc(S.bounceLowMult??0.8)}배)`:'';
@@ -959,10 +959,10 @@ export function scalpDetailsHTML(s){
  const MK={TRADER_LADDER:'카피식 추매',CURRENT:'이전 방식'};
  const byManagement=st.byManagement?`<div class="copy-stats tn-management-stats">${['TRADER_LADDER','CURRENT'].map(k=>{const b=st.byManagement?.[k]||{};return stat(`${MK[k]}${S.management===k?' (지금)':''}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'} · <i class="${tnCls(b.netUSD)}">${b.trades?tnMoney(b.netUSD):'—'}</i>`)}).join('')}</div>`:'';
  const byKind=`<div class="copy-stats tn-kind-stats">${['MOVE_REVERSAL','ZONE_REVERSAL'].map(k=>{const b=st.byKind?.[k]||{};return stat(`${KK[k]}${k==='ZONE_REVERSAL'&&S.zoneSignals===false?' (꺼짐)':''}`,`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'}`)+stat(`${KK[k]} 손익`,tnMoney(b.trades?b.netUSD:null),`class="${tnCls(b.netUSD)}"`)}).join('')}</div>`;
- const GK={S:'S급 (80+)',A:'A급 (70~75)',B:'B급 (65)'};
+ const GK=scoreGradeLabels(S); // from the gate and the S / A edges (1-point totals since 2026-11-25)
  const byGrade=st.byGrade?`<div class="copy-stats tn-grade-stats">${['S','A','B'].map(g=>{const b=st.byGrade?.[g]||{};return stat(GK[g],`${b.trades||0}건 · ${b.winRatePct!=null?b.winRatePct+'%':'—'} · PF ${b.profitFactor!=null?b.profitFactor:b.trades?'∞':'—'} · <i class="${tnCls(b.netUSD)}">${b.trades?tnMoney(b.netUSD):'—'}</i>`)}).join('')}</div>`:'';
  const ss=s.scoreSummary;
- const scoreDist=ss&&(ss.passed>0||ss.nearMiss>0||ss.low>0)?`<p class="copy-rules tn-score-dist">점수 분포: 통과(${esc(ss.minScore??65)}점+) <b>${esc(ss.passed)}건</b> · 턱걸이 차단(${esc(ss.nearFloor??60)}점대) <b>${esc(ss.nearMiss)}건</b> · 하위 차단(${esc((ss.nearFloor??60)-5)}점 이하) <b>${esc(ss.low)}건</b></p>`:'';
+ const scoreDist=ss&&(ss.passed>0||ss.nearMiss>0||ss.low>0)?`<p class="copy-rules tn-score-dist">점수 분포: 통과(${esc(ss.minScore??65)}점+) <b>${esc(ss.passed)}건</b> · 턱걸이 차단(${esc(ss.nearFloor??60)}~${esc((ss.minScore??65)-1)}점) <b>${esc(ss.nearMiss)}건</b> · 하위 차단(${esc((ss.nearFloor??60)-1)}점 이하) <b>${esc(ss.low)}건</b></p>`:'';
  const skipBox=scalpReasonListHTML(s,S,tnWhen,scoreDist);
  const journal=`<p class="copy-rules">전체 기록: <a href="/api/scalp/journal?limit=200" target="_blank" rel="noopener">단타 거래 기록</a> · <a href="/api/scalp/journal?kind=signals&amp;limit=200" target="_blank" rel="noopener">감지된 신호</a> (JSON)</p>`;
  const experiment=S.repeatedScaleIn&&st.repeatedScaleIn?`<p class="copy-rules">반복 추매 실험 종료 ${esc(st.repeatedScaleIn.closed)}건 · 추매 ${esc(st.repeatedScaleIn.adds)}회</p>`:st.scaleIn&&S.scaleIn?`<p class="copy-rules">추매 실험 종료 ${esc(st.scaleIn.closed)}건 · 추매 체결 ${esc(st.scaleIn.filled)}건</p>`:'';

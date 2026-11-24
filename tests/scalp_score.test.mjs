@@ -182,8 +182,9 @@ test('ScalpExecutor default score gate blocks low-score against-trend setup and 
  assert.match(details,/2\.5% 이상 통합 점수 판별 \(매물대 강제 해제\)/);
  assert.match(details,/name="minScore"/);
  assert.match(details,/S급 \(80\+\)/);
- assert.match(details,/A급 \(70~75\)/);
- assert.match(details,/B급 \(65\)/);
+ // 1-point totals (2026-11-25): A is 70~79 and B 65~69 (the 5-point labels were "70~75" / "65").
+ assert.match(details,/A급 \(70~79\)/);
+ assert.match(details,/B급 \(65~69\)/);
 });
 
 test('unified 2.5%+ score gate enters high-confluence 3% move without 4H/1D zone reads and tracks byGrade stats',async()=>{
@@ -329,7 +330,7 @@ test('per-symbol loss cooldown blocks rapid re-entry after recent loss or 2 same
  });
  assert.match(closedHtml,/80점 S급/);
 
- // 4) scoreSummary tracks passed / nearMiss (60) / low (<=55) and renders in scalpDetailsHTML
+ // 4) scoreSummary tracks passed / nearMiss (60~64) / low (<=59, 1-point totals) and renders in scalpDetailsHTML
  ex1.store.skips.push(
   {at:T0-1000,symbol:'XUSDT',reason:'SCORE_BELOW_MINIMUM',score:60,grade:'C'},
   {at:T0-2000,symbol:'YUSDT',reason:'SCORE_BELOW_MINIMUM',score:45,grade:'D'},
@@ -337,7 +338,7 @@ test('per-symbol loss cooldown blocks rapid re-entry after recent loss or 2 same
  const st1=ex1.status();
  assert.deepEqual(st1.scoreSummary,{minScore:65,nearFloor:60,passed:1,nearMiss:1,low:1});
  const det1=scalpDetailsHTML(st1);
- assert.match(det1,/점수 분포: 통과\(65점\+\) <b>1건<\/b> · 턱걸이 차단\(60점대\) <b>1건<\/b> · 하위 차단\(55점 이하\) <b>1건<\/b>/);
+ assert.match(det1,/점수 분포: 통과\(65점\+\) <b>1건<\/b> · 턱걸이 차단\(60~64점\) <b>1건<\/b> · 하위 차단\(59점 이하\) <b>1건<\/b>/);
 });
 
 test('Combo B / C7 profit-max suite: Post-Only maker entry, disabled 15m fallback, and +16% ROE 25% partial TP / 75% runner',async()=>{
