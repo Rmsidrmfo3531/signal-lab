@@ -213,6 +213,7 @@ export class RealTrailingManager{
     const key=`${disp}|${dir}`;
     openKeys.add(key);
     if(!cfg.enabled){const st=this.tracked.get(key);if(st?.missing){st.missing=0;dirty=true}continue}
+    if(p.origin==='scalp')continue;
     const isCopy=p.origin==='copy';
     if(isCopy&&!cfg.applyToCopy)continue;
     if(!isCopy&&!cfg.applyToManual)continue;

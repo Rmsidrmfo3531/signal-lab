@@ -46,20 +46,25 @@ export function normalizeVenuePosition(row,{markOf=()=>null}={}){
   updatedAt:pos(row.updateTime)};
 }
 
-/** Marks each venue row copy (an OPEN copy-ledger position on the same venue symbol and direction; in hedge
- * mode the direction is the row's positionSide) or manual (anything else). A one-way row holding a copy and a
- * manual entry in the same direction is one venue position and counts as copy. */
-export function tagOrigins(rows,copyPositions=[]){
- const open=(Array.isArray(copyPositions)?copyPositions:[]).filter(p=>p?.status==='OPEN');
- return (rows||[]).map(r=>{const p=r.direction?open.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
-  return {...r,origin:p?'copy':'manual',...(p?.symbol?{symbol:p.symbol}:{})}});
+/** Marks each venue row copy (an OPEN copy-ledger position), scalp (an OPEN live scalp position),
+ * or manual (anything else). A one-way row holding a copy and a manual entry in the same direction counts as copy. */
+export function tagOrigins(rows,copyPositions=[],scalpPositions=[]){
+ const openCopy=(Array.isArray(copyPositions)?copyPositions:[]).filter(p=>p?.status==='OPEN');
+ const openScalp=(Array.isArray(scalpPositions)?scalpPositions:[]).filter(p=>p?.status==='OPEN');
+ return (rows||[]).map(r=>{
+  const c=r.direction?openCopy.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
+  if(c)return {...r,origin:'copy',...(c.symbol?{symbol:c.symbol}:{})};
+  const s=r.direction?openScalp.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
+  if(s)return {...r,origin:'scalp',...(s.symbol?{symbol:s.symbol}:{})};
+  return {...r,origin:'manual'};
+ });
 }
 
 /** The rows of a positions answer (an array; null when the answer is not a list). */
 export function venueRows(data){return Array.isArray(data)?data:Array.isArray(data?.positions)?data.positions:null}
 
-/** Cached reader: snapshot(copyPositions) re-reads the venue when the list is older than ttlMs (one request at a
- * time, waiting at most waitMs for it) and never throws. Errors keep the last good list. */
+/** Cached reader: snapshot(copyPositions, scalpPositions) re-reads the venue when the list is older than ttlMs
+ * (one request at a time, waiting at most waitMs for it) and never throws. Errors keep the last good list. */
 export function createVenuePositionsReader({read,markOf=()=>null,now=()=>Date.now(),ttlMs=3000,waitMs=2500}){
  let rows=null,at=0,error=null,errorAt=0,pending=null,tried=null;
  const refresh=()=>{tried=now();pending=Promise.resolve().then(read).then(data=>{const list=venueRows(data);if(!list)throw Object.assign(Error('BAD_RESPONSE'),{code:'BAD_RESPONSE'});
@@ -67,11 +72,12 @@ export function createVenuePositionsReader({read,markOf=()=>null,now=()=>Date.no
   .catch(e=>{error=String(e?.code||e?.message||'READ_FAILED').replace(/[^\w.:\- ]/g,'').slice(0,60)||'READ_FAILED';errorAt=now()})
   .finally(()=>{pending=null});return pending};
  return {
-  async snapshot(copyPositions=[]){
+  cachedRows(){return Array.isArray(rows)?rows:[]},
+  async snapshot(copyPositions=[],scalpPositions=[]){
    try{if(!pending&&(tried===null||!(now()-tried<ttlMs)))refresh();
     if(pending){let t;await Promise.race([pending,new Promise(r=>{t=setTimeout(r,waitMs)})]);clearTimeout(t)}}catch{}
    // The cached last price may have moved since the read: fill a missing mark (and its PnL) again.
-   const list=rows?tagOrigins(rows,copyPositions).map(r=>{if(r.mark)return r;const m=pos((()=>{try{return markOf(r.venueSymbol)}catch{return null}})());
+   const list=rows?tagOrigins(rows,copyPositions,scalpPositions).map(r=>{if(r.mark)return r;const m=pos((()=>{try{return markOf(r.venueSymbol)}catch{return null}})());
     if(!m||!r.avg||!r.direction)return r;const u=r.unrealized??(r.direction==='LONG'?1:-1)*(m-r.avg)*r.size;return {...r,mark:m,unrealized:u,roePct:r.initialMargin?u/r.initialMargin*100:r.roePct}}):null;
    return {venuePositions:list,venuePositionsAt:at||null,venuePositionsError:error,venuePositionsErrorAt:error?errorAt:null};
   },
