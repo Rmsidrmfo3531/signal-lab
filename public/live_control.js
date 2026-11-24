@@ -557,6 +557,7 @@ export function copyHTML(c){
     <label>통합 일일 손실 차단 (%, 0=꺼짐) <input name="dailyLossLimitPct" type="number" min="0" max="50" step="0.5" value="${esc(sf.dailyLossLimitPct??8)}" title="당일 거래소 실현 + 현재 미실현 합산 손실이 잔고의 이 비율에 닿으면 신규 진입 자동 중단"></label>
     <label>수동 최대 레버리지 (배, 0=제한없음) <input name="manualMaxLeverage" type="number" min="0" max="125" step="1" value="${esc(sf.manualMaxLeverage??0)}" title="고배율(50~80배) 수동 진입 사고 방지"></label>
     <label>수동 단일 증거금 한도 (%, 0=제한없음) <input name="manualMaxMarginPct" type="number" min="0" max="100" step="1" value="${esc(sf.manualMaxMarginPct??0)}" title="단일 수동 주문 증거금이 잔고의 이 비율을 넘으면 차단"></label>
+    ${c.marginAlert?`<label>증거금 사용률 경보 (%, 쉼표, 비우면 끔) <input name="marginAlertLevels" type="text" value="${esc((c.marginAlert.levels||[]).join(', '))}" title="사용 증거금 ÷ 순자산이 처음 넘을 때 텔레그램 1번, 10%p 아래로 내려와야 다시 알림. 자동 청산·주문 차단 없음 (알림만)"></label>`:''}
     <div class="ctrl-btn-row">
      <button type="submit" class="outline-btn small">안전 가드 저장</button>
      <button type="button" class="outline-btn small" data-safety-preset title="계좌 안전 가드(일일 손실 차단·수동 레버리지·증거금 제한 끔) + 카피 제어(최대 20배, 종목한도 15%, 3연패·-6% 쿨다운) 일괄 적용">🛡️ 권장 안전 프리셋 일괄 적용</button>
@@ -580,6 +581,11 @@ export function copyHTML(c){
   ${stat(isLive?'정산 확인':'종료',counted+'건')}${stat('승률',counted?Math.round(wins/counted*100)+'%':'—')}${stat('PF',loss>0?(gross/loss).toFixed(2):counted?'∞':'—')}${stat(exNet!=null?'누적 손익 (거래소)':'누적 손익',money(displayNet),`class="${cls(displayNet)}"${netTitle}`)}</div>`+
   (c.manual?`<p class="copy-split">카피 <b class="${cls(st.copy.net)}">${money(st.copy.n?st.copy.net:null)}</b> (${st.copy.n}건) · 수동 <b class="${cls(st.manual.net)}">${money(st.manual.n?st.manual.net:null)}</b> (${st.manual.n}건)${st.pending?` · <span class="muted">정산 중 ${st.pending}건</span>`:''}${exNet!=null&&unsettledCount>0?` · <span class="muted">원장 미확정 ${unsettledCount}건 제외</span>`:''}</p>`:'')+
   (!isLive&&(st.all.n||st.all.unknown)?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
+ // Exchange margin usage (user decision 2026-11-24 17:34, alert only) and the copy listener's heartbeat (same day, "2번").
+ const mu=isLive?c.marginAlert?.current:null,muLv=c.marginAlert?.levels||[];
+ const marginLine=mu&&Number.isFinite(Number(mu.pct))?`<p class="copy-stamp" data-margin-usage>증거금 사용률 <b class="${Number(mu.pct)>=(muLv[0]??101)?'paper-loss':''}">${Number(mu.pct).toFixed(1)}%</b> · ${muLv.length?`경보 ${muLv.map(esc).join('·')}%`:'경보 꺼짐'} <small class="muted">(알림만)</small></p>`:'';
+ const ls_=c.listener||null;
+ const listenerLine=ls_?`<p class="copy-stamp" data-copy-listener>카피 수신 ${ls_.state==='OK'?'<b class="paper-profit">OK</b>':ls_.state==='DOWN'?'<b class="paper-loss">끊김</b>':'<b>확인 대기</b>'} · 마지막 신호 ${ls_.lastBeatAt?esc(new Date(ls_.lastBeatAt).toLocaleTimeString('ko-KR',{hour12:false})):'없음'}${ls_.state==='DOWN'&&ls_.reason==='TELEGRAM_DISCONNECTED'?' <small class="muted">(텔레그램 연결 끊김)</small>':''}</p>`:'';
  const sizingBasis=isLive?'내 가용 증거금':'내 잔고';
  const rules=`<details class="copy-rules-fold"><summary>규칙 보기</summary><p class="copy-rules">수량 ${c.sizing==='BALANCE_RATIO'?`트레이더 수량 × ${sizingBasis} ÷ $${Number(c.traderBalanceUSD).toLocaleString()} (최소 주문 미달 시 트레이더 1배 수량·추매 1배)`:c.sizing==='MIN_ORDER'?`첫 증거금 $${esc(c.firstMarginUSD??0)} (거래소 최소 주문보다 작으면 최소 주문), 추매는 트레이더 비율`:`첫 증거금 $${esc(c.marginUSD)}`} · 추매 최대 ${esc(c.maxAdds??10)}회 · 손절 ${c.stops?`포지션당 잔고 ${esc(c.maxLossPct)}%`:'없음(트레이더 청산만)'} · 한도 증거금 ${esc(c.maxTotalMarginPct)}%·손실 ${esc(c.ledgerLossPct)}%</p></details>`;
  const row=p=>`<li>${symTag(p.symbol)}${p.closing?'<small>청산 중</small>':''}${side(p.direction)}<span>${esc(p.leverage)}배</span><span>수량 ${esc(p.qty)}${p.avg?` · 평단 ${esc(p.avg)}`:''}</span><span>추매 ${esc(p.adds||0)}회 · 부분청산 ${p.reduces==null?'—':esc(p.reduces)+'회'}</span><span class="muted">${held(p.openedAt,Date.now())}째</span>${p.unrealized!=null?`<b class="${cls(p.unrealized)} end">${money(p.unrealized)}</b>`:''}</li>`;
@@ -627,7 +633,7 @@ export function copyHTML(c){
     <span class="copy-msg" data-live-scalp-msg></span>
    </div>
   </div></details>`:'';
- const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${safetyBanner}${deferredNote}${stats}${safetyPanel}${liveScalpPanel}${controlsPanel}${alertsPanel}${trailingPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
+ const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${safetyBanner}${deferredNote}${stats}${marginLine}${listenerLine}${safetyPanel}${liveScalpPanel}${controlsPanel}${alertsPanel}${trailingPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (c.analytics?analyticsHTML(c.analytics):'')+
@@ -1035,6 +1041,8 @@ function bindCopyButtons(el){
     manualMaxLeverage:numv('manualMaxLeverage'),
     manualMaxMarginPct:numv('manualMaxMarginPct'),
    };
+   const mal=safetyForm.elements.namedItem('marginAlertLevels');
+   if(mal)body.marginAlertLevels=String(mal.value||'').trim();
    return call(safetyForm.querySelector('button[type="submit"]'),'/api/real/safety',body,'저장 중…','[data-real-safety-msg]');
   }
   const trailingForm=e.target.closest('[data-real-trailing-form]');

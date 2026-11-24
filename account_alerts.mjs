@@ -111,7 +111,7 @@ export function formatDailyReport({day,copyClosed=[],manualClosed=[],dailyByDay=
  return lines.join('\n');
 }
 
-export function formatStatusReply({equityUSD,availableUSD,positions=[],copy}){
+export function formatStatusReply({equityUSD,availableUSD,positions=[],copy,marginUsage=null}){
  const list=Array.isArray(positions)?positions:[];
  const totalMargin=list.reduce((s,p)=>s+(Number(p.margin)||0),0);
  const totalUnreal=list.reduce((s,p)=>s+(Number(p.unrealized)||0),0);
@@ -123,6 +123,12 @@ export function formatStatusReply({equityUSD,availableUSD,positions=[],copy}){
   `증거금 ${usd(totalMargin)}${marginPct!=null?` (${marginPct.toFixed(1)}%)`:''} · 미실현 ${money(totalUnreal)}`,
   `카피 상태: ${copyState}${copy?.traderBalanceUSD?` · 기준 $${Number(copy.traderBalanceUSD).toLocaleString()}`:''}`,
  ];
+ // Exchange margin usage (real_margin_alert.mjs, user decision 2026-11-24 17:34): used margin ÷ equity, alert only.
+ const mu=marginUsage?.current;
+ if(mu&&Number.isFinite(Number(mu.pct))){
+  const lv=Array.isArray(marginUsage.levels)&&marginUsage.levels.length?`경보 ${marginUsage.levels.join('·')}%`:'경보 꺼짐';
+  lines.splice(3,0,`증거금 사용률(거래소) ${Number(mu.pct).toFixed(1)}% · ${lv} (알림만)`);
+ }
  if(!list.length)lines.push('보유 포지션 없음');
  else{
   const sorted=[...list].sort((a,b)=>(Number(b?.unrealized)||0)-(Number(a?.unrealized)||0));
