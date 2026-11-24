@@ -12,8 +12,9 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 export const READY_SCALP_MIN_TRADES=100;          // A1 closed trades
 export const READY_SCALP_MIN_PROFIT_FACTOR=1.3;   // A2 profit factor after fees (≥)
 export const READY_SCALP_MAX_BIG_LOSS_X=5;        // A4 average big loss ≤ 5 × the average winning trade
-// A4 "big loss" exits: the −75 % ROE catastrophe cut and the emergency close after a failed protective stop.
-export const READY_BIG_LOSS_EXIT_REASONS=Object.freeze(['EMERGENCY_ROE_STOP','NO_STOP']);
+// A4 "big loss" exits: the −75 % ROE catastrophe cut, the emergency close after a failed protective stop, and the
+// TRADER_LADDER final line (the same −75 % ROE after the last ladder step, user 2026-11-24 "(나) 마지막 선에서 정리").
+export const READY_BIG_LOSS_EXIT_REASONS=Object.freeze(['EMERGENCY_ROE_STOP','NO_STOP','LADDER_FINAL_LINE']);
 // A3: both the older and the newer half of the group's trades (by count, oldest first) have net PnL > 0.
 // B. 급변 알림 되돌림 (fade): every criterion must hold.
 export const READY_PUMP_MIN_TRACKED=50;           // B1 alerts on BingX-listed coins with a 15-min result

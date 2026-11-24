@@ -310,6 +310,9 @@ test('readiness counts only TRADER_LADDER trades from the switch time, and says 
  assert.match(s.scope.text,/카피식 추매\(TRADER_LADDER\) 거래만/);assert.match(readyReplyText(s),/카피식 추매\(TRADER_LADDER\) 거래만/);
  assert.match(liveReadinessHTML(s),/카피식 추매\(TRADER_LADDER\) 거래만 셉니다/);
  assert.equal(evaluateReadiness({scalpRows:rows,pumpRecords:[]}).groups[0].trades,123);
+ // The final line counts as a big loss (A4) like the emergency cut.
+ const big=evaluateReadiness({scalpRows:[row('TRADER_LADDER',since+30,2),{...row('TRADER_LADDER',since+40,-50),closeReason:'LADDER_FINAL_LINE'}],pumpRecords:[],scalpScope:{management:'TRADER_LADDER',since}});
+ assert.equal(big.groups[0].bigLoss.count,1);assert.equal(big.groups[0].checks.bigLoss,false);
 });
 
 test('glossary and texts: the ladder line, the new exit reasons',()=>{
