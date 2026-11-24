@@ -15,6 +15,8 @@ export const SCALP_REASON_KO=Object.freeze({SIDE_OFF:'꺼 둔 방향의 신호 (
  BTC_DUMP_GUARD:'BTC 급락 연동 방어 (알트 롱 일시 보류)',BTC_PUMP_GUARD:'BTC 급등 연동 방어 (알트 숏 일시 보류)',
  SCORE_BELOW_MINIMUM:'신호 점수 미달 (100점 기준 진입 보류)',
  SYMBOL_LOSS_COOLDOWN:'종목 손실 쿨다운 (연속 손절 방지 휴식)',
+ PUMP_NOT_ON_BINGX:'급변 알림 — BingX에 없는 종목',PUMP_NO_REVERSAL:'급변 알림 — 5분봉 반전 조건 미충족',PUMP_CANDLES_STALE:'급변 알림 — 막 닫힌 5분봉 없음',PUMP_CANDLES_FAILED:'급변 알림 — 5분봉 조회 실패',
+ PUMP_UNIVERSE_UNAVAILABLE:'급변 알림 — 종목 목록(BTC 방어용) 확인 불가',PUMP_ALERTS_OFF:'급변 알림 매매 꺼짐 (SCALP_PUMP_ALERTS=off)',PUMP_WATCH_EXPIRED:'급변 알림 확인 시간(15분) 지남',PUMP_ALERT_INVALID:'급변 알림 형식 오류',PUMP_ALERT_STALE:'급변 알림 — 늦게 도착 (알림 뒤 15분 지남)',QUEUED_AFTER_SCAN:'5분봉 검사 뒤 확인',
  // Close reasons
  STOP:'손절',BREAKEVEN_STOP:'1차 목표 뒤 본전 손절',ALL_TARGETS:'목표 모두 도달',TIME_STOP:'2시간 보유 시간 만료',MAX_HOLD_EXIT:'최대 보유시간 컷 (손실 장기화 차단)',EMERGENCY_ROE_STOP:'비상 손절 (-ROE 한도)',EARLY_TAKE_PROFIT:'조기 익절',EXTERNAL:'외부 청산',NO_STOP:'보호 손절 실패로 긴급 청산',MANUAL:'수동',NO_PROTECTIVE_STOP:'보호 손절 실패'});
 export const scalpReasonKo=r=>SCALP_REASON_KO[r]||r||'';
@@ -38,7 +40,7 @@ export function scalpEventText(e){
   const sessPart=e.sessionLabel&&Number.isFinite(Number(e.sessionMult))&&Math.abs(Number(e.sessionMult)-1)>1e-4?` · ${e.sessionLabel} ${e.sessionMult}x`:'';
   const ofPart=e.orderflowSummary?` · 수급 ${e.orderflowSummary}`:'';
   const execPart=e.executionMode==='MAKER'?' · 메이커 체결':e.executionMode==='MAKER+MARKET'?' · 메이커+시장가':'';
-  return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${sessPart}${ofPart}${execPart}`;
+  return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.trigger==='PUMP_ALERT'?' · 급변 알림':''}${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${e.stopLossEnabled===false?'자동 손절 없음 · 한도 계산 위험':`손절 ${fmt(e.stop)} · 위험`} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${sessPart}${ofPart}${execPart}`;
  }
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
  if(e.type==='SCALE_IN_FILLED'&&e.qty>0){

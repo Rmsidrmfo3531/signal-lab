@@ -8,10 +8,14 @@ passes each new message to the local Signal Lab server, which copies it on the B
   COPY_CHANNEL_ID                        e.g. -1001234567890 (t.me/c/1234567890)
   COPY_LISTENER_TOKEN                    shared with the server (copy.sh creates it)
   SIGNAL_LAB_PORT                        default 3000 (the server's PORT)
+  PUMP_ALERT_CHATS                       급변 알림 chats (user 2026-11-24): comma-separated usernames or ids, default
+                                         ggangalt2_bot; empty = off. Each message goes to /api/pump-alert (same token).
+                                         Separate handler, queue and connection: the copy channel is handled as before,
+                                         and a chat that cannot be resolved is logged and skipped (never exits).
 The login session file (copy.session) stays in the data folder, readable only by signallab.
 """
 import asyncio, http.client, json, os, sys, threading, urllib.error, urllib.request
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, utils
 
 # Ensure SQLite session files (-wal/-shm/-journal) are created 0600 only.
 os.umask(0o077)
@@ -34,6 +38,9 @@ CHANNEL = int(E.get('COPY_CHANNEL_ID', '0') or 0)
 TOKEN = E.get('COPY_LISTENER_TOKEN', '')
 PORT = int(E.get('SIGNAL_LAB_PORT', E.get('PORT', '3000')) or 3000)
 URL = f"http://127.0.0.1:{PORT}/api/copy/message"
+PUMP_PATH = '/api/pump-alert'
+# Unset = the bot the user subscribed to; an explicit empty value turns the pump alerts off.
+PUMP_CHATS = [x.strip().lstrip('@') for x in (E['PUMP_ALERT_CHATS'] if 'PUMP_ALERT_CHATS' in E else 'ggangalt2_bot').split(',') if x.strip()]
 if not (API_ID and API_HASH and CHANNEL and len(TOKEN) >= 24):
     sys.exit('설정 누락: TELEGRAM_API_ID, TELEGRAM_API_HASH, COPY_CHANNEL_ID, COPY_LISTENER_TOKEN (copy.sh로 설정)')
 
@@ -74,6 +81,8 @@ def _http_err(code, reason, body_text):
 
 client = TelegramClient(os.path.join(DATA, 'copy'), API_ID, API_HASH)
 delivery_queue = None
+pump_queue = None
+pump_ids = set()   # resolved peer ids of PUMP_CHATS (filled in main; the handler ignores everything else)
 
 async def deliver(payload):
     msg_id = payload['id']
@@ -120,8 +129,84 @@ async def on_message(event):
     else:
         await deliver(payload)
 
+# ---- 급변 알림 (pump alerts) -------------------------------------------------------------------
+# Kept apart from the copy path: its own queue and worker, a fresh short-lived connection per POST (never the copy
+# connection or its lock), a shorter retry, and every error caught here.
+def post_pump(payload):
+    body = json.dumps(payload).encode()
+    conn = http.client.HTTPConnection('127.0.0.1', PORT, timeout=10)
+    try:
+        conn.request('POST', PUMP_PATH, body=body, headers={'Content-Type': 'application/json', 'X-Copy-Token': TOKEN})
+        resp = conn.getresponse()
+        raw = resp.read().decode('utf-8', errors='replace')
+        return resp.status, raw[:200]
+    finally:
+        conn.close()
+
+async def deliver_pump(payload):
+    for wait in (0, 2, 5, 10, 20, 30):
+        if wait:
+            await asyncio.sleep(wait)
+        try:
+            status, raw = await asyncio.get_running_loop().run_in_executor(None, post_pump, payload)
+            if status < 400:
+                print(f"[PUMP] {payload['id']} -> {raw}", flush=True)
+                return
+            print(f"[PUMP] {payload['id']} HTTP {status}: {raw}", flush=True)
+            if 400 <= status < 500 and status != 429:
+                return
+        except Exception as e:
+            print(f"[PUMP] {payload['id']} 전달 실패: {e}", flush=True)
+    print(f"[PUMP] {payload['id']} 최종 전달 실패", flush=True)
+
+async def pump_worker():
+    while True:
+        payload = await pump_queue.get()
+        try:
+            await deliver_pump(payload)
+        except Exception as e:
+            print(f"[PUMP] 처리 오류: {e}", flush=True)
+        finally:
+            pump_queue.task_done()
+
+async def resolve_pump_chats():
+    """Resolve PUMP_CHATS to peer ids. A chat that cannot be resolved is logged and skipped, then tried again
+    every 10 minutes; the copy listener keeps running either way."""
+    pending = list(PUMP_CHATS)
+    while pending:
+        left = []
+        for name in pending:
+            try:
+                ent = await client.get_entity(int(name) if name.lstrip('-').isdigit() else name)
+                pump_ids.add(utils.get_peer_id(ent))
+                print(f"[PUMP] 알림 수신: {getattr(ent, 'username', None) or getattr(ent, 'title', None) or name}", flush=True)
+            except Exception as e:
+                print(f"[PUMP] {name} 확인 실패 (10분 뒤 다시 시도): {type(e).__name__}", flush=True)
+                left.append(name)
+        pending = left
+        if pending:
+            await asyncio.sleep(600)
+
+@client.on(events.NewMessage(incoming=True))
+async def on_pump_message(event):
+    # No chats= filter here on purpose: an unresolvable chat in an event filter would raise inside Telethon's
+    # dispatch, next to the copy handler. Ids are compared here instead.
+    try:
+        if not pump_ids or event.chat_id not in pump_ids or pump_queue is None:
+            return
+        msg = event.message
+        text = (msg.message or '')[:4000]
+        if not text:
+            return
+        # Never waits: a full queue drops this alert instead of holding up Telethon's update dispatch.
+        pump_queue.put_nowait({'id': msg.id, 'chat': str(event.chat_id), 'date': int(msg.date.timestamp() * 1000), 'text': text})
+    except asyncio.QueueFull:
+        print('[PUMP] 대기열 가득 참 — 알림 1건 버림', flush=True)
+    except Exception as e:
+        print(f"[PUMP] 수신 오류: {e}", flush=True)
+
 async def main():
-    global delivery_queue
+    global delivery_queue, pump_queue
     login_mode = len(sys.argv) > 1 and sys.argv[1] == '--login'
     if login_mode or sys.stdin.isatty():
         await client.start()  # first run (copy.sh): asks for the phone number and the login code
@@ -134,10 +219,18 @@ async def main():
         print('로그인 완료 · 채널 확인:', getattr(ent, 'title', CHANNEL)); return
     delivery_queue = asyncio.Queue()
     worker = asyncio.create_task(delivery_worker())
+    pump_tasks = []
+    if PUMP_CHATS:
+        pump_queue = asyncio.Queue(maxsize=500)
+        pump_tasks = [asyncio.create_task(pump_worker()), asyncio.create_task(resolve_pump_chats())]
+    else:
+        print('[PUMP] PUMP_ALERT_CHATS 비어 있음 — 급변 알림 꺼짐', flush=True)
     print('[COPY] 채널 수신 대기 중', flush=True)
     try:
         await client.run_until_disconnected()
     finally:
         worker.cancel()
+        for t in pump_tasks:
+            t.cancel()
 
 asyncio.run(main())

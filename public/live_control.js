@@ -946,6 +946,14 @@ export function scalpDetailsHTML(s){
   </div></details>`;
  return byKind+bySide+byGrade+rules.replace('</p>',`${recheck}</p>`)+experiment+skipBox+simBox+journal;
 }
+/** 급변 알림 (user 2026-11-24): alert count, testnet trades it triggered, and fade / follow averages after costs by horizon. */
+export function pumpAlertsHTML(p){
+ if(!p)return '';
+ const pct=v=>fin(v)?`${Number(v)>=0?'+':''}${Number(v).toFixed(2)}%`:'—',cls=v=>tnCls(v),t=p.scalpTrades||{};
+ const stat=(k,v)=>`<span>${k}<b>${v}</b></span>`;
+ const horizons=Object.entries(p.byHorizon||{}).map(([h,x])=>stat(`${esc(h)}분 <small>${esc(x?.n??0)}건</small>`,`되돌림 <i class="${cls(x?.fadeNetPct)}">${pct(x?.fadeNetPct)}</i> · 추종 <i class="${cls(x?.followNetPct)}">${pct(x?.followNetPct)}</i>`)).join('');
+ return `<div class="copy-stats tn-pump-stats">${stat('알림',`${esc(p.count??0)}건 <small>24시간 ${esc(p.last24h??0)}</small>`)}${stat('알림 단타',`${esc(t.trades??0)}건 · <i class="${cls(t.netUSD)}">${t.trades?tnMoney(t.netUSD):'—'}</i>`)}${horizons}</div>`;
+}
 function bindTestnetPager(el){
  if(!el||el.dataset.tnBound)return;el.dataset.tnBound='1';
  el.addEventListener('click',e=>{const pg=e.target.closest('[data-tn-page]');if(!pg)return;setTestnetPage(tnPage+Number(pg.dataset.tnPage));if(lastTestnet)el.innerHTML=testnetClosedHTML(lastTestnet)})}
@@ -1230,6 +1238,7 @@ function render(o){
  if($('navRealMode'))$('navRealMode').textContent=!real?'—':copy.armed&&!copy.killed?'ON':'OFF';
  // Testnet: the scalp's own details (rules, skips, journal), collapsed; its switch is the one testnet switch above.
  // Signal strategy not on the testnet (LIVE): the scalp keeps its own panel and buttons as before (review M3).
+ if($('livePumpSection')){$('livePumpSection').hidden=!(tn&&o.pumpAlerts);if(tn&&o.pumpAlerts&&$('livePump'))$('livePump').innerHTML=pumpAlertsHTML(o.pumpAlerts)}
  if($('liveScalpSection')){$('liveScalpSection').hidden=!(tn&&o.scalp);if(tn&&o.scalp&&$('liveScalp')&&!$('liveScalp').contains(document.activeElement))$('liveScalp').innerHTML=scalpDetailsHTML(o.scalp)}
  bindScalpButtons($('liveScalpOwn'));
  if($('liveScalpPanel')){$('liveScalpPanel').hidden=Boolean(tn)||!o.scalp;if(!tn&&o.scalp&&$('liveScalpOwn')&&!scalpActionBusy)$('liveScalpOwn').innerHTML=scalpHTML(o.scalp)}

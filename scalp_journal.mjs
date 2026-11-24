@@ -99,7 +99,8 @@ export function journalLine(x){
   ...(repeat?{count:a.count,orders:a.orders}: {})}:null;
  const bps=(a,b)=>a>0&&b>0?r2(dir*(a-b)/b*1e4):null; // + = worse for us (paid more on a LONG, got less on a SHORT)
  // kind: MOVE_REVERSAL (5 % move) or ZONE_REVERSAL (매물대 반전, 2.5 % at a 4H / 1D zone; zone = the touched zone).
- return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,capitalBasisUSD:positive(x.capitalBasisUSD),
+ // trigger: SCAN (the 5m scan) or PUMP_ALERT (급변 알림, user 2026-11-24), counted apart in summarizeJournal.
+ return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',trigger:x.trigger||'SCAN',...(x.pumpAlert?{pumpAlert:x.pumpAlert}:{}),zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,capitalBasisUSD:positive(x.capitalBasisUSD),
   barAt:x.barAt,detectedAt:x.detectedAt??null,evidence:x.evidence??null,candle:x.candle??null,atr:x.atr??null,trend4h:x.trend4h??null,btcTrend4h:x.btcTrend4h??null,withTrend:x.withTrend??null,...(x.scalpScore?{score:x.scalpScore}:{}),
   plan:{signalClose:signal||null,checkedPrice:plan||null,entry:x.entry,stop:x.stopLossEnabled===false?null:x.initialStop,
    ...(x.stopLossEnabled===false?{riskReference:x.initialStop}:{}),targets:x.targets,parts:x.parts,targetCount:x.targetCount??null,merged:x.merged===true,
@@ -137,7 +138,7 @@ export function summarizeJournal(lines,{now=Date.now()}={}){
  const move=x=>{const m=Number(x.evidence?.movePct);const b=MOVE_BUCKETS.find(([a,c])=>m>=a&&m<c);return b?bucketLabel(b,'%'):null};
  const rank=x=>{const k=Number(x.universe?.rank);const b=RANK_BUCKETS.find(([a,c])=>k>=a&&k<=c);return b?bucketLabel(b,'위'):null};
  const hour=x=>{const t=x.entry?.at??x.barAt;return t?String(kst(t).getUTCHours()).padStart(2,'0'):null};
- return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
+ return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),byTrigger:by(list,x=>x.trigger||'SCAN'),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
   scaleIn:{all:groupStats(experiment),filled:groupStats(filled),withoutFill:groupStats(experiment.filter(x=>!(x.scaleIn.fillQty>0))),
    touched:experiment.filter(x=>x.scaleIn.touchedAt!=null).length,recovered:experiment.filter(x=>x.scaleIn.recoveredAt!=null).length,
    attempted:experiment.filter(x=>x.scaleIn.attemptedAt!=null).length,byDecision:by(experiment,x=>x.scaleIn.reason??x.scaleIn.state)},

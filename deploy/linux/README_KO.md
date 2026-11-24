@@ -42,3 +42,12 @@ bash /opt/signallab/app/deploy/linux/update.sh
 - 클라우드 서버를 켠 뒤에는 **PC 서버를 켜지 마세요** (주문이 두 번 들어갈 수 있습니다).
 - 서버가 다시 켜지면 실매매는 비활성으로 시작합니다. 화면에서 **활성화**를 눌러 주세요.
 - BingX API 키에 이 서버의 IP만 허용하도록 설정하면 더 안전합니다.
+
+## 급변 알림(공습경보) 수신 (2026-11-24)
+카피 수신 서비스(`signal-lab-copy`)가 텔레그램 봇 `@ggangalt2_bot`의 공습경보도 함께 받아 서버로 보냅니다(테스트넷 단타·기록용).
+자동 업데이트는 서버(`signal-lab`)만 다시 시작하고 수신 서비스는 다시 시작하지 않으므로, 이 기능이 처음 들어온 뒤 한 번만 아래를 실행합니다.
+```
+systemctl restart signal-lab-copy
+journalctl -u signal-lab-copy -n 20 --no-pager   # "[PUMP] 알림 수신: ggangalt2_bot" 이 보이면 정상
+```
+다른 채팅을 받으려면 `.env`에 `PUMP_ALERT_CHATS=이름1,이름2`(빈 값이면 끔)를 넣고 같은 명령으로 다시 시작합니다.
