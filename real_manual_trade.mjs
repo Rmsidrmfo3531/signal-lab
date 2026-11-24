@@ -8,6 +8,7 @@ import {bingxBalanceRows,balanceOf} from './exchange_pnl.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {isCoinSymbol} from './venue_charts.mjs';
 import {placeMakerThenMarket} from './maker_order.mjs';
+import {venueRows,normalizeVenuePosition} from './venue_positions.mjs';
 
 export const REAL_CHART_INTERVALS=Object.freeze(['1m','5m','15m','1h','4h','1d']);
 
@@ -82,7 +83,7 @@ function parseLeverageInfo(raw){
 /** Pure order planner & validator for manual BingX futures orders. */
 export function planRealManualOrder({
  side,orderType='MARKET',amountMode='MARGIN_USDT',amount,price=null,
- leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,makerFirst=false,
+ leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,makerFirst=false,postOnly=false,
  contract,markPrice,availableUSD=null,maxLeverage=125,maxMarginUSD=null,
 }={}){
  const dir=String(side||'').trim().toUpperCase();
@@ -150,6 +151,13 @@ export function planRealManualOrder({
   if(!(sign*(execPrice-sl)>0))throw err('INVALID_SL',dir==='LONG'?'롱 손절가(SL)는 진입가보다 낮아야 합니다':'숏 손절가(SL)는 진입가보다 높아야 합니다');
  }
 
+ const isPostOnly=type==='LIMIT'&&postOnly===true;
+ const isMakerFirst=type==='MARKET'&&makerFirst===true;
+ const makerRate=pos(contract.makerFeeRate)??0.0002;
+ const takerRate=pos(contract.takerFeeRate)??0.0005;
+ const entryFeeRate=(isPostOnly||isMakerFirst)?makerRate:takerRate;
+ const rtRate=entryFeeRate+takerRate;
+
  return {
   symbol:contract.symbol,
   displaySymbol:displaySymbol(contract.symbol),
@@ -166,7 +174,11 @@ export function planRealManualOrder({
   marginUSD:+marginUSD.toFixed(2),
   tpPrice:tp,
   slPrice:sl,
-  makerFirst:type==='MARKET'&&makerFirst===true,
+  makerFirst:isMakerFirst,
+  postOnly:isPostOnly,
+  estRoundTripFeeUSD:+(notionalUSD*rtRate).toFixed(4),
+  breakevenMovePct:+(rtRate*100).toFixed(3),
+  breakevenRoePct:+(rtRate*lev*100).toFixed(2),
  };
 }
 
@@ -218,7 +230,7 @@ export function copyLaneOf({copyPositions=[],contract,side,hedge}){
 /** Execute a confirmed real-account manual order on BingX. */
 export async function executeRealManualOrder({
  confirm,symbol,side,orderType='MARKET',amountMode='MARGIN_USDT',amount,price=null,
- leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,makerFirst=false,makerWaitMs=2500,sleep,
+ leverage,marginMode='CROSSED',tpPrice=null,slPrice=null,makerFirst=false,postOnly=false,makerWaitMs=2500,sleep,
  client,contractsFor,markOf,safety=null,copyPositions=[],
 }){
  if(confirm!=='REAL_MANUAL_ORDER')throw err('CONFIRM_REQUIRED','실계좌 수동 주문 확인 문구가 필요합니다');
@@ -252,7 +264,7 @@ export async function executeRealManualOrder({
  const safeMaxMarginUSD=pos(safety?.maxMarginUSD)??(pos(safety?.maxMarginPct)&&pos(equityUSD)?+(equityUSD*safety.maxMarginPct/100).toFixed(2):null);
 
  const plan=planRealManualOrder({
-  side,orderType,amountMode,amount,price,leverage,marginMode,tpPrice,slPrice,makerFirst,
+  side,orderType,amountMode,amount,price,leverage,marginMode,tpPrice,slPrice,makerFirst,postOnly,
   contract,markPrice,availableUSD,maxLeverage:effectiveMaxLev,maxMarginUSD:safeMaxMarginUSD,
  });
 
@@ -294,7 +306,7 @@ export async function executeRealManualOrder({
   ...(plan.tpPrice!=null?{takeProfit:JSON.stringify({type:'TAKE_PROFIT_MARKET',stopPrice:plan.tpPrice,workingType:'MARK_PRICE'})}:{}),
   ...(plan.slPrice!=null?{stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:plan.slPrice,workingType:'MARK_PRICE'})}:{}),
  };
- let orderId=null,executionMode=plan.orderType==='LIMIT'?'LIMIT':'MARKET';
+ let orderId=null,executionMode=plan.orderType==='LIMIT'?(plan.postOnly?'POST_ONLY':'LIMIT'):'MARKET';
  if(plan.orderType==='MARKET'&&plan.makerFirst){
   const r=await placeMakerThenMarket({
    client,
@@ -321,7 +333,7 @@ export async function executeRealManualOrder({
    positionSide:positionSideFor({hedge,direction:plan.side}),
    type:plan.orderType,
    quantity:String(plan.qty),
-   ...(plan.orderType==='LIMIT'?{price:String(plan.limitPrice),timeInForce:'GTC'}:{}),
+   ...(plan.orderType==='LIMIT'?{price:String(plan.limitPrice),timeInForce:plan.postOnly?'PostOnly':'GTC'}:{}),
    ...extraTpSl,
    clientOrderId:cid,
   },hedge);
@@ -331,7 +343,7 @@ export async function executeRealManualOrder({
  }
  const sideKo=plan.side==='LONG'?'롱':'숏';
  const typeKo=plan.orderType==='LIMIT'
-  ?`지정가 ${plan.limitPrice}`
+  ?`${plan.postOnly?'지정가(Post-Only)':'지정가'} ${plan.limitPrice}`
   :executionMode==='MAKER'?'메이커 지정가 체결'
    :executionMode==='HYBRID'?'메이커+시장가 체결'
     :plan.makerFirst?'시장가 폴백':'시장가';
@@ -391,3 +403,83 @@ export async function cancelRealOpenOrder({confirm,symbol,orderId,client,contrac
  await client.cancelOrder(vs,id);
  return {ok:true,orderId:id,venueSymbol:vs,summary:`${displaySymbol(vs.replace(/[-_]/g,''))} 주문 취소 완료 (#${id.slice(-6)})`};
 }
+
+export const REAL_PANIC_CONFIRM_TOKEN='PANIC_FLAT_ALL';
+
+/** Backend-only emergency panic flat for the BingX real account:
+ *  1) Disarms all live automation first (copy, live scalp, signal) so no new order can race
+ *  2) Cancels all open exchange orders (limit / TP / SL)
+ *  3) Market-closes every open position (hedge-aware, reduceOnly)
+ *  4) Re-reads positions to confirm flat state and optionally notifies via Telegram. */
+export async function executeRealPanicFlat({confirm,client,onDisarmAll=()=>{},sendText=null,log=()=>{}}={}){
+ if(confirm!==REAL_PANIC_CONFIRM_TOKEN)throw err('CONFIRM_REQUIRED','비상 전량 청산 확인 문구(PANIC_FLAT_ALL)가 필요합니다');
+ if(!client||client.mode!=='LIVE')throw err('LIVE_ACCOUNT_UNAVAILABLE','실계좌 BingX 클라이언트가 연결되어 있지 않습니다',409);
+
+ // Step 1: disarm all live automation immediately before touching orders/positions.
+ let disarmed=false;
+ try{await onDisarmAll();disarmed=true}catch(e){log('[PANIC] disarm error',e?.message||e)}
+
+ // Step 2: cancel every open order on the exchange.
+ const cancelledOrders=[],cancelErrors=[];
+ try{
+  const openOrders=await listRealOpenOrders({client});
+  for(const o of openOrders){
+   try{
+    await client.cancelOrder(o.venueSymbol,o.orderId);
+    cancelledOrders.push({symbol:o.displaySymbol,venueSymbol:o.venueSymbol,orderId:o.orderId,type:o.type});
+   }catch(e){
+    cancelErrors.push({symbol:o.displaySymbol,venueSymbol:o.venueSymbol,orderId:o.orderId,error:e?.code||e?.message||'CANCEL_FAILED'});
+   }
+  }
+ }catch(e){
+  cancelErrors.push({symbol:'ALL',error:e?.code||e?.message||'OPEN_ORDERS_FAILED'});
+ }
+
+ // Step 3: read position mode & all open positions, then market-close every non-zero position.
+ const closedPositions=[],closeErrors=[];
+ let hedge=false;
+ try{
+  const mode=await readPositionMode(client);
+  if(mode?.ok)hedge=mode.hedge===true;
+ }catch{}
+ try{
+  const rawPos=venueRows(await client.positions())||[];
+  const openPos=rawPos.map(r=>normalizeVenuePosition(r)).filter(p=>p&&p.size>0&&p.direction);
+  for(const p of openPos){
+   const closeSide=p.direction==='LONG'?'SELL':'BUY';
+   const useHedge=hedge||p.positionSide==='LONG'||p.positionSide==='SHORT';
+   const cid=('pan'+Date.now().toString(36)+Math.random().toString(36).slice(2,5)).slice(0,32);
+   const params=forMode({
+    symbol:p.venueSymbol,
+    side:closeSide,
+    positionSide:positionSideFor({hedge:useHedge,direction:p.direction}),
+    type:'MARKET',
+    quantity:String(p.size),
+    reduceOnly:'true',
+    clientOrderId:cid,
+   },useHedge);
+   try{
+    const res=await client.placeOrder(params);
+    const o=res?.order??res;
+    closedPositions.push({symbol:displaySymbol(p.symbol),venueSymbol:p.venueSymbol,direction:p.direction,size:p.size,orderId:o?.orderId!=null?String(o.orderId):null});
+   }catch(e){
+    closeErrors.push({symbol:displaySymbol(p.symbol),venueSymbol:p.venueSymbol,direction:p.direction,size:p.size,error:e?.code||e?.message||'CLOSE_FAILED'});
+   }
+  }
+ }catch(e){
+  closeErrors.push({symbol:'ALL',error:e?.code||e?.message||'POSITIONS_READ_FAILED'});
+ }
+
+ // Step 4: verify remaining positions on the venue.
+ let remainingCount=null;
+ try{
+  const after=venueRows(await client.positions())||[];
+  remainingCount=after.map(r=>normalizeVenuePosition(r)).filter(p=>p&&p.size>0).length;
+ }catch{}
+
+ const ok=closeErrors.length===0&&cancelErrors.length===0&&(remainingCount===null||remainingCount===0);
+ const summary=`🚨 실계좌 비상 전량 청산 ${ok?'완료':'부분 완료'}\n· 자동매매 전체 중지: ${disarmed?'완료':'오류'}\n· 미체결 주문 취소: ${cancelledOrders.length}건${cancelErrors.length?` (실패 ${cancelErrors.length}건)`:''}\n· 포지션 시장가 청산: ${closedPositions.length}건${closeErrors.length?` (실패 ${closeErrors.length}건)`:''}\n· 잔여 포지션: ${remainingCount===null?'확인 실패':`${remainingCount}개`}`;
+ if(typeof sendText==='function'){try{await sendText(summary)}catch{}}
+ return {ok,disarmed,cancelledOrders,cancelErrors,closedPositions,closeErrors,remainingCount,summary};
+}
+

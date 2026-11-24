@@ -612,11 +612,13 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .an-legend .leg-tot::before{background:#4da3ff}
 .an-legend .leg-copy::before{background:#42ceac}
 .an-legend .leg-man::before{background:#f6b94c}
+.an-legend .leg-scalp::before{background:#c084fc}
 .an-chart svg{width:100%;max-height:160px;height:auto;display:block}
 .an-chart svg text{fill:#8fa2bc;font-size:9.5px;font-variant-numeric:tabular-nums}
 .an-line-tot{fill:none;stroke:#4da3ff;stroke-width:2}
 .an-line-copy{fill:none;stroke:#42ceac;stroke-width:1.4;stroke-dasharray:4 2}
 .an-line-man{fill:none;stroke:#f6b94c;stroke-width:1.4;stroke-dasharray:2 2}
+.an-line-scalp{fill:none;stroke:#c084fc;stroke-width:1.4;stroke-dasharray:3 2}
 .an-tabs{display:flex;flex-wrap:wrap;gap:6px}
 .an-tabs button.is-current{background:#1b3b5c;border-color:#5a9cff;color:#eef6ff}
 .an-scroll{display:block!important;overflow-x:auto}

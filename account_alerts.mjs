@@ -167,8 +167,8 @@ export class AccountAlerts{
  constructor({directory=null,fileName='account-alerts.json',now=()=>Date.now(),log=()=>{},
   sendText=async()=>({ok:false}),post=null,allowedChatId='',
   getSnapshot=async()=>null,getScalpStatus=async()=>null,getReadiness=async()=>null,onControls=null,
-  onPause=async()=>null,onResume=async()=>null,onClose=async()=>null}={}){
-  Object.assign(this,{now,log,sendText,allowedChatId:String(allowedChatId||'').trim(),getSnapshot,getScalpStatus,getReadiness,onControls,onPause,onResume,onClose});
+  onPause=async()=>null,onResume=async()=>null,onClose=async()=>null,onPanic=null}={}){
+  Object.assign(this,{now,log,sendText,allowedChatId:String(allowedChatId||'').trim(),getSnapshot,getScalpStatus,getReadiness,onControls,onPause,onResume,onClose,onPanic});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={
@@ -428,7 +428,8 @@ export class AccountAlerts{
     '/unblock 종목 — 카피 제외 목록에서 제거',
     '/pause · /resume — 실계좌 카피 일시정지·재개 (재개는 2단계 확인, 손실 한도 정지는 화면에서만 해제)',
     '/close 종목 [LONG|SHORT] 또는 /close ALL — 청산 (2단계 확인)',
-    '/confirm 코드 — /close · /resume · /size 실행 확인 (60초 안)',
+    '/panic — 🚨 비상 일괄 청산 (전체 자동매매 중지 + 미체결 취소 + 전 포지션 시장가 청산, 2단계 확인)',
+    '/confirm 코드 — /close · /resume · /size · /panic 실행 확인 (60초 안)',
    ].join('\n');
   }
 
@@ -558,15 +559,30 @@ export class AccountAlerts{
    return `⚠️ 실계좌 시장가 청산 확인\n대상: ${label}\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
   }
 
+  if(cmd==='/panic'||cmd==='/비상청산'){
+   if(typeof this.onPanic!=='function')return '⚠️ 비상 일괄 청산 기능이 연결되어 있지 않습니다.';
+   const code=String(randomInt(1000,10000));
+   this.pendingAction={kind:'PANIC',code,expiresAt:now+CONFIRM_TTL_MS};
+   return `🚨 실계좌 비상 일괄 청산 확인\n1) 카피·단타·시그널 자동매매 전체 중지\n2) BingX 모든 미체결 주문 취소\n3) BingX 보유 전 포지션 즉시 시장가 청산\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
+  }
+
   if(cmd==='/confirm'||cmd==='/확인'){
    const code=String(parts[1]||'').trim();
    const pending=this.pendingAction;
    if(!pending||now>pending.expiresAt){
     this.pendingAction=null;
-    return '⚠️ 유효한 확인 요청이 없거나 만료되었습니다. /close · /resume · /size 명령부터 다시 입력하세요.';
+    return '⚠️ 유효한 확인 요청이 없거나 만료되었습니다. /close · /resume · /size · /panic 명령부터 다시 입력하세요.';
    }
    if(code!==pending.code)return '⚠️ 확인 코드가 일치하지 않습니다.';
    this.pendingAction=null;
+   if(pending.kind==='PANIC'){
+    if(typeof this.onPanic!=='function')return '⚠️ 비상 일괄 청산 기능이 연결되어 있지 않습니다.';
+    try{
+     const res=await this.onPanic();
+     if(res?.ok===false)return `⚠️ 비상 청산 일부 실패\n${res.summary||res.message||res.error||'잔여 포지션을 거래소에서 확인하세요'}`;
+     return `🚨 비상 일괄 청산 완료\n${res?.summary||'전체 자동매매 중지 + 미체결 취소 + 전 포지션 청산 완료'}`;
+    }catch(e){return `⚠️ 비상 청산 오류: ${e?.message||'PANIC_FAILED'}`}
+   }
    if(pending.kind==='RESUME'){
     try{
      const res=await this.onResume();

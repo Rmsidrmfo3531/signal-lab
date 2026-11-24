@@ -48,6 +48,7 @@ function summarizeGroup(rows){
   fundingUSD:fundSum,
   copyCount:rows.filter(x=>x.origin==='copy').length,
   manualCount:rows.filter(x=>x.origin==='manual').length,
+  scalpCount:rows.filter(x=>x.origin==='scalp').length,
  };
 }
 
@@ -130,34 +131,49 @@ function buildCostBreakdown(trades,exchangeCosts){
  };
 }
 
-export function buildCopyAnalytics({copyClosed=[],manualClosed=[],dailyByDay=null,equityUSD=null,confirmedOnly=true,exchangeCosts=null}={}){
+const ORIGIN_BUCKETS=[
+ {key:'copy',label:'카피'},
+ {key:'manual',label:'수동'},
+ {key:'scalp',label:'단타'},
+];
+
+export function buildCopyAnalytics({copyClosed=[],manualClosed=[],scalpClosed=[],dailyByDay=null,equityUSD=null,confirmedOnly=true,exchangeCosts=null}={}){
  const ok=x=>x&&!x.archivedFromHistory&&x.netUSD!=null&&String(x.netUSD).trim()!==''&&Number.isFinite(Number(x.netUSD))
   &&(!confirmedOnly||['EXCHANGE','EXCHANGE_FILLS'].includes(x.netSource));
 
- const mapTrade=(x,origin)=>({
-  symbol:displaySymbol(x.symbol).toUpperCase(),
-  origin,
-  direction:x.direction||null,
-  leverage:Number(x.leverage)>0?Number(x.leverage):null,
-  openedAt:Number(x.openedAt)||Number(x.closedAt)||0,
-  closedAt:Number(x.closedAt)||0,
-  netUSD:Number(x.netUSD),
-  pnlUSD:fin(x.pnlUSD)?Number(x.pnlUSD):null,
-  feeUSD:fin(x.feeUSD)?Number(x.feeUSD):null,
-  fundingUSD:fin(x.fundingUSD)?Number(x.fundingUSD):null,
- });
+ const mapTrade=(x,origin)=>{
+  const rz=x.realized&&typeof x.realized==='object'?x.realized:null;
+  const pnlRaw=fin(x.pnlUSD)?x.pnlUSD:(rz&&fin(rz.pnlUSD)?rz.pnlUSD:null);
+  const feeRaw=fin(x.feeUSD)?x.feeUSD:(rz&&fin(rz.feeUSD)?rz.feeUSD:null);
+  const fundRaw=fin(x.fundingUSD)?x.fundingUSD:(rz&&fin(rz.fundingUSD)?rz.fundingUSD:null);
+  return {
+   symbol:displaySymbol(x.symbol).toUpperCase(),
+   origin,
+   direction:x.direction||null,
+   leverage:Number(x.leverage)>0?Number(x.leverage):null,
+   openedAt:Number(x.openedAt)||Number(x.createdAt)||Number(x.closedAt)||0,
+   closedAt:Number(x.closedAt)||0,
+   netUSD:Number(x.netUSD),
+   pnlUSD:pnlRaw!=null?Number(pnlRaw):null,
+   feeUSD:feeRaw!=null?Number(feeRaw):null,
+   fundingUSD:fundRaw!=null?Number(fundRaw):null,
+  };
+ };
  const trades=[
   ...(Array.isArray(copyClosed)?copyClosed:[]).filter(ok).map(x=>mapTrade(x,'copy')),
   ...(Array.isArray(manualClosed)?manualClosed:[]).filter(ok).map(x=>mapTrade(x,'manual')),
+  ...(Array.isArray(scalpClosed)?scalpClosed:[]).filter(ok).map(x=>mapTrade(x,'scalp')),
  ].sort((a,b)=>a.closedAt-b.closedAt);
 
- // Daily series for equity curve (total, copy, manual)
+ // Daily series for equity curve (total, copy, manual, scalp)
  const dayMap=new Map();
- const ensure=day=>{let row=dayMap.get(day);if(!row){row={day,copy:0,manual:0,exchange:null};dayMap.set(day,row)}return row};
+ const ensure=day=>{let row=dayMap.get(day);if(!row){row={day,copy:0,manual:0,scalp:0,exchange:null};dayMap.set(day,row)}return row};
  for(const t of trades){
   if(!(t.closedAt>0))continue;
   const row=ensure(kstDay(t.closedAt));
-  if(t.origin==='copy')row.copy+=t.netUSD;else row.manual+=t.netUSD;
+  if(t.origin==='copy')row.copy+=t.netUSD;
+  else if(t.origin==='scalp')row.scalp+=t.netUSD;
+  else row.manual+=t.netUSD;
  }
  if(dailyByDay&&typeof dailyByDay==='object'){
   for(const [day,val] of Object.entries(dailyByDay)){
@@ -165,13 +181,14 @@ export function buildCopyAnalytics({copyClosed=[],manualClosed=[],dailyByDay=nul
   }
  }
  const sortedDays=[...dayMap.values()].sort((a,b)=>a.day.localeCompare(b.day));
- let cumTotal=0,cumCopy=0,cumManual=0,peak=0,maxDrawdownUSD=0;
+ let cumTotal=0,cumCopy=0,cumManual=0,cumScalp=0,peak=0,maxDrawdownUSD=0;
  const curve=[];
  for(const d of sortedDays){
-  const dayDelta=d.exchange!=null?d.exchange:(d.copy+d.manual);
+  const dayDelta=d.exchange!=null?d.exchange:(d.copy+d.manual+d.scalp);
   cumTotal+=dayDelta;
   cumCopy+=d.copy;
   cumManual+=d.manual;
+  cumScalp+=d.scalp;
   if(cumTotal>peak)peak=cumTotal;
   const dd=peak-cumTotal;
   if(dd>maxDrawdownUSD)maxDrawdownUSD=dd;
@@ -181,6 +198,7 @@ export function buildCopyAnalytics({copyClosed=[],manualClosed=[],dailyByDay=nul
    totalUSD:r2(cumTotal),
    copyUSD:r2(cumCopy),
    manualUSD:r2(cumManual),
+   scalpUSD:r2(cumScalp),
    drawdownUSD:r2(dd),
   });
  }
@@ -236,6 +254,12 @@ export function buildCopyAnalytics({copyClosed=[],manualClosed=[],dailyByDay=nul
   return {key:b.key,label:b.label,...summarizeGroup(rows)};
  });
 
+ // #11 3-way breakdown by strategy origin (카피 / 수동 / 단타)
+ const byOrigin=ORIGIN_BUCKETS.map(b=>{
+  const rows=trades.filter(t=>t.origin===b.key);
+  return {key:b.key,label:b.label,...summarizeGroup(rows)};
+ });
+
  const costs=costBreakdown?(({bySymbolCost,...rest})=>rest)(costBreakdown):null;
 
  return {
@@ -251,14 +275,15 @@ export function buildCopyAnalytics({copyClosed=[],manualClosed=[],dailyByDay=nul
   },
   costs,
   curve,
+  byOrigin,
   bySymbol,
   byHourKst,
   byLeverage,
  };
 }
 
-/** RFC-4180 CSV export of merged real-account (copy + manual) closed trades with UTF-8 BOM and Excel formula neutralization. */
-export function exportCopyTradesCSV({copyClosed=[],manualClosed=[]}={}){
+/** RFC-4180 CSV export of merged real-account (copy + manual + scalp) closed trades with UTF-8 BOM and Excel formula neutralization. */
+export function exportCopyTradesCSV({copyClosed=[],manualClosed=[],scalpClosed=[]}={}){
  const cols=[
   '종료시각(KST)','진입시각(KST)','구분','종목','원본심볼','방향','배율',
   '추매','부분청산','평균진입가','매매손익(USD)','수수료(USD)','펀딩비(USD)',
@@ -272,15 +297,20 @@ export function exportCopyTradesCSV({copyClosed=[],manualClosed=[]}={}){
  const rows=[
   ...(Array.isArray(copyClosed)?copyClosed:[]).filter(x=>x&&!x.archivedFromHistory).map(x=>({...x,_origin:'카피'})),
   ...(Array.isArray(manualClosed)?manualClosed:[]).filter(x=>x&&!x.archivedFromHistory).map(x=>({...x,_origin:'수동'})),
+  ...(Array.isArray(scalpClosed)?scalpClosed:[]).filter(x=>x&&!x.archivedFromHistory).map(x=>({...x,_origin:'단타'})),
  ].sort((a,b)=>(Number(b.closedAt)||0)-(Number(a.closedAt)||0));
 
  const lines=rows.map(x=>{
   const rawSym=String(x.symbol||'');
   const dispSym=displaySymbol(rawSym);
   const tags=Array.isArray(x.tags)?x.tags.join(', '):'';
+  const rz=x.realized&&typeof x.realized==='object'?x.realized:null;
+  const pnlVal=fin(x.pnlUSD)?x.pnlUSD:(rz&&fin(rz.pnlUSD)?rz.pnlUSD:null);
+  const feeVal=fin(x.feeUSD)?x.feeUSD:(rz&&fin(rz.feeUSD)?rz.feeUSD:null);
+  const fundVal=fin(x.fundingUSD)?x.fundingUSD:(rz&&fin(rz.fundingUSD)?rz.fundingUSD:null);
   return [
    kstTimestamp(x.closedAt),
-   kstTimestamp(x.openedAt),
+   kstTimestamp(x.openedAt||x.createdAt),
    x._origin,
    dispSym,
    rawSym,
@@ -289,9 +319,9 @@ export function exportCopyTradesCSV({copyClosed=[],manualClosed=[]}={}){
    fin(x.adds)?Number(x.adds):0,
    fin(x.reduces)?Number(x.reduces):'',
    fin(x.avg)?Number(x.avg):'',
-   fin(x.pnlUSD)?r2(x.pnlUSD):'',
-   fin(x.feeUSD)?r2(x.feeUSD):'',
-   fin(x.fundingUSD)?r2(x.fundingUSD):'',
+   pnlVal!=null?r2(pnlVal):'',
+   feeVal!=null?r2(feeVal):'',
+   fundVal!=null?r2(fundVal):'',
    fin(x.netUSD)?r2(x.netUSD):'',
    String(x.netSource||''),
    String(x.closeReason||''),

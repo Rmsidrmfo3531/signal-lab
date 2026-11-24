@@ -285,3 +285,43 @@ test('#10 #12 #13 #14 UI renderers: position quick actions, analytics fold & tab
  assert.match(html,/추격 진입 반성/);
  assert.doesNotMatch(html,/data-manual-note-id="cp-1"/,'copy trade rows do not have manual memo buttons');
 });
+
+test('#11 3-way analytics breakdown (카피/수동/단타) merges scalpClosed into byOrigin, curve, CSV export, and UI tab',async()=>{
+ const {exportCopyTradesCSV}=await import('../copy_analytics.mjs');
+ const t1=Date.parse('2026-11-20T02:00:00Z');
+ const t2=Date.parse('2026-11-20T05:00:00Z');
+ const t3=Date.parse('2026-11-21T02:00:00Z');
+ const copyClosed=[{symbol:'BTCUSDT',direction:'LONG',leverage:20,openedAt:t1,closedAt:t1+1800000,netUSD:80,feeUSD:-4,fundingUSD:0,netSource:'EXCHANGE_FILLS'}];
+ const manualClosed=[{symbol:'ETHUSDT',direction:'SHORT',leverage:10,openedAt:t2,closedAt:t2+1800000,netUSD:-25,feeUSD:-3,fundingUSD:0,netSource:'EXCHANGE'}];
+ const scalpClosed=[{symbol:'SOLUSDT',direction:'LONG',leverage:15,createdAt:t3,closedAt:t3+900000,netUSD:35,realized:{pnlUSD:38,feeUSD:-3,fundingUSD:0,netUSD:35},netSource:'EXCHANGE',closeReason:'TRAIL_STOP'}];
+
+ const a=buildCopyAnalytics({copyClosed,manualClosed,scalpClosed,equityUSD:3500,confirmedOnly:true});
+ assert.equal(a.summary.trades,3);
+ assert.equal(a.summary.copyCount,1);
+ assert.equal(a.summary.manualCount,1);
+ assert.equal(a.summary.scalpCount,1);
+ assert.equal(a.summary.netUSD,90);
+ assert.deepEqual(a.byOrigin.map(r=>[r.key,r.label,r.trades,r.netUSD,r.feeUSD]),[
+  ['copy','카피',1,80,-4],
+  ['manual','수동',1,-25,-3],
+  ['scalp','단타',1,35,-3],
+ ]);
+ assert.equal(a.curve.at(-1).scalpUSD,35);
+ assert.equal(a.curve.at(-1).totalUSD,90);
+
+ const csv=exportCopyTradesCSV({copyClosed,manualClosed,scalpClosed});
+ assert.match(csv,/"단타","SOLUSDT"/);
+ assert.match(csv,/"38","-3","0","35"/);
+
+ setAnalyticsOpen(true);
+ setAnalyticsTab('origin');
+ const html=analyticsHTML(a);
+ assert.match(html,/data-analytics-tab="origin"/);
+ assert.match(html,/전략별 \(카피\/수동\/단타\)/);
+ assert.match(html,/an-line-scalp/);
+ assert.match(html,/leg-scalp/);
+ assert.match(html,/>단타<\/b>/);
+ setAnalyticsOpen(false);
+ setAnalyticsTab('symbol');
+});
+

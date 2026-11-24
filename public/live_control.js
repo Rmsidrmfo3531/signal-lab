@@ -261,7 +261,7 @@ export function setAlertsOpen(v){alertsOpen=!!v}
 export function setTrailingOpen(v){trailingOpen=!!v}
 export function setSafetyOpen(v){safetyOpen=!!v}
 export function setAnalyticsOpen(v){analyticsOpen=!!v}
-export function setAnalyticsTab(t){if(['symbol','hour','leverage'].includes(t))analyticsTab=t}
+export function setAnalyticsTab(t){if(['origin','symbol','hour','leverage'].includes(t))analyticsTab=t}
 export const COPY_PAGE_SIZE=10;
 export function setCopyPage(p){copyPage=Math.max(0,p|0)}
 export function setCopyFailPage(p){failPage=Math.max(0,p|0)}
@@ -293,29 +293,31 @@ export function analyticsHTML(a){
     <span>최종 순손익<b class="${cl(costs.netUSD)}">${mny(costs.netUSD)}</b></span>
    </div>${leaks}</div>`;
  })();
+ const hasScalp=(s.scalpCount||0)>0||curve.some(p=>Number(p.scalpUSD)||0);
  const svg=(()=>{
   if(!curve.length)return '';
-  const allVals=[0,...curve.flatMap(p=>[Number(p.totalUSD)||0,Number(p.copyUSD)||0,Number(p.manualUSD)||0])];
+  const allVals=[0,...curve.flatMap(p=>[Number(p.totalUSD)||0,Number(p.copyUSD)||0,Number(p.manualUSD)||0,...(hasScalp?[Number(p.scalpUSD)||0]:[])])];
   const low=Math.min(...allVals),high=Math.max(...allVals),left=52,right=352,top=10,bottom=88;
   const y=v=>high===low?(top+bottom)/2:bottom-(v-low)/(high-low)*(bottom-top);
   const x=i=>left+(right-left)*i/curve.length;
   const pathFor=fn=>'M '+left+','+y(0).toFixed(1)+' '+curve.map((p,i)=>`L ${x(i+1).toFixed(1)},${y(fn(p)).toFixed(1)}`).join(' ');
   const labels=high===low?[0]:[high,low];
-  return `<figure class="an-chart"><figcaption><span>누적 손익 곡선 (일별)</span><span class="an-legend"><i class="leg-tot">전체</i><i class="leg-copy">카피</i><i class="leg-man">수동</i></span></figcaption>
-   <svg viewBox="0 0 360 108" role="img" aria-label="실계좌 누적 손익 및 카피 수동 비교 곡선">
+  return `<figure class="an-chart"><figcaption><span>누적 손익 곡선 (일별)</span><span class="an-legend"><i class="leg-tot">전체</i><i class="leg-copy">카피</i><i class="leg-man">수동</i>${hasScalp?'<i class="leg-scalp">단타</i>':''}</span></figcaption>
+   <svg viewBox="0 0 360 108" role="img" aria-label="실계좌 누적 손익 및 카피 수동 단타 비교 곡선">
     <line x1="${left}" y1="${y(0).toFixed(1)}" x2="${right}" y2="${y(0).toFixed(1)}" class="cal-chart-zero"/>
     ${labels.map(v=>`<text x="48" y="${(y(v)+3).toFixed(1)}" text-anchor="end">${esc(calAmt(v))}</text>`).join('')}
     <path class="an-line-copy" d="${pathFor(p=>Number(p.copyUSD)||0)}"/>
     <path class="an-line-man" d="${pathFor(p=>Number(p.manualUSD)||0)}"/>
+    ${hasScalp?`<path class="an-line-scalp" d="${pathFor(p=>Number(p.scalpUSD)||0)}"/>`:''}
     <path class="an-line-tot" d="${pathFor(p=>Number(p.totalUSD)||0)}"/>
     <text x="${left}" y="103">${esc(shortDay(curve[0].day))}</text><text x="${right}" y="103" text-anchor="end">${esc(shortDay(curve.at(-1).day))}</text>
    </svg></figure>`;
  })();
  const tab=analyticsTab;
- const tabs=`<div class="an-tabs"><button type="button" class="outline-btn small${tab==='symbol'?' is-current':''}" data-analytics-tab="symbol">종목별</button><button type="button" class="outline-btn small${tab==='hour'?' is-current':''}" data-analytics-tab="hour">시간대별 (KST)</button><button type="button" class="outline-btn small${tab==='leverage'?' is-current':''}" data-analytics-tab="leverage">레버리지별</button></div>`;
- const rows=tab==='symbol'?(a.bySymbol||[]).slice(0,15).map(r=>({name:symText(r.symbol),...r})):tab==='hour'?(a.byHourKst||[]).map(r=>({name:r.label,...r})):(a.byLeverage||[]).map(r=>({name:r.label,...r}));
- const showFee=tab==='symbol'&&rows.some(r=>fin(r.feeUSD));
- const table=rows.length?`<div class="copy-table-scroll an-scroll" role="region" aria-label="성과 분석표" tabindex="0"><table class="copy-table analytics-table"><thead><tr><th>${tab==='symbol'?'종목':tab==='hour'?'시간대 (KST)':'레버리지'}</th><th class="num">거래</th><th class="num">승률</th><th class="num">PF</th><th class="num">평균</th>${showFee?'<th class="num">수수료</th>':''}<th class="num">누적 손익</th></tr></thead><tbody>${rows.map(r=>`<tr class="${r.trades?'':'muted'}"><td><b>${esc(r.name)}</b></td><td class="num">${esc(r.trades)}건</td><td class="num">${r.winRatePct!=null?esc(r.winRatePct)+'%':'—'}</td><td class="num">${r.profitFactor!=null?esc(r.profitFactor):r.trades&&r.netUSD>0?'∞':'—'}</td><td class="num ${cl(r.avgUSD)}">${mny(r.avgUSD)}</td>${showFee?`<td class="num ${cl(r.feeUSD)}">${fin(r.feeUSD)?mny(r.feeUSD):'—'}</td>`:''}<td class="num"><b class="${cl(r.netUSD)}">${r.trades?mny(r.netUSD):'—'}</b></td></tr>`).join('')}</tbody></table></div>`:'<p class="empty-small">집계할 정산 거래가 아직 없습니다.</p>';
+ const tabs=`<div class="an-tabs"><button type="button" class="outline-btn small${tab==='origin'?' is-current':''}" data-analytics-tab="origin">전략별 (카피/수동/단타)</button><button type="button" class="outline-btn small${tab==='symbol'?' is-current':''}" data-analytics-tab="symbol">종목별</button><button type="button" class="outline-btn small${tab==='hour'?' is-current':''}" data-analytics-tab="hour">시간대별 (KST)</button><button type="button" class="outline-btn small${tab==='leverage'?' is-current':''}" data-analytics-tab="leverage">레버리지별</button></div>`;
+ const rows=tab==='origin'?(a.byOrigin||[]).map(r=>({name:r.label,...r})):tab==='symbol'?(a.bySymbol||[]).slice(0,15).map(r=>({name:symText(r.symbol),...r})):tab==='hour'?(a.byHourKst||[]).map(r=>({name:r.label,...r})):(a.byLeverage||[]).map(r=>({name:r.label,...r}));
+ const showFee=(tab==='symbol'||tab==='origin')&&rows.some(r=>fin(r.feeUSD));
+ const table=rows.length?`<div class="copy-table-scroll an-scroll" role="region" aria-label="성과 분석표" tabindex="0"><table class="copy-table analytics-table"><thead><tr><th>${tab==='origin'?'전략 구분':tab==='symbol'?'종목':tab==='hour'?'시간대 (KST)':'레버리지'}</th><th class="num">거래</th><th class="num">승률</th><th class="num">PF</th><th class="num">평균</th>${showFee?'<th class="num">수수료</th>':''}<th class="num">누적 손익</th></tr></thead><tbody>${rows.map(r=>`<tr class="${r.trades?'':'muted'}"><td><b>${esc(r.name)}</b></td><td class="num">${esc(r.trades)}건</td><td class="num">${r.winRatePct!=null?esc(r.winRatePct)+'%':'—'}</td><td class="num">${r.profitFactor!=null?esc(r.profitFactor):r.trades&&r.netUSD>0?'∞':'—'}</td><td class="num ${cl(r.avgUSD)}">${mny(r.avgUSD)}</td>${showFee?`<td class="num ${cl(r.feeUSD)}">${fin(r.feeUSD)?mny(r.feeUSD):'—'}</td>`:''}<td class="num"><b class="${cl(r.netUSD)}">${r.trades?mny(r.netUSD):'—'}</b></td></tr>`).join('')}</tbody></table></div>`:'<p class="empty-small">집계할 정산 거래가 아직 없습니다.</p>';
  return `<details class="copy-analytics-fold"${analyticsOpen?' open':''}><summary data-analytics-toggle><b>성과 분석 · 수익 곡선 · MDD</b> <small>MDD ${mddVal}${fin(s.avgUSD)?` · 평균 ${mny(s.avgUSD)}`:''}${costs&&fin(costs.totalCostUSD)?` · 비용 ${mny(costs.totalCostUSD)}`:''}</small></summary><div class="an-body">${summaryBar}${costsBox}${svg}${tabs}${table}</div></details>`;
 }
 // Copy and manual closes together (user 2026-11-17 "수동 매매도 누적 수익·기록은 똑같이, 수동인지만 표시"): manual trades
