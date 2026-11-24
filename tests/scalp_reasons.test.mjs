@@ -119,15 +119,18 @@ test('Telegram and /scalp use the same Korean labels instead of codes',()=>{
 });
 
 test('colours: total by tier with the pass line in words, items by share of max and weight, labels by category',()=>{
- assert.deepEqual([80,75,70,65,64,50,49].map(scoreTier),['S','A+','A','B','C','C','D']);
+ // Grades B 70 / B+ 75 / A 80 / A+ 85 / S 90 from the 70 gate (user 2026-11-25 08:28).
+ assert.deepEqual([90,85,80,75,70,69,50,49].map(s=>scoreTier(s)),['S','A+','A','B+','B','C','C','D']);
  assert.equal(scoreItemClass(25,25),'rz-i rz-i-full rz-w-hi');assert.equal(scoreItemClass(10,15),'rz-i rz-i-part rz-w-mid');
  assert.equal(scoreItemClass(0,20),'rz-i rz-i-zero rz-w-hi');assert.equal(scoreItemClass(0,5),'rz-i rz-i-zero rz-w-lo');
- const pass=scoreItemsHTML({score:75,minScore:65,breakdown:{movePct:15,trend4h:20,btcTrend4h:10,moveAtr:15,retracedPct:10,climaxVolume:5,netRR:0,rsiExtreme:0}});
- assert.match(pass,/rz-total rz-g-Ap rz-pass">합계 <b>75<\/b> A\+급 · 통과/);
+ const pass=scoreItemsHTML({score:75,minScore:70,breakdown:{movePct:15,trend4h:20,btcTrend4h:10,moveAtr:15,retracedPct:10,climaxVolume:5,netRR:0,rsiExtreme:0}});
+ assert.match(pass,/rz-total rz-g-Bp rz-pass">합계 <b>75<\/b> B\+급 · 통과/);
+ assert.match(scoreItemsHTML({score:86,minScore:70,breakdown:{}}),/rz-total rz-g-Ap rz-pass">합계 <b>86<\/b> A\+급 · 통과/);
+ assert.match(scoreItemsHTML({score:69,minScore:70,breakdown:{}}),/rz-total rz-g-C rz-fail">합계 <b>69<\/b> C급 · 미달/);
  assert.match(pass,/class="rz-i rz-i-full rz-w-hi"[^>]*>4H 추세 20</);assert.match(pass,/class="rz-i rz-i-part rz-w-hi"[^>]*>급변 15</);assert.match(pass,/class="rz-i rz-i-zero rz-w-lo"[^>]*>RSI 0</);
  for(const [code,cat] of [['NO_REJECTION_CANDLE','entry'],['SCORE_BELOW_MINIMUM','score'],['DAILY_LOSS_LIMIT','limit'],['PUMP_NO_REVERSAL','pump'],['HTTP_429','venue']])
   assert.match(reasonHTML(code),new RegExp(`class="rz rz-c-${cat}"`),code);
  const css=fs.readFileSync(fileURLToPath(new URL('../public/styles.css',import.meta.url)),'utf8');
- for(const c of ['rz-c-entry','rz-c-score','rz-c-limit','rz-c-pump','rz-c-venue','rz-i-zero.rz-w-hi','rz-total.rz-fail','rz-g-S','rz-g-D'])assert.ok(css.includes('.'+c),c);
+ for(const c of ['rz-c-entry','rz-c-score','rz-c-limit','rz-c-pump','rz-c-venue','rz-i-zero.rz-w-hi','rz-total.rz-fail','rz-g-S','rz-g-Ap','rz-g-A','rz-g-Bp','rz-g-B','rz-g-C','rz-g-D'])assert.ok(css.includes('.'+c),c);
  assert.match(css,/:root\[data-theme="light"\]\{--rz-entry/);
 });

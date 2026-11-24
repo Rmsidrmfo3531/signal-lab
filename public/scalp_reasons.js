@@ -39,7 +39,7 @@ const G={
  ALREADY_SENT:['entry','이미 주문한 신호',()=>'같은 종목·같은 5분봉·같은 방향 신호는 한 번만 주문합니다.'],
  SPREAD_TOO_WIDE:['entry','호가 스프레드 큼',S=>`매수·매도 호가 차이가 기준 ${n(S.maxSpreadPct)}%보다 넓어 실거래 슬리피지 위험이 큽니다.`],
  // 점수 항목 — scoreScalpSetup (items are in SCORE_ITEMS below)
- SCORE_BELOW_MINIMUM:['score','점수 미달',S=>`8개 항목 100점 만점 점수가 기준 ${n(S.minScore)}점보다 낮아 진입하지 않았습니다(${n(S.highScore)}점 이상은 비중을 키웁니다).`],
+ SCORE_BELOW_MINIMUM:['score','점수 미달',S=>`8개 항목 100점 만점 점수가 기준 ${n(S.minScore)}점(B급)보다 낮아 진입하지 않았습니다(등급별 비중 ${scoreTierRangesText(S)}).`],
  // 한도·차단 — #blocked / #precheck / testnet_budget.mjs
  NOT_ARMED:['limit','단타 꺼짐',()=>'테스트넷 스위치가 꺼져 있거나 켜고 끄는 사이에 들어온 신호라 새로 진입하지 않습니다.'],
  SCALP_MODE_OFF:['limit','단타 모드 꺼짐',()=>'서버 설정(SCALP_EXEC_MODE)이 OFF라 단타 주문을 하지 않습니다.'],
@@ -168,14 +168,14 @@ export const REASON_ALIASES=Object.freeze({
 
 /** The 8 items of scoreScalpSetup (scalp_reversal.mjs; max = SCALP_SCORE_WEIGHTS) and the orderflow OI/CVD bonuses. */
 export const SCORE_ITEMS=Object.freeze([
- ['movePct','급변',25,()=>'급변 폭 — 5% 이상 25점 · 3.5% 이상 15점 · 2.5% 이상 5점'],
- ['trend4h','4H 추세',20,()=>'코인 4시간 추세 — 진입 방향과 같으면 20점 · 횡보 10점 · 반대 0점'],
- ['btcTrend4h','BTC',15,()=>'BTC 4시간 추세 — 진입 방향과 같으면 15점 · 횡보 10점 · 반대 0점'],
- ['moveAtr','ATR',15,()=>'급변 크기 ÷ 평소 변동폭(ATR) — 3~4.5배 15점 · 4.5~6배 10점 · 6배 이상 5점'],
- ['retracedPct','반등',10,()=>'진입 전 되돌림 — 15~30% 10점 · 10~15%·30~35%·거부캔들 확인 시 5점 · 그 밖 0점'],
- ['climaxVolume','거래량',5,()=>'급변 봉 거래량이 평소의 5배 이상이면 5점'],
- ['netRR','손익비',5,()=>'비용을 뺀 1차 목표 손익비가 1.2 이상이면 5점'],
- ['rsiExtreme','RSI',5,()=>'RSI(14)가 롱은 22 이하, 숏은 78 이상까지 가면 5점'],
+ ['movePct','급변',25,()=>'급변 폭 — 2%에서 0점, 2.5% 5점, 3.5% 15점, 5% 이상 25점 (사이는 1점 단위로 비례)'],
+ ['trend4h','4H 추세',20,()=>'코인 4시간 추세(EMA100·200) — 진입 방향과 같으면 20점 · 횡보 10점 · 반대 0점 (추세 세기 값이 없어 3단계)'],
+ ['btcTrend4h','BTC',15,()=>'BTC 4시간 추세(EMA100·200) — 진입 방향과 같으면 15점 · 횡보 10점 · 반대 0점 (추세 세기 값이 없어 3단계)'],
+ ['moveAtr','ATR',15,()=>'급변 크기 ÷ 평소 변동폭(ATR) — 2배 0점, 3~4.5배 15점, 6배 10점, 9배 이상 5점 (사이는 1점 단위로 비례)'],
+ ['retracedPct','반등',10,()=>'진입 전 되돌림 — 0% 0점, 15~30% 10점, 45% 이상 0점 (사이는 1점 단위로 비례) · 반전 꼬리·직전 봉 돌파 마감이면 최소 5점'],
+ ['climaxVolume','거래량',5,()=>'급변 봉 거래량 ÷ 평소 — 2배 0점, 5배 이상 5점 (사이는 1점 단위로 비례)'],
+ ['netRR','손익비',5,()=>'비용을 뺀 1차 목표 손익비 — 0.8 0점, 1.4 이상 5점 (사이는 1점 단위로 비례)'],
+ ['rsiExtreme','RSI',5,()=>'RSI(14) 극단 — 롱은 30에서 0점, 18 이하 5점 · 숏은 70에서 0점, 82 이상 5점 (사이는 1점 단위로 비례)'],
  ['oiBonus','수급',null,S=>`30분 미결제약정(OI)이 1% 넘게 줄면(청산 소진) +${n(S.orderflowOiBonus)}점 보너스`],
  ['cvdBonus','CVD',null,S=>`5분 CVD가 진입 방향으로 15% 넘게 강하게 반전하면 +${n(S.orderflowCvdBonus)}점 보너스`]]);
 
@@ -202,8 +202,25 @@ export function tipHTML(label,desc,cls='rz'){return desc?`<span class="${cls}" t
 // Category colour (user 2026-11-24 12:01 "중요도에 따라 점수의 색도 달라지면 좋을듯하다"): rz-c-entry / score / limit / pump / venue / position.
 export function reasonHTML(code,S={}){const i=reasonInfo(code,S);return i?tipHTML(i.label,i.desc,`rz rz-c-${i.cat}`):esc(code)}
 
-/** Score tier by total (S >=80, A+ >=75, A >=70, B >=65, C 50~64, D <50; the tiers of the score-tier sizing). */
-export function scoreTier(score){const s=Number(score);return !Number.isFinite(s)?null:s>=80?'S':s>=75?'A+':s>=70?'A':s>=65?'B':s>=50?'C':'D'}
+/** Grade edges from the screen settings: B = the gate S.minScore (70), B+ / A / A+ / S = S.scoreTiers (SCALP_SCORE_TIERS,
+ * default 75 / 80 / 85 / 90; user 2026-11-25 08:28 "70,75,80,85,90 ... B, B+, A, A+, S"). */
+export function scoreTierEdges(S={}){
+ const t=S?.scoreTiers,ok=t&&['B+','A','A+','S'].every(k=>fin(t[k]));
+ return {B:fin(S?.minScore)&&Number(S.minScore)>0?Number(S.minScore):70,'B+':ok?Number(t['B+']):75,A:ok?Number(t.A):80,'A+':ok?Number(t['A+']):85,S:ok?Number(t.S):90};
+}
+/** Grade of a total (as scalpScoreGrade): below the gate C (50+) / D, from the gate B, B+, A, A+, S. */
+export function scoreTier(score,S={}){const s=Number(score),e=scoreTierEdges(S);return !Number.isFinite(s)?null:s<Math.max(1,e.B)?(s>=50?'C':'D'):s>=e.S?'S':s>=e['A+']?'A+':s>=e.A?'A':s>=e['B+']?'B+':'B'}
+const span=(lo,hi)=>lo>hi?'':lo===hi?`${lo}`:`${lo}~${hi}`;
+const GRADE_ROWS=e=>[['B',e.B,e['B+']-1],['B+',Math.max(e['B+'],e.B),e.A-1],['A',Math.max(e.A,e.B),e['A+']-1],['A+',Math.max(e['A+'],e.B),e.S-1],['S',Math.max(e.S,e.B),Infinity]];
+/** "70~74 0.75x / 75~79 0.9x / 80~84 1x / 85~89 1.2x / 90+ 1.4x": size by grade from the gate up, empty grades left out. */
+export function scoreTierRangesText(S={}){
+ const M={B:0.75,'B+':0.9,A:1,'A+':1.2,S:1.4,...(S?.scoreTierMults||{})};
+ return GRADE_ROWS(scoreTierEdges(S)).filter(([,lo,hi])=>lo<=hi).map(([k,lo,hi])=>`${hi===Infinity?`${lo}+`:span(lo,hi)} ${M[k]}x`).join(' / ');
+}
+/** Grade labels of the stats rows, e.g. "B+급 (75~79)" (no range when the grade is empty under the gate). */
+export function scoreGradeLabels(S={}){
+ return Object.fromEntries(GRADE_ROWS(scoreTierEdges(S)).map(([k,lo,hi])=>{const r=hi===Infinity?`${lo}+`:span(lo,hi);return [k,`${k}급${r?` (${r})`:''}`]}));
+}
 /** Item colour class: how much of its max it earned (full / part / zero) and how heavy the item is (hi 20+, mid 15, lo <=10). */
 export function scoreItemClass(points,max){
  const p=Number(points),m=Number(max);if(!Number.isFinite(p)||!(m>0))return 'rz-i';
@@ -228,10 +245,10 @@ export function scoreItemsHTML(x,S={}){
  const isBonus=k=>k==='oiBonus'||k==='cvdBonus';
  const items=sp.parts?SCORE_ITEMS.filter(([k])=>!isBonus(k)||fin(sp.parts[k])&&sp.parts[k]>0).map(([k,label,max,rule])=>
   tipHTML(`${label} ${fin(sp.parts[k])?(isBonus(k)?'+':'')+Number(sp.parts[k]):'—'}`,`${rule(S||{})}${max?` (최대 ${max}점)`:''}`,max?scoreItemClass(sp.parts[k],max):'rz-i rz-i-full rz-w-lo')).join(' · '):'';
- const min=sp.min??(fin(S?.minScore)?Number(S.minScore):null),tier=scoreTier(sp.score);
+ const min=sp.min??(fin(S?.minScore)?Number(S.minScore):null),tier=scoreTier(sp.score,{...S,minScore:min});
  // The pass / fail line (the minimum score) is said in words too, not by colour alone.
  const pass=sp.score!=null&&min!=null?sp.score>=min:null;
- const total=sp.score!=null?`<span class="rz-total rz-g-${tier==='A+'?'Ap':tier}${pass===false?' rz-fail':pass?' rz-pass':''}">합계 <b>${esc(sp.score)}</b> ${esc(tier)}급${pass!=null?` · ${pass?'통과':'미달'}`:''}</span>${min!=null?` <small>(기준 ${esc(min)})</small>`:''}`:'';
+ const total=sp.score!=null?`<span class="rz-total rz-g-${String(tier).replace('+','p')}${pass===false?' rz-fail':pass?' rz-pass':''}">합계 <b>${esc(sp.score)}</b> ${esc(tier)}급${pass!=null?` · ${pass?'통과':'미달'}`:''}</span>${min!=null?` <small>(기준 ${esc(min)})</small>`:''}`:'';
  return `<span class="rz-score">${items}${items&&total?' / ':''}${total}</span>`;
 }
 

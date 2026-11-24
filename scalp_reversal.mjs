@@ -180,17 +180,40 @@ export function fourHourTrend(rows,now=Date.now()){
 export function trendAllows(direction,trend){return trend!==null&&!(direction==='LONG'&&trend==='down')&&!(direction==='SHORT'&&trend==='up')}
 
 /**
- * Data-calibrated 100-point scalp setup scoring (40-coin BingX 5m empirical Train/OOS backtest, pure 5-point increments).
+ * Data-calibrated 100-point scalp setup scoring (40-coin BingX 5m empirical Train/OOS backtest).
  * Weights sum strictly to 100:
  *   movePct (25) + trend4h (20) + btcTrend4h (15) + moveAtr (15) + retracedPct (10)
  *   + climaxVolume (5) + netRR (5) + rsiExtreme (5) = 100.
+ * Each item is linear between the anchor points of SCALP_SCORE_CURVES (the old 5-point step edges), flat
+ * outside them, then rounded to a whole point (user 2026-11-25 "5점 단위말고 1점 단위로").
  */
 export const SCALP_SCORE_DEFAULTS=Object.freeze({
- minScore:65,      // B-grade entry floor (<65 blocked as negative EV in Train & OOS)
- highScore:70,     // A/S-grade size boost threshold
- topScore:80,      // S-grade display threshold
- highSizeMult:1.25 // Risk sizing multiplier for A/S-grade setups
+ minScore:70,      // B-grade entry floor (user 2026-11-25 08:28 "70,75,80,85,90 ... B, B+, A, A+, S"; was 65)
+ highScore:80,     // A grade; the legacy highSizeMult below (only when tier and bounce sizing are both off)
+ highSizeMult:1.25 // Legacy risk multiplier at highScore+
 });
+/** Grade edges above the gate (user 2026-11-25 08:28 "차라리 70,75,80,85,90으로 넣고 B, B+, A, A+,S 이렇게 구분하자"):
+ * B from the gate (minScore 70), B+ 75, A 80, A+ 85, S 90; below the gate C (50+) or D. SCALP_SCORE_TIERS="B+,A,A+,S". */
+export const SCALP_SCORE_TIERS=Object.freeze({'B+':75,A:80,'A+':85,S:90});
+/** Size multiplier per grade (score-tier sizing; initial margin cap stays fixed). */
+export const SCALP_SCORE_TIER_MULTS=Object.freeze({B:0.75,'B+':0.9,A:1.0,'A+':1.2,S:1.4});
+export const SCALP_GRADES=Object.freeze(['S','A+','A','B+','B']);
+const TIER_KEYS=['B+','A','A+','S'];
+/** Edges are whole points 1..100, B+ <= A <= A+ <= S. */
+export function validScoreTiers(t){const v=TIER_KEYS.map(k=>t?.[k]);return v.every(x=>Number.isInteger(x)&&x>=1&&x<=100)&&v.every((x,i)=>i===0||v[i-1]<=x)}
+/** SCALP_SCORE_TIERS = "B+,A,A+,S" lower edges (default "75,80,85,90"); anything else keeps the defaults. */
+export function parseScalpScoreTiers(raw){
+ if(raw===undefined||raw===null||String(raw).trim()==='')return {...SCALP_SCORE_TIERS};
+ const v=String(raw).trim().split(/[\s,/]+/).map(Number),t=Object.fromEntries(TIER_KEYS.map((k,i)=>[k,v[i]]));
+ return v.length===4&&validScoreTiers(t)?t:{...SCALP_SCORE_TIERS};
+}
+/** Grade of a total: below the gate C (50+) / D; from the gate B, then B+ / A / A+ / S at the tier edges. One rule for the
+ * base score, the orderflow-boosted total, the size tier and the stats. */
+export function scalpScoreGrade(score,{minScore=SCALP_SCORE_DEFAULTS.minScore,scoreTiers=SCALP_SCORE_TIERS}={}){
+ const s=Number(score),t=validScoreTiers(scoreTiers)?scoreTiers:SCALP_SCORE_TIERS,min=Number.isFinite(Number(minScore))?Number(minScore):SCALP_SCORE_DEFAULTS.minScore;
+ if(!(s>=Math.max(1,min)))return s>=50?'C':'D';
+ return s>=t.S?'S':s>=t['A+']?'A+':s>=t.A?'A':s>=t['B+']?'B+':'B';
+}
 export const SCALP_SCORE_WEIGHTS=Object.freeze({
  movePct:25,
  trend4h:20,
@@ -202,6 +225,29 @@ export const SCALP_SCORE_WEIGHTS=Object.freeze({
  rsiExtreme:5
 });
 
+/** Anchor points [value, points] per item; linear between them, flat beyond the first and last. */
+export const SCALP_SCORE_CURVES=Object.freeze({
+ movePct:Object.freeze([[2.0,0],[2.5,5],[3.5,15],[5.0,25]]),
+ // 3.0~4.5x plateau; above it falls to 5 at 9x and stays there (A-3: no 0-pt cliff on capitulation spikes).
+ moveAtr:Object.freeze([[2.0,0],[3.0,15],[4.5,15],[6.0,10],[9.0,5]]),
+ // 15~30 % plateau; a rejection candle (WICK / CLOSE_BEYOND_PREVIOUS) gives at least SCALP_REJECTION_FLOOR.
+ retracedPct:Object.freeze([[0,0],[15,10],[30,10],[45,0]]),
+ climaxVolume:Object.freeze([[2,0],[5,5]]),
+ netRR:Object.freeze([[0.8,0],[1.4,5]]),
+ rsiLong:Object.freeze([[18,5],[30,0]]),
+ rsiShort:Object.freeze([[70,0],[82,5]])
+});
+export const SCALP_REJECTION_FLOOR=5;
+/** Piecewise-linear value of x on sorted anchor points, flat outside them; NaN -> null. */
+export function scoreCurve(x,points){
+ const v=Number(x);if(x===null||x===undefined||x===''||!Number.isFinite(v))return null;
+ if(v<=points[0][0])return points[0][1];
+ for(let i=1;i<points.length;i++){const [x1,y1]=points[i];if(v<=x1){const [x0,y0]=points[i-1];return y0+(v-x0)/(x1-x0)*(y1-y0)}}
+ return points.at(-1)[1];
+}
+// Whole points; toFixed(9) first so 7.4999999999 from float error rounds like 7.5.
+const pts=(x,points,max)=>{const y=scoreCurve(x,points);return y===null?0:Math.max(0,Math.min(max,Math.round(Number(y.toFixed(9)))))};
+
 function trendRelation(direction,trend){
  if(trend!=='up'&&trend!=='down')return 'range';
  return trendAllows(direction,trend)?'aligned':'against';
@@ -210,47 +256,48 @@ function trendRelation(direction,trend){
 export function scoreScalpSetup({direction='LONG',evidence={},trend4h=null,btcTrend4h=null,netRR=null,config={}}={}){
  const dir=direction==='SHORT'?'SHORT':'LONG';
  const minScore=Number.isFinite(Number(config.minScore))?Number(config.minScore):SCALP_SCORE_DEFAULTS.minScore;
- const highScore=Number.isFinite(Number(config.highScore))?Number(config.highScore):SCALP_SCORE_DEFAULTS.highScore;
- const topScore=Number.isFinite(Number(config.topScore))?Number(config.topScore):SCALP_SCORE_DEFAULTS.topScore;
+ const scoreTiers=validScoreTiers(config.scoreTiers)?{...config.scoreTiers}:{...SCALP_SCORE_TIERS};
+ const highScore=Number.isFinite(Number(config.highScore))?Number(config.highScore):scoreTiers.A;
  const highSizeMult=Number.isFinite(Number(config.highScoreSizeMult??config.highSizeMult))&&Number(config.highScoreSizeMult??config.highSizeMult)>=1
   ?Number(config.highScoreSizeMult??config.highSizeMult):SCALP_SCORE_DEFAULTS.highSizeMult;
 
- const movePctVal=Number(evidence?.movePct);
- const moveAtrVal=Number(evidence?.moveAtr);
- const retracedVal=Number(evidence?.retracedPct);
- const volVal=Number(evidence?.climaxVolumeRatio);
- const rsiVal=Number(evidence?.rsiPeak);
- const rrVal=Number(netRR);
+ // Missing values (null / undefined / '') score 0, not Number(null)=0 (a missing LONG rsiPeak used to read as RSI 0 -> 5 pts).
+ const val=v=>v===null||v===undefined||v===''?NaN:Number(v);
+ const movePctVal=val(evidence?.movePct);
+ const moveAtrVal=val(evidence?.moveAtr);
+ const retracedVal=val(evidence?.retracedPct);
+ const volVal=val(evidence?.climaxVolumeRatio);
+ const rsiVal=val(evidence?.rsiPeak);
+ const rrVal=val(netRR);
 
- // 1. Move % Size (25 pts) — strongest monotonic predictor across Train & OOS
- const movePct=Number.isFinite(movePctVal)?(movePctVal>=5.0?25:movePctVal>=3.5?15:movePctVal>=2.5?5:0):0;
- // 2. Coin 4H Trend (20 pts)
+ // 1. Move % Size (25 pts) — strongest monotonic predictor across Train & OOS: 2%->0, 2.5%->5, 3.5%->15, 5%+->25
+ const W=SCALP_SCORE_WEIGHTS,C=SCALP_SCORE_CURVES;
+ const movePct=pts(movePctVal,C.movePct,W.movePct);
+ // 2. Coin 4H Trend (20 pts) — fourHourTrend gives only up/down/range (no strength), so 3 levels stay: 20/10/0
  const coinRel=trendRelation(dir,trend4h);
  const trend4hPts=coinRel==='aligned'?20:coinRel==='range'?10:0;
- // 3. BTC 4H Trend (15 pts)
+ // 3. BTC 4H Trend (15 pts) — same 3 levels: 15/10/0
  const btcRel=trendRelation(dir,btcTrend4h);
  const btcTrend4hPts=btcRel==='aligned'?15:btcRel==='range'?10:0;
- // 4. Move ATR Sweet Spot (15 pts) — 3.0~4.5x: 15, 4.5~6.0x: 10, >=6.0x: 5 (A-3: remove 0-pt cliff on genuine capitulation spikes)
- const moveAtr=Number.isFinite(moveAtrVal)?(moveAtrVal>=3.0&&moveAtrVal<4.5?15:moveAtrVal>=4.5&&moveAtrVal<6.0?10:moveAtrVal>=6.0?5:0):0;
- // 5. Retraced Before Entry / Rejection Candle (10 pts) — 15~30%: 10; 10~15%, 30~35%, or confirmed rejection wick/close: 5 (A-3)
+ // 4. Move ATR Sweet Spot (15 pts) — 2x->0, 3~4.5x->15, 6x->10, 9x+->5
+ const moveAtr=pts(moveAtrVal,C.moveAtr,W.moveAtr);
+ // 5. Retraced Before Entry / Rejection Candle (10 pts) — 0%->0, 15~30%->10, 45%+->0; rejection candle floor 5
  const hasRejection=evidence?.rejection==='WICK'||evidence?.rejection==='CLOSE_BEYOND_PREVIOUS';
- const retracedPct=Number.isFinite(retracedVal)
-  ?(retracedVal>=15&&retracedVal<=30?10:((retracedVal>10&&retracedVal<15)||(retracedVal>30&&retracedVal<=35)||hasRejection)?5:0)
-  :(hasRejection?5:0);
- // 6. Climax Volume (5 pts)
- const climaxVolume=Number.isFinite(volVal)&&volVal>=5.0?5:0;
- // 7. TP1 Net RR (5 pts)
- const netRRPts=Number.isFinite(rrVal)&&rrVal>=1.2?5:0;
- // 8. RSI Extreme (5 pts)
- const rsiExtreme=Number.isFinite(rsiVal)&&(dir==='LONG'?rsiVal<=22:rsiVal>=78)?5:0;
+ const retracedPct=Math.max(pts(retracedVal,C.retracedPct,W.retracedPct),hasRejection?SCALP_REJECTION_FLOOR:0);
+ // 6. Climax Volume (5 pts) — 2x->0, 5x+->5
+ const climaxVolume=pts(volVal,C.climaxVolume,W.climaxVolume);
+ // 7. TP1 Net RR (5 pts) — 0.8->0, 1.4+->5
+ const netRRPts=pts(rrVal,C.netRR,W.netRR);
+ // 8. RSI Extreme (5 pts) — LONG 30->0 .. 18 and below->5; SHORT 70->0 .. 82 and above->5
+ const rsiExtreme=pts(rsiVal,dir==='LONG'?C.rsiLong:C.rsiShort,W.rsiExtreme);
 
  const breakdown={movePct,trend4h:trend4hPts,btcTrend4h:btcTrend4hPts,moveAtr,retracedPct,climaxVolume,netRR:netRRPts,rsiExtreme};
  const score=movePct+trend4hPts+btcTrend4hPts+moveAtr+retracedPct+climaxVolume+netRRPts+rsiExtreme;
- const grade=score>=topScore?'S':score>=highScore?'A':score>=Math.max(1,minScore)?'B':score>=50?'C':'D';
+ const grade=scalpScoreGrade(score,{minScore,scoreTiers});
  const pass=minScore<=0||score>=minScore;
  const sizeMult=pass?(score>=highScore?highSizeMult:1):0;
  const shortBreakdown=`급변${movePct}·4H${trend4hPts}·BTC${btcTrend4hPts}·ATR${moveAtr}·반등${retracedPct}·거래량${climaxVolume}·RR${netRRPts}·RSI${rsiExtreme}`;
  const summary=`${score}점(${grade}급) · ${shortBreakdown}`;
- return {score,maxScore:100,grade,pass,minScore,highScore,sizeMult,breakdown,shortBreakdown,summary};
+ return {score,maxScore:100,grade,pass,minScore,highScore,scoreTiers,sizeMult,breakdown,shortBreakdown,summary};
 }
 

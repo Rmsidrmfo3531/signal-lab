@@ -926,7 +926,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .rz-i-zero.rz-w-lo{color:var(--rz-zero-lo);font-weight:400}
 .rz-total{display:inline-block;padding:0 7px;border-radius:6px;border:1px solid currentColor;white-space:nowrap}.rz-total b{color:inherit;font-size:12.5px}
 .rz-total.rz-pass{border-style:solid}.rz-total.rz-fail{border:2px dashed currentColor;font-weight:600}
-.rz-g-S{color:var(--rz-pass);background:var(--rz-pass-soft);font-weight:700}.rz-g-Ap{color:var(--rz-pass)}.rz-g-A{color:var(--rz-mid)}.rz-g-B{color:var(--rz-b)}
+.rz-g-S{color:var(--rz-pass);background:var(--rz-pass-soft);font-weight:700}.rz-g-Ap{color:var(--rz-pass)}.rz-g-A{color:var(--rz-mid)}.rz-g-Bp{color:var(--rz-b);font-weight:600}.rz-g-B{color:var(--rz-b)}
 .rz-g-C{color:var(--rz-warn);background:var(--rz-warn-soft)}.rz-g-D{color:var(--rz-fail);background:var(--rz-fail-soft)}
 .rz-tip{position:fixed;z-index:200;background:var(--panel-raise,#152031);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.55;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 .rz-cat{border-top:1px solid var(--line-soft,var(--line))}.rz-cat summary{cursor:pointer;padding:7px 0;font-size:12px;color:var(--text)}.rz-cat summary small{color:var(--dim)}.rz-cat[open]{padding-bottom:8px}

@@ -160,12 +160,13 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   const I = 300_000;
   const T0 = Date.parse('2026-11-22T10:05:10Z');
   const BUCKET = Math.floor(T0 / I);
-  // Build a 60pt setup (move 4.3% -> 15pt, 4h range -> 10pt, btc 4h range -> 10pt, moveAtr ~4.5 -> 15pt, retraced ~18% -> 5pt, vol 5x -> 5pt = 60pt!)
+  // Build a 60pt setup under the 1-point curves (user 2026-11-25): move ~3.6% -> 16, 4h range 10, btc 4h range 10, moveAtr ~5.4x -> 12,
+  // retraced ~12% -> 8, vol 2.2x -> 0, netRR ~0.9 -> 1, RSI ~22.6 -> 3 = 60. (The old fixture, 4.1% / 5.5x volume, now scores 68 and would pass alone.)
   const rows = []; let p = 100;
   for (let i = 0; i < 45; i++) { const o = p, c = p + (i % 2 ? 0.2 : -0.2); rows.push([0, o, Math.max(o, c) + 0.25, Math.min(o, c) - 0.25, c, 100]); p = c; }
-  for (let i = 0; i < 4; i++) { const o = p, c = p - 0.75; rows.push([0, o, o + 0.05, c - 0.05, c, 100 * (i === 3 ? 5.5 : 2)]); p = c; }
-  const low = p - 0.65, close = p - 0.12;
-  rows.push([0, p - 0.20, close + 0.05, low, close, 550]);
+  for (let i = 0; i < 4; i++) { const o = p, c = p - 0.65; rows.push([0, o, o + 0.05, c - 0.05, c, 100 * (i === 3 ? 2.2 : 2)]); p = c; }
+  const low = p - 0.65, close = p - 0.18;
+  rows.push([0, p - 0.20, close + 0.05, low, close, 220]);
   const lastOpen = (BUCKET - 1) * I;
   const candles5m = [...rows.map((r, i) => {
     const t = lastOpen - (rows.length - 1 - i) * I;
@@ -247,8 +248,11 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   assert.match(tg, /비중 1\.5x/);
   assert.match(tg, /유럽장 0\.5x/);
   assert.equal(exBoosted.store.open[0].scalpScore.session.session, 'EUROPE');
-  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.mult, 1.0);
-  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.75);
+  // 70 is grade B (70~74) since 2026-11-25 08:28 -> tier 0.75x (was A 1.0x); 1.5 (CVD) x 0.75 x 0.5 (EU) = 0.5625.
+  assert.equal(exBoosted.store.open[0].scalpScore.grade, 'B');
+  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.tier, 'B');
+  assert.equal(exBoosted.store.open[0].scalpScore.scoreTier.mult, 0.75);
+  assert.equal(exBoosted.store.open[0].scalpScore.effectiveMult, 0.5625);
 
   // CVD strong flip ALONE (without OI flush) rescues a 60pt setup to 65pt (A-3)
   const v3 = mkVenue(close);
@@ -269,6 +273,29 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   assert.equal(exCvdOnly.store.open[0].scalpScore.score, 65);
   assert.equal(exCvdOnly.store.open[0].scalpScore.oiBonus ?? 0, 0);
   assert.equal(exCvdOnly.store.open[0].scalpScore.cvdBonus, 5);
+
+  // A boosted total is graded on the configured gate, like an unboosted one (review 2026-11-25: it was fixed at 80/70/65,
+  // so with a 66 gate a boosted 65 read "B급" while failing, and an unboosted 65 read "C급").
+  const v4 = mkVenue(close);
+  const exGate66 = new ScalpExecutor({
+    config: { ...scalpExecConfig({}), management: 'CURRENT', stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 66 },
+    client: v4.client,
+    contracts: async () => new Map([['SOLUSDT', SOL], ['BTCUSDT', BTC]]),
+    tickers: async () => [{ symbol: 'SOL-USDT', quoteVolume: '90000000' }, { symbol: 'BTC-USDT', quoteVolume: '500000000' }],
+    candles: async (s, iv) => iv === '5m' ? (s === 'SOLUSDT' ? candles5m : []) : range4h,
+    orderflow: async () => ({ ok: true, source: 'BINANCE', oi: { change30mPct: 0.2 }, cvd: { lastDeltaNorm: 0.28 }, funding: { ratePct: 0.01 } }),
+    priceOf: async () => close, markOf: async () => close,
+    balance: async () => ({ equity: 3000, available: 2900 }),
+    now: () => T0,
+  });
+  exGate66.arm();
+  await exGate66.scan();
+  const gateSkip = exGate66.store.skips.at(-1);
+  assert.equal(exGate66.store.open.length, 0);
+  assert.equal(gateSkip.reason, 'SCORE_BELOW_MINIMUM');
+  assert.equal(gateSkip.score, 65);
+  assert.equal(gateSkip.cvdBonus, 5);
+  assert.equal(gateSkip.grade, 'C', 'below the 66 gate: C, as scoreScalpSetup grades 65 with a 66 gate');
 });
 
 test('scalpSessionMultiplier applies backtest-validated EU 0.5x, US/Late 1.15x, Asia 1.0x', async () => {
