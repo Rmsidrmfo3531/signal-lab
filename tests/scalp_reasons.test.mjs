@@ -21,13 +21,14 @@ const NOT_REASONS=new Set(`AKEUSDT EVAAUSDT BTCUSDT USDT ALIGNED OPPOSED CONFIRM
  ORDER_IN_PROGRESS SCAN_FAILED
  STOP_FAILED STOP_PLACED STOP_TO_BREAKEVEN HARD_STOP_PLACED HARD_STOP_UPDATED REAL_MONEY_SCALP SCALE_IN_FILLED SCALE_IN_PENDING PARTIAL_EXIT PARTIAL_TAKE_PROFIT TARGET_FAILED TARGET_RECOVERED CANCEL_FAILED CLOSE_FAILED
  CLOSE_UNCONFIRMED EMERGENCY_CLOSE_FAILED ENTRY_NOT_FILLED ENTRY_RECOVERED RECONCILE_ERROR OTHER_SIDE_SEEN SCALP_STOP_REMOVED SCALP_STOP_CANCEL_PENDING
- SCALP_TARGET_CANCEL_PENDING MANUAL_CLOSE_CLEANUP POSITION_MODE_CHANGED POSITION_SIDE_MISMATCH POSITION_NOT_FOUND SYMBOL_BUSY TESTNET_CLOSE_ONLY`.split(/\s+/).filter(Boolean));
+ SCALP_TARGET_CANCEL_PENDING MANUAL_CLOSE_CLEANUP POSITION_MODE_CHANGED POSITION_SIDE_MISMATCH POSITION_NOT_FOUND SYMBOL_BUSY TESTNET_CLOSE_ONLY
+ TRADER_LADDER CURRENT USER FALLBACK MEASURED BETWEEN AT_SPACING COMPLETE STOPPED LADDER_ADD`.split(/\s+/).filter(Boolean));
 // Event types and close-button refusals above are shown with their own Korean text elsewhere (scalp_telegram / the close dialog).
 const envKeys=text=>new Set([...text.matchAll(/n\('([A-Z0-9_]+)'/g)].map(m=>m[1]));
 
-test('every reason literal in scalp_reversal / scalp_executor / testnet_budget has a glossary entry',()=>{
+test('every reason literal in scalp_reversal / scalp_executor / scalp_ladder / testnet_budget has a glossary entry',()=>{
  const missing=[];
- for(const f of ['scalp_reversal.mjs','scalp_executor.mjs','testnet_budget.mjs']){
+ for(const f of ['scalp_reversal.mjs','scalp_executor.mjs','scalp_ladder.mjs','testnet_budget.mjs']){
   const text=src(f),env=envKeys(text);
   for(const [,code] of text.matchAll(/'([A-Z][A-Z0-9_]{3,})'/g)){
    if(NOT_REASONS.has(code)||env.has(code))continue;

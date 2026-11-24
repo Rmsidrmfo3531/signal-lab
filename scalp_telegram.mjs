@@ -1,7 +1,7 @@
 // Telegram / screen notices for the testnet reversal scalp ledger (scalp_executor.mjs events), and the
 // Korean labels of its skip and close reasons. Entries, closes, the first target and problems only:
 // nothing per scan. Text only: symbol, prices and results — never keys or order ids.
-import {REASON_ALIASES,REASON_CODES,reasonLabel} from './public/scalp_reasons.js';
+import {REASON_ALIASES,REASON_CODES,reasonLabel,ladderStepText} from './public/scalp_reasons.js';
 export const SCALP_LABEL='[되돌림 단타·테스트넷]';
 export const SCALP_LIVE_LABEL='[되돌림 단타·실계좌]';
 // Korean labels: the shared glossary (public/scalp_reasons.js, the same short labels the #live screen shows).
@@ -31,7 +31,17 @@ export function scalpEventText(e){
   const stopText=e.stopLossEnabled===false
    ?(Number(e.hardStopPrice)>0?`거래소 비상스탑 ${fmt(e.hardStopPrice)} · 한도 계산 위험`:'자동 손절 없음 · 한도 계산 위험')
    :`손절 ${fmt(e.stop)} · 위험`;
+  // 카피식 추매 (TRADER_LADDER, user 2026-11-24): the ladder instead of stop / targets.
+  if(e.management==='TRADER_LADDER'&&e.ladder){
+   const L=e.ladder;
+   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입 · 카피식 추매${e.trigger==='PUMP_ALERT'?' · 급변 알림':''}${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n${ladderStepText(L,{fmt})}\n사다리 ${(L.units||[]).join('·')}단위 · 1단위 $${Number(L.unitMarginUSD||0).toFixed(2)} · 간격 ${L.spacingPct}% · 예약 증거금 $${Number(L.reserveMarginUSD||0).toFixed(2)}\n익절 ${fmt(L.tpPrice)} (평단 +${L.tpNetPct}% 수수료 뺀) · 마지막 선 −${L.finalLineRoePct}% ROE · 최대 ${Math.round((Number(L.maxHoldMin)||0)/60)}시간\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${sessPart}${ofPart}${execPart}`;
+  }
   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.trigger==='PUMP_ALERT'?' · 급변 알림':''}${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${stopText} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${sessPart}${ofPart}${execPart}`;
+ }
+ if(e.type==='LADDER_ADD'&&e.qty>0){
+  const z=e.zone&&Number(e.boost)>0?` · 강한 매물대 2배 (${(e.zone.why||[]).map(c=>scalpReasonKo(c)).join('·')})`:'';
+  const view={step:e.step,of:e.of,avg:e.avg,nextAdd:e.nextAdd>0?{price:e.nextAdd}:null};
+  return `➕ ${head} ${side(e)} 카피식 추매 ${e.step}/${e.of}단계${z}${e.adopted?' · 늦게 확인된 체결':''}\n수량 +${fmt(e.qty)} · 체결가 ${fmt(e.price)} · 평단 ${fmt(e.prevAvg)} → ${fmt(e.avg)}\n${ladderStepText(view,{fmt})} · 익절 ${fmt(e.tpPrice)}`;
  }
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
  if(e.type==='SCALE_IN_FILLED'&&e.qty>0){
@@ -51,7 +61,7 @@ export function scalpEventText(e){
   const trailPart=Number(e.peakRoePct)>0?` (트레일링 고점 +${Number(e.peakRoePct).toFixed(1)}%)`:'';
   const scorePart=Number.isFinite(Number(e.score))?` · ${e.score}점(${e.grade||''}급)`:'';
   const roePart=Number.isFinite(Number(e.roePct))?` (${Number(e.roePct)>=0?'+':''}${Number(e.roePct).toFixed(1)}% ROE)`:'';
-  const addPart=Number.isFinite(Number(e.adds))?` · 추매 ${Number(e.adds)}회`:'';
+  const addPart=e.management==='TRADER_LADDER'&&Number(e.of)>0?` · 카피식 추매 ${e.step}/${e.of}단계`:Number.isFinite(Number(e.adds))?` · 추매 ${Number(e.adds)}회`:'';
   return `${Number(e.netUSD)>0?'✅':Number(e.netUSD)<0?'🔻':'⚪'} ${head} ${side(e)} 청산 · ${scalpReasonKo(e.reason)}${trailPart}${scorePart}\n손익 ${usd(e.netUSD)}${roePart} (수수료 포함 추정) · 목표 ${e.tp||0}개${addPart} · 보유 ${mins(e.holdMs)}`;
  }
  if(e.type==='DAILY_LOSS_LIMIT')return e.shared?`⛔ [테스트넷] 하루 손실 한도 도달 (신호+단타 ${usd(e.lossUSD)})\n오늘(한국 시간)은 신호 전략·단타 모두 신규 진입과 추매를 멈췄습니다.`

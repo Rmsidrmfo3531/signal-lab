@@ -55,6 +55,8 @@ const G={
  OPEN_RISK_LIMIT:['limit','열린 위험 한도',S=>`오늘 손실 + 열린 포지션 손절 위험 + 새 거래 위험의 합이 잔고의 ${n(S.dailyLossPct)}%를 넘습니다.`],
  TESTNET_MARGIN_CAP:['limit','공동 증거금 한도',S=>`신호 전략과 단타의 증거금 합계가 잔고의 ${n(S.maxTotalMarginPct)}%를 넘게 됩니다.`],
  MARGIN_CAP:['limit','증거금 한도',S=>`포지션당 잔고의 ${n(S.maxMarginPct)}%·전체 ${n(S.maxTotalMarginPct)}%·여유 증거금 90% 안에서 주문할 여유가 없습니다.`],
+ LADDER_BELOW_MINIMUM:['limit','추매 사다리 불가',S=>`거래소 최소 주문 때문에 첫 진입과 1회 추매(1·1단위)조차 종목당 증거금 한도(잔고의 ${n(S.maxMarginPct)}%) 안에 넣을 수 없습니다.`],
+ LADDER_FINAL_LINE_OFF:['limit','마지막 선 꺼짐',()=>'카피식 추매에는 마지막 정리선(비상 손절 ROE)이 있어야 하는데 설정이 0이라 진입하지 않습니다.'],
  ACCOUNT_MARGIN_RESERVE:['limit','실계좌 마진 보호',S=>`실계좌 여유 증거금이 잔고의 ${n(S.minFreeAccountMarginPct)}% 미만이라 카피·수동 여력을 지키려 보류합니다.`],
  TESTNET_BUDGET_UNAVAILABLE:['limit','한도 계산 실패',()=>'공동 위험 한도를 계산할 자료(잔고·손익)를 읽지 못해 안전하게 건너뜁니다.'],
  NO_BALANCE:['limit','잔고 확인 실패',()=>'테스트넷 잔고를 읽지 못했거나 오래된 값이라 주문 크기를 정할 수 없습니다.'],
@@ -117,7 +119,7 @@ const G={
  // 추매·청산 — scale-in decisions and close reasons
  MAX_ADDS_REACHED:['position','추매 횟수 다 씀',S=>`이 포지션은 최대 추매 ${n(S.maxScaleInAdds)}회를 모두 했습니다.`],
  FALLING_KNIFE:['position','역방향 장대봉',()=>'마지막 5분봉이 반대 방향 장대봉(몸통 65% 이상)이라 추매를 미룹니다.'],
- PRICE_OUTSIDE_BAND:['position','추매 가격 아님',S=>`가격이 추매 자리(1R·1.5R 또는 −${n(S.defensiveAddRoePct)}% ROE 방어)에 오지 않았습니다.`],
+ PRICE_OUTSIDE_BAND:['position','추매 가격 아님',S=>S.management==='TRADER_LADDER'?`가격이 다음 추매 자리(마지막 체결가에서 ${n(S.ladderSpacingMinPct)}% 또는 1시간 ATR만큼, 강한 매물대면 그 자리)에 오지 않았습니다.`:`가격이 추매 자리(1R·1.5R 또는 −${n(S.defensiveAddRoePct)}% ROE 방어)에 오지 않았습니다.`],
  MIN_QUANTITY:['position','추매 수량 부족',()=>'추매 수량이 거래소 최소 주문보다 작습니다.'],
  RISK_OR_MARGIN_CAP:['position','추매 한도 부족',()=>'추매하면 위험·증거금 한도를 넘습니다.'],
  TESTNET_BUDGET:['position','공동 한도 부족',()=>'추매하면 테스트넷 공동 위험·증거금 한도를 넘습니다.'],
@@ -143,6 +145,13 @@ const G={
  EARLY_TAKE_PROFIT:['position','조기 익절',()=>'비용을 넘는 수익에서 일찍 이익을 확정했습니다.'],
  EXTERNAL:['position','외부 청산',()=>'거래소에서 직접(수동·강제) 닫힌 포지션입니다.'],
  MANUAL:['position','수동 청산',()=>'화면 버튼으로 직접 청산했습니다.'],
+ // 카피식 추매 TRADER_LADDER (user 2026-11-24, scalp_ladder.mjs): exits and the strong-zone add reasons.
+ LADDER_TAKE_PROFIT:['position','평단 익절',S=>`평단에서 수수료·비용을 뺀 +${n(S.ladderTpNetPct)}% 자리에 닿아 전량 익절했습니다.`],
+ LADDER_MAX_HOLD:['position','추매 보유 만료',S=>`카피식 추매 포지션을 ${n(S.ladderMaxHoldHours)}시간 넘게 보유해 손익과 관계없이 정리했습니다.`],
+ LADDER_FINAL_LINE:['position','마지막 선 정리',S=>`추매 ${Array.isArray(S.ladderSteps)?S.ladderSteps.length:'모든'}단계를 다 채운 뒤에도 밀려 손실이 전체 증거금 기준 −${n(S.ladderFinalLineRoePct)}% ROE에 닿아 정리했습니다.`],
+ OVERLAP_4H_1D:['position','4H·1D 매물대 겹침',S=>`4시간·1일 매물대가 ±${n(S.ladderZoneTouchPct)}% 안에서 겹치는 강한 자리라 이 추매를 ${n(S.ladderZoneBoost)}배로 넣었습니다.`],
+ TOP_VOLUME_NODE:['position','최대 거래량 매물대',S=>`4시간 또는 1일 거래량 분포에서 가장 큰 매물대(1위)라 이 추매를 ${n(S.ladderZoneBoost)}배로 넣었습니다.`],
+ REJECTIONS_3:['position','3회 이상 막힌 자리',S=>`4시간봉이 ${n(S.ladderZoneMinRejections)}번 이상 닿고 되돌아간 자리라 이 추매를 ${n(S.ladderZoneBoost)}배로 넣었습니다.`],
  NO_STOP:['position','보호 손절 실패',()=>'보호 손절 주문을 걸지 못해 긴급 청산하고 단타를 멈췄습니다.'],
 };
 /** Codes that mean the same thing to the user share one entry (listed once). */
@@ -251,11 +260,20 @@ export function skipRowHTML(x,S={},when=t=>t){
  const detail=skipDetailHTML(x,S);
  return `<li class="rz-row">${headHTML(x,when)} · ${reasonHTML(x.reason,S)}${detail?` — ${detail}`:''}</li>`;
 }
+/** 카피식 추매 one line (status().positions[].ladderView or an event's ladder view): "3/6 단계 · 평단 … · 다음 추매 …".
+ * Text only (the screen and Telegram both use it). */
+export function ladderStepText(v,{fmt=px}={}){
+ if(!v||!Number.isFinite(Number(v.step)))return '';
+ const z=v.nextAdd?.zone,zone=z?` (강한 매물대 ${(z.why||[]).map(c=>reasonLabel(c)).join('·')||''} · 2배)`:'';
+ const next=v.nextAdd&&Number(v.nextAdd.price)>0?`다음 추매 ${fmt(v.nextAdd.price)}${zone}`:Number(v.step)>=Number(v.of)?'추매 끝 · 마지막 선만 남음':'다음 추매 없음';
+ return `${v.step}/${v.of} 단계 · 평단 ${fmt(v.avg)} · ${next}`;
+}
 /** One entry row (an OPENED event): why it entered — kind / trigger, direction, score items, targets / stop. */
 export function enteredRowHTML(e,S={},when=t=>t){
  const tg=(e.targets||[]).filter((t,i)=>!(Array.isArray(e.parts)&&e.parts.length)||e.parts[i]>0).map(px).join(' / ');
  const stop=e.stopLossEnabled===false?'자동 손절 없음':`손절 ${px(e.stop)}`;
  const score=scoreItemsHTML(e,S);
+ if(e.management==='TRADER_LADDER'&&e.ladder)return `<li class="rz-row rz-entered"><span class="rz-in">진입</span> ${headHTML(e,when,true)} · 진입 ${px(e.entry)} · 카피식 추매 ${esc(ladderStepText(e.ladder))} · 익절 ${px(e.ladder.tpPrice)}${score?` — ${score}`:''}</li>`;
  return `<li class="rz-row rz-entered"><span class="rz-in">진입</span> ${headHTML(e,when,true)} · 진입 ${px(e.entry)}${tg?` · 목표 ${tg}`:''} · ${stop}${score?` — ${score}`:''}</li>`;
 }
 

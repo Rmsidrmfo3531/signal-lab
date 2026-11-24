@@ -12,8 +12,10 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 export const READY_SCALP_MIN_TRADES=100;          // A1 closed trades
 export const READY_SCALP_MIN_PROFIT_FACTOR=1.3;   // A2 profit factor after fees (≥)
 export const READY_SCALP_MAX_BIG_LOSS_X=5;        // A4 average big loss ≤ 5 × the average winning trade
-// A4 "big loss" exits: the −75 % ROE catastrophe cut and the emergency close after a failed protective stop.
-export const READY_BIG_LOSS_EXIT_REASONS=Object.freeze(['EMERGENCY_ROE_STOP','NO_STOP']);
+// A4 "big loss" exits: the −75 % ROE catastrophe cut, the emergency close after a failed protective stop, and the
+// TRADER_LADDER final line (the same −75 % ROE after the last ladder step, user 2026-11-24 "(나) 마지막 선에서 정리"),
+// and a losing 24 h ladder expiry (it can close a full ladder at a large loss; counted only when the trade lost).
+export const READY_BIG_LOSS_EXIT_REASONS=Object.freeze(['EMERGENCY_ROE_STOP','NO_STOP','LADDER_FINAL_LINE','LADDER_MAX_HOLD']);
 // A3: both the older and the newer half of the group's trades (by count, oldest first) have net PnL > 0.
 // B. 급변 알림 되돌림 (fade): every criterion must hold.
 export const READY_PUMP_MIN_TRACKED=50;           // B1 alerts on BingX-listed coins with a 15-min result
@@ -82,10 +84,21 @@ export function pumpReadiness(records){
   avg60Pct:r4(a60),tracked60:t60.length,window:windowOf(t15,x=>x.at??null)});
 }
 
-/** Every group. scalpRows: ScalpExecutor.readinessRows(); pumpRecords: PumpAlertBook.records. Pure. */
-export function evaluateReadiness({scalpRows=[],pumpRecords=[],now=Date.now()}={}){
- const groups=[...['SCALP_ALL','SCALP_SHORT','SCALP_LONG'].map(g=>scalpGroupReadiness(scalpRows,{group:g})),pumpReadiness(pumpRecords)];
- return {at:now,anyReady:groups.some(g=>g.ready),groups,
+/** The scalp trades that count (user 2026-11-24, 카피식 추매): only TRADER_LADDER trades closed from its switch time on.
+ * scope: {management, since} (ScalpExecutor.managementScope()); none = every trade (as before). */
+export function scopedScalpRows(rows,scope=null){
+ const list=Array.isArray(rows)?rows:[];
+ if(!scope?.management)return list;
+ const since=Number(scope.since)||0;
+ return list.filter(x=>x&&(x.management||'CURRENT')===scope.management&&num(x.closedAt)>=since&&(x.openedAt==null||num(x.openedAt)>=since));
+}
+export const scopeText=scope=>scope?.management?`단타는 카피식 추매(${scope.management}) 거래만 셈${Number(scope.since)>0?` · ${kstTime(scope.since)} KST 전환 이후`:''}`:'';
+/** Every group. scalpRows: ScalpExecutor.readinessRows(); pumpRecords: PumpAlertBook.records; scalpScope:
+ * ScalpExecutor.managementScope() (only those trades count). Pure. */
+export function evaluateReadiness({scalpRows=[],pumpRecords=[],now=Date.now(),scalpScope=null}={}){
+ const rows=scopedScalpRows(scalpRows,scalpScope);
+ const groups=[...['SCALP_ALL','SCALP_SHORT','SCALP_LONG'].map(g=>scalpGroupReadiness(rows,{group:g})),pumpReadiness(pumpRecords)];
+ return {at:now,anyReady:groups.some(g=>g.ready),groups,...(scalpScope?.management?{scope:{management:scalpScope.management,since:Number(scalpScope.since)||null,text:scopeText(scalpScope)}}:{}),
   criteria:{scalp:{minTrades:READY_SCALP_MIN_TRADES,minProfitFactor:READY_SCALP_MIN_PROFIT_FACTOR,halvesNetAbove:0,maxBigLossX:READY_SCALP_MAX_BIG_LOSS_X,bigLossReasons:[...READY_BIG_LOSS_EXIT_REASONS]},
    pump:{minTracked:READY_PUMP_MIN_TRACKED,horizonMin:READY_PUMP_HORIZON_MIN,avgAbovePct:0,halvesAbovePct:0,longHorizonMin:READY_PUMP_LONG_HORIZON_MIN,longMinPct:0}}};
 }
@@ -112,7 +125,7 @@ export function lossLimitText(l={}){
  return `⚠️ 참고: 실계좌 손실 한도 — 하루 손실 차단 ${d>0?d+'%':'꺼짐'} · 카피 열린 손실 한도 ${c>0?c+'%':'꺼짐'}`;
 }
 /** The Telegram message for one group that has just met the criteria. Plain text (no keys, no account numbers). */
-export function readinessMessage(g,{again=false,lossLimits=null}={}){
+export function readinessMessage(g,{again=false,lossLimits=null,scope=null}={}){
  const head=`✅ 실계좌 후보 — 검증 필요 · ${g.label} (테스트넷)${again?' · 다시 충족':''}`;
  const rows=g.kind==='PUMP'?[
   `${ok(g.checks.tracked)} 15분 결과가 있는 BingX 상장 알림 ${g.tracked}건 / ${g.minTracked}건 이상`,
@@ -123,12 +136,12 @@ export function readinessMessage(g,{again=false,lossLimits=null}={}){
   `${ok(g.checks.profitFactor)} 수수료 뺀 PF ${pfText(g.profitFactor)} / ${g.minProfitFactor} 이상`,
   `${ok(g.checks.halves)} 앞 절반 ${money(g.olderHalf.netUSD)}(${g.olderHalf.count}건) · 뒤 절반 ${money(g.newerHalf.netUSD)}(${g.newerHalf.count}건) / 둘 다 0 초과`,
   g.bigLoss.count?`${ok(g.checks.bigLoss)} 큰 손실(비상 청산) 평균 ${money(-g.bigLoss.avgLossUSD)} = 평균 수익 ${money(g.bigLoss.avgWinUSD)}의 ${xText(g.bigLoss.ratio)}배 / ${g.bigLoss.max}배 이하 (${g.bigLoss.count}건)`:`✓ 큰 손실(비상 청산) 없음 / ${g.bigLoss.max}배 이하`];
- return [head,...rows,`검증 구간: ${windowText(g.window)} — 이 거래들로 다시 한 번 검증한 뒤 결정하세요.`,READY_NOT_AUTOMATIC,lossLimitText(lossLimits||{})].join('\n');
+ return [head,...rows,...(g.kind==='SCALP'&&scope?.management?[scopeText(scope)]:[]),`검증 구간: ${windowText(g.window)} — 이 거래들로 다시 한 번 검증한 뒤 결정하세요.`,READY_NOT_AUTOMATIC,lossLimitText(lossLimits||{})].join('\n');
 }
 /** /ready reply: every group's progress line. */
 export function readyReplyText(summary,{lossLimits=null}={}){
  if(!summary?.groups?.length)return '⚠️ 실계좌 준비 점검 결과를 아직 계산하지 못했습니다.';
- return ['📋 실계좌 준비 점검 (테스트넷, 조회 전용)',...summary.groups.map(g=>`${g.ready?'✅':'·'} ${g.line}`),
+ return ['📋 실계좌 준비 점검 (테스트넷, 조회 전용)',...summary.groups.map(g=>`${g.ready?'✅':'·'} ${g.line}`),...(summary.scope?.text?[summary.scope.text]:[]),
   `단타 기준: ${READY_SCALP_MIN_TRADES}건 · PF ${READY_SCALP_MIN_PROFIT_FACTOR} 이상 · 앞·뒤 절반 모두 플러스 · 큰 손실 평균 ≤ 평균 수익 ${READY_SCALP_MAX_BIG_LOSS_X}배`,
   `급변 기준: ${READY_PUMP_MIN_TRACKED}건 · 15분 평균·앞뒤 절반 플러스 · 60분 평균 0% 이상`,
   READY_NOT_AUTOMATIC,lossLimitText(lossLimits||{})].join('\n');
@@ -160,7 +173,7 @@ export class ReadinessNotifier{
     const s=this.state.groups[g.group]||(this.state.groups[g.group]={ready:false,notifiedAt:null,notifyCount:0,lostAt:null,window:null});
     if(!g.ready){if(s.ready){s.ready=false;s.lostAt=this.now();changed=true}continue}
     if(s.ready)continue;
-    const again=s.notifyCount>0,text=readinessMessage(g,{again,lossLimits});
+    const again=s.notifyCount>0,text=readinessMessage(g,{again,lossLimits,scope:summary.scope});
     try{
      if(typeof this.send!=='function')throw Error('TELEGRAM_NOT_CONFIGURED');
      await this.send(text);
@@ -175,6 +188,6 @@ export class ReadinessNotifier{
   return sent;
  }
  /** For the screen, /ready and the hourly upload (latest.json liveReadiness). */
- status(summary=this.last){return {at:summary?.at??null,criteria:summary?.criteria??null,
+ status(summary=this.last){return {at:summary?.at??null,criteria:summary?.criteria??null,scope:summary?.scope??null,
   groups:(summary?.groups||[]).map(g=>({...g,notified:{...(this.state.groups[g.group]||{ready:false,notifiedAt:null,notifyCount:0,lostAt:null,window:null})}}))}}
 }
