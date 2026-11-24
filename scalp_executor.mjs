@@ -43,6 +43,7 @@ import {vsaStatus} from './scalp_vsa.mjs';
 import {aiLensHigherTimeframe,aiLensRiskMap,aiLensStatus,LENS_HIGHER_INTERVAL_MS} from './scalp_ai_lens.mjs';
 import {zoneBook,zoneTouches,zoneTagFields,zoneSpanMs,ZONE_PROFILES,ZONE_TOUCH_PCT} from './backtest.mjs';
 import {placeMakerThenMarket,makerLimitPrice,makerChildIds} from './maker_order.mjs';
+import {SCALP_MANAGEMENTS,TRADER_LADDER,scalpManagementOf,atrPct,ladderSpacing,planLadder,ladderZoneBoost,ladderReserve,strongZones,ladderNextAdd,ladderTpPrice} from './scalp_ladder.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
 export const SCALP_EXEC_MODES=Object.freeze(['OFF','TESTNET']);
@@ -125,6 +126,12 @@ const withTimeout=(p,ms,fallback=null)=>Promise.race([Promise.resolve(p).catch((
 const err=(code,status=409)=>Object.assign(Error(code),{code,httpStatus:status});
 const dirOf=d=>d==='SHORT'?-1:1;
 const POSITION_LIMIT_ERROR='VENUE_ERROR_101429';
+// TRADER_LADDER positions hold their whole ladder budget from the entry on (user 2026-11-24, budget): margin = the larger of
+// the margin in use and the reserved ladder margin, risk = the reserved worst case (every step filled, closed at the final
+// line). Many small first entries laddering down together can then never commit more than the shared limits allow.
+const isLadder=p=>p?.management===SCALP_MANAGEMENTS.LADDER&&Boolean(p.ladder);
+const ladderHeldMargin=p=>Math.max((p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1),Number(p.ladder?.reserveMarginUSD)||0);
+const ladderHeldRisk=p=>Number(p.ladder?.reserveRiskUSD)||0;
 // Tick rounding by side: a stop away from the entry (LONG down / SHORT up), a target or a break-even stop
 // on the safe side (target toward the entry, break-even at or beyond the entry in the profit direction).
 const awayMode=d=>d==='SHORT'?'UP':'DOWN',towardMode=d=>d==='SHORT'?'UP':'DOWN',beMode=d=>d==='SHORT'?'DOWN':'UP';
@@ -245,6 +252,13 @@ export function scalpExecConfig(env=process.env){
   zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT,
   // 급변 알림 trigger (user 2026-11-24): on by default; only ever acts in TESTNET mode (LIVE is refused above).
   pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_PUMP_ALERTS??'').trim().toLowerCase()),
+  // Position management (user 2026-11-24 21:33-21:35, scalp_ladder.mjs): TRADER_LADDER (default; copy-trader style
+  // 1·1·2·4·8·16 ladder, take profit on the average, 24 h, final line) or CURRENT (the management before). TESTNET only,
+  // and only without the automatic stop (SCALP_STOP_LOSS=on keeps CURRENT).
+  management:scalpManagementOf(env),
+  ladderSpacingMinPct:n('SCALP_LADDER_SPACING_MIN_PCT',TRADER_LADDER.spacingMinPct,.3,10),
+  ladderTpNetPct:n('SCALP_LADDER_TP_PCT',TRADER_LADDER.tpNetPct,.1,5),
+  ladderMaxHoldMin:n('SCALP_LADDER_MAX_HOLD_MIN',TRADER_LADDER.maxHoldMin,60,4320),
   // Live-account safety rails (disabled = 0 on TESTNET by default so testnet verification is unaffected; active in scalpLiveExecConfig).
   hardStopRoePct:n('SCALP_HARD_STOP_ROE_PCT',0,0,95),
   minFreeAccountMarginPct:n('SCALP_MIN_FREE_MARGIN_PCT',0,0,90),
@@ -288,6 +302,8 @@ export function scalpLiveExecConfig(env=process.env){
   scaleInMarketFallback:['on','true','1','yes'].includes(String(env.SCALP_LIVE_SCALE_IN_MARKET_FALLBACK??'').trim().toLowerCase()),
   scaleInRetrySlippagePct:n('SCALP_LIVE_SCALE_IN_RETRY_SLIP_PCT',1.1,0.2,3),
   pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_LIVE_PUMP_ALERTS??'off').trim().toLowerCase()),
+  // TRADER_LADDER is TESTNET only (user 2026-11-24): a live scalp keeps the management it had.
+  management:SCALP_MANAGEMENTS.CURRENT,
  };
 }
 
@@ -479,6 +495,7 @@ function scalpPositionDetails(p,now){
 }
 
 export function scalpAddCount(x){
+ if(x?.management===SCALP_MANAGEMENTS.LADDER&&x.ladder)return Math.max(0,(Number(x.ladder.filled)||1)-1);
  const a=x?.scaleIn;
  if(a?.version===SCALP_REPEAT_SCALE_IN.version)return Math.max(0,Number(a.count)||0);
  if(a?.fillQty>0)return 1;
@@ -517,12 +534,15 @@ export class ScalpExecutor{
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={open:Array.isArray(saved?.open)?saved.open:[],closed:Array.isArray(saved?.closed)?saved.closed:[],events:Array.isArray(saved?.events)?saved.events:[],
    skipCounts:saved?.skipCounts||{},skips:Array.isArray(saved?.skips)?saved.skips:[],sent:Array.isArray(saved?.sent)?saved.sent:[],dailyStop:saved?.dailyStop||null,
-   autoRearm:saved?.autoRearm===true,userPaused:saved?.userPaused===true};
+   autoRearm:saved?.autoRearm===true,userPaused:saved?.userPaused===true,
+   managementSince:saved?.managementSince&&typeof saved.managementSince==='object'?{...saved.managementSince}:{}};
   // An entry cut off by a restart: its outcome is read from the venue by the next check.
   for(const p of this.store.open)if(p.status==='SUBMITTING')p.status='UNKNOWN';
   // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the daily loss, open risk and margin shared with the
   // signal strategy on the testnet (TESTNET_DAILY_LOSS_PCT, default 15 %). Without it the scalp's own 3 % rules apply.
   this.budget=this.execMode==='LIVE'?null:budget;this.reservedRisk=new Map();
+  // When TRADER_LADDER first ran here (ready_check.mjs counts only its trades from then on): written once, kept.
+  if(this.#management()===SCALP_MANAGEMENTS.LADDER&&!(Number(this.store.managementSince[SCALP_MANAGEMENTS.LADDER])>0))this.store.managementSince[SCALP_MANAGEMENTS.LADDER]=this.now();
   this.armed=false;this.entryRevision=0;this.reserved=new Set();this.reservedDirections=new Map();this.universe=[];this.universeAt=0;this.trendCache=new Map();this.lastScanBucket=null;this.lastScan=null;
   this.reversalWatch=new Map();this.pumpWatch=new Map();
   this.wyckoffCache=new Map();
@@ -531,12 +551,16 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,journalFileName):null;this.signalsFile=directory?path.join(directory,signalsFileName):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
+  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
   try{this.#flushJournal();this.#save()}catch(e){this.log?.('[SCALP] journal start',e.message)}
  }
+ /** The management a new entry gets: TRADER_LADDER only on the TESTNET, without the automatic stop; else CURRENT. */
+ #management(){return this.execMode==='TESTNET'&&this.config?.mode==='TESTNET'&&this.config.management===SCALP_MANAGEMENTS.LADDER&&this.config.stopLossEnabled===false?SCALP_MANAGEMENTS.LADDER:SCALP_MANAGEMENTS.CURRENT}
+ /** For 실계좌 준비 점검: which trades count (TRADER_LADDER from its switch time). */
+ managementScope(){return {management:SCALP_MANAGEMENTS.LADDER,since:Number(this.store.managementSince?.[SCALP_MANAGEMENTS.LADDER])||null,active:this.#management()===SCALP_MANAGEMENTS.LADDER}}
  #save(){if(!this.file)return;const s=this.store;s.closed=s.closed.slice(-MAX_CLOSED);s.events=s.events.slice(-MAX_EVENTS);s.skips=s.skips.slice(-MAX_SKIPS);s.sent=s.sent.slice(-MAX_KEYS);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,strategy:SCALP_EXEC_STRATEGY,...s})}
  #event(type,detail={}){const e={type,at:this.now(),mode:this.execMode,strategy:SCALP_EXEC_STRATEGY,...detail};this.store.events.push(e);this.log(`[SCALP${this.execMode==='LIVE'?':LIVE':''}] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
@@ -582,7 +606,7 @@ export class ScalpExecutor{
   if(this.#todayStopped())return 'DAILY_LOSS_LIMIT';
   // Shared budget: the signal strategy's and the scalp's realized loss today reached the shared limit.
   if(this.budget?.stopped(this.funds?.equity))return 'DAILY_LOSS_LIMIT';
-  if(this.store.open.some(p=>p.status==='UNKNOWN'||p.id!==ignoreAddId&&p.scaleIn?.state==='PENDING'&&this.now()-(p.scaleIn.attemptedAt||0)<5*60000))return 'UNRESOLVED_ORDER_STATE';
+  if(this.store.open.some(p=>p.status==='UNKNOWN'||p.id!==ignoreAddId&&(p.scaleIn?.state==='PENDING'&&this.now()-(p.scaleIn.attemptedAt||0)<5*60000||p.ladder?.pending&&this.now()-(p.ladder.pending.attemptedAt||0)<5*60000)))return 'UNRESOLVED_ORDER_STATE';
   if(this.cooldownUntil>this.now())return 'RATE_LIMIT_COOLDOWN';
   return null;
  }
@@ -903,7 +927,7 @@ export class ScalpExecutor{
   // The candle still open closes next; with none open, the one after the last closed candle.
   const open=valid.find(r=>Number(r[6])>=at),nextCloseAt=open?Number(open[6])+1:valid.length?Number(valid.at(-1)[6])+1+cfg.intervalMs:at+cfg.intervalMs;
   const book=zoneBook(valid,{symbol,tickSize,interval});
-  this.zoneCache.set(key,{book,nextCloseAt,tickSize:String(tickSize),usedAt:now});return book;
+  this.zoneCache.set(key,{book,rows:valid,nextCloseAt,tickSize:String(tickSize),usedAt:now});return book;
  }
  /** 매물대 반전 gate: the extreme in or within 0.3 % of a 4H / 1D zone from candles closed before the move window
   * (backtestScalp's zoneTag). Missing candles are never a touch: ZONE_DATA_UNAVAILABLE. */
@@ -941,6 +965,7 @@ export class ScalpExecutor{
  }
  /** Loss to the stops of the open positions (0 once a stop sits at breakeven or better). */
  #openRisk(){return this.store.open.reduce((t,p)=>{
+  if(isLadder(p))return t+ladderHeldRisk(p);
   const d=dirOf(p.direction),e=pos(p.avg||p.entry),st=pos(p.stop),q=pos(p.size||p.qty),pending=p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedRiskUSD||0):0;
   if(!e||!st||!q)return t+pending;
   if(this.config.stopLossEnabled===false)return t+this.#repeatRisk(p,e,p.mark)*q+pending;
@@ -948,7 +973,7 @@ export class ScalpExecutor{
   if(p.scaleIn&&p.status==='SUBMITTING')return t+Math.max(unit*q,p.riskUSD)+pending;
   return t+unit*q+pending;
  },0)}
- #usedMargin(){return this.store.open.reduce((t,p)=>t+(p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1)
+ #usedMargin(){return this.store.open.reduce((t,p)=>isLadder(p)?t+ladderHeldMargin(p):t+(p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1)
   +(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedMarginUSD||0):0),0)}
  async #funds({requireAvailable=false}={}){
   const b=await this.balance().catch(()=>null),eq=pos(b?.equity);if(!eq)return null;
@@ -1071,12 +1096,43 @@ export class ScalpExecutor{
      if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty??null,riskUSD:plan.riskUSD??null,sizeMult:effectiveMult});
     }
    }
+   // TRADER_LADDER (user 2026-11-24): the entry above is unchanged; the size becomes the first ladder unit and the whole
+   // ladder is reserved in the budget. Score / session / bounce multipliers scale the unit, never past the symbol cap.
+   if(this.#management()===SCALP_MANAGEMENTS.LADDER){
+    const lad=await this.#ladderPlan({u,c,plan,funds,shared,lev,sizeMult:(againstTrend?SCALP_AGAINST_TREND_RISK_SCALE:1)*effectiveMult});
+    if(!lad.ok)return skip(lad.reason,lad.detail);
+    plan=lad.plan;
+    if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty,riskUSD:plan.riskUSD,management:SCALP_MANAGEMENTS.LADDER,ladderUnits:plan.ladder.units,unitMarginUSD:plan.ladder.unitMarginUSD,reserveMarginUSD:plan.ladder.reserveMarginUSD,spacingPct:plan.ladder.spacingPct});
+   }
    // Reserve a plan that fits the shared budget while the venue setup runs. A larger plan may still fit after the cap.
-   if(this.budget?.check({equity:funds.equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'}).ok)
-    this.reservedRisk.set(u.symbol,{riskUSD:plan.riskUSD,marginUSD:plan.marginUSD});
+   const holdRisk=plan.ladder?.reserveRiskUSD??plan.riskUSD,holdMargin=plan.ladder?.reserveMarginUSD??plan.marginUSD;
+   if(this.budget?.check({equity:funds.equity,newRiskUSD:holdRisk,newMarginUSD:holdMargin,who:'scalp'}).ok)
+    this.reservedRisk.set(u.symbol,{riskUSD:holdRisk,marginUSD:holdMargin});
    return await this.#enter(u,det,c,plan,key,{revision,equity:funds.equity});
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
   finally{this.reserved.delete(u.symbol);this.reservedDirections.delete(u.symbol);this.reservedRisk.delete(u.symbol)}
+ }
+ /** The TRADER_LADDER plan of an entry (scalp_ladder.mjs): unit = per-symbol cap (maxMarginPct of the equity) / 32, held
+  * within the shared margin room and 90 % of the free margin; spacing from the 1H ATR; the worst case reserved. */
+ async #ladderPlan({u,c,plan,funds,shared,lev,sizeMult}){
+  const finalLine=Number(this.config.emergencyStopRoePct)||0;
+  // Without the final line a full ladder would have no loss exit: no entry.
+  if(!(finalLine>0))return {ok:false,reason:'LADDER_FINAL_LINE_OFF'};
+  const symbolCapUSD=funds.equity*this.config.maxMarginPct/100;
+  const roomUSD=Math.min((shared?.marginCapUSD??funds.equity*this.config.maxTotalMarginPct/100)-(shared?.marginUSD??this.#usedMargin()),funds.available!=null?funds.available*.9:Infinity);
+  const lad=planLadder({symbolCapUSD,roomUSD,leverage:lev,price:plan.entry,quantityStep:c.quantityStep,minQty:c.minQuantityBase,minNotional:c.minNotionalUSDT,sizeMult});
+  if(!lad.ok)return {ok:false,reason:lad.reason,detail:lad.reason==='LADDER_BELOW_MINIMUM'?`1단위 최소 $${lad.minUnitMarginUSD} · 한도 $${lad.capUSD}`:null};
+  const rows=await withTimeout(Promise.resolve().then(()=>this.candles(u.symbol,'1h',40)),3000);
+  const sp=ladderSpacing({atrPct:atrPct(rows,{now:this.now()}),leverage:lev,finalLineRoePct:finalLine,minPct:this.config.ladderSpacingMinPct});
+  const reservePct=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/1e4+SCALP_EXEC_COSTS.fundingRate;
+  const reserve=ladderReserve({totalMarginUSD:lad.totalMarginUSD,leverage:lev,finalLineRoePct:finalLine,takerRate:plan.takerRate,reservePct});
+  const ladder={v:TRADER_LADDER.version,units:[...lad.units],plannedUnits:[...lad.units],unitMarginUSD:lad.unitMarginUSD,symbolCapUSD:+symbolCapUSD.toFixed(4),capUSD:lad.capUSD,
+   sizeMult:lad.sizeMult,capped:lad.capped,raised:lad.raised,shortened:lad.shortened,minQty:lad.minQty,
+   spacingPct:sp.spacingPct,spacingBasePct:sp.basePct,spacingCapPct:sp.capPct,spacingCapped:sp.capped,atrPct:sp.atrPct,
+   tpNetPct:this.config.ladderTpNetPct,maxHoldMin:this.config.ladderMaxHoldMin,finalLineRoePct:finalLine,reservePct,
+   reserveMarginUSD:reserve.marginUSD,reserveRiskUSD:reserve.riskUSD,filled:0,fills:[],attempt:0,lastFill:null,size:0,state:'WATCH',source:{...TRADER_LADDER.source}};
+  const qty=lad.qty0;
+  return {ok:true,plan:{...plan,qty,parts:[qty,0,0],targetCount:1,merged:false,marginUSD:qty*plan.entry/lev,riskUSD:reserve.riskUSD,scaleIn:null,ladder}};
  }
  /** BTC 5m/15m shock check (cached once per 5m bucket) to avoid catching simultaneous altcoin knives during BTC dumps/pumps. */
  async #btcShock(bucket){
@@ -1170,6 +1226,7 @@ export class ScalpExecutor{
   return {
    realizedToday:day=>this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0)*scaleOf(x),0),
    openRisk:()=>this.store.open.reduce((t,p)=>{
+    if(isLadder(p))return t+ladderHeldRisk(p)*scaleOf(p);
     const sc=scaleOf(p),d=dirOf(p.direction),e=pos(p.avg||p.entry),st=pos(p.stop),q=pos(p.size||p.qty),pending=(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedRiskUSD||0):0)*sc;
     if(!e||!st||!q)return t+pending;
     if(this.config.stopLossEnabled===false)return t+this.#repeatRisk(p,e,p.mark)*q*sc+pending;
@@ -1179,6 +1236,7 @@ export class ScalpExecutor{
    },0)+reserved('riskUSD'),
    usedMargin:()=>this.store.open.reduce((t,p)=>{
     const sc=scaleOf(p);
+    if(isLadder(p))return t+ladderHeldMargin(p)*sc;
     return t+((p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1)+(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedMarginUSD||0):0))*sc;
    },0)+reserved('marginUSD'),
    unrealized:()=>this.store.open.reduce((t,p)=>t+(Number(p.unrealized)||0)*scaleOf(p),0),
@@ -1207,6 +1265,7 @@ export class ScalpExecutor{
   const venueAvailableQty=room!==null&&room>=0?room:null;
   const requestedQty=plan.qty;
   if(this.cur?.plan)Object.assign(this.cur.plan,{requestedQty,venueAvailableQty});
+  if(venueAvailableQty!==null&&venueAvailableQty<requestedQty&&plan.ladder)return skip('VENUE_POSITION_LIMIT',`가용 ${venueAvailableQty}개 · 첫 단위 ${requestedQty}개`);
   if(venueAvailableQty!==null&&venueAvailableQty<requestedQty){
    const qty=Number(grid(venueAvailableQty,c.quantityStep,'DOWN'))||0;
    const split=scalpSplits(qty,c.quantityStep,plan.minPart);
@@ -1218,13 +1277,16 @@ export class ScalpExecutor{
   }
   // Check the final size and save it in the ledger before yielding to order dispatch.
   this.reservedRisk.delete(u.symbol);
+  // A ladder is checked with its whole reserved budget (every step at the final line), not its first unit.
+  const holdRisk=plan.ladder?.reserveRiskUSD??plan.riskUSD,holdMargin=plan.ladder?.reserveMarginUSD??plan.marginUSD;
   if(this.budget){
-   const b=this.budget.check({equity,newRiskUSD:plan.riskUSD,newMarginUSD:plan.marginUSD,who:'scalp'});
-   if(this.cur?.plan&&b.snap?.ok)this.cur.plan.openRiskUSD=+(b.snap.usedUSD+plan.riskUSD).toFixed(2);
+   const b=this.budget.check({equity,newRiskUSD:holdRisk,newMarginUSD:holdMargin,who:'scalp'});
+   if(this.cur?.plan&&b.snap?.ok)this.cur.plan.openRiskUSD=+(b.snap.usedUSD+holdRisk).toFixed(2);
    if(!b.ok)return skip(b.reason,b.detail);
   }else{
    const day=kstDay(this.now()),realized=this.store.closed.filter(x=>kstDay(x.closedAt)===day).reduce((t,x)=>t+(Number(x.netUSD)||0),0);
-   const risk=Math.max(0,-realized)+this.#openRisk()+plan.riskUSD,limit=equity*this.config.dailyLossPct/100;
+   const risk=Math.max(0,-realized)+this.#openRisk()+holdRisk,limit=equity*this.config.dailyLossPct/100;
+   if(plan.ladder&&this.#usedMargin()+holdMargin>equity*this.config.maxTotalMarginPct/100+1e-9)return skip('MARGIN_CAP',`$${(this.#usedMargin()+holdMargin).toFixed(2)} > $${(equity*this.config.maxTotalMarginPct/100).toFixed(2)}`);
    if(this.cur?.plan)this.cur.plan.openRiskUSD=+risk.toFixed(2);
    if(risk>limit)return skip('OPEN_RISK_LIMIT',`$${risk.toFixed(2)} > $${limit.toFixed(2)}`);
   }
@@ -1246,6 +1308,7 @@ export class ScalpExecutor{
    avg:null,size:0,filled:0,stopOrderId:null,stopIds:[],tpOrderIds:[null,null,null],tpTries:[0,0,0],breakevenMoved:false,exitIds:[],steps:[],
    stopLossEnabled:this.config.stopLossEnabled!==false,
    ...(this.config.stopLossEnabled===false?{profitTargetsReady:true}:{}),
+   management:plan.ladder?SCALP_MANAGEMENTS.LADDER:SCALP_MANAGEMENTS.CURRENT,...(plan.ladder?{ladder:plan.ladder}:{}),
    ...(plan.scaleIn?{scaleIn:plan.scaleIn}:{}),
    // Journal context (analysis only).
    atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,btcTrend4h:this.cur?.btcTrend4h??null,withTrend:this.cur?.withTrend??null,
@@ -1302,7 +1365,8 @@ export class ScalpExecutor{
    Object.assign(p.scaleIn,{initialEntry:p.avg,initialQty:p.filled,initialMarginUSD:p.marginUSD,initialRiskUSD:p.riskUSD});
   }
   p.initialRiskUSD=p.riskUSD;p.initialMarginUSD=p.marginUSD;
-  if(!p.stopLossEnabled){
+  if(isLadder(p)){this.#ladderOpened(p);p.riskUSD=p.initialRiskUSD=ladderHeldRisk(p)}
+  else if(!p.stopLossEnabled){
    this.#enableRepeat(p);
    p.riskUSD=this.#repeatRisk(p,p.avg,p.mark)*p.filled;
    if(p.scaleIn)p.scaleIn.initialRiskUSD=p.riskUSD;
@@ -1315,7 +1379,7 @@ export class ScalpExecutor{
   trackExcursion(p,p.avg,this.now());
   // BTC 5m / 1h change around the entry: read after the orders are in, never awaited (journal only).
   void withTimeout(this.#btc(),5000).then(b=>{if(b)p.btc=b});
-  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,trigger:p.trigger,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,...(pos(p.hardStopPrice)?{hardStopPrice:p.hardStopPrice}:{}),targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,minScore:p.scalpScore.minScore,...(p.scalpScore.breakdown?{breakdown:{...p.scalpScore.breakdown}}:{}),...(p.scalpScore.oiBonus>0?{oiBonus:p.scalpScore.oiBonus}:{}),...(p.scalpScore.cvdBonus>0?{cvdBonus:p.scalpScore.cvdBonus}:{}),sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.scoreTier?.active?{scoreTierMult:p.scalpScore.scoreTier.mult}:{}),...(Number.isFinite(Number(p.scalpScore.effectiveMult))?{effectiveMult:p.scalpScore.effectiveMult}:{}),...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{})});
+  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,trigger:p.trigger,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,...(pos(p.hardStopPrice)?{hardStopPrice:p.hardStopPrice}:{}),targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,minScore:p.scalpScore.minScore,...(p.scalpScore.breakdown?{breakdown:{...p.scalpScore.breakdown}}:{}),...(p.scalpScore.oiBonus>0?{oiBonus:p.scalpScore.oiBonus}:{}),...(p.scalpScore.cvdBonus>0?{cvdBonus:p.scalpScore.cvdBonus}:{}),sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.scoreTier?.active?{scoreTierMult:p.scalpScore.scoreTier.mult}:{}),...(Number.isFinite(Number(p.scalpScore.effectiveMult))?{effectiveMult:p.scalpScore.effectiveMult}:{}),...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{}),...(isLadder(p)?{management:p.management,ladder:this.#ladderView(p)}:{})});
   this.#save();return {entered:true};
  }
  /** BTC change over the last closed 5m candle and the last hour (12 candles), cached per 5m candle. */
@@ -1346,7 +1410,7 @@ export class ScalpExecutor{
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
    x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
-   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,scoreGrade:line.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
+   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.openedAt??null,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,scoreGrade:line.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
   }
  }
  /** The newest `limit` journal lines (oldest first). */
@@ -1523,7 +1587,7 @@ export class ScalpExecutor{
  }
  #maxAdds(){const m=Number(this.config?.maxScaleInAdds);return Number.isFinite(m)&&m>0?m:SCALP_REPEAT_SCALE_IN.maxAdds}
  #enableRepeat(p){
-  if(!this.config.scaleIn)return;
+  if(isLadder(p)||!this.config.scaleIn)return;
   if(p.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version){
    // Re-open positions that were previously skipped solely due to partial exit when >=25% remains and under maxAdds.
    if(p.scaleIn.state==='SKIPPED'&&p.scaleIn.reason==='POSITION_CHANGED'&&!this.#partialTooSmall(p)&&(p.scaleIn.count||0)<this.#maxAdds()){
@@ -1789,6 +1853,7 @@ export class ScalpExecutor{
  }
  /** One attempt: closed midpoint retest after entry, then a price in the band in the immediately following candle. */
  async #considerAdd(p,mark){
+  if(isLadder(p))return;
   if(this.config.stopLossEnabled===false)return this.#considerRepeat(p,mark);
   const a=p.scaleIn,now=this.now(),bucket=Math.floor(now/I5)*I5,dir=dirOf(p.direction);
   if(!a||a.state!=='WATCH')return;
@@ -1953,6 +2018,7 @@ export class ScalpExecutor{
   p.profitTargetsReady=true;this.#save();return true;
  }
  async #placeTargets(p){
+  if(isLadder(p))return; // TRADER_LADDER takes profit on the average itself (#ladderTakeProfit)
   const profitOnly=this.config.stopLossEnabled===false;
   if(profitOnly)await this.#retireLegacyProfitTargets(p);
   const dir=dirOf(p.direction);
@@ -2058,7 +2124,7 @@ export class ScalpExecutor{
   if(!activeMode||this.client?.mode!==activeMode)return refuse(activeMode==='LIVE'?'SCALP_MODE_OFF':'TESTNET_CLOSE_ONLY');
   const p=this.store.open.find(p=>p.id===id&&p.mode===activeMode&&p.status==='OPEN');
   if(!p)return refuse('POSITION_NOT_FOUND',404);
-  if(this.reserved.has(p.symbol)||this.reconcilingSymbol===p.symbol||['PENDING','RESIZE'].includes(p.scaleIn?.state))return refuse('SYMBOL_BUSY');
+  if(this.reserved.has(p.symbol)||this.reconcilingSymbol===p.symbol||['PENDING','RESIZE'].includes(p.scaleIn?.state)||p.ladder?.pending||p.ladder?.exit)return refuse('SYMBOL_BUSY');
   this.reserved.add(p.symbol);
   try{
    const mode=await readPositionMode(this.client);
@@ -2108,6 +2174,7 @@ export class ScalpExecutor{
   this.#save();
  }
  async #tryEarlyTakeProfit(p,mark){
+  if(isLadder(p))return false;
   const now=this.now(),opened=p.openedAt??p.createdAt,profitOnly=this.config.stopLossEnabled===false;
   const delay=profitOnly?0:EARLY_TAKE_PROFIT_MS,retry=profitOnly?PROFIT_ONLY_RETRY_MS:EARLY_EXIT_RETRY_MS;
   const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
@@ -2292,6 +2359,211 @@ export class ScalpExecutor{
   this.#recordEarlyTakeProfit(p,response,{alreadyFilled:makerFilledTotal});
   return true;
  }
+ // ---- TRADER_LADDER (scalp_ladder.mjs, user 2026-11-24) ----------------------------------------------------------
+ /** The first fill is step 1 of the ladder. */
+ #ladderOpened(p){
+  const L=p.ladder;if(!L||L.filled>0)return;
+  L.filled=1;L.lastFill=p.avg;L.avg=p.avg;L.size=p.filled;L.fills=[{step:1,units:L.units[0],qty:p.filled,price:p.avg,at:this.now(),zone:null,boost:0,executionMode:p.executionMode||null}];
+  L.state=L.units.length>1?'WATCH':'COMPLETE';
+ }
+ #ladderTp(p){
+  const L=p.ladder;
+  return ladderTpPrice({direction:p.direction,avg:p.avg,takerRate:Math.max(Number(p.takerRate)||0,SCALP_EXEC_COSTS.takerRate),tpNetPct:L.tpNetPct,reservePct:L.reservePct??.0004,tickSize:p.tickSize});
+ }
+ /** What the screen and the Telegram notices show: "3/6 단계 · 평단 … · 다음 추매 …". */
+ #ladderView(p){
+  const L=p.ladder;if(!L)return null;
+  const next=L.state==='WATCH'&&L.filled<L.units.length?(L.next??ladderNextAdd({direction:p.direction,lastFill:L.lastFill,spacingPct:L.spacingPct,zones:L.zones?.list||[]})):null;
+  const opened=p.openedAt??p.createdAt;
+  return {step:L.filled,of:L.units.length,units:[...L.units],avg:pos(p.avg),lastFill:pos(L.lastFill),spacingPct:L.spacingPct,atrPct:L.atrPct??null,
+   nextAdd:next?{price:pos(next.level),zone:next.zone?{tf:next.zone.tf,low:next.zone.low,high:next.zone.high,why:[...(next.zone.why||[])],at:next.zone.at}:null,units:next.zone?ladderZoneBoost(L.units,L.filled).units[L.filled]:L.units[L.filled]}:null,
+   tpPrice:pos(L.tpPrice)??this.#ladderTp(p),tpNetPct:L.tpNetPct,finalLineRoePct:L.finalLineRoePct,maxHoldMin:L.maxHoldMin,closeBy:opened>0&&L.maxHoldMin>0?opened+L.maxHoldMin*60000:null,
+   state:L.state,lastReason:L.lastReason??null,pending:Boolean(L.pending),unitMarginUSD:L.unitMarginUSD,reserveMarginUSD:L.reserveMarginUSD,reserveRiskUSD:L.reserveRiskUSD,
+   fills:(L.fills||[]).map(f=>({step:f.step,units:f.units,qty:f.qty,price:f.price,at:f.at,zone:f.zone?{tf:f.zone.tf,why:[...(f.zone.why||[])]}:null,boost:f.boost||0}))};
+ }
+ /** Strong 4H / 1D zones of this coin (scalp_ladder.mjs strongZones), read again once per 4H candle. */
+ async #ladderZones(p){
+  const L=p.ladder,b=Math.floor(this.now()/(4*3600000));
+  if(L.zones?.bucket===b||L.zones?.retryAt>this.now())return L.zones.list||[];
+  const st={},b4=await this.zoneBookOf(p.symbol,'4h',p.tickSize,st),b1=st.error?null:await this.zoneBookOf(p.symbol,'1d',p.tickSize,st);
+  const now=this.now(),rows4h=this.zoneCache.get(p.symbol+'|4h')?.rows||null;
+  const list=strongZones({zones4h:b4?b4(now):null,zones1d:b1?b1(now):null,rows4h:Array.isArray(rows4h)?rows4h.slice(-180):null,direction:p.direction});
+  // Nothing read: no zones now, read again in 5 minutes (not cached for the candle).
+  L.zones={bucket:b4||b1?b:null,at:now,list,...(b4||b1?{}:{retryAt:now+5*60000})};
+  return list;
+ }
+ /** Reconcile step for a TRADER_LADDER position: final line, max hold, take profit on the average, the next add. */
+ async #manageLadder(p,{size,mark,row}){
+  const L=p.ladder,dir=dirOf(p.direction),step=Number(p.quantityStep)||0;
+  if(Number(this.config.hardStopRoePct)>0)await this.#ensureHardStop(p);
+  else if(!await this.#retireStop(p))return;
+  // A fill the ledger has not booked (an add answered after we gave up on it, a PostOnly child that rested): booked
+  // as the next step, never added again. Less than booked: something else closed part of it, so no more adds.
+  if(size>L.size+step/2)this.#ladderBook(p,{qty:+(size-L.size).toFixed(12),size,avg:pos(row?.avgPrice),prevAvg:pos(L.avg)??pos(L.lastFill),prevSize:L.size,adopted:true});
+  else if(size<L.size-step/2){L.size=size;p.everReduced=true;if(L.state==='WATCH'){L.state='STOPPED';L.lastReason='POSITION_CHANGED'}this.#save()}
+  p.riskUSD=ladderHeldRisk(p);
+  if(L.exit&&!await this.#ladderExitCheck(p))return;
+  if(p.status!=='OPEN')return;
+  const lev=Math.max(1,Number(p.leverage)||10),roePct=mark>0&&p.avg>0?dir*(mark-p.avg)/p.avg*lev*100:null;
+  const line=Number(L.finalLineRoePct)||Number(this.config.emergencyStopRoePct)||0;
+  if(line>0&&roePct!==null&&roePct<=-line){
+   // After the last step this is the user's final line "(나) 마지막 선에서 정리"; before it, the existing emergency line.
+   const reason=L.filled>=L.units.length?'LADDER_FINAL_LINE':'EMERGENCY_ROE_STOP';
+   p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'em'+p.exitTries);
+   p.exitReason=reason;p.closeMeta={roePct:+roePct.toFixed(1),limitPct:line,step:L.filled,of:L.units.length};
+   this.#event(reason,{symbol:p.symbol,direction:p.direction,roePct:+roePct.toFixed(1),limitPct:line,step:L.filled,of:L.units.length});
+   if(!(r.size>0))await this.#finish(p,reason);
+   return;
+  }
+  const opened=p.openedAt??p.createdAt,maxHoldMin=Number(L.maxHoldMin)||0;
+  if(maxHoldMin>0&&opened>0&&this.now()-opened>=maxHoldMin*60000){
+   p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'mh'+p.exitTries);
+   const holdMin=Math.round((this.now()-opened)/60000);
+   p.exitReason='LADDER_MAX_HOLD';p.closeMeta={holdMin,maxHoldMin,roePct:roePct===null?null:+roePct.toFixed(1),step:L.filled,of:L.units.length};
+   this.#event('LADDER_MAX_HOLD',{symbol:p.symbol,direction:p.direction,holdMin,maxHoldMin,roePct:p.closeMeta.roePct,step:L.filled,of:L.units.length});
+   if(!(r.size>0))await this.#finish(p,'LADDER_MAX_HOLD');
+   return;
+  }
+  if(await this.#ladderTakeProfit(p,mark,size))return;
+  await this.#ladderAdd(p,mark);
+ }
+ /** Whole position at the average + tpNetPct % net of fees: a reduce-only IOC limit AT the take-profit price (never a
+  * worse fill), sent when the mark is there. Unfilled: tried again at the next check. */
+ async #ladderTakeProfit(p,mark,size){
+  const L=p.ladder,dir=dirOf(p.direction),tp=this.#ladderTp(p);
+  L.tpPrice=tp;
+  if(!(tp>0&&mark>0&&dir*(mark-tp)>=0))return false;
+  const qty=Number(grid(size,p.quantityStep,'DOWN'));if(!(qty>0))return false;
+  const n=L.exitTries=(L.exitTries||0)+1,cid=(p.id+'lx'+n).slice(0,40);
+  L.exit={clientOrderId:cid,qty,price:tp,at:this.now()};this.#save();
+  let o;
+  try{
+   o=orderOf(await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),
+    type:'LIMIT',timeInForce:'IOC',price:String(tp),quantity:String(qty),reduceOnly:'true',clientOrderId:cid},p.hedge===true)));
+  }catch(e){
+   // A refusal from the venue: nothing was placed. Anything else (no answer): looked up by its id at the next check.
+   if(/^(?:VENUE_ERROR_\d+|HTTP_4\d\d)$/.test(String(e?.code||''))){delete L.exit;L.lastReason=e.code;this.#save()}
+   else this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message});
+   return true;
+  }
+  return this.#ladderExitResult(p,o);
+ }
+ async #ladderExitResult(p,o){
+  const L=p.ladder,x=L.exit,step=Number(p.quantityStep)||0,id=orderId(o),filled=pos(o?.executedQty)??0,status=String(o?.status||'').toUpperCase();
+  if(id&&!p.exitIds.includes(id))p.exitIds.push(id);
+  if(filled>0&&!x?.booked){L.size=Math.max(0,+(L.size-filled).toFixed(12));if(x)x.booked=true;if(filled>=(x?.qty??0)-step/2)p.exitReason='LADDER_TAKE_PROFIT';else p.everReduced=true}
+  if(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(status)||filled>=(x?.qty??Infinity)-step/2)delete L.exit;
+  this.#save();
+  if(p.exitReason==='LADDER_TAKE_PROFIT'){
+   const now=await this.#position(p.venueSymbol,p.direction,p.hedge===true).catch(()=>null);
+   if(now&&!(now.size>0))await this.#finish(p,'LADDER_TAKE_PROFIT');
+  }
+  return true;
+ }
+ /** A take-profit order sent without an answer: its outcome by client id. true = the check may go on. */
+ async #ladderExitCheck(p){
+  const L=p.ladder;let o=null;
+  try{o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:L.exit.clientOrderId}))}
+  catch(e){if(orderAbsent(e)){delete L.exit;this.#save();return true}return false}
+  if(!o){if(this.now()-(L.exit.at||0)>120000){delete L.exit;this.#save();return true}return false}
+  await this.#ladderExitResult(p,o);
+  return p.status==='OPEN'&&!L.exit;
+ }
+ /** The next ladder add when the price reaches it (from the last fill, or a strong zone before that). One order at a time,
+  * saved as pending before it is sent (a restart settles it from the position, never sends it again). */
+ async #ladderAdd(p,mark){
+  const L=p.ladder,dir=dirOf(p.direction),nowTs=this.now();
+  if(L.state!=='WATCH'||L.pending)return;
+  if(L.filled>=L.units.length){L.state='COMPLETE';this.#save();return}
+  if(L.retryAfterAt&&nowTs<L.retryAfterAt)return;
+  // Adds pause while new entries are blocked (switch off, day loss stop, kill switch), as the earlier adds did.
+  if(this.#blocked(p.id))return;
+  const zones=await this.#ladderZones(p);
+  const next=ladderNextAdd({direction:p.direction,lastFill:L.lastFill,spacingPct:L.spacingPct,zones});
+  L.next=next;
+  if(!next||!(mark>0)||dir*(mark-next.level)>0)return;
+  const revision=this.entryRevision,vs=p.venueSymbol,hedge=p.hedge===true,cl=this.client,stepQ=Number(p.quantityStep)||0;
+  const [funds,fresh,levInfo]=await Promise.all([this.#funds({requireAvailable:true}),this.#position(vs,p.direction,hedge),typeof cl.leverage==='function'?withTimeout(cl.leverage(vs),2500):null]);
+  if(!funds){L.lastReason='NO_BALANCE';return}
+  if(!fresh.avg||Math.abs(fresh.size-L.size)>stepQ/2){L.lastReason='POSITION_CHANGED';return}
+  const price=pos(fresh.mark)??mark;
+  if(dir*(price-next.level)>0){L.lastReason='PRICE_OUTSIDE_BAND';return}
+  const index=L.filled,boosted=next.zone?ladderZoneBoost(L.units,index):{units:[...L.units],boost:0},units=boosted.units[index];
+  // The per-symbol cap: the margin of the fills so far + this step never goes past it.
+  const used=L.fills.reduce((t,f)=>t+f.qty*f.price/p.leverage,0),left=L.capUSD-used;
+  let qty=Number(grid(Math.min(units*L.unitMarginUSD,left)*p.leverage/price*(1+1e-9),p.quantityStep,'DOWN'))||0;
+  if(qty<L.minQty&&L.minQty*price/p.leverage<=left+1e-9)qty=L.minQty;
+  if(!(qty>=L.minQty)){L.state='STOPPED';L.lastReason='MIN_QUANTITY';this.#save();return}
+  if(qty*price/p.leverage>funds.available*.9){L.lastReason='RISK_OR_MARGIN_CAP';L.retryAfterAt=nowTs+60000;return}
+  const rawRoom=p.direction==='SHORT'?levInfo?.availableShortVol:levInfo?.availableLongVol;
+  const room=typeof rawRoom==='number'||(typeof rawRoom==='string'&&rawRoom.trim()!=='')?num(rawRoom):null;
+  if(room!==null&&room>=0&&room<qty){L.lastReason='VENUE_POSITION_LIMIT';L.retryAfterAt=nowTs+60000;return}
+  const guard=()=>this.#blocked(p.id)||(revision!==this.entryRevision?'NOT_ARMED':null);
+  if(guard())return;
+  L.attempt=(L.attempt||0)+1;
+  const id=(p.id+'L'+(index+1)+'n'+L.attempt).slice(0,31);
+  L.pending={step:index+1,index,units,plannedUnits:boosted.units,boost:boosted.boost,zone:next.zone,level:next.level,clientOrderId:id,attemptedAt:nowTs,preSize:fresh.size,preAvg:fresh.avg,requestedQty:qty,prevLastFill:L.lastFill};
+  this.#save();
+  try{
+   if(this.config.makerEntry!==false&&typeof cl.getOrder==='function'&&typeof cl.cancelOrder==='function'){
+    const exec=await placeMakerThenMarket({client:cl,symbol:vs,side:openSide(p.direction),positionSide:positionSideFor({hedge,direction:p.direction}),
+     quantity:qty,quantityStep:p.quantityStep,minQuantity:L.minQty,tickSize:p.tickSize,markPrice:price,hedge,clientOrderId:id,
+     waitMs:this.config.makerWaitMs??2500,pollMs:this.config.makerPollMs??400,beforeSend:guard});
+    Object.assign(L.pending,{executionMode:exec.executionMode||'MARKET',reportedQty:pos(exec.filledQty),reportedPrice:pos(exec.avg)});
+   }else{
+    const o=orderOf(await cl.placeOrder({symbol:vs,side:openSide(p.direction),positionSide:positionSideFor({hedge,direction:p.direction}),type:'MARKET',quantity:String(qty),clientOrderId:id},{beforeSend:guard}));
+    Object.assign(L.pending,{executionMode:'MARKET',reportedQty:pos(o?.executedQty),reportedPrice:pos(o?.avgPrice)});
+   }
+  }catch(e){
+   if(e?.code==='ENTRY_NOT_SENT'){delete L.pending;L.lastReason=e.reason||'ENTRY_NOT_SENT';this.#save();return}
+   // Refused by the venue: nothing was placed (a PostOnly part that filled is returned, not thrown, by the helper).
+   if(/^(?:VENUE_ERROR_\d+|HTTP_4\d\d)$/.test(String(e?.code||''))){delete L.pending;L.lastReason=e.code;L.retryAfterAt=nowTs+60000;this.#save();return}
+   // No answer, HTTP 5xx, PostOnly state unknown: kept pending and settled from the position.
+   Object.assign(L.pending,{unknown:e?.code||e?.message||'UNKNOWN',...(e?.makerClientOrderId?{makerClientOrderId:e.makerClientOrderId}:{})});
+   this.#event('SCALE_IN_PENDING',{symbol:p.symbol,reason:'ORDER_OUTCOME_UNKNOWN'});this.#save();return;
+  }
+  this.#save();
+  await this.#ladderSettle(p);
+ }
+ /** A pending add settled from the venue position: added = size now - size before. Nothing added: waits up to 2 minutes,
+  * cancelling a PostOnly child that may rest, then gives the step back (tried again 15 s later at the same level). */
+ async #ladderSettle(p){
+  const L=p.ladder,a=L.pending;if(!a)return;
+  const fresh=await this.#position(p.venueSymbol,p.direction,p.hedge===true).catch(()=>null);
+  if(!fresh)return;
+  const stepQ=Number(p.quantityStep)||0,added=+(fresh.size-a.preSize).toFixed(12);
+  if(added>stepQ/2)return this.#ladderBook(p,{qty:added,size:fresh.size,avg:pos(fresh.avg),prevAvg:pos(a.preAvg),prevSize:a.preSize,pending:a});
+  const age=this.now()-(a.attemptedAt||0);
+  // Any add not yet seen in the position (an answer lost, a restart between sending and booking, a slow position read)
+  // is waited for; only after that is the step given back.
+  if(age<120000){
+   const maker=a.makerClientOrderId||makerChildIds(a.clientOrderId).limit;
+   if(typeof this.client.cancelOrder==='function')try{await this.client.cancelOrder(p.venueSymbol,undefined,{clientOrderId:maker})}catch{}
+   return;
+  }
+  delete L.pending;L.lastReason=a.unknown?'ORDER_OUTCOME_UNKNOWN':'NOT_FILLED';L.retryAfterAt=this.now()+15000;
+  this.#save();
+ }
+ /** Books one ladder fill (from a pending add, or adopted from the position). */
+ #ladderBook(p,{qty,size,avg,prevAvg=null,prevSize=0,pending=null,adopted=false}){
+  const L=p.ladder;
+  // The fill price from the venue average before and after (the order answer's price when that cannot be worked out).
+  const price=avg&&prevAvg&&prevSize>0?(avg*size-prevAvg*prevSize)/qty:avg;
+  const fill=pos(price)??pos(pending?.reportedPrice)??avg??p.avg;
+  if(pending?.plannedUnits)L.units=[...pending.plannedUnits];
+  L.filled++;L.lastFill=fill;L.size=size;if(avg)L.avg=avg;
+  L.fills.push({step:L.filled,units:pending?.units??L.units[L.filled-1]??null,qty,price:fill,at:this.now(),zone:pending?.zone?{tf:pending.zone.tf,low:pending.zone.low,high:pending.zone.high,why:[...(pending.zone.why||[])],at:pending.zone.at}:null,
+   boost:pending?.boost||0,executionMode:pending?.executionMode||null,...(adopted?{adopted:true}:{})});
+  p.filled=+(Number(p.filled||0)+qty).toFixed(12);p.size=size;if(avg)p.avg=avg;p.marginUSD=p.avg*size/p.leverage;
+  p.steps.push({kind:'ADD',at:this.now(),qty,avg:p.avg});
+  delete L.pending;L.lastReason=null;L.retryAfterAt=null;L.next=null;
+  L.state=L.state==='WATCH'||L.state==='COMPLETE'?(L.filled>=L.units.length?'COMPLETE':'WATCH'):L.state;
+  this.#save();
+  const view=this.#ladderView(p);
+  this.#event('LADDER_ADD',{symbol:p.symbol,direction:p.direction,step:L.filled,of:L.units.length,units:L.fills.at(-1).units,qty,price:fill,prevAvg,avg:p.avg,left:size,
+   zone:L.fills.at(-1).zone,boost:L.fills.at(-1).boost,adopted,nextAdd:view?.nextAdd?.price??null,tpPrice:view?.tpPrice??null,finalLineRoePct:L.finalLineRoePct});
+  if(Number(this.config.hardStopRoePct)>0)void this.#ensureHardStop(p,{forceReplace:true}).catch(()=>{});
+ }
  async #emergency(p,reason){
   try{p.exitTries=(p.exitTries||0)+1;await this.#market(p,'e'+p.exitTries);p.exitReason=reason;await this.#finish(p,reason)}
   catch(e){p.status='UNKNOWN';this.#event('EMERGENCY_CLOSE_FAILED',{symbol:p.symbol,reason:e?.code||e?.message})}
@@ -2330,6 +2602,8 @@ export class ScalpExecutor{
      if(p.status==='SUBMITTING'||p.status==='CLOSED'||this.reserved.has(p.symbol))continue;
      this.reconcilingSymbol=p.symbol;
     try{
+     // A ladder add sent but not booked (also after a restart): settled from the venue position first, never sent again.
+     if(isLadder(p)&&p.ladder.pending){await this.#ladderSettle(p);continue}
      if(p.scaleIn?.state==='PENDING'||p.scaleIn?.state==='RESIZE'){
       if(this.config.stopLossEnabled===false&&!(Number(this.config.hardStopRoePct)>0))await this.#retireStop(p);
       await this.#recoverAdd(p);continue;
@@ -2351,7 +2625,7 @@ export class ScalpExecutor{
        }
        delete p.unknownOrder;
        p.status='OPEN';p.filled=p.size=size;p.avg=pos(row.avgPrice)??p.entry;p.firstEntryPrice??=pos(row.avgPrice);p.openedAt??=this.now();this.#event('ENTRY_RECOVERED',{symbol:p.symbol,qty:size});
-       if(noStop){p.steps.push({kind:'OPEN',at:this.now(),qty:size,avg:p.avg});this.#enableRepeat(p)}
+       if(noStop){p.steps.push({kind:'OPEN',at:this.now(),qty:size,avg:p.avg});if(isLadder(p)){this.#ladderOpened(p);p.riskUSD=p.initialRiskUSD=ladderHeldRisk(p)}else this.#enableRepeat(p)}
        const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts;if(await this.#protect(p))await this.#placeTargets(p);
       }else{
        const uo=p.unknownOrder;
@@ -2402,6 +2676,7 @@ export class ScalpExecutor{
      trackExcursion(p,mark,this.now());p.tpFills??=[null,null,null];
      p.tpDone.forEach((ok,i)=>{if(ok&&!p.tpFills[i])p.tpFills[i]={at:this.now(),price:mark??null,qty:parts[i],seen:'RECONCILE'}});
      if(p.earlyTakeProfit||p.exitReason==='EARLY_TAKE_PROFIT')continue;
+     if(isLadder(p)){await this.#manageLadder(p,{size,mark,row});continue}
      if(noStop){
       if(Number(this.config.hardStopRoePct)>0){await this.#ensureHardStop(p)}
       else if(!await this.#retireStop(p))continue;
@@ -2537,7 +2812,7 @@ export class ScalpExecutor{
   const marginBase=p.avg>0&&p.filled>0?(p.avg*p.filled/(p.leverage||1)):0;
   const roePct=marginBase>0?+(row.netUSD/marginBase*100).toFixed(2):null;
   const adds=scalpAddCount(p);
-  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,adds,holdMs:row.holdMs,entry:p.avg,roePct,peakRoePct:pos(p.trailPeakRoePct)??null,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade}:{})});
+  this.#event('CLOSED',{symbol:p.symbol,direction:p.direction,reason,netUSD:row.netUSD,tp:tpFilled,adds,...(isLadder(p)?{management:p.management,step:p.ladder.filled,of:p.ladder.units.length}:{}),holdMs:row.holdMs,entry:p.avg,roePct,peakRoePct:pos(p.trailPeakRoePct)??null,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade}:{})});
   return cleanupPending;
  }
  /** BingX fund flow (realized PnL + fees + funding) of this trade's symbol and lifetime, read after the close. */
@@ -2558,12 +2833,14 @@ export class ScalpExecutor{
   all.byKind=Object.fromEntries(Object.values(SCALP_KINDS).map(k=>[k,this.#stats(list.filter(x=>(x.kind||SCALP_KINDS.MOVE)===k))]));
   all.byTrigger=Object.fromEntries(Object.values(SCALP_TRIGGERS).map(k=>[k,this.#stats(list.filter(x=>(x.trigger||SCALP_TRIGGERS.SCAN)===k))]));
   all.byGrade=Object.fromEntries(['S','A','B'].map(g=>[g,this.#stats(list.filter(x=>(x.scoreGrade??x.scalpScore?.grade??x.score?.grade)===g))]));
+  // TRADER_LADDER (from 2026-11-24) and the management before it, apart.
+  all.byManagement=Object.fromEntries(Object.values(SCALP_MANAGEMENTS).map(k=>[k,this.#stats(list.filter(x=>(x.management||SCALP_MANAGEMENTS.CURRENT)===k))]));
   const experiment=list.filter(x=>x.scaleIn?.version===SCALP_SCALE_IN.version);
   const repeated=list.filter(x=>x.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version);
   all.scaleIn={closed:experiment.length,filled:experiment.filter(x=>x.scaleIn.fillQty>0).length};
   all.repeatedScaleIn={closed:repeated.length,filled:repeated.filter(x=>x.scaleIn.count>0).length,adds:repeated.reduce((n,x)=>n+(x.scaleIn.count||0),0)};return all}
  /** Read only, for 실계좌 준비 점검 (ready_check.mjs): the same trades and scaled net as stats(), one row each. */
- readinessRows(){return [...this.journalRows,...this.store.closed.filter(x=>!x.journaled)].map(x=>({direction:x.direction||'LONG',netUSD:(Number(x.netUSD)||0)*this.#displayScaleFor(x),closedAt:x.closedAt??null,closeReason:x.closeReason??null}))}
+ readinessRows(){return [...this.journalRows,...this.store.closed.filter(x=>!x.journaled)].map(x=>({direction:x.direction||'LONG',netUSD:(Number(x.netUSD)||0)*this.#displayScaleFor(x),closedAt:x.closedAt??null,openedAt:x.openedAt??null,closeReason:x.closeReason??null,management:x.management||SCALP_MANAGEMENTS.CURRENT}))}
  #stats(list){
   const n=list.length,scaled=list.map(x=>({x,net:(Number(x.netUSD)||0)*this.#displayScaleFor(x)}));
   const wins=scaled.filter(r=>r.net>0),gross=wins.reduce((t,r)=>t+r.net,0),loss=-scaled.filter(r=>r.net<0).reduce((t,r)=>t+r.net,0);
@@ -2600,10 +2877,15 @@ export class ScalpExecutor{
     sessionWeighting:c.sessionWeighting!==false,sessionEuMult:c.sessionEuMult??0.5,sessionUsMult:c.sessionUsMult??1.15,
     bounceSizing:c.bounceSizing!==false,bounceThresholdPct:c.bounceThresholdPct??20,bounceHighMult:c.bounceHighMult??1.35,bounceLowMult:c.bounceLowMult??0.8,
     symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,
-    scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false},
+    scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false&&this.#management()!==SCALP_MANAGEMENTS.LADDER,
+    // TRADER_LADDER (scalp_ladder.mjs): the settings the screen and the reason glossary show.
+    management:this.#management(),managementConfigured:c.management??SCALP_MANAGEMENTS.LADDER,managementSince:this.managementScope().since,
+    ladderSteps:[...TRADER_LADDER.steps],ladderTotalUnits:TRADER_LADDER.totalUnits,ladderSpacingMinPct:c.ladderSpacingMinPct??TRADER_LADDER.spacingMinPct,ladderSpacingAtrMult:TRADER_LADDER.spacingAtrMult,
+    ladderTpNetPct:c.ladderTpNetPct??TRADER_LADDER.tpNetPct,ladderMaxHoldMin:c.ladderMaxHoldMin??TRADER_LADDER.maxHoldMin,ladderMaxHoldHours:+((c.ladderMaxHoldMin??TRADER_LADDER.maxHoldMin)/60).toFixed(1),
+    ladderFinalLineRoePct:c.emergencyStopRoePct??75,ladderZoneTouchPct:TRADER_LADDER.zoneTouchPct,ladderZoneMinRejections:TRADER_LADDER.zoneMinRejections,ladderZoneBoost:TRADER_LADDER.zoneBoost,ladderSource:{...TRADER_LADDER.source}},
    pumpWatch:[...this.pumpWatch.values()].map(w=>({symbol:w.symbol,direction:w.direction,until:w.until,tries:w.tries,lastReason:w.lastReason??null})),
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,
-   blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,exchangePosition,...p})=>({...p,details:scalpPositionDetails({...p,steps,exchangePosition},this.now())})),
+   blockedKo:scalpReasonKo(this.#blocked()),positions:this.store.open.map(({steps,exchangePosition,...p})=>({...p,details:scalpPositionDetails({...p,steps,exchangePosition},this.now()),...(isLadder(p)?{ladderView:this.#ladderView(p)}:{})})),
    closed:this.store.closed.slice(-SCREEN_CLOSED).reverse().map(({steps,exchangePosition,...x})=>({...x,adds:scalpAddCount({steps,...x}),margin:scalpMargin(x),closeReasonKo:scalpCloseReasonLabel(x)})),stats:this.stats(),
    scoreSummary:this.#scoreSummary(),
    skipCounts:Object.entries(this.store.skipCounts).map(([reason,count])=>({reason,label:scalpReasonKo(reason),count})).sort((a,b)=>b.count-a.count),
@@ -2619,7 +2901,8 @@ export class ScalpExecutor{
    trendMode:c.trendMode,minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,
    symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,makerEntry:c.makerEntry!==false,scoreSummary:this.#scoreSummary(),
    aiLensRecord:c.mode==='TESTNET'&&c.wyckoffRecord===true&&Boolean(this.signalsFile),scaleInEnabled:c.scaleIn,stopLossEnabled:c.stopLossEnabled,
-   repeatedScaleIn:c.scaleIn&&!c.stopLossEnabled,open:this.store.open.length,
+   repeatedScaleIn:c.scaleIn&&!c.stopLossEnabled&&this.#management()!==SCALP_MANAGEMENTS.LADDER,management:this.#management(),open:this.store.open.length,
+   ladderPositions:this.store.open.filter(isLadder).map(p=>({symbol:p.symbol,direction:p.direction,step:p.ladder.filled,of:p.ladder.units.length,state:p.ladder.state,lastReason:short(p.ladder.lastReason),pending:Boolean(p.ladder.pending)})),
    ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0,earlyFallbackMin:c.earlyFallbackMin??PROFIT_ONLY_EARLY_EXIT_MIN,minProfitRoePct:c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT,partialTakeFrac:c.partialTakeFrac??SCALP_PARTIAL_TAKE_FRAC,profitOnlyMaxHoldMin:c.profitOnlyMaxHoldMin??240,minMovePct:c.settings?.minMovePct??null}:{}),
    stopRetirementPending:this.store.open.filter(p=>p.stopRetirementError).length,
    openAdds:this.store.open.reduce((n,p)=>n+(p.scaleIn?.count||0),0),

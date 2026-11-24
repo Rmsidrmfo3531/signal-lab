@@ -204,7 +204,7 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   // Without orderflow boost -> base score (<65) stays blocked by SCORE_BELOW_MINIMUM
   const v1 = mkVenue(close);
   const exNoBoost = new ScalpExecutor({
-    config: { ...scalpExecConfig({}), stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 65 },
+    config: { ...scalpExecConfig({}), management: 'CURRENT', stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 65 },
     client: v1.client,
     contracts: async () => new Map([['SOLUSDT', SOL], ['BTCUSDT', BTC]]),
     tickers: async () => [{ symbol: 'SOL-USDT', quoteVolume: '90000000' }, { symbol: 'BTC-USDT', quoteVolume: '500000000' }],
@@ -224,7 +224,7 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   // With OI flush (-2.2% -> +5pt) + strong CVD flip (+0.32 -> 1.5x sizing) -> rescued to 65pt & entered at 1.5x!
   const v2 = mkVenue(close);
   const exBoosted = new ScalpExecutor({
-    config: { ...scalpExecConfig({}), stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 65 },
+    config: { ...scalpExecConfig({}), management: 'CURRENT', stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 65 },
     client: v2.client,
     contracts: async () => new Map([['SOLUSDT', SOL], ['BTCUSDT', BTC]]),
     tickers: async () => [{ symbol: 'SOL-USDT', quoteVolume: '90000000' }, { symbol: 'BTC-USDT', quoteVolume: '500000000' }],
@@ -253,7 +253,7 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   // CVD strong flip ALONE (without OI flush) rescues a 60pt setup to 65pt (A-3)
   const v3 = mkVenue(close);
   const exCvdOnly = new ScalpExecutor({
-    config: { ...scalpExecConfig({}), stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 65 },
+    config: { ...scalpExecConfig({}), management: 'CURRENT', stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 65 },
     client: v3.client,
     contracts: async () => new Map([['SOLUSDT', SOL], ['BTCUSDT', BTC]]),
     tickers: async () => [{ symbol: 'SOL-USDT', quoteVolume: '90000000' }, { symbol: 'BTC-USDT', quoteVolume: '500000000' }],

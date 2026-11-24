@@ -65,6 +65,14 @@ const positive=v=>Number.isFinite(Number(v))&&Number(v)>0?Number(v):null;
 
 /** Entry notional divided by configured leverage, summed over filled entries. */
 export function scalpMargin(x){
+ // TRADER_LADDER (scalp_ladder.mjs): the first step and the adds from the ladder's own fills.
+ const L=x?.ladder;
+ if(Array.isArray(L?.fills)&&L.fills.length){
+  const lev=positive(x.leverage??x.entry?.leverage),m=f=>lev&&positive(f?.price)&&positive(f?.qty)?Number(f.price)*Number(f.qty)/lev:null;
+  const first=m(L.fills[0]),adds=L.fills.slice(1).map(m);
+  const added=adds.some(v=>v===null)?null:adds.reduce((t,v)=>t+v,0);
+  return {initialUSD:r4(first),addedUSD:r4(added),totalUSD:first!==null&&added!==null?r4(first+added):null};
+ }
  const entry=typeof x.entry==='object'?x.entry:null,a=x.scaleIn,legacy=x.legacyScaleIn;
  const leverage=positive(entry?.leverage??x.leverage);
  const fillMargin=(price,qty)=>positive(price)&&positive(qty)&&leverage?Number(price)*Number(qty)/leverage:null;
@@ -100,7 +108,11 @@ export function journalLine(x){
  const bps=(a,b)=>a>0&&b>0?r2(dir*(a-b)/b*1e4):null; // + = worse for us (paid more on a LONG, got less on a SHORT)
  // kind: MOVE_REVERSAL (5 % move) or ZONE_REVERSAL (매물대 반전, 2.5 % at a 4H / 1D zone; zone = the touched zone).
  // trigger: SCAN (the 5m scan) or PUMP_ALERT (급변 알림, user 2026-11-24), counted apart in summarizeJournal.
- return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',trigger:x.trigger||'SCAN',...(x.pumpAlert?{pumpAlert:x.pumpAlert}:{}),zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,capitalBasisUSD:positive(x.capitalBasisUSD),
+ // management: TRADER_LADDER (user 2026-11-24, scalp_ladder.mjs) or CURRENT (before); the ladder's steps for the record.
+ const L=x.ladder,ladder=L?{units:L.units??null,plannedUnits:L.plannedUnits??null,filled:L.filled??null,state:L.state??null,unitMarginUSD:r4(L.unitMarginUSD),reserveMarginUSD:r4(L.reserveMarginUSD),reserveRiskUSD:r4(L.reserveRiskUSD),
+  spacingPct:L.spacingPct??null,spacingCapped:L.spacingCapped===true,atrPct:L.atrPct??null,tpNetPct:L.tpNetPct??null,maxHoldMin:L.maxHoldMin??null,finalLineRoePct:L.finalLineRoePct??null,
+  sizeMult:L.sizeMult??null,capped:L.capped===true,raised:L.raised===true,shortened:L.shortened===true,fills:Array.isArray(L.fills)?L.fills:[]}:null;
+ return {v:1,strategy:x.strategy,kind:x.kind||'MOVE_REVERSAL',trigger:x.trigger||'SCAN',management:x.management||'CURRENT',...(ladder?{ladder}:{}),...(x.pumpAlert?{pumpAlert:x.pumpAlert}:{}),zone:x.zone??null,id:x.id,symbol:x.symbol,venueSymbol:x.venueSymbol,direction:x.direction,interval:x.interval||'5m',mode:x.mode,capitalBasisUSD:positive(x.capitalBasisUSD),
   barAt:x.barAt,detectedAt:x.detectedAt??null,evidence:x.evidence??null,candle:x.candle??null,atr:x.atr??null,trend4h:x.trend4h??null,btcTrend4h:x.btcTrend4h??null,withTrend:x.withTrend??null,...(x.scalpScore?{score:x.scalpScore}:{}),
   plan:{signalClose:signal||null,checkedPrice:plan||null,entry:x.entry,stop:x.stopLossEnabled===false?null:x.initialStop,
    ...(x.stopLossEnabled===false?{riskReference:x.initialStop}:{}),targets:x.targets,parts:x.parts,targetCount:x.targetCount??null,merged:x.merged===true,
@@ -138,7 +150,7 @@ export function summarizeJournal(lines,{now=Date.now()}={}){
  const move=x=>{const m=Number(x.evidence?.movePct);const b=MOVE_BUCKETS.find(([a,c])=>m>=a&&m<c);return b?bucketLabel(b,'%'):null};
  const rank=x=>{const k=Number(x.universe?.rank);const b=RANK_BUCKETS.find(([a,c])=>k>=a&&k<=c);return b?bucketLabel(b,'위'):null};
  const hour=x=>{const t=x.entry?.at??x.barAt;return t?String(kst(t).getUTCHours()).padStart(2,'0'):null};
- return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),byTrigger:by(list,x=>x.trigger||'SCAN'),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
+ return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),byTrigger:by(list,x=>x.trigger||'SCAN'),byManagement:by(list,x=>x.management||'CURRENT'),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
   scaleIn:{all:groupStats(experiment),filled:groupStats(filled),withoutFill:groupStats(experiment.filter(x=>!(x.scaleIn.fillQty>0))),
    touched:experiment.filter(x=>x.scaleIn.touchedAt!=null).length,recovered:experiment.filter(x=>x.scaleIn.recoveredAt!=null).length,
    attempted:experiment.filter(x=>x.scaleIn.attemptedAt!=null).length,byDecision:by(experiment,x=>x.scaleIn.reason??x.scaleIn.state)},

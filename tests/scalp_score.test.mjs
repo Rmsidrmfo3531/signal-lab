@@ -343,7 +343,7 @@ test('Combo B / C7 profit-max suite: Post-Only maker entry, disabled 15m fallbac
  let now=T0,mark=PX;
  const v=mockVenue(PX,{fillMaker:true});
  const ex=new ScalpExecutor({
-  config:{...cfg,scaleIn:true,stopLossEnabled:false},
+  config:{...cfg,management:'CURRENT',scaleIn:true,stopLossEnabled:false},
   client:v.client,
   contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
   tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
@@ -521,7 +521,7 @@ test('extreme funding + surging 30m OI squeeze guard blocks counter-squeeze entr
  const v=mockVenue();
  let ofSnap={ok:true,source:'BINANCE',funding:{ratePct:0.14},oi:{change30mPct:3.5},cvd:{lastDeltaNorm:0.2}};
  const ex=new ScalpExecutor({
-  config:{...scalpExecConfig({}),minScore:65,stopLossEnabled:false,squeezeGuard:true,squeezeFundingPct:0.10,squeezeOiChange30mPct:2.0},
+  config:{...scalpExecConfig({}),management:'CURRENT',minScore:65,stopLossEnabled:false,squeezeGuard:true,squeezeFundingPct:0.10,squeezeOiChange30mPct:2.0},
   client:v.client,
   contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
   tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],

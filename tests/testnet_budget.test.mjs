@@ -350,7 +350,7 @@ function venue({onMarket=null}={}){
    return {order:add(p)}}};
  return {client,set mark(v){mark=v},get avg(){return avg}};
 }
-const scalpMake=(v,{clock,funds,budget})=>new ScalpExecutor({config:{...scalpExecConfig({})},client:v.client,contracts:async()=>new Map([['SOLUSDT',SOL]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'}],
+const scalpMake=(v,{clock,funds,budget})=>new ScalpExecutor({config:{...scalpExecConfig({}),management:'CURRENT'},client:v.client,contracts:async()=>new Map([['SOLUSDT',SOL]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'}],
  candles:async(s,iv)=>iv==='5m'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:up4h(clock.t),priceOf:async()=>PX,markOf:async()=>101,
  balance:async()=>funds,gate:()=>({ok:true}),isBusy:()=>false,directory:null,now:()=>clock.t,budget});
 
