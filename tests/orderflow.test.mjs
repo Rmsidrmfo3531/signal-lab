@@ -270,6 +270,29 @@ test('ScalpExecutor integrates orderflow boost: rescues 60pt setup via OI flush 
   assert.equal(exCvdOnly.store.open[0].scalpScore.score, 65);
   assert.equal(exCvdOnly.store.open[0].scalpScore.oiBonus ?? 0, 0);
   assert.equal(exCvdOnly.store.open[0].scalpScore.cvdBonus, 5);
+
+  // A boosted total is graded on the configured gate, like an unboosted one (review 2026-11-25: it was fixed at 80/70/65,
+  // so with a 66 gate a boosted 65 read "B급" while failing, and an unboosted 65 read "C급").
+  const v4 = mkVenue(close);
+  const exGate66 = new ScalpExecutor({
+    config: { ...scalpExecConfig({}), management: 'CURRENT', stopLossEnabled: false, scaleIn: false, makerEntry: false, minScore: 66 },
+    client: v4.client,
+    contracts: async () => new Map([['SOLUSDT', SOL], ['BTCUSDT', BTC]]),
+    tickers: async () => [{ symbol: 'SOL-USDT', quoteVolume: '90000000' }, { symbol: 'BTC-USDT', quoteVolume: '500000000' }],
+    candles: async (s, iv) => iv === '5m' ? (s === 'SOLUSDT' ? candles5m : []) : range4h,
+    orderflow: async () => ({ ok: true, source: 'BINANCE', oi: { change30mPct: 0.2 }, cvd: { lastDeltaNorm: 0.28 }, funding: { ratePct: 0.01 } }),
+    priceOf: async () => close, markOf: async () => close,
+    balance: async () => ({ equity: 3000, available: 2900 }),
+    now: () => T0,
+  });
+  exGate66.arm();
+  await exGate66.scan();
+  const gateSkip = exGate66.store.skips.at(-1);
+  assert.equal(exGate66.store.open.length, 0);
+  assert.equal(gateSkip.reason, 'SCORE_BELOW_MINIMUM');
+  assert.equal(gateSkip.score, 65);
+  assert.equal(gateSkip.cvdBonus, 5);
+  assert.equal(gateSkip.grade, 'C', 'below the 66 gate: C, as scoreScalpSetup grades 65 with a 66 gate');
 });
 
 test('scalpSessionMultiplier applies backtest-validated EU 0.5x, US/Late 1.15x, Asia 1.0x', async () => {

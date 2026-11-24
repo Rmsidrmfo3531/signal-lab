@@ -37,7 +37,7 @@ import {evaluateScalpOrderflowBoost,evaluateScalpSqueezeGuard} from './orderflow
 import {waitForFlat} from './live_orders.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,scalpMargin,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
-import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows,scoreScalpSetup,SCALP_SCORE_DEFAULTS} from './scalp_reversal.mjs';
+import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows,scoreScalpSetup,scalpScoreGrade,SCALP_SCORE_DEFAULTS} from './scalp_reversal.mjs';
 import {closedScalpBars,observeScalpStructure,WYCKOFF_CANDLES,WYCKOFF_INTERVAL_MS} from './scalp_wyckoff.mjs';
 import {vsaStatus} from './scalp_vsa.mjs';
 import {aiLensHigherTimeframe,aiLensRiskMap,aiLensStatus,LENS_HIGHER_INTERVAL_MS} from './scalp_ai_lens.mjs';
@@ -167,7 +167,7 @@ export function scalpExecConfig(env=process.env){
  // SCALP_EXEC_MODE: OFF | TESTNET (default; still disarmed until the dashboard button). Anything else,
  // LIVE included, is refused and leaves the scalps OFF.
  const raw=String(env.SCALP_EXEC_MODE??'').trim().toUpperCase(),known=raw===''||SCALP_EXEC_MODES.includes(raw);
- const minMovePct=n('SCALP_MIN_MOVE_PCT',SCALP_EXEC_SETTINGS.minMovePct,2.5,15);
+ const minMovePct=n('SCALP_MIN_MOVE_PCT',SCALP_EXEC_SETTINGS.minMovePct,2.5,15),scoreTiers=parseScalpScoreTiers(env.SCALP_SCORE_TIERS);
  return {mode:known?(raw||'TESTNET'):'OFF',refused:known?null:raw==='LIVE'?'LIVE_REFUSED':'MODE_INVALID',interval:'5m',sides:scalpSides(env.SCALP_EXEC_SIDES),
   settings:{...SCALP_EXEC_SETTINGS,minMovePct,retracements:[...SCALP_EXEC_SETTINGS.retracements]},
   minProfitRoePct:n('SCALP_MIN_PROFIT_ROE_PCT',SCALP_MIN_PROFIT_ROE_PCT,0,100),
@@ -230,7 +230,10 @@ export function scalpExecConfig(env=process.env){
   symbolDailyMaxLosses:n('SCALP_SYMBOL_DAILY_MAX_LOSSES',2,0,10),
   // Data-calibrated 100-point setup scoring (40-coin BingX 5m Train/OOS backtest): >=65 entry floor, gentle forward score tier sizing (0.75/1.0/1.2/1.4x, initial margin cap fixed).
   minScore:n('SCALP_MIN_SCORE',SCALP_SCORE_DEFAULTS.minScore,0,100),
-  highScore:n('SCALP_HIGH_SCORE',SCALP_SCORE_DEFAULTS.highScore,0,100),
+  // Tier edges SCALP_SCORE_TIERS="S,A+,A" (default 80,75,70); grade S follows tier S, grade A follows tier A unless
+  // SCALP_HIGH_SCORE is set (review 2026-11-25: one place for the edges the size tiers and the grades use).
+  scoreTiers:scoreTiers,topScore:scoreTiers.S,
+  highScore:n('SCALP_HIGH_SCORE',scoreTiers.A,0,100),
   highScoreSizeMult:n('SCALP_HIGH_SCORE_SIZE_MULT',SCALP_SCORE_DEFAULTS.highSizeMult,1,2),
   scoreTierSizing:!['off','false','0','no'].includes(String(env.SCALP_SCORE_TIER_SIZING??'').trim().toLowerCase()),
   // Backtest-validated orderflow boost (40 coins, Train/OOS): +5pt on 30m OI flush <=-1% + 1.5x sizing on strong CVD reversal flip (>15%).
@@ -337,14 +340,24 @@ export function scalpBounceMultiplier(retracedPct,config={}){
  return {active:true,confirmed,mult:confirmed?hi:lo,retracedPct:+r.toFixed(1)};
 }
 
-/** Backtest-validated gentle forward score tier sizing (40 coins 120d Train/OOS): 65~69 -> 0.75x, 70~74 -> 1.0x, 75~79 -> 1.2x, 80+ -> 1.4x (initial margin cap stays fixed). */
+/** Score tier lower edges and size multipliers (40 coins 120d Train/OOS): S 80+ 1.4x, A+ 75+ 1.2x, A 70+ 1.0x, below 0.75x. */
+export const SCALP_SCORE_TIERS=Object.freeze({S:80,'A+':75,A:70});
+export const SCALP_SCORE_TIER_MULTS=Object.freeze({S:1.4,'A+':1.2,A:1.0,B:0.75});
+const validTiers=t=>[t?.S,t?.['A+'],t?.A].every(x=>Number.isInteger(x)&&x>=1&&x<=100)&&t.S>=t['A+']&&t['A+']>=t.A;
+/** SCALP_SCORE_TIERS = "S,A+,A" lower edges in whole points (e.g. "86,81,76"), 1..100 with S >= A+ >= A; else the defaults. */
+export function parseScalpScoreTiers(raw){
+ if(raw===undefined||raw===null||String(raw).trim()==='')return {...SCALP_SCORE_TIERS};
+ const v=String(raw).trim().split(/[\s,/]+/).map(Number),t={S:v[0],'A+':v[1],A:v[2]};
+ return v.length===3&&validTiers(t)?t:{...SCALP_SCORE_TIERS};
+}
+/** Backtest-validated gentle forward score tier sizing: config.scoreTiers edges (default 80 / 75 / 70; initial margin cap stays fixed). */
 export function scalpScoreTierMultiplier(score,config={}){
  if(config?.scoreTierSizing===false||!Number.isFinite(Number(score)))return {active:false,tier:null,mult:1};
- const s=Number(score);
- if(s>=80)return {active:true,tier:'S',mult:1.4};
- if(s>=75)return {active:true,tier:'A+',mult:1.2};
- if(s>=70)return {active:true,tier:'A',mult:1.0};
- return {active:true,tier:'B',mult:0.75};
+ const s=Number(score),t=validTiers(config?.scoreTiers)?config.scoreTiers:SCALP_SCORE_TIERS,M=SCALP_SCORE_TIER_MULTS;
+ if(s>=t.S)return {active:true,tier:'S',mult:M.S};
+ if(s>=t['A+'])return {active:true,tier:'A+',mult:M['A+']};
+ if(s>=t.A)return {active:true,tier:'A',mult:M.A};
+ return {active:true,tier:'B',mult:M.B};
 }
 
 /** Pillar 1 — Volatility-targeted leverage (5m ATR%): <1.2% -> base (10x), 1.2~2.0% -> min(base, 7x), >=2.0% -> min(base, 5x). */
@@ -1060,7 +1073,7 @@ export class ScalpExecutor{
     const boost=evaluateScalpOrderflowBoost(ofSnap,det.direction,{oiBonus:oiBonusCfg,cvdBonus:cvdBonusCfg,cvdSizeMult:Number(this.config.orderflowCvdSizeMult??1.5)});
     if(boost.available){
      const nextScore=Math.min(100,scalpScore.score+(boost.oiBonus||0)+(boost.cvdBonus||0));
-     const nextGrade=nextScore>=80?'S':nextScore>=70?'A':nextScore>=65?'B':nextScore>=50?'C':'D';
+     const nextGrade=scalpScoreGrade(nextScore,scalpScore); // the gate / A / S edges scoreScalpSetup used
      const nextPass=minSc>0?nextScore>=minSc:true;
      const highScore=Number(this.config.highScore??SCALP_SCORE_DEFAULTS.highScore);
      const baseMult=bounce.active?bounce.mult:(tierEnabled?1:(nextScore>=highScore?Number(this.config.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult):1));
@@ -2974,7 +2987,7 @@ export class ScalpExecutor{
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,pumpAlerts:c.pumpAlerts!==false&&(c.mode==='TESTNET'||(c.mode==='LIVE'&&c.allowLive===true)),pumpWatchMin:PUMP_WATCH_MIN,
-    minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreTierSizing:c.scoreTierSizing!==false,scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
+    minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,topScore:c.topScore??SCALP_SCORE_DEFAULTS.topScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreTierSizing:c.scoreTierSizing!==false,scoreTiers:{...(c.scoreTiers??SCALP_SCORE_TIERS)},scoreTierMults:{...SCALP_SCORE_TIER_MULTS},scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
     emergencyStopRoePct:c.emergencyStopRoePct??75,hardStopRoePct:c.hardStopRoePct??0,minFreeAccountMarginPct:c.minFreeAccountMarginPct??0,maxSpreadPct:c.maxSpreadPct??0,preFundingWindowMin:c.preFundingWindowMin??0,preFundingExtremePct:c.preFundingExtremePct??0,scaleInRetrySlippagePct:c.scaleInRetrySlippagePct??SCALP_REPEAT_SCALE_IN.retrySlippagePct,scaleInMarketFallback:c.scaleInMarketFallback!==false,
     defensiveAddRoePct:c.defensiveAddRoePct??40,defensiveBouncePct:c.defensiveBouncePct??0.4,defensiveForceRoePct:c.defensiveForceRoePct??55,scaleInMinStepPct:c.scaleInMinStepPct??SCALP_REPEAT_SCALE_IN.minStepPct,scaleInMaxStepPct:c.scaleInMaxStepPct??SCALP_REPEAT_SCALE_IN.maxStepPct,scaleInSteps:SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),scaleInMults:SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),
     orderflowBoost:c.orderflowBoost!==false,orderflowOiBonus:c.orderflowOiBonus??5,orderflowCvdBonus:c.orderflowCvdBonus??5,orderflowCvdSizeMult:c.orderflowCvdSizeMult??1.5,
@@ -3002,7 +3015,7 @@ export class ScalpExecutor{
   const skipCounts=Object.fromEntries(Object.entries(this.store.skipCounts||{}).filter(([,v])=>Number.isFinite(Number(v))&&Number(v)>0).slice(0,30));
   return {
    mode:c.mode,armed:this.armed,blocked:this.#blocked(),scanning:this.scanning===true,
-   trendMode:c.trendMode,minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,
+   trendMode:c.trendMode,minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,scoreTiers:{...(c.scoreTiers??SCALP_SCORE_TIERS)},highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreUnifiedMove:c.scoreUnifiedMove!==false,
    symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,makerEntry:c.makerEntry!==false,scoreSummary:this.#scoreSummary(),
    aiLensRecord:c.mode==='TESTNET'&&c.wyckoffRecord===true&&Boolean(this.signalsFile),scaleInEnabled:c.scaleIn,stopLossEnabled:c.stopLossEnabled,
    repeatedScaleIn:c.scaleIn&&!c.stopLossEnabled&&this.#management()!==SCALP_MANAGEMENTS.LADDER,management:this.#management(),open:this.store.open.length,

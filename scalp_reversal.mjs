@@ -227,6 +227,13 @@ export function scoreCurve(x,points){
 // Whole points; toFixed(9) first so 7.4999999999 from float error rounds like 7.5.
 const pts=(x,points,max)=>{const y=scoreCurve(x,points);return y===null?0:Math.max(0,Math.min(max,Math.round(Number(y.toFixed(9)))))};
 
+/** Grade letter of a total: S >= topScore, A >= highScore, B >= minScore (at least 1), C >= 50, else D. One rule for
+ * the base score and the orderflow-boosted total. */
+export function scalpScoreGrade(score,{minScore=SCALP_SCORE_DEFAULTS.minScore,highScore=SCALP_SCORE_DEFAULTS.highScore,topScore=SCALP_SCORE_DEFAULTS.topScore}={}){
+ const s=Number(score);
+ return s>=topScore?'S':s>=highScore?'A':s>=Math.max(1,minScore)?'B':s>=50?'C':'D';
+}
+
 function trendRelation(direction,trend){
  if(trend!=='up'&&trend!=='down')return 'range';
  return trendAllows(direction,trend)?'aligned':'against';
@@ -272,11 +279,11 @@ export function scoreScalpSetup({direction='LONG',evidence={},trend4h=null,btcTr
 
  const breakdown={movePct,trend4h:trend4hPts,btcTrend4h:btcTrend4hPts,moveAtr,retracedPct,climaxVolume,netRR:netRRPts,rsiExtreme};
  const score=movePct+trend4hPts+btcTrend4hPts+moveAtr+retracedPct+climaxVolume+netRRPts+rsiExtreme;
- const grade=score>=topScore?'S':score>=highScore?'A':score>=Math.max(1,minScore)?'B':score>=50?'C':'D';
+ const grade=scalpScoreGrade(score,{minScore,highScore,topScore});
  const pass=minScore<=0||score>=minScore;
  const sizeMult=pass?(score>=highScore?highSizeMult:1):0;
  const shortBreakdown=`급변${movePct}·4H${trend4hPts}·BTC${btcTrend4hPts}·ATR${moveAtr}·반등${retracedPct}·거래량${climaxVolume}·RR${netRRPts}·RSI${rsiExtreme}`;
  const summary=`${score}점(${grade}급) · ${shortBreakdown}`;
- return {score,maxScore:100,grade,pass,minScore,highScore,sizeMult,breakdown,shortBreakdown,summary};
+ return {score,maxScore:100,grade,pass,minScore,highScore,topScore,sizeMult,breakdown,shortBreakdown,summary};
 }
 
