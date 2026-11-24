@@ -436,6 +436,8 @@ function readRealWallet(){
 }
 const copyControls=new CopyControls({directory:storage.dir,fileName:COPY.mode==='LIVE'?'copy-controls-live.json':'copy-controls.json'});
 copyTrader=new CopyExecutor({config:COPY,client:copyClient,controls:copyControls,fileName:COPY.mode==='LIVE'?'copy-store-live.json':'copy-store.json',auditOrders:COPY.mode==='LIVE',
+ // Manual first (user 2026-11-25): the manual ledger's open records are one of the signals of a manual position on a lane.
+ manualPositions:()=>COPY.mode==='LIVE'&&manualLedger?Object.values(manualLedger.store.positions):[], // read only after startup (copy_executor wraps the call)
  // Same name, 1000-coin contract or stock perpetual (SNDKUSDT -> NCSKSNDK2USD-USDT).
  // A coin missing or suspended in the cached list re-reads the list (new listings / delistings, 2026-11-16).
  contractOf:async symbol=>resolveCopyContract(await venueQuotes.clients.BINGX.contractsFor(symbol),symbol),
@@ -677,7 +679,7 @@ function copyNotice(e){
  if(e.mode==='LIVE'&&['SKIPPED','ADD_SKIPPED'].includes(e.type)&&accountAlerts&&!accountAlerts.shouldSendSkip(e))return;
  if(e.mode==='LIVE')void sendTradeTelegram(text);
 }
-const SCALP_LIVE_TG_EVENTS=new Set(['ARMED','DISARMED','OPENED','SCALE_IN_FILLED','PARTIAL_TAKE_PROFIT','CLOSED','EMERGENCY_ROE_STOP','MAX_HOLD_EXIT','STOP_FAILED','DAILY_LOSS_LIMIT','EMERGENCY_CLOSE_FAILED']);
+const SCALP_LIVE_TG_EVENTS=new Set(['MANUAL_FIRST','MANUAL_PROTECT_HOLD','ARMED','DISARMED','OPENED','SCALE_IN_FILLED','PARTIAL_TAKE_PROFIT','CLOSED','EMERGENCY_ROE_STOP','MAX_HOLD_EXIT','STOP_FAILED','DAILY_LOSS_LIMIT','EMERGENCY_CLOSE_FAILED']);
 function scalpLiveNotice(e){
  if(e?.type==='CLOSED'||e?.type==='OPENED')try{reportsDirty=true}catch{}
  const text=scalpEventText(e);if(!text)return;
@@ -958,7 +960,13 @@ if(COPY.mode==='LIVE'){
    await accountAlerts.checkPositionSummary({positions});
    if(realSafety)await realSafety.evaluateDailyLoss({equityUSD:eq,dailyByDay:dailyPnl?.status()?.byDay??null,positions});
    // Only a fresh, successful venue read; scalp-managed positions run their own trailing + exchange hard stop.
-   if(realTrailing&&Array.isArray(v?.venuePositions)&&!v.venuePositionsError)await realTrailing.evaluate(v.venuePositions.filter(p=>p.origin!=='scalp'));
+   // Manual first (user 2026-11-25): manual positions are managed only when the lane has no user TP / SL, so the open
+   // orders are read for the pass (a failed read leaves every manual position alone).
+   if(realTrailing&&Array.isArray(v?.venuePositions)&&!v.venuePositionsError){
+    const st=realTrailing.store,needOrders=st.enabled&&st.applyToManual&&v.venuePositions.some(p=>p.origin==='manual');
+    const openOrders=needOrders?await listRealOpenOrders({client:realBingxClient}).catch(()=>null):null;
+    await realTrailing.evaluate(v.venuePositions.filter(p=>p.origin!=='scalp'),Date.now(),{openOrders});
+   }
   }catch(e){console.warn('[ALERTS]',e.message)}
  };
  const checkDaily=async()=>{

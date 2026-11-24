@@ -1402,7 +1402,7 @@ test('live copy enters and adds when only unfilled resting manual LIMIT orders e
 
  v.setSize(10);
  orders=[{symbol:'TNSR-USDT',orderId:'m4',type:'LIMIT',side:'SELL',positionSide:'BOTH',executedQty:'0',status:'NEW'}];
- assert.equal((await ex.handle({id:7,date:1e12+6000,text:OPEN})).reason,'VENUE_POSITION_EXISTS','filled manual position must still block entry');
+ assert.equal((await ex.handle({id:7,date:1e12+6000,text:OPEN})).reason,'MANUAL_FIRST','filled manual position must still block entry (manual first, real account)');
 });
 
 test('live copy in hedge mode handles resting manual LIMIT order and venue setLeverage refusal safely within maxLeverage',async()=>{

@@ -15,6 +15,12 @@ import {CopyExecutor,copyConfig} from '../copy_executor.mjs';
 import {executeRealManualOrder} from '../real_manual_trade.mjs';
 import {AccountAlerts} from '../account_alerts.mjs';
 
+// Manual first (user 2026-11-25): a manual position is managed only when this pass read the open orders and its lane has
+// no user TP / SL. These tests are about the trailing rules themselves, so each pass sees an empty open-order list
+// unless a test passes its own (tests/manual_first.test.mjs covers the protection).
+{const evaluate=RealTrailingManager.prototype.evaluate;
+ RealTrailingManager.prototype.evaluate=function(positions,now,opts){return evaluate.call(this,positions,now,opts??{openOrders:[]})}}
+
 const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'sl-audit-'));
 const fastSleep=ms=>new Promise(r=>setTimeout(r,Math.min(Number(ms)||0,5)));
 
