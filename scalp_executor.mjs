@@ -2402,24 +2402,20 @@ export class ScalpExecutor{
   const L=p.ladder,dir=dirOf(p.direction),step=Number(p.quantityStep)||0;
   if(Number(this.config.hardStopRoePct)>0)await this.#ensureHardStop(p);
   else if(!await this.#retireStop(p))return;
+  // A take-profit order whose answer was lost: its outcome first, so its fill is booked before the size is compared
+  // (a partial fill was taken as a reduction here and then subtracted again: a phantom late add, review 2026-11-24).
+  if(L.exit){await this.#ladderExitCheck(p);if(p.status!=='OPEN')return}
   // A fill the ledger has not booked (an add answered after we gave up on it, a PostOnly child that rested): booked
   // as the next step, never added again. Less than booked: something else closed part of it, so no more adds.
-  if(size>L.size+step/2)this.#ladderBook(p,{qty:+(size-L.size).toFixed(12),size,avg:pos(row?.avgPrice),prevAvg:pos(L.avg)??pos(L.lastFill),prevSize:L.size,adopted:true});
-  else if(size<L.size-step/2){L.size=size;p.everReduced=true;if(L.state==='WATCH'){L.state='STOPPED';L.lastReason='POSITION_CHANGED'}this.#save()}
-  p.riskUSD=ladderHeldRisk(p);
-  if(L.exit&&!await this.#ladderExitCheck(p))return;
-  if(p.status!=='OPEN')return;
-  const lev=Math.max(1,Number(p.leverage)||10),roePct=mark>0&&p.avg>0?dir*(mark-p.avg)/p.avg*lev*100:null;
-  const line=Number(L.finalLineRoePct)||Number(this.config.emergencyStopRoePct)||0;
-  if(line>0&&roePct!==null&&roePct<=-line){
-   // After the last step this is the user's final line "(나) 마지막 선에서 정리"; before it, the existing emergency line.
-   const reason=L.filled>=L.units.length?'LADDER_FINAL_LINE':'EMERGENCY_ROE_STOP';
-   p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'em'+p.exitTries);
-   p.exitReason=reason;p.closeMeta={roePct:+roePct.toFixed(1),limitPct:line,step:L.filled,of:L.units.length};
-   this.#event(reason,{symbol:p.symbol,direction:p.direction,roePct:+roePct.toFixed(1),limitPct:line,step:L.filled,of:L.units.length});
-   if(!(r.size>0))await this.#finish(p,reason);
-   return;
+  // Not while the take-profit outcome is unknown, and not after it filled (a position read that lags is not an add).
+  if(!L.exit){
+   if(size>L.size+step/2){if(p.exitReason!=='LADDER_TAKE_PROFIT')this.#ladderBook(p,{qty:+(size-L.size).toFixed(12),size,avg:pos(row?.avgPrice),prevAvg:pos(L.avg)??pos(L.lastFill),prevSize:L.size,adopted:true})}
+   else if(size<L.size-step/2){L.size=size;p.everReduced=true;if(L.state==='WATCH'){L.state='STOPPED';L.lastReason='POSITION_CHANGED'}this.#save()}
   }
+  p.riskUSD=ladderHeldRisk(p);
+  // The final line runs whatever else is unresolved (review 2026-11-24: it used to wait for the take-profit lookup).
+  if(await this.#ladderFinalLine(p,{size,mark,avg:p.avg}))return;
+  const lev=Math.max(1,Number(p.leverage)||10),roePct=mark>0&&p.avg>0?dir*(mark-p.avg)/p.avg*lev*100:null;
   const opened=p.openedAt??p.createdAt,maxHoldMin=Number(L.maxHoldMin)||0;
   if(maxHoldMin>0&&opened>0&&this.now()-opened>=maxHoldMin*60000){
    p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'mh'+p.exitTries);
@@ -2429,8 +2425,29 @@ export class ScalpExecutor{
    if(!(r.size>0))await this.#finish(p,'LADDER_MAX_HOLD');
    return;
   }
+  // The take-profit order's outcome still unknown: no new order on this position until it is known.
+  if(L.exit)return;
   if(await this.#ladderTakeProfit(p,mark,size))return;
   await this.#ladderAdd(p,mark);
+ }
+ /** The final line: -finalLineRoePct % ROE on the position margin (venue average and mark), closed at market. After the
+  * last step it is the user's "(나) 마지막 선에서 정리"; before it, the existing emergency line. true when it fired.
+  * Also run while an add is pending (review 2026-11-24): that add's PostOnly child is cancelled first so it cannot reopen
+  * the position, and the ledger is closed only once the attempt is resolved (#ladderSettle), never before. */
+ async #ladderFinalLine(p,{size,mark,avg}){
+  const L=p.ladder,lev=Math.max(1,Number(p.leverage)||10),a=pos(avg)??pos(p.avg);
+  const roePct=size>0&&mark>0&&a>0?dirOf(p.direction)*(mark-a)/a*lev*100:null;
+  const line=Number(L.finalLineRoePct)||Number(this.config.emergencyStopRoePct)||0;
+  if(!(line>0&&roePct!==null&&roePct<=-line))return false;
+  const pending=L.pending||null;
+  if(pending)await this.#ladderCancelAttempt(p,pending);
+  const reason=L.filled>=L.units.length?'LADDER_FINAL_LINE':'EMERGENCY_ROE_STOP';
+  p.exitTries=(p.exitTries||0)+1;const r=await this.#market(p,'em'+p.exitTries);
+  p.exitReason=reason;p.closeMeta={roePct:+roePct.toFixed(1),limitPct:line,step:L.filled,of:L.units.length,...(pending?{pendingStep:pending.step}:{})};
+  this.#event(reason,{symbol:p.symbol,direction:p.direction,roePct:+roePct.toFixed(1),limitPct:line,step:L.filled,of:L.units.length});
+  if(!pending&&!(r.size>0))await this.#finish(p,reason);
+  else this.#save();
+  return true;
  }
  /** Whole position at the average + tpNetPct % net of fees: a reduce-only IOC limit AT the take-profit price (never a
   * worse fill), sent when the mark is there. Unfilled: tried again at the next check. */
@@ -2467,10 +2484,11 @@ export class ScalpExecutor{
  }
  /** A take-profit order sent without an answer: its outcome by client id. true = the check may go on. */
  async #ladderExitCheck(p){
-  const L=p.ladder;let o=null;
-  try{o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:L.exit.clientOrderId}))}
-  catch(e){if(orderAbsent(e)){delete L.exit;this.#save();return true}return false}
-  if(!o){if(this.now()-(L.exit.at||0)>120000){delete L.exit;this.#save();return true}return false}
+  const L=p.ladder,old=this.now()-(L.exit.at||0)>120000;let o=null;
+  // Not readable for 2 minutes: forgotten; the position size then tells what is left (a fill shows as a reduction).
+  try{o=ladderOrderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:L.exit.clientOrderId}))}
+  catch(e){if(orderAbsent(e)||old){delete L.exit;this.#save();return true}return false}
+  if(!o){if(old){delete L.exit;this.#save();return true}return false}
   await this.#ladderExitResult(p,o);
   return p.status==='OPEN'&&!L.exit;
  }
@@ -2649,7 +2667,13 @@ export class ScalpExecutor{
      this.reconcilingSymbol=p.symbol;
     try{
      // A ladder add sent but not booked (also after a restart): settled from the venue position first, never sent again.
-     if(isLadder(p)&&p.ladder.pending){await this.#ladderSettle(p);continue}
+     // Still pending afterwards: the final line keeps protecting the position meanwhile (review 2026-11-24: it was
+     // skipped for up to 2 minutes, longer while the position read failed).
+     if(isLadder(p)&&p.ladder.pending){
+      await this.#ladderSettle(p);
+      if(p.ladder.pending&&p.status==='OPEN'){const {size,row}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true);await this.#ladderFinalLine(p,{size,mark:pos(row?.markPrice),avg:pos(row?.avgPrice)})}
+      continue;
+     }
      if(p.scaleIn?.state==='PENDING'||p.scaleIn?.state==='RESIZE'){
       if(this.config.stopLossEnabled===false&&!(Number(this.config.hardStopRoePct)>0))await this.#retireStop(p);
       await this.#recoverAdd(p);continue;

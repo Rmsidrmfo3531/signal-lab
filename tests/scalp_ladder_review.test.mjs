@@ -96,3 +96,43 @@ test('a step is never given back while its PostOnly child may rest: after an out
  assert.ok(q.ladder.filled<=q.ladder.units.length,`filled ${q.ladder.filled} steps of ${q.ladder.units.length}`);
  assert.equal(late,false,'the first PostOnly child was still resting after the step was given back and retried');
 });
+
+test('while an add is pending the final line still closes the position (no 2-minute gap)',async()=>{
+ const {v,clock,ex,p}=await opened({venue:{dropAdd:true}});
+ const first=p.avg;
+ setMark(v,below(first*.985));clock.t+=10000;await ex.reconcile();
+ assert.ok(p.ladder.pending,'the add answer was lost: pending');
+ // 30 s later the price is past the -75 % ROE line of the position (10x: 7.5 % under the average).
+ setMark(v,+(first*(1-.08)).toFixed(2));clock.t+=30000;await ex.reconcile();
+ const closes=v.calls.filter(c=>c.type==='MARKET'&&c.reduceOnly);
+ assert.equal(closes.length,1,'closed at the final line while the add was pending');
+ assert.equal(v.st(VS).amt,0);
+ // The ledger closes once the add attempt is resolved, with the emergency reason.
+ for(let i=0;i<8;i++){clock.t+=30000;await ex.reconcile()}
+ assert.equal(ex.store.open.length,0);assert.equal(ex.store.closed[0].closeReason,'EMERGENCY_ROE_STOP');
+ assert.equal(v.calls.filter(c=>c.type==='MARKET'&&!c.reduceOnly&&/L\d+n\d+$/.test(c.clientOrderId)).length,1,'no add retried after the close');
+});
+
+test('a take-profit answer lost after a partial fill: booked once, no phantom add',async()=>{
+ const {v,clock,ex,p}=await opened({venue:{iocPartialLost:true}});
+ setMark(v,below(p.avg*.985));clock.t+=10000;await ex.reconcile();assert.equal(p.ladder.filled,2);
+ const size=p.size;
+ setMark(v,+(p.avg*1.02).toFixed(2));clock.t+=10000;await ex.reconcile();
+ assert.ok(p.ladder.exit,'TP answer lost: looked up next');
+ // The IOC lookup works on the next checks (EXPIRED with half filled).
+ setMark(v,+(p.avg*1.001).toFixed(2));clock.t+=10000;await ex.reconcile();clock.t+=10000;await ex.reconcile();
+ assert.equal(ex.store.events.filter(e=>e.type==='LADDER_ADD').length,1,'only the real add (step 2): no late-fill phantom');
+ assert.equal(p.ladder.filled,2);
+ assert.ok(Math.abs(p.ladder.size-v.st(VS).amt)<1e-9,`ledger ${p.ladder.size} vs venue ${v.st(VS).amt}`);
+ assert.ok(v.st(VS).amt<size);
+});
+
+test('a take-profit answer lost and its lookup failing: the final line still closes the position',async()=>{
+ const {v,clock,ex,p}=await opened({venue:{iocPartialLost:true}});
+ setMark(v,+(p.avg*1.02).toFixed(2));clock.t+=10000;await ex.reconcile();
+ assert.ok(p.ladder.exit,'TP answer lost');
+ v.net.getOrderDown=true;
+ setMark(v,+(p.avg*(1-.08)).toFixed(2));clock.t+=10000;await ex.reconcile();
+ assert.equal(v.st(VS).amt,0,'closed at the line although the TP lookup fails');
+ assert.equal(ex.store.events.filter(e=>e.type==='EMERGENCY_ROE_STOP').length,1);
+});
