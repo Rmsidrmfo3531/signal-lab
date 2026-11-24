@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
-import {ScalpExecutor,scalpExecConfig,scalpSplits,planScalpOrder,scalpUniverse,scalpClientId,scalpSides,signedAmount,SCALP_EXEC_COSTS,SCALP_EXEC_SETTINGS} from '../scalp_executor.mjs';
+import {ScalpExecutor,scalpExecConfig,scalpSplits,planScalpOrder,scalpUniverse,scalpClientId,scalpSides,signedAmount,scalpAdaptiveLeverage,SCALP_EXEC_COSTS,SCALP_EXEC_SETTINGS} from '../scalp_executor.mjs';
 import {scalpEventText,scalpReasonKo} from '../scalp_telegram.mjs';
 import {detectScalpReversal,SCALP_TIMEFRAMES} from '../scalp_reversal.mjs';
 import {BACKTEST_COSTS} from '../backtest.mjs';
@@ -75,7 +75,7 @@ function venue({hedge=false,modeFail=false,failStop=false,maxLev=20,fillAt=PX,fi
   fill(o,price){o.status='FILLED';o.executedQty=o.quantity??String(Math.abs(amt));o.avgPrice=String(price??o.stopPrice);reduce(Number(o.executedQty))}};
 }
 function make(v,{clock={t:T0},price=PX,funds={equity:10000,available:9000},gate=()=>({ok:true}),isBusy=()=>false,dir=null,trend=up4h,contract=SOL,config={},rows=crash,budget=null,zone=null}={}){
- return new ScalpExecutor({config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,minScore:0,highScoreSizeMult:1,riskPct:.5,makerEntry:false,minProfitRoePct:10,partialTakeFrac:.5,earlyFallbackMin:15,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
+ return new ScalpExecutor({config:{...scalpExecConfig({}),stopLossEnabled:true,scaleIn:false,minScore:0,highScoreSizeMult:1,riskPct:.5,makerEntry:false,makerExit:false,scaleInMinStepPct:0,profitOnlyTargetMarginPct:0,minProfitRoePct:10,partialTakeFrac:.5,earlyFallbackMin:15,...config},client:v.client,contracts:async()=>new Map([['SOLUSDT',contract]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'NCSKAAPL2USD-USDT',quoteVolume:'1e12'}],
   candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:trend(clock.t),priceOf:async()=>typeof price==='function'?price():price,markOf:async()=>101,
   balance:async()=>typeof funds==='function'?funds():funds,gate,isBusy,directory:dir,now:()=>clock.t,budget,...(zone?{zoneCandles:zone}:{})});
 }
@@ -332,10 +332,12 @@ test('detection on synthetic closed 5m candles -> plan: 38.2/50/61.8 % targets, 
  const {extreme,origin}=det.evidence,move=origin-extreme;
  assert.ok([.382,.5,.618].every((f,i)=>Math.abs(det.targets[i]-(extreme+f*move))<1e-9));
  assert.equal(detectScalpReversal(crash({move:2.5,wick:.2}),{now:T0,interval:'5m',settings:cfg.settings}).ok,false,'a ~2.7 % drop is below the 3.5 % setting');
- const plan=planScalpOrder({det,price:det.entry+.02,contract:SOL,equity:10000,available:9000,leverage:10,config:cfg});
+ const plan=planScalpOrder({det,price:det.entry+.02,contract:SOL,equity:10000,available:9000,leverage:10,config:{...cfg,stopLossEnabled:true}});
  assert.equal(plan.ok,true,JSON.stringify(plan));assert.ok(plan.stop<extreme&&plan.entry>plan.stop&&plan.targets[0]>plan.entry);
  assert.ok(Math.abs(plan.riskUSD-75)<.3,'0.75 % of 10,000 at the stop');assert.ok(plan.netRR>=1);
  assert.ok(Math.abs(plan.parts.reduce((a,b)=>a+b,0)-plan.qty)<1e-9);assert.equal(plan.parts[0],Number((Math.floor(plan.qty*100*.4)/100).toFixed(2)));
+ const profitOnlyPlan=planScalpOrder({det,price:det.entry+.02,contract:SOL,equity:10000,available:9000,leverage:10,config:cfg});
+ assert.equal(profitOnlyPlan.ok,true);assert.ok(Math.abs(profitOnlyPlan.marginUSD-300)<1,'profit-only mode sizes by 3 % target initial margin');
  assert.deepEqual(planScalpOrder({det,price:det.entry*.994,contract:SOL,equity:10000,leverage:10,config:{...cfg,stopLossEnabled:true}}).reasons,['PRICE_DRIFT'],'0.6 % toward the stop with stop-loss on: skipped');
  assert.equal(planScalpOrder({det,price:det.entry*.994,contract:SOL,equity:10000,leverage:10,config:cfg}).ok,true,'stop-loss off: better price above extreme is allowed');
  assert.deepEqual(planScalpOrder({det,price:det.entry,contract:SOL,equity:10000,leverage:10,config:{...cfg,stopLossEnabled:true,minNetRR:50}}).reasons,['TP1_NET_RR_BELOW_MINIMUM']);
@@ -624,7 +626,7 @@ test('sides: SCALP_EXEC_SIDES (default both), one-way position sign',()=>{
 });
 
 test('SHORT detection -> plan: stop above the high (rounded up), 38.2/50/61.8 % targets below the entry, same risk',()=>{
- const cfg=scalpExecConfig({SCALP_SCALE_IN:'off'}),det=detectScalpReversal(rise(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ const cfg=scalpExecConfig({SCALP_SCALE_IN:'off',SCALP_STOP_LOSS:'on'}),det=detectScalpReversal(rise(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
  assert.equal(det.ok,true,JSON.stringify(det.reasons));assert.equal(det.direction,'SHORT');
  const {extreme,origin}=det.evidence,move=extreme-origin;
  assert.ok([.382,.5,.618].every((f,i)=>Math.abs(det.targets[i]-(extreme-f*move))<1e-9));
@@ -1255,7 +1257,7 @@ test('repeat scale-in IOC handles thin-book partial fills, 101429 auto-downsize,
  }
 });
 
-test('scaled-in positions lock in 50% at +6% Net ROE and trail remaining 50% runner with 30% peak pullback',async()=>{
+test('scaled-in positions lock in 40% at +8% Net ROE and trail remaining 60% runner with 25% peak pullback',async()=>{
  const v=venue(),clock={t:T0};
  let price=PX;
  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15}});
@@ -1273,12 +1275,12 @@ test('scaled-in positions lock in 50% at +6% Net ROE and trail remaining 50% run
  await ex.reconcile();
  assert.equal(ex.store.open.length,1,'scaled-in position does not exit at +1.9% ROE');
  assert.equal(p.trailPeakRoePct,null);
- // Rebound to +1.0% move (~+8.4% net ROE >= +6%): locks in 50% profit immediately and keeps 50% runner open!
+ // Rebound to +1.0% move (~+8.4% net ROE >= +8%): locks in 40% profit immediately and keeps 60% runner open!
  clock.t+=5000;v.mark=+(avg*1.010).toFixed(2);
  await ex.reconcile();
- assert.equal(ex.store.open.length,1,'50% runner stays open after partial lock-in');
+ assert.equal(ex.store.open.length,1,'60% runner stays open after partial lock-in');
  assert.equal(p.scaleInPartialTaken,true);
- assert.ok(Math.abs(v.size-fullSize*0.5)<0.05,'half position closed to lock profit');
+ assert.ok(Math.abs(v.size-fullSize*0.6)<0.05,'40% closed to lock profit, 60% runner kept');
  assert.ok(p.trailPeakRoePct>=8,'peak ROE tracked');
  assert.equal(ex.runtimeSummary().scaleInPositions[0].partialProfitTaken,true);
  // Runner keeps climbing to +1.6% move (~+14.4% net ROE): raises peak and keeps riding!
@@ -1286,10 +1288,10 @@ test('scaled-in positions lock in 50% at +6% Net ROE and trail remaining 50% run
  await ex.reconcile();
  assert.equal(ex.store.open.length,1,'runner rides higher rebound');
  assert.ok(p.trailPeakRoePct>=14);
- // Pulls back 30%+ from peak (~+14.4% -> +9.4% net ROE <= ~10.1% runner trail stop): exits remaining 50% cleanly!
+ // Pulls back 25%+ from peak (~+14.4% -> +9.4% net ROE <= ~10.8% runner trail stop): exits remaining 60% cleanly!
  clock.t+=5000;v.mark=+(avg*1.0110).toFixed(2);
  await ex.reconcile();
- assert.equal(v.size,0,'runner closed on 30% pullback from peak');
+ assert.equal(v.size,0,'runner closed on 25% pullback from peak');
  clock.t+=5000;await ex.reconcile();clock.t+=5000;await ex.reconcile();
  assert.equal(ex.store.open.length,0);
  assert.equal(ex.store.closed[0].closeReason,'EARLY_TAKE_PROFIT');
@@ -1471,8 +1473,8 @@ test('closed testnet trades expose add count (추매) in status, UI table/list, 
  assert.match(html,/비상 손절 \(-45\.0% \/ 한도 -40%\)/);
 });
 
-test('defensive 1st scale-in fires at -40% ROE (0.75x) instead of stopping out, while -75% catastrophe stop takes priority',async()=>{
- // 1) Wide-1R SHORT hits -42% ROE (+4.2% move at 10x) before reaching 1R -> executes defensive 1st 0.75x add (no stop-out!)
+test('defensive 1st scale-in arms at -40% ROE and fires (0.75x) on +0.4% bounce confirmation, while -75% catastrophe stop takes priority',async()=>{
+ // 1) Wide-1R SHORT hits -42% ROE (+4.2% move at 10x) -> arms defensive add, waits for +0.4% bounce -> executes 0.75x add
  {
   const v=venue({fillAt:PX_S}),clock={t:T0};
   let price=PX_S;
@@ -1482,21 +1484,28 @@ test('defensive 1st scale-in fires at -40% ROE (0.75x) instead of stopping out, 
   // Widen initialStop so 1R is 6% (beyond +4.2% defensive trigger, like HUSDT)
   p.initialStop=+(p.avg*1.06).toFixed(2);
   const expectedAdd=Math.floor(first*0.75*100)/100;
-  // Move +4.2% against SHORT (-42% ROE) just 3 minutes after entry (same 5m candle!)
+  // Move +4.2% against SHORT (-42% ROE) just 3 minutes after entry (same 5m candle!): arms but waits for bounce confirmation
   clock.t+=3*60000;
   price=+(p.avg*1.042).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(p.defensiveArmed,true,'armed at -42% ROE');
+  assert.equal(p.scaleIn.count,0,'waits for +0.4% bounce off local extreme before adding');
+  // Price pulls back -0.5% in SHORT's favor (bounce confirmation >= +0.4% off extreme, still ~-36.8% ROE): executes defensive add!
+  clock.t+=10000;
+  price=+(price*0.995).toFixed(2);v.mark=price;
   await ex.reconcile();
   assert.equal(ex.store.open.length,1,'position stays open via defensive scale-in instead of early stop');
   assert.equal(ex.store.closed.length,0);
   assert.equal(p.scaleIn.count,1);
+  assert.equal(p.defensiveArmed,false,'disarmed after defensive add fills');
   assert.ok(Math.abs(p.scaleIn.orders[0].qty-expectedAdd)<1e-6);
   assert.equal(p.scaleIn.orders[0].defensive,true);
-  assert.ok(p.scaleIn.orders[0].defensiveRoePct<=-40);
+  assert.ok(p.scaleIn.orders[0].defensiveRoePct<=-30);
   assert.ok(p.avg>PX_S,'short average improved upward after defensive add');
   const addEv=ex.store.events.find(e=>e.type==='SCALE_IN_FILLED');
   assert.equal(addEv?.defensive,true);
   const tg=scalpEventText(addEv);
-  assert.match(tg,/🛡️.*방어 추매 1회차 \(-42\.0% ROE 방어\)/);
+  assert.match(tg,/🛡️.*방어 추매 1회차 \(-\d+\.\d+% ROE 방어\)/);
   // 2) Further move to -78% ROE from new improved average -> catastrophe EMERGENCY_ROE_STOP closes position
   clock.t+=I;
   price=+(p.avg*1.078).toFixed(2);v.mark=price;
@@ -1581,9 +1590,13 @@ test('defensive -40% ROE scale-in respects falling-knife marubozu guard',async()
  p.initialStop=+(p.avg*0.94).toFixed(2);
  const prevCandles=ex.candles;
  ex.candles=(sym,tf,n)=>tf==='5m'&&n===3?Promise.resolve(marubozuDump()):prevCandles(sym,tf,n);
- // Drop -4.3% (-43% ROE) while latest closed 5m bar is a vertical red marubozu -> deferred as FALLING_KNIFE
+ // Drop -4.3% (-43% ROE) arms defensive add; bouncing +0.5% tries to fire but latest closed 5m bar is a vertical red marubozu -> deferred as FALLING_KNIFE
  clock.t+=2*60000;
  price=+(p.avg*0.957).toFixed(2);v.mark=price;
+ await ex.reconcile();
+ assert.equal(p.defensiveArmed,true);
+ clock.t+=10000;
+ price=+(price*1.005).toFixed(2);v.mark=price;
  await ex.reconcile();
  assert.equal(p.scaleIn.count,0,'must not fire defensive add into a vertical marubozu dump');
  assert.equal(p.scaleIn.lastReason,'FALLING_KNIFE');
@@ -1862,3 +1875,212 @@ test('pump alert: a burst of 17 alerts — one evaluation at a time, one positio
  assert.ok(open.every(p=>p.trigger==='PUMP_ALERT'));
  assert.deepEqual([open.length,ex.store.skipCounts.MARGIN_CAP],[3,14],'three fit under the 3 % cap, the other 14 refused');
 });
+
+test('Pillar 1: ATR-adaptive leverage (5x/7x/10x) scales down volatile coins and survives -9% MAE without catastrophe stop',async()=>{
+ // Pure tier tests
+ assert.equal(scalpAdaptiveLeverage({atr:0.8,price:100,baseLeverage:10}),10,'ATR 0.8% (<1.2%) -> 10x');
+ assert.equal(scalpAdaptiveLeverage({atr:1.5,price:100,baseLeverage:10}),7,'ATR 1.5% (1.2~2.0%) -> 7x');
+ assert.equal(scalpAdaptiveLeverage({atr:2.98,price:100,baseLeverage:10}),5,'ATR 2.98% (>=2.0%, ARIAUSDT) -> 5x');
+ assert.equal(scalpAdaptiveLeverage({atr:1.5,price:100,baseLeverage:10,maxLeverage:6}),6,'respects venue maxLeverage cap');
+ assert.equal(scalpAdaptiveLeverage({atr:3.0,price:100,baseLeverage:10,config:{adaptiveLeverage:false}}),10,'off -> baseLeverage');
+
+ // Integration: high-ATR (~2.8%) synthetic crash enters at 5x and survives -9.2% MAE (-46% ROE < -75% catastrophe stop)
+ const hiAtrCrash=()=>{
+  const rows=[];let p=100;const push=(o,h,l,c,v)=>rows.push([0,o,h,l,c,v]),lastOpen=(BUCKET-1)*I;
+  for(let i=0;i<50;i++){const o=p,c=p+(i%2?1.2:-1.2);push(o,Math.max(o,c)+1.4,Math.min(o,c)-1.4,c,100);p=c}
+  for(let i=0;i<4;i++){const o=p,c=p-3.5;push(o,o+.2,c-.4,c,1000*(i===3?1:.5));p=c}
+  push(p,p+.4,p-2.5,p+.3,800);
+  return rows.map((r,i)=>{const t=lastOpen-(rows.length-1-i)*I;return [t,...r.slice(1,6).map(String),t+I-1,String(r[5]*r[4])]});
+ };
+ const hiRows=hiAtrCrash(),hiPx=+(Number(hiRows.at(-1)[4])+.02).toFixed(2);
+ const v=venue({fillAt:hiPx}),clock={t:T0};
+ const ex=make(v,{clock,price:hiPx,rows:hiAtrCrash,config:{stopLossEnabled:false,scaleIn:false,adaptiveLeverage:true,emergencyStopRoePct:75}});
+ ex.arm();assert.equal((await ex.scan()).entered,1,JSON.stringify(ex.store.skips));
+ const p=ex.store.open[0];
+ assert.equal(p.leverage,5,'high-ATR symbol entered at 5x leverage');
+ assert.equal(v.calls.find(c=>c.op==='lev')?.l,5,'venue setLeverage called with 5x');
+ // Drop -9.2% (at 10x this would be -92% ROE -> stopped out; at 5x it is -46% ROE -> survives!)
+ clock.t+=10000;v.mark=+(p.avg*0.908).toFixed(2);
+ await ex.reconcile();
+ assert.equal(ex.store.open.length,1,'survives -9.2% MAE at 5x without hitting -75% catastrophe stop');
+ assert.equal(ex.store.closed.length,0);
+});
+
+test('Pillar 2: clamped scale-in step [1.2%, 3.0%], 15s NOT_FILLED retry + MARKET fallback, and defensive disarm / -55% backstop',async()=>{
+ // 1) Tight raw 1R (0.4%) clamped UP to 1.2%; wide raw 1R (4.5%) clamped DOWN to 3.0%
+ {
+  const v=venue(),clock={t:T0};
+  let price=PX;
+  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,scaleInMinStepPct:1.2,scaleInMaxStepPct:3.0,riskPct:.15,defensiveAddRoePct:0,emergencyStopRoePct:0}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  p.initialStop=+(p.avg*0.996).toFixed(2); // 0.4% tight stop -> clamped up to 1.2%
+  clock.t+=I;price=+(p.avg*0.994).toFixed(2);v.mark=price; // -0.6% < 1.2%
+  await ex.reconcile();
+  assert.equal(p.scaleIn.count,0,'tight 0.4% 1R clamped up to 1.2%: no noise add at -0.6%');
+  price=+(p.avg*0.987).toFixed(2);v.mark=price; // -1.3% >= 1.2%
+  await ex.reconcile();
+  assert.equal(p.scaleIn.count,1,'fires once clamped 1.2% step is reached');
+
+  // Wide 4.5% stop clamped DOWN to 3.0% (2nd step = 1.5 * 3.0% = 4.5%, not 1.5 * 4.5% = 6.75%)
+  p.initialStop=+(p.scaleIn.initialEntry*0.955).toFixed(2);
+  clock.t+=I;
+  price=+(p.scaleIn.anchor-p.scaleIn.initialEntry*0.046).toFixed(2);v.mark=price;
+  await ex.reconcile();
+  assert.equal(p.scaleIn.count,2,'wide 4.5% 1R clamped down to 3.0% base step');
+ }
+
+ // 2) NOT_FILLED retries after 15s inside the SAME 5m candle and falls back to MARKET if widened retry IOC still expires
+ {
+  const v=venue({fillAdd:false}),clock={t:T0};
+  let price=PX;
+  const ex=make(v,{clock,price:()=>price,config:{stopLossEnabled:false,scaleIn:true,scaleInMinStepPct:1.2,scaleInMarketFallback:true,riskPct:.15,defensiveAddRoePct:0,emergencyStopRoePct:0}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  clock.t+=I;
+  // Simulate VST divergence: venue mark is -1.5% below entry while live priceOf is still near entry
+  v.mark=+(p.avg*0.985).toFixed(2);price=+(p.avg*0.998).toFixed(2);
+  await ex.reconcile();
+  assert.equal(p.scaleIn.count,0,'first IOC expired unfilled');
+  assert.equal(p.scaleIn.lastReason,'NOT_FILLED');
+  assert.equal(p.scaleIn.checkedBucket,null,'NOT_FILLED unlocks the 5m bucket for fast retry');
+  assert.equal(p.scaleIn.retryAfterAt,clock.t+15000,'retry scheduled 15s later');
+  // 10s later: still cooling down (no retry yet)
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(placed(v,'LIMIT').length,1);
+  // +6s later (total 16s, STILL inside same 5m candle): widened IOC expires -> immediate MARKET fallback fills!
+  clock.t+=6000;await ex.reconcile();
+  assert.equal(placed(v,'LIMIT').length,2,'widened retry IOC attempted');
+  assert.equal(placed(v,'MARKET').length,2,'initial entry + MARKET fallback add executed');
+  assert.equal(p.scaleIn.count,1,'scale-in succeeded via MARKET fallback');
+ }
+
+ // 3) Defensive add: self-recovery above -30% ROE disarms; -55% ROE backstop force-fires even without bounce
+ {
+  const v=venue({fillAt:PX_S}),clock={t:T0};
+  let price=PX_S;
+  const ex=make(v,{clock,price:()=>price,trend:down4h,rows:rise,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15,defensiveAddRoePct:40,defensiveBouncePct:0.4,defensiveForceRoePct:55,emergencyStopRoePct:75}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  p.initialStop=+(p.avg*1.08).toFixed(2);
+  // Arm at -42% ROE -> recover to -25% ROE (above -30% disarm) -> disarmed without adding
+  clock.t+=2*60000;price=+(p.avg*1.042).toFixed(2);v.mark=price;await ex.reconcile();
+  assert.equal(p.defensiveArmed,true);assert.equal(p.scaleIn.count,0);
+  clock.t+=10000;price=+(p.avg*1.025).toFixed(2);v.mark=price;await ex.reconcile();
+  assert.equal(p.defensiveArmed,false,'disarmed on self-recovery above -30% ROE');
+  assert.equal(p.scaleIn.count,0);
+  // Straight flush to -56% ROE with zero bounce -> -55% backstop force-fires defensive add
+  clock.t+=10000;price=+(p.avg*1.056).toFixed(2);v.mark=price;await ex.reconcile();
+  assert.equal(p.scaleIn.count,1,'-55% ROE backstop force-fired defensive add without waiting for bounce');
+  assert.equal(p.scaleIn.orders[0].defensive,true);
+ }
+});
+
+test('Pillar 3: profit-only mode sizes directly by target initial margin (independent of phantom stop width)',()=>{
+ const cfg=scalpExecConfig({});
+ const baseDet=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
+ assert.equal(baseDet.ok,true);
+ const tightStop={...baseDet,stop:+(baseDet.entry*0.996).toFixed(2)}; // 0.4% tight 1R
+ const wideStop={...baseDet,stop:+(baseDet.entry*0.955).toFixed(2)};  // 4.5% wide 1R
+ const pTight=planScalpOrder({det:tightStop,price:baseDet.entry,contract:SOL,equity:3000,available:3000,leverage:10,config:cfg});
+ const pWide=planScalpOrder({det:wideStop,price:baseDet.entry,contract:SOL,equity:3000,available:3000,leverage:10,config:cfg});
+ assert.equal(pTight.ok,true);assert.equal(pWide.ok,true);
+ assert.ok(Math.abs(pTight.marginUSD-90)<1,`tight-1R gets ~$90 (3% of $3k), got ${pTight.marginUSD}`);
+ assert.ok(Math.abs(pWide.marginUSD-90)<1,`wide-1R gets ~$90 (3% of $3k), got ${pWide.marginUSD}`);
+ // S-grade (1.4x) gets ~$126, B-grade (0.75x) gets ~$67.5, extreme mult capped at $150 (maxMarginPct/2)
+ const pS=planScalpOrder({det:wideStop,price:baseDet.entry,contract:SOL,equity:3000,available:3000,leverage:5,config:{...cfg,riskPct:cfg.riskPct*1.4}});
+ const pB=planScalpOrder({det:wideStop,price:baseDet.entry,contract:SOL,equity:3000,available:3000,leverage:5,config:{...cfg,riskPct:cfg.riskPct*0.75}});
+ const pCap=planScalpOrder({det:wideStop,price:baseDet.entry,contract:SOL,equity:3000,available:3000,leverage:5,config:{...cfg,riskPct:cfg.riskPct*2.5}});
+ assert.ok(Math.abs(pS.marginUSD-126)<1,`S-grade 1.4x -> ~$126, got ${pS.marginUSD}`);
+ assert.ok(Math.abs(pB.marginUSD-67.5)<1,`B-grade 0.75x -> ~$67.5, got ${pB.marginUSD}`);
+ assert.ok(pCap.capped&&pCap.marginUSD<=150+1e-6,`capped at $150, got ${pCap.marginUSD}`);
+});
+
+test('Pillar 4: PostOnly-first profit exits (full fill, timeout->IOC, partial->IOC remainder) and +35% ROE high-profit runner tightening',async()=>{
+ // 1) PostOnly fills immediately -> 0 IOC orders sent
+ {
+  const v=venue(),clock={t:T0};
+  const basePlace=v.client.placeOrder;
+  v.client.placeOrder=async(p,opt)=>{
+   if(p.type==='LIMIT'&&p.timeInForce==='PostOnly'&&p.reduceOnly){
+    const q=Number(p.quantity);
+    v.size=+(Math.max(0,v.size-q)).toFixed(8);
+    const o={orderId:'po1',...p,status:'FILLED',executedQty:String(q),avgPrice:String(p.price)};
+    v.orders.set(o.orderId,o);
+    v.calls.push({op:'order',...p});
+    return {order:o};
+   }
+   return basePlace(p,opt);
+  };
+  const ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:false,makerExit:true,makerExitWaitMs:50,minProfitRoePct:16,partialTakeFrac:0.25,earlyFallbackMin:0}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],initSize=p.size;
+  clock.t+=10000;v.mark=+(p.avg*1.0185).toFixed(2); // >= +16% Net ROE
+  await ex.reconcile();
+  const po=v.calls.filter(c=>c.op==='order'&&c.timeInForce==='PostOnly');
+  const ioc=v.calls.filter(c=>c.op==='order'&&c.timeInForce==='IOC');
+  assert.equal(po.length,1,'PostOnly maker exit placed');
+  assert.equal(ioc.length,0,'no IOC fallback needed when PostOnly fills 100%');
+  assert.equal(p.scaleInPartialTaken,true);
+  assert.ok(Math.abs(v.size-initSize*0.75)<0.05,'75% runner remains open');
+ }
+
+ // 2) PostOnly partially fills 40% then times out -> canceled -> IOC closes strictly 60% remainder with single PARTIAL_TAKE_PROFIT event
+ {
+  const v=venue(),clock={t:T0};
+  const basePlace=v.client.placeOrder,baseCancel=v.client.cancelOrder;
+  let partialMakerQty=0;
+  v.client.placeOrder=async(p,opt)=>{
+   if(p.type==='LIMIT'&&p.timeInForce==='PostOnly'&&p.reduceOnly){
+    const q=Number(p.quantity);
+    partialMakerQty=+(Math.floor(q*0.4*100)/100).toFixed(2);
+    v.size=+(Math.max(0,v.size-partialMakerQty)).toFixed(8);
+    const o={orderId:'po-part',...p,status:'PARTIALLY_FILLED',executedQty:String(partialMakerQty),avgPrice:String(p.price)};
+    v.orders.set(o.orderId,o);
+    v.calls.push({op:'order',...p});
+    return {order:o};
+   }
+   return basePlace(p,opt);
+  };
+  v.client.cancelOrder=async(s,oid,opt)=>{
+   const o=v.orders.get(oid)||[...v.orders.values()].find(x=>x.clientOrderId===opt?.clientOrderId);
+   if(o&&o.status==='PARTIALLY_FILLED')o.status='CANCELED';
+   return baseCancel(s,oid);
+  };
+  const ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:false,makerExit:true,makerExitWaitMs:30,minProfitRoePct:16,partialTakeFrac:0.25,earlyFallbackMin:0}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0],initSize=p.size;
+  const targetExitQty=Math.floor(initSize*0.25*100)/100;
+  clock.t+=10000;v.mark=+(p.avg*1.0185).toFixed(2);
+  await ex.reconcile();
+  const ioc=v.calls.filter(c=>c.op==='order'&&c.timeInForce==='IOC');
+  assert.equal(ioc.length,1,'IOC fallback sent once for unfilled remainder');
+  assert.ok(Math.abs(Number(ioc[0].quantity)-(targetExitQty-partialMakerQty))<0.02,'IOC quantity strictly equals unfilled remainder');
+  const partEvents=ex.store.events.filter(e=>e.type==='PARTIAL_TAKE_PROFIT');
+  assert.equal(partEvents.length,1,'single PARTIAL_TAKE_PROFIT event emitted for combined maker+IOC fill');
+  assert.ok(Math.abs(partEvents[0].qty-targetExitQty)<0.02);
+ }
+
+ // 3) High-profit runner auto-tightening: once peak >= +35% Net ROE (e.g. +40%), pullback tightens from 25% (+30%) to 18% (+32.8%)
+ {
+  const v=venue(),clock={t:T0};
+  const ex=make(v,{clock,config:{stopLossEnabled:false,scaleIn:false,makerExit:false,minProfitRoePct:16,partialTakeFrac:0.25,earlyFallbackMin:0}});
+  ex.arm();assert.equal((await ex.scan()).entered,1);
+  const p=ex.store.open[0];
+  // Hit +18% Net ROE -> locks 25% partial, enters runner mode
+  clock.t+=10000;v.mark=+(p.avg*1.0196).toFixed(2);
+  await ex.reconcile();
+  assert.equal(p.scaleInPartialTaken,true);
+  // Surge to +40% Net ROE (~+4.16% move at 10x)
+  clock.t+=10000;v.mark=+(p.avg*1.0416).toFixed(2);
+  await ex.reconcile();
+  assert.ok(p.trailPeakRoePct>=39.5,`peak >= 39.5%, got ${p.trailPeakRoePct}`);
+  assert.equal(ex.store.open.length,1);
+  // Pull back to +31.5% Net ROE (~+3.31% move): under old 25% pullback (stop +30.0%) this would NOT exit,
+  // under new 18% high-profit tightening (stop +32.8%) it exits cleanly and locks in +31.5% ROE!
+  clock.t+=10000;v.mark=+(p.avg*1.0331).toFixed(2);
+  await ex.reconcile();
+  assert.equal(v.size,0,'high-profit runner exited on tightened 18% pullback at +31.5% Net ROE');
+ }
+});
+
