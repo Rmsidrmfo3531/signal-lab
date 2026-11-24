@@ -42,6 +42,9 @@ export function copyEventText(e){
  if(e.type==='ADD_SKIPPED')return `${head} 추매 건너뜀 · ${why(e.reason)}${e.need!=null&&Number.isFinite(Number(e.free))?` (필요 $${e.need} / 여유 $${Number(e.free).toFixed(2)})`:''}${e.detail?` (${e.detail})`:''}`;
  // Manual first (user 2026-11-25): the copy left a manual position alone.
  if(e.type==='SKIPPED'&&e.reason==='MANUAL_FIRST')return `${head} 🛡 수동 포지션 우선 — 카피 진입 건너뜀${e.detail?` (${e.detail})`:''}`;
+ if(e.type==='MANUAL_ON_LANE')return Number(e.manualQty)>0
+  ?`[카피] 🛡 ${symHead?symHead+' ':''}같은 자리에 수동 ${e.manualQty} 확인 — 카피는 자기 수량 ${e.ownQty}만 관리합니다 (추매 안 함 · 청산은 ${e.ownQty}까지만)${e.source==='STEPS'?'\n카피 수량은 이전 체결 기록으로 계산했습니다 — 수동 포지션이 아니라면 실계좌 화면에서 확인해 주세요.':''}`
+  :`[카피] 🛡 ${symHead?symHead+' ':''}같은 자리의 수동 몫이 0이 되었습니다 (이전 ${e.prevManualQty}) — 남은 ${e.ownQty}는 카피 수량이라 트레이더 청산 때 함께 청산합니다. 수동 몫이 남아 있다면 확인해 주세요.`;
  if(e.type==='MANUAL_PROTECT_HOLD')return `[카피] 🛡 ${symHead?symHead+' ':''}카피 몫 불명 — 수동 보호로 청산 보류${e.detail&&!/카피 몫 불명/.test(e.detail)?` (${e.detail})`:''}\n카피 원장 수량을 확인할 수 없어 주문을 보내지 않았습니다. 정기 확인에서 계속 다시 봅니다 — 실계좌 화면에서 확인해 주세요.`;
  if(e.type==='SKIPPED'&&!['NOT_COPIED','COPY_OFF'].includes(e.reason))return `${head} 진입 안 함 · ${why(e.reason)}${e.detail?` (${e.detail})`:''}`;
  if(e.type==='UNCONFIRMED_ADOPT')return `[카피] ⚠️ ${symHead?symHead+' ':''}거래소 포지션을 카피 원장에 넣지 않았습니다 (${e.reason==='ENTRY_ORDER_NOT_FOUND'?'우리 진입 주문이 거래소에 없음':'진입 체결 확인 실패'})\n거래소에 ${e.size??''} 보유 중 — 직접 확인해 주세요.`;

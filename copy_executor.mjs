@@ -112,6 +112,8 @@ const CLOSING_TYPE=/STOP|TAKE_PROFIT|TRAILING/i;
 /** A user order that protects or closes a position of this lane (TP / SL / reduce-only / closePosition), not ours. */
 export function userProtectOrder(o,{hedge,direction,ownIds=null}){
  if(!o||ownCid(o.clientOrderId??o.clientOrderID))return false;
+ // The real-trailing lock stop (server.mjs 'optr', internal only) is this server's, not the user's (as real_trailing.mjs).
+ if(String(o.clientOrderId??o.clientOrderID??'').trim().toLowerCase().startsWith('optr'))return false;
  if(ownIds&&o.orderId!=null&&ownIds.has(String(o.orderId)))return false; // our stop (sent without a client id)
  const lane=String(o.positionSide||'').toUpperCase(),closeSide=direction==='LONG'?'SELL':'BUY',side=String(o.side||'').toUpperCase();
  if(hedge&&lane&&lane!=='BOTH'&&lane!==direction)return false;
@@ -409,7 +411,11 @@ export class CopyExecutor{
   * than half a lot step counts as ours). flipped: a one-way row now on the other side (the user netted it): own 0. */
  #split(p,now,{floor=null}={}){
   const venue=Number(now?.size)||0,step=pos(p.qtyStep);
-  if(venue>0&&now?.direction&&now.direction!==p.direction)return {venue,own:0,manual:venue,known:true,flipped:true};
+  // Testnet: as before, the whole lane is the copy's (manual first is the real account's rule, user 2026-11-25 01:39).
+  if(!this.#live())return {venue,own:venue,manual:0,known:true};
+  // Netted to the other side only when the venue states it (review 2026-11-25: an unsigned short at break-even read
+  // LONG would book the copy gone and leave it on the venue); an unstated side stays ours (closes are reduce-only).
+  if(venue>0&&now?.side&&now.side!==p.direction)return {venue,own:0,manual:venue,known:true,flipped:true};
   // An add whose answer was lost (#resolveOwn): until it is settled the extra on the lane may be ours or manual.
   if(p.unverifiedAdds?.length)return {venue,own:null,manual:null,known:false};
   const ledger=this.#ownQty(p);
@@ -459,12 +465,39 @@ export class CopyExecutor{
   if(used==null)return;
   p.ownQty=Number(Math.max(0,own-Math.min(own,used)).toFixed(12));
  }
+ /** A reduce order of ours (tag) whose answer was lost, looked up by its client id: the executed quantity (0 when BingX
+  * says it does not exist or it ended unfilled), 'UNKNOWN' (lookup failed, still working) or 'NO_LOOKUP' (client without
+  * getOrder). Read before the lane is split again: the venue drop alone cannot tell our fill from a manual position
+  * opened meanwhile (review 2026-11-25, manual first). */
+ async #lostReduce(p,tag){
+  if(typeof this.client.getOrder!=='function')return 'NO_LOOKUP';
+  let o;try{o=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:this.#clientId(p,tag)}))}catch(e){return orderAbsent(e)?0:'UNKNOWN'}
+  if(!TERMINAL_ORDER.has(String(o?.status||'').toUpperCase()))return 'UNKNOWN';
+  return num(o?.executedQty)??0;
+ }
+ /** Our reduce order sent for `sent` of the own quantity filled `executed`: the own quantity is at most sent - executed. */
+ #takeOwn(p,sent,executed){
+  const ex=num(executed);if(!(ex>0)||!(Number(sent)>0))return;
+  const left=Math.max(0,Number(sent)-ex),cur=this.#ownQty(p);
+  p.ownQty=Number(Math.min(cur??left,left).toFixed(12));this.#save();
+ }
  /** PnL of the copy's own part only when a manual position shares the lane (the venue's avg and PnL are blended). */
  #ownUnrealized(p,now,sp){
   if(!(sp?.manual>0))return now.unrealized;
   const mark=pos(now.mark)??pos(p.mark),avg=pos(p.avg);
   if(mark&&avg)return (p.direction==='LONG'?1:-1)*(mark-avg)*sp.own;
   return now.unrealized!=null&&sp.venue>0?now.unrealized*sp.own/sp.venue:null;
+ }
+ /** The split of a shared lane is told when it changes (review 2026-11-25): a manual position joined, the lane shrank
+  * without an order of ours (taken off the manual part first), or — right after the deploy — an older record whose
+  * fills (ownQty from steps) come short of the venue. The user can then check what the next close will and will not take. */
+ #noteSplit(p,sp){
+  if(!sp?.known||!this.#live())return;
+  const prev=Number(p.manualNoticeQty)||0,step=pos(p.qtyStep),tol=step?step/2:Math.max(1e-10,sp.venue*1e-8);
+  if(Math.abs(sp.manual-prev)<tol)return;
+  p.manualNoticeQty=sp.manual;
+  this.#event('MANUAL_ON_LANE',{symbol:p.symbol,direction:p.direction,reason:'MANUAL_ON_LANE',ownQty:sp.own,manualQty:sp.manual,prevManualQty:prev,venueQty:sp.venue,
+   detail:`카피 ${sp.own} · 수동 ${sp.manual}${p.ownQtySource==='STEPS'?' (카피 수량은 이전 체결 기록으로 계산)':''}`,...(p.ownQtySource==='STEPS'?{source:'STEPS'}:{})});
  }
  /** A close or cut held back to protect a manual position: an event (screen, Telegram) at most once per position per 10 min. */
  #manualHold(p,reason,detail){
@@ -494,7 +527,10 @@ export class CopyExecutor{
   const row=positionRow(list,p.venueSymbol,{hedge:p.hedge===true,direction:p.direction}),amt=row?Number(row.positionAmt):0;
   const size=Math.abs(amt);if(size>0)p.seenAt=this.now(); // the last confirmed state (#goneEvidence window)
   const unrealized=row?.unrealizedProfit;
-  return {size,direction:directionOf(row),avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:unrealized==null||String(unrealized).trim()===''?null:num(unrealized)}}
+  // side: only what the venue states (positionSide LONG / SHORT, or a negative amount); an unsigned one-way amount is
+  // never read as a side (like live_executor / scalp_executor; directionOf guesses LONG at break-even).
+  const ps=String(row?.positionSide||'').toUpperCase(),side=ps==='LONG'||ps==='SHORT'?ps:amt<0?'SHORT':null;
+  return {size,direction:directionOf(row),side,avg:pos(row?.avgPrice),mark:pos(row?.markPrice),unrealized:unrealized==null||String(unrealized).trim()===''?null:num(unrealized)}}
  auditStatus(){
   const a=this.audit;if(!a)return null;
   const positions=Object.values(this.store.positions).filter(p=>p.status==='OPEN'),now=this.now();
@@ -586,7 +622,9 @@ export class CopyExecutor{
     const full=String(o.closePosition).toLowerCase()==='true';
     const size=pos(o.quantity??o.origQty),side=String(o.side||'').toUpperCase(),lane=String(o.positionSide||'').toUpperCase();
     const expectedSide=p.direction==='LONG'?'SELL':'BUY',expectedLane=positionSideFor({hedge:p.hedge===true,direction:p.direction});
-    const protectedSize=full||size!=null&&(size>qty||sameSize(size,qty))&&
+    // An own-quantity stop (a manual position shares the lane, manual first) covers the copy's own quantity only.
+    const cover=p.stopWhole===false&&pos(p.qty)?Math.min(qty,p.qty):qty;
+    const protectedSize=full||size!=null&&(size>cover||sameSize(size,cover))&&
      (p.hedge===true||o.closePosition==null||String(o.reduceOnly).toLowerCase()==='true');
     const trigger=pos(o.stopPrice),tick=pos(p.tickSize),priceOK=trigger!=null&&pos(p.stop)!=null&&(tick?Math.abs(trigger-p.stop)<tick*.51:sameSize(trigger,p.stop));
     const match=String(o.type).toUpperCase()==='STOP_MARKET'&&side===expectedSide&&(!lane||lane===expectedLane)&&
@@ -815,7 +853,7 @@ export class CopyExecutor{
    const params={symbol:p.venueSymbol,side:dir===1?'SELL':'BUY',positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'STOP_MARKET',quantity:String(p.qty),stopPrice:String(stop),
     ...(whole?{closePosition:'true'}:p.hedge===true?{}:{reduceOnly:'true'}),workingType:'MARK_PRICE'};
    try{const res=orderOf(await this.client.placeOrder(params));const old=p.stopOrderId;
-    p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopOrderId=res?.orderId??null;p.stopStale=false;
+    p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopOrderId=res?.orderId??null;p.stopStale=false;p.stopWhole=whole;
     this.#rememberFillOrder(p,p.stopOrderId,params.side);
     if(old&&old!==p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,old)}catch{}}
     return}
@@ -831,7 +869,7 @@ export class CopyExecutor{
       if(!attempt)continue;
       try{const res=orderOf(await this.client.placeOrder(attempt));
        if(k<3){p.stop=stop;p.stopDistPctActual=+(d*100).toFixed(1);p.stopSource=d===capDist?'BALANCE_CAP':'BACKSTOP';p.stopStale=false}else p.stopStale=true;
-       p.stopOrderId=res?.orderId??null;this.#rememberFillOrder(p,p.stopOrderId,params.side);return}
+       p.stopOrderId=res?.orderId??null;p.stopWhole=whole;this.#rememberFillOrder(p,p.stopOrderId,params.side);return}
       catch(e){last=e;if(k<2)await new Promise(r=>setTimeout(r,500*(k+1)))}
      }
      this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:last?.code||last?.message||'UNKNOWN',detail:'stop swap failed'});await this.#emergency(p,'NO_STOP');return;
@@ -873,16 +911,21 @@ export class CopyExecutor{
     let now;
     try{now=await this.#recheck(p,await this.#position(p))}catch(e){if(!noVenueAnswer(e)&&e.code!=='HTTP_429')throw e;lastErr=e;continue}
     if(!(now.size>0)){p.ownQty=0;await this.#completeClose(p,p.closing.reason,last??now);return}
-    // Manual first: only the copy's own part, never below the manual part measured before our first close order.
+    // Manual first: an emergency order of ours whose answer was lost is looked up before the lane is split again (its
+    // fill must not leave room for a manual position opened meanwhile to be read as ours).
+    if(p.closing.lost&&this.#live()){const r=await this.#lostReduce(p,p.closing.lost.tag);
+     if(r==='UNKNOWN'){this.#manualHold(p,'COPY_QTY_UNKNOWN','응답을 잃은 청산 주문 확인 불가 — 수동 보호로 청산 보류');this.#save();return}
+     if(r!=='NO_LOOKUP')this.#takeOwn(p,p.closing.lost.qty,r);delete p.closing.lost;this.#save()}
+    // Only the copy's own part, never below the manual part measured before our first close order.
     const sp=await this.#laneSplit(p,now,{floor:p.closing.manualFloor});
     if(!sp.known){this.#manualHold(p,'COPY_QTY_UNKNOWN','카피 몫 불명 — 수동 보호로 청산 보류');this.#save();return}
     this.#syncOwn(p,sp);
     if(!(sp.own>0)){p.ownQty=0;await this.#completeClose(p,p.closing.reason,last??{...now,size:0});return}
     if(p.closing.manualFloor==null){p.closing.manualFloor=sp.manual;this.#save()}
     last=now;
-    let order;
-    try{order=await this.#market(p,p.direction==='LONG'?'SELL':'BUY',sp.own,{reduceOnly:true,tag:this.#tag(p,'emergency')})}
-    catch(e){if(!noVenueAnswer(e))throw e;lastErr=e;continue}
+    let order;const tag=this.#tag(p,'emergency');
+    try{order=await this.#market(p,p.direction==='LONG'?'SELL':'BUY',sp.own,{reduceOnly:true,tag})}
+    catch(e){if(!noVenueAnswer(e))throw e;if(this.#live()){p.closing.lost={tag,qty:sp.own};this.#save()}lastErr=e;continue}
     // Answered: read again (a size still there is closed by the next attempt).
     let after=null;try{after=await this.#recheck(p,await this.#position(p))}catch(e){lastErr=e;continue}
     const left=this.#split(p,after,{floor:p.closing.manualFloor});
@@ -1234,8 +1277,20 @@ export class CopyExecutor{
   const ratio=m.to/m.from,now=await this.#recheck(p,firstPos);
   if(!(now.size>0))return this.#gone(p,'POSITION_GONE',now);
   if(pos(c?.quantityStep))p.qtyStep??=pos(c.quantityStep);
-  // Manual first: cut ratios use the copy ledger's own quantity, never the venue size (a pending cut keeps the manual
-  // part it measured as the floor, so a cut whose answer was lost is never sent again into the manual part).
+  // Manual first: a cut of ours whose answer was lost is looked up first and its fill taken off the own quantity, so a
+  // manual position opened meanwhile is never cut as ours (the floor below only covers the manual part measured before).
+  if(p.pendingCut&&this.#live()){const pc=p.pendingCut,r=await this.#lostReduce(p,'cut'+(p.reduces+1));
+   if(r==='UNKNOWN'){
+    if(ratio>1){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_QTY_UNKNOWN',detail:'응답을 잃은 축소 주문 확인 전'});return {ok:false,reason:'COPY_QTY_UNKNOWN'}}
+    this.#manualHold(p,'COPY_QTY_UNKNOWN','응답을 잃은 축소 주문 확인 불가 — 수동 보호로 축소 보류');
+    throw Object.assign(Error('COPY_QTY_UNKNOWN'),{code:'COPY_QTY_UNKNOWN'});
+   }
+   if(r>0){this.#takeOwn(p,pc.sentQty??pc.beforeQty,r);
+    // Another card than the one it was sent for: booked here (its tag is never reused for the next cut).
+    if(!(pc.from===m.from&&pc.to===m.to)){p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:r,recovered:true});p.theirTotal=pc.to;delete p.pendingCut;this.#save()}}
+  }
+  // Cut ratios use the copy ledger's own quantity, never the venue size (a pending cut keeps the manual part it
+  // measured as the floor, so a cut whose answer was lost is never sent again into the manual part).
   const sp=await this.#laneSplit(p,now,{floor:p.pendingCut?.manualFloor});
   if(!sp.known){
    p.qty=now.size;
@@ -1272,7 +1327,7 @@ export class CopyExecutor{
    const cut=samePending?Number(Math.max(0,p.qty-targetLeft).toFixed(12)):totalWantCut;
    if(!(cut>0))return {ok:true,tooSmall:true};
    if(cut>=p.qty)return this.#close(m,'TRADER_CUT_ALL');
-   p.pendingCut={from:m.from,to:m.to,beforeQty:baseQty,wantCut:totalWantCut,targetLeft,manualFloor:p.pendingCut?.manualFloor??sp.manual};this.#save();
+   p.pendingCut={from:m.from,to:m.to,beforeQty:baseQty,wantCut:totalWantCut,targetLeft,manualFloor:p.pendingCut?.manualFloor??sp.manual,sentQty:p.qty};this.#save();
    const order=await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});
    const filledCut=pos(order?.executedQty)?Math.min(cut,order.executedQty):cut;
    p.qty=Number(Math.max(0,p.qty-filledCut).toFixed(12));p.ownQty=p.qty;
@@ -1353,7 +1408,7 @@ export class CopyExecutor{
   catch(e){
    // An add that may have filled without our knowing (no answer, not a refusal): the own quantity is unknown until its
    // order is looked up (#resolveOwn) — never counted as manual, never closed as ours meanwhile (manual first).
-   if(!e.orderBlock&&e.code!=='RETRY_ABANDONED'&&!/^(?:VENUE_ERROR_\d+|HTTP_4\d\d)$/.test(String(e.code||''))){
+   if(this.#live()&&!e.orderBlock&&e.code!=='RETRY_ABANDONED'&&!/^(?:VENUE_ERROR_\d+|HTTP_4\d\d)$/.test(String(e.code||''))){
     (p.unverifiedAdds??=[]).push({cid:this.#clientId(p,addTag),at:this.now(),venueBefore:now.size});try{this.#save()}catch{}}
    if(!e.orderBlock)throw e;
    this.#event('ADD_SKIPPED',{symbol:p.symbol,...e.orderBlock});
@@ -1414,6 +1469,9 @@ export class CopyExecutor{
     this.#rememberFillOrder(p,order?.orderId,side,Number(order?.executedQty)>0||order?.status==='FILLED',notice);
     this.#notifyOrderReceipt(p,order?.orderId);
     if(!['FILLED','CANCELED','CANCELLED','REJECTED','EXPIRED','FAILED'].includes(String(order?.status).toUpperCase()))return {ok:false,reason:'CLOSE_PENDING'};
+    // Manual first: its fill comes off the own quantity before the lane is split again (a manual position opened
+    // meanwhile on the lane is not ours to close).
+    if(this.#live())this.#takeOwn(p,close.pending.requestedQty,order?.executedQty);
    }catch(error){if(!orderAbsent(error))return {ok:false,reason:'CLOSE_PENDING'}}
    delete close.pending;
    now=await this.#recheck(p,await this.#position(p));
@@ -1699,7 +1757,7 @@ export class CopyExecutor{
     }
     const now=await this.#position(p);
     // A one-way row now on the other side: the user netted our copy away (manual first: nothing is sent; gone).
-    const flipped=now.size>0&&now.direction&&now.direction!==p.direction;
+    const flipped=this.#live()&&now.size>0&&now.side&&now.side!==p.direction;
     // One empty answer is not enough to close the ledger (a venue list can come back empty for a moment;
     // the position would stay on the venue and the next card would buy again): two checks in a row.
     if(!(now.size>0)||flipped){p.zeroSeen=(p.zeroSeen||0)+1;if(p.zeroSeen<2){this.#save();continue}
@@ -1713,13 +1771,18 @@ export class CopyExecutor{
      if(!f.filled&&f.resting?.length){this.#save();continue}
      if(!f.filled){const key=this.#key(p);if(this.store.positions[key]===p)delete this.store.positions[key];p.status='CLOSED';
       this.#event('UNCONFIRMED_ADOPT',{symbol:p.symbol,reason:f.absent?'ENTRY_ORDER_NOT_FOUND':'ENTRY_LOOKUP_FAILED',size:now.size,detail:`거래소에 ${now.size} 보유 — 우리 진입 체결이 확인되지 않아 원장에 넣지 않음(직접 확인 필요)`});continue}
-     p.steps=[{kind:'ADOPTED',at:this.now(),qty:now.size}];p.ownQty=now.size;if(this.audit)p.auditQty=now.size}
+     // Real account: our own fill (the order lookup), never more than the lane — a manual position may have joined it.
+     const q=this.#live()?Math.min(now.size,pos(f.qty)??now.size):now.size;
+     p.steps=[{kind:'ADOPTED',at:this.now(),qty:q}];p.ownQty=q;if(this.audit)p.auditQty=q}
     // A close of ours that did not go through (no answer, a refusal): closed again.
     if(p.closing&&!['TRADER_CLOSE','TRADER_CUT_ALL'].includes(p.closing.reason)){await this.#emergency(p,p.closing.reason);continue}
     // Manual first: the copy's own part of the lane (a manual position on it is never counted, added to or closed).
     {const sp=await this.#laneSplit(p,now);
-     if(sp.known){this.#syncOwn(p,sp);p.qty=sp.own;p.manualQty=sp.manual}else{p.qty=now.size;p.manualQty=null}
+     if(sp.known){this.#syncOwn(p,sp);p.qty=sp.own;p.manualQty=sp.manual;this.#noteSplit(p,sp)}else{p.qty=now.size;p.manualQty=null}
      if(!(sp.manual>0))p.avg=now.avg??p.avg;
+     // A whole-position (closePosition) stop of ours — older records have no stopWhole — would close the manual part
+     // too when it triggers: placed again for the own quantity (#protect places the new one, then cancels the old).
+     if(this.config.stops&&p.stopOrderId&&p.stopWhole!==false&&sp.known&&sp.manual>0)p.stopStale=true;
      p.mark=now.mark;p.unrealized=sp.known?this.#ownUnrealized(p,now,sp):now.unrealized;unrealized+=Number(p.unrealized)||0;}
     if(this.config.stops&&(!p.stopOrderId||p.stopStale)||!this.config.stops&&p.stopOrderId)await this.#protect(p);
     if(this.config.stops&&p.stopZone&&await this.#zoneBroken(p).catch(()=>false)){await this.#emergency(p,'ZONE_BREAK_VOLUME');continue}
