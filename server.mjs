@@ -1,6 +1,6 @@
 import http from 'node:http';
 import {exec,execFile} from 'node:child_process';
-import {gitUpdateAvailable,gitCheck,gitApply,checkTree,displayVersionOf,checkPostUpdateNotice} from './git_update.mjs';
+import {gitUpdateAvailable,gitCheck,gitApply,checkTree,displayVersionOf,headDisplayVersionSync,checkPostUpdateNotice} from './git_update.mjs';
 import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
@@ -77,7 +77,7 @@ import {prepareData,readStore,atomicWriteStore,backupStore,acquireDataLock,recor
 
 const __dirname=path.dirname(fileURLToPath(import.meta.url));
 const appPackage=JSON.parse(fs.readFileSync(path.join(__dirname,'package.json'),'utf8'));
-const appVersion={version:appPackage.version,displayVersion:displayVersionOf(appPackage)};
+const appVersion={version:appPackage.version,displayVersion:headDisplayVersionSync(__dirname)||displayVersionOf(appPackage)};
 const storage=prepareData(__dirname);
 configureFirechartPersistence(storage.dir);
 const releaseDataLock=acquireDataLock(storage.dir);

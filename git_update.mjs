@@ -1,7 +1,7 @@
 // One-tap update for the cloud server: the app folder is a git checkout (deploy/linux/install.sh,
 // read-only deploy key) and systemd restarts the process when it exits. Fast-forward only, the new
 // server.mjs is syntax-checked before the restart, and live trading starts disarmed after it.
-import {execFile} from 'node:child_process';
+import {execFile,execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -15,7 +15,21 @@ export function displayVersionOf(info){
  const named=typeof info?.displayVersion==='string'?info.displayVersion.trim():'';
  return named||(typeof info?.version==='string'&&info.version.trim()?'v'+info.version.trim():null);
 }
+// The version shown in the header is the running commit (user 2026-11-24 "이 부분에 있는 버전이 업데이트할 때마다 변경되어있지
+// 않아 수정해줘"): its commit time in KST plus the short hash, so every update changes it without editing package.json.
+const KST_MS=9*3600000;
+export function commitDisplayVersion(iso,sha){
+ const t=Date.parse(String(iso||'').trim()),h=String(sha||'').trim().slice(0,7);
+ if(!Number.isFinite(t)||!h)return null;
+ const d=new Date(t+KST_MS).toISOString();return `${d.slice(0,10)} ${d.slice(11,16)} KST · ${h}`;
+}
+/** The running checkout's version, read synchronously at boot; null outside a git checkout. */
+export function headDisplayVersionSync(root){
+ if(!fs.existsSync(path.join(root,'.git')))return null;
+ try{const [iso,sha]=String(execFileSync('git',['-C',root,'show','-s','--format=%cI|%h','HEAD'],{timeout:5000,stdio:['ignore','pipe','ignore']})).trim().split('|');return commitDisplayVersion(iso,sha)}catch{return null}
+}
 async function versionAt(root,git,commit){
+ try{const v=commitDisplayVersion(await git(root,['show','-s','--format=%cI',commit]),commit);if(v)return v}catch{}
  try{return displayVersionOf(JSON.parse(await git(root,['show',commit+':package.json'])))}catch{return null}
 }
 

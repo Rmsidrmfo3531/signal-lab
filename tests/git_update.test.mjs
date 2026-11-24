@@ -150,3 +150,20 @@ test('auto-update streams live progress via SSE and locks manual update button a
 });
 
 
+
+test('header version follows the running commit: commit time in KST + short hash (user 2026-11-24 "업데이트할 때마다 변경")',async()=>{
+ const {commitDisplayVersion,gitCheck}=await import('../git_update.mjs');
+ assert.equal(commitDisplayVersion('2026-11-24T14:05:09Z','506c88536fee'),'2026-11-24 23:05 KST · 506c885');
+ assert.equal(commitDisplayVersion('bad','abc1234'),null);assert.equal(commitDisplayVersion('2026-11-24T14:05:09Z',''),null);
+ const times={aaa1111:'2026-11-23T05:56:00Z',bbb2222:'2026-11-24T14:05:00Z'};
+ const git=async(root,args)=>{
+  if(args[0]==='fetch')return '';
+  if(args[0]==='rev-parse')return args[2]==='HEAD'?'aaa1111':'bbb2222';
+  if(args[0]==='show'&&args[1]==='-s')return times[args.at(-1)];
+  if(args[0]==='log')return 'bbb2222 feat: x';
+  throw Error('unexpected '+args.join(' '));
+ };
+ const c=await gitCheck('/x',{git});
+ assert.equal(c.currentDisplayVersion,'2026-11-23 14:56 KST · aaa1111');
+ assert.equal(c.latestDisplayVersion,'2026-11-24 23:05 KST · bbb2222');
+});
