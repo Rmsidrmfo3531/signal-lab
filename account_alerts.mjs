@@ -160,9 +160,9 @@ export function formatScalpStatusReply(rt,{now=Date.now()}={}){
 export class AccountAlerts{
  constructor({directory=null,fileName='account-alerts.json',now=()=>Date.now(),log=()=>{},
   sendText=async()=>({ok:false}),post=null,allowedChatId='',
-  getSnapshot=async()=>null,getScalpStatus=async()=>null,onControls=null,
+  getSnapshot=async()=>null,getScalpStatus=async()=>null,getReadiness=async()=>null,onControls=null,
   onPause=async()=>null,onResume=async()=>null,onClose=async()=>null}={}){
-  Object.assign(this,{now,log,sendText,allowedChatId:String(allowedChatId||'').trim(),getSnapshot,getScalpStatus,onControls,onPause,onResume,onClose});
+  Object.assign(this,{now,log,sendText,allowedChatId:String(allowedChatId||'').trim(),getSnapshot,getScalpStatus,getReadiness,onControls,onPause,onResume,onClose});
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={
@@ -415,6 +415,7 @@ export class AccountAlerts{
     '/status — 실계좌 잔고·증거금·보유 포지션',
     '/pos [분] — 진행 중 포지션 손익 요약 (숫자 입력 시 알림 주기 변경)',
     '/scalp — 테스트넷 단타 5분 스캔 상태',
+    '/ready — 실계좌 준비 점검 진행 상황 (조회 전용)',
     '/report — 오늘 KST 손익 중간 리포트',
     '/size [금액|0.5x|1x|2x] — 카피 기준 잔고 조회·변경',
     '/block [종목] — 카피 제외 목록 조회·추가',
@@ -447,6 +448,12 @@ export class AccountAlerts{
   if(cmd==='/scalp'||cmd==='/단타'){
    const rt=await this.getScalpStatus();
    return formatScalpStatusReply(rt,{now});
+  }
+
+  // 실계좌 준비 점검 (user 2026-11-24 13:35): read only, no /confirm; changes nothing.
+  if(cmd==='/ready'||cmd==='/준비'){
+   try{const r=await this.getReadiness();return typeof r==='string'?r:'⚠️ 실계좌 준비 점검 결과를 아직 계산하지 못했습니다.'}
+   catch(e){return `⚠️ 실계좌 준비 점검 조회 실패: ${e?.message||'ERROR'}`}
   }
 
   if(cmd==='/size'||cmd==='/비중'){
@@ -582,6 +589,14 @@ export class AccountAlerts{
   }
 
   return null;
+ }
+
+ /** A plain-text message to the allowed private chat (the chat the commands come from). Throws unless delivered. */
+ async sendToAllowedChat(text){
+  if(!this.replyRequest||!this.allowedChatId)throw Error('TELEGRAM_NOT_CONFIGURED');
+  const {response,error}=await this.replyRequest({chat_id:this.allowedChatId,text:String(text||'')});
+  if(!response?.ok)throw Error(error||`HTTP_${response?.status??'NO_RESPONSE'}`);
+  return true;
  }
 
  /** Poll Telegram Bot API getUpdates safely using the network-recovery transport. */
