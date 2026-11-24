@@ -5,6 +5,7 @@ FAKE_TG_SCRIPT (JSON file):
   duringCatchup  [{id, text}]                             dispatched as live copy messages while iter_messages runs
   live           [{delay, id, text, chat?}]               dispatched after connect (chat defaults to the copy channel)
   disconnectedAfter  seconds: is_connected() turns False after this long (Telethon reconnecting)
+  historyFailAfter   iter_messages raises after yielding this many messages (a dropped connection mid-fetch)
 """
 import asyncio, datetime, json, os
 
@@ -106,11 +107,14 @@ class TelegramClient:
         now = datetime.datetime.now(datetime.timezone.utc)
         rows = sorted(_SCRIPT.get('history', []), key=lambda r: -int(r['id']))
         n = 0
+        fail_after = _SCRIPT.get('historyFailAfter')
         for r in rows:
             if int(r['id']) <= (min_id or 0):
                 continue
             if limit is not None and n >= limit:
                 break
+            if fail_after is not None and n >= int(fail_after):
+                raise ConnectionError('fake: connection lost while reading history')
             n += 1
             yield _Msg(int(r['id']), r['text'], now - datetime.timedelta(seconds=float(r.get('age', 0))))
 

@@ -31,7 +31,7 @@ export function sanitizeHeartbeat(body){
   lastPumpAt:time(b.lastPumpAt),
   queues:{copy:count(q.copy),pump:count(q.pump)},
   inFlight:count(b.inFlight),
-  catchup:b.catchup&&typeof b.catchup==='object'?{forwarded:count(b.catchup.forwarded),at:time(b.catchup.at),error:typeof b.catchup.error==='string'?b.catchup.error.slice(0,80):null}:null,
+  catchup:b.catchup&&typeof b.catchup==='object'?{forwarded:count(b.catchup.forwarded),skipped:count(b.catchup.skipped),at:time(b.catchup.at),error:typeof b.catchup.error==='string'?b.catchup.error.slice(0,80):null}:null,
  };
 }
 

@@ -25,6 +25,11 @@ Liveness and self-restart (user decision 2026-11-24 17:34 "2번은 그대로 진
     copy-listener-state.json, at most 20, and only those at most COPY_CATCHUP_MAX_AGE_SEC = 120 s old) are forwarded
     in order before live ones. The server handles each message id once (copy_executor seen list), so a message sent
     twice is never traded twice. COPY_CATCHUP_MAX_AGE_SEC=0 turns this off.
+    Only a complete gap is sent (review 2026-11-24): when one missed text message is older than the age limit, there
+    are more than 20, or reading the channel failed, NONE of the missed ones are sent (as before this catch-up), since
+    the rest would reach the copy executor without what came before them (a MONITOR_START cut off makes its
+    re-announced positions new entries / adds; a close cut off before a re-entry makes it an add). The saved id is
+    kept per channel (another channel's id is ignored).
 """
 import asyncio, concurrent.futures, hashlib, http.client, json, os, sys, threading, time, urllib.error, urllib.request
 from telethon import TelegramClient, events, utils
@@ -70,6 +75,7 @@ SELF_CHECK_SEC = _int_env('COPY_SELF_CHECK_SEC', 60, 1, 3600)
 DRAIN_WAIT_SEC = _int_env('COPY_RESTART_DRAIN_SEC', 30, 1, 120)
 CATCHUP_MAX_AGE_SEC = _int_env('COPY_CATCHUP_MAX_AGE_SEC', 120, 0, 600)
 CATCHUP_LIMIT = 20
+CATCHUP_FETCH = CATCHUP_LIMIT * 3  # posts without text (photos, service messages) count toward one history read too
 
 def file_hash(path):
     try:
@@ -136,15 +142,24 @@ def load_state():
     except (OSError, ValueError):
         return {}
 
+def last_forwarded_id():
+    """The saved last id for THIS channel, or None: no file, a corrupt one, another channel's id (COPY_CHANNEL_ID was
+    changed; its id would hide this channel's messages and never be overwritten) or a value that is no message id."""
+    st = load_state()
+    last = st.get('lastId')
+    if st.get('channel', CHANNEL) != CHANNEL or type(last) is not int or not 0 < last < 2 ** 31:
+        return None
+    return last
+
 def save_forwarded(payload):
     """The last copy message id the server has answered for (copy-listener-state.json, 0600). Never raises."""
     try:
-        st = load_state()
-        if isinstance(st.get('lastId'), int) and st['lastId'] >= payload['id']:
+        last = last_forwarded_id()
+        if last is not None and last >= payload['id']:
             return
         tmp = STATE_FILE + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump({'lastId': payload['id'], 'lastDate': payload.get('date'), 'savedAt': now_ms()}, f)
+            json.dump({'channel': CHANNEL, 'lastId': payload['id'], 'lastDate': payload.get('date'), 'savedAt': now_ms()}, f)
         os.replace(tmp, STATE_FILE)
     except Exception as e:
         print(f"[COPY] 상태 저장 실패: {type(e).__name__}", flush=True)
@@ -194,8 +209,10 @@ async def delivery_worker():
             delivery_queue.task_done()
 
 def copy_payload(msg):
-    text = (msg.message or '')[:4000]
-    return {'id': msg.id, 'date': int(msg.date.timestamp() * 1000), 'text': text} if text else None
+    text = (getattr(msg, 'message', None) or '')[:4000]
+    if not text or getattr(msg, 'date', None) is None:
+        return None
+    return {'id': msg.id, 'date': int(msg.date.timestamp() * 1000), 'text': text}
 
 @client.on(events.NewMessage(chats=CHANNEL))
 async def on_message(event):
@@ -214,23 +231,39 @@ async def on_message(event):
 async def catch_up():
     """Copy messages that arrived while the listener was not running (restart gap): newer than the last forwarded id,
     at most CATCHUP_LIMIT, and only up to CATCHUP_MAX_AGE_SEC old (an older card is stale: no late entry from it).
-    Live messages received meanwhile wait in catchup_buffer; both go out in id order, each id once. Never raises."""
+    Live messages received meanwhile wait in catchup_buffer; both go out in id order, each id once. Never raises.
+    Only a complete gap goes out: a missed text message older than the age limit, more than CATCHUP_LIMIT of them, or a
+    failed read means none of the missed ones are sent (the rest would arrive without what came before them)."""
     global catchup_buffer, catchup_running
-    found, error = [], None
+    found, error, gap = [], None, None
     try:
         if CATCHUP_MAX_AGE_SEC > 0:
-            last = load_state().get('lastId')
+            last = last_forwarded_id()
             cutoff = time.time() - CATCHUP_MAX_AGE_SEC
-            kwargs = {'limit': CATCHUP_LIMIT}
-            if isinstance(last, int) and last > 0:
+            kwargs = {'limit': CATCHUP_FETCH}
+            if last is not None:
                 kwargs['min_id'] = last
             async def fetch():
-                async for m in client.iter_messages(CHANNEL, **kwargs):  # newest first
-                    if m.date.timestamp() < cutoff:
-                        break
+                nonlocal gap
+                read = 0
+                async for m in client.iter_messages(CHANNEL, **kwargs):  # newest first (only ids after `last`)
+                    read += 1
                     p = copy_payload(m)
+                    date = getattr(m, 'date', None)
+                    if date is not None and date.timestamp() < cutoff:
+                        if last is None:
+                            return  # no saved id: only the recent window is looked at
+                        if p:
+                            gap = 'OLD'  # missed, but too old to send: everything after it would lack it
+                            return
+                        continue  # an old post without text was never forwarded anyway; older text ones still count
                     if p:
                         found.append(p)
+                        if len(found) > CATCHUP_LIMIT:
+                            gap = 'LIMIT'
+                            return
+                if read >= CATCHUP_FETCH:
+                    gap = 'LIMIT'  # one read was full: older missed messages may lie beyond it
             await asyncio.wait_for(fetch(), timeout=20)
     except Exception as e:
         error = type(e).__name__
@@ -238,6 +271,15 @@ async def catch_up():
     finally:
         buffered = catchup_buffer or []
         catchup_buffer = None
+        skipped = 0
+        if error or gap:
+            # Never a part: the oldest missed ones are not in it (or unknown), so none of them go out.
+            skipped = len([p for p in found if p['id'] not in {b['id'] for b in buffered}])
+            found = []
+            if gap:
+                why = f"{CATCHUP_MAX_AGE_SEC}초보다 오래된 메시지가 있음" if gap == 'OLD' else f"{CATCHUP_LIMIT}건 넘음"
+                print(f"[COPY] 재시작 동안 놓친 메시지를 다시 보내지 않습니다 ({why}, 최근 {skipped}건 포함) — 앞부분이 빠진 채"
+                      " 보내면 모니터 재시작 카드가 새 진입·추매로 처리될 수 있습니다. 채널을 직접 확인하세요", flush=True)
         merged, seen = [], set()
         for p in sorted(found + buffered, key=lambda x: x['id']):
             if p['id'] not in seen:
@@ -247,7 +289,8 @@ async def catch_up():
             delivery_queue.put_nowait(p)
         catchup_running = False
         missed = len([p for p in found if p['id'] not in {b['id'] for b in buffered}])
-        STATS['catchup'] = {'forwarded': missed, 'at': now_ms(), 'error': error}
+        STATS['catchup'] = {'forwarded': missed, 'skipped': skipped, 'at': now_ms(),
+                            'error': error or (f'GAP_{gap}' if gap else None)}
         if missed:
             print(f"[COPY] 재시작 동안 놓친 메시지 {missed}건 전달 (최근 {CATCHUP_MAX_AGE_SEC}초 안, 서버가 같은 id는 한 번만 처리)", flush=True)
 

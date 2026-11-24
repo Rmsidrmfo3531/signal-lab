@@ -234,6 +234,76 @@ test('listener: catch-up skips cards older than the age limit; no state file = a
  }finally{L.child.kill('SIGTERM');await L.exited;server.close()}
 });
 
+// Review 2026-11-24: a catch-up that drops the OLDEST missed messages (age limit or the 20 cap) and sends the rest makes
+// the copy executor see them without what came before: a MONITOR_START cut off turns its re-announced positions into
+// new entries / adds (an open copy was tripled in a repro), a close cut off before a re-entry turns it into an add.
+// Then none of the missed messages go out (as before the catch-up existed); live ones still do.
+const STATE=(lastId,channel=-100123)=>JSON.stringify({channel,lastId});
+test('listener: a missed message older than the age limit means none of the missed ones are sent (no gap before them)',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+ const {server,got,port}=await fakeServer(),dataDir=tmp();
+ fs.writeFileSync(path.join(dataDir,'copy-listener-state.json'),STATE(10));
+ const L=runListener({port,dataDir,script:{
+  history:[{id:11,age:300,text:'old close'},{id:12,age:30,text:'re-entry'},{id:13,age:5,text:'add'}],
+  duringCatchup:[{id:14,text:'live 14'}],live:[{delay:0.3,id:15,text:'live 15'}]}});
+ try{
+  assert.ok(await until(()=>got.copy.length>=2&&got.beats.some(b=>b.catchup)),L.log());
+  await new Promise(r=>setTimeout(r,500));
+  assert.deepEqual(got.copy.map(x=>x.id),[14,15]);
+  assert.match(L.log(),/다시 보내지 않습니다/);
+  const beat=got.beats.filter(b=>b.catchup).at(-1);
+  assert.equal(beat.catchup.forwarded,0);assert.equal(beat.catchup.error,'GAP_OLD');assert.equal(beat.catchup.skipped,2);
+ }finally{L.child.kill('SIGTERM');await L.exited;server.close()}
+});
+
+test('listener: more missed messages than the cap (a monitor restart re-announcing positions) are not sent in part',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+ const {server,got,port}=await fakeServer(),dataDir=tmp();
+ fs.writeFileSync(path.join(dataDir,'copy-listener-state.json'),STATE(10));
+ const history=[{id:11,age:20,text:'Gate.io 모니터 시작'},...Array.from({length:21},(_,i)=>({id:12+i,age:15-i*0.5,text:`snapshot ${12+i}`}))];
+ const L=runListener({port,dataDir,script:{history,live:[{delay:0.3,id:40,text:'live 40'}]}});
+ try{
+  assert.ok(await until(()=>got.copy.length>=1&&got.beats.some(b=>b.catchup)),L.log());
+  await new Promise(r=>setTimeout(r,500));
+  assert.deepEqual(got.copy.map(x=>x.id),[40],'never the snapshot cards without their MONITOR_START');
+  assert.equal(got.beats.filter(b=>b.catchup).at(-1).catchup.error,'GAP_LIMIT');
+ }finally{L.child.kill('SIGTERM');await L.exited;server.close()}
+});
+
+test('listener: an old post without text is not a gap; a fetch that fails midway sends nothing it read',{skip:!PY&&'python3 not available',timeout:40000},async()=>{
+ {const {server,got,port}=await fakeServer(),dataDir=tmp();
+  fs.writeFileSync(path.join(dataDir,'copy-listener-state.json'),STATE(10));
+  const L=runListener({port,dataDir,script:{history:[{id:11,age:300,text:''},{id:12,age:10,text:'recent'}],live:[]}});
+  try{
+   assert.ok(await until(()=>got.copy.length>=1),L.log());
+   assert.deepEqual(got.copy.map(x=>x.id),[12]);
+  }finally{L.child.kill('SIGTERM');await L.exited;server.close()}}
+ {const {server,got,port}=await fakeServer(),dataDir=tmp();
+  fs.writeFileSync(path.join(dataDir,'copy-listener-state.json'),STATE(10));
+  const L=runListener({port,dataDir,script:{historyFailAfter:1,history:[{id:11,age:30,text:'a'},{id:12,age:10,text:'b'}],live:[{delay:0.3,id:13,text:'live 13'}]}});
+  try{
+   assert.ok(await until(()=>got.copy.length>=1&&got.beats.some(b=>b.catchup)),L.log());
+   await new Promise(r=>setTimeout(r,500));
+   assert.deepEqual(got.copy.map(x=>x.id),[13],'12 was read before the failure but 11 was not: not sent');
+   assert.equal(got.beats.filter(b=>b.catchup).at(-1).catchup.error,'ConnectionError');
+  }finally{L.child.kill('SIGTERM');await L.exited;server.close()}}
+});
+
+test('listener: the saved last id belongs to one channel; another channel\'s id or a non-id value is ignored',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+ const {server,got,port}=await fakeServer(),dataDir=tmp(),file=path.join(dataDir,'copy-listener-state.json');
+ fs.writeFileSync(file,STATE(5000,-100999));
+ const L=runListener({port,dataDir,script:{history:[{id:7,age:10,text:'new channel'}],live:[]}});
+ try{
+  assert.ok(await until(()=>got.copy.length>=1),L.log());
+  assert.match(L.log(),/"min_id": 0/);
+  assert.ok(await until(()=>{try{const s=JSON.parse(fs.readFileSync(file,'utf8'));return s.lastId===7&&s.channel===-100123}catch{return false}}),'saved for this channel, not stuck behind the other one');
+ }finally{L.child.kill('SIGTERM');await L.exited;server.close()}
+ // Not a Telegram message id (corrupt file): ignored the same way.
+ const s2=await fakeServer(),d2=tmp();
+ fs.writeFileSync(path.join(d2,'copy-listener-state.json'),JSON.stringify({lastId:2**40}));
+ const L2=runListener({port:s2.port,dataDir:d2,script:{history:[{id:8,age:10,text:'x'}],live:[]}});
+ try{assert.ok(await until(()=>s2.got.copy.length>=1),L2.log());assert.match(L2.log(),/"min_id": 0/)}
+ finally{L2.child.kill('SIGTERM');await L2.exited;s2.server.close()}
+});
+
 test('listener: a hanging heartbeat never holds up copy delivery; disconnected state is reported',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
  const {server,got,port}=await fakeServer({heartbeatHang:true}),dataDir=tmp();
  const L=runListener({port,dataDir,env:{COPY_CATCHUP_MAX_AGE_SEC:'0'},script:{disconnectedAfter:0,live:[{delay:1.5,id:21,text:'a'},{delay:0.2,id:22,text:'b'}]}});
