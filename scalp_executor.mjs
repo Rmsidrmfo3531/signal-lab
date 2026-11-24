@@ -2392,6 +2392,8 @@ export class ScalpExecutor{
   const repeated=list.filter(x=>x.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version);
   all.scaleIn={closed:experiment.length,filled:experiment.filter(x=>x.scaleIn.fillQty>0).length};
   all.repeatedScaleIn={closed:repeated.length,filled:repeated.filter(x=>x.scaleIn.count>0).length,adds:repeated.reduce((n,x)=>n+(x.scaleIn.count||0),0)};return all}
+ /** Read only, for 실계좌 준비 점검 (ready_check.mjs): the same trades and scaled net as stats(), one row each. */
+ readinessRows(){return [...this.journalRows,...this.store.closed.filter(x=>!x.journaled)].map(x=>({direction:x.direction||'LONG',netUSD:(Number(x.netUSD)||0)*this.#displayScaleFor(x),closedAt:x.closedAt??null,closeReason:x.closeReason??null}))}
  #stats(list){
   const n=list.length,scaled=list.map(x=>({x,net:(Number(x.netUSD)||0)*this.#displayScaleFor(x)}));
   const wins=scaled.filter(r=>r.net>0),gross=wins.reduce((t,r)=>t+r.net,0),loss=-scaled.filter(r=>r.net<0).reduce((t,r)=>t+r.net,0);

@@ -62,6 +62,7 @@ import {createVenuePositionsReader,venueRows,normalizeVenuePosition} from './ven
 import {ManualLedger,MANUAL_LEDGER_FILE} from './manual_ledger.mjs';
 import {CopyControls} from './copy_controls.mjs';
 import {AccountAlerts} from './account_alerts.mjs';
+import {evaluateReadiness,ReadinessNotifier,readyReplyText} from './ready_check.mjs';
 import {RealTrailingManager,REAL_TRAILING_DEFAULTS,feeNetBreakevenPrice} from './real_trailing.mjs';
 import {RealAccountGuard,REAL_SAFETY_COPY_PRESET,copyRearmable as copyRearmableNow,copyRearmOnBoot} from './real_safety.mjs';
 import {fetchOrderflow,fetchOrderflowWithFirechart,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
@@ -560,6 +561,18 @@ const pumpBook=new PumpAlertBook({directory:storage.dir,log:(...a)=>console.warn
  listed:async symbol=>{const c=(await venueQuotes.clients.BINGX.contractsFor(symbol))?.get?.(symbol);return c?c.tradable===true:false}});
 scalpExec.onPumpResult=(key,result)=>{if(key)pumpBook.attachScalp(key,result)};
 setInterval(()=>{void pumpBook.track().catch(e=>console.warn('[PUMP]',e.message))},60000).unref?.();
+// 실계좌 준비 점검 (ready_check.mjs, user 2026-11-24 13:35 "조건이 완료되면 알림으로 알려줄 수 있나 실계좌에 쓸 상황이
+// 되었다고", 13:37 "2주는 너무 멀어 100건으로 잡고 다시 한 번 검증해보자고"): hourly, read only. One message to the allowed
+// chat per group when it first meets the criteria (live-readiness.json). Never changes a setting, never arms, no orders.
+const readyLossLimits=()=>({dailyLossPct:Number(realSafety?.store?.dailyLossLimitPct)||0,copyLedgerLossPct:COPY.mode==='LIVE'?Number(copyTrader?.config?.ledgerLossPct)||0:0});
+const readySummary=()=>evaluateReadiness({scalpRows:scalpExec.readinessRows(),pumpRecords:pumpBook.records});
+const readyNotifier=new ReadinessNotifier({directory:storage.dir,log:(...a)=>console.warn(...a),
+ send:async text=>{
+  if(accountAlerts)return accountAlerts.sendToAllowedChat(text);
+  if(!CONFIG.tgToken||!CONFIG.tgChat.trim())throw Error('TELEGRAM_NOT_CONFIGURED');
+  const res=await telegramPost({chat_id:CONFIG.tgChat.trim(),text});if(!res?.ok)throw Error(`HTTP_${res?.status}`);return true}});
+async function readyCheck(){try{await readyNotifier.check(readySummary(),{lossLimits:readyLossLimits()})}catch(e){console.warn('[READY]',e.message)}}
+setInterval(()=>{void readyCheck()},3600000).unref?.();setTimeout(()=>{void readyCheck()},180000).unref?.();
 function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
  const text=scalpEventText(e);if(!text)return;
@@ -834,6 +847,7 @@ if(COPY.mode==='LIVE'){
    };
   },
   getScalpStatus:async()=>scalpExec?.runtimeSummary?.()??null,
+  getReadiness:async()=>readyReplyText(readySummary(),{lossLimits:readyLossLimits()}),
   onControls:patch=>{
    if(patch){copyControls.configure(patch);reportsDirty=true}
    return {controls:copyControls.status(),traderBalanceUSD:copyControls.effectiveTraderBalanceUSD(COPY.traderBalanceUSD)};
@@ -1199,6 +1213,8 @@ async function uploadReport(force=false){
   if(report.scalp)report.scalp.runtime=scalpExec.runtimeSummary();
   // 급변 알림: count, fade / follow averages after costs by horizon, and the testnet scalp trades it triggered.
   try{report.pumpAlerts={...pumpBook.summary(),scalpTrades:scalpExec.stats().byTrigger?.PUMP_ALERT??null}}catch(e){console.warn('[REPORTS] pump',e.message)}
+  // 실계좌 준비 점검: every group's criteria, values and the trade window measured (for a re-check on the same trades).
+  try{report.liveReadiness=readyNotifier.status(readySummary())}catch(e){console.warn('[REPORTS] readiness',e.message)}
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});
   reportsDay=day;reportsHour=hourKey;reportsDirty=false;if(r.pushed)console.log('[REPORTS] 결과 업로드',r.day);
  }catch(e){console.error('[REPORTS]',e.message)}finally{reportsBusy=false}
@@ -2324,7 +2340,8 @@ const server=http.createServer(async(req,res)=>{
     return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
    const b=testnet?.budget,balance=hasTestnetBingx&&rawBalance?.venue==='BINGX'&&b?{...rawBalance,usd:b.balanceError?null:b.accountEquityUSD,at:b.balanceAt,error:b.balanceError}:rawBalance;
    const pumpAlerts=testnet?{...pumpBook.summary(),scalpTrades:scalp?.stats?.byTrigger?.PUMP_ALERT??null}:null;
-   return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,pumpAlerts,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+   let liveReadiness=null;if(testnet)try{liveReadiness=readyNotifier.status(readySummary())}catch{}
+   return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,pumpAlerts,liveReadiness,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance,paperTrading:CONFIG.paperTrading})})}
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);

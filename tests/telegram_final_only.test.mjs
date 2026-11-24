@@ -29,7 +29,9 @@ test('server contains a single Telegram delivery path guarded by live final resu
  // daily testnet readiness report (live_readiness.mjs: results only, no signals) and live trade
  // notices (live_telegram.mjs: entry/add/target/close/problems of orders already placed) — nothing else.
  // The same transport also carries automatic updates and confirmed real-account trade notices.
- assert.equal([...server.matchAll(/(?<!function )telegramPost\(/g)].length,6);
+ // 실계좌 준비 점검 (ready_check.mjs, 2026-11-24): results only, to the allowed chat, when the account alerts are not built.
+ assert.equal([...server.matchAll(/(?<!function )telegramPost\(/g)].length,7);
+ assert.match(server,/const readyNotifier=new ReadinessNotifier\(\{[\s\S]{0,300}?accountAlerts\.sendToAllowedChat\(text\);[\s\S]{0,200}?telegramPost\(\{chat_id:CONFIG\.tgChat\.trim\(\),text\}\)/);
  assert.match(server,/function updateNotice\(text\)\{try\{if\(CONFIG\.tgToken&&CONFIG\.tgChat\)telegramPost\(/);
  const scalpNotice=server.slice(server.indexOf('function scalpNotice('),server.indexOf('// A copy ledger'));
  assert.match(scalpNotice,/send\('live-notice'/);

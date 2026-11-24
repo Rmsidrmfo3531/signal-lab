@@ -959,6 +959,13 @@ export function pumpAlertsHTML(p){
  const horizons=Object.entries(p.byHorizon||{}).map(([h,x])=>stat(`${esc(h)}분 <small>${esc(x?.n??0)}건</small>`,`되돌림 <i class="${cls(x?.fadeNetPct)}">${pct(x?.fadeNetPct)}</i> · 추종 <i class="${cls(x?.followNetPct)}">${pct(x?.followNetPct)}</i>`)).join('');
  return `<div class="copy-stats tn-pump-stats">${stat('알림',`${esc(p.count??0)}건 <small>24시간 ${esc(p.last24h??0)}</small>`)}${stat('알림 단타',`${esc(t.trades??0)}건 · <i class="${cls(t.netUSD)}">${t.trades?tnMoney(t.netUSD):'—'}</i>`)}${horizons}</div>`;
 }
+/** 실계좌 준비 점검 (user 2026-11-24): one compact line and a progress bar (trades / required) per group. Read only. */
+export function liveReadinessHTML(r){
+ const groups=Array.isArray(r?.groups)?r.groups:[];
+ if(!groups.length)return '';
+ return `<ul class="ready-groups">${groups.map(g=>{const p=Math.max(0,Math.min(100,Math.round((Number(g.progress)||0)*100)));
+  return `<li class="${g.ready?'ok':'todo'}"><span class="ready-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p}" aria-label="${esc(g.label)} ${p}%"><i style="width:${p}%"></i></span><span>${g.ready?'✅ ':''}${esc(g.line||g.label)}</span></li>`}).join('')}</ul>`;
+}
 function bindTestnetPager(el){
  if(!el||el.dataset.tnBound)return;el.dataset.tnBound='1';
  el.addEventListener('click',e=>{const pg=e.target.closest('[data-tn-page]');if(!pg)return;setTestnetPage(tnPage+Number(pg.dataset.tnPage));if(lastTestnet)el.innerHTML=testnetClosedHTML(lastTestnet)})}
@@ -1244,6 +1251,7 @@ function render(o){
  // Testnet: the scalp's own details (rules, skips, journal), collapsed; its switch is the one testnet switch above.
  // Signal strategy not on the testnet (LIVE): the scalp keeps its own panel and buttons as before (review M3).
  if($('livePumpSection')){$('livePumpSection').hidden=!(tn&&o.pumpAlerts);if(tn&&o.pumpAlerts&&$('livePump'))$('livePump').innerHTML=pumpAlertsHTML(o.pumpAlerts)}
+ if($('liveReadySection')){const h=tn?liveReadinessHTML(o.liveReadiness):'';$('liveReadySection').hidden=!h;if(h&&$('liveReady'))$('liveReady').innerHTML=h}
  if($('liveScalpSection')){$('liveScalpSection').hidden=!(tn&&o.scalp);if(tn&&o.scalp&&$('liveScalp')&&!$('liveScalp').contains(document.activeElement))$('liveScalp').innerHTML=scalpDetailsHTML(o.scalp)}
  // 사유 설명 보기 (user 2026-11-24): a static fold, rewritten only when the thresholds change so it stays open.
  if($('liveReasonSection')){$('liveReasonSection').hidden=!(tn&&o.scalp);const g=tn&&o.scalp?reasonGlossaryHTML(o.scalp.settings):'';if(g&&$('liveReasons')&&$('liveReasons').dataset.html!==g){$('liveReasons').innerHTML=g;$('liveReasons').dataset.html=g}bindReasonTips(document)}
