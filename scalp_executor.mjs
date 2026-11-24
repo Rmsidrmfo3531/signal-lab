@@ -166,6 +166,7 @@ export function scalpExecConfig(env=process.env){
   // Better price (toward the stop): enter while >= this % of the planned stop distance is left (0 = old 0.4 %).
   stopKeepPct:n('SCALP_STOP_KEEP_PCT',50,0,100),maxDriftAtr:n('SCALP_MAX_DRIFT_ATR',1,.1,3),
   universeSize:n('SCALP_UNIVERSE_SIZE',120,10,250),
+  scanMaxSymbols:n('SCALP_SCAN_MAX_SYMBOLS',45,10,250),
   // Coins always scanned whatever their volume rank (user 2026-11-16: "단타를 먹기 쉬운 것들 AKEUSDT, EVAAUSDT 등").
   watchlist:[...new Set(['AKEUSDT','EVAAUSDT',...String(env.SCALP_WATCHLIST||'').toUpperCase().split(/[\s,]+/)].filter(x=>/^[A-Z0-9]{2,20}USDT$/.test(x)))],universeRefreshMs:30*60000,klineGapMs:n('SCALP_KLINE_GAP_MS',350,100,2000),scanGapMs:n('SCALP_SCAN_GAP_MS',120,0,1000),scanDelayMs:3000,
   balanceCapUSD:n('SCALP_BALANCE_CAP_USD',0,0,1e7),
@@ -493,20 +494,44 @@ export class ScalpExecutor{
   const merged=[...watch,...list.filter(u=>!watch.some(w=>w.symbol===u.symbol))];
   if(merged.length){this.universe=merged;this.universeAt=now}
  }
- /** The universe ordered by the price range of the last 8 scans' ticker snapshots (largest first); the volume
-  * order when no ticker is available. */
+ /** The universe ordered by the price range of the last 8 scans' ticker snapshots (largest first), with
+  * conservative flat-symbol prefiltering when the universe exceeds scanMaxSymbols so 5m scans finish fast. */
  async #byRecentMove(bucket){
   try{
   const pre=this.prefetch?.bucket===bucket?this.prefetch.rows:null;
   let rows=null;try{rows=await withTimeout(pre||(this.tickersFresh||this.tickers)(),pre?3000:5000)}catch{}
   if(!Array.isArray(rows))return [...this.universe];
-  const px=new Map(rows.filter(Boolean).map(r=>[String(r?.symbol),Number(r?.lastPrice)]));this.pxHist||=new Map();
+  const px=new Map(),chg24=new Map();
+  for(const r of rows){
+   if(!r?.symbol)continue;
+   const sym=String(r.symbol);
+   const p=Number(r.lastPrice);if(p>0)px.set(sym,p);
+   const c=Math.abs(Number(r.priceChangePercent));if(Number.isFinite(c))chg24.set(sym,c);
+  }
+  this.pxHist||=new Map();
   const live=new Set(this.universe.map(u=>u.symbol));for(const k of this.pxHist.keys())if(!live.has(k))this.pxHist.delete(k);
   const score=new Map();
+  let warmed=0;
   for(const u of this.universe){const p=px.get(u.venueSymbol);if(!(p>0))continue;
    const h=(this.pxHist.get(u.symbol)||[]).filter(x=>x.bucket>bucket-8&&x.bucket!==bucket);h.push({bucket,p});this.pxHist.set(u.symbol,h);
+   if(h.length>=2)warmed++;
    const ps=h.map(x=>x.p),lo=Math.min(...ps);score.set(u.symbol,(Math.max(...ps)-lo)/lo)}
-  return [...this.universe].sort((a,b)=>(score.get(b.symbol)??-1)-(score.get(a.symbol)??-1));
+  const sorted=[...this.universe].sort((a,b)=>{
+   const sa=score.get(a.symbol)??-1,sb=score.get(b.symbol)??-1;
+   if(sb!==sa)return sb-sa;
+   return (chg24.get(b.venueSymbol)??-1)-(chg24.get(a.venueSymbol)??-1);
+  });
+  const maxSym=Number(this.config.scanMaxSymbols)||0;
+  if(!(maxSym>0)||sorted.length<=maxSym)return sorted;
+  const minMoveFloor=Math.min(Number(this.config.settings?.minMovePct)||3.5,this.config.zoneSignals?(Number(this.config.zoneMinMovePct)||2.5):3.5);
+  const activeRange=(minMoveFloor/100)*0.35;
+  const hasHist=warmed>=Math.ceil(sorted.length*0.5);
+  const kept=[];
+  for(const [i,u] of sorted.entries()){
+   const mustScan=u.watch===true||this.reversalWatch.has(u.symbol)||i<maxSym||(hasHist&&(score.get(u.symbol)??0)>=activeRange);
+   if(mustScan)kept.push(u);
+  }
+  return kept;
   }catch{return [...this.universe]} // any bad ticker data: the volume order
  }
  async scan(now=this.now()){
@@ -522,7 +547,7 @@ export class ScalpExecutor{
    await this.#refreshUniverse(now);
    // Coins that moved most over the last ~35 minutes are read first (user 2026-11-17: by the 60th coin the
    // signal was ~50 s old and big movers drifted past the price check). One bulk ticker read per scan.
-   const order=await this.#byRecentMove(bucket);st.firstSymbols=order.slice(0,5).map(u=>u.symbol);
+   const order=await this.#byRecentMove(bucket);st.firstSymbols=order.slice(0,5).map(u=>u.symbol);st.prefiltered=order.length;st.universeTotal=this.universe.length;
    for(const [seq,u] of order.entries()){const ix=this.universe.indexOf(u);
     if(revision!==this.entryRevision||this.#blocked())break;
     // BingX answers 100410 when the shared public request rate is exceeded (2026-11-16: 10 of 80 coins per
@@ -1184,7 +1209,7 @@ export class ScalpExecutor{
   const trigger=defensive?mark:this.#repeatTrigger(p);
   if(!defensive&&(!(trigger>0)||dir*(mark-trigger)>1e-12))return;
   if(defensive)a.defensiveCheckedBucket=bucket;else a.checkedBucket=bucket;
-  if(!defensive&&await this.#isFallingKnife(p.symbol,p.direction,this.now())){a.lastReason='FALLING_KNIFE';return}
+  if(await this.#isFallingKnife(p.symbol,p.direction,this.now())){a.lastReason='FALLING_KNIFE';return}
   const revision=this.entryRevision,vs=p.venueSymbol,hedge=p.hedge===true;
   const [price,funds,fresh,levInfo]=await Promise.all([
    withTimeout(this.priceOf(p.symbol,vs),3000),
@@ -1576,9 +1601,17 @@ export class ScalpExecutor{
       const bumped=grid(mark+dir*tick,p.tickSize,beMode(p.direction));
       if(bumped&&dir*(Number(bumped)-mark)>0)stopPrice=bumped;
      }
+     const tpLimitFor=(sp,floor)=>{
+      if(!profitOnly)return null;
+      const spNum=Number(sp),flNum=Number(floor);
+      if(!(spNum>0))return floor??price;
+      const buffered=spNum*(1-dir*0.0015);
+      const clamped=flNum>0?(dir>0?Math.max(buffered,flNum):Math.min(buffered,flNum)):buffered;
+      return grid(clamped,p.tickSize,beMode(p.direction))??floor??price;
+     };
      let o;
      try{
-      o=await this.client.placeOrder(buildParams({stopPrice,limitPrice:profitOnly?price:null,type:orderType,cid:clientOrderId,qty:qtyStr}));
+      o=await this.client.placeOrder(buildParams({stopPrice,limitPrice:tpLimitFor(stopPrice,triggerFloor),type:orderType,cid:clientOrderId,qty:qtyStr}));
      }catch(e){
       const is110401=e?.code==='VENUE_ERROR_110401'||/\b110401\b/.test(String(e?.message||''));
       if(!is110401)throw e;
@@ -1597,9 +1630,9 @@ export class ScalpExecutor{
       let retryStop=profitOnly&&triggerFloor&&dir*(Number(freshTarget)-Number(triggerFloor))<0?triggerFloor:freshTarget;
       const retryCid=(p.id+(profitOnly?'p':'')+tag+'r'+tries).slice(0,39);
       let recovered=null,how='';
-      const profitFloor=freshLimit?Number(freshLimit):p.avg;
+      const profitFloor=Number(triggerFloor??freshLimit)??p.avg;
       if(profitOnly&&freshLimit&&freshMark&&dir*(freshMark-Number(freshLimit))>=0){
-       const limPx=grid(dir>0?Math.max(Number(freshTarget),Number(freshLimit)):Math.min(Number(freshTarget),Number(freshLimit)),p.tickSize,beMode(p.direction))??freshLimit;
+       const limPx=grid(dir>0?Math.max(Number(retryStop),Number(freshLimit)):Math.min(Number(retryStop),Number(freshLimit)),p.tickSize,beMode(p.direction))??retryStop;
        try{recovered=await this.client.placeOrder(buildParams({stopPrice:null,limitPrice:limPx,type:'LIMIT',cid:retryCid,qty:freshQty}));how=`LIMIT@${limPx}`}catch{}
       }
       if(!recovered){
@@ -1608,7 +1641,7 @@ export class ScalpExecutor{
         if(bumped&&dir*(Number(bumped)-freshMark)>0)retryStop=bumped;
        }
        try{
-        recovered=await this.client.placeOrder(buildParams({stopPrice:retryStop,limitPrice:profitOnly?(freshLimit??price):null,type:orderType,cid:(retryCid+'a').slice(0,40),qty:freshQty}));
+        recovered=await this.client.placeOrder(buildParams({stopPrice:retryStop,limitPrice:tpLimitFor(retryStop,triggerFloor??freshLimit),type:orderType,cid:(retryCid+'a').slice(0,40),qty:freshQty}));
         how=`${orderType}@${retryStop}`;
        }catch(e2){
         if(profitOnly&&dir*(Number(retryStop)-profitFloor)>=0){
@@ -1688,7 +1721,12 @@ export class ScalpExecutor{
   const direction=dirOf(p.direction);
   const qty=Number(grid(p.size,p.quantityStep,'DOWN'));
   if(!(qty>0))return false;
-  const bookedLoss=profitOnly?Math.max(0,-(num(p.exchangePosition?.realizedPnLUSD)??0)):0;
+  const rawRealizedLoss=profitOnly?Math.max(0,-(num(p.exchangePosition?.realizedPnLUSD)??0)):0;
+  // BingX books the entry fee as negative realisedProfit immediately upon opening (already covered by 2*fee in
+  // profitLimit/netRoePct). Only treat negative realisedProfit exceeding ~2.5x taker entry fee as a real booked
+  // trading loss; otherwise every new position would falsely enter recoveryMode (minNetRoePct=0) and dump at +3% ROE.
+  const entryFeeAllowance=(pos(p.filled)??qty)*p.avg*Math.max(p.takerRate||0,SCALP_EXEC_COSTS.takerRate)*2.5;
+  const bookedLoss=rawRealizedLoss>entryFeeAllowance?rawRealizedLoss:0;
   const scaledIn=(p.scaleIn?.count||0)>0;
   const initQty=pos(p.scaleIn?.initialQty)??pos(p.initialQty)??pos(p.filled);
   const isDust=profitOnly&&p.everReduced===true&&initQty>0&&p.size<initQty*SCALP_REPEAT_SCALE_IN.dustRatio;

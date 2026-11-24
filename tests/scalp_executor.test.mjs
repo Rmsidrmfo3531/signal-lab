@@ -1529,13 +1529,86 @@ test('defensive 1st scale-in fires at -40% ROE (0.75x) instead of stopping out, 
 
 
 
-test('maker entry: an unclear PostOnly answer (HTTP 5xx) is an unknown outcome, never dropped as rejected nor followed by a market order (review 2026-11-23)',async()=>{
- const v=venue(),ex=make(v,{config:{makerEntry:true,makerWaitMs:10,makerPollMs:50}});
- const place=v.client.placeOrder;
- // The PostOnly order reaches the book, but the answer is a gateway error.
- v.client.placeOrder=async(p,o)=>{const r=await place(p,o);if(p.type==='LIMIT'&&p.timeInForce==='PostOnly')throw Object.assign(Error('bad gateway'),{code:'HTTP_502'});return r};
- ex.arm();await ex.scan();
- assert.equal(placed(v,'MARKET').length,0,'no market order on top of a PostOnly order that may rest');
- assert.equal(ex.store.open.length,1);assert.equal(ex.store.open[0].status,'UNKNOWN');
- assert.ok(ex.store.events.some(e=>e.type==='ENTRY_OUTCOME_UNKNOWN'&&e.reason==='HTTP_502'));
+ test('maker entry: an unclear PostOnly answer (HTTP 5xx) is an unknown outcome, never dropped as rejected nor followed by a market order (review 2026-11-23)',async()=>{
+  const v=venue(),ex=make(v,{config:{makerEntry:true,makerWaitMs:10,makerPollMs:50}});
+  const place=v.client.placeOrder;
+  // The PostOnly order reaches the book, but the answer is a gateway error.
+  v.client.placeOrder=async(p,o)=>{const r=await place(p,o);if(p.type==='LIMIT'&&p.timeInForce==='PostOnly')throw Object.assign(Error('bad gateway'),{code:'HTTP_502'});return r};
+  ex.arm();await ex.scan();
+  assert.equal(placed(v,'MARKET').length,0,'no market order on top of a PostOnly order that may rest');
+  assert.equal(ex.store.open.length,1);assert.equal(ex.store.open[0].status,'UNKNOWN');
+  assert.ok(ex.store.events.some(e=>e.type==='ENTRY_OUTCOME_UNKNOWN'&&e.reason==='HTTP_502'));
+ });
+
+test('BingX negative entry-fee realisedProfit does not bypass +16% ROE partial-take & trailing, and TAKE_PROFIT limitPrice stays above triggerFloor',async()=>{
+ const v=venue({fillAt:PX_S}),clock={t:T0};
+ const ex=make(v,{clock,price:PX_S,trend:down4h,rows:rise,config:{stopLossEnabled:false,scaleIn:false,minProfitRoePct:16,earlyFallbackMin:0,partialTakeFrac:0.25}});
+ ex.arm();assert.equal((await ex.scan()).entered,1);
+ const p=ex.store.open[0],initSize=p.size;
+ // 1) TAKE_PROFIT limitPrice must be anchored near stopPrice / triggerFloor (~+16% ROE = -1.76% move), NEVER breakeven (~-0.16%)
+ const tps=placed(v,'TAKE_PROFIT');
+ assert.ok(tps.length>0);
+ for(const tp of tps){
+  const pctFromAvg=(p.avg-Number(tp.price))/p.avg*100;
+  assert.ok(pctFromAvg>=1.5,`TAKE_PROFIT limitPrice ${tp.price} must protect >=1.5% profit (not breakeven), got ${pctFromAvg.toFixed(2)}%`);
+ }
+ // 2) Simulate BingX reporting negative entry fee (-0.06% of notional) in realisedProfit from second 0
+ const entryFeeUSD=+(p.size*p.avg*0.0006).toFixed(4);
+ const origPos=v.client.positions;
+ v.client.positions=async(...a)=>(await origPos(...a)).map(r=>({...r,realisedProfit:String(-entryFeeUSD)}));
+ // Small +0.4% move (+4% gross ROE) must NOT trigger breakeven EARLY_TAKE_PROFIT!
+ v.mark=+(p.avg*0.996).toFixed(2);
+ clock.t+=10000;await ex.reconcile();
+ assert.equal(ex.store.open.length,1,'entry-fee realisedProfit must not cause premature +4% ROE dump');
+ assert.equal(v.size,initSize);
+ // +1.85% move (>= +16% Net ROE at 10x) triggers 25% partial lock-in and keeps 75% runner open
+ v.mark=+(p.avg*0.9815).toFixed(2);
+ clock.t+=10000;await ex.reconcile();
+ assert.equal(p.scaleInPartialTaken,true,'25% partial profit locked in at >= +16% Net ROE');
+ assert.ok(v.size>initSize*0.7&&v.size<initSize*0.8,'~75% runner remains open');
 });
+
+test('defensive -40% ROE scale-in respects falling-knife marubozu guard',async()=>{
+ const v=venue({fillAt:PX}),clock={t:T0};
+ let price=PX;
+ const marubozuDump=()=>[
+  [T0-2*I,100,100.5,99.5,100,100,T0-I-1],
+  [T0-I,100,100.2,95.0,95.2,500,T0-1], // huge red marubozu (body/range > 0.9, lower wick < 0.05)
+ ];
+ const ex=make(v,{clock,price:()=>price,trend:up4h,rows:crash,config:{stopLossEnabled:false,scaleIn:true,riskPct:.15,defensiveAddRoePct:40,emergencyStopRoePct:75}});
+ ex.arm();assert.equal((await ex.scan()).entered,1);
+ const p=ex.store.open[0];
+ p.initialStop=+(p.avg*0.94).toFixed(2);
+ const prevCandles=ex.candles;
+ ex.candles=(sym,tf,n)=>tf==='5m'&&n===3?Promise.resolve(marubozuDump()):prevCandles(sym,tf,n);
+ // Drop -4.3% (-43% ROE) while latest closed 5m bar is a vertical red marubozu -> deferred as FALLING_KNIFE
+ clock.t+=2*60000;
+ price=+(p.avg*0.957).toFixed(2);v.mark=price;
+ await ex.reconcile();
+ assert.equal(p.scaleIn.count,0,'must not fire defensive add into a vertical marubozu dump');
+ assert.equal(p.scaleIn.lastReason,'FALLING_KNIFE');
+});
+
+test('ticker prefilter limits 5m candle fetches to scanMaxSymbols + active movers + watchlist',async()=>{
+ const v=venue(),clock={t:T0};
+ const syms=Array.from({length:60},(_,i)=>({symbol:`C${i}USDT`,venueSymbol:`C${i}-USDT`,quoteVolume:1e8-i*1e5,lastPrice:100,priceChangePercent:i<5?12:0.5}));
+ const fetched=[];
+ const ex=new ScalpExecutor({
+  directory:tmp(),
+  config:{...scalpExecConfig({SCALP_EXEC_MODE:'TESTNET',SCALP_UNIVERSE_SIZE:'60',SCALP_SCAN_MAX_SYMBOLS:'10',SCALP_WATCHLIST:'C59USDT'}),scanGapMs:0,klineGapMs:0},
+  client:v.client,
+  tickers:async()=>syms.map(s=>({symbol:s.venueSymbol,lastPrice:String(s.lastPrice),quoteVolume:String(s.quoteVolume),priceChangePercent:String(s.priceChangePercent)})),
+  contracts:async()=>new Map(syms.map(s=>[s.symbol,{symbol:s.symbol,venueSymbol:s.venueSymbol,tickSize:'0.01',quantityStep:'0.01',minQuantityBase:0.01,minNotionalUSDT:2,tradable:true}])),
+  candles:async(sym)=>{fetched.push(sym);return []},
+  balance:async()=>({equity:3000,available:3000}),
+  now:()=>clock.t,
+ });
+ ex.arm();
+ const st=await ex.scan(clock.t);
+ assert.equal(st.universeTotal,60);
+ assert.ok(st.prefiltered<=12,`expected prefiltered <= 12, got ${st.prefiltered}`);
+ assert.ok(fetched.includes('C59USDT'),'watchlist symbol is always scanned');
+ assert.ok(fetched.includes('C0USDT'),'high-24h-volatility mover is scanned');
+ assert.ok(fetched.length<=12,'dead-flat symbols skipped to keep scan fast');
+});
+
