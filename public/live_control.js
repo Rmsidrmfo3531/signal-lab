@@ -179,11 +179,13 @@ function notCopiedWhy(e,when,all=[]){
 const scrollCopyTable=(table,label)=>`<div class="copy-table-scroll" role="region" aria-label="${esc(label)}" tabindex="0">${table}</div>`;
 export function venuePositionsHTML(c,copyOpen=[]){
  if(!c||c.mode!=='LIVE'||!('venuePositions' in c||c.venuePositionsError))return '';
- const list=Array.isArray(c.venuePositions)?c.venuePositions:null,manual=(list||[]).filter(p=>p.origin!=='copy');
+ const list=Array.isArray(c.venuePositions)?c.venuePositions:null;
+ const copyCount=(list||[]).filter(p=>p.origin==='copy').length,scalpCount=(list||[]).filter(p=>p.origin==='scalp').length;
+ const manual=(list||[]).filter(p=>p.origin!=='copy'&&p.origin!=='scalp');
  const money=v=>!fin(v)?'—':`${Number(v)>=0?'+':'−'}$${Math.abs(Number(v)).toFixed(2)}`,usdv=v=>!fin(v)?'—':`$${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
  const cls=v=>!fin(v)?'':Number(v)>0?'paper-profit':Number(v)<0?'paper-loss':'',px=v=>fin(v)&&Number(v)>0?esc(+Number(v).toPrecision(6)):'—';
  const pct=v=>!fin(v)?'—':`${Number(v)>=0?'+':'−'}${Math.abs(Number(v)).toFixed(1)}%`,mm=p=>p.marginMode==='ISOLATED'?'격리':'교차';
- const badge=p=>p.origin==='copy'?'<span class="vp-badge copy">카피</span>':'<span class="vp-badge manual">수동</span>';
+ const badge=p=>p.origin==='copy'?'<span class="vp-badge copy">카피</span>':p.origin==='scalp'?'<span class="vp-badge scalp">단타</span>':'<span class="vp-badge manual">수동</span>';
  const sum=a=>a.reduce((t,p)=>t+(Number(p.unrealized)||0),0);
  const hhmm=t=>t?new Date(t).toLocaleTimeString('ko-KR',{hour12:false}):'';
  const fail=c.venuePositionsError?`<span class="vp-fail" title="${esc(c.venuePositionsError)}">갱신 실패${list&&c.venuePositionsAt?` · ${hhmm(c.venuePositionsAt)} 목록`:''}</span>`:'';
@@ -192,13 +194,13 @@ export function venuePositionsHTML(c,copyOpen=[]){
  const info=p=>{if(p.origin!=='copy')return null;const r=rec.get(keyOf(p.symbol,p.direction));if(r)seen.add(r);return r};
  const partialCount=r=>r?.reduces!=null&&Number.isSafeInteger(Number(r.reduces))&&Number(r.reduces)>=0?esc(r.reduces)+'회':'—';
  const heldTxt=r=>{if(!r?.openedAt)return '—';const m=Math.max(0,Math.round((Date.now()-r.openedAt)/60000));return m<60?`${m}분`:m<1440?`${Math.floor(m/60)}시간 ${m%60}분`:`${Math.floor(m/1440)}일 ${Math.floor(m%1440/60)}시간`};
- const head=`<h5 class="copy-sub">보유 중 <small>${list?`${list.length}개 · 카피 ${list.length-manual.length}개 · 수동 ${manual.length}개`:'조회 전'}</small>${fail}</h5>`;
+ const head=`<h5 class="copy-sub">보유 중 <small>${list?`${list.length}개 · 카피 ${copyCount}개${scalpCount>0?` · 단타 ${scalpCount}개`:''} · 수동 ${manual.length}개`:'조회 전'}</small>${fail}</h5>`;
  if(!list)return head+'<p class="empty-small">거래소 포지션을 아직 읽지 못했습니다.</p>';
  if(!list.length&&!copyOpen.length)return head+'<p class="empty-small">보유 중인 포지션이 없습니다. 채널에 새 진입 알림이 오면 따라 들어갑니다.</p>';
  const totals=`<p class="copy-stamp vp-total">미실현 합계 <b class="${cls(sum(list))}">${money(sum(list))}</b> · 수동만 <b class="${cls(sum(manual))}">${manual.length?money(sum(manual)):'—'}</b></p>`;
  const tr=c.trailing||null;
  const trInfo=p=>{
-  if(!tr?.enabled)return null;
+  if(!tr?.enabled||p.origin==='scalp')return null;
   const isCopy=p.origin==='copy';
   if((isCopy&&!tr.applyToCopy)||(!isCopy&&!tr.applyToManual))return null;
   const disp=symText(p.symbol),excluded=(tr.excludedSymbols||[]).includes(disp);
@@ -214,24 +216,24 @@ export function venuePositionsHTML(c,copyOpen=[]){
  };
  const stopBadge=p=>{
   if(fin(p.stop))return `<span class="vp-badge" title="거래소 손절 주문 설정됨">🛡 손절 ${px(p.stop)}</span>`;
-  if(p.origin!=='copy'&&p.stopChecked===true)return '<span class="vp-badge warn" title="손절 주문이 없습니다. 아래 버튼으로 즉시 설정할 수 있습니다.">⚠ 손절 없음</span>';
+  if(p.origin!=='copy'&&p.origin!=='scalp'&&p.stopChecked===true)return '<span class="vp-badge warn" title="손절 주문이 없습니다. 아래 버튼으로 즉시 설정할 수 있습니다.">⚠ 손절 없음</span>';
   return '';
  };
  const posActions=p=>{
   const inProfit=fin(p.unrealized)&&Number(p.unrealized)>0,sym=esc(p.symbol),dir=esc(p.direction),sz=esc(qtyFmt(p.size)),lev=esc(p.leverage||''),mmMode=esc(p.marginMode||'CROSSED');
   const info=trInfo(p);
-  const slBtn=p.origin!=='copy'&&!fin(p.stop)?`<button type="button" class="vp-act-btn warn" data-pos-action="SET_STOP_LOSS" data-pos-sl-roe="15" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="현재 포지션에 −15% ROE 손절(STOP_MARKET) 즉시 설정">🛡 -15% 손절</button>`:'';
+  const slBtn=p.origin!=='copy'&&p.origin!=='scalp'&&!fin(p.stop)?`<button type="button" class="vp-act-btn warn" data-pos-action="SET_STOP_LOSS" data-pos-sl-roe="15" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="현재 포지션에 −15% ROE 손절(STOP_MARKET) 즉시 설정">🛡 -15% 손절</button>`:'';
   const trBtn=info?`<button type="button" class="vp-act-btn" data-trail-toggle="${esc(info.disp)}" title="${info.excluded?'이 종목을 자동 트레일링 대상에 다시 포함':'이 종목을 자동 트레일링에서 제외'}">${info.excluded?'트레일 포함':'트레일 제외'}</button>`:'';
   const ofBtn=`<button type="button" class="vp-act-btn" data-open-orderflow="${sym}" title="이 종목의 FireCharts 호가 히트맵·고래/개미 CVD·추정 청산맵 보기">수급/CVD</button>`;
   return `<div class="vp-actions"><button type="button" class="vp-act-btn trade" data-trade-fill data-pos-symbol="${sym}" data-pos-lev="${lev}" data-pos-mm="${mmMode}" title="이 종목을 수동 주문 패널에 불러오기">주문/추매</button>${ofBtn}<button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가+왕복 수수료에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button>${slBtn}${trBtn}</div>`;
  };
- const row=p=>{const r=info(p);return `<li class="${p.origin==='copy'?'':'vp-manual'}">${symTag(p.symbol)}${badge(p)}${stopBadge(p)}${trBadge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · 부분청산 ${partialCount(r)} · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b>${posActions(p)}</li>`};
+ const row=p=>{const r=info(p),isMan=p.origin!=='copy'&&p.origin!=='scalp';return `<li class="${isMan?'vp-manual':''}">${symTag(p.symbol)}${badge(p)}${stopBadge(p)}${trBadge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · 부분청산 ${partialCount(r)} · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b>${posActions(p)}</li>`};
 
  const table=`<table class="copy-table vp-table vp-two-row only-desk">
   <colgroup><col style="width:26%"><col style="width:12%"><col style="width:12%"><col style="width:17%"><col style="width:18%"><col style="width:15%"></colgroup>
   <thead><tr><th>종목·구분</th><th>방향</th><th>배율</th><th class="num">수량</th><th class="num">평단</th><th class="num">현재가</th></tr></thead>
   <tbody>${list.map(p=>{
-   const r=info(p),manual=p.origin==='copy'?'':' vp-manual';
+   const r=info(p),manual=p.origin!=='copy'&&p.origin!=='scalp'?' vp-manual':'';
    return `<tr class="vp-primary${manual}">
     <td class="vp-symbol-cell" rowspan="2">${symTag(p.symbol,'vp-symbol')} ${badge(p)} ${stopBadge(p)} ${trBadge(p)}${posActions(p)}</td>
     <td>${side(p.direction)}</td>
@@ -252,7 +254,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
 }
 
 // Recent closes: 10 at a time with page buttons (user 2026-11-17 "10건으로 해주고 페이지 형식으로").
-let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,trailingOpen=false,safetyOpen=false,analyticsOpen=false,analyticsTab='symbol',lastCopy=null,realTradeCtrl=null;
+let copyPage=0,failPage=0,failOpen=false,controlsOpen=false,alertsOpen=false,trailingOpen=false,safetyOpen=false,liveScalpOpen=false,analyticsOpen=false,analyticsTab='symbol',lastCopy=null,realTradeCtrl=null;
 export function setFailOpen(v){failOpen=!!v}
 export function setControlsOpen(v){controlsOpen=!!v}
 export function setAlertsOpen(v){alertsOpen=!!v}
@@ -614,7 +616,20 @@ export function copyHTML(c){
  const fresh=open.map(p=>p.markAt).filter(Boolean),updated=Math.max(f?.at||0,Number(c.venuePositionsAt)||0,...fresh);
  const deferredNote=c.deferredEntries>0?`<p class="copy-stamp">⏳ 업데이트 대기 중인 카피 신호 ${esc(c.deferredEntries)}건 (재시작 직후 처리)</p>`:'';
  const stamp=isLive&&updated>0?`<p class="copy-stamp">${new Date(updated).toLocaleTimeString('ko-KR',{hour12:false})} 기준 · 3초마다 갱신</p>`:'';
- const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${safetyBanner}${deferredNote}${stats}${safetyPanel}${controlsPanel}${alertsPanel}${trailingPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
+ const ls=isLive&&c.liveScalp&&c.liveScalp.mode==='LIVE'?c.liveScalp:null;
+ const lsSet=ls?.settings||{};
+ const liveScalpPanel=ls?`<details class="copy-controls-fold"${liveScalpOpen?' open':''}><summary data-live-scalp-toggle>되돌림 단타 · 실계좌 파일럿 <small>${ls.armed?`ON · 보유 ${(ls.positions||[]).length}/${esc(lsSet.maxOpen||3)}개`:'OFF (안전 대기)'}</small></summary>
+  <div class="copy-controls-form">
+   <p class="copy-stamp">자본 상한 <b>$${esc(lsSet.balanceCapUSD??500)}</b> · 거래소 비상스탑 <b>−${esc(lsSet.hardStopRoePct??85)}% ROE</b> · 여유 마진 <b>${esc(lsSet.minFreeAccountMarginPct??40)}%</b> 보호</p>
+   <p class="copy-stamp">최대 <b>${esc(lsSet.maxOpen??3)}종목</b> (같은 방향 ${esc(lsSet.maxSameSide??2)}종목) · 스프레드 ≤ <b>${esc(lsSet.maxSpreadPct??0.25)}%</b> · 일일 한도 <b>−${esc(lsSet.dailyLossPct??3)}%</b> · 재시작 시 자동 꺼짐</p>
+   ${ls.blocked&&ls.blocked!=='NOT_ARMED'?`<p class="copy-stamp">상태: <b>${esc(ls.blockedKo||ls.blocked)}</b></p>`:''}
+   <p class="copy-stamp">오늘 실현 <b class="${cls(ls.stats?.todayNetUSD)}">${money(ls.stats?.todayNetUSD)}</b> · 누적 ${esc(ls.stats?.trades||0)}건 (${ls.stats?.winRatePct!=null?`${esc(ls.stats.winRatePct)}%`:'—'})</p>
+   <div class="copy-controls-actions">
+    ${ls.armed?'<button type="button" class="outline-btn small" data-live-scalp-disarm>실계좌 단타 끄기</button>':'<button type="button" class="outline-btn small danger-btn" data-live-scalp-arm>실계좌 단타 켜기</button>'}
+    <span class="copy-msg" data-live-scalp-msg></span>
+   </div>
+  </div></details>`:'';
+ const side_=`<div class="copy-side">${modeLine}${kill}${cooldownBanner}${safetyBanner}${deferredNote}${stats}${safetyPanel}${liveScalpPanel}${controlsPanel}${alertsPanel}${trailingPanel}${isLive&&c.daily?pnlCalendarHTML(c.daily):''}${rules}${stamp}</div>`;
  const merged=c.mode==='LIVE'&&('venuePositions' in c||c.venuePositionsError);
  const main=`<div class="copy-main">`+(merged?venuePositionsHTML(c,open):`<h5 class="copy-sub">보유 중 <small>${open.length}개</small></h5>`+(open.length?`<ul class="copy-list only-mob">${open.map(row).join('')}</ul>${scrollCopyTable(openTable,'보유 포지션')}`:`<p class="empty-small">따라 들어간 포지션이 없습니다. 채널에 새 진입 알림이 오면 들어갑니다.</p>`))+
   (c.analytics?analyticsHTML(c.analytics):'')+
@@ -1067,7 +1082,19 @@ function bindCopyButtons(el){
   if(e.target.closest('[data-alerts-toggle]')){alertsOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-trailing-toggle]')){trailingOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-safety-toggle]')){safetyOpen=!e.target.closest('details')?.open;}
+  if(e.target.closest('[data-live-scalp-toggle]')){liveScalpOpen=!e.target.closest('details')?.open;}
   if(e.target.closest('[data-analytics-toggle]')){analyticsOpen=!e.target.closest('details')?.open;}
+  const lsArm=e.target.closest('[data-live-scalp-arm]');
+  if(lsArm){
+   const cap=lastCopy?.liveScalp?.settings?.balanceCapUSD??500;
+   const hs=lastCopy?.liveScalp?.settings?.hardStopRoePct??85;
+   if(!window.confirm(`실계좌 되돌림 단타를 켤까요?\n· 실제 BingX USDT 잔고로 주문이 나갑니다 (자본 상한 $${cap})\n· 거래소 비상스탑 −${hs}% ROE 자동 설정 · 서버 재시작 시 자동 꺼짐\n· 카피/수동 보유 종목은 자동으로 건너뜁니다`))return;
+   return call(lsArm,'/api/scalp/live/arm',{confirm:'SCALP_LIVE_ARM'},'켜는 중…','[data-live-scalp-msg]');
+  }
+  const lsDisarm=e.target.closest('[data-live-scalp-disarm]');
+  if(lsDisarm){
+   return call(lsDisarm,'/api/scalp/live/disarm',{},'끄는 중…','[data-live-scalp-msg]');
+  }
   const safetyPreset=e.target.closest('[data-safety-preset]');
   if(safetyPreset){
    if(!window.confirm('실계좌 권장 안전 프리셋을 일괄 적용할까요?\n· 통합 일일 손실 차단·수동 레버리지·수동 증거금 제한 끔\n· 카피 최대 레버리지 20배\n· 카피 종목당 증거금 한도 15%\n· 카피 3연패 또는 당일 -6% 쿨다운(2시간)'))return;

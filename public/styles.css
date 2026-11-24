@@ -452,6 +452,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 /* Every venue position on the real account (user 2026-11-17): 카피 / 수동 badges, read-only. */
 .vp-badge{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:700;line-height:1.5;border:1px solid transparent}
 .vp-badge.copy{background:#16263a;color:#9fc3ef;border-color:#2c4565}
+.vp-badge.scalp{background:rgba(180,140,255,.14);color:#c9b2ff;border-color:rgba(180,140,255,.45)}
 .vp-badge.manual{background:rgba(242,196,109,.12);color:#f2c46d;border-color:rgba(242,196,109,.35)}
 .copy-list li.vp-manual{border-color:rgba(242,196,109,.28)}
 .copy-table tr.vp-manual td:first-child{box-shadow:inset 2px 0 rgba(242,196,109,.55)}

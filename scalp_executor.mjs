@@ -244,7 +244,51 @@ export function scalpExecConfig(env=process.env){
   // 매물대 반전 (user 2026-11-17 23:12): on by default, SCALP_ZONE_SIGNALS=off turns it off.
   zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT,
   // 급변 알림 trigger (user 2026-11-24): on by default; only ever acts in TESTNET mode (LIVE is refused above).
-  pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_PUMP_ALERTS??'').trim().toLowerCase())};
+  pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_PUMP_ALERTS??'').trim().toLowerCase()),
+  // Live-account safety rails (disabled = 0 on TESTNET by default so testnet verification is unaffected; active in scalpLiveExecConfig).
+  hardStopRoePct:n('SCALP_HARD_STOP_ROE_PCT',0,0,95),
+  minFreeAccountMarginPct:n('SCALP_MIN_FREE_MARGIN_PCT',0,0,90),
+  maxSpreadPct:n('SCALP_MAX_SPREAD_PCT',0,0,5),
+  preFundingWindowMin:n('SCALP_PRE_FUNDING_WINDOW_MIN',0,0,60),
+  preFundingExtremePct:n('SCALP_PRE_FUNDING_EXTREME_PCT',0,0,5),
+  scaleInRetrySlippagePct:n('SCALP_SCALE_IN_RETRY_SLIP_PCT',SCALP_REPEAT_SCALE_IN.retrySlippagePct,0.1,3)};
+}
+
+export const SCALP_LIVE_CONFIRM_TOKEN='REAL_MONEY_SCALP';
+
+/** Dedicated real-money scalp config (default OFF): requires BOTH SCALP_LIVE_MODE=LIVE AND SCALP_LIVE_CONFIRM=REAL_MONEY_SCALP.
+ * Completely independent from testnet SCALP_EXEC_MODE so testnet verification runs undisturbed alongside live pilot rails. */
+export function scalpLiveExecConfig(env=process.env){
+ const base=scalpExecConfig({...env,SCALP_EXEC_MODE:'TESTNET'});
+ const n=(k,d,lo,hi)=>{const v=Number(env[k]);return env[k]!==undefined&&env[k]!==''&&Number.isFinite(v)&&v>=lo&&v<=hi?v:d};
+ const raw=String(env.SCALP_LIVE_MODE??'').trim().toUpperCase();
+ const confirmed=String(env.SCALP_LIVE_CONFIRM??'').trim()===SCALP_LIVE_CONFIRM_TOKEN;
+ const wantLive=raw==='LIVE';
+ const mode=wantLive&&confirmed?'LIVE':'OFF';
+ const refused=wantLive&&!confirmed?'LIVE_CONFIRM_REQUIRED':(raw===''||raw==='OFF'||raw==='LIVE'?null:'MODE_INVALID');
+ return {
+  ...base,
+  mode,
+  refused,
+  allowLive:mode==='LIVE',
+  balanceCapUSD:n('SCALP_LIVE_CAPITAL_CAP_USD',500,50,1e7),
+  maxOpen:n('SCALP_LIVE_MAX_OPEN',3,1,20),
+  maxSameSide:n('SCALP_LIVE_MAX_SAME_SIDE',2,1,10),
+  dailyLossPct:n('SCALP_LIVE_DAILY_LOSS_PCT',3,0.5,15),
+  profitOnlyTargetMarginPct:n('SCALP_LIVE_TARGET_MARGIN_PCT',3.0,0.5,10),
+  // Exchange-side catastrophic STOP_MARKET safety net on BingX servers when local reconcile/network stalls.
+  hardStopRoePct:n('SCALP_LIVE_HARD_STOP_ROE_PCT',85,50,95),
+  // Reserve >= 40% free real-account margin so live copy/manual trading is never starved.
+  minFreeAccountMarginPct:n('SCALP_LIVE_MIN_FREE_MARGIN_PCT',40,0,90),
+  // Live execution quality guards: filter thin alt spreads and pre-settlement extreme funding bleed.
+  maxSpreadPct:n('SCALP_LIVE_MAX_SPREAD_PCT',0.25,0,5),
+  preFundingWindowMin:n('SCALP_LIVE_PRE_FUNDING_WINDOW_MIN',15,0,60),
+  preFundingExtremePct:n('SCALP_LIVE_PRE_FUNDING_EXTREME_PCT',0.30,0,5),
+  // Bounded IOC slippage on live scale-in instead of blind MARKET fallback on thin books.
+  scaleInMarketFallback:['on','true','1','yes'].includes(String(env.SCALP_LIVE_SCALE_IN_MARKET_FALLBACK??'').trim().toLowerCase()),
+  scaleInRetrySlippagePct:n('SCALP_LIVE_SCALE_IN_RETRY_SLIP_PCT',1.1,0.2,3),
+  pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_LIVE_PUMP_ALERTS??'off').trim().toLowerCase()),
+ };
 }
 
 /** Backtest-validated session size multiplier (40 coins, Train/OOS): EU(08-14 UTC / 17-23 KST) 0.5x, US/Late(14-24 UTC / 23-09 KST) 1.15x, Asia 1.0x. */
@@ -457,11 +501,14 @@ function scalpCloseReasonLabel(x){
 }
 
 export class ScalpExecutor{
- constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,zoneCandles=null,orderflow=null,priceOf=async()=>null,markOf=async()=>null,
-  balance=async()=>null,isBusy=()=>false,gate=()=>({ok:true}),directory=null,fileName='scalp-store.json',now=()=>Date.now(),log=()=>{},onEvent=()=>{},budget=null}){
-  if(!SCALP_EXEC_MODES.includes(config?.mode))throw err('SCALP_TESTNET_ONLY',500);
-  if(client&&client.mode!=='TESTNET')throw err('SCALP_TESTNET_ONLY',500);
-  Object.assign(this,{config,client,contracts,tickers,tickersFresh,candles,orderflow,priceOf,markOf,balance,isBusy,gate,now,log,onEvent});
+ constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,zoneCandles=null,orderflow=null,priceOf=async()=>null,markOf=async()=>null,bookOf=null,
+  balance=async()=>null,isBusy=()=>false,gate=()=>({ok:true}),directory=null,fileName='scalp-store.json',journalFileName=SCALP_JOURNAL_FILE,signalsFileName=SCALP_SIGNALS_FILE,now=()=>Date.now(),log=()=>{},onEvent=()=>{},budget=null}){
+  const isLiveAllowed=config?.mode==='LIVE'&&config?.allowLive===true;
+  if(!SCALP_EXEC_MODES.includes(config?.mode)&&!isLiveAllowed)throw err('SCALP_TESTNET_ONLY',500);
+  const expectedClientMode=isLiveAllowed?'LIVE':'TESTNET';
+  if(client&&client.mode!==expectedClientMode)throw err('SCALP_TESTNET_ONLY',500);
+  this.execMode=isLiveAllowed?'LIVE':'TESTNET';
+  Object.assign(this,{config,client,contracts,tickers,tickersFresh,candles,orderflow,priceOf,markOf,bookOf,balance,isBusy,gate,now,log,onEvent});
   this.trendCandles=trendCandles??(symbol=>this.candles(symbol,'4h',301));
   // 4H / 1D candles for the volume zones (BingX public market data, the scan's paced queue); cached per symbol and
   // timeframe until the next candle of that timeframe closes.
@@ -474,14 +521,14 @@ export class ScalpExecutor{
   for(const p of this.store.open)if(p.status==='SUBMITTING')p.status='UNKNOWN';
   // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the daily loss, open risk and margin shared with the
   // signal strategy on the testnet (TESTNET_DAILY_LOSS_PCT, default 15 %). Without it the scalp's own 3 % rules apply.
-  this.budget=budget;this.reservedRisk=new Map();
+  this.budget=this.execMode==='LIVE'?null:budget;this.reservedRisk=new Map();
   this.armed=false;this.entryRevision=0;this.reserved=new Set();this.reservedDirections=new Map();this.universe=[];this.universeAt=0;this.trendCache=new Map();this.lastScanBucket=null;this.lastScan=null;
   this.reversalWatch=new Map();this.pumpWatch=new Map();
   this.wyckoffCache=new Map();
   this.scanning=false;this.reconciling=false;this.lastReconcileAt=0;this.cooldownUntil=0;this.funds=null;
   // Trade journal (scalp_journal.mjs, user 2026-11-16 22:18): every finished trade, never truncated; the stats
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
-  this.journalFile=directory?path.join(directory,SCALP_JOURNAL_FILE):null;this.signalsFile=directory?path.join(directory,SCALP_SIGNALS_FILE):null;
+  this.journalFile=directory?path.join(directory,journalFileName):null;this.signalsFile=directory?path.join(directory,signalsFileName):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
   this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
@@ -491,8 +538,8 @@ export class ScalpExecutor{
  }
  #save(){if(!this.file)return;const s=this.store;s.closed=s.closed.slice(-MAX_CLOSED);s.events=s.events.slice(-MAX_EVENTS);s.skips=s.skips.slice(-MAX_SKIPS);s.sent=s.sent.slice(-MAX_KEYS);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,strategy:SCALP_EXEC_STRATEGY,...s})}
- #event(type,detail={}){const e={type,at:this.now(),mode:'TESTNET',strategy:SCALP_EXEC_STRATEGY,...detail};this.store.events.push(e);this.log(`[SCALP] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
- #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null,kind:this.cur.kind||SCALP_KINDS.MOVE}:{}),...(this.cur?.symbol===symbol&&this.cur.score?{score:this.cur.score.score,grade:this.cur.score.grade,minScore:this.cur.score.minScore,...(this.cur.score.breakdown?{breakdown:{...this.cur.score.breakdown}}:{}),...(this.cur.score.oiBonus>0?{oiBonus:this.cur.score.oiBonus}:{})}:{}),...(this.cur?.symbol===symbol&&this.cur.trigger?{trigger:this.cur.trigger}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
+ #event(type,detail={}){const e={type,at:this.now(),mode:this.execMode,strategy:SCALP_EXEC_STRATEGY,...detail};this.store.events.push(e);this.log(`[SCALP${this.execMode==='LIVE'?':LIVE':''}] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
+ #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null,kind:this.cur.kind||SCALP_KINDS.MOVE}:{}),...(this.cur?.symbol===symbol&&this.cur.score?{score:this.cur.score.score,grade:this.cur.score.grade,minScore:this.cur.score.minScore,...(this.cur.score.breakdown?{breakdown:{...this.cur.score.breakdown}}:{}),...(this.cur.score.oiBonus>0?{oiBonus:this.cur.score.oiBonus}:{}),...(this.cur.score.cvdBonus>0?{cvdBonus:this.cur.score.cvdBonus}:{})}:{}),...(this.cur?.symbol===symbol&&this.cur.trigger?{trigger:this.cur.trigger}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
  #gate(){try{return this.gate()||{ok:true}}catch{return {ok:false,reason:'GATE_ERROR'}}}
  // With the shared budget only a stop written under it counts (review L2: a scalp-only 3 % stop saved before is ignored).
  #todayStopped(day=kstDay(this.now())){
@@ -525,9 +572,10 @@ export class ScalpExecutor{
  }
  /** Why no new entry may be sent now (null = may). */
  #blocked(ignoreAddId=null){
-  if(this.config.mode!=='TESTNET')return this.config.refused||'SCALP_MODE_OFF';
+  const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
+  if(!activeMode)return this.config.refused||'SCALP_MODE_OFF';
   if(!this.client)return 'CREDENTIALS_MISSING';
-  if(this.client.mode!=='TESTNET')return 'SCALP_TESTNET_ONLY';
+  if(this.client.mode!==activeMode)return 'SCALP_TESTNET_ONLY';
   if(!this.armed)return 'NOT_ARMED';
   const g=this.#gate();if(!g.ok)return g.reason||'GATE_CLOSED';
   if(this.#todayStopped())return 'DAILY_LOSS_LIMIT';
@@ -538,9 +586,10 @@ export class ScalpExecutor{
   return null;
  }
  arm(){
-  if(this.config.mode!=='TESTNET')throw err(this.config.refused||'SCALP_MODE_OFF');
+  const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
+  if(!activeMode)throw err(this.config.refused||'SCALP_MODE_OFF');
   if(!this.client)throw err('CREDENTIALS_MISSING');
-  if(this.client.mode!=='TESTNET')throw err('SCALP_TESTNET_ONLY');
+  if(this.client.mode!==activeMode)throw err('SCALP_TESTNET_ONLY');
   const g=this.#gate();if(!g.ok)throw err(g.reason==='KILL_SWITCH'?'KILL_SWITCH_ON':g.reason||'GATE_CLOSED');
   // Shared budget (one testnet switch): the switch may stay on through a day stop; entries wait for the next KST day.
   if(this.#todayStopped()&&!this.budget)throw err('DAILY_LOSS_LIMIT');
@@ -734,7 +783,8 @@ export class ScalpExecutor{
   * Returns the first evaluation's result ({queued:true} when a scan is running: the next tick evaluates it). */
  async pumpAlert(alert){
   if(this.config.pumpAlerts===false)return {entered:false,reason:'PUMP_ALERTS_OFF'};
-  if(this.config.mode!=='TESTNET'||!this.client||this.client.mode!=='TESTNET')return {entered:false,reason:this.config.refused||'SCALP_TESTNET_ONLY'};
+  const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
+  if(!activeMode||!this.client||this.client.mode!==activeMode)return {entered:false,reason:this.config.refused||'SCALP_TESTNET_ONLY'};
   const symbol=String(alert?.symbol||'').toUpperCase(),direction=alert?.dir==='DOWN'?'LONG':alert?.dir==='UP'?'SHORT':null;
   if(!/^[A-Z0-9]{1,30}USDT$/.test(symbol)||!direction)return {entered:false,reason:'PUMP_ALERT_INVALID'};
   if(!this.armed)return {entered:false,reason:'NOT_ARMED'};
@@ -899,7 +949,16 @@ export class ScalpExecutor{
   if(requireAvailable&&(!['number','string'].includes(typeof raw)||String(raw).trim()===''||available===null))return null;
   const cap=this.config.balanceCapUSD>0?this.config.balanceCapUSD:Infinity,equity=Math.min(eq,cap),used=Math.max(0,eq-(available??eq));
   const scaledAvail=cap<Infinity&&eq>cap&&available!==null?equity*(available/eq):Math.min(available??equity,equity-used);
-  this.funds={equity,available:Math.max(0,scaledAvail),at:this.now()};return this.funds;
+  this.funds={equity,available:Math.max(0,scaledAvail),accountEquity:eq,accountAvailable:available!==null?Math.max(0,available):null,at:this.now()};return this.funds;
+ }
+ /** Real-account free-margin buffer guard: ensures live scalp never starves copy/manual trading margin. */
+ #accountMarginLow(funds){
+  const minPct=Number(this.config.minFreeAccountMarginPct)||0;
+  if(!(minPct>0)||!funds)return null;
+  const accEq=pos(funds.accountEquity),accAv=funds.accountAvailable;
+  if(!(accEq>0)||accAv==null||!Number.isFinite(accAv))return null;
+  const freePct=accAv/accEq*100;
+  return freePct<minPct?`여유 마진 ${freePct.toFixed(1)}% < ${minPct}%`:null;
  }
  async #btcTrend4h(symbol){
   if(symbol==='BTCUSDT')return this.cur?.trend4h??await this.#trend('BTCUSDT');
@@ -919,6 +978,17 @@ export class ScalpExecutor{
    const c=(await this.contracts(u.symbol).catch(()=>null))?.get?.(u.symbol);if(!c?.tradable)return skip('CONTRACT_UNAVAILABLE');
    const price=pos(await withTimeout(this.priceOf(u.symbol,u.venueSymbol),3000));
    const funds=await this.#funds();if(!funds)return skip('NO_BALANCE');
+   const lowMargin=this.#accountMarginLow(funds);
+   if(lowMargin)return skip('ACCOUNT_MARGIN_RESERVE',lowMargin);
+   const maxSpread=Number(this.config.maxSpreadPct)||0;
+   if(maxSpread>0&&typeof this.bookOf==='function'){
+    const bk=await withTimeout(Promise.resolve().then(()=>this.bookOf(u.symbol,u.venueSymbol)),2500).catch(()=>null);
+    const bid=pos(bk?.bid),ask=pos(bk?.ask),mid=bid&&ask?(bid+ask)/2:0;
+    if(mid>0&&ask>=bid){
+     const spPct=(ask-bid)/mid*100;
+     if(spPct>maxSpread)return skip('SPREAD_TOO_WIDE',`${spPct.toFixed(2)}% > ${maxSpread}%`);
+    }
+   }
    let maxVenueLev=null;
    try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)maxVenueLev=Math.floor(max)}catch{}
    const lev=scalpAdaptiveLeverage({atr:det.atr,price:price??det.entry,baseLeverage:this.config.leverage,maxLeverage:maxVenueLev,config:this.config});
@@ -944,8 +1014,9 @@ export class ScalpExecutor{
    // Backtest-validated orderflow boost (FJ + A-3): +5pt on 30m OI flush <=-1%, +5pt & 1.5x sizing on strong CVD reversal flip (>15%).
    const wantOrderflowBoost=this.config.orderflowBoost!==false&&scalpScore.score>=Math.max(0,minSc-maxOfBonus);
    const wantSqueezeGuard=this.config.squeezeGuard!==false&&(minSc<=0||scalpScore.score>=Math.max(0,minSc-maxOfBonus));
+   const wantPreFunding=Number(this.config.preFundingWindowMin)>0&&Number(this.config.preFundingExtremePct)>0&&(minSc<=0||scalpScore.score>=Math.max(0,minSc-maxOfBonus));
    let ofSnap=null;
-   if((wantOrderflowBoost||wantSqueezeGuard)&&typeof this.orderflow==='function'){
+   if((wantOrderflowBoost||wantSqueezeGuard||wantPreFunding)&&typeof this.orderflow==='function'){
     ofSnap=await withTimeout(Promise.resolve().then(()=>this.orderflow(u.symbol)),3500).catch(()=>null);
    }
    if(wantOrderflowBoost&&ofSnap){
@@ -973,6 +1044,16 @@ export class ScalpExecutor{
    if(wantSqueezeGuard&&ofSnap){
     const sq=evaluateScalpSqueezeGuard(ofSnap,det.direction,{fundingPct:this.config.squeezeFundingPct,oiChange30mPct:this.config.squeezeOiChange30mPct});
     if(sq.blocked)return skip(sq.reason,sq.detail);
+   }
+   if(wantPreFunding&&ofSnap?.funding){
+    const ratePct=num(ofSnap.funding.ratePct),nextAt=num(ofSnap.funding.nextFundingTime);
+    const leftMs=nextAt!=null?nextAt-this.now():null;
+    const winMs=Number(this.config.preFundingWindowMin)*60000,lim=Number(this.config.preFundingExtremePct);
+    const adverse=ratePct!==null&&(det.direction==='LONG'?ratePct>=lim:ratePct<=-lim);
+    if(adverse&&leftMs!==null&&leftMs>=0&&leftMs<=winMs){
+     const leftMin=Math.max(0,Math.ceil(leftMs/60000));
+     return skip('PRE_FUNDING_EXTREME',`펀딩 ${ratePct>=0?'+':''}${ratePct.toFixed(3)}% · 정산 ${leftMin}분 전`);
+    }
    }
    if(!againstTrend&&Math.abs(effectiveMult-1)>1e-6){
     const scaled=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
@@ -1151,7 +1232,7 @@ export class ScalpExecutor{
   const tick=c.tickSize,px=v=>grid(v,tick,awayMode(d))??String(v);
   const kind=this.cur?.kind||SCALP_KINDS.MOVE;
   const trigger=this.cur?.trigger===SCALP_TRIGGERS.PUMP?SCALP_TRIGGERS.PUMP:SCALP_TRIGGERS.SCAN;
-  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,kind,trigger,...(trigger===SCALP_TRIGGERS.PUMP&&this.cur?.pumpAlert?{pumpAlert:this.cur.pumpAlert}:{}),...(kind===SCALP_KINDS.ZONE&&this.cur?.zone?{zone:this.cur.zone}:{}),mode:'TESTNET',venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
+  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,kind,trigger,...(trigger===SCALP_TRIGGERS.PUMP&&this.cur?.pumpAlert?{pumpAlert:this.cur.pumpAlert}:{}),...(kind===SCALP_KINDS.ZONE&&this.cur?.zone?{zone:this.cur.zone}:{}),mode:this.execMode,venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
    pattern:det.pattern,barAt:det.barAt,plannedEntry:det.entry,checkedPrice:plan.entry,driftPct:plan.driftPct,entry:plan.entry,stop:plan.stop,initialStop:plan.stop,targets:plan.targets,
    qty:plan.qty,initialQty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,initialRiskUSD:plan.riskUSD,marginUSD:plan.marginUSD,initialMarginUSD:plan.marginUSD,capitalBasisUSD:pos(equity)??null,netRR:plan.netRR,
    tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
@@ -1227,7 +1308,7 @@ export class ScalpExecutor{
   trackExcursion(p,p.avg,this.now());
   // BTC 5m / 1h change around the entry: read after the orders are in, never awaited (journal only).
   void withTimeout(this.#btc(),5000).then(b=>{if(b)p.btc=b});
-  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,trigger:p.trigger,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,minScore:p.scalpScore.minScore,...(p.scalpScore.breakdown?{breakdown:{...p.scalpScore.breakdown}}:{}),...(p.scalpScore.oiBonus>0?{oiBonus:p.scalpScore.oiBonus}:{}),...(p.scalpScore.cvdBonus>0?{cvdBonus:p.scalpScore.cvdBonus}:{}),sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.scoreTier?.active?{scoreTierMult:p.scalpScore.scoreTier.mult}:{}),...(Number.isFinite(Number(p.scalpScore.effectiveMult))?{effectiveMult:p.scalpScore.effectiveMult}:{}),...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{})});
+  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,trigger:p.trigger,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,...(pos(p.hardStopPrice)?{hardStopPrice:p.hardStopPrice}:{}),targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,minScore:p.scalpScore.minScore,...(p.scalpScore.breakdown?{breakdown:{...p.scalpScore.breakdown}}:{}),...(p.scalpScore.oiBonus>0?{oiBonus:p.scalpScore.oiBonus}:{}),...(p.scalpScore.cvdBonus>0?{cvdBonus:p.scalpScore.cvdBonus}:{}),sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.scoreTier?.active?{scoreTierMult:p.scalpScore.scoreTier.mult}:{}),...(Number.isFinite(Number(p.scalpScore.effectiveMult))?{effectiveMult:p.scalpScore.effectiveMult}:{}),...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{})});
   this.#save();return {entered:true};
  }
  /** BTC change over the last closed 5m candle and the last hour (12 candles), cached per 5m candle. */
@@ -1307,13 +1388,84 @@ export class ScalpExecutor{
  async #openOrders(vs){const o=await this.client.openOrders(vs);return o?.orders??(Array.isArray(o)?o:[])}
  /** The attached stop is confirmed; else a whole-position stop is placed; else the position is closed. */
  async #protect(p){
-  if(this.config.stopLossEnabled===false)return this.#retireStop(p);
+  if(this.config.stopLossEnabled===false){
+   if(Number(this.config.hardStopRoePct)>0)return this.#ensureHardStop(p,{critical:true});
+   return this.#retireStop(p);
+  }
   let list=null;try{list=await this.#openOrders(p.venueSymbol)}catch{try{list=await this.#openOrders(p.venueSymbol)}catch{}}
   // The stop attached to the entry (same price within a tick when the venue reports it).
   const found=(list||[]).find(o=>String(o.type).startsWith('STOP')&&orderOnSide(o,{hedge:p.hedge===true,direction:p.direction})&&(!pos(o.stopPrice)||Math.abs(Number(o.stopPrice)-p.stop)<=Number(p.tickSize)*1.01));
   if(found){p.stopOrderId=orderId(found);p.stopIds.push(p.stopOrderId);return true}
   try{const s=await this.client.placeOrder(this.#stopParams(p,p.stop,'s'));p.stopOrderId=orderId(s);p.stopIds.push(p.stopOrderId);this.#event('STOP_PLACED',{symbol:p.symbol});return true}
   catch(e){this.#event('STOP_FAILED',{symbol:p.symbol,reason:e?.code||e?.message});await this.#emergency(p,'NO_STOP');this.disarm('NO_PROTECTIVE_STOP');return false}
+ }
+ /** Exchange-side catastrophic hard stop price at -hardStopRoePct% ROE from current avg entry. */
+ #hardStopPrice(p){
+  const pct=Number(this.config.hardStopRoePct)||0;
+  if(!(pct>0))return null;
+  const avg=pos(p.avg)??pos(p.entry),lev=Math.max(1,Number(p.leverage)||10),dir=dirOf(p.direction);
+  if(!(avg>0))return null;
+  const raw=avg*(1-dir*(pct/100)/lev);
+  if(!(raw>0))return null;
+  const snapped=Number(grid(raw,p.tickSize,awayMode(p.direction)));
+  return snapped>0?snapped:null;
+ }
+ /** Ensure an exchange-side STOP_MARKET closePosition order protects the position at -hardStopRoePct% ROE. */
+ async #ensureHardStop(p,{forceReplace=false,critical=false}={}){
+  const target=this.#hardStopPrice(p);
+  if(!(target>0))return true;
+  const vs=p.venueSymbol,side={hedge:p.hedge===true,direction:p.direction},tick=Number(p.tickSize)||0;
+  const tol=Math.max(tick*2,target*0.002);
+  const now=this.now();
+  if(!forceReplace&&!critical&&p.hardStopOrderId&&pos(p.hardStopPrice)&&Math.abs(p.hardStopPrice-target)<=tol&&now-(p.hardStopVerifiedAt||0)<60000){
+   return true;
+  }
+  let open=[];
+  try{open=await this.#openOrders(vs)}catch{open=[]}
+  const match=open.find(o=>/^STOP(?:_|$)/i.test(String(o?.type))&&orderOnSide(o,side)&&(!o.side||String(o.side).toUpperCase()===closeSide(p.direction))&&pos(o.stopPrice)&&Math.abs(Number(o.stopPrice)-target)<=tol);
+  if(match&&!forceReplace){
+   const id=orderId(match);
+   p.hardStopOrderId=p.stopOrderId=id;
+   p.hardStopPrice=Number(match.stopPrice)||target;
+   p.hardStopVerifiedAt=now;
+   if(id&&!p.stopIds.includes(id))p.stopIds.push(id);
+   this.#save();return true;
+  }
+  const old=p.hardStopOrderId||p.stopOrderId||null;
+  p.hardStopTries=(p.hardStopTries||0)+1;
+  const tag='hs'+p.hardStopTries;
+  let placed=null;
+  try{
+   placed=await this.client.placeOrder(this.#stopParams(p,target,tag));
+  }catch(e){
+   if(/110406/.test(String(e?.code||e?.message))&&old){
+    try{await this.client.cancelOrder(vs,old)}catch{}
+    p.hardStopOrderId=p.stopOrderId=null;
+    try{placed=await this.client.placeOrder(this.#stopParams(p,target,tag+'b'))}
+    catch(e2){
+     this.#event('STOP_FAILED',{symbol:p.symbol,reason:e2?.code||e2?.message});
+     if(critical){await this.#emergency(p,'NO_STOP');this.disarm('NO_PROTECTIVE_STOP')}
+     return false;
+    }
+   }else{
+    this.#event('STOP_FAILED',{symbol:p.symbol,reason:e?.code||e?.message});
+    if(critical){await this.#emergency(p,'NO_STOP');this.disarm('NO_PROTECTIVE_STOP')}
+    return false;
+   }
+  }
+  const id=orderId(placed);
+  if(!id){
+   this.#event('STOP_FAILED',{symbol:p.symbol,reason:'NO_STOP'});
+   if(critical){await this.#emergency(p,'NO_STOP');this.disarm('NO_PROTECTIVE_STOP')}
+   return false;
+  }
+  p.hardStopOrderId=p.stopOrderId=id;
+  p.hardStopPrice=target;
+  p.hardStopVerifiedAt=now;
+  if(!p.stopIds.includes(id))p.stopIds.push(id);
+  if(old&&old!==id){try{await this.client.cancelOrder(vs,old)}catch{}}
+  this.#event(old?'HARD_STOP_UPDATED':'HARD_STOP_PLACED',{symbol:p.symbol,direction:p.direction,price:target,roePct:this.config.hardStopRoePct});
+  this.#save();return true;
  }
  #stopParams(p,price,tag,mode=awayMode(p.direction)){return {symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'STOP_MARKET',quantity:String(p.size),stopPrice:grid(price,p.tickSize,mode)??String(price),closePosition:'true',workingType:'MARK_PRICE',clientOrderId:(p.id+tag).slice(0,40)}}
  async #retireStop(p){
@@ -1420,12 +1572,14 @@ export class ScalpExecutor{
    typeof this.client.leverage==='function'?withTimeout(this.client.leverage(vs),2500):null,
   ]);
   if(!funds){a.lastReason='NO_BALANCE';return}
+  if(this.#accountMarginLow(funds)){a.lastReason='ACCOUNT_MARGIN_RESERVE';return}
   if(!fresh.avg||Math.abs(fresh.size-p.size)>step/2||Math.abs(fresh.avg-p.avg)>Number(p.tickSize)/2||this.#partialTooSmall(p,fresh.size)){a.lastReason='POSITION_CHANGED';return}
   if(!fresh.mark&&!pos(price)){a.lastReason='PRICE_OUTSIDE_BAND';return}
   const venueMark=pos(fresh.mark)??pos(price);
   // Pillar 2: Anchor marketable IOC price to venueMark (not live-only priceOf which can diverge 0.5~2% from VST).
   const retryWide=a.lastReason==='NOT_FILLED';
-  const slip=(retryWide?SCALP_REPEAT_SCALE_IN.retrySlippagePct:SCALP_REPEAT_SCALE_IN.slippagePct)/100;
+  const retrySlip=Number(this.config.scaleInRetrySlippagePct)||SCALP_REPEAT_SCALE_IN.retrySlippagePct;
+  const slip=(retryWide?retrySlip:SCALP_REPEAT_SCALE_IN.slippagePct)/100;
   const refPrice=pos(price)?(dir>0?Math.max(price,venueMark):Math.min(price,venueMark)):venueMark;
   const bound=Number(grid(refPrice*(1+dir*slip),p.tickSize,awayMode(p.direction)))||Number(grid(refPrice+dir*Number(p.tickSize),p.tickSize,awayMode(p.direction)));
   let orderPrice=bound;
@@ -1595,6 +1749,7 @@ export class ScalpExecutor{
   Object.assign(a,{state:nextState,reason:fresh.size>0?(nextState==='SKIPPED'?'POSITION_CHANGED':null):'FLAT_DURING_RESIZE'});
   this.#save();this.#event('SCALE_IN_FILLED',{symbol:p.symbol,direction:p.direction,count:a.count,fillMarginUSD:a.fillMarginUSD,qty:a.fillQty,price:a.fillPrice,prevAvg:a.prevAvg??null,avg:p.avg,avgImprovePct:a.avgImprovePct??null,left:p.size,...(wasDefensive?{defensive:true,defensiveRoePct:defRoe}:{})});
   if(!fresh.size){await this.#finish(p);return}
+  if(this.config.stopLossEnabled===false&&Number(this.config.hardStopRoePct)>0)await this.#ensureHardStop(p,{forceReplace:true});
   await this.#placeTargets(p);
  }
  #addDecision(p,state,reason=null){
@@ -1889,11 +2044,12 @@ export class ScalpExecutor{
   const o=await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),type:'MARKET',quantity:String(now.size),reduceOnly:'true',clientOrderId:(p.id+tag).slice(0,40)},p.hedge===true));
   const id=orderId(o);if(id)p.exitIds.push(id);return {...now,size:0,exitAvg:pos(orderOf(o)?.avgPrice)};
  }
- /** User-initiated exit for one tracked testnet scalp. */
- async closeTestnetPosition(id,{sleep}={}){
+ /** User-initiated exit for one tracked scalp position (testnet or opt-in live). */
+ async closePosition(id,{sleep}={}){
   const refuse=(error,status=409)=>({ok:false,error,status});
-  if(this.config.mode!=='TESTNET'||this.client?.mode!=='TESTNET')return refuse('TESTNET_CLOSE_ONLY');
-  const p=this.store.open.find(p=>p.id===id&&p.mode==='TESTNET'&&p.status==='OPEN');
+  const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
+  if(!activeMode||this.client?.mode!==activeMode)return refuse(activeMode==='LIVE'?'SCALP_MODE_OFF':'TESTNET_CLOSE_ONLY');
+  const p=this.store.open.find(p=>p.id===id&&p.mode===activeMode&&p.status==='OPEN');
   if(!p)return refuse('POSITION_NOT_FOUND',404);
   if(this.reserved.has(p.symbol)||this.reconcilingSymbol===p.symbol||['PENDING','RESIZE'].includes(p.scaleIn?.state))return refuse('SYMBOL_BUSY');
   this.reserved.add(p.symbol);
@@ -1923,6 +2079,11 @@ export class ScalpExecutor{
   }catch(error){return refuse(error.code||'CLOSE_FAILED',error.httpStatus||502)}
   finally{this.reserved.delete(p.symbol);this.#save()}
  }
+ /** User-initiated exit for one tracked testnet scalp. */
+ async closeTestnetPosition(id,opts={}){
+  if(this.config.mode!=='TESTNET'||this.client?.mode!=='TESTNET')return {ok:false,error:'TESTNET_CLOSE_ONLY',status:409};
+  return this.closePosition(id,opts);
+ }
  #recordEarlyTakeProfit(p,response,{alreadyFilled=0,suppressPartialEvent=false}={}){
   const o=orderOf(response),id=orderId(o),filled=Number(o?.executedQty)||0,totalFilled=filled+alreadyFilled;
   if(id&&!p.exitIds.includes(id))p.exitIds.push(id);
@@ -1942,7 +2103,8 @@ export class ScalpExecutor{
  async #tryEarlyTakeProfit(p,mark){
   const now=this.now(),opened=p.openedAt??p.createdAt,profitOnly=this.config.stopLossEnabled===false;
   const delay=profitOnly?0:EARLY_TAKE_PROFIT_MS,retry=profitOnly?PROFIT_ONLY_RETRY_MS:EARLY_EXIT_RETRY_MS;
-  if(this.config.mode!=='TESTNET'||!(opened>0)||now-opened<delay||now-(p.earlyTakeProfitAt??0)<retry||!(mark>0&&p.avg>0&&p.size>0))return false;
+  const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
+  if(!activeMode||!(opened>0)||now-opened<delay||now-(p.earlyTakeProfitAt??0)<retry||!(mark>0&&p.avg>0&&p.size>0))return false;
   const direction=dirOf(p.direction);
   const qty=Number(grid(p.size,p.quantityStep,'DOWN'));
   if(!(qty>0))return false;
@@ -2162,7 +2324,7 @@ export class ScalpExecutor{
      this.reconcilingSymbol=p.symbol;
     try{
      if(p.scaleIn?.state==='PENDING'||p.scaleIn?.state==='RESIZE'){
-      if(this.config.stopLossEnabled===false)await this.#retireStop(p);
+      if(this.config.stopLossEnabled===false&&!(Number(this.config.hardStopRoePct)>0))await this.#retireStop(p);
       await this.#recoverAdd(p);continue;
      }
      const {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true),mark=pos(row?.markPrice);
@@ -2234,7 +2396,8 @@ export class ScalpExecutor{
      p.tpDone.forEach((ok,i)=>{if(ok&&!p.tpFills[i])p.tpFills[i]={at:this.now(),price:mark??null,qty:parts[i],seen:'RECONCILE'}});
      if(p.earlyTakeProfit||p.exitReason==='EARLY_TAKE_PROFIT')continue;
      if(noStop){
-      if(!await this.#retireStop(p))continue;
+      if(Number(this.config.hardStopRoePct)>0){await this.#ensureHardStop(p)}
+      else if(!await this.#retireStop(p))continue;
       await this.#retireLegacyProfitTargets(p);
       this.#enableRepeat(p);p.riskUSD=this.#repeatRisk(p,p.avg,mark)*size;
       const lev=Math.max(1,Number(p.leverage)||10);
@@ -2420,9 +2583,10 @@ export class ScalpExecutor{
     earlyTakeProfitMin:c.stopLossEnabled===false?(c.earlyFallbackMin??PROFIT_ONLY_EARLY_EXIT_MIN):EARLY_TAKE_PROFIT_MS/60000,profitHoldTargetMin:c.stopLossEnabled===false?SCALP_PROFIT_HOLD_TARGET_MIN:null,minProfitRoePct:c.stopLossEnabled===false?(c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):null,partialTakeFrac:c.partialTakeFrac??SCALP_PARTIAL_TAKE_FRAC,profitOnlyMaxHoldMin:c.profitOnlyMaxHoldMin??240,makerEntry:c.makerEntry!==false,makerExit:c.makerExit!==false,adaptiveLeverage:c.adaptiveLeverage!==false,profitOnlyTargetMarginPct:c.profitOnlyTargetMarginPct??SCALP_PROFIT_ONLY_TARGET_MARGIN_PCT,
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
-    zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,pumpAlerts:c.pumpAlerts!==false&&c.mode==='TESTNET',pumpWatchMin:PUMP_WATCH_MIN,
+    zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,pumpAlerts:c.pumpAlerts!==false&&(c.mode==='TESTNET'||(c.mode==='LIVE'&&c.allowLive===true)),pumpWatchMin:PUMP_WATCH_MIN,
     minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreTierSizing:c.scoreTierSizing!==false,scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
-    emergencyStopRoePct:c.emergencyStopRoePct??75,defensiveAddRoePct:c.defensiveAddRoePct??40,defensiveBouncePct:c.defensiveBouncePct??0.4,defensiveForceRoePct:c.defensiveForceRoePct??55,scaleInMinStepPct:c.scaleInMinStepPct??SCALP_REPEAT_SCALE_IN.minStepPct,scaleInMaxStepPct:c.scaleInMaxStepPct??SCALP_REPEAT_SCALE_IN.maxStepPct,scaleInSteps:SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),scaleInMults:SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),
+    emergencyStopRoePct:c.emergencyStopRoePct??75,hardStopRoePct:c.hardStopRoePct??0,minFreeAccountMarginPct:c.minFreeAccountMarginPct??0,maxSpreadPct:c.maxSpreadPct??0,preFundingWindowMin:c.preFundingWindowMin??0,preFundingExtremePct:c.preFundingExtremePct??0,scaleInRetrySlippagePct:c.scaleInRetrySlippagePct??SCALP_REPEAT_SCALE_IN.retrySlippagePct,scaleInMarketFallback:c.scaleInMarketFallback!==false,
+    defensiveAddRoePct:c.defensiveAddRoePct??40,defensiveBouncePct:c.defensiveBouncePct??0.4,defensiveForceRoePct:c.defensiveForceRoePct??55,scaleInMinStepPct:c.scaleInMinStepPct??SCALP_REPEAT_SCALE_IN.minStepPct,scaleInMaxStepPct:c.scaleInMaxStepPct??SCALP_REPEAT_SCALE_IN.maxStepPct,scaleInSteps:SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),scaleInMults:SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),
     orderflowBoost:c.orderflowBoost!==false,orderflowOiBonus:c.orderflowOiBonus??5,orderflowCvdBonus:c.orderflowCvdBonus??5,orderflowCvdSizeMult:c.orderflowCvdSizeMult??1.5,
     sessionWeighting:c.sessionWeighting!==false,sessionEuMult:c.sessionEuMult??0.5,sessionUsMult:c.sessionUsMult??1.15,
     bounceSizing:c.bounceSizing!==false,bounceThresholdPct:c.bounceThresholdPct??20,bounceHighMult:c.bounceHighMult??1.35,bounceLowMult:c.bounceLowMult??0.8,

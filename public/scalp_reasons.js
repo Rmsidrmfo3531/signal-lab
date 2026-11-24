@@ -37,12 +37,14 @@ const G={
  ZONE_NOT_TOUCHED:['entry','매물대 밖',S=>`${n(S.zoneMinMovePct)}% 급변 후보지만 급변의 끝이 4H·1D 매물대 ±${n(S.zoneTouchPct)}% 안에 닿지 않았습니다.`],
  ZONE_DATA_UNAVAILABLE:['entry','매물대 확인 불가',()=>'4H 또는 1D 캔들을 받지 못해 매물대를 계산하지 못했습니다.'],
  ALREADY_SENT:['entry','이미 주문한 신호',()=>'같은 종목·같은 5분봉·같은 방향 신호는 한 번만 주문합니다.'],
+ SPREAD_TOO_WIDE:['entry','호가 스프레드 큼',S=>`매수·매도 호가 차이가 기준 ${n(S.maxSpreadPct)}%보다 넓어 실거래 슬리피지 위험이 큽니다.`],
  // 점수 항목 — scoreScalpSetup (items are in SCORE_ITEMS below)
  SCORE_BELOW_MINIMUM:['score','점수 미달',S=>`8개 항목 100점 만점 점수가 기준 ${n(S.minScore)}점보다 낮아 진입하지 않았습니다(${n(S.highScore)}점 이상은 비중을 키웁니다).`],
  // 한도·차단 — #blocked / #precheck / testnet_budget.mjs
  NOT_ARMED:['limit','단타 꺼짐',()=>'테스트넷 스위치가 꺼져 있거나 켜고 끄는 사이에 들어온 신호라 새로 진입하지 않습니다.'],
  SCALP_MODE_OFF:['limit','단타 모드 꺼짐',()=>'서버 설정(SCALP_EXEC_MODE)이 OFF라 단타 주문을 하지 않습니다.'],
  LIVE_REFUSED:['limit','실계좌 거부',()=>'되돌림 단타는 테스트넷 전용이라 실계좌 모드 설정을 거부하고 꺼 둡니다.'],
+ LIVE_CONFIRM_REQUIRED:['limit','실거래 확인 필요',()=>'실계좌 단타는 SCALP_LIVE_CONFIRM=REAL_MONEY_SCALP 확인 문구가 있어야 켤 수 있습니다.'],
  MODE_INVALID:['limit','알 수 없는 모드',()=>'모드 설정 값을 알 수 없어 안전하게 꺼 둡니다.'],
  SCALP_TESTNET_ONLY:['limit','테스트넷 아님',()=>'연결된 계정이 테스트넷이 아니라 주문하지 않습니다(단타는 테스트넷 전용).'],
  KILL_SWITCH:['limit','긴급 정지 중',()=>'긴급 정지가 켜져 있어 모든 새 진입을 멈췄습니다.'],
@@ -53,6 +55,7 @@ const G={
  OPEN_RISK_LIMIT:['limit','열린 위험 한도',S=>`오늘 손실 + 열린 포지션 손절 위험 + 새 거래 위험의 합이 잔고의 ${n(S.dailyLossPct)}%를 넘습니다.`],
  TESTNET_MARGIN_CAP:['limit','공동 증거금 한도',S=>`신호 전략과 단타의 증거금 합계가 잔고의 ${n(S.maxTotalMarginPct)}%를 넘게 됩니다.`],
  MARGIN_CAP:['limit','증거금 한도',S=>`포지션당 잔고의 ${n(S.maxMarginPct)}%·전체 ${n(S.maxTotalMarginPct)}%·여유 증거금 90% 안에서 주문할 여유가 없습니다.`],
+ ACCOUNT_MARGIN_RESERVE:['limit','실계좌 마진 보호',S=>`실계좌 여유 증거금이 잔고의 ${n(S.minFreeAccountMarginPct)}% 미만이라 카피·수동 여력을 지키려 보류합니다.`],
  TESTNET_BUDGET_UNAVAILABLE:['limit','한도 계산 실패',()=>'공동 위험 한도를 계산할 자료(잔고·손익)를 읽지 못해 안전하게 건너뜁니다.'],
  NO_BALANCE:['limit','잔고 확인 실패',()=>'테스트넷 잔고를 읽지 못했거나 오래된 값이라 주문 크기를 정할 수 없습니다.'],
  MAX_OPEN_POSITIONS:['limit','동시 보유 한도',S=>`동시에 가질 수 있는 단타 포지션 수(${fin(S.maxOpen)&&Number(S.maxOpen)>0?n(S.maxOpen)+'개':'제한 없음'})를 채웠습니다.`],
@@ -62,6 +65,7 @@ const G={
  SYMBOL_LOSS_COOLDOWN:['limit','종목 손실 휴식',S=>`이 종목에서 손실 뒤 ${n(S.symbolLossCooldownMin)}분 동안, 또는 오늘 ${n(S.symbolDailyMaxLosses)}번 지면 자정까지 쉽니다.`],
  BTC_DUMP_GUARD:['limit','BTC 급변 방어',S=>`BTC가 5분에 ${n(S.btcGuard5mPct)}% 또는 15분에 ${n(S.btcGuard15mPct)}% 넘게 급락(롱 보류)·급등(숏 보류)했습니다(직전 5분봉이 ${n(S.btcGuardRelease5mPct)}% 이상 반전하면 해제).`],
  SHORT_SQUEEZE_GUARD:['limit','스퀴즈 위험 보류',S=>`펀딩비가 ±${n(S.squeezeFundingPct)}% 넘게 쏠리고 30분 미결제약정이 ${n(S.squeezeOiChange30mPct)}% 넘게 늘어 반대로 튈 위험이 큽니다.`],
+ PRE_FUNDING_EXTREME:['limit','펀딩 정산 직전',S=>`펀딩 정산 ${n(S.preFundingWindowMin)}분 이내에 불리한 방향 펀딩비가 ±${n(S.preFundingExtremePct)}%를 넘어 보류합니다.`],
  UNRESOLVED_ORDER_STATE:['limit','확인 안 된 주문',()=>'결과를 아직 확인하지 못한 주문이 있어 새 진입을 잠시 멈춥니다.'],
  RATE_LIMIT_COOLDOWN:['limit','요청 과다 휴식',()=>'거래소 요청 한도에 닿아 1분 동안 쉬고 있습니다.'],
  // 급변 알림 — pumpAlert (scalp_executor.mjs) and pump_alert.mjs
@@ -147,7 +151,7 @@ export const REASON_ALIASES=Object.freeze({
  GATE_ERROR:'GATE_CLOSED',BALANCE_STALE:'NO_BALANCE',BALANCE_UNAVAILABLE:'NO_BALANCE',INVALID_BUDGET_METRIC:'TESTNET_BUDGET_UNAVAILABLE',
  INVALID_TESTNET_BUDGET:'TESTNET_BUDGET_UNAVAILABLE',READ_FAILED:'TESTNET_BUDGET_UNAVAILABLE',BTC_PUMP_GUARD:'BTC_DUMP_GUARD',LONG_SQUEEZE_GUARD:'SHORT_SQUEEZE_GUARD',
  UNKNOWN:'ENTRY_OUTCOME_UNKNOWN',ENTRY_FILL_UNCONFIRMED:'ENTRY_OUTCOME_UNKNOWN',LEVERAGE_NOT_CONFIRMED:'MARGIN_SETUP_FAILED',CROSS_NOT_CONFIRMED:'MARGIN_SETUP_FAILED',
- VENUE_ERROR_101429:'VENUE_POSITION_LIMIT',VENUE_ERROR_100410:'HTTP_429',NO_PROTECTIVE_STOP:'NO_STOP'});
+ VENUE_ERROR_101429:'VENUE_POSITION_LIMIT',VENUE_ERROR_100410:'HTTP_429',NO_PROTECTIVE_STOP:'NO_STOP',DAILY_LOSS_CIRCUIT_BREAKER:'DAILY_LOSS_LIMIT'});
 
 /** The 8 items of scoreScalpSetup (scalp_reversal.mjs; max = SCALP_SCORE_WEIGHTS) and the orderflow OI/CVD bonuses. */
 export const SCORE_ITEMS=Object.freeze([
