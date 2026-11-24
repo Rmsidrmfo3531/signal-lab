@@ -495,6 +495,47 @@ test('gentle forward score tier sizing (0.75/1.0/1.2/1.4x, fixed initial cap), T
  assert.match(html,/점수배수 65~69 0\.75x \/ 70~74 1x \/ 75~79 1\.2x \/ 80\+ 1\.4x \(초기캡 고정\)/);
 });
 
+test('extreme funding + surging 30m OI squeeze guard blocks counter-squeeze entries while allowing with-squeeze and OI-flushing setups',async()=>{
+ const {evaluateScalpSqueezeGuard}=await import('../orderflow.mjs');
+ const {scalpReasonKo}=await import('../scalp_telegram.mjs');
+
+ // 1) Pure evaluator
+ assert.equal(evaluateScalpSqueezeGuard({ok:true,funding:{ratePct:-0.12},oi:{change30mPct:3.2}},'SHORT').reason,'SHORT_SQUEEZE_GUARD');
+ assert.equal(evaluateScalpSqueezeGuard({ok:true,funding:{ratePct:-0.12},oi:{change30mPct:3.2}},'LONG').blocked,false,'with-squeeze LONG is allowed');
+ assert.equal(evaluateScalpSqueezeGuard({ok:true,funding:{ratePct:0.15},oi:{change30mPct:2.5}},'LONG').reason,'LONG_SQUEEZE_GUARD');
+ assert.equal(evaluateScalpSqueezeGuard({ok:true,funding:{ratePct:0.15},oi:{change30mPct:2.5}},'SHORT').blocked,false,'with-squeeze SHORT is allowed');
+ assert.equal(evaluateScalpSqueezeGuard({ok:true,funding:{ratePct:-0.20},oi:{change30mPct:-1.5}},'SHORT').blocked,false,'OI flushing means squeeze is exhausted');
+ assert.equal(evaluateScalpSqueezeGuard(null,'SHORT').blocked,false,'fail-open when orderflow snapshot is unavailable');
+ assert.match(scalpReasonKo('SHORT_SQUEEZE_GUARD'),/숏 스퀴즈/);
+ assert.match(scalpReasonKo('LONG_SQUEEZE_GUARD'),/롱 스퀴즈/);
+
+ // 2) ScalpExecutor integration: blocks LONG on extreme positive funding + surging OI, allows when OI is normal
+ const v=mockVenue();
+ let ofSnap={ok:true,source:'BINANCE',funding:{ratePct:0.14},oi:{change30mPct:3.5},cvd:{lastDeltaNorm:0.2}};
+ const ex=new ScalpExecutor({
+  config:{...scalpExecConfig({}),minScore:65,stopLossEnabled:false,squeezeGuard:true,squeezeFundingPct:0.10,squeezeOiChange30mPct:2.0},
+  client:v.client,
+  contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
+  tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
+  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:[]):up4h(T0),
+  orderflow:async()=>ofSnap,
+  priceOf:async()=>PX,markOf:async()=>PX,
+  balance:async()=>({equity:10000,available:9000}),
+  now:()=>T0,
+ });
+ ex.arm();
+ const st1=await ex.scan();
+ assert.equal(st1.entered,0,'LONG blocked by LONG_SQUEEZE_GUARD');
+ assert.equal(ex.store.skips.at(-1)?.reason,'LONG_SQUEEZE_GUARD');
+ assert.match(ex.store.skips.at(-1)?.detail||'',/펀딩 \+0\.1400%.*30분 OI \+3\.50%/);
+
+ // Next scan with normal funding -> enters cleanly
+ ofSnap={ok:true,source:'BINANCE',funding:{ratePct:0.01},oi:{change30mPct:3.5},cvd:{lastDeltaNorm:0.2}};
+ const st2=await ex.scan();
+ assert.equal(st2.entered,1,'normal funding allows LONG entry');
+});
+
+
 
 
 

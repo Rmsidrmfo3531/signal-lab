@@ -13,6 +13,7 @@ export const SCALP_REASON_KO=Object.freeze({SIDE_OFF:'꺼 둔 방향의 신호 (
  SCALP_TESTNET_ONLY:'테스트넷 전용',KILL_SWITCH:'긴급 정지 중',KILL_SWITCH_ON:'긴급 정지 중',UPDATING:'업데이트 중',DAILY_LOSS_LIMIT:'하루 손실 한도 도달',UNRESOLVED_ORDER_STATE:'확인 안 된 주문이 있음',RATE_LIMIT_COOLDOWN:'요청 과다로 잠시 쉼',
  FALLING_KNIFE:'강한 역방향 장대봉 진행 중 (반전 대기)',MAX_ADDS_REACHED:'최대 추매 횟수 도달',
  BTC_DUMP_GUARD:'BTC 급락 연동 방어 (알트 롱 일시 보류)',BTC_PUMP_GUARD:'BTC 급등 연동 방어 (알트 숏 일시 보류)',
+ SHORT_SQUEEZE_GUARD:'극단 음수 펀딩+OI 급증 (숏 스퀴즈 위험 보류)',LONG_SQUEEZE_GUARD:'극단 양수 펀딩+OI 급증 (롱 스퀴즈 위험 보류)',
  SCORE_BELOW_MINIMUM:'신호 점수 미달 (100점 기준 진입 보류)',
  SYMBOL_LOSS_COOLDOWN:'종목 손실 쿨다운 (연속 손절 방지 휴식)',
  PUMP_NOT_ON_BINGX:'급변 알림 — BingX에 없는 종목',PUMP_NO_REVERSAL:'급변 알림 — 5분봉 반전 조건 미충족',PUMP_CANDLES_STALE:'급변 알림 — 막 닫힌 5분봉 없음',PUMP_CANDLES_FAILED:'급변 알림 — 5분봉 조회 실패',
