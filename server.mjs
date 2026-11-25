@@ -67,7 +67,9 @@ import {CopyListenerHealth,listenerHeartbeatEndpoint} from './copy_listener_heal
 import {evaluateReadiness,ReadinessNotifier,readyReplyText} from './ready_check.mjs';
 import {RealTrailingManager,REAL_TRAILING_DEFAULTS,feeNetBreakevenPrice} from './real_trailing.mjs';
 import {RealAccountGuard,REAL_SAFETY_COPY_PRESET,copyRearmable as copyRearmableNow,copyRearmOnBoot,scalpLiveRearmable as scalpLiveRearmableNow,scalpLiveRearmOnBoot} from './real_safety.mjs';
-import {fetchWhaleCvd,whaleThresholds,WHALE_CVD_DEFAULTS} from './whale_cvd.mjs';
+import {whaleThresholds,WHALE_CVD_DEFAULTS} from './whale_cvd.mjs';
+import {WhaleTradeStore,buildWhaleZones,whaleZonesPayload,whaleZoneLookbackMs,WHALE_ZONE_DEFAULTS} from './whale_zones.mjs';
+import {atrPct as ladderAtrPct} from './scalp_ladder.mjs';
 import {fetchOrderflow,fetchOrderflowWithFirechart,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
 import {configureFirechartPersistence,FIRECHART_RANGES} from './firechart.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
@@ -557,8 +559,8 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  zoneCandles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
  // Backtest-validated 5m orderflow (OI flush +5pt / CVD strong flip 1.5x), read only for >=60pt candidates (30s cache).
  orderflow:symbol=>fetchOrderflow(symbol,{interval:'5m'}),
- // 고래 CVD (user 2026-11-25 "(나) 진행"): Binance aggTrades on the shared public read budget, only for >=55pt candidates.
- whaleCvd:(symbol,o)=>scalpWhaleCvd(symbol,o),
+ // 고래 매물대 (user 2026-11-25 09:51): Binance aggTrades on the shared public read budget, only for candidates a ±5 can move.
+ whaleZones:(symbol,o)=>scalpWhaleZones(symbol,o),
  // Entry price check: the BingX book mid, else a fresh BingX last price.
  priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
  markOf:venueSymbol=>scalpLast(venueSymbol,20000),
@@ -592,7 +594,7 @@ if(SCALP_LIVE_EXEC.mode==='LIVE'&&realBingxClient?.mode==='LIVE'){
   trendCandles:symbol=>state.activeSet.has(symbol)?klines(symbol,'4h',301):scalpMarket.klines(symbol,'4h',301),
   zoneCandles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
   orderflow:symbol=>fetchOrderflow(symbol,{interval:'5m'}),
-  whaleCvd:(symbol,o)=>scalpWhaleCvd(symbol,o),
+  whaleZones:(symbol,o)=>scalpWhaleZones(symbol,o),
   bookOf:symbol=>scalpMarket.book(symbol),
   priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
   markOf:venueSymbol=>scalpLast(venueSymbol,20000),
@@ -1123,16 +1125,31 @@ async function binance(url,ttl=30000){
  try{return await task;}catch(e){if(apiCache.get(url)?.pending===task)apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
 }
 const exchangeInfo=()=>binance('/fapi/v1/exchangeInfo',15*60*1000);
-// 고래 CVD of a scalp candidate (whale_cvd.mjs): Binance-listed coins only, aggTrades on the shared PublicReadBudget
-// (weight 20 a page, at most SCALP_WHALE_CVD_MAX_PAGES pages, stops when the budget is above 60 %). Read with
-// budgetedPublicRead, not binance(): a failed side read must not set state.rest='offline' / state.error (that blocks
-// cryptoEntryAllowed and the paper scalp until the next good read) nor keep dead pages in apiCache (review 2026-11-25).
+// 고래 매물대 (whale_zones.mjs, user 2026-11-25 09:51 "단타에선 CVD 활용 방법이 매물대를 보는 거라고 생각하면 편할 것 같고"):
+// Binance-listed coins only. One WhaleTradeStore for the process keeps each symbol's whale-class trades and reads only newer
+// trades (then older ones back to the lookback start) on the shared PublicReadBudget: weight 20 a page, at most
+// SCALP_WHALE_ZONE_MAX_PAGES pages a call, stops above 60 % of the budget, same symbol at most every 30 s, dropped after
+// 15 min unused. Read with budgetedPublicRead, not binance(): a failed side read must not set state.rest='offline' /
+// state.error (that blocks cryptoEntryAllowed and the paper scalp) nor keep pages in apiCache (review 2026-11-25).
 // Edges scaled by the coin's 24h quote volume against BTC from the scanner's cached 24h tickers (no extra read).
-function scalpWhaleCvd(symbol,{startMs,endMs,scale='auto',maxPages=WHALE_CVD_DEFAULTS.maxPages}={}){
- if(!state.activeSet.has(symbol))return {ok:false,error:'NOT_ON_BINANCE'};
+const whaleTradeStore=new WhaleTradeStore();
+function whaleZoneThresholds(symbol,scale){
  const qv=sym=>Number((rawMarketTickers||[]).find(t=>t?.symbol===sym)?.quoteVolume)||null;
- const thresholds=whaleThresholds({mode:scale,quoteVolume24h:qv(symbol),referenceQuoteVolume24h:qv(WHALE_CVD_DEFAULTS.referenceSymbol)});
- return fetchWhaleCvd(symbol,{request:url=>budgetedPublicRead(url,{budget:publicReadBudget,timeoutMs:WHALE_CVD_DEFAULTS.timeoutMs}),budget:()=>publicReadBudget.snapshot(),startMs,endMs,thresholds,maxPages});
+ return whaleThresholds({mode:scale,quoteVolume24h:qv(symbol),referenceQuoteVolume24h:qv(WHALE_CVD_DEFAULTS.referenceSymbol)});
+}
+function scalpWhaleZones(symbol,{lookbackMs,endMs,scale='auto',maxPages=WHALE_ZONE_DEFAULTS.maxPages,reservePct=WHALE_ZONE_DEFAULTS.reservePct}={}){
+ if(!state.activeSet.has(symbol))return {ok:false,error:'NOT_ON_BINANCE'};
+ return whaleTradeStore.read(symbol,{request:url=>budgetedPublicRead(url,{budget:publicReadBudget,timeoutMs:WHALE_ZONE_DEFAULTS.timeoutMs}),budget:()=>publicReadBudget.snapshot(),
+  thresholds:whaleZoneThresholds(symbol,scale),lookbackMs,endMs,maxPages,reservePct});
+}
+// ATR(1H) for GET /api/whale-zones (bin width / K): Binance 1H klines (weight 1) on the same budget path, 5 min per symbol.
+const whaleAtrCache=new Map();
+async function whaleZoneAtr(symbol){
+ const hit=whaleAtrCache.get(symbol);if(hit&&Date.now()-hit.at<5*60000)return hit.atr;
+ let atr=null;
+ try{atr=ladderAtrPct(await budgetedPublicRead(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=1h&limit=40`,{budget:publicReadBudget,timeoutMs:3000}),{now:Date.now()})}catch{}
+ whaleAtrCache.set(symbol,{at:Date.now(),atr});if(whaleAtrCache.size>60)whaleAtrCache.delete(whaleAtrCache.keys().next().value);
+ return atr;
 }
 const market24=()=>binance('/fapi/v1/ticker/24hr',75000);
 const klines=(symbol,interval,limit=150)=>binance(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`,interval==='4h'?170000:interval==='1h'?54000:20000);
@@ -2643,6 +2660,21 @@ const server=http.createServer(async(req,res)=>{
    }catch(e){
     return response(res,502,{ok:false,symbol,interval,error:e?.message||'ORDERFLOW_FETCH_FAILED'});
    }
+  }
+  // 고래 매물대 of one symbol (read-only, for the heatmap; whale_zones.mjs whaleZonesPayload): the scalp's settings, the shared
+  // trade store (a symbol is read again at most every 30 s), Binance-listed symbols only. No order, no account data.
+  // The screen asks every 30 s: its pages run only under 40 % of the budget (apiReservePct) so the score's reads go first,
+  // and a coin not on Binance is 422, not 404 (the screen takes a 404 as "no such endpoint" and stops asking for 10 min).
+  if(pathname==='/api/whale-zones'&&req.method==='GET'){
+   const symbol=String(url.searchParams.get('symbol')||'').toUpperCase();
+   if(!/^[A-Z0-9]{2,30}USDT$/.test(symbol))return response(res,400,{ok:false,error:'INVALID_SYMBOL'});
+   if(!state.activeSet.has(symbol))return response(res,422,{ok:false,symbol,error:'NOT_ON_BINANCE'});
+   const cfg=scalpExec?.config||SCALP_EXEC;
+   const [snap,atr]=await Promise.all([scalpWhaleZones(symbol,{lookbackMs:whaleZoneLookbackMs(cfg.whaleZoneHours),scale:cfg.whaleCvdScale??'auto',maxPages:cfg.whaleZoneMaxPages,reservePct:WHALE_ZONE_DEFAULTS.apiReservePct}),whaleZoneAtr(symbol)]);
+   const last=Number((rawMarketTickers||[]).find(t=>t?.symbol===symbol)?.lastPrice)||null;
+   const zr=buildWhaleZones(snap,{price:last,atrPct:atr});
+   const body=whaleZonesPayload(snap,zr,{atrPct:atr});
+   return response(res,body.ok?200:502,body.ok?body:{...body,symbol});
   }
   if(pathname==='/api/market-commentary'){
    try{await refreshMarketStats()}catch{}

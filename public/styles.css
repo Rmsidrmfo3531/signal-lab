@@ -976,6 +976,8 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .wcv-row{font-size:11px}.wcv{padding:0 4px;border-radius:4px;border:1px solid currentColor;margin-right:2px;white-space:nowrap}
 .wcv-orange{color:var(--wcv-orange)}.wcv-green{color:var(--wcv-green)}.wcv-red{color:var(--wcv-red)}.wcv-purple{color:var(--wcv-purple)}.wcv-brown{color:var(--wcv-brown)}.wcv-blue{color:var(--wcv-blue)}
 .wcv-div{color:var(--muted)}
+/* 고래 매물대 (2026-11-25): the support / resistance zone chip and the read coverage. */
+.wcv-zone{font-size:11px}.wcv-zone-buy{color:var(--wcv-green)}.wcv-zone-sell{color:var(--wcv-red)}.wcv-cov{color:var(--muted)}
 .rz-whale-plus{color:var(--wcv-purple);font-weight:700}.rz-whale-minus{color:var(--rz-fail);font-weight:700}.rz-whale-zero{color:var(--rz-zero-lo)}
 .rz-tip{position:fixed;z-index:200;background:var(--panel-raise,#152031);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.55;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 .rz-cat{border-top:1px solid var(--line-soft,var(--line))}.rz-cat summary{cursor:pointer;padding:7px 0;font-size:12px;color:var(--text)}.rz-cat summary small{color:var(--dim)}.rz-cat[open]{padding-bottom:8px}

@@ -107,7 +107,7 @@ export function zoneRejections(rows,zone,direction,touchPct=TRADER_LADDER.zoneTo
  return n;
 }
 
-/** Strong zones ("강력하고 확실한 저항선"). A 4H or 1D volume zone (backtest.mjs zoneBook, HVNs) is strong when
+/** Strong zones ("강력하고 확실한 저항선"; the executor adds the 고래 매물대 of whale_zones.mjs as kind 'WHALE'). A 4H or 1D volume zone (backtest.mjs zoneBook, HVNs) is strong when
  *  - OVERLAP_4H_1D: a zone of the other timeframe lies within ±touchPct % of it, or
  *  - TOP_VOLUME_NODE: it is the timeframe's largest volume node (rank 1), or
  *  - REJECTIONS_3: 4H candles touched it and closed back on our side at least minRejections times.
@@ -122,7 +122,7 @@ export function strongZones({zones4h=null,zones1d=null,rows4h=null,direction='LO
    if((Array.isArray(other)?other:[]).some(o=>Number(o?.low)>0&&near(z,o)))why.push('OVERLAP_4H_1D');
    if(Number(z.rank)===1)why.push('TOP_VOLUME_NODE');
    if(rejections>=minRejections)why.push('REJECTIONS_3');
-   if(why.length)out.push({low:Number(z.low),high:Number(z.high),tf,rank:z.rank??null,sharePct:Number.isFinite(Number(z.sharePct))?+Number(z.sharePct).toFixed(2):null,rejections,why});
+   if(why.length)out.push({low:Number(z.low),high:Number(z.high),tf,kind:'VOLUME',rank:z.rank??null,sharePct:Number.isFinite(Number(z.sharePct))?+Number(z.sharePct).toFixed(2):null,rejections,why});
   }
  }
  return out;
@@ -135,7 +135,8 @@ export function ladderNextAdd({direction,lastFill,spacingPct,zones=[],zoneMinFra
  const d=dirOf(direction),f=pos(lastFill),s=Number(spacingPct);
  if(!f||!(s>0))return null;
  const spacingLevel=f*(1-d*s/100),minLevel=f*(1-d*s*zoneMinFrac/100),t=touchPct/100;
- const pick=z=>({low:z.low,high:z.high,tf:z.tf,why:[...z.why],rank:z.rank??null,rejections:z.rejections??0});
+ // kind: 'VOLUME' (4H / 1D, strongZones) or 'WHALE' (고래 매물대, whale_zones.mjs whaleLadderZones): recorded on the fill.
+ const pick=z=>({low:z.low,high:z.high,tf:z.tf,kind:z.kind??'VOLUME',why:[...z.why],rank:z.rank??null,rejections:z.rejections??0,...(z.kind==='WHALE'?{side:z.side,netUSD:z.netUSD??null}:{})});
  const between=(Array.isArray(zones)?zones:[]).map(z=>({z,level:d>0?Number(z.high):Number(z.low)}))
   .filter(({level})=>level>0&&d*(minLevel-level)>=0&&d*(level-spacingLevel)>=0)
   .sort((a,b)=>d*(b.level-a.level));
