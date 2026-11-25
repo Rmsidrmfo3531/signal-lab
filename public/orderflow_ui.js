@@ -1,6 +1,7 @@
-// Dedicated "수급 · 청산" (#orderflow) workspace screen.
-// Features Material Indicators FireCharts-style Liquidity Wall Heatmap + 4-Cohort (Whale/Large/Mid/Retail)
-// Normalized/Absolute CVD, plus Live 20-Coin Anomaly Radar, OI/Funding/L-S KPIs, and Estimated Liquidation Map.
+// Dedicated "호가·CVD·청산맵" (#orderflow) workspace screen (renamed from "수급 · 청산" on user request 2026-11-25 09:51).
+// Features Material Indicators FireCharts-style Liquidity Wall Heatmap + order-size CVD in the 6 FireCharts classes
+// (새우 $100~$1000 .. 고래 $1M~$10M, All Orders; Normalized/Absolute), the combined CVD and OI trend, the estimated
+// liquidation map and the market-wide anomaly radar. Display only: nothing here places or changes an order.
 // Pure rendering helpers are exported for unit tests; DOM bindings initialize automatically in browser.
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -26,6 +27,18 @@ function fmtUsdCompact(v, signed = false) {
   return `${sign}$${a.toFixed(0)}`;
 }
 
+/** 3 significant digits for the narrow colour-scale labels: $236M, $38.2M, $4.10K. */
+function fmtUsdShort(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  const a = Math.abs(n), sign = n < 0 ? '−' : '';
+  const s = x => (x >= 100 ? x.toFixed(0) : x >= 10 ? x.toFixed(1) : x.toFixed(2));
+  if (a >= 1e9) return `${sign}$${s(a / 1e9)}B`;
+  if (a >= 1e6) return `${sign}$${s(a / 1e6)}M`;
+  if (a >= 1e3) return `${sign}$${s(a / 1e3)}K`;
+  return `${sign}$${a.toFixed(0)}`;
+}
+
 function fmtPct(v, d = 2) {
   if (!fin(v)) return '—';
   const n = Number(v);
@@ -42,6 +55,16 @@ function fmtKst(ts, withDate = false) {
   } catch { return '—'; }
 }
 
+/** KST calendar day with the year (6M / 1Y / 3Y axes): 2026.11.25 → "26.11.25". */
+function fmtKstDay(ts) {
+  if (!ts) return '—';
+  try {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', year: '2-digit', month: '2-digit', day: '2-digit' })
+      .formatToParts(new Date(ts)).map(x => [x.type, x.value]));
+    return `${p.year}.${p.month}.${p.day}`;
+  } catch { return '—'; }
+}
+
 function fmtCountdown(nextTs, now = Date.now()) {
   if (!fin(nextTs) || Number(nextTs) <= now) return '';
   const mins = Math.max(1, Math.round((Number(nextTs) - now) / 60_000));
@@ -55,12 +78,87 @@ const SOURCE_LABELS = Object.freeze({
   BINGX: 'BingX 선물',
 });
 
-const COHORT_META = Object.freeze([
-  { key: 'retail', name: '개미', color: '#f59e0b', stepped: false },
-  { key: 'mid', name: '중형', color: '#38bdf8', stepped: false },
-  { key: 'large', name: '대형', color: '#22c55e', stepped: false },
-  { key: 'whale', name: '고래', color: '#ef4444', stepped: true },
-]);
+/**
+ * The 6 CVD lines of the user's FireCharts screenshot (2026-11-25 09:20), small to large, then All Orders.
+ * Same keys, legend text and dark-theme colours as firechart.mjs FIRECHART_CLASSES (a test keeps them equal);
+ * on screen every line and chip takes its colour from the CSS token --wcv-<key> (light theme has its own values).
+ */
+export const FIRECHART_CVD_CLASSES = Object.freeze([
+  { key: 'orange', legend: '$100~$1000 (새우)', color: '#fb923c', width: 1.7, stepped: false },
+  { key: 'green', legend: '$1000~$10000', color: '#4ade80', width: 1.6, stepped: false },
+  { key: 'red', legend: '$10K~$100K', color: '#f87171', width: 1.6, stepped: false },
+  { key: 'purple', legend: '$100K~$1M', color: '#c084fc', width: 1.8, stepped: false },
+  { key: 'brown', legend: '$1M~$10M (고래)', color: '#d19a66', width: 2.1, stepped: true },
+  { key: 'blue', legend: 'All Orders', color: '#60a5fa', width: 2.2, stepped: false },
+].map(c => Object.freeze(c)));
+const CVD_KEYS = FIRECHART_CVD_CLASSES.map(c => c.key);
+/** The two readings printed on the screenshot, shown under the legend. */
+export const FIRECHART_CVD_NOTES = Object.freeze(['고래 : CVD 증가 = 매집 경향', '새우 : CVD 감소 = 매도 경향']);
+export const FIRECHART_HEAT_NOTE = '색이 밝을수록 매물대가 두터움';
+// A payload from before 2026-11-25 (개미/중형/대형/고래) still draws: retail→orange, mid→green, large→red, whale→brown.
+const LEGACY_CVD_KEY = Object.freeze({ orange: 'retail', green: 'mid', red: 'large', brown: 'whale' });
+
+/** One point's value for one class: mode 'normalized' → 0..1 (flat/missing 0.5), 'absolute' → USD (missing 0). */
+export function cvdPointValue(pt, key, mode = 'normalized') {
+  const isNorm = mode !== 'absolute';
+  const box = isNorm ? pt?.norm : pt?.abs;
+  const fallback = isNorm ? 0.5 : 0;
+  if (!box) return fallback;
+  const raw = box[key] !== undefined ? box[key] : box[LEGACY_CVD_KEY[key]];
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Y range of the CVD pane. Normalized: always 0..1 (each line already min-max scaled on the server).
+ * Absolute: one shared USD scale over the shown lines, always including 0 so the zero line is visible.
+ */
+export function cvdPaneScale(points = [], { mode = 'normalized', hidden = [] } = {}) {
+  if (mode !== 'absolute') return { min: 0, max: 1 };
+  const hide = new Set(hidden);
+  let min = 0, max = 0;
+  for (const pt of points) {
+    for (const key of CVD_KEYS) {
+      if (hide.has(key)) continue;
+      const v = cvdPointValue(pt, key, 'absolute');
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  if (!(max > min)) return { min: -1, max: 1 };
+  return { min, max };
+}
+
+/** Keep only well-formed whale zones (low < high, finite, side BUY|SELL). Anything else → []. */
+export function parseWhaleZones(body) {
+  const zones = Array.isArray(body?.zones) ? body.zones : [];
+  return zones
+    .map(z => ({ low: Number(z?.low), high: Number(z?.high), net: Number(z?.net), side: String(z?.side || '').toUpperCase() }))
+    .filter(z => Number.isFinite(z.low) && Number.isFinite(z.high) && z.low > 0 && z.high > z.low && (z.side === 'BUY' || z.side === 'SELL'))
+    .map(z => ({ ...z, net: Number.isFinite(z.net) ? z.net : 0 }))
+    .slice(0, 24);
+}
+
+/**
+ * HOOK — 고래 매물대 bands on the heatmap.
+ * Reads GET /api/whale-zones?symbol=<SYM> → {zones:[{low, high, net, side:'BUY'|'SELL'}]} (USD prices, net = signed USD).
+ * That endpoint is built in a separate change. Until it exists the server answers 404 and this returns
+ * {available:false, zones:[]} so nothing is drawn; any other error or a bad body also draws nothing.
+ * The controller below calls it after each symbol load and passes the zones to firechartSvg({whaleZones}).
+ */
+export const WHALE_ZONES_ENDPOINT = '/api/whale-zones';
+export async function fetchWhaleZones(symbol, { fetcher = globalThis.fetch } = {}) {
+  if (!symbol || typeof fetcher !== 'function') return { available: false, zones: [] };
+  try {
+    const res = await fetcher(`${WHALE_ZONES_ENDPOINT}?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+    if (!res || res.status === 404) return { available: false, zones: [] };
+    if (!res.ok) return { available: true, zones: [] };
+    const body = await res.json().catch(() => null);
+    return { available: true, zones: parseWhaleZones(body) };
+  } catch {
+    return { available: true, zones: [] };
+  }
+}
 
 /** Map 0..1 intensity to Material Indicators FireCharts color ramp (Dark Red -> Red -> Orange -> Yellow -> White). */
 function fireColor(t) {
@@ -255,34 +353,54 @@ export function firechartWallSummaryHTML(data, { minPct = 93, maxPct = 99, price
 }
 
 /**
- * Pure SVG Material Indicators FireCharts-style Dual Pane:
- * - Upper Pane: Pitch-black canvas with Fire Colorbar + Orderbook/Liquidity Wall Heatmap + Price Line + Touch Crosshair
- * - Lower Pane: 4-Cohort Multi-Line CVD (Normalized 0..1 OR Absolute USD) with Stepped Red Whale Line
+ * Layout of the two panes for a given drawing width (px). The SVG is drawn at the container's real width so text
+ * stays readable on a phone (a 920-wide drawing shrunk to 360 px would print 4 px labels).
  */
-export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct = 99, priceSpan = 'wide', inspected = null } = {}) {
+export function firechartLayout(width = 920) {
+  const W = Math.round(Math.max(280, Math.min(1400, Number(width) || 920)));
+  const compact = W < 560;
+  const PL = compact ? 70 : 94;
+  const PR = compact ? 60 : 80;
+  const topY = 24;
+  const topH = compact ? 210 : 246;
+  const botY = topY + topH + 30;
+  const botH = compact ? 156 : 190;
+  const H = botY + botH + 22;
+  return { W, H, PL, PR, PW: W - PL - PR, topY, topH, botY, botH, compact, font: compact ? 9.5 : 10 };
+}
+
+/**
+ * Pure SVG Material Indicators FireCharts-style Dual Pane:
+ * - Upper "Fire Chart": black canvas, vertical colour scale (색이 밝을수록 매물대가 두터움), liquidity wall heatmap,
+ *   optional 고래 매물대 bands (whaleZones hook), price line and touch crosshair.
+ * - Lower CVD: the 6 order-size lines (Normalized 0..1 per line, or Absolute USD on one shared scale).
+ */
+export function firechartSvg(data, {
+  cvdMode = 'normalized', minPct = 93, maxPct = 99, priceSpan = 'wide', inspected = null,
+  width = 920, hiddenClasses = [], whaleZones = [],
+} = {}) {
   const fc = data?.firechart;
   const candles = data?.series || [];
   const cohortPts = fc?.cohorts?.series || [];
   const hm = fc?.heatmap;
   if (!fc || candles.length < 3 || cohortPts.length < 3) {
-    return '<div class="empty-small" style="padding:36px">FireCharts 유동성 히트맵과 코호트 CVD를 계산하는 중입니다…</div>';
+    return '<div class="empty-small" style="padding:36px">FireCharts 유동성 히트맵과 금액대별 CVD를 계산하는 중입니다…</div>';
   }
 
-  const W = 920, H = 496;
-  const PL = 86, PR = 78, PW = W - PL - PR;
-  const topY = 16, topH = 238;
-  const botY = 276, botH = 186;
+  const L = firechartLayout(width);
+  const { W, H, PL, PR, PW, topY, topH, botY, botH, compact, font } = L;
   const loPct = Math.min(minPct, maxPct);
   const hiPct = Math.max(minPct, maxPct);
+  const hidden = new Set(hiddenClasses || []);
 
-  // Upper Pane: Dynamic wide price scale & Liquidity Heatmap
+  // Upper Pane: price scale & liquidity heatmap
   const { minP, maxP } = computeFirechartPriceBounds(data, priceSpan);
   const pSpan = maxP - minP || maxP * 0.01 || 1;
   const py = v => topY + topH - ((v - minP) / pSpan) * topH;
   const pxOf = (i, len) => PL + (len > 1 ? (i / (len - 1)) * PW : PW / 2);
 
   const visibleCells = (hm?.cells || []).filter(c => c.pctRank >= loPct && c.pctRank <= hiPct + 0.99 && c.price >= minP && c.price <= maxP);
-  const maxVisUsd = Math.max(1, ...visibleCells.map(c => c.usd));
+  const maxVisUsd = visibleCells.length ? Math.max(...visibleCells.map(c => c.usd)) : 0;
   const minVisUsd = visibleCells.length ? Math.min(...visibleCells.map(c => c.usd)) : 0;
   const masterSpan = Math.max(1e-12, (hm?.maxPrice || maxP) - (hm?.minPrice || minP));
   const binPxStep = masterSpan / Math.max(1, hm?.priceBins || 72);
@@ -297,11 +415,25 @@ export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct
     return `<rect class="of-fc-wall" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${cellH.toFixed(1)}" fill="${fireColor(intensity)}" rx="1" data-wall-price="${esc(c.price)}" data-wall-usd="${esc(c.usd)}" data-wall-side="${esc(c.side)}" data-wall-pct="${esc(c.pctRank)}" data-wall-live="${c.live ? '1' : '0'}"/>`;
   }).join('');
 
-  // Price line overlaid on heatmap
+  // 고래 매물대 bands (hook: empty until GET /api/whale-zones exists)
+  const zoneSvg = (whaleZones || [])
+    .filter(z => z && z.high > minP && z.low < maxP)
+    .map(z => {
+      const yTop = py(Math.min(maxP, z.high));
+      const yBot = py(Math.max(minP, z.low));
+      const h = Math.max(2, yBot - yTop);
+      const buy = z.side === 'BUY';
+      const label = `고래 ${buy ? '매수' : '매도'} ${fmtUsdCompact(z.net, true)}`;
+      return `<g class="of-fc-whale-zone ${buy ? 'buy' : 'sell'}" data-whale-zone data-zone-low="${esc(z.low)}" data-zone-high="${esc(z.high)}" style="pointer-events:none">
+      <rect x="${PL}" y="${yTop.toFixed(1)}" width="${PW}" height="${h.toFixed(1)}" fill="${buy ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)'}" stroke="${buy ? '#4ade80' : '#f87171'}" stroke-width="1" stroke-dasharray="4 3"/>
+      <text x="${PL + 6}" y="${(yTop + Math.min(h, 14) - 3).toFixed(1)}" fill="${buy ? '#86efac' : '#fca5a5'}" font-size="${font - 0.5}" font-weight="700">${esc(label)}</text>
+    </g>`;
+    }).join('');
+
   const pricePts = candles.map((c, i) => `${pxOf(i, candles.length).toFixed(1)},${py(c.c).toFixed(1)}`).join(' ');
   const lastPx = candles.at(-1).c;
+  const badgeW = PR - 6;
 
-  // Touched/inspected horizontal price guide line + right-axis badge
   let inspectSvg = '';
   if (inspected && fin(inspected.price) && Number(inspected.price) >= minP && Number(inspected.price) <= maxP) {
     const iy = py(Number(inspected.price));
@@ -309,80 +441,75 @@ export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct
     const boxFill = inspected.snapped ? (inspected.side === 'ASK' ? '#7a1f2d' : '#115e49') : '#1c3e63';
     inspectSvg = `<g class="of-fc-crosshair" data-fc-crosshair>
       <line x1="${PL}" y1="${iy.toFixed(1)}" x2="${W - PR}" y2="${iy.toFixed(1)}" stroke="${lineColor}" stroke-width="1.4" stroke-dasharray="5 3"/>
-      <rect x="${W - PR + 2}" y="${(iy - 9).toFixed(1)}" width="74" height="18" rx="3" fill="${boxFill}" stroke="${lineColor}" stroke-width="1"/>
-      <text x="${W - PR + 6}" y="${(iy + 3.5).toFixed(1)}" fill="#fff" font-size="10" font-weight="800">${esc(fmtPx(inspected.price))}</text>
+      <rect x="${W - PR + 2}" y="${(iy - 9).toFixed(1)}" width="${badgeW}" height="18" rx="3" fill="${boxFill}" stroke="${lineColor}" stroke-width="1"/>
+      <text x="${W - PR + 6}" y="${(iy + 3.5).toFixed(1)}" fill="#fff" font-size="${font}" font-weight="800">${esc(fmtPx(inspected.price))}</text>
     </g>`;
   }
 
-  // Upper grid & 6 price ticks for crisp readability on wide vertical spans
   const pTicks = [0, 0.2, 0.4, 0.6, 0.8, 1].map(f => {
     const val = minP + f * pSpan;
     const y = py(val);
     return `<line x1="${PL}" y1="${y.toFixed(1)}" x2="${W - PR}" y2="${y.toFixed(1)}" stroke="#162130" stroke-width="1"/>
-      <text x="${W - PR + 7}" y="${(y + 3.5).toFixed(1)}" fill="#8ba3bc" font-size="10">${esc(fmtPx(val))}</text>`;
+      <text class="of-fc-axis" x="${W - PR + 6}" y="${(y + 3.5).toFixed(1)}" fill="#8ba3bc" font-size="${font}">${esc(fmtPx(val))}</text>`;
   }).join('');
 
-  // Left Fire Colorbar ticks
-  const cbMax = hm?.maxUsd || maxVisUsd;
-  const cbMin = hm?.p80Usd || minVisUsd;
-  const cbTicks = [1, 0.75, 0.5, 0.25, 0].map(f => {
+  // Vertical colour scale: the visible cells' USD range mapped onto the same ramp the cells use
+  const barX = compact ? 18 : 30, barW = compact ? 10 : 14;
+  const cbMax = maxVisUsd || hm?.maxUsd || 0;
+  const cbMin = visibleCells.length ? minVisUsd : (hm?.p80Usd || 0);
+  const cbTicks = (compact ? [1, 0.5, 0] : [1, 0.75, 0.5, 0.25, 0]).map(f => {
     const v = cbMin + f * Math.max(0, cbMax - cbMin);
     const y = topY + (1 - f) * topH;
-    return `<text x="52" y="${(y + 3.5).toFixed(1)}" text-anchor="end" fill="#90a7bf" font-size="9.5">${esc(fmtUsdCompact(v))}</text>`;
+    return `<text class="of-fc-axis" x="${barX + barW + 4}" y="${(y + (f === 1 ? 8 : f === 0 ? -2 : 3.5)).toFixed(1)}" fill="#8ba3bc" font-size="${font - 0.5}">${esc(fmtUsdShort(v))}</text>`;
   }).join('');
+  const noteX = compact ? 10 : 15;
+  const noteY = topY + topH / 2;
 
-  // Lower Pane: 4-Cohort Multi-Line CVD
+  // Lower Pane: 6 CVD lines
   const isNorm = cvdMode !== 'absolute';
-  let cMin = 0, cMax = 1;
-  if (!isNorm) {
-    cMin = Infinity; cMax = -Infinity;
-    for (const pt of cohortPts) {
-      for (const m of COHORT_META) {
-        const v = Number(pt.abs?.[m.key] ?? 0);
-        if (v < cMin) cMin = v;
-        if (v > cMax) cMax = v;
-      }
-    }
-    if (!Number.isFinite(cMin) || !Number.isFinite(cMax) || cMax <= cMin) { cMin = -1; cMax = 1; }
-  }
+  const mode = isNorm ? 'normalized' : 'absolute';
+  const { min: cMin, max: cMax } = cvdPaneScale(cohortPts, { mode, hidden: [...hidden] });
   const cSpan = cMax - cMin || 1;
-  const cy = v => botY + botH - ((v - cMin) / cSpan) * botH;
+  const cy = v => botY + botH - ((Math.max(cMin, Math.min(cMax, v)) - cMin) / cSpan) * botH;
 
-  const cohortPaths = COHORT_META.map(m => {
-    const coords = cohortPts.map((pt, i) => {
-      const val = isNorm ? Number(pt.norm?.[m.key] ?? 0.5) : Number(pt.abs?.[m.key] ?? 0);
-      return [pxOf(i, cohortPts.length), cy(val)];
-    });
+  // All Orders first (behind), then small → large so the whale lines stay on top
+  const drawOrder = ['blue', 'orange', 'green', 'red', 'purple', 'brown'];
+  const cohortPaths = drawOrder.map(key => FIRECHART_CVD_CLASSES.find(m => m.key === key)).filter(m => m && !hidden.has(m.key)).map(m => {
+    const coords = cohortPts.map((pt, i) => [pxOf(i, cohortPts.length), cy(cvdPointValue(pt, m.key, mode))]);
+    const cls = `of-fc-line of-fc-l-${m.key}`;
     if (m.stepped) {
-      return `<path d="${buildSteppedPath(coords)}" fill="none" stroke="${m.color}" stroke-width="2" stroke-linejoin="miter" opacity="0.95"/>`;
+      return `<path class="${cls}" d="${buildSteppedPath(coords)}" fill="none" stroke="${m.color}" stroke-width="${m.width}" stroke-linejoin="miter" data-cvd-line="${m.key}"/>`;
     }
     const ptsStr = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
-    return `<polyline fill="none" stroke="${m.color}" stroke-width="1.8" points="${ptsStr}" opacity="0.92"/>`;
+    return `<polyline class="${cls}" fill="none" stroke="${m.color}" stroke-width="${m.width}" stroke-linejoin="round" points="${ptsStr}" data-cvd-line="${m.key}"/>`;
   }).join('');
 
   const cTicks = [0, 0.25, 0.5, 0.75, 1].map(f => {
     const val = cMin + f * cSpan;
     const y = cy(val);
     const lbl = isNorm ? val.toFixed(2) : fmtUsdCompact(val, true);
-    return `<line x1="${PL}" y1="${y.toFixed(1)}" x2="${W - PR}" y2="${y.toFixed(1)}" stroke="#162130" stroke-width="1"/>
-      <text x="${W - PR + 7}" y="${(y + 3.5).toFixed(1)}" fill="#8ba3bc" font-size="10">${esc(lbl)}</text>`;
+    return `<line class="of-fc-grid" x1="${PL}" y1="${y.toFixed(1)}" x2="${W - PR}" y2="${y.toFixed(1)}" stroke="#162130" stroke-width="1"/>
+      <text class="of-fc-axis" x="${W - PR + 6}" y="${(y + 3.5).toFixed(1)}" fill="#8ba3bc" font-size="${font}">${esc(lbl)}</text>`;
   }).join('');
 
   const zeroLine = !isNorm && cMin < 0 && cMax > 0
-    ? `<line x1="${PL}" y1="${cy(0).toFixed(1)}" x2="${W - PR}" y2="${cy(0).toFixed(1)}" stroke="#395573" stroke-dasharray="4 3"/>`
+    ? `<line class="of-fc-zero" x1="${PL}" y1="${cy(0).toFixed(1)}" x2="${W - PR}" y2="${cy(0).toFixed(1)}" stroke="#395573" stroke-dasharray="4 3"/>`
     : '';
 
-  // Time labels along bottom axis (use cohort timestamps)
   const withDate = fc.range !== 'LIVE';
-  const timeTicks = [0, 0.25, 0.5, 0.75, 1].map(f => {
+  const dailyAxis = ['6M', '1Y', '3Y'].includes(fc.range);
+  const tickFs = compact ? [0, 0.5, 1] : [0, 0.25, 0.5, 0.75, 1];
+  const timeTicks = tickFs.map(f => {
     const idx = Math.min(cohortPts.length - 1, Math.round(f * (cohortPts.length - 1)));
     const x = pxOf(idx, cohortPts.length);
+    const anchor = f === 0 ? 'start' : f === 1 ? 'end' : 'middle';
     return `<line x1="${x.toFixed(1)}" y1="${topY}" x2="${x.toFixed(1)}" y2="${topY + topH}" stroke="#121c29" stroke-width="1"/>
-      <line x1="${x.toFixed(1)}" y1="${botY}" x2="${x.toFixed(1)}" y2="${botY + botH}" stroke="#121c29" stroke-width="1"/>
-      <text x="${x.toFixed(1)}" y="${H - 8}" text-anchor="middle" fill="#7c96b0" font-size="9.5">${esc(fmtKst(cohortPts[idx].t, withDate))}</text>`;
+      <line class="of-fc-grid" x1="${x.toFixed(1)}" y1="${botY}" x2="${x.toFixed(1)}" y2="${botY + botH}" stroke="#121c29" stroke-width="1"/>
+      <text class="of-fc-axis" x="${x.toFixed(1)}" y="${H - 7}" text-anchor="${anchor}" fill="#8ba3bc" font-size="${font - 0.5}">${esc(dailyAxis ? fmtKstDay(cohortPts[idx].t) : fmtKst(cohortPts[idx].t, withDate))}</text>`;
   }).join('');
 
-  return `<svg class="of-fc-svg" data-fc-svg data-w="${W}" data-h="${H}" data-pl="${PL}" data-pw="${PW}" data-top-y="${topY}" data-top-h="${topH}" viewBox="0 0 ${W} ${H}" role="img" aria-label="FireCharts 호가 유동성 히트맵 및 금액대별 코호트 CVD">
+  const cvdTitle = isNorm ? 'Normalized CVD (0~1)' : 'Absolute CVD (USD)';
+  return `<svg class="of-fc-svg" data-fc-svg data-w="${W}" data-h="${H}" data-pl="${PL}" data-pw="${PW}" data-top-y="${topY}" data-top-h="${topH}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Fire Chart 호가 유동성 히트맵(${esc(FIRECHART_HEAT_NOTE)})과 금액대별 ${esc(cvdTitle)}">
     <defs>
       <linearGradient id="fcFireScale" x1="0" y1="1" x2="0" y2="0">
         <stop offset="0%" stop-color="#140404"/>
@@ -393,28 +520,27 @@ export function firechartSvg(data, { cvdMode = 'normalized', minPct = 93, maxPct
         <stop offset="100%" stop-color="#ffffff"/>
       </linearGradient>
     </defs>
-    <!-- Upper Heatmap Canvas -->
+    <text class="of-fc-title" x="${PL}" y="${topY - 8}" fill="#d6e7f8" font-size="${font + 1.5}" font-weight="800">Fire Chart</text>
     <rect x="${PL}" y="${topY}" width="${PW}" height="${topH}" fill="#05070c" stroke="#1d2c3e" stroke-width="1"/>
-    <!-- Left Fire Colorbar -->
-    <rect x="58" y="${topY}" width="14" height="${topH}" fill="url(#fcFireScale)" stroke="#23364b" stroke-width="1" rx="2"/>
+    <!-- Vertical colour scale + note -->
+    <rect x="${barX}" y="${topY}" width="${barW}" height="${topH}" fill="url(#fcFireScale)" stroke="#23364b" stroke-width="1" rx="2" data-fc-scale/>
     ${cbTicks}
-    <text x="12" y="${topY + topH / 2}" transform="rotate(-90 12 ${topY + topH / 2})" text-anchor="middle" fill="#7892ac" font-size="9.5">Volume (USDT)</text>
-    <!-- Grid & Heatmap Cells -->
+    <text class="of-fc-title of-fc-scale-note" x="${noteX}" y="${noteY}" transform="rotate(-90 ${noteX} ${noteY})" text-anchor="middle" fill="#d6e7f8" font-size="${font}" font-weight="600">${esc(FIRECHART_HEAT_NOTE)}</text>
     ${timeTicks}
     ${pTicks}
+    ${zoneSvg}
     ${heatmapRects}
-    <!-- Price Line Overlay -->
     <polyline fill="none" stroke="#45b3ff" stroke-width="2" points="${pricePts}" style="pointer-events:none"/>
     <circle cx="${pxOf(candles.length - 1, candles.length).toFixed(1)}" cy="${py(lastPx).toFixed(1)}" r="3.4" fill="#9fe3ff" style="pointer-events:none"/>
-    <rect x="${W - PR + 3}" y="${(py(lastPx) - 8).toFixed(1)}" width="72" height="16" rx="3" fill="#184775" stroke="#45b3ff" stroke-width="0.8"/>
-    <text x="${W - PR + 7}" y="${(py(lastPx) + 3.5).toFixed(1)}" fill="#fff" font-size="10" font-weight="700">${esc(fmtPx(lastPx))}</text>
+    <rect x="${W - PR + 3}" y="${(py(lastPx) - 8).toFixed(1)}" width="${badgeW - 1}" height="16" rx="3" fill="#184775" stroke="#45b3ff" stroke-width="0.8"/>
+    <text x="${W - PR + 6}" y="${(py(lastPx) + 3.5).toFixed(1)}" fill="#fff" font-size="${font}" font-weight="700">${esc(fmtPx(lastPx))}</text>
     ${inspectSvg}
-    <!-- Lower Cohort CVD Canvas -->
-    <rect x="${PL}" y="${botY}" width="${PW}" height="${botH}" fill="#070b12" stroke="#1d2c3e" stroke-width="1"/>
+    <!-- Lower CVD pane -->
+    <text class="of-fc-title" x="${PL}" y="${botY - 9}" fill="#d6e7f8" font-size="${font + 1.5}" font-weight="800">${cvdTitle}</text>
+    <rect class="of-fc-cvd-bg" x="${PL}" y="${botY}" width="${PW}" height="${botH}" fill="#070b12" stroke="#1d2c3e" stroke-width="1"/>
     ${cTicks}
     ${zeroLine}
     ${cohortPaths}
-    <text x="${W - 10}" y="${botY + botH / 2}" transform="rotate(90 ${W - 10} ${botY + botH / 2})" text-anchor="middle" fill="#7892ac" font-size="9.5">${isNorm ? 'Normalized CVD (0~1)' : 'Absolute CVD (USD)'}</text>
   </svg>`;
 }
 
@@ -558,8 +684,79 @@ export function orderflowRadarHTML(radar, activeSymbol = '', loading = false) {
   </section>`;
 }
 
+/** Range tabs: 실시간 plus the FireCharts 1D 1W 1M 6M 1Y 3Y (3Y = 1,095 daily candles, see firechart.mjs). */
+export const FIRECHART_RANGE_TABS = Object.freeze([['LIVE', '실시간'], ['1D', '1D'], ['1W', '1W'], ['1M', '1M'], ['6M', '6M'], ['1Y', '1Y'], ['3Y', '3Y']]);
+
+/** Clamp a percentile pair to 0..100 with low <= high (the low thumb cannot pass the high one, and back). */
+export function clampPercentiles(minPct, maxPct, moved = 'min') {
+  const c = v => Math.max(0, Math.min(100, Math.round(Number(v)) || 0));
+  let lo = c(minPct), hi = c(maxPct);
+  if (lo > hi) { if (moved === 'max') lo = hi; else hi = lo; }
+  return { minPct: lo, maxPct: hi };
+}
+
+/** "Volume Percentiles a .. b": one track with two thumbs (two native range inputs, so keyboard and screen readers work). */
+export function firechartPercentileHTML(minPct = 93, maxPct = 99) {
+  const { minPct: lo, maxPct: hi } = clampPercentiles(Math.min(minPct, maxPct), Math.max(minPct, maxPct));
+  return `<div class="of-fc-pct-ctrl" role="group" aria-label="Volume Percentiles (호가 유동성 백분위 범위)">
+        <span class="of-fc-pct-title">Volume Percentiles: <b data-of-pct-label>${esc(lo)} .. ${esc(hi)}</b></span>
+        <div class="of-fc-dual" data-of-pct-dual style="--lo:${lo};--hi:${hi}">
+          <span class="of-fc-dual-track" aria-hidden="true"></span>
+          <span class="of-fc-dual-fill" aria-hidden="true"></span>
+          <input type="range" min="0" max="100" step="1" value="${esc(lo)}" data-of-pct-min aria-label="최소 유동성 백분위">
+          <input type="range" min="0" max="100" step="1" value="${esc(hi)}" data-of-pct-max aria-label="최대 유동성 백분위">
+        </div>
+      </div>`;
+}
+
 /**
- * Full "수급 · 청산" screen HTML renderer (pure, unit-testable).
+ * CVD legend under the chart, as in the screenshot: one chip per line (same colour token), the latest cumulative
+ * value, the Normalized / Absolute toggle ("CVD 표시 모드"), the two readings and how this range's CVD was made.
+ * A chip toggles its line (aria-pressed).
+ */
+export function firechartLegendHTML(data, { cvdMode = 'normalized', hiddenClasses = [] } = {}) {
+  const fc = data?.firechart;
+  if (!fc) return '';
+  const hidden = new Set(hiddenClasses || []);
+  const latest = fc.cohorts?.series?.at(-1) || fc.cohorts?.latest || null;
+  const counts = fc.cohorts?.classCounts || null;
+  const real = fc.cohortMode === 'REAL_TRADES';
+  const chips = FIRECHART_CVD_CLASSES.map(m => {
+    const on = !hidden.has(m.key);
+    const val = cvdPointValue(latest, m.key, 'absolute');
+    const none = real && counts && counts[m.key] === 0;
+    const valTxt = none ? '체결 없음' : fmtUsdCompact(val, true);
+    const tone = none ? 'muted' : val > 0 ? 'paper-profit' : val < 0 ? 'paper-loss' : 'muted';
+    return `<button type="button" class="of-fc-leg wcv-${m.key}${on ? '' : ' off'}" data-of-cvd-class="${m.key}" aria-pressed="${on}" title="${esc(m.legend)} 선 ${on ? '숨기기' : '보이기'} · 최근 누적 CVD"><i aria-hidden="true"></i><b>${esc(m.legend)}</b><em class="${tone}">${esc(valTxt)}</em></button>`;
+  }).join('');
+
+  const cDiv = fc.cohorts?.divergence;
+  const divBadge = cDiv && cDiv.badgeKo
+    ? `<span class="of-tag ${cDiv.tone === 'pos' ? 'pos' : cDiv.tone === 'neg' ? 'neg' : 'neutral'}" data-of-cohort-div title="${esc(cDiv.detailKo || '')}">${esc(cDiv.badgeKo)}</span>`
+    : '';
+  const spanMin = Number(fc.cohorts?.spanSec) > 0 ? Math.max(1, Math.round(fc.cohorts.spanSec / 60)) : null;
+  const modeNote = real
+    ? `실제 체결 ${esc(fc.cohorts?.tradeCount ?? 0)}건${spanMin ? `(최근 약 ${esc(spanMin)}분)` : ''}을 주문 금액대로 나눠 누적 · 실시간 호가벽 ${esc(fc.heatmap?.liveWalls?.length ?? 0)}개${fc.heatmap?.snapshotCount > 0 ? ` · 누적 스냅샷 ${esc(fc.heatmap.snapshotCount)}회` : ''}`
+    : `All Orders는 봉별 실제 테이커 순매수 · 금액대 5개는 봉 거래 규모로 나눈 추정 · 우측 실시간 호가벽(${esc(SOURCE_LABELS[fc.bookSource] || fc.bookSource || '—')})`;
+  const isAbs = cvdMode === 'absolute';
+  return `<div class="of-fc-legend-row">
+      <div class="of-fc-legends" role="group" aria-label="CVD 금액대 (눌러서 선 숨기기·보이기)">${chips}</div>
+    </div>
+    <div class="of-fc-notes">
+      <div class="of-fc-note-list">
+        ${FIRECHART_CVD_NOTES.map((t, i) => `<span class="of-fc-note"><i class="wcv-dot wcv-${i === 0 ? 'brown' : 'orange'}" aria-hidden="true"></i>${esc(t)}</span>`).join('')}
+        ${divBadge}
+      </div>
+      <div class="of-fc-mode-toggle" role="group" aria-label="CVD 표시 모드">
+        <button type="button" class="of-fc-tab${isAbs ? '' : ' active'}" data-of-cvd-mode="normalized" aria-pressed="${!isAbs}">Normalized CVD</button>
+        <button type="button" class="of-fc-tab${isAbs ? ' active' : ''}" data-of-cvd-mode="absolute" aria-pressed="${isAbs}">Absolute CVD</button>
+      </div>
+      <small class="of-fc-mode-note">${modeNote}</small>
+    </div>`;
+}
+
+/**
+ * Full "호가·CVD·청산맵" screen HTML renderer (pure, unit-testable).
  */
 export function orderflowHTML(data, {
   symbol = 'BTCUSDT',
@@ -573,6 +770,9 @@ export function orderflowHTML(data, {
   error = '',
   radar = null,
   radarLoading = false,
+  fcWidth = 920,
+  hiddenClasses = [],
+  whaleZones = [],
 } = {}) {
   const activeSym = data?.symbol || symbol;
   const activeRange = data?.range || range || 'LIVE';
@@ -587,12 +787,12 @@ export function orderflowHTML(data, {
     return `<button type="button" class="of-chip${active}" data-of-symbol="${esc(s)}">${held}${esc(short)}</button>`;
   }).join('');
 
-  const rangeBtns = [['LIVE', '실시간'], ['1D', '1D'], ['1W', '1W'], ['1M', '1M'], ['6M', '6M'], ['1Y', '1Y']].map(([k, lbl]) =>
-    `<button type="button" class="outline-btn small${activeRange === k ? ' active-btn' : ''}" data-of-range="${k}">${lbl}</button>`
+  const rangeBtns = FIRECHART_RANGE_TABS.map(([k, lbl]) =>
+    `<button type="button" class="outline-btn small${activeRange === k ? ' active-btn' : ''}" data-of-range="${k}" aria-pressed="${activeRange === k}">${lbl}</button>`
   ).join('');
 
   const spanBtns = [['tight', '좁게'], ['normal', '표준'], ['wide', '넓게'], ['ultra', '초광역']].map(([k, lbl]) =>
-    `<button type="button" class="of-fc-tab${activeSpan === k ? ' active' : ''}" data-of-price-span="${k}">${lbl}</button>`
+    `<button type="button" class="of-fc-tab${activeSpan === k ? ' active' : ''}" data-of-price-span="${k}" aria-pressed="${activeSpan === k}">${lbl}</button>`
   ).join('');
 
   const srcBadge = data?.source ? `<span class="of-src-badge">${esc(SOURCE_LABELS[data.source] || data.source)}</span>` : '';
@@ -614,52 +814,22 @@ export function orderflowHTML(data, {
     return `${controls}${radarBox}<div class="venues-status warn" style="margin:14px 18px">수급 데이터 조회 실패: ${esc(error)}</div>`;
   }
   if (!data) {
-    return `${controls}${radarBox}<div class="empty-small" style="padding:36px">종목 수급·청산 데이터를 불러오는 중입니다…</div>`;
+    return `${controls}${radarBox}<div class="empty-small" style="padding:36px">호가·CVD·청산맵 데이터를 불러오는 중입니다…</div>`;
   }
 
   const px = data.price || {}, cvd = data.cvd || {}, oi = data.oi || {}, ratios = data.ratios || {}, fund = data.funding || {}, liq = data.liquidations || {}, sig = data.scalpSignal || {};
   const fc = data.firechart || null;
-  const thLabels = fc?.cohorts?.thresholds?.labels || { retail: '<$1K', mid: '$1K~$10K', large: '$10K~$100K', whale: '$100K+' };
-  const latestAbs = fc?.cohorts?.latest?.abs || {};
-
-  const cohortLegend = COHORT_META.map(m => {
-    const val = latestAbs[m.key];
-    return `<span class="of-fc-leg"><i style="background:${m.color}"></i><b>${m.name}</b> <small>(${esc(thLabels[m.key] || '')})</small> <em class="${(val ?? 0) >= 0 ? 'paper-profit' : 'paper-loss'}">${esc(fmtUsdCompact(val ?? 0, true))}</em></span>`;
-  }).join('');
-
-  const cDiv = fc?.cohorts?.divergence;
-  const cohortDivBadge = cDiv && cDiv.badgeKo
-    ? `<span class="of-tag ${cDiv.tone === 'pos' ? 'pos' : cDiv.tone === 'neg' ? 'neg' : 'neutral'}" data-of-cohort-div title="${esc(cDiv.detailKo || '')}">${esc(cDiv.badgeKo)}</span>`
-    : '';
-
-  const modeNote = fc?.cohortMode === 'REAL_TRADES'
-    ? `실제 개별 체결 ${esc(fc.cohorts?.tradeCount ?? 0)}건 분리 · 실시간 호가벽 ${esc(fc.heatmap?.liveWalls?.length ?? 0)}개${fc.heatmap?.snapshotCount > 0 ? ` · 누적 스냅샷 ${esc(fc.heatmap.snapshotCount)}회` : ''}`
-    : `거래량 유동성 선반 + 우측 실시간 호가벽(${esc(SOURCE_LABELS[fc?.bookSource] || fc?.bookSource || '')}) · 캔들 규모 기반 고래/개미 추정 코호트`;
-
-  const firechartCard = `<section class="of-fc-card" aria-label="FireCharts 호가 히트맵 및 코호트 CVD">
+  const firechartCard = `<section class="of-fc-card" aria-label="Fire Chart 호가 히트맵 및 금액대별 CVD">
     <div class="of-fc-bar">
-      <div class="of-fc-pct-ctrl">
-        <label>Volume Percentiles: <b data-of-pct-label>${esc(Math.min(minPct, maxPct))} .. ${esc(Math.max(minPct, maxPct))}</b></label>
-        <div class="of-fc-sliders">
-          <input type="range" min="50" max="98" step="1" value="${esc(minPct)}" data-of-pct-min aria-label="최소 유동성 백분위">
-          <input type="range" min="60" max="99" step="1" value="${esc(maxPct)}" data-of-pct-max aria-label="최대 유동성 백분위">
-        </div>
-      </div>
+      ${firechartPercentileHTML(minPct, maxPct)}
       <div class="of-fc-span-ctrl">
         <span>가격 범위</span>
         <div class="of-fc-span-toggle" role="group" aria-label="가격 Y축 범위">${spanBtns}</div>
       </div>
-      <div class="of-fc-mode-toggle" role="group" aria-label="CVD 표시 모드">
-        <button type="button" class="of-fc-tab${cvdMode !== 'absolute' ? ' active' : ''}" data-of-cvd-mode="normalized">Normalized CVD</button>
-        <button type="button" class="of-fc-tab${cvdMode === 'absolute' ? ' active' : ''}" data-of-cvd-mode="absolute">Absolute CVD</button>
-      </div>
-    </div>
-    <div class="of-fc-legend-row">
-      <div class="of-fc-legends">${cohortLegend}${cohortDivBadge}</div>
-      <small class="of-fc-mode-note">${modeNote}</small>
     </div>
     <div data-of-fc-inspect-wrap>${firechartInspectBarHTML(inspected, activeSym)}</div>
-    <div class="of-fc-canvas" data-of-fc-canvas>${firechartSvg(data, { cvdMode, minPct, maxPct, priceSpan: activeSpan, inspected })}</div>
+    <div class="of-fc-canvas" data-of-fc-canvas>${firechartSvg(data, { cvdMode, minPct, maxPct, priceSpan: activeSpan, inspected, width: fcWidth, hiddenClasses, whaleZones })}</div>
+    <div data-of-fc-legend-wrap>${firechartLegendHTML(data, { cvdMode, hiddenClasses })}</div>
     <div data-of-wall-strip-wrap>${firechartWallSummaryHTML(data, { minPct, maxPct, priceSpan: activeSpan, inspected })}</div>
   </section>`;
 
@@ -759,9 +929,26 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       error: '',
       radar: null,
       radarLoading: false,
+      fcWidth: 920,
+      hiddenClasses: (() => { try { return JSON.parse(readLS('sl_of_cvd_hidden', '[]')).filter(k => CVD_KEYS.includes(k)); } catch { return []; } })(),
+      whaleZones: [],
+      whaleZonesSymbol: '',
+      whaleZonesMissingUntil: 0,
     };
+    ({ minPct: state.minPct, maxPct: state.maxPct } = clampPercentiles(state.minPct, state.maxPct));
 
-    const render = () => { host.innerHTML = orderflowHTML(state.data, state); };
+    // Draw the SVG at the canvas' real width (minus its 8 px side padding) so labels stay readable on a phone.
+    const measureWidth = () => {
+      const box = host.querySelector('[data-of-fc-canvas]');
+      const w = (box?.clientWidth || host.clientWidth || 920) - 16;
+      return Math.max(280, Math.min(1400, Math.round(w)));
+    };
+    const render = () => {
+      if (host.clientWidth > 0) state.fcWidth = measureWidth();
+      host.innerHTML = orderflowHTML(state.data, state);
+      const w = measureWidth();
+      if (state.data && Math.abs(w - state.fcWidth) > 4) { state.fcWidth = w; rerenderFirechartOnly(); }
+    };
     const rerenderFirechartOnly = () => {
       const box = host.querySelector('[data-of-fc-canvas]');
       const lbl = host.querySelector('[data-of-pct-label]');
@@ -769,7 +956,11 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       const stripWrap = host.querySelector('[data-of-wall-strip-wrap]');
       if (lbl) lbl.textContent = `${Math.min(state.minPct, state.maxPct)} .. ${Math.max(state.minPct, state.maxPct)}`;
       if (inspWrap) inspWrap.innerHTML = firechartInspectBarHTML(state.inspected, state.data?.symbol || state.symbol);
-      if (box && state.data) box.innerHTML = firechartSvg(state.data, state);
+      const legendWrap = host.querySelector('[data-of-fc-legend-wrap]');
+      const dual = host.querySelector('[data-of-pct-dual]');
+      if (dual) { dual.style.setProperty('--lo', String(state.minPct)); dual.style.setProperty('--hi', String(state.maxPct)); }
+      if (box && state.data) box.innerHTML = firechartSvg(state.data, { ...state, width: state.fcWidth });
+      if (legendWrap && state.data) legendWrap.innerHTML = firechartLegendHTML(state.data, state);
       if (stripWrap && state.data) stripWrap.innerHTML = firechartWallSummaryHTML(state.data, state);
       host.querySelectorAll('[data-of-price-span]').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.ofPriceSpan === state.priceSpan);
@@ -842,6 +1033,19 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
         state.loading = false;
         render();
       }
+      void loadWhaleZones();
+    }
+
+    // 고래 매물대 hook (see fetchWhaleZones): one read per symbol load; a 404 pauses the reads for 10 minutes.
+    async function loadWhaleZones() {
+      const sym = state.data?.symbol || state.symbol;
+      if (!sym || Date.now() < state.whaleZonesMissingUntil) return;
+      const { available, zones } = await fetchWhaleZones(sym);
+      if (!available) state.whaleZonesMissingUntil = Date.now() + 10 * 60_000;
+      const before = JSON.stringify(state.whaleZonesSymbol === sym ? state.whaleZones : []);
+      state.whaleZones = zones;
+      state.whaleZonesSymbol = sym;
+      if ((state.data?.symbol || state.symbol) === sym && JSON.stringify(zones) !== before) rerenderFirechartOnly();
     }
 
     async function loadRadar({ force = false } = {}) {
@@ -911,9 +1115,21 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
         }
         return;
       }
+      const legBtn = e.target.closest('[data-of-cvd-class]');
+      if (legBtn) {
+        const key = legBtn.dataset.ofCvdClass;
+        const set = new Set(state.hiddenClasses);
+        if (set.has(key)) set.delete(key); else set.add(key);
+        state.hiddenClasses = CVD_KEYS.filter(k => set.has(k));
+        try { localStorage.setItem('sl_of_cvd_hidden', JSON.stringify(state.hiddenClasses)); } catch {}
+        rerenderFirechartOnly();
+        host.querySelector(`[data-of-cvd-class="${key}"]`)?.focus();
+        return;
+      }
       const chip = e.target.closest('[data-of-symbol]');
       if (chip) {
         state.symbol = chip.dataset.ofSymbol;
+        state.whaleZones = [];
         state.inspected = null;
         state.inspectLocked = false;
         void load();
@@ -929,9 +1145,10 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       }
       const modeBtn = e.target.closest('[data-of-cvd-mode]');
       if (modeBtn) {
-        state.cvdMode = modeBtn.dataset.ofCvdMode;
+        state.cvdMode = modeBtn.dataset.ofCvdMode === 'absolute' ? 'absolute' : 'normalized';
         try { localStorage.setItem('sl_of_cvd_mode', state.cvdMode); } catch {}
-        render();
+        rerenderFirechartOnly();
+        host.querySelector(`[data-of-cvd-mode="${state.cvdMode}"]`)?.focus();
         return;
       }
       if (e.target.closest('[data-of-radar-refresh]')) {
@@ -963,15 +1180,18 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     });
 
     host.addEventListener('input', e => {
-      if (e.target.matches('[data-of-pct-min]')) {
-        state.minPct = Number(e.target.value) || 80;
-        try { localStorage.setItem('sl_of_min_pct', String(state.minPct)); } catch {}
-        rerenderFirechartOnly();
-      } else if (e.target.matches('[data-of-pct-max]')) {
-        state.maxPct = Number(e.target.value) || 99;
-        try { localStorage.setItem('sl_of_max_pct', String(state.maxPct)); } catch {}
-        rerenderFirechartOnly();
-      }
+      const isMin = e.target.matches('[data-of-pct-min]');
+      if (!isMin && !e.target.matches('[data-of-pct-max]')) return;
+      const next = clampPercentiles(isMin ? e.target.value : state.minPct, isMin ? state.maxPct : e.target.value, isMin ? 'min' : 'max');
+      state.minPct = next.minPct;
+      state.maxPct = next.maxPct;
+      // The moved thumb stops at the other one (low <= high)
+      e.target.value = String(isMin ? state.minPct : state.maxPct);
+      try {
+        localStorage.setItem('sl_of_min_pct', String(state.minPct));
+        localStorage.setItem('sl_of_max_pct', String(state.maxPct));
+      } catch {}
+      rerenderFirechartOnly();
     });
 
     host.addEventListener('submit', e => {
@@ -1005,6 +1225,15 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       void load({ force: true });
     });
     window.addEventListener('hashchange', () => setTimeout(maybeLoadOnRoute, 10));
+    let resizeTimer = 0;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (!isVisible() || !state.data) return;
+        const w = measureWidth();
+        if (Math.abs(w - state.fcWidth) > 4) { state.fcWidth = w; rerenderFirechartOnly(); }
+      }, 150);
+    });
     setInterval(() => {
       if (!isVisible()) return;
       void load();

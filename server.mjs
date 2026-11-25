@@ -71,7 +71,7 @@ import {whaleThresholds,WHALE_CVD_DEFAULTS} from './whale_cvd.mjs';
 import {WhaleTradeStore,buildWhaleZones,whaleZonesPayload,whaleZoneLookbackMs,WHALE_ZONE_DEFAULTS} from './whale_zones.mjs';
 import {atrPct as ladderAtrPct} from './scalp_ladder.mjs';
 import {fetchOrderflow,fetchOrderflowWithFirechart,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
-import {configureFirechartPersistence} from './firechart.mjs';
+import {configureFirechartPersistence,FIRECHART_RANGES} from './firechart.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
@@ -2643,7 +2643,8 @@ const server=http.createServer(async(req,res)=>{
    const force=url.searchParams.get('force')==='1';
    const symbol=normalizeOrderflowSymbol(rawSym);
    if(!/^[A-Z0-9]{4,25}$/.test(symbol))return response(res,400,{ok:false,error:'INVALID_SYMBOL'});
-   if(rangeParam&&!['LIVE','1D','1W','1M'].includes(rangeParam))return response(res,400,{ok:false,error:'INVALID_RANGE'});
+   // Every FireCharts range tab (실시간·1D·1W·1M·6M·1Y·3Y); 6M/1Y were rejected here before 2026-11-25.
+   if(rangeParam&&!Object.hasOwn(FIRECHART_RANGES,rangeParam))return response(res,400,{ok:false,error:'INVALID_RANGE'});
    if(!['5m','15m','1h','4h'].includes(interval))return response(res,400,{ok:false,error:'INVALID_INTERVAL'});
    try{
     const data=await fetchOrderflowWithFirechart(symbol,{range:rangeParam||undefined,interval,force});

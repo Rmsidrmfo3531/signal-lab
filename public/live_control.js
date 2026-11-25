@@ -224,7 +224,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
   const info=trInfo(p);
   const slBtn=p.origin!=='copy'&&p.origin!=='scalp'&&!fin(p.stop)?`<button type="button" class="vp-act-btn warn" data-pos-action="SET_STOP_LOSS" data-pos-sl-roe="15" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="현재 포지션에 −15% ROE 손절(STOP_MARKET) 즉시 설정">🛡 -15% 손절</button>`:'';
   const trBtn=info?`<button type="button" class="vp-act-btn" data-trail-toggle="${esc(info.disp)}" title="${info.excluded?'이 종목을 자동 트레일링 대상에 다시 포함':'이 종목을 자동 트레일링에서 제외'}">${info.excluded?'트레일 포함':'트레일 제외'}</button>`:'';
-  const ofBtn=`<button type="button" class="vp-act-btn" data-open-orderflow="${sym}" title="이 종목의 FireCharts 호가 히트맵·고래/개미 CVD·추정 청산맵 보기">수급/CVD</button>`;
+  const ofBtn=`<button type="button" class="vp-act-btn" data-open-orderflow="${sym}" title="이 종목의 호가·CVD·청산맵(FireCharts 호가 히트맵·금액대별 새우~고래 CVD·추정 청산맵) 보기">수급/CVD</button>`;
   return `<div class="vp-actions"><button type="button" class="vp-act-btn trade" data-trade-fill data-pos-symbol="${sym}" data-pos-lev="${lev}" data-pos-mm="${mmMode}" title="이 종목을 수동 주문 패널에 불러오기">주문/추매</button>${ofBtn}<button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가+왕복 수수료에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button>${slBtn}${trBtn}</div>`;
  };
  const row=p=>{const r=info(p),isMan=p.origin!=='copy'&&p.origin!=='scalp';return `<li class="${isMan?'vp-manual':''}">${symTag(p.symbol)}${badge(p)}${stopBadge(p)}${trBadge(p)}${side(p.direction)}<span>${esc(p.leverage??'—')}배 ${mm(p)}</span><span>수량 ${esc(qtyFmt(p.size))} · 평단 ${px(p.avg)}</span><span class="muted">현재 ${px(p.mark)} · 증거금 ${usdv(p.margin)}${p.liquidation?` · 청산 ${px(p.liquidation)}`:''}${r?` · 추매 ${esc(r.adds||0)}회 · 부분청산 ${partialCount(r)} · ${heldTxt(r)}`:''}</span><b class="${cls(p.unrealized)} end">${money(p.unrealized)} <small>${pct(p.roePct)}</small></b>${posActions(p)}</li>`};
@@ -808,13 +808,13 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
  const scoreBadge=fin(p.scalpScore?.score)?`<span class="vp-badge" title="${esc(p.scalpScore.summary||'')}">${esc(p.scalpScore.score)}점 ${esc(p.scalpScore.grade||'')}급${Number.isFinite(Number(p.scalpScore.sizeMult))&&Math.abs(Number(p.scalpScore.sizeMult)-1)>1e-4?` · ${esc(p.scalpScore.sizeMult)}x`:''}</span>`:'';
  // 카피식 추매 (TRADER_LADDER, user 2026-11-24): step, average, next add, take profit instead of stop / targets.
  const lv=p.management==='TRADER_LADDER'?p.ladderView??null:null;
- const ofJump=p.symbol?`<button type="button" class="vp-act-btn" data-open-orderflow="${esc(p.symbol)}" title="이 종목의 FireCharts 호가 히트맵·고래/개미 CVD 보기">수급/CVD</button>`:'';
+ const ofJump=p.symbol?`<button type="button" class="vp-act-btn" data-open-orderflow="${esc(p.symbol)}" title="이 종목의 호가·CVD·청산맵(FireCharts 호가 히트맵·금액대별 새우~고래 CVD) 보기">수급/CVD</button>`:'';
  return `<article class="paper-trade live-position tn-scalp-card${p.status&&p.status!=='OPEN'?' live-warn':''}">
  <header><b>${esc(p.symbol)}</b>${scalpBadge(p.kind)}${scoreBadge}${scaleBadge}${side(p.direction||'LONG')}${ofJump}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · BingX</span><span class="live-state s-${esc(p.status||'OPEN')}">${esc(p.status==='OPEN'||!p.status?'보유 중':p.status)}</span></header>
  <div class="paper-trade-values live-values">
   ${positionMetricsHTML(details)}
-  ${lv?`<span class="tp-cell">익절<b>${px(lv.tpPrice)}</b><small>평단 +${esc(lv.tpNetPct)}% (수수료 뺀)</small></span>
-  <span>마지막 선<b>−${esc(lv.finalLineRoePct)}% ROE</b><small>사다리 다 채운 뒤</small></span>
+  ${lv?`<span>마지막 선<b>−${esc(lv.finalLineRoePct)}% ROE</b><small>사다리 다 채운 뒤</small></span>
+  <span class="tp-cell">익절<b>${px(lv.tpPrice)}</b><small>평단 +${esc(lv.tpNetPct)}% (수수료 뺀)</small></span>
   <span>예약 위험<b>${tnUsd(riskVal)}</b><small>증거금 ${tnUsd(fin(lv.reserveMarginUSD)?Number(lv.reserveMarginUSD)*sc:null)}</small></span>
   <span>보유<b>${tnHeld(p.openedAt||p.createdAt,Date.now())}째</b><small>최대 ${esc(Math.round((Number(lv.maxHoldMin)||0)/60))}시간</small></span>`:`${p.stopLossEnabled===false?'<span>자동 손절<b>없음</b></span>':`<span>손절가<b>${px(p.stop)}</b>${p.breakevenMoved?'<small>1차 목표 뒤 본전</small>':''}</span>`}
   <span class="tp-cell">목표<b>${tgt}</b></span>

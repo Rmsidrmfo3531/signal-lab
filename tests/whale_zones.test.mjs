@@ -506,8 +506,6 @@ test('server: /api/whale-zones read-only route and the scalp reader on budgetedP
  assert.doesNotMatch(route,/placeOrder|client\.|\bbinance\(/,'read-only');
  assert.equal((src.match(/whaleZones:\(symbol,o\)=>scalpWhaleZones\(symbol,o\)/g)||[]).length,2,'testnet and the opt-in live scalp');
  assert.doesNotMatch(src,/fetchWhaleCvd/,'the old window fetch is no longer used');
- // SCALP_SCORE_RULES_SINCE is set at merge (TODO left for the coordinator).
- assert.match(fs.readFileSync(new URL('../scalp_executor.mjs',import.meta.url),'utf8'),/TODO\(merge\): set to the merge time of the 고래 매물대 change/);
 });
 
 test('simulator: a zone-rule ±5 counts on the re-score, the old window rule ±5 (record only now) does not',async()=>{

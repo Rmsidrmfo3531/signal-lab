@@ -1,10 +1,15 @@
-// Material Indicators FireCharts-style Liquidity Wall Heatmap + 4-Cohort (Whale/Large/Mid/Retail) CVD engine.
+// Material Indicators FireCharts-style Liquidity Wall Heatmap + order-size CVD (6 lines) engine.
+// Order-size classes follow the FireCharts legend in the user's screenshot (2026-11-25 09:20, request 09:51
+// "CVD를 UI 등 수정했으면 해"): 주황 $100~$1000 (새우) · 초록 $1000~$10000 · 빨강 $10K~$100K · 보라 $100K~$1M ·
+// 갈색 $1M~$10M (고래) · 파랑 All Orders. Display and analytics only — no trading decision reads this module.
 // Pure math helpers are exported for unit tests; live fetchers pull real L2 orderbooks and signed trades
 // from Binance Futures (primary) with automatic Gate.io / BingX fallback, and accumulate live L2 snapshots in memory.
 
 import fs from 'node:fs';
 import path from 'node:path';
 
+// 3Y = 1,095 daily candles: one Binance /fapi/v1/klines call (limit <= 1500), Gate.io candlesticks (<= 2000) and
+// BingX v3 klines (<= 1440) also fit. A coin listed less than 3 years ago simply returns fewer candles.
 export const FIRECHART_RANGES = Object.freeze({
   LIVE: { key: 'LIVE', labelKo: '실시간', interval: '5m', limit: 72, useRealTrades: true },
   '1D': { key: '1D', labelKo: '1D', interval: '15m', limit: 96, useRealTrades: false },
@@ -12,14 +17,28 @@ export const FIRECHART_RANGES = Object.freeze({
   '1M': { key: '1M', labelKo: '1M', interval: '4h', limit: 180, useRealTrades: false },
   '6M': { key: '6M', labelKo: '6M', interval: '1d', limit: 180, useRealTrades: false },
   '1Y': { key: '1Y', labelKo: '1Y', interval: '1d', limit: 365, useRealTrades: false },
+  '3Y': { key: '3Y', labelKo: '3Y', interval: '1d', limit: 1095, useRealTrades: false },
 });
 
-export const FIRECHART_COHORTS = Object.freeze([
-  { key: 'retail', labelKo: '개미', color: '#f59e0b', stepped: false },
-  { key: 'mid', labelKo: '중형', color: '#38bdf8', stepped: false },
-  { key: 'large', labelKo: '대형', color: '#22c55e', stepped: false },
-  { key: 'whale', labelKo: '고래', color: '#ef4444', stepped: true },
-]);
+/** FireCharts fixed lower edges per taker order (USD); brownMaxUSD is the legend's top (an order above it stays brown). */
+export const FIRECHART_CLASS_EDGES = Object.freeze({
+  orangeMinUSD: 100, greenMinUSD: 1_000, redMinUSD: 10_000, purpleMinUSD: 100_000, brownMinUSD: 1_000_000, brownMaxUSD: 10_000_000,
+});
+
+/** The 6 CVD lines, small to large, then All Orders. `color` = dark-theme hex of the CSS token `--wcv-<key>`. */
+export const FIRECHART_CLASSES = Object.freeze([
+  { key: 'orange', colorKo: '주황', nickKo: '새우', rangeLabel: '$100~$1000', legend: '$100~$1000 (새우)', color: '#fb923c', token: '--wcv-orange' },
+  { key: 'green', colorKo: '초록', nickKo: '', rangeLabel: '$1000~$10000', legend: '$1000~$10000', color: '#4ade80', token: '--wcv-green' },
+  { key: 'red', colorKo: '빨강', nickKo: '', rangeLabel: '$10K~$100K', legend: '$10K~$100K', color: '#f87171', token: '--wcv-red' },
+  { key: 'purple', colorKo: '보라', nickKo: '', rangeLabel: '$100K~$1M', legend: '$100K~$1M', color: '#c084fc', token: '--wcv-purple' },
+  { key: 'brown', colorKo: '갈색', nickKo: '고래', rangeLabel: '$1M~$10M', legend: '$1M~$10M (고래)', color: '#d19a66', token: '--wcv-brown' },
+  { key: 'blue', colorKo: '파랑', nickKo: '전체', rangeLabel: 'All Orders', legend: 'All Orders', color: '#60a5fa', token: '--wcv-blue' },
+].map(c => Object.freeze(c)));
+export const FIRECHART_CLASS_KEYS = Object.freeze(FIRECHART_CLASSES.map(c => c.key));
+/** The five size classes (blue = All Orders is their total plus orders under $100). */
+export const FIRECHART_SIZE_KEYS = Object.freeze(FIRECHART_CLASS_KEYS.filter(k => k !== 'blue'));
+/** Old name kept for imports; now the 6 FireCharts classes (was 개미/중형/대형/고래 until 2026-11-25). */
+export const FIRECHART_COHORTS = FIRECHART_CLASSES;
 
 const num = (v, fb = 0) => {
   const n = Number(v);
@@ -99,130 +118,142 @@ export function clearFirechartHistory() {
 }
 
 /**
- * Detect Whale (Red) + Large (Green) vs Retail (Orange) CVD divergence.
+ * Order-size class of one taker trade (USD notional): 'orange' .. 'brown', or null under the orange edge
+ * (a dust order under $100 counts only in 'blue' = All Orders). An order above the brown top ($10M) stays brown.
  */
-export function detectCohortDivergence(series = []) {
-  if (!Array.isArray(series) || series.length < 4) {
-    return { type: 'NEUTRAL', badgeKo: '고래·개미 중립', detailKo: '코호트 간 유의미한 수급 역행 없음', tone: 'neutral' };
-  }
-  const last = series.at(-1);
-  const lookback = series[Math.max(0, series.length - Math.min(12, Math.floor(series.length / 2)))];
-  const whaleAbs = num(last?.abs?.whale);
-  const largeAbs = num(last?.abs?.large);
-  const retailAbs = num(last?.abs?.retail);
-  const whaleNorm = num(last?.norm?.whale, 0.5);
-  const retailNorm = num(last?.norm?.retail, 0.5);
-  const whaleRecentDelta = whaleAbs - num(lookback?.abs?.whale);
-  const retailRecentDelta = retailAbs - num(lookback?.abs?.retail);
-  const smartSum = whaleAbs + largeAbs * 0.5;
-
-  // 1) Whale Accumulation against Retail Selling (Bullish Smart-Money Divergence)
-  if ((whaleAbs > 0 || smartSum > 0) && retailAbs < 0 && (whaleNorm - retailNorm >= 0.22 || (whaleRecentDelta > 0 && retailRecentDelta < 0))) {
-    return {
-      type: 'WHALE_ACCUMULATION',
-      badgeKo: '🐋 고래 매집 · 개미 투매 역행',
-      detailKo: '고래(Red)·대형(Green) 순매수 유입 중 개미(Orange) 순매도 이탈 — 스마트머니 하방 흡수 우위',
-      tone: 'pos',
-    };
-  }
-  // 2) Whale Distribution into Retail Buying (Bearish Smart-Money Divergence)
-  if ((whaleAbs < 0 || smartSum < 0) && retailAbs > 0 && (retailNorm - whaleNorm >= 0.22 || (whaleRecentDelta < 0 && retailRecentDelta > 0))) {
-    return {
-      type: 'WHALE_DISTRIBUTION',
-      badgeKo: '🐋 고래 매도 · 개미 추격 역행',
-      detailKo: '고래(Red)·대형(Green) 순매도 이탈 중 개미(Orange) 추격 순매수 — 상방 물량 떠넘기기 주의',
-      tone: 'neg',
-    };
-  }
-  // 3) Strong Whale-led directional flow
-  if (whaleAbs > 0 && whaleNorm >= 0.72) {
-    return {
-      type: 'WHALE_LED_BUY',
-      badgeKo: '🐋 고래 주도 순매수 우위',
-      detailKo: '고래(Red) 계단식 순매수 누적 구간',
-      tone: 'pos',
-    };
-  }
-  if (whaleAbs < 0 && whaleNorm <= 0.28) {
-    return {
-      type: 'WHALE_LED_SELL',
-      badgeKo: '🐋 고래 주도 순매도 우위',
-      detailKo: '고래(Red) 계단식 순매도 이탈 구간',
-      tone: 'neg',
-    };
-  }
-  return { type: 'NEUTRAL', badgeKo: '고래·개미 동조/중립', detailKo: '코호트 간 뚜렷한 역행 없음', tone: 'neutral' };
+export function firechartClassOf(quoteUsd, edges = FIRECHART_CLASS_EDGES) {
+  const x = Math.abs(num(quoteUsd));
+  if (x >= edges.brownMinUSD) return 'brown';
+  if (x >= edges.purpleMinUSD) return 'purple';
+  if (x >= edges.redMinUSD) return 'red';
+  if (x >= edges.greenMinUSD) return 'green';
+  if (x >= edges.orangeMinUSD) return 'orange';
+  return null;
 }
 
 /**
- * Normalize 4 cohort cumulative series into both Absolute (USD) and Normalized (0.00..1.00) arrays.
+ * Min-max scale one series into 0..1 over the shown window (FireCharts "Normalized CVD": each line on its own scale,
+ * so a small class and All Orders can be compared by shape). A flat series (span <= 1e-6) sits at 0.5.
  */
-export function normalizeCohortSeries(points = []) {
-  const keys = ['retail', 'mid', 'large', 'whale'];
-  const bounds = {};
-  for (const k of keys) {
-    let mn = Infinity, mx = -Infinity;
-    for (const pt of points) {
-      const v = num(pt[k]);
-      if (v < mn) mn = v;
-      if (v > mx) mx = v;
-    }
-    bounds[k] = { min: Number.isFinite(mn) ? mn : 0, max: Number.isFinite(mx) ? mx : 0 };
+export function normalizeMinMax(values = []) {
+  let mn = Infinity, mx = -Infinity;
+  for (const raw of values) {
+    const v = num(raw);
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
   }
-  const series = points.map(pt => {
+  if (!Number.isFinite(mn)) return { min: 0, max: 0, values: [] };
+  const span = mx - mn;
+  return { min: mn, max: mx, values: values.map(raw => (span > 1e-6 ? round((num(raw) - mn) / span, 4) : 0.5)) };
+}
+
+/**
+ * Pre-2026-11-25 cohort points used retail/mid/large/whale. Map them onto the FireCharts classes so a stored or
+ * hand-built old point still renders: retail→orange, mid→green, large→red, whale→brown; blue = their sum.
+ */
+function upgradeLegacyPoint(pt) {
+  if (!pt || FIRECHART_CLASS_KEYS.some(k => pt[k] !== undefined)) return pt;
+  if (!['retail', 'mid', 'large', 'whale'].some(k => pt[k] !== undefined)) return pt;
+  const out = { t: pt.t, price: pt.price, orange: num(pt.retail), green: num(pt.mid), red: num(pt.large), purple: 0, brown: num(pt.whale) };
+  out.blue = out.orange + out.green + out.red + out.brown;
+  return out;
+}
+
+/**
+ * Whale (purple $100K~$1M + brown $1M~$10M) vs shrimp (orange $100~$1000) CVD divergence on the series.
+ * Reading of the user's FireCharts screenshot: 고래 CVD 증가 = 매집 경향, 새우 CVD 감소 = 매도 경향. Display only.
+ */
+export function detectCohortDivergence(series = []) {
+  if (!Array.isArray(series) || series.length < 4) {
+    return { type: 'NEUTRAL', badgeKo: '고래·새우 중립', detailKo: '금액대 간 뚜렷한 역행 없음', tone: 'neutral' };
+  }
+  const whaleAt = pt => num(pt?.abs?.purple) + num(pt?.abs?.brown);
+  const whaleSeries = series.map(whaleAt);
+  const whaleNormAll = normalizeMinMax(whaleSeries).values;
+  const last = series.at(-1);
+  const lookback = series[Math.max(0, series.length - Math.min(12, Math.floor(series.length / 2)))];
+  const whaleAbs = whaleAt(last);
+  const redAbs = num(last?.abs?.red);
+  const shrimpAbs = num(last?.abs?.orange);
+  const whaleNorm = num(whaleNormAll.at(-1), 0.5);
+  const shrimpNorm = num(last?.norm?.orange, 0.5);
+  const whaleRecentDelta = whaleAbs - whaleAt(lookback);
+  const shrimpRecentDelta = shrimpAbs - num(lookback?.abs?.orange);
+  const smartSum = whaleAbs + redAbs * 0.5;
+
+  if ((whaleAbs > 0 || smartSum > 0) && shrimpAbs < 0 && (whaleNorm - shrimpNorm >= 0.22 || (whaleRecentDelta > 0 && shrimpRecentDelta < 0))) {
+    return {
+      type: 'WHALE_ACCUMULATION',
+      badgeKo: '고래 매집 · 새우 매도 역행',
+      detailKo: '고래(보라·갈색) CVD 증가 중 새우(주황) CVD 감소 — 큰 주문이 작은 주문의 매도를 받아 가는 모습',
+      tone: 'pos',
+    };
+  }
+  if ((whaleAbs < 0 || smartSum < 0) && shrimpAbs > 0 && (shrimpNorm - whaleNorm >= 0.22 || (whaleRecentDelta < 0 && shrimpRecentDelta > 0))) {
+    return {
+      type: 'WHALE_DISTRIBUTION',
+      badgeKo: '고래 매도 · 새우 추격 역행',
+      detailKo: '고래(보라·갈색) CVD 감소 중 새우(주황) CVD 증가 — 큰 주문이 작은 주문의 매수에 물량을 넘기는 모습',
+      tone: 'neg',
+    };
+  }
+  if (whaleAbs > 0 && whaleNorm >= 0.72) {
+    return { type: 'WHALE_LED_BUY', badgeKo: '고래 주도 순매수', detailKo: '고래(보라·갈색) CVD가 구간 상단에서 증가', tone: 'pos' };
+  }
+  if (whaleAbs < 0 && whaleNorm <= 0.28) {
+    return { type: 'WHALE_LED_SELL', badgeKo: '고래 주도 순매도', detailKo: '고래(보라·갈색) CVD가 구간 하단에서 감소', tone: 'neg' };
+  }
+  return { type: 'NEUTRAL', badgeKo: '고래·새우 동조/중립', detailKo: '금액대 간 뚜렷한 역행 없음', tone: 'neutral' };
+}
+
+/**
+ * Turn cumulative class points {t, price, orange..brown, blue} into the Absolute (USD) and Normalized (0..1) series.
+ * `maxPoints` thins long histories (3Y = ~1,095 daily bars) to an even stride that always keeps the last point.
+ */
+export function normalizeCohortSeries(points = [], { maxPoints = 0 } = {}) {
+  let pts = (Array.isArray(points) ? points : []).map(upgradeLegacyPoint);
+  if (maxPoints > 0 && pts.length > maxPoints) {
+    const stride = Math.ceil(pts.length / maxPoints);
+    const lastIdx = pts.length - 1;
+    pts = pts.filter((_, i) => (lastIdx - i) % stride === 0);
+  }
+  const bounds = {};
+  const normByKey = {};
+  for (const k of FIRECHART_CLASS_KEYS) {
+    const scaled = normalizeMinMax(pts.map(pt => pt[k]));
+    bounds[k] = { min: scaled.min, max: scaled.max };
+    normByKey[k] = scaled.values;
+  }
+  const series = pts.map((pt, i) => {
     const abs = {}, norm = {};
-    for (const k of keys) {
-      const v = num(pt[k]);
-      abs[k] = Math.round(v);
-      const span = bounds[k].max - bounds[k].min;
-      norm[k] = span > 1e-6 ? round((v - bounds[k].min) / span, 4) : 0.5;
+    for (const k of FIRECHART_CLASS_KEYS) {
+      abs[k] = Math.round(num(pt[k]));
+      norm[k] = normByKey[k][i];
     }
     return { t: pt.t, price: num(pt.price), abs, norm };
   });
-  const latest = series.at(-1) || { abs: { retail: 0, mid: 0, large: 0, whale: 0 }, norm: { retail: 0.5, mid: 0.5, large: 0.5, whale: 0.5 } };
+  const zero = Object.fromEntries(FIRECHART_CLASS_KEYS.map(k => [k, 0]));
+  const half = Object.fromEntries(FIRECHART_CLASS_KEYS.map(k => [k, 0.5]));
+  const latest = series.at(-1) || { abs: zero, norm: half };
   const divergence = detectCohortDivergence(series);
   return { series, latest, bounds, divergence };
 }
 
-/**
- * Pick adaptive trade-size cohort thresholds so both BTC ($1K/$10K/$100K) and smaller alts ($500/$5K/$25K)
- * produce lively, informative 4-tier cohort curves.
- */
-export function selectCohortThresholds(trades = []) {
-  const sizes = trades.map(tr => num(tr.quoteUsd)).filter(v => v > 0).sort((a, b) => a - b);
-  const p99 = sizes.length ? sizes[Math.min(sizes.length - 1, Math.floor(sizes.length * 0.99))] : 100_000;
-  if (p99 >= 60_000) {
-    return {
-      mode: 'MAJOR',
-      t1: 1_000,
-      t2: 10_000,
-      t3: 100_000,
-      labels: { retail: '<$1K', mid: '$1K~$10K', large: '$10K~$100K', whale: '$100K+' },
-    };
-  }
-  if (p99 >= 15_000) {
-    return {
-      mode: 'ALT',
-      t1: 500,
-      t2: 5_000,
-      t3: 25_000,
-      labels: { retail: '<$500', mid: '$500~$5K', large: '$5K~$25K', whale: '$25K+' },
-    };
-  }
+/** FireCharts' fixed class edges and the legend's labels (kept under the old name for any caller). */
+export function selectCohortThresholds() {
   return {
-    mode: 'SMALL_CAP',
-    t1: 200,
-    t2: 1_500,
-    t3: 8_000,
-    labels: { retail: '<$200', mid: '$200~$1.5K', large: '$1.5K~$8K', whale: '$8K+' },
+    mode: 'FIRECHARTS_FIXED',
+    ...FIRECHART_CLASS_EDGES,
+    labels: Object.fromEntries(FIRECHART_CLASSES.map(c => [c.key, c.rangeLabel])),
   };
 }
 
 /**
- * Build 100% REAL individual-trade 4-cohort CVD series from signed exchange ticks.
+ * Build the 6-line order-size CVD from REAL signed exchange trades (each trade = one taker order at one price):
+ * signed USD (+ taker buy, − taker sell) accumulated per class over time buckets; blue = every trade (All Orders).
  */
-export function buildTradeCohortSeries(trades = [], { buckets = 60, thresholds = null } = {}) {
-  const clean = [...trades]
+export function buildTradeCohortSeries(trades = [], { buckets = 60, edges = FIRECHART_CLASS_EDGES } = {}) {
+  const clean = [...(Array.isArray(trades) ? trades : [])]
     .map(tr => ({
       t: num(tr.t),
       price: num(tr.price),
@@ -232,9 +263,10 @@ export function buildTradeCohortSeries(trades = [], { buckets = 60, thresholds =
     .filter(tr => tr.t > 0 && tr.price > 0 && tr.quoteUsd > 0)
     .sort((a, b) => a.t - b.t);
 
-  const th = thresholds || selectCohortThresholds(clean);
+  const th = selectCohortThresholds();
+  const classCounts = Object.fromEntries(FIRECHART_CLASS_KEYS.map(k => [k, 0]));
   if (clean.length < 4) {
-    return { cohortMode: 'REAL_TRADES', tradeCount: clean.length, thresholds: th, ...normalizeCohortSeries([]) };
+    return { cohortMode: 'REAL_TRADES', tradeCount: clean.length, classCounts, thresholds: th, ...normalizeCohortSeries([]) };
   }
 
   const tMin = clean[0].t, tMax = clean.at(-1).t;
@@ -242,7 +274,7 @@ export function buildTradeCohortSeries(trades = [], { buckets = 60, thresholds =
   const nBins = Math.min(buckets, Math.max(12, Math.floor(clean.length / 4)));
   const binStep = span / nBins;
 
-  const cum = { retail: 0, mid: 0, large: 0, whale: 0 };
+  const cum = Object.fromEntries(FIRECHART_CLASS_KEYS.map(k => [k, 0]));
   const pts = [];
   let idx = 0;
   let lastPx = clean[0].price;
@@ -253,24 +285,18 @@ export function buildTradeCohortSeries(trades = [], { buckets = 60, thresholds =
       const tr = clean[idx++];
       lastPx = tr.price;
       const signed = tr.isBuy ? tr.quoteUsd : -tr.quoteUsd;
-      if (tr.quoteUsd >= th.t3) cum.whale += signed;
-      else if (tr.quoteUsd >= th.t2) cum.large += signed;
-      else if (tr.quoteUsd >= th.t1) cum.mid += signed;
-      else cum.retail += signed;
+      const cls = firechartClassOf(tr.quoteUsd, edges);
+      if (cls) { cum[cls] += signed; classCounts[cls]++; }
+      cum.blue += signed;
+      classCounts.blue++;
     }
-    pts.push({
-      t: Math.round(b === nBins - 1 ? tMax : tMin + (b + 0.5) * binStep),
-      price: lastPx,
-      retail: cum.retail,
-      mid: cum.mid,
-      large: cum.large,
-      whale: cum.whale,
-    });
+    pts.push({ t: Math.round(b === nBins - 1 ? tMax : tMin + (b + 0.5) * binStep), price: lastPx, ...cum });
   }
 
   return {
     cohortMode: 'REAL_TRADES',
     tradeCount: clean.length,
+    classCounts,
     spanSec: Math.round(span / 1000),
     thresholds: th,
     ...normalizeCohortSeries(pts),
@@ -278,15 +304,13 @@ export function buildTradeCohortSeries(trades = [], { buckets = 60, thresholds =
 }
 
 /**
- * Build bar-intensity-decomposed 4-cohort CVD series for multi-day historical views (1D / 1W / 1M).
- * Uses each candle's real taker delta, quote volume, and (when available) Binance trade count (avg trade size)
- * to separate calm retail flow from high-volume whale block impulses (stepped red line).
+ * Multi-day views (1D .. 3Y) have no per-trade data: All Orders (blue) is each candle's REAL taker delta
+ * (taker buy − taker sell quote volume), and the five size classes are an ESTIMATE that splits that delta by the
+ * candle's intensity (quote volume and average trade size vs the window's median): calm bars go to the small classes,
+ * spikes feed purple and, at >= 2.2x, brown. Labelled 추정 on screen.
  */
-export function buildHistoricalCohortSeries(candles = []) {
-  const th = {
-    mode: 'HISTORICAL_ESTIMATE',
-    labels: { retail: '소액 추정', mid: '중형 추정', large: '대형 추정', whale: '고래 추정(임펄스)' },
-  };
+export function buildHistoricalCohortSeries(candles = [], { maxPoints = 400 } = {}) {
+  const th = { ...selectCohortThresholds(), mode: 'HISTORICAL_ESTIMATE' };
   if (!Array.isArray(candles) || candles.length < 4) {
     return { cohortMode: 'ESTIMATED_BY_BAR_SIZE', tradeCount: 0, thresholds: th, ...normalizeCohortSeries([]) };
   }
@@ -298,43 +322,31 @@ export function buildHistoricalCohortSeries(candles = []) {
   const validSizes = avgTradeSizes.filter(v => v != null).sort((a, b) => a - b);
   const medTradeSize = validSizes.length ? validSizes[Math.floor(validSizes.length / 2)] : null;
 
-  const cum = { retail: 0, mid: 0, large: 0, whale: 0 };
+  const cum = Object.fromEntries(FIRECHART_CLASS_KEYS.map(k => [k, 0]));
   const pts = candles.map((c, i) => {
     const delta = num(c.delta) || (num(c.buyVol) - num(c.sellVol));
     const volRatio = vols[i] / medVol;
     const sizeRatio = medTradeSize && avgTradeSizes[i] != null ? avgTradeSizes[i] / medTradeSize : volRatio;
     const intensity = 0.55 * volRatio + 0.45 * sizeRatio;
 
-    // Decompose bar taker delta across 4 tiers:
-    // - Calm bars: dominated by retail/mid flow
-    // - Spikes (>= 1.85x intensity): trigger distinct stepped whale impulses!
-    let wWhale = intensity >= 1.85 ? Math.min(0.42, (intensity - 1.55) * 0.22) : 0;
-    let wLarge = intensity >= 1.15 ? Math.min(0.36, 0.14 + (intensity - 1.0) * 0.14) : 0.08;
-    let wMid = 0.28;
-    let wRetail = Math.max(0.12, 1 - wWhale - wLarge - wMid);
-    const sumW = wWhale + wLarge + wMid + wRetail;
-    wWhale /= sumW; wLarge /= sumW; wMid /= sumW; wRetail /= sumW;
-
-    cum.retail += delta * wRetail;
-    cum.mid += delta * wMid;
-    cum.large += delta * wLarge;
-    if (wWhale > 0) cum.whale += delta * wWhale;
-
-    return {
-      t: num(c.t),
-      price: num(c.c),
-      retail: cum.retail,
-      mid: cum.mid,
-      large: cum.large,
-      whale: cum.whale,
+    const w = {
+      brown: intensity >= 2.2 ? Math.min(0.32, (intensity - 1.9) * 0.18) : 0,
+      purple: intensity >= 1.4 ? Math.min(0.30, 0.08 + (intensity - 1.4) * 0.16) : 0.04,
+      red: intensity >= 1.15 ? 0.24 : 0.18,
+      green: 0.24,
     };
+    w.orange = Math.max(0.10, 1 - w.brown - w.purple - w.red - w.green);
+    const sumW = w.orange + w.green + w.red + w.purple + w.brown;
+    for (const k of FIRECHART_SIZE_KEYS) cum[k] += delta * (w[k] / sumW);
+    cum.blue += delta;
+    return { t: num(c.t), price: num(c.c), ...cum };
   });
 
   return {
     cohortMode: 'ESTIMATED_BY_BAR_SIZE',
     tradeCount: candles.reduce((a, c) => a + num(c.trades), 0),
     thresholds: th,
-    ...normalizeCohortSeries(pts),
+    ...normalizeCohortSeries(pts, { maxPoints }),
   };
 }
 
