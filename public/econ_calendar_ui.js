@@ -59,9 +59,18 @@ function renderSubEvents(subEvents){
  return `<div class="econ-sub-box"><div class="econ-sub-label">동시 발표 세부 지표 (${subEvents.length}건)</div>${rows}</div>`;
 }
 
+function renderBacktestLine(bt){
+ if(!bt||!bt.sampleCount)return '';
+ const dirParts=[];
+ if(bt.aboveAvgRet60mPct!=null)dirParts.push(`상회 시 ${bt.aboveAvgRet60mPct>=0?'+':''}${bt.aboveAvgRet60mPct}%`);
+ if(bt.belowAvgRet60mPct!=null)dirParts.push(`하회 시 ${bt.belowAvgRet60mPct>=0?'+':''}${bt.belowAvgRet60mPct}%`);
+ const dirTxt=dirParts.length?` · ${dirParts.join(' / ')}`:'';
+ return `<div class="econ-bt">📊 <b>2년 BTC 실측</b> (${bt.sampleCount}회): 15분 <b>${bt.avgRange15mPct}%</b> (평상시 ${bt.vsBaseline15mX}배) · 1H <b>${bt.avgRange60mPct}%</b> (최대 ${bt.maxRange60mPct}%) · 휩소 반전 <b>${bt.whipsawRatePct}%</b>${esc(dirTxt)}</div>`;
+}
+
 function renderEventRow(ev,isRecent=false){
- const tierCls=ev.tier==='CRITICAL'?'critical':'high';
- const tierIcon=ev.tier==='CRITICAL'?'🔥':'🔴';
+ const tierCls=ev.tier==='CRITICAL'?'critical':(ev.tier==='HIGH'?'high':'watch');
+ const tierIcon=ev.tier==='CRITICAL'?'🔥':(ev.tier==='HIGH'?'🔴':'🟡');
  const hasActual=Boolean(ev.actual);
  const imminentCls=!isRecent&&!hasActual&&ev.isImminent?' imminent':'';
  const releasedCls=hasActual&&ev.isJustReleased?' released':'';
@@ -74,6 +83,7 @@ function renderEventRow(ev,isRecent=false){
  const imp=impactChip(ev);
  const cdAttrs=!hasActual?` data-econ-cd="1" data-econ-at="${Number(ev.at)||0}" data-econ-expects="${ev.expectsActual===false?'0':'1'}"`:'';
  const periodTag=ev.period?` <span class="econ-period">${esc(ev.period)}</span>`:'';
+ const btHtml=renderBacktestLine(ev.backtest);
  const conflictHtml=ev.conflict?.detected?`<div class="econ-conflict-box">⚡ ${esc(ev.conflict.summaryKo)}</div>`:'';
  const subHtml=renderSubEvents(ev.subEvents);
  const hasDetail=Boolean(ev.watchItemsKo||ev.reversalKo);
@@ -91,10 +101,11 @@ function renderEventRow(ev,isRecent=false){
   <div class="econ-row${imminentCls}${releasedCls}${conflictCls}${isRecent&&!ev.isJustReleased?' recent':''}">
    <div class="econ-row-main">
     <div class="econ-row-left">
-     <span class="econ-tier ${tierCls}">${tierIcon} ${esc(ev.tierLabelKo||'강력')}</span>
+     <span class="econ-tier ${tierCls}">${tierIcon} ${esc(ev.tierLabelKo||'참고')}</span>
      <div class="econ-title-wrap">
-      <div class="econ-title">${esc(ev.flag||'🌐')} <b>${esc(ev.titleKo)}</b>${periodTag}${ev.title&&ev.title!==ev.titleKo?` <small class="econ-orig">${esc(ev.title)}</small>`:''}</div>
+      <div class="econ-title">${esc(ev.flag||'🇺🇸')} <b>${esc(ev.titleKo)}</b>${periodTag}${ev.title&&ev.title!==ev.titleKo?` <small class="econ-orig">${esc(ev.title)}</small>`:''}</div>
       ${ev.hintKo?`<div class="econ-hint">${esc(ev.hintKo)}</div>`:''}
+      ${btHtml}
      </div>
     </div>
     <div class="econ-row-right">
@@ -180,7 +191,7 @@ export function renderEconomicCalendarHTML(d){
   </summary>
   <div class="econ-body">
    <div class="econ-top-row">
-    <p class="econ-desc">미국 FOMC·CPI·PCE·비농업고용 등 고영향 지표와 동시 발표 세부 지표(근원 물가·임금·기대 인플레이션·ISM 물가 등)를 함께 추적합니다. 헤드라인이 나빠도 세부 지표로 인해 방향이 반전되는 엇갈림 구간을 자동 표시합니다.</p>
+    <p class="econ-desc">최근 2년 BTC 5분봉 백테스트로 실측한 <b>미국 핵심 지표</b>(FOMC·CPI·NFP·PCE·PPI·GDP·실업수당·소매판매·ISM·JOLTS·미시간대)와 동시 발표 세부 지표만 선별합니다. 중국·주택 등 저영향 노이즈는 제외했습니다.</p>
     <div class="econ-actions"><small>${esc(d.source||'')} · ${kstTime(d.updatedAt)} KST</small><button type="button" class="outline-btn small" data-econ-refresh="1">↻ 갱신</button></div>
    </div>
    ${errNote}

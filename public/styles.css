@@ -1095,11 +1095,14 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .econ-tier{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:5px;font-size:10.5px;font-weight:700;white-space:nowrap;flex-shrink:0;margin-top:1px}
 .econ-tier.critical{background:rgba(241,113,134,.18);color:#ff9dad;border:1px solid rgba(241,113,134,.4)}
 .econ-tier.high{background:rgba(238,189,113,.15);color:#f3cb83;border:1px solid rgba(238,189,113,.35)}
+.econ-tier.watch{background:rgba(90,156,255,.14);color:#8ec0ff;border:1px solid rgba(90,156,255,.32)}
 .econ-title-wrap{display:grid;gap:3px;min-width:0}
 .econ-title{font-size:12px;color:var(--text);line-height:1.45}
 .econ-period{display:inline-block;padding:0 5px;border-radius:4px;background:#1a2c40;color:#9bc0e3;font-size:10px;font-family:'DM Mono',monospace;margin-left:4px}
 .econ-orig{color:var(--dim);font-size:10.5px;font-family:'DM Mono',monospace;margin-left:4px}
 .econ-hint{font-size:10.5px;color:#8fa6be;line-height:1.45}
+.econ-bt{font-size:10.5px;color:#9cc2e3;font-family:'DM Mono',monospace;line-height:1.45;margin-top:2px}
+.econ-bt b{color:#dcebfb}
 .econ-row-right{display:grid;gap:4px;text-align:right;flex-shrink:0}
 .econ-time{font-size:11.5px;font-family:'DM Mono',monospace;color:#d6e5f5;display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
 .econ-cd{padding:2px 6px;border-radius:5px;background:#17283b;color:var(--amber);font-size:10.5px;font-weight:700}

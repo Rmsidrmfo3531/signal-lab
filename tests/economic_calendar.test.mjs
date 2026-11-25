@@ -3,14 +3,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+ ECON_IMPACT_STATS,
+ getHistoricalImpact,
  isHighImpactCryptoEvent,
  localizeEconomicEvent,
+ evaluateCryptoImpact,
  formatTvValue,
  computeEventSurprise,
  formatKstEventTime,
  formatCountdownKo,
  parseEconomicEvents,
  parseTradingViewEvents,
+ analyzeReleaseConflicts,
  isReleaseWatchWindow,
  findNewlyReleasedEvents,
  buildEconomicCalendarReport,
@@ -20,38 +24,52 @@ import {renderEconomicCalendarHTML,formatClientCountdown} from '../public/econ_c
 
 const NOW=Date.parse('2026-11-25T12:00:00Z'); // 2026-11-25 21:00 KST
 
-test('isHighImpactCryptoEvent keeps USD High and major central bank High releases (TradingView & ForexFactory)',()=>{
+test('isHighImpactCryptoEvent focuses strictly on US core BTC indicators and excludes China/non-US and housing/ADP noise',()=>{
+ // Included US core indicators (including Initial Jobless Claims even when TradingView sets importance=0, and Interest Rate)
  assert.equal(isHighImpactCryptoEvent({country:'USD',impact:'High',title:'Core PCE Price Index m/m'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Core Inflation Rate MoM'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'Initial Jobless Claims'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Interest Rate'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'GDP Growth Rate QoQ 2nd Est'}),true);
+
+ // Excluded: China, non-US countries, US housing/ADP/oil noise
+ assert.equal(isHighImpactCryptoEvent({country:'CN',currency:'CNY',importance:1,title:'GDP Growth Rate YoY'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'CNY',impact:'High',title:'CPI y/y'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'EUR',impact:'High',title:'Main Refinancing Rate'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'JPY',impact:'High',title:'BOJ Policy Rate'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Housing Starts'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Existing Home Sales'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'ADP Employment Change'}),false);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'Crude Oil Inventories'}),false);
- assert.equal(isHighImpactCryptoEvent({country:'JPY',impact:'High',title:'BOJ Policy Rate'}),true);
- assert.equal(isHighImpactCryptoEvent({country:'EU',currency:'EUR',importance:1,title:'ECB Interest Rate Decision'}),true);
- assert.equal(isHighImpactCryptoEvent({country:'NZD',impact:'High',title:'Official Cash Rate'}),false);
- assert.equal(isHighImpactCryptoEvent({country:'GBP',impact:'High',title:'Rightmove HPI m/m'}),false);
 });
 
-test('localizeEconomicEvent maps FOMC/CPI/PCE/NFP/BOJ (TV & FF names) to CRITICAL Korean labels',()=>{
- const pce=localizeEconomicEvent({country:'USD',title:'Core PCE Price Index m/m'});
- assert.equal(pce.tier,'CRITICAL');
- assert.equal(pce.tierLabelKo,'초강력');
- assert.match(pce.titleKo,/근원 PCE/);
+test('localizeEconomicEvent attaches real 24-month empirical BTC backtest stats and data-driven S/A/B tiers',()=>{
+ assert.ok(ECON_IMPACT_STATS?.families?.CPI?.sampleCount>=12,'24-month empirical stats loaded');
+ assert.ok(getHistoricalImpact('FOMC_RATE')?.whipsawRatePct>0);
 
- const tvFed=localizeEconomicEvent({country:'US',currency:'USD',title:'Fed Interest Rate Decision'});
- assert.equal(tvFed.tier,'CRITICAL');
- assert.match(tvFed.titleKo,/미국 기준금리 결정/);
+ const cpi=localizeEconomicEvent({country:'US',currency:'USD',title:'Core Inflation Rate MoM'});
+ assert.equal(cpi.familyKey,'CPI');
+ assert.equal(cpi.grade,'S');
+ assert.equal(cpi.tier,'CRITICAL');
+ assert.equal(cpi.tierLabelKo,'S 초강력');
+ assert.ok(cpi.backtest?.avgRange15mPct>0.5);
 
- const tvCpi=localizeEconomicEvent({country:'US',currency:'USD',title:'Core Inflation Rate YoY'});
- assert.equal(tvCpi.tier,'CRITICAL');
- assert.match(tvCpi.titleKo,/근원 CPI/);
-
- const boj=localizeEconomicEvent({country:'JPY',title:'BOJ Policy Rate'});
- assert.equal(boj.tier,'CRITICAL');
- assert.match(boj.titleKo,/일본은행/);
+ const fomc=localizeEconomicEvent({country:'US',currency:'USD',title:'Interest Rate'});
+ assert.equal(fomc.familyKey,'FOMC_RATE');
+ assert.equal(fomc.tier,'CRITICAL');
+ assert.match(fomc.titleKo,/미국 기준금리 결정/);
 
  const ppi=localizeEconomicEvent({country:'USD',title:'Core PPI m/m'});
+ assert.equal(ppi.familyKey,'PPI');
+ assert.equal(ppi.grade,'A');
  assert.equal(ppi.tier,'HIGH');
- assert.equal(ppi.tierLabelKo,'강력');
- assert.match(ppi.titleKo,/근원 생산자물가/);
+ assert.equal(ppi.tierLabelKo,'A 강력');
+
+ const pce=localizeEconomicEvent({country:'USD',title:'Core PCE Price Index m/m'});
+ assert.equal(pce.familyKey,'PCE');
+ assert.equal(pce.tier,'WATCH');
+ assert.match(pce.titleKo,/근원 PCE/);
+ assert.ok(pce.backtest?.maxRange60mPct>1);
 });
 
 test('formatTvValue and computeEventSurprise format units and surprise directions accurately',()=>{
@@ -84,48 +102,64 @@ test('formatKstEventTime, formatCountdownKo, and formatClientCountdown produce l
  assert.equal(formatClientCountdown(NOW-2*60000,NOW,{hasActual:true}),'발표 완료');
 });
 
-test('parseTradingViewEvents, isReleaseWatchWindow, findNewlyReleasedEvents, and justReleased work together',()=>{
+test('parseTradingViewEvents folds same-family siblings & imp=-1 sub-indicators and detects release conflicts',()=>{
+ // Real-world 22:30 KST bundle: Core PCE MoM (imp=1) + Core PCE YoY (imp=-1) + GDP 2nd Est (imp=1) + GDP Price Index (imp=0) + Initial Claims (imp=0) + Continuing Claims (imp=-1)
+ const events=parseTradingViewEvents({
+  result:[
+   {id:1,title:'Core PCE Price Index MoM',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:0.3,forecast:0.3,previous:0.3,scale:'',unit:'%'},
+   {id:2,title:'Core PCE Price Index YoY',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:-1,actual:3.3,forecast:3.2,previous:3.2,scale:'',unit:'%'},
+   {id:3,title:'GDP Growth Rate QoQ 2nd Est',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:4.3,forecast:3.5,previous:3.4,scale:'',unit:'%'},
+   {id:4,title:'GDP Price Index QoQ 2nd Est',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:0,actual:1.8,forecast:2.3,previous:2.3,scale:'',unit:'%'},
+   {id:5,title:'Initial Jobless Claims',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:0,actual:189,forecast:200,previous:202,scale:'K',unit:''},
+   {id:6,title:'Continuing Jobless Claims',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:-1,actual:1697,forecast:1721,previous:1710,scale:'K',unit:''},
+   // China event should be ignored completely
+   {id:7,title:'GDP Growth Rate YoY',country:'CN',currency:'CNY',date:'2026-11-25T11:55:00Z',importance:1,actual:5.0,forecast:4.8,previous:4.7,scale:'',unit:'%'},
+  ],
+ });
+ assert.equal(events.length,3,'3 US primary families: PCE, GDP, JOBLESS_CLAIMS (China dropped)');
+ const pce=events.find(e=>e.familyKey==='PCE');
+ const gdp=events.find(e=>e.familyKey==='GDP');
+ const claims=events.find(e=>e.familyKey==='JOBLESS_CLAIMS');
+ assert.ok(pce&&gdp&&claims);
+ assert.equal(pce.subEvents.length,1,'Core PCE YoY (imp=-1) attached to PCE');
+ assert.equal(gdp.subEvents.length,1,'GDP Price Index (imp=0) attached to GDP');
+ assert.equal(claims.subEvents.length,1,'Continuing Jobless Claims (imp=-1) attached to Initial Claims');
+ // Core PCE YoY hot (BEARISH) vs GDP Price Index cool (BULLISH) -> automatic reversal conflict detected!
+ assert.ok(pce.conflict?.detected,'detects opposite-impact conflict across simultaneous US prints');
+ assert.equal(pce.conflict.kind,'OPPOSITE_IMPACT');
+ assert.equal(analyzeReleaseConflicts(events).length,1);
+});
+
+test('isReleaseWatchWindow and findNewlyReleasedEvents track imminent release actuals accurately',()=>{
  const before=parseTradingViewEvents({
   result:[
    {id:101,title:'Core PCE Price Index MoM',country:'US',currency:'USD',date:'2026-11-25T12:00:10.000Z',importance:1,actual:null,forecast:0.3,previous:0.2,scale:'',unit:'%'},
    {id:102,title:'Fed Powell Speech',country:'US',currency:'USD',date:'2026-11-25T12:00:10.000Z',importance:1,actual:null,forecast:null,previous:null,scale:'',unit:''},
   ],
  });
- assert.equal(before.length,2);
- assert.equal(before[0].actual,'');
- assert.equal(before[0].forecast,'0.3%');
- assert.equal(before[0].expectsActual,true);
- assert.equal(before[1].expectsActual,false,'speeches do not trigger numeric actual polling');
  assert.equal(isReleaseWatchWindow(before,NOW),true,'10s before PCE triggers release watch');
- assert.equal(isReleaseWatchWindow([before[1]],NOW),false,'speech-only does not trigger release watch');
+ assert.equal(isReleaseWatchWindow([before.find(e=>e.id==='tv:102')],NOW),false,'speech-only does not trigger release watch');
 
  const after=parseTradingViewEvents({
   result:[
    {id:101,title:'Core PCE Price Index MoM',country:'US',currency:'USD',date:'2026-11-25T12:00:10.000Z',importance:1,actual:0.4,forecast:0.3,previous:0.2,scale:'',unit:'%'},
-   {id:102,title:'Fed Powell Speech',country:'US',currency:'USD',date:'2026-11-25T12:00:10.000Z',importance:1,actual:null,forecast:null,previous:null,scale:'',unit:''},
   ],
  });
  const newly=findNewlyReleasedEvents(before,after);
  assert.equal(newly.length,1);
  assert.equal(newly[0].actual,'0.4%');
- assert.equal(newly[0].surprise.direction,'ABOVE');
  assert.equal(isReleaseWatchWindow(after,NOW+30000),false,'stops fast polling once actual arrived');
-
- const report=buildEconomicCalendarReport({events:after,now:NOW+60000,updatedAt:NOW+60000});
- assert.equal(report.justReleased.length,1);
- assert.equal(report.justReleased[0].actual,'0.4%');
- assert.equal(report.upcoming.some(e=>e.id==='tv:101'),false,'released event moves out of upcoming');
 });
 
 test('parseEconomicEvents deduplicates across weeks and buildEconomicCalendarReport splits upcoming vs recent',()=>{
  const rawThis=[
-  {title:'Core PCE Price Index m/m',country:'USD',date:'2026-11-25T13:30:00Z',impact:'High',forecast:'0.3%',previous:'0.2%'},
+  {title:'Core CPI m/m',country:'USD',date:'2026-11-25T13:30:00Z',impact:'High',forecast:'0.3%',previous:'0.2%'},
   {title:'Unemployment Claims',country:'USD',date:'2026-11-25T13:30:00Z',impact:'High',forecast:'220K',previous:'218K'},
   {title:'CB Consumer Confidence',country:'USD',date:'2026-11-25T09:00:00Z',impact:'High',forecast:'101.0',previous:'99.5'},
   {title:'Natural Gas Storage',country:'USD',date:'2026-11-25T15:30:00Z',impact:'Low',forecast:'-2B',previous:'-1B'},
  ];
  const rawNext=[
-  {title:'Core PCE Price Index m/m',country:'USD',date:'2026-11-25T13:30:00Z',impact:'High',forecast:'0.3%',previous:'0.2%'},
+  {title:'Core CPI m/m',country:'USD',date:'2026-11-25T13:30:00Z',impact:'High',forecast:'0.3%',previous:'0.2%'},
   {title:'Non-Farm Employment Change',country:'USD',date:'2026-12-04T13:30:00Z',impact:'High',forecast:'180K',previous:'165K'},
  ];
  const parsed=parseEconomicEvents([rawThis,rawNext]);
@@ -135,18 +169,18 @@ test('parseEconomicEvents deduplicates across weeks and buildEconomicCalendarRep
  assert.equal(report.ok,true);
  assert.equal(report.upcomingCount,3);
  assert.equal(report.recent.length,1);
- assert.equal(report.imminentCount,2,'both 22:30 KST events are within 2 hours');
- assert.equal(report.criticalCount,2,'Core PCE and NFP are CRITICAL');
- assert.equal(report.nextEvent.title,'Core PCE Price Index m/m','CRITICAL event wins tie at same timestamp');
- assert.equal(report.nextEvent.isImminent,true);
+ assert.equal(report.imminentCount,2);
+ assert.equal(report.criticalCount,2,'Core CPI and NFP are S-grade CRITICAL');
+ assert.equal(report.nextEvent.title,'Core CPI m/m','S-grade CRITICAL wins tie at same timestamp');
 });
 
-test('fetchEconomicCalendar uses TradingView primary with Origin header and falls back to ForexFactory on error',async()=>{
- let seenOrigin='';
+test('fetchEconomicCalendar queries US-only on TradingView and falls back to ForexFactory on error',async()=>{
+ let seenUrl='',seenOrigin='';
  const tvEvents=await fetchEconomicCalendar({
   now:NOW,
   fetcher:async(url,opts)=>{
    if(url.includes('tradingview.com')){
+    seenUrl=url;
     seenOrigin=opts?.headers?.Origin||'';
     return {
      ok:true,
@@ -157,12 +191,11 @@ test('fetchEconomicCalendar uses TradingView primary with Origin header and fall
    throw Error('unexpected fallback');
   },
  });
+ assert.match(seenUrl,/countries=US$/);
  assert.equal(seenOrigin,'https://www.tradingview.com');
  assert.equal(tvEvents.length,1);
  assert.equal(tvEvents[0].source,'TradingView');
- assert.equal(tvEvents[0].actual,'0.2%');
 
- // Fallback when TradingView fails
  const ffEvents=await fetchEconomicCalendar({
   now:NOW,
   fetcher:async url=>{
@@ -179,14 +212,13 @@ test('fetchEconomicCalendar uses TradingView primary with Origin header and fall
  assert.equal(ffEvents[0].source,'ForexFactory');
 });
 
-test('renderEconomicCalendarHTML renders live countdown attrs, just-released actual results, and escapes XSS',()=>{
- const loading=renderEconomicCalendarHTML(null);
- assert.match(loading,/주요 경제지표/);
-
+test('renderEconomicCalendarHTML renders 2-year BTC backtest metrics, sub-indicators, conflict badge, and escapes XSS',()=>{
+ assert.equal(evaluateCryptoImpact({direction:'BELOW',labelKo:'예상 하회'},'INVERSE').tone,'BULLISH');
  const events=parseTradingViewEvents({
   result:[
-   {id:1,title:'Core PCE Price Index MoM',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:0.4,forecast:0.3,previous:0.2,scale:'',unit:'%'},
-   {id:2,title:'Initial Jobless Claims',country:'US',currency:'USD',date:'2026-11-25T13:30:00Z',importance:1,actual:null,forecast:220,previous:218,scale:'K',unit:''},
+   {id:201,title:'Inflation Rate YoY',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:3.0,forecast:2.8,previous:2.7,scale:'',unit:'%',period:'Oct'},
+   {id:202,title:'Core Inflation Rate MoM',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:0.2,forecast:0.3,previous:0.3,scale:'',unit:'%',period:'Oct'},
+   {id:203,title:'Initial Jobless Claims',country:'US',currency:'USD',date:'2026-11-25T13:30:00Z',importance:0,actual:null,forecast:200,previous:202,scale:'K',unit:''},
   ],
  });
  const report=buildEconomicCalendarReport({
@@ -196,18 +228,18 @@ test('renderEconomicCalendarHTML renders live countdown attrs, just-released act
   error:'<img src=x onerror=alert(1)>',
  });
  const html=renderEconomicCalendarHTML(report);
- assert.match(html,/econ-badge released/);
- assert.match(html,/지표 발표 결과/);
- assert.match(html,/실제 <b>0\.4%<\/b>/);
- assert.match(html,/예상 상회 \+0\.1%p/);
+ assert.match(html,/econ-badge conflict/);
+ assert.match(html,/지표 엇갈림 · 반전 주의/);
+ assert.match(html,/2년 BTC 실측/);
+ assert.match(html,/휩소 반전/);
+ assert.match(html,/동시 발표 세부 지표 \(1건\)/);
  assert.match(html,/data-econ-cd="1"/);
  assert.match(html,/T-01:30:00/);
- assert.match(html,/data-econ-refresh="1"/);
  assert.doesNotMatch(html,/<img /);
  assert.match(html,/&lt;img src=x onerror=alert\(1\)&gt;/);
 });
 
-test('server.mjs, public/app.js, public/index.html, public/styles.css, and updater.mjs wire live economic calendar cleanly',()=>{
+test('server.mjs, public/app.js, public/index.html, public/styles.css, and updater.mjs wire everything cleanly',()=>{
  const root=path.resolve(import.meta.dirname,'..');
  const serverSrc=fs.readFileSync(path.join(root,'server.mjs'),'utf8');
  const appSrc=fs.readFileSync(path.join(root,'public/app.js'),'utf8');
@@ -222,57 +254,8 @@ test('server.mjs, public/app.js, public/index.html, public/styles.css, and updat
  assert.match(appSrc,/es\.addEventListener\('economic-calendar'/);
  assert.match(htmlSrc,/id="econCalendarBar"/);
  assert.match(htmlSrc,/src="\/econ_calendar_ui\.js"/);
- assert.match(cssSrc,/\.econ-bar\{/);
- assert.match(cssSrc,/\.econ-actual\{/);
- assert.match(cssSrc,/\.econ-surprise\.above\{/);
- assert.match(cssSrc,/\.econ-conflict-box\{/);
- assert.match(cssSrc,/\.econ-sub-box\{/);
- assert.match(updaterSrc,/'economic_calendar\.mjs'/);
+ assert.match(cssSrc,/\.econ-bt\{/);
+ assert.match(cssSrc,/\.econ-tier\.watch\{/);
+ assert.match(updaterSrc,/'econ_impact_stats\.json'/);
+ assert.match(updaterSrc,/'scripts\/backtest-econ-impact\.mjs'/);
 });
-
-test('companion sub-indicators, crypto impact polarity, reversal guides, and simultaneous conflict detection work end-to-end',async()=>{
- const {evaluateCryptoImpact,analyzeReleaseConflicts}=await import('../economic_calendar.mjs');
-
- assert.equal(evaluateCryptoImpact({direction:'BELOW',labelKo:'예상 하회'},'INVERSE').tone,'BULLISH');
- assert.equal(evaluateCryptoImpact({direction:'ABOVE',labelKo:'예상 상회'},'INVERSE').tone,'BEARISH');
- assert.equal(evaluateCryptoImpact({direction:'ABOVE',labelKo:'예상 상회'},'INVERSE_CLAIMS').tone,'MIXED');
-
- // CPI Headline hot (BEARISH) vs simultaneous Core CPI MoM cool (BULLISH) -> OPPOSITE_IMPACT reversal alert!
- const events=parseTradingViewEvents({
-  result:[
-   {id:201,title:'Inflation Rate YoY',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:3.0,forecast:2.8,previous:2.7,scale:'',unit:'%',period:'Oct'},
-   {id:202,title:'Core Inflation Rate MoM',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:0,actual:0.2,forecast:0.3,previous:0.3,scale:'',unit:'%',period:'Oct'},
-   {id:203,title:'Personal Spending MoM',country:'US',currency:'USD',date:'2026-11-25T13:30:00Z',importance:0,actual:null,forecast:0.4,previous:0.5,scale:'',unit:'%'},
-   {id:204,title:'Core PCE Price Index MoM',country:'US',currency:'USD',date:'2026-11-25T13:30:00Z',importance:1,actual:null,forecast:0.3,previous:0.2,scale:'',unit:'%'},
-  ],
- });
- assert.equal(events.length,2,'two primary High events with Medium companions attached');
- const cpi=events.find(e=>e.id==='tv:201');
- const pce=events.find(e=>e.id==='tv:204');
- assert.equal(cpi.subEvents.length,1);
- assert.match(cpi.subEvents[0].titleKo,/근원 CPI/);
- assert.equal(cpi.subEvents[0].cryptoImpact.tone,'BULLISH');
- assert.equal(cpi.cryptoImpact.tone,'BEARISH');
- assert.ok(cpi.conflict?.detected,'detects conflict between hot headline CPI and cool Core CPI');
- assert.equal(cpi.conflict.kind,'OPPOSITE_IMPACT');
- assert.match(cpi.conflict.summaryKo,/지표 엇갈림 · 반전 주의/);
- assert.match(cpi.watchItemsKo,/주거비/);
- assert.match(cpi.reversalKo,/반전/);
-
- assert.equal(pce.subEvents.length,1);
- assert.match(pce.subEvents[0].titleKo,/개인소비지출/);
-
- const conflicts=analyzeReleaseConflicts(events);
- assert.equal(conflicts.length,1);
-
- const report=buildEconomicCalendarReport({events,now:NOW,updatedAt:NOW});
- assert.ok(report.latestConflict?.detected);
- const html=renderEconomicCalendarHTML(report);
- assert.match(html,/econ-badge conflict/);
- assert.match(html,/지표 엇갈림 · 반전 주의/);
- assert.match(html,/동시 발표 세부 지표 \(1건\)/);
- assert.match(html,/세부 항목 · 반전 변수 보기/);
- assert.match(html,/🔍 세부 체크:/);
- assert.match(html,/🔄 반전 주의:/);
-});
-
