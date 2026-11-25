@@ -89,17 +89,23 @@ function sumMinutes(minutes,startMs,endMs,key){
 
 /** The stored state of one symbol. Ids are contiguous from firstId to lastId (forward reads never skip). */
 function newEntry(symbol,thresholds,now){
- return {symbol,thresholds,firstId:null,firstAt:null,lastId:null,lastAt:null,caughtUpAt:null,reachedStart:false,whale:[],minutes:new Map(),usedAt:now,refreshedAt:0,pages:0,snapshot:null,pending:null};
+ return {symbol,thresholds,firstId:null,firstAt:null,lastId:null,lastAt:null,caughtUpAt:null,reachedStart:false,cappedFromAt:null,whale:[],minutes:new Map(),usedAt:now,refreshedAt:0,pages:0,snapshot:null,pending:null};
 }
-function addTrades(e,rows){
+/** Rows sorted by id. `older`: a backward page (its trades are older than all stored ones). The whale list stays in id
+ * (= time) order: older pages go in front (review 2026-11-25: they were appended, so prune() stopped at the first page's
+ * trades and the cap below dropped the NEWEST trades while the coverage still said 100 %). */
+function addTrades(e,rows,{older=false,max=WHALE_ZONE_DEFAULTS.maxWhaleTrades}={}){
+ const whales=[];
  for(const t of rows){
   const m=Math.floor(t.at/60_000)*60_000;let row=e.minutes.get(m);
   if(!row){row={at:m,scaled:emptySeries(),fixed:emptySeries()};e.minutes.set(m,row)}
   const b=whaleBucketOf(t.notionalUSD,e.thresholds);
   addTo(row.scaled[b],t);addTo(row.scaled.blue,t);addTo(row.fixed[whaleBucketOf(t.notionalUSD,WHALE_CVD_FIXED)],t);addTo(row.fixed.blue,t);
-  if(b==='purple'||b==='brown')e.whale.push({id:t.id,at:t.at,price:t.price,notionalUSD:t.notionalUSD,side:t.side,bucket:b});
+  if(b==='purple'||b==='brown')whales.push({id:t.id,at:t.at,price:t.price,notionalUSD:t.notionalUSD,side:t.side,bucket:b});
  }
- if(e.whale.length>WHALE_ZONE_DEFAULTS.maxWhaleTrades)e.whale.splice(0,e.whale.length-WHALE_ZONE_DEFAULTS.maxWhaleTrades);
+ if(whales.length)e.whale=older?whales.concat(e.whale):e.whale.concat(whales);
+ // Over the cap the OLDEST go, and the coverage then starts at the oldest whale trade kept (no older page is read again).
+ if(e.whale.length>max){e.whale.splice(0,e.whale.length-max);e.cappedFromAt=Math.max(Number(e.cappedFromAt)||0,e.whale[0].at)}
 }
 function prune(e,before){
  if(e.whale.length&&e.whale[0].at<before)e.whale=e.whale.filter(t=>t.at>=before);
@@ -110,7 +116,7 @@ const sameEdges=(a,b)=>{const x=Number(a?.purpleMinUSD),y=Number(b?.purpleMinUSD
 
 /** The snapshot of a symbol over [startMs, endMs]: coverage, whale trades (for the zones), series sums (record). */
 function snapshotOf(e,{startMs,endMs,pages=0,stopped=null,cached=false}){
- const from=e.reachedStart?startMs:Math.max(startMs,Number(e.firstAt)||endMs);
+ const from=Math.max(e.reachedStart?startMs:Math.max(startMs,Number(e.firstAt)||endMs),Number(e.cappedFromAt)||-Infinity);
  // Covered up to the moment the last forward read came back short (nothing newer then), else to the newest trade read.
  // Never "to now" by itself: a later read that failed (budget, cooldown, error) does not move it (review 2026-11-25:
  // it claimed 100 % on hours-old trades while every newer read failed).
@@ -130,8 +136,8 @@ function snapshotOf(e,{startMs,endMs,pages=0,stopped=null,cached=false}){
  * read() never throws: {ok:false,error} when nothing could be read at all.
  */
 export class WhaleTradeStore{
- constructor({now=Date.now,refreshMs=WHALE_ZONE_DEFAULTS.refreshMs,ttlMs=WHALE_ZONE_DEFAULTS.storeTtlMs,maxSymbols=WHALE_ZONE_DEFAULTS.maxSymbols}={}){
-  Object.assign(this,{now,refreshMs,ttlMs,maxSymbols});this.entries=new Map();
+ constructor({now=Date.now,refreshMs=WHALE_ZONE_DEFAULTS.refreshMs,ttlMs=WHALE_ZONE_DEFAULTS.storeTtlMs,maxSymbols=WHALE_ZONE_DEFAULTS.maxSymbols,maxWhaleTrades=WHALE_ZONE_DEFAULTS.maxWhaleTrades}={}){
+  Object.assign(this,{now,refreshMs,ttlMs,maxSymbols,maxWhaleTrades});this.entries=new Map();
  }
  clear(){this.entries.clear()}
  /** Memory per symbol, for the status screen. */
@@ -152,13 +158,17 @@ export class WhaleTradeStore{
   let e=this.entries.get(sym);
   // Edges moved (24h volume changed a lot), or nothing read since before the lookback: start over.
   if(e&&!e.pending&&(!sameEdges(e.thresholds,thresholds)||!(Number(e.lastAt)>=start)))e=null;
-  if(e?.pending){e.usedAt=t0;return e.pending}
-  if(e&&t0-e.refreshedAt<this.refreshMs&&e.snapshot){e.usedAt=t0;return {...snapshotOf(e,{startMs:start,endMs:end,cached:true})}}
-  if(!e){e=newEntry(sym,thresholds,t0);this.entries.delete(sym)}
-  this.entries.set(sym,e);
-  while(this.entries.size>this.maxSymbols){const k=this.entries.keys().next().value;if(k===sym)break;this.entries.delete(k)}
+  // Most recently used last: the eviction below drops the least recently used symbol, never one being read.
+  if(e){this.entries.delete(sym);this.entries.set(sym,e);e.usedAt=t0}
+  // A read of this symbol already running: its result (a failure of it is {ok:false}, never a rejection).
+  if(e?.pending)return e.pending.catch(err=>({ok:false,error:String(err?.message||err).slice(0,80)}));
+  if(e&&t0-e.refreshedAt<this.refreshMs&&e.snapshot)return {...snapshotOf(e,{startMs:start,endMs:end,cached:true})};
+  if(!e){e=newEntry(sym,thresholds,t0);this.entries.delete(sym);this.entries.set(sym,e)}
+  for(const [k,v] of this.entries){if(this.entries.size<=this.maxSymbols)break;if(k!==sym&&!v.pending)this.entries.delete(k)}
   e.usedAt=t0;
-  const entry=e;
+  const entry=e,maxWhale=Math.max(1,Math.floor(Number(this.maxWhaleTrades)||WHALE_ZONE_DEFAULTS.maxWhaleTrades));
+  // Only this read's own entry is dropped on a failure (another read may have started a new one meanwhile).
+  const drop=()=>{if(this.entries.get(sym)===entry)this.entries.delete(sym)};
   const task=(async()=>{
    const pages=Math.max(1,Math.min(30,Math.floor(Number(maxPages)||1))),limit=Math.max(100,Math.min(1000,Math.floor(Number(pageLimit)||1000)));
    const deadline=Math.max(500,Number(deadlineMs)||WHALE_ZONE_DEFAULTS.timeoutMs);
@@ -178,7 +188,7 @@ export class WhaleTradeStore{
     while(read<pages){
      const r=await page(`${base}&fromId=${entry.lastId+1}`);if(!r)break;
      const fresh=r.rows.filter(t=>t.id>entry.lastId).sort((a,b)=>a.id-b.id);
-     if(fresh.length){addTrades(entry,fresh);entry.lastId=fresh.at(-1).id;entry.lastAt=Math.max(Number(entry.lastAt)||0,...fresh.map(t=>t.at))}
+     if(fresh.length){addTrades(entry,fresh,{max:maxWhale});entry.lastId=fresh.at(-1).id;entry.lastAt=Math.max(Number(entry.lastAt)||0,...fresh.map(t=>t.at))}
      if(r.rows.length<limit){entry.caughtUpAt=r.at;break}
     }
    }else{
@@ -186,24 +196,24 @@ export class WhaleTradeStore{
     const r=await page(base);
     if(r){
      const rows=r.rows.sort((a,b)=>a.id-b.id);
-     if(rows.length){addTrades(entry,rows);entry.firstId=rows[0].id;entry.firstAt=Math.min(...rows.map(t=>t.at));entry.lastId=rows.at(-1).id;entry.lastAt=Math.max(...rows.map(t=>t.at))}
+     if(rows.length){addTrades(entry,rows,{max:maxWhale});entry.firstId=rows[0].id;entry.firstAt=Math.min(...rows.map(t=>t.at));entry.lastId=rows.at(-1).id;entry.lastAt=Math.max(...rows.map(t=>t.at))}
      else{entry.reachedStart=true}
      entry.caughtUpAt=r.at;
      if(rows.length<limit||entry.firstId<=0)entry.reachedStart=true;
     }
    }
    // 2) Backward: older trades with the pages left, back to the lookback start.
-   while(read<pages&&!entry.reachedStart&&entry.firstId!=null){
+   while(read<pages&&!entry.reachedStart&&entry.cappedFromAt==null&&entry.firstId!=null){
     if(entry.firstAt<=start){entry.reachedStart=true;break}
     const r=await page(`${base}&fromId=${Math.max(0,entry.firstId-limit)}`);if(!r)break;
     const older=r.rows.filter(t=>t.id<entry.firstId).sort((a,b)=>a.id-b.id);
     if(!older.length){entry.reachedStart=true;break}
-    addTrades(entry,older);entry.firstId=older[0].id;entry.firstAt=Math.min(entry.firstAt,...older.map(t=>t.at));
+    addTrades(entry,older,{older:true,max:maxWhale});entry.firstId=older[0].id;entry.firstAt=Math.min(entry.firstAt,...older.map(t=>t.at));
     if(entry.firstAt<=start||entry.firstId<=0)entry.reachedStart=true;
    }
    if(entry.firstAt!=null&&entry.firstAt<=start)entry.reachedStart=true;
    prune(entry,start);
-   if(entry.lastId==null){this.entries.delete(sym);return {ok:false,error:firstError||stopped||'NO_PAGE'}}
+   if(entry.lastId==null){drop();return {ok:false,error:firstError||stopped||'NO_PAGE'}}
    entry.refreshedAt=t0;
    const snap=snapshotOf(entry,{startMs:start,endMs:end,pages:read,stopped});
    entry.snapshot={...snap,minutes:undefined,whaleTrades:undefined};
@@ -211,7 +221,7 @@ export class WhaleTradeStore{
   })();
   entry.pending=task;
   try{return await task}
-  catch(err){this.entries.delete(sym);return {ok:false,error:String(err?.message||err).slice(0,80)}}
+  catch(err){drop();return {ok:false,error:String(err?.message||err).slice(0,80)}}
   finally{entry.pending=null}
  }
 }

@@ -223,6 +223,36 @@ test('store: newest page then older ones by fromId; later reads fetch only newer
  assert.equal(k.routes.length,4);
 });
 
+test('review 2026-11-25: whale trades kept in time order (prune works, the cap drops the oldest and lowers the coverage); LRU; no rejection',async()=>{
+ // 3,000 trades over the last 4 h, every one a whale; a cap of 2,000: the NEWEST 2,000 stay, the coverage says so.
+ let clock=10*H;const N=3000,all=Array.from({length:N},(_,i)=>agg(i+1,clock-4*H+Math.round((i+1)*(4*H/N)),150_000,'BUY',100));
+ const request=async route=>{const u=new URL(route,'https://x'),lim=Number(u.searchParams.get('limit')),from=u.searchParams.get('fromId');
+  return from==null?all.slice(-lim):all.filter(t=>t.a>=Number(from)).slice(0,lim)};
+ const capped=new WhaleTradeStore({now:()=>clock,maxWhaleTrades:2000});
+ let s=await capped.read('SOLUSDT',{request,lookbackMs:4*H,maxPages:10});
+ const ids=s.whaleTrades.map(t=>t.id);
+ assert.equal(ids.length,2000);assert.equal(Math.min(...ids),1001);assert.equal(Math.max(...ids),N,'the newest trade is kept');
+ assert.ok(ids.every((id,i)=>!i||ids[i-1]<id),'id order');
+ assert.ok(s.coveragePct>66&&s.coveragePct<67,`coverage from the oldest whale trade kept: ${s.coveragePct}`);
+ assert.equal(evaluateWhaleZoneBonus(s,buildWhaleZones(s,{price:100}),{direction:'LONG',entry:100}).code,C.PARTIAL);
+ // Prune: after the lookback slides, nothing older than its start is kept (the newest page was read first, the older after).
+ clock=20*H;const f=feed({end:clock,n:3600});const st=new WhaleTradeStore({now:()=>clock});
+ await st.read('SOLUSDT',{request:f.request,lookbackMs:H,maxPages:10});
+ clock+=30*60_000;f.more(1800,clock);
+ s=await st.read('SOLUSDT',{request:f.request,lookbackMs:H,maxPages:10});
+ const kept=st.entries.get('SOLUSDT').whale;
+ assert.ok(kept.every(t=>t.at>=clock-H),'pruned to the lookback');assert.ok(kept.every((t,i)=>!i||kept[i-1].id<t.id));
+ assert.equal(s.coveragePct,100);
+ // LRU: a symbol read again is kept over one read once (maxSymbols 2).
+ const lru=new WhaleTradeStore({now:()=>clock,maxSymbols:2}),g=feed({end:clock,n:500});
+ for(const sym of ['AAAUSDT','BBBUSDT','AAAUSDT','CCCUSDT'])await lru.read(sym,{request:g.request,lookbackMs:H});
+ assert.deepEqual([...lru.entries.keys()].sort(),['AAAUSDT','CCCUSDT']);
+ // A read that throws inside (here the budget callback) answers every caller {ok:false}, the joined ones too.
+ const boom=new WhaleTradeStore({now:()=>clock}),bad={request:g.request,lookbackMs:H,budget:()=>{throw Error('budget broke')}};
+ const both=await Promise.all([boom.read('DDDUSDT',bad),boom.read('DDDUSDT',bad)]);
+ assert.deepEqual(both.map(x=>x.ok),[false,false]);assert.equal(boom.entries.size,0);
+});
+
 test('API payload (GET /api/whale-zones shape): price ranges, side, net, thresholds, coverage; ladder zones by side',async()=>{
  const end=10*H,t=end-H;
  const s=await snapOf([[t,500_000,'BUY',99.7],[t+1,500_000,'SELL',100.3],[t+2,800,'SELL',100]],{end});
