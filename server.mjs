@@ -420,7 +420,7 @@ function readRealWallet(){
   const usdt=bingxBalanceRows(data).find(row=>row?.asset==='USDT'),raw=usdt?.availableMargin;
   const parsed=['number','string'].includes(typeof raw)?bingxFunds(usdt,{requireAvailable:true}):null;
   const available=parsed?.available??null;
-  const snapshot=available===null?null:{available,at:Date.now()};
+  const snapshot=available===null?null:{available,equity:parsed?.equity??null,at:Date.now()};
   realWallet.error=snapshot?null:'AVAILABLE_MARGIN_MISSING';
   if(snapshot){
    realWallet.last=snapshot;
@@ -558,7 +558,7 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  // for coins whose 2.5 % detection fired, cached per coin until the next 4H / 1D candle closes.
  zoneCandles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
  // Backtest-validated 5m orderflow (OI flush +5pt / CVD strong flip 1.5x), read only for >=60pt candidates (30s cache).
- orderflow:symbol=>fetchOrderflow(symbol,{interval:'5m'}),
+ orderflow:symbol=>fetchOrderflow(symbol,{interval:'5m',budget:publicReadBudget}),
  // 고래 매물대 (user 2026-11-25 09:51): Binance aggTrades on the shared public read budget, only for candidates a ±5 can move.
  whaleZones:(symbol,o)=>scalpWhaleZones(symbol,o),
  // Entry price check: the BingX book mid, else a fresh BingX last price.
@@ -593,7 +593,7 @@ if(SCALP_LIVE_EXEC.mode==='LIVE'&&realBingxClient?.mode==='LIVE'){
   candles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
   trendCandles:symbol=>state.activeSet.has(symbol)?klines(symbol,'4h',301):scalpMarket.klines(symbol,'4h',301),
   zoneCandles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
-  orderflow:symbol=>fetchOrderflow(symbol,{interval:'5m'}),
+  orderflow:symbol=>fetchOrderflow(symbol,{interval:'5m',budget:publicReadBudget}),
   whaleZones:(symbol,o)=>scalpWhaleZones(symbol,o),
   bookOf:symbol=>scalpMarket.book(symbol),
   priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
@@ -811,7 +811,7 @@ async function sendRealTradeTelegram(e){
 // Shared real-account position operator (used by Telegram /close+#confirm and dashboard one-click actions).
 // TRAIL_STOP / CANCEL_STOP are internal (real_trailing.mjs): the exchange lock stop and its clean-up; the HTTP route
 // below accepts only the four screen actions.
-async function executeRealPositionAction({symbol,direction=null,action,stopPrice=null,lossRoePct=null,closePct=null,feePct=null,replaceOrderId=null,venueSymbol=null,orderId=null}={}){
+async function executeRealPositionAction({symbol,direction=null,action,stopPrice=null,lossRoePct=null,closePct=null,feePct=null,replaceOrderId=null,replaceOrderIds=null,venueSymbol=null,orderId=null}={}){
  if(COPY.mode!=='LIVE'||!realBingxClient)return {ok:false,status:409,error:'LIVE_ACCOUNT_UNAVAILABLE',message:'실계좌 BingX 클라이언트가 연결되어 있지 않습니다'};
  if(!['CLOSE_ALL','CLOSE_HALF','BREAKEVEN_STOP','SET_STOP_LOSS','TRAIL_STOP','CANCEL_STOP'].includes(action))return {ok:false,status:400,error:'INVALID_ACTION',message:'지원하지 않는 포지션 작업입니다'};
  if(action==='CANCEL_STOP'){
@@ -863,21 +863,39 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
    if(!(rawStop>0)||!(dir*(mark-rawStop)>0))return {ok:false,status:400,error:'INVALID_STOP_PRICE',message:'손절가는 현재가보다 손실 방향에 위치해야 합니다'};
    targetStop=c?.tickSize?roundDecimalToStep(rawStop,c.tickSize,p.direction==='LONG'?'DOWN':'UP'):String(+rawStop.toPrecision(6));
   }
-  const cid=((action==='BREAKEVEN_STOP'?'opbe':action==='TRAIL_STOP'?'optr':'opsl')+Date.now().toString(36)).slice(0,32);
-  const placed=await realBingxClient.placeOrder({
+  const oldStopIds=[...new Set([...(Array.isArray(replaceOrderIds)?replaceOrderIds:[]),...(replaceOrderId!=null?[replaceOrderId]:[])].filter(Boolean).map(String))];
+  const stopPayload=cid=>({
    symbol:p.venueSymbol,side:p.direction==='LONG'?'SELL':'BUY',
    positionSide:positionSideFor({hedge,direction:p.direction}),
    type:'STOP_MARKET',quantity:String(p.size),stopPrice:String(targetStop),
    closePosition:'true',workingType:'MARK_PRICE',clientOrderId:cid,
   });
+  const cid=((action==='BREAKEVEN_STOP'?'opbe':action==='TRAIL_STOP'?'optr':'opsl')+Date.now().toString(36)).slice(0,32);
+  let placed,canceledBefore=false;
+  const staleOrderIds=[],canceledOrderIds=[];
+  try{
+   placed=await realBingxClient.placeOrder(stopPayload(cid));
+  }catch(e){
+   // BingX allows only one closePosition stop per position (110406): cancel prior stop(s) first, then place once.
+   if(action==='TRAIL_STOP'&&oldStopIds.length&&e?.code==='VENUE_ERROR_110406'){
+    canceledBefore=true;
+    for(const oid of oldStopIds){try{await realBingxClient.cancelOrder(p.venueSymbol,oid);canceledOrderIds.push(oid)}catch(ce){staleOrderIds.push(oid);console.warn('[REAL_TRAIL] pre-replace stop cancel',ce?.code||ce?.message)}}
+    placed=await realBingxClient.placeOrder(stopPayload((cid.slice(0,30)+'r2').slice(0,32)));
+   }else throw e;
+  }
   realOpenStops.at=0;
   const newOrderId=(placed?.order??placed)?.orderId;
-  // The lock stop moves up: the new one is in first, then the old one is cancelled (never without a stop). A failed
-  // cancel is reported (staleOrderId) so real_trailing.mjs cancels it with the others when the position is gone.
-  let staleOrderId=null;
-  if(action==='TRAIL_STOP'&&replaceOrderId&&String(replaceOrderId)!==String(newOrderId??'')){try{await realBingxClient.cancelOrder(p.venueSymbol,String(replaceOrderId))}catch(e){staleOrderId=String(replaceOrderId);console.warn('[REAL_TRAIL] old stop cancel',e?.code||e?.message)}}
+  // The lock stop moves up: the new one is in first, then the old ones are cancelled (never without a stop). Any
+  // failed cancel is reported (staleOrderId / staleOrderIds) so real_trailing.mjs cleans it up when the position closes.
+  if(action==='TRAIL_STOP'&&!canceledBefore&&oldStopIds.length){
+   for(const oid of oldStopIds){
+    if(oid===String(newOrderId??''))continue;
+    try{await realBingxClient.cancelOrder(p.venueSymbol,oid);canceledOrderIds.push(oid)}catch(e){staleOrderIds.push(oid);console.warn('[REAL_TRAIL] old stop cancel',e?.code||e?.message)}
+   }
+  }
+  const staleOrderId=staleOrderIds[0]??null;
   const label=action==='BREAKEVEN_STOP'?'본전 스탑(수수료 포함)':action==='TRAIL_STOP'?'트레일링 잠금 스탑':`손절 스탑${Number(lossRoePct)>0?` (-${Number(lossRoePct)}% ROE)`:''}`;
-  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),orderId:newOrderId!=null?String(newOrderId):null,venueSymbol:p.venueSymbol,...(staleOrderId?{staleOrderId}:{}),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
+  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),orderId:newOrderId!=null?String(newOrderId):null,venueSymbol:p.venueSymbol,...(canceledOrderIds.length?{canceledOrderIds}:{}),...(staleOrderId?{staleOrderId,staleOrderIds}:{}),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
  }
  const partPct=Number.isFinite(Number(closePct))&&Number(closePct)>0&&Number(closePct)<100?Math.round(Number(closePct)):50;
  const results=[];
@@ -886,10 +904,11 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
   if(action==='CLOSE_HALF'){
    const contracts=await venueQuotes.clients.BINGX.contractsFor(p.symbol).catch(()=>new Map());
    const c=resolveCopyContract(contracts,p.symbol)||contracts?.get?.(p.symbol)||[...(contracts?.values?.()||[])].find(x=>x?.venueSymbol===p.venueSymbol);
-   const step=c?.quantityStep,minQ=Number(c?.minQuantityBase)||0;
+   const step=c?.quantityStep,minQ=Number(c?.minQuantityBase)||0,minN=Number(c?.minNotionalUSDT)||0;
+   const markPx=Number(p.mark)||Number(p.avg)||0;
    const rawQty=p.size*(partPct/100);
    qty=step?Number(roundDecimalToStep(rawQty,step,'DOWN')):rawQty;
-   if(!(qty>0)||qty<minQ||qty>=p.size)return {ok:false,status:409,error:'HALF_QTY_TOO_SMALL',message:`${partPct}% 분할 수량(${qty})이 최소 주문 단위 미만입니다`};
+   if(!(qty>0)||qty<minQ||qty>=p.size||(minN>0&&markPx>0&&qty*markPx<minN))return {ok:false,status:409,error:'HALF_QTY_TOO_SMALL',message:`${partPct}% 분할 수량(${qty})이 최소 주문 단위 미만입니다`};
   }
   const cid=('opcl'+Date.now().toString(36)+results.length).slice(0,32);
   await realBingxClient.placeOrder({
@@ -1122,7 +1141,13 @@ async function binance(url,ttl=30000){
  })();
  apiCache.set(url,{data:cache?.data,until:0,pending:task});
  if(apiCache.size>1200){for(const [key,value]of apiCache){if(!value.pending&&value.until<Date.now())apiCache.delete(key);if(apiCache.size<=1000)break}}
- try{return await task;}catch(e){if(apiCache.get(url)?.pending===task)apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
+ try{return await task;}catch(e){
+  if(apiCache.get(url)?.pending===task){if(cache?.data)apiCache.set(url,{data:cache.data,until:0});else apiCache.delete(url)}
+  const msg=String(e?.message||'');
+  const localOrSymbol=/^(?:BINANCE_PUBLIC_WEIGHT_BUDGET|BINANCE_PUBLIC_COOLDOWN)$/.test(msg)||/^Binance HTTP 40[04]\b/.test(msg);
+  if(!localOrSymbol){state.rest='offline';state.error=msg}
+  throw e;
+ }
 }
 const exchangeInfo=()=>binance('/fapi/v1/exchangeInfo',15*60*1000);
 // 고래 매물대 (whale_zones.mjs, user 2026-11-25 09:51 "단타에선 CVD 활용 방법이 매물대를 보는 거라고 생각하면 편할 것 같고"):
@@ -2408,8 +2433,8 @@ const server=http.createServer(async(req,res)=>{
      contractsFor:sym=>venueQuotes.clients.BINGX.contractsFor(sym),
      markOf,
      safety:realSafety?.orderGuard({equityUSD:copyTrader.funds?.equity??realWallet.last?.equity??null})??null,
-     // Copy lanes (audit C-5): the manual panel may not change leverage / margin mode under an open copy position.
-     copyPositions:COPY.mode==='LIVE'?Object.values(copyTrader.store.positions):[],
+     // Copy & live-scalp lanes (audit C-5): the manual panel may not change leverage / margin mode under an open managed position.
+     copyPositions:[...(COPY.mode==='LIVE'?Object.values(copyTrader.store.positions):[]),...(scalpLiveExec?.store?.open||[])],
     });
     // The copy executor caches margin-mode / leverage settings for 30 min: drop them for this contract (C-5).
     try{copyTrader.clearVenueCache(r?.plan?.venueSymbol||null)}catch{}
@@ -2631,7 +2656,7 @@ const server=http.createServer(async(req,res)=>{
     ].filter(s=>/^[A-Z0-9]{4,25}$/.test(String(s||'')));
     const topMarket=(state.ranked||[]).slice(0,16).map(m=>m.symbol);
     const list=[...new Set([...openHeld,...ORDERFLOW_RADAR_DEFAULTS,...topMarket])].slice(0,20);
-    return response(res,200,await scanOrderflowAnomalies(list,{force}));
+    return response(res,200,await scanOrderflowAnomalies(list,{force,budget:publicReadBudget}));
    }catch(e){
     return response(res,502,{ok:false,error:e?.message||'RADAR_FETCH_FAILED'});
    }
@@ -2647,7 +2672,7 @@ const server=http.createServer(async(req,res)=>{
    if(rangeParam&&!Object.hasOwn(FIRECHART_RANGES,rangeParam))return response(res,400,{ok:false,error:'INVALID_RANGE'});
    if(!['5m','15m','1h','4h'].includes(interval))return response(res,400,{ok:false,error:'INVALID_INTERVAL'});
    try{
-    const data=await fetchOrderflowWithFirechart(symbol,{range:rangeParam||undefined,interval,force});
+    const data=await fetchOrderflowWithFirechart(symbol,{range:rangeParam||undefined,interval,force,budget:publicReadBudget});
     const openHeld=[
      ...(copyTrader?.store?.open||[]).map(p=>p.symbol),
      ...(scalpExec?.store?.open||[]).map(p=>p.symbol),

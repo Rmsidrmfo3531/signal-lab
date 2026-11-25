@@ -2211,4 +2211,30 @@ test('B-4: maxSameSide (default 4) caps correlated same-direction positions whil
  assert.equal(exShort.store.open.at(-1)?.direction,'SHORT');
 });
 
+test('P0-2: reconcile clears earlyTakeProfit on VENUE_ERROR_109421 and backs off on VENUE_ERROR_109429 / repeated errors',async()=>{
+ const v=venue();
+ let t=T0;
+ const ex=make(v,{clock:{t},config:{stopLossEnabled:false,management:'CURRENT'}});
+ ex.now=()=>t;
+ ex.arm();
+ await ex.scan();
+ const p=ex.store.open[0];
+ assert.ok(p);
+ p.earlyTakeProfit={clientOrderId:'et-gone',at:t};
+ const origGet=v.client.getOrder;
+ v.client.getOrder=async()=>{throw Object.assign(Error('order invalid'),{code:'VENUE_ERROR_109421'})};
+ await ex.reconcile();
+ assert.equal(p.earlyTakeProfit,undefined,'VENUE_ERROR_109421 clears stuck earlyTakeProfit');
+ assert.equal(ex.store.events.filter(e=>e.type==='RECONCILE_ERROR').length,0);
+
+ // 109429 rate limit sets 60s global cooldown
+ v.client.getOrder=origGet;
+ const origPos=v.client.positions;
+ v.client.positions=async()=>{throw Object.assign(Error('rate limit'),{code:'VENUE_ERROR_109429'})};
+ await ex.reconcile();
+ assert.equal(ex.cooldownUntil,t+60000,'VENUE_ERROR_109429 sets 60s cooldown');
+ v.client.positions=origPos;
+});
+
+
 

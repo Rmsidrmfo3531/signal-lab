@@ -301,8 +301,8 @@ export class RealTrailingManager{
       const msg=`${copyPrefix}💰 [실계좌 자동 익절] ${disp} ${sideKo(dir)} ${partPct}% 부분 익절 확정\n순 ROE +${roe.toFixed(1)}% (수수료 -${feeRoePct.toFixed(1)}% 반영) · 추정 실현 ${money(estPart)}\n잔여 ${remPct}% 고점 대비 ${cfg.trailPullbackRatio}% 트레일링 추적 중${beLine}`;
       try{await this.sendText(msg)}catch{}
       actions.push({key,action:'CLOSE_HALF',closePct:partPct,roePct:roe,grossRoePct:grossRoe,feeRoePct,breakeven:st.breakevenPlaced});
-     }else if(res?.error==='HALF_QTY_TOO_SMALL'){
-      // Position too small to split -> skip partial lock-in and trail full position instead.
+     }else if(res?.error==='HALF_QTY_TOO_SMALL'||res?.error==='VENUE_ERROR_101400'){
+      // Position too small (qty or notional) to split -> skip partial lock-in and trail full position instead.
       st.partialTaken=true;
      }
      continue;
@@ -333,10 +333,14 @@ export class RealTrailingManager{
       const stopPrice=priceForNetRoe({avg,direction:dir,leverage:lev,netRoePct:stopRoe,feeRoePct});
       if(stopPrice){
        dirty=true;
-       const res=await this.executeAction({symbol:p.symbol,direction:dir,action:'TRAIL_STOP',stopPrice,replaceOrderId:st.lockStopOrderId}).catch(e=>({ok:false,error:e?.code||e?.message}));
+       const replaceOrderIds=[...new Set([st.lockStopOrderId,st.breakevenOrderId].filter(Boolean).map(String))];
+       const res=await this.executeAction({symbol:p.symbol,direction:dir,action:'TRAIL_STOP',stopPrice,replaceOrderId:st.lockStopOrderId,...(replaceOrderIds.length?{replaceOrderIds}:{})}).catch(e=>({ok:false,error:e?.code||e?.message}));
        if(res?.ok){
         const first=st.lockStopRoe===null;st.lockRetryAt=0;
-        if(res.staleOrderId!=null)st.staleStopIds=[...(st.staleStopIds||[]),String(res.staleOrderId)].slice(-10);
+        const staleList=[...(Array.isArray(res.staleOrderIds)?res.staleOrderIds:[]),...(res.staleOrderId!=null?[res.staleOrderId]:[])].map(String);
+        if(staleList.length)st.staleStopIds=[...new Set([...(st.staleStopIds||[]),...staleList])].slice(-10);
+        const canceledList=Array.isArray(res.canceledOrderIds)?res.canceledOrderIds.map(String):[];
+        if(st.breakevenOrderId&&canceledList.includes(String(st.breakevenOrderId)))st.breakevenOrderId=null;
         st.lockStopOrderId=res.orderId!=null?String(res.orderId):null;
         st.lockStopPrice=Number(res.stopPrice)||stopPrice;st.lockStopRoe=stopRoe;
         if(first){try{await this.sendText(`${copyPrefix}🛡️ [실계좌 트레일링] ${disp} ${sideKo(dir)} 거래소 잠금 스탑 설정 ${st.lockStopPrice} (순 ROE +${stopRoe.toFixed(1)}% 지점, 서버가 꺼져도 유지)`)}catch{}}

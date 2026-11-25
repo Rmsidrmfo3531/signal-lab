@@ -515,12 +515,17 @@ export function buildLiquidityHeatmap({ candles = [], orderbook = null, snapshot
   };
 }
 
-async function fetchJson(url, { fetcher = fetch, timeoutMs = 4500 } = {}) {
+async function fetchJson(url, { fetcher = fetch, timeoutMs = 4500, budget = null } = {}) {
+  if (budget) {
+    const r = budget.reserve(url);
+    if (!r.ok) { const err = new Error(r.code); err.code = r.code; throw err; }
+  }
   const res = await fetcher(url, {
     signal: AbortSignal.timeout(timeoutMs),
     headers: { 'User-Agent': 'SignalLab/1.0', Accept: 'application/json' },
   });
   if (!res.ok) {
+    if (budget) budget.rateLimited(res.status, res.headers?.get?.('retry-after'));
     const err = new Error(`HTTP_${res.status}`);
     err.status = res.status;
     throw err;
@@ -538,6 +543,7 @@ export async function fetchFirechartExtras(symbol, {
   needTrades = false,
   skipBinance = false,
   fetcher = fetch,
+  budget = null,
   binanceBase = 'https://fapi.binance.com',
   gateBase = 'https://api.gateio.ws',
   bingxBase = 'https://open-api.bingx.com',
@@ -550,9 +556,9 @@ export async function fetchFirechartExtras(symbol, {
   if (!skipBinance) {
     try {
       const [depth, agg] = await Promise.all([
-        fetchJson(`${binanceBase}/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`, { fetcher, timeoutMs: 3800 }),
+        fetchJson(`${binanceBase}/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=1000`, { fetcher, timeoutMs: 3800, budget }),
         needTrades
-          ? fetchJson(`${binanceBase}/fapi/v1/aggTrades?symbol=${encodeURIComponent(symbol)}&limit=1000`, { fetcher, timeoutMs: 4000 }).catch(() => [])
+          ? fetchJson(`${binanceBase}/fapi/v1/aggTrades?symbol=${encodeURIComponent(symbol)}&limit=1000`, { fetcher, timeoutMs: 4000, budget }).catch(() => [])
           : Promise.resolve([]),
       ]);
       if (depth && (Array.isArray(depth.bids) || Array.isArray(depth.asks))) {

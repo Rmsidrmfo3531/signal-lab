@@ -3,7 +3,7 @@ export function binanceReadWeight(route){
  const url=new URL(route,'https://fapi.binance.com');
  if(url.pathname.endsWith('/aggTrades'))return 20;
  if(url.pathname.endsWith('/ticker/24hr'))return url.searchParams.has('symbol')?1:40;
- if(url.pathname.endsWith('/depth')){const n=Number(url.searchParams.get('limit')||20);return n<=50?2:n<=100?5:n<=500?10:20}
+ if(url.pathname.endsWith('/depth')){const n=Number(url.searchParams.get('limit')||20);return n<=50?2:n<=100?5:n<=500?10:50}
  if(url.pathname.endsWith('/klines')){const n=Number(url.searchParams.get('limit')||150);return n<100?1:n<500?2:n<=1000?5:10}
  return 1;
 }

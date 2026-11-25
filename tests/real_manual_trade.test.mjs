@@ -272,3 +272,51 @@ test('#10 executeRealPanicFlat disarms all automation first, cancels open orders
  assert.match(notices[0],/비상 전량 청산 완료/);
 });
 
+test('P0-3: makerFirst partial fill strips duplicate TP/SL from fallback market order and reports partial marketError accurately',async()=>{
+ const BTC={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',quantityStep:'0.001',tickSize:'0.1',minQuantityBase:0.001,minNotionalUSDT:5,unitMultiplier:1};
+ const placed=[];
+ const client={
+  mode:'LIVE',
+  balance:async()=>({balance:{asset:'USDT',availableMargin:'1000',equity:'1000'}}),
+  positionMode:async()=>({dualSidePosition:true}),
+  leverage:async()=>({maxLongLeverage:100,maxShortLeverage:100}),
+  setMarginType:async()=>({}),
+  setLeverage:async()=>({}),
+  placeOrder:async p=>{
+   placed.push(p);
+   if(p.type==='LIMIT')return {order:{orderId:'mk-1',status:'PARTIALLY_FILLED',executedQty:'0.008',avgPrice:'50000'}};
+   return {order:{orderId:'mkt-1',status:'FILLED',executedQty:p.quantity,avgPrice:'50010'}};
+  },
+  getOrder:async()=>({order:{orderId:'mk-1',status:'PARTIALLY_FILLED',executedQty:'0.008',avgPrice:'50000'}}),
+  cancelOrder:async()=>({order:{orderId:'mk-1',status:'CANCELED',executedQty:'0.008',avgPrice:'50000'}}),
+ };
+ const res=await executeRealManualOrder({
+  confirm:'REAL_MANUAL_ORDER',symbol:'BTCUSDT',side:'LONG',orderType:'MARKET',makerFirst:true,makerWaitMs:10,sleep:async()=>{},
+  amountMode:'MARGIN_USDT',amount:100,leverage:10,marginMode:'CROSSED',tpPrice:55000,slPrice:48000,
+  client,contractsFor:async()=>new Map([['BTCUSDT',BTC]]),markOf:async()=>50000,
+ });
+ assert.equal(res.ok,true);
+ assert.equal(res.executionMode,'HYBRID');
+ assert.equal(placed.length,2);
+ assert.ok(placed[0].takeProfit&&placed[0].stopLoss);
+ assert.equal(placed[1].takeProfit,undefined,'fallback MARKET after partial maker fill omits duplicate TP');
+ assert.equal(placed[1].stopLoss,undefined,'fallback MARKET after partial maker fill omits duplicate SL');
+
+ const failClient={...client,placeOrder:async p=>{
+  if(p.type==='LIMIT')return {order:{orderId:'mk-2',status:'PARTIALLY_FILLED',executedQty:'0.008',avgPrice:'50000'}};
+  throw Object.assign(Error('min notional'),{code:'VENUE_ERROR_101400'});
+ }};
+ const r2=await executeRealManualOrder({
+  confirm:'REAL_MANUAL_ORDER',symbol:'BTCUSDT',side:'LONG',orderType:'MARKET',makerFirst:true,makerWaitMs:10,sleep:async()=>{},
+  amountMode:'MARGIN_USDT',amount:100,leverage:10,marginMode:'CROSSED',
+  client:failClient,contractsFor:async()=>new Map([['BTCUSDT',BTC]]),markOf:async()=>50000,
+ });
+ assert.equal(r2.ok,true);
+ assert.equal(r2.partialFill,true);
+ assert.equal(r2.filledQty,0.008);
+ assert.equal(r2.marketError,'VENUE_ERROR_101400');
+ assert.match(r2.summary,/0\.008/);
+ assert.match(r2.summary,/VENUE_ERROR_101400/);
+});
+
+

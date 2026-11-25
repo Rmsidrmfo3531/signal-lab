@@ -249,4 +249,37 @@ test('RealTrailingManager prepends [카피] at the start of line 1 for copy-orig
  assert.match(msgs[2],/^\[카피\] 🎯 \[실계좌 자동 트레일링\]/);
 });
 
+test('P0-1: TRAIL_STOP passes breakevenOrderId in replaceOrderIds and CLOSE_HALF stops retrying on VENUE_ERROR_101400',async()=>{
+ let t=1_700_000_000_000;
+ const calls=[];
+ const rt=new RealTrailingManager({
+  now:()=>t,
+  executeAction:async a=>{calls.push(a);return a.action==='BREAKEVEN_STOP'?{ok:true,orderId:'be-1',stopPrice:3005}:{ok:true,orderId:'tr-1',stopPrice:a.stopPrice||3050}},
+  sendText:async()=>{},
+ });
+ rt.configure({enabled:true,applyToManual:true,partialLockRoePct:15,trailActivateRoePct:15,trailPullbackRatio:30,minLockRoePct:3,autoBreakeven:true});
+ await rt.evaluate([pos({roePct:17,unrealized:30})],t);
+ assert.equal(calls[0].action,'CLOSE_HALF');
+ assert.equal(calls[1].action,'BREAKEVEN_STOP');
+ t+=25_000;
+ await rt.evaluate([pos({roePct:26,unrealized:50})],t);
+ const trailCall=calls.find(c=>c.action==='TRAIL_STOP');
+ assert.ok(trailCall);
+ assert.deepEqual(trailCall.replaceOrderIds,['be-1']);
+
+ // 101400 (minNotional) should set partialTaken=true so CLOSE_HALF does not loop every 15s
+ const c2=[];
+ const rt2=new RealTrailingManager({
+  now:()=>t,
+  executeAction:async a=>{c2.push(a);return a.action==='CLOSE_HALF'?{ok:false,error:'VENUE_ERROR_101400'}:{ok:true,orderId:'tr-2',stopPrice:a.stopPrice||3050}},
+  sendText:async()=>{},
+ });
+ rt2.configure({enabled:true,applyToManual:true,partialLockRoePct:15,trailActivateRoePct:15,trailPullbackRatio:30,minLockRoePct:3,autoBreakeven:false});
+ await rt2.evaluate([pos({roePct:17,unrealized:10})],t);
+ t+=25_000;
+ await rt2.evaluate([pos({roePct:18,unrealized:11})],t);
+ assert.equal(c2.filter(c=>c.action==='CLOSE_HALF').length,1);
+});
+
+
 
