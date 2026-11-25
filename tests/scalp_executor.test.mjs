@@ -1977,7 +1977,7 @@ test('Pillar 2: clamped scale-in step [1.2%, 3.0%], 15s NOT_FILLED retry + MARKE
 });
 
 test('Pillar 3: profit-only mode sizes directly by target initial margin (independent of phantom stop width)',()=>{
- const cfg=scalpExecConfig({});
+ const cfg=scalpExecConfig({SCALP_MAX_MARGIN_PCT:'10'});
  const baseDet=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0,interval:'5m',settings:cfg.settings});
  assert.equal(baseDet.ok,true);
  const tightStop={...baseDet,stop:+(baseDet.entry*0.996).toFixed(2)}; // 0.4% tight 1R

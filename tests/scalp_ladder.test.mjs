@@ -65,9 +65,10 @@ const down4h=now=>up4h(now).map(r=>{const c=200-(Number(r[4])-50);return [r[0],S
 const PX_S=+(Number(rise().at(-1)[4])-.02).toFixed(2);
 function make(v,{clock={t:T0},symbols=['SOLUSDT'],funds={equity:10000,available:9000},budget=null,dir=null,config={},contracts=null,rows=crash,trend=up4h,px=PX}={}){
  const cmap=new Map(symbols.map(s=>[s,contracts?.[s]??contract(s)]));
- return new ScalpExecutor({config:{...scalpExecConfig({}),minScore:0,makerEntry:false,makerExit:false,dailyLossPct:10,...config},client:v.client,
+ const b=Math.floor(clock.t/I);
+ return new ScalpExecutor({config:{...scalpExecConfig({}),minScore:0,makerEntry:false,makerExit:false,dailyLossPct:20,...config},client:v.client,
   contracts:async()=>cmap,tickers:async()=>symbols.map(s=>({symbol:s.replace('USDT','-USDT'),quoteVolume:'90000000'})),
-  candles:async(s,iv)=>iv==='5m'?[...rows(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:iv==='1h'?hourly(clock.t):trend(clock.t),
+  candles:async(s,iv)=>iv==='5m'?[...rows(),[b*I,'100','100','100','100','1',b*I+I-1,'1']]:iv==='1h'?hourly(clock.t):trend(clock.t),
   zoneCandles:async()=>[],priceOf:async()=>px,markOf:async()=>px,balance:async()=>funds,gate:()=>({ok:true}),isBusy:()=>false,directory:dir,now:()=>clock.t,budget});
 }
 const tmp=()=>fs.mkdtempSync(path.join(os.tmpdir(),'scalp-ladder-'));
@@ -171,13 +172,13 @@ test('management: TRADER_LADDER by default on the testnet; CURRENT on request, w
 test('entry: same gates, first ladder step (2 units), whole ladder reserved; the card and Telegram show the step',async()=>{
  const {v,ex,p}=await opened();
  assert.equal(p.management,'TRADER_LADDER');assert.equal(p.scaleIn,undefined);
- assert.deepEqual(p.ladder.units,[2,2,4,8,16]);assert.equal(p.ladder.unitMarginUSD,31.25);assert.equal(p.ladder.filled,1);
+ assert.deepEqual(p.ladder.units,[2,2,4,8,16]);assert.equal(p.ladder.unitMarginUSD,62.5);assert.equal(p.ladder.filled,1);
  assert.equal(p.ladder.spacingPct,1.5);assert.equal(p.leverage,10);
- assert.ok(Math.abs(p.size*p.avg/10-62.5)<.1);
- assert.equal(p.ladder.reserveMarginUSD,1000);assert.equal(p.ladder.reserveRiskUSD,766);assert.equal(p.riskUSD,766);
+ assert.ok(Math.abs(p.size*p.avg/10-125)<.2);
+ assert.equal(p.ladder.reserveMarginUSD,2000);assert.equal(p.ladder.reserveRiskUSD,1532);assert.equal(p.riskUSD,1532);
  // No take-profit / stop orders on the venue: the ladder exits itself.
  assert.equal(v.calls.filter(c=>c.reduceOnly||c.type==='STOP_MARKET').length,0);
- const src=ex.budgetSource();assert.equal(src.usedMargin(),1000);assert.equal(src.openRisk(),766);
+ const src=ex.budgetSource();assert.equal(src.usedMargin(),2000);assert.equal(src.openRisk(),1532);
  const s=ex.status(),pos=s.positions[0];
  assert.equal(pos.ladderView.step,1);assert.equal(pos.ladderView.of,5);
  assert.ok(Math.abs(pos.ladderView.nextAdd.price-p.avg*.985)<1e-6);
@@ -203,7 +204,7 @@ test('adds: at the spacing from the LAST fill, one per step, unique client ids; 
  setMark(v,'SOLUSDT',+(lvl+.05).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(adds(v).length,1);
  setMark(v,'SOLUSDT',+(lvl-.01).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.equal(adds(v).length,2);assert.equal(p.ladder.fills[2].units,4);
- assert.ok(Math.abs(p.ladder.fills[2].qty*p.ladder.fills[2].price/10-125)<1.5);
+ assert.ok(Math.abs(p.ladder.fills[2].qty*p.ladder.fills[2].price/10-250)<2);
  const ids=adds(v).map(c=>c.clientOrderId);assert.equal(new Set(ids).size,ids.length);assert.match(ids[0],/L2n1$/);assert.match(ids[1],/L3n2$/);
  // Same price again: no second order for the same step.
  clock.t+=10000;await ex.reconcile();assert.equal(adds(v).length,2);
@@ -220,7 +221,7 @@ test('a strong zone between the last fill and the spacing level: the add comes t
  assert.equal(adds(v).length,1);
  assert.deepEqual(p.ladder.units,[2,4,4,8,14]);assert.equal(p.ladder.fills[1].units,4);assert.equal(p.ladder.fills[1].boost,2);
  assert.deepEqual(p.ladder.fills[1].zone.why,['OVERLAP_4H_1D','TOP_VOLUME_NODE']);
- assert.ok(Math.abs(p.ladder.fills[1].qty*p.ladder.fills[1].price/10-125)<1.5);
+ assert.ok(Math.abs(p.ladder.fills[1].qty*p.ladder.fills[1].price/10-250)<2);
  const e=ex.store.events.find(x=>x.type==='LADDER_ADD');assert.match(scalpEventText(e),/강한 매물대 2배 \(4H·1D 매물대 겹침·최대 거래량 매물대\)/);
 });
 
@@ -237,7 +238,7 @@ test('take profit: the whole position at the average + 0.6 % net of fees, booked
  const notional=x.avg*x.filled;assert.ok(x.netUSD/notional*100>=.55,`${x.netUSD/notional*100}`);
  assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/평단 익절.*\n.*카피식 추매 2\/5단계/);
  const line=journalLine(x);assert.equal(line.management,'TRADER_LADDER');assert.equal(line.ladder.filled,2);
- const m=scalpMargin(x);assert.ok(Math.abs(m.initialUSD-62.5)<.2);assert.ok(Math.abs(m.addedUSD-62.5)<.8);
+ const m=scalpMargin(x);assert.ok(Math.abs(m.initialUSD-125)<.4);assert.ok(Math.abs(m.addedUSD-125)<1.5);
  const st=ex.stats();assert.equal(st.byManagement.TRADER_LADDER.trades,1);assert.equal(st.byManagement.CURRENT.trades,0);
  assert.equal(summarizeJournal([line]).byManagement.TRADER_LADDER.trades,1);
 });
@@ -267,22 +268,22 @@ test('final line: after the last step -75 % ROE closes as LADDER_FINAL_LINE; bef
 });
 
 test('budget: every open ladder holds its whole margin and worst-case risk, so concurrent first entries cannot over-commit',async()=>{
- // Daily loss 15 % of 10,000 = 1,500; one ladder reserves 766 (1,000 margin at -75 % + fees): only one fits.
- {const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:15,marginCapPct:100,now:()=>clock.t});
+ // Daily loss 30 % of 10,000 = 3,000; one ladder reserves 1,532 (2,000 margin at -75 % + fees): only one fits.
+ {const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:30,marginCapPct:100,now:()=>clock.t});
   const ex=make(v,{clock,symbols:['SOLUSDT','XRPUSDT','ADAUSDT'],budget});budget.register('scalp',ex.budgetSource());
   ex.arm();await ex.scan();
   assert.equal(ex.store.open.length,1);assert.ok(ex.store.skips.some(s=>s.reason==='OPEN_RISK_LIMIT'));
-  const snap=budget.snapshot(10000);assert.equal(snap.marginUSD,1000);assert.equal(snap.openRiskUSD,766);}
- // Margin cap 30 % = 3,000: three ladders (3 x 1,000 reserved) and no fourth, although their first steps use ~188.
- const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:100,marginCapPct:30,now:()=>clock.t});
+  const snap=budget.snapshot(10000);assert.equal(snap.marginUSD,2000);assert.equal(snap.openRiskUSD,1532);}
+ // Margin cap 60 % = 6,000: three ladders (3 x 2,000 reserved) and no fourth, although their first steps use ~375.
+ const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:100,marginCapPct:60,now:()=>clock.t});
  const ex=make(v,{clock,symbols:['SOLUSDT','XRPUSDT','ADAUSDT','DOTUSDT'],budget});budget.register('scalp',ex.budgetSource());
  ex.arm();await ex.scan();
  assert.equal(ex.store.open.length,3);
  assert.ok(ex.store.skips.some(s=>['MARGIN_CAP','TESTNET_MARGIN_CAP'].includes(s.reason)),JSON.stringify(ex.store.skips.map(s=>s.reason)));
- const firstUnits=ex.store.open.reduce((t,p)=>t+p.size*p.avg/p.leverage,0);assert.ok(firstUnits<200);
- assert.equal(budget.snapshot(10000).marginUSD,3000);
+ const firstUnits=ex.store.open.reduce((t,p)=>t+p.size*p.avg/p.leverage,0);assert.ok(firstUnits<400);
+ assert.equal(budget.snapshot(10000).marginUSD,6000);
  // Worst case: every step filled to the final line still fits the shared margin.
- for(const p of ex.store.open)assert.ok(p.ladder.reserveMarginUSD<=1000+1e-9);
+ for(const p of ex.store.open)assert.ok(p.ladder.reserveMarginUSD<=2000+1e-9);
 });
 
 test('restart: an add whose answer was lost is settled from the position once, never sent twice',async()=>{
@@ -369,16 +370,16 @@ test('position cards align CURRENT and TRADER_LADDER into identical 12-cell unif
 test('P1-1/P1-2: STOPPED ladder releases unspent tail budget, journalLine uses ladder reserveRiskUSD, and TP retry allows 1-tick profitable buffer',async()=>{
  const {v,clock,ex,p}=await opened();
  const fullMargin=ex.budgetSource().usedMargin(),fullRisk=ex.budgetSource().openRisk();
- assert.equal(fullMargin,1000);
- assert.equal(fullRisk,766);
+ assert.equal(fullMargin,2000);
+ assert.equal(fullRisk,1532);
  // Once ladder stops adding, only actual open margin + its final-line risk stay reserved.
  p.ladder.state='STOPPED';
- assert.ok(ex.budgetSource().usedMargin()<100,'stopped ladder releases unspent tail margin');
- assert.ok(ex.budgetSource().openRisk()<100,'stopped ladder releases unspent tail risk');
+ assert.ok(ex.budgetSource().usedMargin()<200,'stopped ladder releases unspent tail margin');
+ assert.ok(ex.budgetSource().openRisk()<200,'stopped ladder releases unspent tail risk');
 
  // journalLine uses ladder reserveRiskUSD rather than phantom 0.25 ATR stop
- const line=journalLine({...p,initialStop:p.avg*0.999,closedAt:clock.t+60000,closeReason:'LADDER_TAKE_PROFIT',netUSD:7.66});
- assert.equal(line.pnl.riskUSDActual,766);
+ const line=journalLine({...p,initialStop:p.avg*0.999,closedAt:clock.t+60000,closeReason:'LADDER_TAKE_PROFIT',netUSD:15.32});
+ assert.equal(line.pnl.riskUSDActual,1532);
  assert.equal(line.pnl.r,0.01);
 
  // TP retry (n>=2) applies 1-tick profitable buffer when 1st IOC expires
@@ -399,5 +400,27 @@ test('P1-1/P1-2: STOPPED ladder releases unspent tail budget, journalLine uses l
  assert.equal(iocCalls.length,2);
  assert.ok(iocCalls[1]<iocCalls[0],'LONG TP retry steps down 1 tick while staying profitable');
 });
+
+test('TRADER_LADDER keeps full 2/32 first-step margin on 20% testnet cap even under EU session, B-grade, low bounce, and 4H against-trend; LIVE stays 10%',async()=>{
+ // LIVE real-money scalp must remain pinned to 10% / 30%
+ const liveCfg=scalpLiveExecConfig({});
+ assert.equal(liveCfg.maxMarginPct,10);
+ assert.equal(liveCfg.maxTotalMarginPct,30);
+ // 10:00 UTC (19:00 KST) = EU session (0.5x), 4H downtrend while entering LONG = againstTrend (0.5x), minScore=50 -> B-grade/low bounce
+ const euBucket=Math.floor(Date.parse('2026-11-16T10:00:00Z')/I);
+ const euNow=euBucket*I+5000;
+ const v=venue(),clock={t:euNow};
+ const euRows=()=>crash({lastOpen:(euBucket-1)*I});
+ const ex=make(v,{clock,rows:euRows,trend:down4h,config:{minScore:50,scoreTierSizing:true,sessionWeighting:true,sessionEuMult:0.5,bounceSizing:true,bounceLowMult:0.8,trendMode:'soft'}});
+ ex.arm();await ex.scan();
+ const p=ex.store.open[0];
+ assert.ok(p,'entered TRADER_LADDER position');
+ assert.equal(p.ladder.sizeMult,1);
+ assert.equal(p.ladder.unitMarginUSD,62.5);
+ assert.ok(Math.abs(p.size*p.avg/p.leverage-125)<.4,`expected full 2/32 ($125) first step, got ${(p.size*p.avg/p.leverage).toFixed(2)}`);
+ assert.equal(p.ladder.reserveMarginUSD,2000);
+});
+
+
 
 

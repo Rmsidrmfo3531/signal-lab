@@ -60,7 +60,7 @@ function venue({dropAdd=false,iocPartialLost=false}={}){
  return {client,calls,st:S,orders,net,fillResting};
 }
 function make(v,{clock,config={}}={}){
- return new ScalpExecutor({config:{...scalpExecConfig({}),minScore:0,makerEntry:false,makerExit:false,dailyLossPct:10,makerWaitMs:0,makerPollMs:1,...config},client:v.client,
+ return new ScalpExecutor({config:{...scalpExecConfig({}),minScore:0,makerEntry:false,makerExit:false,dailyLossPct:20,makerWaitMs:0,makerPollMs:1,...config},client:v.client,
   contracts:async()=>new Map([['SOLUSDT',contract('SOLUSDT')]]),tickers:async()=>[{symbol:VS,quoteVolume:'90000000'}],
   candles:async(s,iv)=>iv==='5m'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:iv==='1h'?hourly(clock.t):up4h(clock.t),
   zoneCandles:async()=>[],priceOf:async()=>PX,markOf:async()=>PX,balance:async()=>({equity:10000,available:9000}),gate:()=>({ok:true}),isBusy:()=>false,now:()=>clock.t});
