@@ -1159,6 +1159,98 @@ test('hedge-mode copy settlement recovers manual adds and closes on the isolated
  }
 });
 
+test('BingX LIVE partial cuts settle the original order across restart',async t=>{
+ const {copyHTML}=await import('../public/live_control.js');
+ for(const outcome of ['FILLED','CANCELED','LOST_RECEIPT','UNFILLED','REJECTED_ONCE','MANUAL_FLAT','TRADER_CLOSE']){
+  await t.test(outcome,async t=>{
+   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'copy-cut-'));
+   t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+   const v=venue(),place=v.client.placeOrder,lookups=[];
+   let clientOrderId,cutSent=false,visible=true,reject=outcome==='REJECTED_ONCE';
+   let status='PARTIALLY_FILLED',filled=outcome==='UNFILLED'?0:24;
+   v.client.openOrders=async()=>({orders:[]});
+   v.client.getOrder=async (symbol,key)=>{
+    assert.equal(symbol,'TNSR-USDT');lookups.push(key);
+    if(!visible)throw Object.assign(Error('order not visible yet'),{code:'VENUE_ERROR_80016'});
+    return {order:{orderId:'cut-49',clientOrderId,status,executedQty:filled}};
+   };
+   v.client.placeOrder=async params=>{
+    if(!params.reduceOnly||params.type!=='MARKET')return place(params);
+    if(reject){reject=false;throw Object.assign(Error('rate limit'),{code:'HTTP_429'})}
+    if(cutSent&&outcome==='TRADER_CLOSE'){
+     assert.equal(params.quantity,'49','close only the copy once the partial order has settled');
+     const receipt=await place(params);
+     return {order:{...receipt.order,status:'FILLED',executedQty:49}};
+    }
+    assert.equal(cutSent,false,'never resubmit a cut after a partial or ambiguous receipt');
+    cutSent=true;clientOrderId=params.clientOrderId;
+    assert.equal(params.quantity,'49');v.setSize(v.size-filled);
+    if(outcome==='LOST_RECEIPT')throw Object.assign(Error('timeout'),{code:'TIMEOUT'});
+    return {order:{orderId:'cut-49',status,executedQty:filled}};
+   };
+   const config=copyConfig({COPY_MODE:'LIVE',COPY_LIVE_CONFIRM:'REAL_MONEY_COPY'});
+   const start=()=>new CopyExecutor({config,directory,client:v.client,contractOf:async()=>contract,
+    balance:async()=>({equity:3000,available:3000}),auditOrders:true,now:()=>1e12,goneRecheckMs:0});
+   let ex=start();
+   const card=(id,text)=>ex.handle({id,date:1e12+id,text});
+   const position=()=>ex.status().positions[0];
+   const half=CHANGE(656,328);
+   await ex.reconcile();
+   assert.equal((await card(1,OPEN.replace('880','656'))).ok,true);
+   assert.equal(v.size,98);
+   assert.equal((await card(2,half)).ok,!['LOST_RECEIPT','REJECTED_ONCE'].includes(outcome));
+   if(outcome==='REJECTED_ONCE'){
+    assert.equal(v.size,98);
+    await ex.reconcile(); // Definite rejection can be retried; ambiguous receipts cannot.
+    lookups.length=0;
+   }
+   assert.equal(v.size,98-filled);
+
+   if(outcome==='LOST_RECEIPT')visible=false;
+   ex=start();await ex.reconcile();
+   assert.deepEqual(lookups[0],outcome==='LOST_RECEIPT'?{clientOrderId}:{orderId:'cut-49'});
+   assert.match(copyHTML(ex.status()),/부분청산 체결 확인 중/);
+   assert.equal((await card(3,half)).already,true);
+   visible=true;
+   if(outcome==='MANUAL_FLAT'){
+    v.setSize(0);await ex.reconcile();await ex.reconcile();
+    assert.equal(ex.status().positions.length,0);
+    assert.equal((await card(4,half)).reason,'NOT_COPIED');
+    return;
+   }
+   if(outcome==='TRADER_CLOSE'){
+    v.setSize(114); // The user opened a manual 40 alongside our remaining copy 74.
+    assert.equal((await card(4,CLOSE)).reason,'CUT_PENDING');
+    assert.equal(v.size,114);
+    status='FILLED';filled=49;v.setSize(89);
+    await ex.reconcile();
+    assert.equal(v.size,40);assert.equal(ex.status().positions.length,0);
+    return;
+   }
+   const canceled=['CANCELED','UNFILLED'].includes(outcome);
+   status=canceled?'CANCELED':'FILLED';
+   if(!canceled){filled=49;v.setSize(49)}
+   await ex.reconcile();await ex.reconcile();
+   const reductions=position().steps.filter(s=>s.kind==='REDUCE');
+   assert.deepEqual(reductions.map(s=>s.qty),filled?[filled]:[]);
+   assert.equal(position().qty,v.size);
+   assert.equal(position().auditQty,v.size);
+   assert.deepEqual(ex.auditStatus().lanes[0].issues,[]);
+   assert.equal((await card(4,half)).already,true);
+   if(canceled){
+    assert.match(copyHTML(ex.status()),new RegExp(`부분청산 목표 미달.*목표 잔량 49개 · 확인 잔량 ${v.size}개`));
+    const alerts=ex.status().events.filter(e=>e.type==='CUT_INCOMPLETE');
+    assert.equal(alerts.length,1);
+    assert.match(copyEventText(alerts[0]),new RegExp(`49개 중 ${filled}개 체결`));
+   }else{
+    assert.equal(position().cutOrder,undefined);
+    assert.equal((await card(5,CHANGE(328,656))).ok,true);
+    assert.ok(v.size>49);
+   }
+  });
+ }
+});
+
 test('Astra audit regressions: idempotent partial reduce, exact partial fill qty, entry/kill restart recovery, 201+ trade PnL, and LiveExecutor mode isolation',async()=>{
  const {copyStats}=await import('../public/live_control.js');
  const {LiveExecutor}=await import('../live_executor.mjs');

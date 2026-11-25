@@ -149,6 +149,35 @@ test('a cut whose lost answer cannot be looked up sends nothing more (held with 
  assert.equal(sum(v.reduces()),49);assert.equal(v.lanes.BOTH,-89);assert.equal(ex.status().positions[0].qty,49);
 });
 
+test('a working partial cut caps its protective stop below the manual share until it settles',async()=>{
+ const v=laneVenue(),ex=copy(v,{stops:true});
+ await ex.msg(OPEN);
+ v.manual('BOTH',-40);
+ await ex.reconcile();
+ const place=v.client.placeOrder,get=v.client.getOrder;
+ let cut;
+ v.client.placeOrder=async params=>{
+  if(params.type!=='MARKET'||params.reduceOnly!=='true')return place(params);
+  assert.equal(params.quantity,'49');
+  const {order}=await place({...params,quantity:'24'});
+  cut={...order,status:'PARTIALLY_FILLED'};
+  return {order:cut};
+ };
+ v.client.getOrder=async (symbol,key)=>key.orderId===cut?.orderId?{order:cut}:get(symbol,key);
+ const activeStop=()=>v.stops.find(o=>o.status==='NEW');
+ assert.equal((await ex.msg(CHANGE(880,440))).ok,true);
+ assert.equal(v.lanes.BOTH,-114);
+ assert.equal(activeStop().quantity,'49','stop can coexist with the remaining 25 without consuming manual 40');
+ assert.equal(activeStop().closePosition,undefined);
+ await ex.reconcile();
+ assert.equal(activeStop().quantity,'49');
+ cut.status='CANCELED';
+ await ex.reconcile();
+ assert.equal(activeStop().quantity,'74','protect the full remaining copy once the other 25 cannot fill');
+ assert.equal(activeStop().closePosition,undefined);
+ assert.equal(ex.status().positions[0].manualQty,40);
+});
+
 test('testnet is unchanged: the whole lane is the copy\'s (closed whole), no MANUAL_FIRST, no hold',async()=>{
  const v=laneVenue();const clock={t:1e12};
  const ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD',COPY_STOPS:'off'},'TESTNET'),client:v.client,contractOf:async()=>contract,
