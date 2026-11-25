@@ -11,8 +11,9 @@
 // The screenshot's reading: 고래 CVD 증가 = 매집 경향, 새우 CVD 감소 = 매도 경향 (orange vs brown is the pair to compare).
 // Scored: whale = purple + brown. Recorded: all six series and the shrimp-vs-whale divergence (no extra points).
 //
-// Data: Binance USDT-M public /fapi/v1/aggTrades through the server's shared public read path (the caller passes
-// `request`, which reserves the PublicReadBudget weight, 20 per page). An aggTrade merges the fills of ONE taker order
+// Data: Binance USDT-M public /fapi/v1/aggTrades on the server's shared PublicReadBudget (the caller passes `request`
+// = public_read_budget.mjs budgetedPublicRead, which reserves the weight, 20 per page, without touching the scanner's
+// REST state or cache). An aggTrade merges the fills of ONE taker order
 // at ONE price, so price × qty approximates the order size; an order that swept several price levels is split into
 // several aggTrades (it can land in a smaller bucket), and orders split by the trader (TWAP / iceberg) are counted as
 // the pieces. `m` true = the buyer was the maker = the taker SOLD.
@@ -35,6 +36,7 @@ export const WHALE_CVD_DEFAULTS=Object.freeze({
  referenceSymbol:'BTCUSDT',
  reservePct:40,        // stop paging when the shared budget would go above 60 % of its per-minute weight
  cacheTtlMs:30_000,
+ timeoutMs:4_000,      // the executor waits at most this long for the read (and each page's fetch is aborted after it)
 });
 export const WHALE_CVD_CODES=Object.freeze({WITH:'WHALE_CVD_WITH',AGAINST:'WHALE_CVD_AGAINST',WEAK:'WHALE_CVD_WEAK',NO_PRINTS:'WHALE_CVD_NO_PRINTS',UNAVAILABLE:'WHALE_CVD_UNAVAILABLE'});
 const AGG_TRADES_WEIGHT=20;

@@ -40,7 +40,7 @@ import {finalTelegramMatch} from './telegram_final.mjs';
 import {createTelegramNetworkRecovery,postTelegramIPv4} from './telegram_transport.mjs';
 import {translateNewsArticles,googleTranslate,googleTranslateStatus,createOpenAINewsTranslator} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
-import {PublicReadBudget} from './public_read_budget.mjs';
+import {PublicReadBudget,budgetedPublicRead} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
 import {liveConfig} from './live_orders.mjs';
@@ -1123,14 +1123,16 @@ async function binance(url,ttl=30000){
  try{return await task;}catch(e){if(apiCache.get(url)?.pending===task)apiCache.delete(url);state.rest='offline';state.error=e.message;throw e}
 }
 const exchangeInfo=()=>binance('/fapi/v1/exchangeInfo',15*60*1000);
-// 고래 CVD of a scalp candidate (whale_cvd.mjs): Binance-listed coins only, aggTrades through binance() (shared
-// PublicReadBudget, weight 20 a page, at most SCALP_WHALE_CVD_MAX_PAGES pages, stops when the budget is above 60 %).
+// 고래 CVD of a scalp candidate (whale_cvd.mjs): Binance-listed coins only, aggTrades on the shared PublicReadBudget
+// (weight 20 a page, at most SCALP_WHALE_CVD_MAX_PAGES pages, stops when the budget is above 60 %). Read with
+// budgetedPublicRead, not binance(): a failed side read must not set state.rest='offline' / state.error (that blocks
+// cryptoEntryAllowed and the paper scalp until the next good read) nor keep dead pages in apiCache (review 2026-11-25).
 // Edges scaled by the coin's 24h quote volume against BTC from the scanner's cached 24h tickers (no extra read).
 function scalpWhaleCvd(symbol,{startMs,endMs,scale='auto',maxPages=WHALE_CVD_DEFAULTS.maxPages}={}){
  if(!state.activeSet.has(symbol))return {ok:false,error:'NOT_ON_BINANCE'};
  const qv=sym=>Number((rawMarketTickers||[]).find(t=>t?.symbol===sym)?.quoteVolume)||null;
  const thresholds=whaleThresholds({mode:scale,quoteVolume24h:qv(symbol),referenceQuoteVolume24h:qv(WHALE_CVD_DEFAULTS.referenceSymbol)});
- return fetchWhaleCvd(symbol,{request:url=>binance(url,0),budget:()=>publicReadBudget.snapshot(),startMs,endMs,thresholds,maxPages});
+ return fetchWhaleCvd(symbol,{request:url=>budgetedPublicRead(url,{budget:publicReadBudget,timeoutMs:WHALE_CVD_DEFAULTS.timeoutMs}),budget:()=>publicReadBudget.snapshot(),startMs,endMs,thresholds,maxPages});
 }
 const market24=()=>binance('/fapi/v1/ticker/24hr',75000);
 const klines=(symbol,interval,limit=150)=>binance(`/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`,interval==='4h'?170000:interval==='1h'?54000:20000);

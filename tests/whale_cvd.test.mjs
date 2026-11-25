@@ -283,3 +283,12 @@ test('screen: 고래CVD ±5 in the breakdown with the six FireCharts colours, gl
   assert.ok(css.includes(`--wcv-${k}:${hex}`),k);assert.ok(css.includes(`.wcv-${k}{color:var(--wcv-${k})}`),k);
  }
 });
+
+test('server wiring: the whale read uses budgetedPublicRead (no state.rest / state.error / apiCache side effect), never binance()',()=>{
+ const src=fs.readFileSync(new URL('../server.mjs',import.meta.url),'utf8');
+ const body=src.match(/function scalpWhaleCvd\([^)]*\)\{([\s\S]*?)\n\}/)?.[1];
+ assert.ok(body,'scalpWhaleCvd found');
+ assert.match(body,/budgetedPublicRead\(url,\{budget:publicReadBudget,timeoutMs:WHALE_CVD_DEFAULTS\.timeoutMs\}\)/);
+ assert.doesNotMatch(body,/\bbinance\(/,'a failed aggTrades page must not mark the Binance REST offline');
+ assert.match(body,/budget:\(\)=>publicReadBudget\.snapshot\(\)/,'the 60 % room check reads the same shared budget');
+});

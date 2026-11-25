@@ -1022,7 +1022,7 @@ export class ScalpExecutor{
   const start=Math.max(end-maxWin,origin>0&&origin<end?origin:end-maxWin);
   const read=Promise.resolve().then(()=>this.whaleCvd(u.symbol,{startMs:start,endMs:end,direction:det.direction,scale:this.config.whaleCvdScale??'auto',maxPages:this.config.whaleCvdMaxPages??WHALE_CVD_DEFAULTS.maxPages}))
    .catch(e=>({ok:false,error:String(e?.code||e?.message||e).slice(0,80)}));
-  const snap=await withTimeout(read,4000,{ok:false,error:'timeout 4s'});
+  const snap=await withTimeout(read,WHALE_CVD_DEFAULTS.timeoutMs,{ok:false,error:`timeout ${WHALE_CVD_DEFAULTS.timeoutMs/1000}s`});
   const ev=evaluateWhaleCvdBonus(snap,det.direction,{bonus:this.config.whaleCvdBonus??WHALE_CVD_DEFAULTS.bonus,minSharePct:this.config.whaleCvdMinSharePct??WHALE_CVD_DEFAULTS.minSharePct});
   return whaleCvdRecord(snap,ev);
  }
