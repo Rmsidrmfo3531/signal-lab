@@ -72,10 +72,10 @@ const used=p=>p.ladder.fills.reduce((t,f)=>t+f.qty*f.price/p.leverage,0);
 
 test('a step is never given back while its PostOnly child may rest: after an outage the child is cancelled first (one fill per step, cap kept)',async()=>{
  const {v,clock,ex,p}=await opened();
- // Steps 2-5 at market.
- for(let i=0;i<4;i++){setMark(v,below(p.ladder.lastFill*.985));clock.t+=10000;await ex.reconcile()}
- assert.equal(p.ladder.filled,5);
- // Step 6 (16 units) with the maker entry: the PostOnly child rests and the network drops right after it is sent.
+ // Steps 2-4 at market.
+ for(let i=0;i<3;i++){setMark(v,below(p.ladder.lastFill*.985));clock.t+=10000;await ex.reconcile()}
+ assert.equal(p.ladder.filled,4);
+ // Step 5 (16 units) with the maker entry: the PostOnly child rests and the network drops right after it is sent.
  ex.config.makerEntry=true;v.net.downAfterPostOnly=true;
  setMark(v,below(p.ladder.lastFill*.985));clock.t+=10000;await ex.reconcile();
  assert.ok(p.ladder.pending?.unknown,'pending with an unknown outcome');

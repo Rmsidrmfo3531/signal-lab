@@ -484,7 +484,7 @@ test('ladder: whale zones on our side count as strong zones for the ×2 step (ki
  assert.equal(whaleReads,3);assert.equal(p.ladder.whaleZones.list.length,1);assert.equal(p.ladder.whaleZones.list[0].side,'BUY');
  assert.equal(p.ladder.filled,2,JSON.stringify({next:p.ladder.next,last:p.ladder.lastReason}));
  const fill=p.ladder.fills[1];
- assert.equal(fill.zone.kind,'WHALE');assert.deepEqual(fill.zone.why,['WHALE_BUY_ZONE']);assert.ok(fill.boost>0,'×2 step');assert.equal(fill.units,2);
+ assert.equal(fill.zone.kind,'WHALE');assert.deepEqual(fill.zone.why,['WHALE_BUY_ZONE']);assert.ok(fill.boost>0,'×2 step');assert.equal(fill.units,4);
  const ev=ex.store.events.find(e=>e.type==='LADDER_ADD');assert.equal(ev.zone.kind,'WHALE');
  // Read again only after 15 min.
  clock.t+=60_000;v.setMark(+(p.ladder.lastFill*.99).toFixed(2));await ex.reconcile();assert.equal(whaleReads,3);

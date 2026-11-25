@@ -79,16 +79,16 @@ async function opened({config={},...opt}={}){
  return {v,clock,ex,p:ex.store.open[0]};
 }
 
-test('ladder sizing: unit = cap / 32, multipliers never break the cap, the min-order shrink from the end, and the refusal',()=>{
+test('ladder sizing: unit = cap / 32 (2·2·4·8·16), multipliers never break the cap, the min-order shrink from the end, and the refusal',()=>{
  const base={symbolCapUSD:1000,leverage:10,price:100,quantityStep:'0.01',minQty:0.01,minNotional:2};
  const a=planLadder(base);
- assert.equal(a.ok,true);assert.deepEqual(a.units,[1,1,2,4,8,16]);assert.equal(a.unitMarginUSD,31.25);assert.equal(a.totalMarginUSD,1000);assert.equal(a.qty0,3.12);
+ assert.equal(a.ok,true);assert.deepEqual(a.units,[2,2,4,8,16]);assert.equal(a.unitMarginUSD,31.25);assert.equal(a.firstMarginUSD,62.5);assert.equal(a.totalMarginUSD,1000);assert.equal(a.qty0,6.25);
  const big=planLadder({...base,sizeMult:1.4});assert.equal(big.capped,true);assert.ok(big.totalMarginUSD<=1000+1e-9);
  const half=planLadder({...base,sizeMult:.5});assert.equal(half.unitMarginUSD,15.625);assert.equal(half.totalMarginUSD,500);
- const room=planLadder({...base,roomUSD:320});assert.ok(room.totalMarginUSD<=320+1e-9);assert.deepEqual(room.units,[1,1,2,4,8,16]);
- // 1 unit below the venue minimum (1 coin at 100 x 10 = $10 margin, +10 % headroom): unit raised, ladder shortened.
- const short=planLadder({...base,symbolCapUSD:300,minQty:1});
- assert.equal(short.raised,true);assert.equal(short.unitMarginUSD,11);assert.deepEqual(short.units,[1,1,2,4,8]);assert.ok(short.totalMarginUSD<=300);assert.equal(short.qty0,1.1);
+ const room=planLadder({...base,roomUSD:320});assert.ok(room.totalMarginUSD<=320+1e-9);assert.deepEqual(room.units,[2,2,4,8,16]);
+ // First step (2 units) below the venue minimum (2 coins at 100 / 10 = $20 margin, +10 % headroom = $22 -> unit $11): raised & shortened.
+ const short=planLadder({...base,symbolCapUSD:300,minQty:2});
+ assert.equal(short.raised,true);assert.equal(short.unitMarginUSD,11);assert.equal(short.firstMarginUSD,22);assert.deepEqual(short.units,[2,2,4,8]);assert.ok(short.totalMarginUSD<=300);assert.equal(short.qty0,2.2);
  assert.deepEqual(planLadder({...base,symbolCapUSD:300,minQty:20}),{ok:false,reason:'LADDER_BELOW_MINIMUM',minUnitMarginUSD:220,capUSD:300});
  assert.equal(planLadder({...base,roomUSD:0}).reason,'MARGIN_CAP');
  // The cap is never exceeded, whatever the multiplier, minimum and room.
@@ -96,18 +96,18 @@ test('ladder sizing: unit = cap / 32, multipliers never break the cap, the min-o
   const r=planLadder({...base,symbolCapUSD:cap,sizeMult:mult,minQty,roomUSD});
   if(!r.ok)continue;
   assert.ok(r.totalMarginUSD<=Math.min(cap,roomUSD)+1e-6,JSON.stringify({cap,mult,minQty,roomUSD}));
-  assert.ok(r.qty0*100/10<=r.unitMarginUSD+1e-9);assert.ok(r.units.length>=2);
+  assert.ok(r.qty0*100/10<=r.units[0]*r.unitMarginUSD+1e-9);assert.ok(r.units.length>=2);
  }
 });
 
 test('strong zone x2 takes the same units off the last steps (total kept); the last step cannot grow',()=>{
- const L=[1,1,2,4,8,16];
- assert.deepEqual(ladderZoneBoost(L,1),{units:[1,2,2,4,8,15],boost:1});
- assert.deepEqual(ladderZoneBoost(L,4),{units:[1,1,2,4,16,8],boost:8});
- assert.deepEqual(ladderZoneBoost(L,5),{units:L,boost:0});
- assert.deepEqual(ladderZoneBoost([1,1,2,4,8],4),{units:[1,1,2,4,8],boost:0});
- assert.deepEqual(ladderZoneBoost([1,1,2,1],2),{units:[1,1,3],boost:1});
- for(let i=0;i<6;i++)assert.equal(ladderZoneBoost(L,i).units.reduce((s,x)=>s+x,0),32);
+ const L=[2,2,4,8,16];
+ assert.deepEqual(ladderZoneBoost(L,1),{units:[2,4,4,8,14],boost:2});
+ assert.deepEqual(ladderZoneBoost(L,3),{units:[2,2,4,16,8],boost:8});
+ assert.deepEqual(ladderZoneBoost(L,4),{units:L,boost:0});
+ assert.deepEqual(ladderZoneBoost([2,2,4,8],3),{units:[2,2,4,8],boost:0});
+ assert.deepEqual(ladderZoneBoost([2,2,4,2],2),{units:[2,2,6],boost:2});
+ for(let i=0;i<5;i++)assert.equal(ladderZoneBoost(L,i).units.reduce((s,x)=>s+x,0),32);
 });
 
 test('add level: spacing from the last fill, a strong zone in between (not too close), or the spacing level inside a zone',()=>{
@@ -168,24 +168,24 @@ test('management: TRADER_LADDER by default on the testnet; CURRENT on request, w
  assert.equal(tn.status().settings.management,'TRADER_LADDER');assert.equal(tn.managementScope().since,T0);
 });
 
-test('entry: same gates, first ladder unit, whole ladder reserved; the card and Telegram show the step',async()=>{
+test('entry: same gates, first ladder step (2 units), whole ladder reserved; the card and Telegram show the step',async()=>{
  const {v,ex,p}=await opened();
  assert.equal(p.management,'TRADER_LADDER');assert.equal(p.scaleIn,undefined);
- assert.deepEqual(p.ladder.units,[1,1,2,4,8,16]);assert.equal(p.ladder.unitMarginUSD,31.25);assert.equal(p.ladder.filled,1);
+ assert.deepEqual(p.ladder.units,[2,2,4,8,16]);assert.equal(p.ladder.unitMarginUSD,31.25);assert.equal(p.ladder.filled,1);
  assert.equal(p.ladder.spacingPct,1.5);assert.equal(p.leverage,10);
- assert.ok(Math.abs(p.size*p.avg/10-31.25)<.1);
+ assert.ok(Math.abs(p.size*p.avg/10-62.5)<.1);
  assert.equal(p.ladder.reserveMarginUSD,1000);assert.equal(p.ladder.reserveRiskUSD,766);assert.equal(p.riskUSD,766);
  // No take-profit / stop orders on the venue: the ladder exits itself.
  assert.equal(v.calls.filter(c=>c.reduceOnly||c.type==='STOP_MARKET').length,0);
  const src=ex.budgetSource();assert.equal(src.usedMargin(),1000);assert.equal(src.openRisk(),766);
  const s=ex.status(),pos=s.positions[0];
- assert.equal(pos.ladderView.step,1);assert.equal(pos.ladderView.of,6);
+ assert.equal(pos.ladderView.step,1);assert.equal(pos.ladderView.of,5);
  assert.ok(Math.abs(pos.ladderView.nextAdd.price-p.avg*.985)<1e-6);
  const card=scalpPositionCardHTML(pos);
- assert.match(card,/카피식 추매 1\/6 단계 · 평단 [\d.]+ · 다음 추매 [\d.]+/);assert.match(card,/익절/);assert.doesNotMatch(card,/자동 손절/);
+ assert.match(card,/카피식 추매 1\/5 단계 · 평단 [\d.]+ · 다음 추매 [\d.]+/);assert.match(card,/익절/);assert.doesNotMatch(card,/자동 손절/);
  const opened_=ex.store.events.find(e=>e.type==='OPENED');
  const text=scalpEventText(opened_);
- assert.match(text,/카피식 추매/);assert.match(text,/1\/6 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 48시간/);
+ assert.match(text,/카피식 추매/);assert.match(text,/1\/5 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 48시간/);
  assert.equal(s.settings.management,'TRADER_LADDER');assert.equal(s.settings.ladderTpNetPct,.6);assert.equal(s.settings.ladderMaxHoldMin,2880);
 });
 
@@ -196,19 +196,19 @@ test('adds: at the spacing from the LAST fill, one per step, unique client ids; 
  setMark(v,'SOLUSDT',first*.988);clock.t+=300*60000;await ex.reconcile();
  assert.equal(adds(v).length,0);assert.equal(ex.store.open.length,1);
  setMark(v,'SOLUSDT',below(first*.985));clock.t+=10000;await ex.reconcile();
- assert.equal(adds(v).length,1);assert.equal(p.ladder.filled,2);assert.equal(p.ladder.fills[1].units,1);assert.equal(p.ladder.fills[1].zone,null);
+ assert.equal(adds(v).length,1);assert.equal(p.ladder.filled,2);assert.equal(p.ladder.fills[1].units,2);assert.equal(p.ladder.fills[1].zone,null);
  assert.ok(Math.abs(p.ladder.lastFill-first*.985)<.03);
  // Next level from the last fill (not the first entry): 1.5 % under the add.
  const lvl=p.ladder.lastFill*.985;
  setMark(v,'SOLUSDT',+(lvl+.05).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(adds(v).length,1);
  setMark(v,'SOLUSDT',+(lvl-.01).toFixed(2));clock.t+=10000;await ex.reconcile();
- assert.equal(adds(v).length,2);assert.equal(p.ladder.fills[2].units,2);
- assert.ok(Math.abs(p.ladder.fills[2].qty*p.ladder.fills[2].price/10-62.5)<1);
+ assert.equal(adds(v).length,2);assert.equal(p.ladder.fills[2].units,4);
+ assert.ok(Math.abs(p.ladder.fills[2].qty*p.ladder.fills[2].price/10-125)<1.5);
  const ids=adds(v).map(c=>c.clientOrderId);assert.equal(new Set(ids).size,ids.length);assert.match(ids[0],/L2n1$/);assert.match(ids[1],/L3n2$/);
  // Same price again: no second order for the same step.
  clock.t+=10000;await ex.reconcile();assert.equal(adds(v).length,2);
  const ev=ex.store.events.filter(e=>e.type==='LADDER_ADD');assert.equal(ev.length,2);
- assert.match(scalpEventText(ev[1]),/카피식 추매 3\/6단계/);assert.match(scalpEventText(ev[1]),/3\/6 단계 · 평단 [\d.]+ · 다음 추매/);
+ assert.match(scalpEventText(ev[1]),/카피식 추매 3\/5단계/);assert.match(scalpEventText(ev[1]),/3\/5 단계 · 평단 [\d.]+ · 다음 추매/);
  assert.ok(!ex.store.events.some(e=>['MAX_HOLD_EXIT','SCALE_IN_FILLED'].includes(e.type)));
 });
 
@@ -218,9 +218,9 @@ test('a strong zone between the last fill and the spacing level: the add comes t
  p.ladder.zones={bucket:Math.floor(clock.t/(4*H)),at:clock.t,list:[zone]};
  setMark(v,'SOLUSDT',zone.high);clock.t+=10000;await ex.reconcile();
  assert.equal(adds(v).length,1);
- assert.deepEqual(p.ladder.units,[1,2,2,4,8,15]);assert.equal(p.ladder.fills[1].units,2);assert.equal(p.ladder.fills[1].boost,1);
+ assert.deepEqual(p.ladder.units,[2,4,4,8,14]);assert.equal(p.ladder.fills[1].units,4);assert.equal(p.ladder.fills[1].boost,2);
  assert.deepEqual(p.ladder.fills[1].zone.why,['OVERLAP_4H_1D','TOP_VOLUME_NODE']);
- assert.ok(Math.abs(p.ladder.fills[1].qty*p.ladder.fills[1].price/10-62.5)<1);
+ assert.ok(Math.abs(p.ladder.fills[1].qty*p.ladder.fills[1].price/10-125)<1.5);
  const e=ex.store.events.find(x=>x.type==='LADDER_ADD');assert.match(scalpEventText(e),/강한 매물대 2배 \(4H·1D 매물대 겹침·최대 거래량 매물대\)/);
 });
 
@@ -235,9 +235,9 @@ test('take profit: the whole position at the average + 0.6 % net of fees, booked
  assert.equal(ex.store.open.length,0);const x=ex.store.closed[0];
  assert.equal(x.closeReason,'LADDER_TAKE_PROFIT');assert.ok(x.netUSD>0);
  const notional=x.avg*x.filled;assert.ok(x.netUSD/notional*100>=.55,`${x.netUSD/notional*100}`);
- assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/평단 익절.*\n.*카피식 추매 2\/6단계/);
+ assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/평단 익절.*\n.*카피식 추매 2\/5단계/);
  const line=journalLine(x);assert.equal(line.management,'TRADER_LADDER');assert.equal(line.ladder.filled,2);
- const m=scalpMargin(x);assert.ok(Math.abs(m.initialUSD-31.25)<.1);assert.ok(Math.abs(m.addedUSD-31.25)<.5);
+ const m=scalpMargin(x);assert.ok(Math.abs(m.initialUSD-62.5)<.2);assert.ok(Math.abs(m.addedUSD-62.5)<.8);
  const st=ex.stats();assert.equal(st.byManagement.TRADER_LADDER.trades,1);assert.equal(st.byManagement.CURRENT.trades,0);
  assert.equal(summarizeJournal([line]).byManagement.TRADER_LADDER.trades,1);
 });
@@ -256,14 +256,14 @@ test('final line: after the last step -75 % ROE closes as LADDER_FINAL_LINE; bef
   setMark(v,'SOLUSDT',+(p.avg*(1-.076)).toFixed(2));p.ladder.retryAfterAt=clock.t+H;clock.t+=10000;await ex.reconcile();
   assert.equal(ex.store.closed[0].closeReason,'EMERGENCY_ROE_STOP');}
  const {v,clock,ex,p}=await opened();
- for(let i=0;i<5;i++){setMark(v,'SOLUSDT',+(p.ladder.lastFill*.985-.01).toFixed(2));clock.t+=10000;await ex.reconcile()}
- assert.equal(p.ladder.filled,6);assert.equal(p.ladder.state,'COMPLETE');assert.equal(adds(v).length,5);
+ for(let i=0;i<4;i++){setMark(v,'SOLUSDT',+(p.ladder.lastFill*.985-.01).toFixed(2));clock.t+=10000;await ex.reconcile()}
+ assert.equal(p.ladder.filled,5);assert.equal(p.ladder.state,'COMPLETE');assert.equal(adds(v).length,4);
  const used=p.ladder.fills.reduce((t,f)=>t+f.qty*f.price/10,0);assert.ok(used<=p.ladder.capUSD+1e-6,`${used}`);
- assert.match(scalpPositionCardHTML(ex.status().positions[0]),/6\/6 단계 · 평단 [\d.]+ · 추매 끝 · 마지막 선만 남음/);
- setMark(v,'SOLUSDT',+(p.avg*(1-.07)).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(ex.store.open.length,1);assert.equal(adds(v).length,5);
+ assert.match(scalpPositionCardHTML(ex.status().positions[0]),/5\/5 단계 · 평단 [\d.]+ · 추매 끝 · 마지막 선만 남음/);
+ setMark(v,'SOLUSDT',+(p.avg*(1-.07)).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(ex.store.open.length,1);assert.equal(adds(v).length,4);
  setMark(v,'SOLUSDT',+(p.avg*(1-.0751)).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.equal(ex.store.open.length,0);const x=ex.store.closed[0];
- assert.equal(x.closeReason,'LADDER_FINAL_LINE');assert.ok(x.closeMeta.roePct<=-75);assert.equal(x.closeMeta.step,6);
+ assert.equal(x.closeReason,'LADDER_FINAL_LINE');assert.ok(x.closeMeta.roePct<=-75);assert.equal(x.closeMeta.step,5);
 });
 
 test('budget: every open ladder holds its whole margin and worst-case risk, so concurrent first entries cannot over-commit',async()=>{
@@ -273,13 +273,13 @@ test('budget: every open ladder holds its whole margin and worst-case risk, so c
   ex.arm();await ex.scan();
   assert.equal(ex.store.open.length,1);assert.ok(ex.store.skips.some(s=>s.reason==='OPEN_RISK_LIMIT'));
   const snap=budget.snapshot(10000);assert.equal(snap.marginUSD,1000);assert.equal(snap.openRiskUSD,766);}
- // Margin cap 30 % = 3,000: three ladders (3 x 1,000 reserved) and no fourth, although their first units use ~94.
+ // Margin cap 30 % = 3,000: three ladders (3 x 1,000 reserved) and no fourth, although their first steps use ~188.
  const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:100,marginCapPct:30,now:()=>clock.t});
  const ex=make(v,{clock,symbols:['SOLUSDT','XRPUSDT','ADAUSDT','DOTUSDT'],budget});budget.register('scalp',ex.budgetSource());
  ex.arm();await ex.scan();
  assert.equal(ex.store.open.length,3);
  assert.ok(ex.store.skips.some(s=>['MARGIN_CAP','TESTNET_MARGIN_CAP'].includes(s.reason)),JSON.stringify(ex.store.skips.map(s=>s.reason)));
- const firstUnits=ex.store.open.reduce((t,p)=>t+p.size*p.avg/p.leverage,0);assert.ok(firstUnits<100);
+ const firstUnits=ex.store.open.reduce((t,p)=>t+p.size*p.avg/p.leverage,0);assert.ok(firstUnits<200);
  assert.equal(budget.snapshot(10000).marginUSD,3000);
  // Worst case: every step filled to the final line still fits the shared margin.
  for(const p of ex.store.open)assert.ok(p.ladder.reserveMarginUSD<=1000+1e-9);
@@ -316,11 +316,11 @@ test('readiness counts only TRADER_LADDER trades from the switch time, and says 
 });
 
 test('glossary and texts: the ladder line, the new exit reasons',()=>{
- assert.equal(ladderStepText({step:3,of:6,avg:98,nextAdd:{price:95.5,zone:null}}),'3/6 단계 · 평단 98 · 다음 추매 95.5');
+ assert.equal(ladderStepText({step:3,of:5,avg:98,nextAdd:{price:95.5,zone:null}}),'3/5 단계 · 평단 98 · 다음 추매 95.5');
  const S=new ScalpExecutor({config:scalpExecConfig({})}).status().settings;
  for(const c of ['LADDER_TAKE_PROFIT','LADDER_MAX_HOLD','LADDER_FINAL_LINE','LADDER_BELOW_MINIMUM','LADDER_FINAL_LINE_OFF'])assert.ok(reasonInfo(c,S)?.label,c);
- assert.match(reasonInfo('LADDER_TAKE_PROFIT',S).desc,/\+0\.6%/);assert.match(reasonInfo('LADDER_FINAL_LINE',S).desc,/6단계.*−75% ROE/);
- assert.deepEqual([...TRADER_LADDER.steps],[1,1,2,4,8,16]);assert.equal(SCALP_MANAGEMENTS.LADDER,'TRADER_LADDER');
+ assert.match(reasonInfo('LADDER_TAKE_PROFIT',S).desc,/\+0\.6%/);assert.match(reasonInfo('LADDER_FINAL_LINE',S).desc,/5단계.*−75% ROE/);
+ assert.deepEqual([...TRADER_LADDER.steps],[2,2,4,8,16]);assert.equal(SCALP_MANAGEMENTS.LADDER,'TRADER_LADDER');
 });
 
 test('SHORT: adds above the last fill, take profit below the average, all net of fees',async()=>{
