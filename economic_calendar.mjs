@@ -32,13 +32,16 @@ export function getHistoricalImpact(familyKey){
  return familyKey&&ECON_IMPACT_STATS?.families?.[familyKey]||null;
 }
 
-// Primary US core BTC-moving indicators (matched by title, independent of TradingView's inconsistent importance code
-// which marks Initial Jobless Claims as 0 and Housing Starts as 1).
-const PRIMARY_US_RE=/^(?:fed interest rate decision|federal funds rate|interest rate|fomc statement|fomc press conference|fomc (?:meeting )?minutes|fomc economic projections|fed chair .*speaks|fed powell speech|powell speaks|core inflation rate (?:mom|yoy)|inflation rate (?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|core pce price index(?:\s*(?:mom|m\/m))?|non[- ]?farm (?:payrolls|employment change)|unemployment rate|ppi\s*(?:mom|m\/m)|core ppi\s*(?:mom|m\/m)|gdp growth rate qoq.*|(?:advance|prelim|final) gdp\s*q\/q|retail sales\s*(?:mom|m\/m)|(?:initial jobless|unemployment) claims|ism manufacturing pmi|ism services pmi|jolts job openings|michigan consumer sentiment.*|prelim uom consumer sentiment|cb consumer confidence|jackson hole.*)$/i;
+// Primary US high-volatility BTC movers ONLY (empirically verified >= 1.15x normal 15m BTC volatility over 24m):
+// S-tier (1.7~1.9x): FOMC, CPI, NFP/Unemployment
+// A-tier (1.17~1.41x): Michigan Sentiment, JOLTS, ISM Services PMI, PPI, ISM Manufacturing PMI, PCE
+// Excluded as low-volatility noise (<1.0x baseline): China/non-US, Housing, ADP, Durable Goods,
+// standalone Initial Jobless Claims, standalone Retail Sales, standalone GDP, CB Consumer Confidence.
+const PRIMARY_US_RE=/^(?:fed interest rate decision|federal funds rate|interest rate|fomc statement|fomc press conference|fomc (?:meeting )?minutes|fomc economic projections|fed chair .*speaks|fed powell speech|powell speaks|core inflation rate (?:mom|yoy)|inflation rate (?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|core pce price index(?:\s*(?:mom|m\/m))?|non[- ]?farm (?:payrolls|employment change)|unemployment rate|ppi\s*(?:mom|m\/m)|core ppi\s*(?:mom|m\/m)|ism manufacturing pmi|ism services pmi|jolts job openings|michigan consumer sentiment.*|prelim uom consumer sentiment|jackson hole.*)$/i;
 
-// Companion sub-indicators (including importance 0 / -1 on TradingView) released alongside primary US releases
-// that frequently drive or reverse BTC direction.
-const SUB_INDICATOR_RE=/^(?:core pce price index\s*(?:yoy|y\/y)|pce price index\s*(?:mom|yoy|m\/m|y\/y)|personal spending(?:\s*mom)?|personal income(?:\s*mom)?|core inflation rate\s*(?:mom|yoy)|inflation rate\s*(?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|average hourly earnings.*|participation rate|u6 unemployment rate|nonfarm payrolls private|core ppi\s*(?:mom|yoy|m\/m|y\/y)|ppi\s*(?:yoy|y\/y)|continuing jobless claims|ism manufacturing prices|ism services prices|ism manufacturing employment|ism services employment|retail sales control group|retail sales ex autos.*|core retail sales.*|gdp price index.*|core pce prices qoq.*|michigan.*inflation expectations.*|uom.*inflation expectations.*|fomc economic projections|interest rate projection.*)$/i;
+// Companion sub-indicators (including importance 0 / -1 on TradingView) released at the exact same minute
+// as a primary high-volatility US release that frequently drive or reverse BTC direction.
+const SUB_INDICATOR_RE=/^(?:core pce price index\s*(?:yoy|y\/y)|pce price index\s*(?:mom|yoy|m\/m|y\/y)|personal spending(?:\s*mom)?|personal income(?:\s*mom)?|core inflation rate\s*(?:mom|yoy)|inflation rate\s*(?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|average hourly earnings.*|participation rate|u6 unemployment rate|nonfarm payrolls private|core ppi\s*(?:mom|yoy|m\/m|y\/y)|ppi\s*(?:yoy|y\/y)|ism manufacturing prices|ism services prices|ism manufacturing employment|ism services employment|gdp growth rate qoq.*|gdp price index.*|core pce prices qoq.*|michigan.*inflation expectations.*|uom.*inflation expectations.*|fomc economic projections|interest rate projection.*)$/i;
 
 const NO_ACTUAL_TITLE_RE=/speaks|speech|press conference|minutes|statement|symposium|outlook report|testifies|testimony|holiday/i;
 
@@ -268,7 +271,7 @@ export function localizeEconomicEvent(raw){
  for(const rule of EVENT_RULES){
   if(rule.re.test(title)){
    const bt=getHistoricalImpact(rule.familyKey);
-   const grade=bt?.grade||(rule.critical?'S':'A');
+   const grade=bt?(bt.vsBaseline15mX>=1.6?'S':(bt.vsBaseline15mX>=1.15?'A':'B')):(rule.critical?'S':'A');
    const tier=grade==='S'?'CRITICAL':(grade==='A'?'HIGH':'WATCH');
    const tierLabelKo=grade==='S'?'S 초강력':(grade==='A'?'A 강력':'B 참고');
    return {
