@@ -292,3 +292,17 @@ test('server wiring: the whale read uses budgetedPublicRead (no state.rest / sta
  assert.doesNotMatch(body,/\bbinance\(/,'a failed aggTrades page must not mark the Binance REST offline');
  assert.match(body,/budget:\(\)=>publicReadBudget\.snapshot\(\)/,'the 60 % room check reads the same shared budget');
 });
+
+test('deadline: no new aggTrades page after the executor’s 4 s wait (no background paging on shared weight)',async()=>{
+ clearWhaleCvdCache();
+ // 6,000 trades, a window needing 6 pages; each page takes 1.5 s on a fake clock.
+ let clock=0;const f=fakeBinance({n:6000,budget:new PublicReadBudget({now:()=>clock})});
+ const slow=async route=>{const rows=await f.request(route);clock+=1500;return rows};
+ const s=await fetchWhaleCvd('SOLUSDT',{request:slow,budget:()=>f.budget.snapshot(),startMs:f.end-5999_000,endMs:f.end,now:()=>clock,maxPages:10,maxWindowMs:2*3600_000});
+ assert.equal(f.routes.length,3,'pages at 0 / 1.5 / 3.0 s; none at 4.5 s');assert.equal(s.stopped,'DEADLINE');assert.equal(s.complete,false);assert.equal(s.ok,true);
+ assert.equal(f.budget.snapshot().usedWeight,60);
+ // A fast read is not cut (the deadline only stops slow paging).
+ clearWhaleCvdCache();clock=0;const g=fakeBinance({n:6000,budget:new PublicReadBudget({now:()=>clock})});
+ const t=await fetchWhaleCvd('SOLUSDT',{request:g.request,budget:()=>g.budget.snapshot(),startMs:g.end-5999_000,endMs:g.end,now:()=>clock,maxPages:10,maxWindowMs:2*3600_000});
+ assert.equal(t.complete,true);assert.equal(t.stopped,undefined);assert.equal(g.routes.length,6);
+});

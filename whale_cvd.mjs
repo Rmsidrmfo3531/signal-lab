@@ -140,14 +140,15 @@ export function clearWhaleCvdCache(){cache.clear()}
 
 /**
  * Read the aggTrades of [startMs, endMs] newest first (no fromId = the newest 1000; then fromId = first id − 1000),
- * at most maxPages pages, stopping early when the shared budget is above (100 − reservePct) % of its weight.
+ * at most maxPages pages, stopping early when the shared budget is above (100 − reservePct) % of its weight, and
+ * requesting no new page once deadlineMs (the executor's wait) has passed since the call.
  * request(route) -> parsed JSON (the server's Binance public read: budget, cooldown, timeout).
  * budget() -> {usedWeight,maxWeightPerMinute,cooldownUntil} (PublicReadBudget.snapshot), optional.
  * Never throws: {ok:false,error} on a failure of the first page; a later page failure keeps what was read (complete false).
  */
 export async function fetchWhaleCvd(symbol,{request,budget=null,startMs,endMs=Date.now(),now=Date.now,thresholds=WHALE_CVD_FIXED,
  maxPages=WHALE_CVD_DEFAULTS.maxPages,pageLimit=WHALE_CVD_DEFAULTS.pageLimit,reservePct=WHALE_CVD_DEFAULTS.reservePct,
- maxWindowMs=WHALE_CVD_DEFAULTS.maxWindowMs,cacheTtlMs=WHALE_CVD_DEFAULTS.cacheTtlMs}={}){
+ maxWindowMs=WHALE_CVD_DEFAULTS.maxWindowMs,cacheTtlMs=WHALE_CVD_DEFAULTS.cacheTtlMs,deadlineMs=WHALE_CVD_DEFAULTS.timeoutMs}={}){
  const sym=String(symbol||'').toUpperCase();
  if(!/^[A-Z0-9]{2,30}USDT$/.test(sym))return {ok:false,error:'BAD_SYMBOL'};
  if(typeof request!=='function')return {ok:false,error:'NO_REQUEST'};
@@ -157,10 +158,14 @@ export async function fetchWhaleCvd(symbol,{request,budget=null,startMs,endMs=Da
  if(hit&&t0-hit.at<cacheTtlMs)return hit.pending??hit.data;
  const task=(async()=>{
   const pages=Math.max(1,Math.min(10,Math.floor(Number(maxPages)||1))),limit=Math.max(100,Math.min(1000,Math.floor(Number(pageLimit)||1000)));
+  const deadline=Math.max(500,Number(deadlineMs)||WHALE_CVD_DEFAULTS.timeoutMs);
   const room=()=>{if(typeof budget!=='function')return true;const s=budget()||{};const max=Number(s.maxWeightPerMinute)||0;
    if(Number(s.cooldownUntil)>now())return false;return !(max>0)||(Number(s.usedWeight)||0)+AGG_TRADES_WEIGHT<=max*(1-Math.max(0,Math.min(90,reservePct))/100)};
   const all=new Map();let read=0,complete=false,stopped=null,firstId=null;
   while(read<pages){
+   // No new page after the caller's wait (review 2026-11-25): the executor gives up at timeoutMs, so later pages
+   // would only spend shared weight on a result nobody reads.
+   if(read>0&&now()-t0>=deadline){stopped='DEADLINE';break}
    if(!room()){stopped='BUDGET';break}
    const route=`/fapi/v1/aggTrades?symbol=${encodeURIComponent(sym)}&limit=${limit}${firstId==null?'':`&fromId=${Math.max(0,firstId-limit)}`}`;
    let rows;
