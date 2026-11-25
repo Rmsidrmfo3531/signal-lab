@@ -231,3 +231,21 @@ test('importLegacy respects SIGNAL_LAB_ENV_DIR and backup/restore preserves comp
   assert.equal(readStore(path.join(emptyRestore,'scalp-store.json')).closed[0].netUSD,4.2);
  }finally{for(const d of [old,shared,localEnv,emptyRestore])fs.rmSync(d,{recursive:true,force:true})}
 });
+
+test('backup and restore include extended companion ledgers (scalp-store-live, real-safety, real-trailing, copy-controls-live)',()=>{
+ const dir=work(),dest=work();
+ try{
+  atomicWriteStore(path.join(dir,'store.json'),fixture('ext'));
+  atomicWriteStore(path.join(dir,'scalp-store-live.json'),{version:1,open:[],closed:[{key:'sl1'}]});
+  atomicWriteStore(path.join(dir,'real-safety.json'),{dailyLossPct:8});
+  atomicWriteStore(path.join(dir,'real-trailing.json'),{enabled:true});
+  atomicWriteStore(path.join(dir,'copy-controls-live.json'),{traderBalanceUSD:4000});
+  const bk=backupStore(path.join(dir,'store.json'));
+  const restored=restoreStore(bk,dest);
+  for(const name of ['scalp-store-live.json','real-safety.json','real-trailing.json','copy-controls-live.json']){
+   assert.ok(restored.restoredLedgers?.includes(name),`missing ${name}`);
+  }
+  assert.equal(readStore(path.join(dest,'copy-controls-live.json')).traderBalanceUSD,4000);
+ }finally{for(const d of [dir,dest])fs.rmSync(d,{recursive:true,force:true})}
+});
+

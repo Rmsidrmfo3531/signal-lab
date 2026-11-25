@@ -404,12 +404,43 @@ export function createRealTradeChart(canvas,{onSelectPrice=()=>{}}={}){
   draw();
  };
 
+ let touchStartX=0,touchStartY=0,touchStartOffset=0,touchMoved=false;
+ const onTouchStart=e=>{
+  if(!e.touches||e.touches.length!==1)return;
+  const t=e.touches[0],pt=canvasPoint(t);
+  touchStartX=t.clientX;touchStartY=t.clientY;touchStartOffset=state.rightOffset;touchMoved=false;
+  state.hover=pt;
+ };
+ const onTouchMove=e=>{
+  if(!e.touches||e.touches.length!==1||!state.candles.length)return;
+  const t=e.touches[0],dx=t.clientX-touchStartX,dy=t.clientY-touchStartY;
+  if(Math.abs(dx)>6&&Math.abs(dx)>=Math.abs(dy)){
+   touchMoved=true;
+   e.preventDefault();
+   const shift=Math.round((dx/Math.max(200,state.chartW||600))*state.visibleCount);
+   const maxOff=Math.max(0,state.candles.length-10);
+   state.rightOffset=Math.max(0,Math.min(maxOff,touchStartOffset+shift));
+   draw();
+  }
+ };
+ const onTouchEnd=e=>{
+  if(!touchMoved&&e.changedTouches&&e.changedTouches.length===1){
+   const pt=canvasPoint(e.changedTouches[0]);
+   const px=yToPrice(pt.y);
+   if(px>0){state.selectedPrice=px;draw();onSelectPrice(px)}
+  }
+  state.hover=null;touchMoved=false;
+ };
+
  if(canvas&&typeof canvas.addEventListener==='function'){
   canvas.addEventListener('mousemove',onMouseMove);
   canvas.addEventListener('mousedown',onMouseDown);
   window.addEventListener('mouseup',onMouseUp);
   canvas.addEventListener('mouseleave',onMouseLeave);
   canvas.addEventListener('wheel',onWheel,{passive:false});
+  canvas.addEventListener('touchstart',onTouchStart,{passive:true});
+  canvas.addEventListener('touchmove',onTouchMove,{passive:false});
+  canvas.addEventListener('touchend',onTouchEnd,{passive:true});
  }
 
  const ro=typeof ResizeObserver!=='undefined'&&canvas?new ResizeObserver(()=>draw()):null;
@@ -443,6 +474,9 @@ export function createRealTradeChart(canvas,{onSelectPrice=()=>{}}={}){
     window.removeEventListener('mouseup',onMouseUp);
     canvas.removeEventListener('mouseleave',onMouseLeave);
     canvas.removeEventListener('wheel',onWheel);
+    canvas.removeEventListener('touchstart',onTouchStart);
+    canvas.removeEventListener('touchmove',onTouchMove);
+    canvas.removeEventListener('touchend',onTouchEnd);
    }
   },
  };

@@ -225,7 +225,7 @@ export class CopyExecutor{
    }
   }
  }
- #effectiveSizing(){return this.controls?.effectiveSizing?.(this.config.sizing)??this.config.sizing}
+ #effectiveSizing(){if(this.config.mode==='LIVE'&&this.config.sizing==='BALANCE_RATIO')return 'BALANCE_RATIO';return this.controls?.effectiveSizing?.(this.config.sizing)??this.config.sizing}
  #effectiveMakerFirst(){
   const ctrlMode=this.controls?.effectiveExecutionMode?.(null);
   if(ctrlMode==='INSTANT')return false;

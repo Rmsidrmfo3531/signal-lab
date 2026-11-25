@@ -1501,7 +1501,7 @@ const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 
  // 실계좌 page: the copy panel alone every 3 s (prices cached 3 s on the server, balance 15 s), while visible.
  let fastBusy=false;
  setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy||copyActionBusy)return;fastBusy=true;
-  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'){realTradeCtrl?.syncContext({visible:true,availableUSD:c.funds?.available??null,heldPositions:c.venuePositions??[]});if(!copyActionBusy&&!el.contains(document.activeElement))el.innerHTML=copyHTML(c)}}}catch{}finally{fastBusy=false}},3000);
+  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'){realTradeCtrl?.syncContext({visible:true,availableUSD:c.funds?.available??null,equityUSD:c.funds?.equity??null,heldPositions:c.venuePositions??[],...(c.safety!==undefined?{safety:c.safety}:{})});if(!copyActionBusy&&!el.contains(document.activeElement)){const sc=[...el.querySelectorAll('.copy-table-scroll')].map(n=>[n.scrollLeft,n.scrollTop]);el.innerHTML=copyHTML(c);el.querySelectorAll('.copy-table-scroll').forEach((n,i)=>{if(sc[i]){n.scrollLeft=sc[i][0];n.scrollTop=sc[i][1]}})}}}}catch{}finally{fastBusy=false}},3000);
  window.addEventListener('signal-lab:prefill-real-trade',e=>{
   const detail=e?.detail||window.__signalLabPendingRealOrder;
   if(!detail)return;

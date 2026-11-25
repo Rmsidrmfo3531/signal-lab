@@ -373,6 +373,28 @@ test('listener: exits with code 0 after its file changed (systemd Restart=always
   assert.match(L.log(),/새 버전 감지 \([0-9a-f]{12} → [0-9a-f]{12}\)/);
  }finally{if(L.child.exitCode===null)L.child.kill('SIGTERM');await L.exited;server.close()}
 });
+
+test('copy_listener.py: live close cards dequeue ahead of entries while preserve_order keeps sequence',()=>{
+ const pyCode=`
+import asyncio, importlib.util, sys
+sys.path.insert(0, ${JSON.stringify(path.join(ROOT,'tests/fixtures/fake_telethon'))})
+spec = importlib.util.spec_from_file_location('copy_listener', ${JSON.stringify(LISTENER)})
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.delivery_queue = asyncio.PriorityQueue()
+mod.enqueue_copy({'id': 1, 'text': '📌 포지션 진입 BTCUSDT'}, preserve_order=False)
+mod.enqueue_copy({'id': 2, 'text': '📌 포지션 진입 ETHUSDT'}, preserve_order=False)
+mod.enqueue_copy({'id': 3, 'text': '📌 포지션 청산 BTCUSDT'}, preserve_order=False)
+out = [mod.delivery_queue.get_nowait()[2]['id'] for _ in range(3)]
+assert out == [3, 1, 2], f'unexpected live priority order: {out}'
+mod.enqueue_copy({'id': 10, 'text': '📌 포지션 진입 SOLUSDT'}, preserve_order=True)
+mod.enqueue_copy({'id': 11, 'text': '📌 포지션 청산 SOLUSDT'}, preserve_order=True)
+out2 = [mod.delivery_queue.get_nowait()[2]['id'] for _ in range(2)]
+assert out2 == [10, 11], f'unexpected catchup order: {out2}'
+`;
+ const r=spawnSync(PY,['-c',pyCode],{encoding:'utf8',env:{PATH:process.env.PATH,PYTHONDONTWRITEBYTECODE:'1',TELEGRAM_API_ID:'1',TELEGRAM_API_HASH:'h',COPY_CHANNEL_ID:'-100123',COPY_LISTENER_TOKEN:TOKEN}});
+ assert.equal(r.status,0,r.stderr||r.stdout);
+});
 }
 
 test('copy.sh unit restarts on a clean exit (Restart=always)',()=>{

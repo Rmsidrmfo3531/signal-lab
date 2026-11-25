@@ -80,7 +80,7 @@ export function atomicWriteStore(storePath,value){
   flushDirectory(path.dirname(storePath));
  }finally{try{fs.rmSync(tmp,{force:true})}catch{}}
 }
-const COMPANION_LEDGERS=['live-orders.json','copy-store.json','copy-store-live.json','scalp-store.json','manual-trades-live.json'];
+const COMPANION_LEDGERS=['live-orders.json','copy-store.json','copy-store-live.json','scalp-store.json','scalp-store-live.json','manual-trades-live.json','real-safety.json','real-trailing.json','real-margin-alert.json','account-alerts.json','testnet-budget.json','copy-controls.json','copy-controls-live.json'];
 export function backupStore(storePath,{maxBackups=30}={}){
  if(!fs.existsSync(storePath))return null;
  readStore(storePath);

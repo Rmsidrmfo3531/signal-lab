@@ -535,7 +535,14 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   if(resolvedSl==null&&state.slRoePct>0&&basePx>0&&Number(state.leverage)>0){
    const dir=side==='LONG'?1:-1;
    const raw=basePx*(1-dir*(state.slRoePct/100)/Number(state.leverage));
-   if(raw>0)resolvedSl=Number(raw.toPrecision(6));
+   const tk=Number(state.info?.tickSize);
+   if(raw>0){
+    if(Number.isFinite(tk)&&tk>0){
+     const dec=(String(state.info.tickSize).split('.')[1]||'').length;
+     const stepped=dir>0?Math.floor(raw/tk)*tk:Math.ceil(raw/tk)*tk;
+     resolvedSl=Number(stepped.toFixed(Math.min(8,dec)));
+    }else resolvedSl=Number(raw.toPrecision(6));
+   }
   }
   const useMaker=orderType==='MARKET'&&state.makerFirst===true;
   const usePostOnly=orderType==='LIMIT'&&state.postOnly===true;
@@ -571,10 +578,13 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   }finally{state.busy=false;render()}
  };
 
- // Periodic 5s live chart + ticker refresh while panel is expanded
+ // Periodic 5s live chart + open-orders (every 10s) refresh while panel is expanded
+ let rtTick=0;
  setInterval(()=>{
   if(!state.visible||!state.open||document.hidden)return;
+  rtTick++;
   void fetchKlines({silent:true});
+  if(rtTick%2===0&&!state.loadingOrders)void fetchOrders();
   if(state.dropdownOpen)void fetchMarkets();
  },5000);
 
@@ -770,10 +780,12 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
     if(sum)sum.textContent=`${symDisplay()} ${fmtPx(state.info?.price)} · 전 종목 드롭다운 · 차트 직접 주문 · 미체결 ${state.openOrders.length}건 · 가용 ${fmtUsd(state.availableUSD)}`;
    }
   },
-  prefill({symbol,leverage,marginMode,orderType,limitPrice,tpPrice,slPrice,note}={}){
+  prefill({symbol,side,leverage,marginMode,orderType,limitPrice,tpPrice,slPrice,note}={}){
    if(!state.visible)return;
    state.open=true;state.dropdownOpen=false;
    if(symbol)state.symbol=displaySymbol(symbol);
+   const normSide=String(side||'').toUpperCase();
+   state.suggestedSide=['LONG','SHORT'].includes(normSide)?normSide:null;
    if(Number(leverage)>=1)state.leverage=Math.round(Number(leverage));
    if(['CROSSED','ISOLATED'].includes(String(marginMode||'').toUpperCase()))state.marginMode=String(marginMode).toUpperCase();
    const normType=String(orderType||'').toUpperCase();
@@ -791,7 +803,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
    const sl=Number(slPrice);
    if(Number.isFinite(sl)&&sl>0)state.slPrice=String(+sl.toPrecision(6));
    state.candles=[];
-   state.msg=note?String(note):'';state.msgErr=false;
+   state.msg=note?String(note):(state.suggestedSide?`📌 ${state.suggestedSide==='LONG'?'롱':'숏'} 방향 지정가 입력됨`:'');state.msgErr=false;
    render();
    if(!state.markets.length)void fetchMarkets();
    void fetchInfo(state.symbol);

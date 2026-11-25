@@ -1069,12 +1069,15 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
         const sym = sendBtn.dataset.symbol || state.data?.symbol || state.symbol;
         const limitPrice = Number(sendBtn.dataset.price);
         const wallLabel = sendBtn.dataset.wallLabel || '매물대';
+        const side = ['LONG', 'SHORT'].includes(String(sendBtn.dataset.side || '').toUpperCase()) ? String(sendBtn.dataset.side).toUpperCase() : null;
         if (sym && Number.isFinite(limitPrice) && limitPrice > 0) {
+          const sideKo = side === 'LONG' ? '롱 추천 · ' : side === 'SHORT' ? '숏 추천 · ' : '';
           const detail = {
             symbol: sym,
+            ...(side ? { side } : {}),
             orderType: 'LIMIT',
             limitPrice,
-            note: `📌 FireCharts ${wallLabel} $${fmtPx(limitPrice)} 지정가 자동 입력 완료 (수량·방향 확인 후 주문하세요)`,
+            note: `📌 FireCharts ${wallLabel} ${sideKo}$${fmtPx(limitPrice)} 지정가 자동 입력 완료 (수량 확인 후 주문하세요)`,
           };
           window.__signalLabPendingRealOrder = detail;
           window.location.hash = '#real';

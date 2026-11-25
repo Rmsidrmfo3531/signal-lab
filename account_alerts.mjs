@@ -280,7 +280,7 @@ export class AccountAlerts{
  }
 
  /** #2 Combined manual + copy margin usage & unrealized loss alerts. */
- async checkRisk({equityUSD,positions=[],now=this.now()}={}){
+ async checkRisk({equityUSD,positions=[],now=this.now(),skipMarginAlert=false}={}){
   if(!this.store.riskAlerts||!(Number(equityUSD)>0))return [];
   const list=Array.isArray(positions)?positions:[];
   const eq=Number(equityUSD);
@@ -306,7 +306,7 @@ export class AccountAlerts{
    }
   };
 
-  evaluate('margin',marginPct,this.store.marginWarnPcts,tier=>
+  if(!skipMarginAlert)evaluate('margin',marginPct,this.store.marginWarnPcts,tier=>
    `⚠️ 실계좌 통합 위험 경보 · 증거금 사용률 ${marginPct.toFixed(1)}% (기준 ${tier}%)\n순자산 ${usd(eq)} · 사용 증거금 ${usd(totalMargin)} · 포지션 ${list.length}개 (카피 ${copyN} · 수동 ${manN})\n합산 미실현 ${money(totalUnreal)}`);
 
   evaluate('loss',lossPct,this.store.lossWarnPcts,tier=>
@@ -553,10 +553,20 @@ export class AccountAlerts{
    const direction=['LONG','SHORT'].includes(dirRaw)?dirRaw:null;
    const target=rawSym==='ALL'?'ALL':displaySymbol(rawSym.endsWith('USDT')?rawSym:`${rawSym}USDT`);
    if(target!=='ALL'&&!/^[A-Z0-9]{4,30}$/.test(target))return '⚠️ 종목 형식이 올바르지 않습니다.';
+   let preview='';
+   try{
+    const snap=await this.getSnapshot();
+    const matched=(snap?.positions||[]).filter(p=>p&&(target==='ALL'||displaySymbol(p.symbol)===target)&&(!direction||p.direction===direction));
+    if(matched.length){
+     const lines=matched.slice(0,5).map(p=>`· ${displaySymbol(p.symbol)} ${sideKo(p.direction)} 수량 ${p.size??'—'} · 미실현 ${money(p.unrealized)}`);
+     if(matched.length>5)lines.push(`…외 ${matched.length-5}건`);
+     preview=`\n현재 포지션:\n${lines.join('\n')}`;
+    }
+   }catch{}
    const code=String(randomInt(1000,10000));
    this.pendingAction={kind:'CLOSE',code,symbol:target,direction,expiresAt:now+CONFIRM_TTL_MS};
    const label=target==='ALL'?'전체 보유 포지션':`${target}${direction?` ${sideKo(direction)}`:' (전체 방향)'}`;
-   return `⚠️ 실계좌 시장가 청산 확인\n대상: ${label}\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
+   return `⚠️ 실계좌 시장가 청산 확인\n대상: ${label}${preview}\n실행하려면 60초 안에 아래 명령을 보내세요:\n/confirm ${code}`;
   }
 
   if(cmd==='/panic'||cmd==='/비상청산'){

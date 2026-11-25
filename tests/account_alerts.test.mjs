@@ -278,3 +278,25 @@ test('#10 Telegram /panic (/비상청산) requires 2-step /confirm within 60s an
  assert.match(await unwired.handleCommand('/panic','123456',now),/연결되어 있지 않습니다/);
 });
 
+test('P2/P3: checkRisk respects skipMarginAlert and /close previews matching live position size and PnL',async()=>{
+ let now=1795000000000;
+ const sent=[];
+ const positions=[{symbol:'BTCUSDT',direction:'LONG',size:0.05,margin:750,unrealized:-120,origin:'manual'}];
+ const alerts=new AccountAlerts({
+  now:()=>now,
+  allowedChatId:'123456',
+  sendText:async t=>{sent.push(t)},
+  getSnapshot:async()=>({positions}),
+ });
+ // skipMarginAlert suppresses duplicate margin usage warning while still alerting unrealized loss
+ const delivered=await alerts.checkRisk({equityUSD:1000,positions,now,skipMarginAlert:true});
+ assert.equal(delivered.some(x=>x.kind==='margin'),false);
+ assert.equal(delivered.some(x=>x.kind==='loss'),true);
+
+ // /close confirmation includes live size & unrealized PnL preview
+ const ask=await alerts.handleCommand('/close BTC LONG','123456',now);
+ assert.match(ask,/현재 포지션:/);
+ assert.match(ask,/BTCUSDT 🟢 롱 수량 0\.05 · 미실현 [-−]\$120\.00/);
+});
+
+
