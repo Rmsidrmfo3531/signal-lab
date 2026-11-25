@@ -1137,10 +1137,10 @@ function whaleZoneThresholds(symbol,scale){
  const qv=sym=>Number((rawMarketTickers||[]).find(t=>t?.symbol===sym)?.quoteVolume)||null;
  return whaleThresholds({mode:scale,quoteVolume24h:qv(symbol),referenceQuoteVolume24h:qv(WHALE_CVD_DEFAULTS.referenceSymbol)});
 }
-function scalpWhaleZones(symbol,{lookbackMs,endMs,scale='auto',maxPages=WHALE_ZONE_DEFAULTS.maxPages}={}){
+function scalpWhaleZones(symbol,{lookbackMs,endMs,scale='auto',maxPages=WHALE_ZONE_DEFAULTS.maxPages,reservePct=WHALE_ZONE_DEFAULTS.reservePct}={}){
  if(!state.activeSet.has(symbol))return {ok:false,error:'NOT_ON_BINANCE'};
  return whaleTradeStore.read(symbol,{request:url=>budgetedPublicRead(url,{budget:publicReadBudget,timeoutMs:WHALE_ZONE_DEFAULTS.timeoutMs}),budget:()=>publicReadBudget.snapshot(),
-  thresholds:whaleZoneThresholds(symbol,scale),lookbackMs,endMs,maxPages});
+  thresholds:whaleZoneThresholds(symbol,scale),lookbackMs,endMs,maxPages,reservePct});
 }
 // ATR(1H) for GET /api/whale-zones (bin width / K): Binance 1H klines (weight 1) on the same budget path, 5 min per symbol.
 const whaleAtrCache=new Map();
@@ -2662,12 +2662,14 @@ const server=http.createServer(async(req,res)=>{
   }
   // 고래 매물대 of one symbol (read-only, for the heatmap; whale_zones.mjs whaleZonesPayload): the scalp's settings, the shared
   // trade store (a symbol is read again at most every 30 s), Binance-listed symbols only. No order, no account data.
+  // The screen asks every 30 s: its pages run only under 40 % of the budget (apiReservePct) so the score's reads go first,
+  // and a coin not on Binance is 422, not 404 (the screen takes a 404 as "no such endpoint" and stops asking for 10 min).
   if(pathname==='/api/whale-zones'&&req.method==='GET'){
    const symbol=String(url.searchParams.get('symbol')||'').toUpperCase();
    if(!/^[A-Z0-9]{2,30}USDT$/.test(symbol))return response(res,400,{ok:false,error:'INVALID_SYMBOL'});
-   if(!state.activeSet.has(symbol))return response(res,404,{ok:false,symbol,error:'NOT_ON_BINANCE'});
+   if(!state.activeSet.has(symbol))return response(res,422,{ok:false,symbol,error:'NOT_ON_BINANCE'});
    const cfg=scalpExec?.config||SCALP_EXEC;
-   const [snap,atr]=await Promise.all([scalpWhaleZones(symbol,{lookbackMs:whaleZoneLookbackMs(cfg.whaleZoneHours),scale:cfg.whaleCvdScale??'auto',maxPages:cfg.whaleZoneMaxPages}),whaleZoneAtr(symbol)]);
+   const [snap,atr]=await Promise.all([scalpWhaleZones(symbol,{lookbackMs:whaleZoneLookbackMs(cfg.whaleZoneHours),scale:cfg.whaleCvdScale??'auto',maxPages:cfg.whaleZoneMaxPages,reservePct:WHALE_ZONE_DEFAULTS.apiReservePct}),whaleZoneAtr(symbol)]);
    const last=Number((rawMarketTickers||[]).find(t=>t?.symbol===symbol)?.lastPrice)||null;
    const zr=buildWhaleZones(snap,{price:last,atrPct:atr});
    const body=whaleZonesPayload(snap,zr,{atrPct:atr});

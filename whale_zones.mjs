@@ -46,6 +46,7 @@ export const WHALE_ZONE_DEFAULTS=Object.freeze({
  storeTtlMs:15*60_000,  // a symbol unused for 15 min is dropped
  maxSymbols:40,maxWhaleTrades:20_000,
  timeoutMs:4_000,       // the executor waits at most this long; no page starts after it
+ apiReservePct:60,      // GET /api/whale-zones (screen, every 30 s) pages only under 40 % of the budget: the score's reads go first
  windowMaxMs:30*60_000, // the old window rule (record only): from the move start, at most 30 min
  apiZones:12,
 });
@@ -375,17 +376,23 @@ export function whaleLadderZones(zr,direction){
  return (zr?.ok?zr.zones:[]).filter(z=>z.side===side).map(z=>({low:z.low,high:z.high,tf:'whale',kind:'WHALE',side:z.side,netUSD:z.netUSD,rank:null,sharePct:null,rejections:0,why:[WHALE_LADDER_WHY[side]]}));
 }
 
-/** The read-only API shape (GET /api/whale-zones?symbol=): zones with price range, side and net, the thresholds and coverage. */
+/**
+ * The read-only API shape (GET /api/whale-zones?symbol=): zones with price range, side and net, the thresholds and coverage.
+ * Contract of the PR #318 screen (public/orderflow_ui.js parseWhaleZones): zones[].{low, high, side 'BUY'|'SELL', net = signed
+ * USD}; `netUSD` is the same value. A partial or stale read (whaleSnapshotUsable, as the score and the ladder) gives no zones
+ * (`hiddenZones` counts them): the screen has no partial flag and would draw them as the full lookback's (review 2026-11-25).
+ */
 export function whaleZonesPayload(snap,zr,{atrPct=null,maxZones=WHALE_ZONE_DEFAULTS.apiZones,minCoveragePct=WHALE_ZONE_DEFAULTS.minCoveragePct}={}){
  if(!snap?.ok)return {ok:false,error:snap?.error||'NO_DATA'};
- const near=whaleZoneNearPct(atrPct);
+ const near=whaleZoneNearPct(atrPct),partial=!whaleSnapshotUsable(snap,{minCoveragePct}).usable;
  const zones=(zr?.zones||[]).slice().sort((a,b)=>Math.abs(b.netUSD)-Math.abs(a.netUSD)).slice(0,maxZones).sort((a,b)=>a.low-b.low);
  return {ok:true,symbol:snap.symbol,rule:WHALE_ZONE_RULE,source:snap.source,sourceNote:snap.sourceNote,startMs:snap.startMs,endMs:snap.endMs,lookbackMin:snap.lookbackMin,
-  coveragePct:snap.coveragePct,staleMs:snap.staleMs??null,partial:!whaleSnapshotUsable(snap,{minCoveragePct}).usable,cached:snap.cached===true,price:zr?.price??null,atrPct:fin(atrPct)?r4(atrPct):null,
+  coveragePct:snap.coveragePct,staleMs:snap.staleMs??null,partial,cached:snap.cached===true,price:zr?.price??null,atrPct:fin(atrPct)?r4(atrPct):null,
   binPct:zr?.binPct??null,binSource:zr?.binSource??null,nearPct:near.pct,floorUSD:zr?.floorUSD??null,purpleMinUSD:zr?.purpleMinUSD??null,brownMinUSD:snap.thresholds?.brownMinUSD??null,
   scale:{mode:snap.thresholds?.mode??'fixed',source:snap.thresholds?.source??'FIXED',factor:snap.thresholds?.factor??1},
   whaleNotionalUSD:zr?.whaleNotionalUSD??null,whaleCvdUSD:snap.whaleCvdUSD,shrimpCvdUSD:snap.shrimpCvdUSD,
-  zones:zones.map(z=>({low:z.low,high:z.high,side:z.side,netUSD:z.netUSD,buyUSD:z.buyUSD,sellUSD:z.sellUSD,count:z.count}))};
+  hiddenZones:partial?zones.length:0,
+  zones:partial?[]:zones.map(z=>({low:z.low,high:z.high,side:z.side,net:z.netUSD,netUSD:z.netUSD,buyUSD:z.buyUSD,sellUSD:z.sellUSD,count:z.count}))};
 }
 
 const usd=v=>{const x=Number(v)||0,a=Math.abs(x),s=x>0?'+':x<0?'−':'';return a>=1e6?`${s}$${+(a/1e6).toFixed(2)}M`:a>=1e3?`${s}$${+(a/1e3).toFixed(1)}K`:`${s}$${Math.round(a)}`};

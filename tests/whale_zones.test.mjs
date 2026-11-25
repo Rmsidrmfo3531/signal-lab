@@ -261,7 +261,21 @@ test('API payload (GET /api/whale-zones shape): price ranges, side, net, thresho
  assert.equal(p.ok,true);assert.equal(p.symbol,'SOLUSDT');assert.equal(p.coveragePct,100);assert.equal(p.partial,false);
  assert.equal(p.binPct,0.2);assert.equal(p.nearPct,0.4);assert.equal(p.purpleMinUSD,100_000);assert.equal(p.floorUSD,200_000);assert.equal(p.lookbackMin,240);
  assert.deepEqual(p.zones.map(z=>[z.side,z.netUSD]),[['BUY',500_000],['SELL',-500_000]],'sorted by price');
- for(const z of p.zones)assert.deepEqual(Object.keys(z),['low','high','side','netUSD','buyUSD','sellUSD','count']);
+ for(const z of p.zones)assert.deepEqual(Object.keys(z),['low','high','side','net','netUSD','buyUSD','sellUSD','count']);
+ // The PR #318 screen's contract (public/orderflow_ui.js parseWhaleZones): low < high, side BUY | SELL, net = signed USD
+ // (review 2026-11-25: only netUSD was sent, so every band was labelled $0).
+ assert.deepEqual(p.zones.map(z=>[z.side,z.net]),[['BUY',500_000],['SELL',-500_000]]);
+ for(const z of p.zones)assert.ok(z.low>0&&z.high>z.low&&Number.isFinite(z.net));
+ const ui=await import('../public/orderflow_ui.js');
+ if(typeof ui.parseWhaleZones==='function')assert.deepEqual(ui.parseWhaleZones(p).map(z=>[z.side,z.net,z.low,z.high]),p.zones.map(z=>[z.side,z.net,z.low,z.high]));
+ // A partial or stale read draws nothing (the screen has no partial flag); the count is kept.
+ for(const bad of [{...s,coveragePct:60},{...s,coveredToMs:s.endMs-120_000}]){
+  const q=whaleZonesPayload(bad,zr,{atrPct:0.8});assert.equal(q.ok,true);assert.equal(q.partial,true);assert.deepEqual(q.zones,[]);assert.equal(q.hiddenZones,2);
+ }
+ // The screen's reads (apiReservePct 60) page only under 40 % of the budget.
+ const g=feed({end,budget:new PublicReadBudget({now:()=>end,maxWeight:100})});
+ await new WhaleTradeStore({now:()=>end}).read('SOLUSDT',{request:g.request,budget:()=>g.budget.snapshot(),lookbackMs:H,maxPages:10,reservePct:WHALE_ZONE_DEFAULTS.apiReservePct});
+ assert.equal(g.routes.length,2,'2 × 20 = 40 % of 100');
  assert.equal(p.shrimpCvdUSD,-800);assert.equal(whaleZonesPayload({ok:false,error:'x'},null).ok,false);
  assert.deepEqual(whaleLadderZones(zr,'LONG').map(z=>[z.kind,z.side,z.why[0]]),[['WHALE','BUY','WHALE_BUY_ZONE']]);
  assert.deepEqual(whaleLadderZones(zr,'SHORT').map(z=>[z.kind,z.side,z.why[0]]),[['WHALE','SELL','WHALE_SELL_ZONE']]);
@@ -484,6 +498,10 @@ test('server: /api/whale-zones read-only route and the scalp reader on budgetedP
  assert.match(body,/budget:\(\)=>publicReadBudget\.snapshot\(\)/);assert.match(body,/whaleTradeStore\.read\(/);
  const route=src.slice(src.indexOf("pathname==='/api/whale-zones'"),src.indexOf("pathname==='/api/market-commentary'"));
  assert.match(route,/req\.method==='GET'/);assert.match(route,/state\.activeSet\.has\(symbol\)/);assert.match(route,/whaleZonesPayload\(/);
+ // Not on Binance is not a 404 (the screen reads 404 as "no endpoint" and stops for 10 min); the screen's pages yield to the score's.
+ assert.match(route,/response\(res,422,\{ok:false,symbol,error:'NOT_ON_BINANCE'\}\)/);assert.doesNotMatch(route,/response\(res,404/);
+ assert.match(route,/reservePct:WHALE_ZONE_DEFAULTS\.apiReservePct/);assert.equal(WHALE_ZONE_DEFAULTS.apiReservePct,60);
+ assert.match(body,/lookbackMs,endMs,maxPages,reservePct\}/);
  assert.doesNotMatch(route,/placeOrder|client\.|\bbinance\(/,'read-only');
  assert.equal((src.match(/whaleZones:\(symbol,o\)=>scalpWhaleZones\(symbol,o\)/g)||[]).length,2,'testnet and the opt-in live scalp');
  assert.doesNotMatch(src,/fetchWhaleCvd/,'the old window fetch is no longer used');
