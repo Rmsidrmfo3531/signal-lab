@@ -216,6 +216,7 @@ function save(candidate=persisted){
 }
 // Each launch creates a restorable snapshot before the running server modifies records.
 try{backupStore(dataPath)}catch(e){console.error('[BACKUP ERROR]',e.message);throw e}
+setInterval(()=>{try{backupStore(dataPath)}catch(e){console.warn('[BACKUP]',e.message)}},24*3600000).unref?.();
 persisted.newsSeen ||= {};persisted.tradfiSeen ||= {};persisted.seen ||= {};persisted.journal=Array.isArray(persisted.journal)?persisted.journal:[];
 persisted.paper ||= {pending:[],open:[],closed:[],skipped:[],seen:{}};
 persisted.paperNotify ||= {enabled:true,history:[]};
@@ -991,16 +992,18 @@ if(COPY.mode==='LIVE'){
   sendText:sendTradeTelegram,
   log:(...a)=>console.log('[REAL_TRAIL]',...a),
  });
+ let riskAndRoiBusy=false;
  const checkRiskAndRoi=async()=>{
-  if(!venuePositionsReader||!accountAlerts)return;
+  if(riskAndRoiBusy||!venuePositionsReader||!accountAlerts)return;
+  riskAndRoiBusy=true;
   try{
    const v=await venuePositionsReader.snapshot(realCopyPositions(),realScalpPositions());
    const positions=Array.isArray(v?.venuePositions)?v.venuePositions:[];
    // In the background, never awaited (review 2026-11-24): a slow balance read or Telegram send must not hold up the
    // daily-loss breaker and the trailing below; refresh() never runs twice at once and never rejects.
    if(realMarginAlert)void realMarginAlert.refresh(()=>readRealFunds(),{openCount:Array.isArray(v?.venuePositions)&&!v.venuePositionsError?positions.length:null});
-   const eq=copyTrader.funds?.equity??null;
-   await accountAlerts.checkRisk({equityUSD:eq,positions});
+   const eq=copyTrader.funds?.equity??realWallet.last?.equity??null;
+   await accountAlerts.checkRisk({equityUSD:eq,positions,skipMarginAlert:Boolean(realMarginAlert)});
    await accountAlerts.checkPositions({positions});
    await accountAlerts.checkPositionSummary({positions});
    if(realSafety)await realSafety.evaluateDailyLoss({equityUSD:eq,dailyByDay:dailyPnl?.status()?.byDay??null,positions});
@@ -1013,6 +1016,7 @@ if(COPY.mode==='LIVE'){
     await realTrailing.evaluate(v.venuePositions.filter(p=>p.origin!=='scalp'),Date.now(),{openOrders});
    }
   }catch(e){console.warn('[ALERTS]',e.message)}
+  finally{riskAndRoiBusy=false}
  };
  const checkDaily=async()=>{
   if(!accountAlerts)return;
@@ -1221,13 +1225,34 @@ async function tgNotify(s){
   if(!r.ok)console.error('Telegram HTTP',r.status);
  }catch{console.error('Telegram delivery unconfirmed')}
 }
-// Shared Bot API transport for chat verification and posting notices.
+// Shared Bot API transport for chat verification and posting notices (with IPv4 fallback & safe HTML truncation).
 function telegramPost(payload,{ipv4=false,method='sendMessage'}={}){
- const body=typeof payload?.text==='string'&&payload.text.length>4096?{...payload,text:payload.text.slice(0,4090)+'…'}:payload;
- const url=`https://api.telegram.org/bot${CONFIG.tgToken}/${method}`;
- if(ipv4)return postTelegramIPv4(url,body);
- return fetch(url,{
-  method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(10000)});
+ let body=payload;
+ if(typeof payload?.text==='string'&&payload.text.length>4096){
+  let txt=payload.text.slice(0,4080);
+  if(String(payload.parse_mode||'').toUpperCase()==='HTML'){
+   txt=txt.replace(/<[^>]*$/,'');
+   const open=[];
+   for(const m of txt.matchAll(/<(\/?)(b|i|u|s|code|pre|a)\b[^>]*>/gi)){
+    const tag=m[2].toLowerCase();
+    if(m[1]==='/'){const idx=open.lastIndexOf(tag);if(idx>=0)open.splice(idx,1)}else open.push(tag);
+   }
+   txt+='…'+open.reverse().map(t=>`</${t}>`).join('');
+  }else txt+='…';
+  body={...payload,text:txt};
+ }
+ const rawPost=(p,{ipv4:useV4=false,method:m='sendMessage'}={})=>{
+  const u=`https://api.telegram.org/bot${CONFIG.tgToken}/${m}`;
+  return useV4&&typeof postTelegramIPv4==='function'
+   ?postTelegramIPv4(u,p)
+   :fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p),signal:AbortSignal.timeout(10000)});
+ };
+ if(ipv4||method!=='sendMessage'||arguments.length>=2||typeof createTelegramNetworkRecovery!=='function'||typeof postTelegramIPv4!=='function')return rawPost(body,{ipv4,method});
+ if(!telegramPost._shared)telegramPost._shared=createTelegramNetworkRecovery((p,o)=>rawPost(p,o));
+ return telegramPost._shared(body).then(({response,error})=>{
+  if(response)return response;
+  throw Object.assign(Error(error||'TELEGRAM_SEND_FAILED'),{code:error||'TELEGRAM_SEND_FAILED'});
+ });
 }
 
 
@@ -1287,7 +1312,9 @@ if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
   // A restart postponed earlier (never idle for 10 minutes): the new code is on disk; restart now when idle.
   if(pendingRestart){const was=live.armed;live.updating=true;live.disarm();live.paused=true;if(allIdle()){console.log('[UPDATE] postponed restart',pendingRestart.from,'→',pendingRestart.to);updateJob={active:true,pct:92,label:'서버 재시작',source:pendingRestart.source||'auto',fromDisplayVersion:appVersion.displayVersion,toDisplayVersion:pendingRestart.toDisplayVersion||null,at:Date.now()};emitUpdateProgress();pendingRestart.writeMarker();process.kill(process.pid,'SIGTERM');return}live.paused=false;live.updating=false;if(was)live.arm();return}
   const c=await gitCheck(__dirname);if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
-  const r=await runGitUpdate('auto');if(r.status>=400&&(r.body?.state==='rolled-back'||r.body?.state==='diverged'))autoUpdateFailedAt=c.latest}catch(e){console.warn('[UPDATE] auto check:',e.message)}
+  const r=await runGitUpdate('auto');
+  if(r.status>=400&&!(r.status===409&&(r.body?.error==='UPDATE_IN_PROGRESS'||r.body?.error==='ORDER_IN_PROGRESS')))autoUpdateFailedAt=c.latest;
+ }catch(e){console.warn('[UPDATE] auto check:',e.message)}
 },AUTO_UPDATE_EVERY_MS).unref?.();
 
 // Telegram readiness reports are limited to the real-account mode.
@@ -2487,7 +2514,7 @@ const server=http.createServer(async(req,res)=>{
      controls=copyControls.configure(REAL_SAFETY_COPY_PRESET);
     }
     reportsDirty=true;
-    const summary=body?.applyPreset===true?'실계좌 권장 안전 프리셋 일괄 적용 완료 (최대 20배 · 증거금 15% · 일일한도 -8%)'
+    const summary=body?.applyPreset===true?'실계좌 권장 안전 프리셋 일괄 적용 완료 (카피 최대 20배 · 증거금 15% · 일일차단·수동제한 끔)'
      :body?.unlockToday===true?'오늘 일일 손실 차단이 해제되었습니다'
      :'계좌 안전 가드 설정 저장됨';
     return response(res,200,{ok:true,safety,...(controls?{controls}:{}),...(marginAlert?{marginAlert}:{}),summary});

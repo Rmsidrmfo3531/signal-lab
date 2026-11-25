@@ -200,9 +200,21 @@ async def _deliver(payload):
     print(f"[COPY] {msg_id} 최종 전달 실패 (약 3분 재시도)", flush=True)
     return False
 
+delivery_seq = 0
+
+def is_close_card(text):
+    t = str(text or '')
+    return ('포지션 청산' in t) or ('전량 청산' in t) or ('청산 완료' in t) or ('POSITION CLOSED' in t.upper())
+
+def enqueue_copy(payload, *, preserve_order=False):
+    global delivery_seq
+    delivery_seq += 1
+    prio = 1 if preserve_order else (0 if is_close_card(payload.get('text')) else 1)
+    delivery_queue.put_nowait((prio, delivery_seq, payload))
+
 async def delivery_worker():
     while True:
-        payload = await delivery_queue.get()
+        _, _, payload = await delivery_queue.get()
         try:
             await deliver(payload)
         finally:
@@ -224,7 +236,7 @@ async def on_message(event):
         catchup_buffer.append(payload)  # sent right after the missed ones, in id order
         return
     if delivery_queue is not None:
-        await delivery_queue.put(payload)
+        enqueue_copy(payload, preserve_order=False)
     else:
         await deliver(payload)
 
@@ -286,7 +298,7 @@ async def catch_up():
                 seen.add(p['id'])
                 merged.append(p)
         for p in merged:
-            delivery_queue.put_nowait(p)
+            enqueue_copy(p, preserve_order=True)
         catchup_running = False
         missed = len([p for p in found if p['id'] not in {b['id'] for b in buffered}])
         STATS['catchup'] = {'forwarded': missed, 'skipped': skipped, 'at': now_ms(),
@@ -466,7 +478,7 @@ async def main():
     login_mode = len(sys.argv) > 1 and sys.argv[1] == '--login'
     if not login_mode:
         # Before connecting: live copy messages that arrive during the start catch-up wait in this buffer.
-        delivery_queue = asyncio.Queue()
+        delivery_queue = asyncio.PriorityQueue()
         catchup_buffer, catchup_running = [], True
     if login_mode or sys.stdin.isatty():
         await client.start()  # first run (copy.sh): asks for the phone number and the login code
@@ -501,4 +513,5 @@ async def main():
             t.cancel()
         _hb_pool.shutdown(wait=False, cancel_futures=True)
 
-asyncio.run(main())
+if __name__ == '__main__':
+    asyncio.run(main())
