@@ -496,7 +496,7 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  * the id it had before shorts were added, so a ledger written then still blocks a resend). */
 export const scalpClientId=(symbol,barAt,direction='LONG')=>'sc'+createHash('sha256').update(`${SCALP_EXEC_STRATEGY}|${symbol}|${barAt}${direction==='SHORT'?'|SHORT':''}`).digest('hex').slice(0,22);
 
-function positionOf(list,vs,direction,hedge=false){
+export function positionOf(list,vs,direction,hedge=false){
  // Hedge mode (user 2026-11-17): the row of our own side only, its amount unsigned; an opposite-side row is
  // another position (size 0 and any 0 for us: it neither blocks an entry nor is closed by us).
  if(hedge){const row=positionRow(list,vs,{hedge:true,direction}),size=row?Math.abs(Number(row.positionAmt)||0):0;
@@ -578,7 +578,8 @@ export class ScalpExecutor{
   // Trade journal (scalp_journal.mjs, user 2026-11-16 22:18): every finished trade, never truncated; the stats
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,journalFileName):null;this.signalsFile=directory?path.join(directory,signalsFileName):null;
-  const written=this.journalFile?readJsonl(this.journalFile):[];
+  // The 급변 알림 초단타 (pump_fade.mjs, strategy PUMP_FADE) writes its trades to the same journal: never counted here.
+  const written=this.journalFile?readJsonl(this.journalFile).filter(x=>x?.strategy!=='PUMP_FADE'):[];
   this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,scoreTotal:x.score?.score??x.scalpScore?.score??null,whaleBonus:whaleKey(x.score??x.scalpScore),whaleSplit:whaleSplitOf(x.score??x.scalpScore),capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));

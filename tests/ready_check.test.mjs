@@ -176,7 +176,7 @@ test('sendToAllowedChat posts only to the allowed chat and throws when not deliv
 test('screen: one line and a progress bar per group',()=>{
  const s=evaluateReadiness({scalpRows:trades(42),pumpRecords:alerts(10)});
  const html=liveReadinessHTML(s);
- assert.equal((html.match(/class="ready-bar"/g)||[]).length,4);
+ assert.equal((html.match(/class="ready-bar"/g)||[]).length,5);
  assert.match(html,/aria-valuenow="42"/);assert.match(html,/aria-valuenow="20"/);
  assert.match(html,/숏 42\/100건/);
  assert.equal(liveReadinessHTML(null),'');

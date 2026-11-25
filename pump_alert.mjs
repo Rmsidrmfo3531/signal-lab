@@ -4,12 +4,16 @@
 //  - PumpAlertBook: every alert in pump-alerts.json (data folder, the last ~2,000), then forward tracking from
 //    public 1m klines (BingX first, Binance as fallback): the price at +1 / +5 / +15 / +60 min and the best and
 //    worst move for a fade (against the alert's arrow) and a follow (with it), after round-trip costs. Read only:
-//    no orders here (the testnet scalp trigger is scalp_executor.mjs pumpAlert).
+//    no orders here (the testnet scalp trigger is scalp_executor.mjs pumpAlert; the separate 급변 알림 초단타 is
+//    pump_fade.mjs, user 2026-11-25 14:34 "단타로 썼던 것 그대로 두고 초단타를 별개로 테스트해보는 거야").
+//  - fadeSim: per alert, the 초단타 rules on the same 1m candles (pump_fade.mjs pumpFadeSimulation): the 1m ATR %, the
+//    3-candle confirmation and range R, when the opposite candle came, and the mode A / B hypothetical TP / SL / time results.
 import fs from 'node:fs';
 import path from 'node:path';
 import {timingSafeEqual} from 'node:crypto';
 import {atomicWriteStore,readStore} from './persistence.mjs';
 import {SCALP_EXEC_COSTS} from './scalp_executor.mjs';
+import {pumpFadeSimulation,PUMP_FADE_DEFAULTS} from './pump_fade.mjs';
 
 export const PUMP_ALERT_FILE='pump-alerts.json';
 export const PUMP_ALERT_MAX=2000;
@@ -18,6 +22,9 @@ export const PUMP_HORIZONS_MIN=Object.freeze([1,5,15,60]);
 export const PUMP_COST_PCT=+((2*SCALP_EXEC_COSTS.takerRate+(2*SCALP_EXEC_COSTS.slippageBps+SCALP_EXEC_COSTS.spreadBps)/1e4)*100).toFixed(4);
 // BingX keeps at most 1,440 1m candles per read: an alert older than that cannot be measured any more.
 const EXPIRE_MS=23*3600000,GRACE_MS=10000,MIN=60000;
+// 1m candles read before the alert's minute too: the 3-candle confirmation and the 1m ATR (14) before it.
+const PRE_BARS=20;
+export const PUMP_EXPORT_MAX=200;
 
 const NUM='([0-9]+(?:\\.[0-9]+)?(?:[eE]-?[0-9]+)?)';
 const RE={
@@ -82,16 +89,43 @@ export function summarizePumpAlerts(records,{now=Date.now(),horizons=PUMP_HORIZO
  return {count:list.length,last24h:list.filter(x=>now-(x.at||0)<86400000).length,costPct,
   bingxListed:list.filter(x=>x.bingx?.listed===true).length,tracked:list.filter(x=>x.track?.horizons?.[horizons.at(-1)]).length,
   scalp:{entered:list.filter(x=>x.scalp?.entered===true).length,evaluated:list.filter(x=>x.scalp).length},
+  // 급변 알림 초단타 (pump_fade.mjs): its decisions, and the simulated mode A / B results under the current rules.
+  fade:{evaluated:list.filter(x=>x.fade).length,entered:list.filter(x=>x.fade?.entered===true).length,confirmed:list.filter(x=>x.fadeSim?.confirm?.passed===true).length,
+   turned:list.filter(x=>x.fadeSim?.confirm?.passed===true&&x.fadeSim?.turn?.at).length,
+   modeA:simStats(list.filter(x=>x.fadeSim?.confirm?.passed===true).map(x=>x.fadeSim.A)),modeB:simStats(list.filter(x=>x.fadeSim?.confirm?.passed===true).map(x=>x.fadeSim.B))},
   byHorizon,
   recent:list.slice(-recent).reverse().map(x=>({at:x.at,symbol:x.symbol,dir:x.dir,pct:x.pct,bingx:x.bingx?.listed??null,
-   follow60:x.track?.horizons?.[horizons.at(-1)]?.follow?.netPct??null,scalp:x.scalp?.entered?'ENTERED':x.scalp?.reason??null}))};
+   follow60:x.track?.horizons?.[horizons.at(-1)]?.follow?.netPct??null,scalp:x.scalp?.entered?'ENTERED':x.scalp?.reason??null,
+   fade:x.fade?(x.fade.entered?'ENTERED':x.fade.reason??null):null}))};
+}
+/** Count / TP / SL / time / average net % of simulated results (exit null = still open, left out). */
+function simStats(sims){
+ const done=sims.filter(s=>s&&s.exit);
+ return {n:done.length,tp:done.filter(s=>s.exit==='TP').length,sl:done.filter(s=>s.exit==='SL').length,time:done.filter(s=>s.exit==='TIME').length,avgNetPct:avg(done.map(s=>s.netPct).filter(Number.isFinite))};
+}
+/** The per-alert list for calibration (latest.json pumpAlerts.alerts): the last `limit` alerts, newest first, with the
+ * fade's best / worst move per horizon, the 1m ATR %, the 3-candle range R, the confirmation, the opposite candle, the
+ * mode A / B hypothetical results and both strategies' decisions. No message ids or chat ids. */
+export function pumpAlertRows(records,{limit=PUMP_EXPORT_MAX,horizons=PUMP_HORIZONS_MIN}={}){
+ const list=(Array.isArray(records)?records:[]).slice(-limit).reverse();
+ const sim=s=>s?{exit:s.exit??null,entry:s.entry??null,entryAt:s.entryAt??null,tp:s.tp??null,stop:s.stop??null,tpPct:s.tpPct??null,slPct:s.slPct??null,stopPct:s.stopPct??null,stopBasis:s.stopBasis??null,
+  exitAt:s.exitAt??null,netPct:s.netPct??null,mfePct:s.mfePct??null,maePct:s.maePct??null}:null;
+ return list.map(x=>{const f=x.fadeSim,h=x.track?.horizons||{};
+  return {at:x.at,symbol:x.symbol,dir:x.dir,pct:x.pct,low:x.low,high:x.high,price:x.price,bingx:x.bingx?.listed??null,source:x.track?.source??null,refPrice:x.track?.refPrice??null,
+   fadeByHorizon:Object.fromEntries(horizons.map(k=>[k,h[k]?{netPct:h[k].fade?.netPct??null,mfePct:h[k].fade?.mfePct??null,maePct:h[k].fade?.maePct??null}:null])),
+   atr1mPct:f?.atr1mPct??null,rangePct:f?.rangePct??null,confirm:f?.confirm??null,turn:f?.turn??null,turnMinutes:f?.turn?.minutes??null,
+   modeA:sim(f?.A),modeB:sim(f?.B),rules:f?.rules??null,
+   scalp:x.scalp?{entered:x.scalp.entered===true,reason:x.scalp.reason??null}:null,
+   fade:x.fade?{status:x.fade.status??null,entered:x.fade.entered===true,reason:x.fade.reason??null,detail:x.fade.detail??null,turnAt:x.fade.turnAt??null,turnMinutes:x.fade.turnMinutes??null}:null};
+ });
 }
 
 const tokenEqual=(a,b)=>{const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||''));return x.length>0&&x.length===y.length&&timingSafeEqual(x,y)};
 /** POST /api/pump-alert from the local listener (deploy/linux/copy_listener.py): the same token as /api/copy/message
  * (COPY_LISTENER_TOKEN, at least 24 characters, compared in constant time). Records the alert and hands a new one to
- * onAlert (the testnet scalp, not awaited). Returns {status, body}. */
-export function pumpAlertEndpoint({token,want,body,book,onAlert=null}){
+ * onAlert (the testnet 5m scalp) and onFade (the 급변 알림 초단타, pump_fade.mjs), both not awaited; each decision is
+ * kept on the record apart (scalp / fade). Returns {status, body}. */
+export function pumpAlertEndpoint({token,want,body,book,onAlert=null,onFade=null}){
  if(!(String(want||'').length>=24&&tokenEqual(token,want)))return {status:403,body:{error:'FORBIDDEN'}};
  if(typeof body?.text!=='string'||body.text.length>4000)return {status:400,body:{error:'TEXT_REQUIRED'}};
  const r=book.record({id:body.id??null,chat:body.chat??null,date:Number(body.date)||null,text:body.text});
@@ -101,6 +135,10 @@ export function pumpAlertEndpoint({token,want,body,book,onAlert=null}){
   void Promise.resolve().then(()=>onAlert({...r.alert,at:r.record.at,key:r.key}))
    .then(result=>{if(result)book.attachScalp(r.key,result)},e=>book.attachScalp(r.key,{entered:false,reason:e?.code||'PUMP_EVALUATION_FAILED'}));
  }
+ if(typeof onFade==='function'){
+  void Promise.resolve().then(()=>onFade({...r.alert,at:r.record.at,key:r.key}))
+   .then(result=>{if(result)book.attachFade(r.key,result)},e=>book.attachFade(r.key,{entered:false,reason:e?.code||'PUMP_EVALUATION_FAILED'}));
+ }
  return {status:200,body:{ok:true,recorded:true,symbol:r.alert.symbol,dir:r.alert.dir}};
 }
 
@@ -109,9 +147,10 @@ const listedOn=(s,symbol)=>{try{return typeof s?.lists==='function'?s.lists(symb
 export class PumpAlertBook{
  /** sources: [{name, klines:(symbol, limit) => rows, lists?:symbol => true | false | null}] tried in order (BingX
   * first, Binance as fallback); a source whose lists() is false is skipped.
-  * listed: async symbol => true | false | null (BingX lists the perpetual). */
- constructor({directory=null,fileName=PUMP_ALERT_FILE,now=()=>Date.now(),max=PUMP_ALERT_MAX,sources=[],listed=null,log=()=>{}}={}){
-  Object.assign(this,{now,max,sources,listed,log});
+  * listed: async symbol => true | false | null (BingX lists the perpetual).
+  * fadeRules: the 초단타 rules (object or () => object, pump_fade.mjs pumpFadeRules) the per-alert simulation uses. */
+ constructor({directory=null,fileName=PUMP_ALERT_FILE,now=()=>Date.now(),max=PUMP_ALERT_MAX,sources=[],listed=null,fadeRules=null,log=()=>{}}={}){
+  Object.assign(this,{now,max,sources,listed,fadeRules,log});
   this.file=directory?path.join(directory,fileName):null;
   let saved=null;try{saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null}catch(e){log('[PUMP] 기록 읽기 실패',e.message)}
   this.records=Array.isArray(saved?.records)?saved.records:[];
@@ -132,7 +171,7 @@ export class PumpAlertBook{
   const key=id!=null&&String(id).trim()?`${String(chat??'bot').slice(0,64)}:${String(id).slice(0,32)}`:`t:${at}:${alert.symbol}:${alert.dir}`;
   const old=this.find(key);
   if(old)return {ok:true,duplicate:true,key,alert,record:old};
-  const rec={key,at,receivedAt:this.now(),...alert,bingx:null,track:null,trackError:null,scalp:null};
+  const rec={key,at,receivedAt:this.now(),...alert,bingx:null,track:null,trackError:null,scalp:null,fade:null};
   this.records.push(rec);this.#save();
   if(typeof this.listed==='function')void Promise.resolve().then(()=>this.listed(alert.symbol)).then(v=>{rec.bingx={listed:v===true?true:v===false?false:null,at:this.now()};this.#save()},()=>{});
   return {ok:true,recorded:true,key,alert,record:rec};
@@ -143,6 +182,16 @@ export class PumpAlertBook{
   rec.scalp={entered:result?.entered===true,reason:result?.entered?null:String(result?.reason||'').slice(0,60)||null,...(result?.queued===true?{queued:true}:{}),...(Number.isFinite(result?.tries)?{tries:result.tries}:{}),at:this.now()};
   this.#save();
  }
+ /** The 급변 알림 초단타's decision for this alert (waiting, entered, or why not), kept apart from the scalp's. */
+ attachFade(key,result){
+  const rec=this.find(key);if(!rec)return;
+  const s=v=>v==null?null:String(v).slice(0,160);
+  rec.fade={status:result?.entered===true?'ENTERED':result?.queued===true?'WAITING':'SKIPPED',entered:result?.entered===true,reason:result?.entered?null:s(result?.reason)?.slice(0,60)??null,
+   detail:s(result?.detail),...(result?.confirm?{confirm:{passed:result.confirm.passed===true,movePct:result.confirm.movePct??null,colours:result.confirm.colours??null}}:{}),
+   turnAt:Number(result?.turnAt)||null,turnMinutes:Number.isFinite(Number(result?.turnMinutes))?Number(result.turnMinutes):null,tradeId:typeof result?.tradeId==='string'?result.tradeId:null,at:this.now()};
+  this.#save();
+ }
+ #rules(){try{const r=typeof this.fadeRules==='function'?this.fadeRules():this.fadeRules;return r&&typeof r==='object'?r:PUMP_FADE_DEFAULTS}catch{return PUMP_FADE_DEFAULTS}}
  /** Measures the horizons that have closed since the last call. One kline read per due alert. */
  async track(){
   if(this.tracking)return {read:0};
@@ -165,17 +214,21 @@ export class PumpAlertBook{
     const chosen=rec.track?.source,order=(chosen?[...this.sources].sort((a,b)=>(b.name===chosen)-(a.name===chosen)):this.sources).filter(s=>listedOn(s,rec.symbol)!==false);
     if(!order.length){rec.trackDone=true;rec.trackError='NOT_LISTED';changed=true;continue}
     rec.trackTriedAt=now;read++;changed=true;
-    const limit=Math.min(1440,Math.ceil((now-m0)/MIN)+3);
+    const limit=Math.min(1440,Math.ceil((now-m0)/MIN)+3+PRE_BARS);
     let result=null,source=null,error=null;
     for(const s of order){
      try{const rows=await s.klines(rec.symbol,limit);const o=pumpOutcome({at:rec.at,dir:rec.dir,rows,now});
-      if(o.refPrice){result=o;source=s.name;break}error=error||'NO_CANDLES'}
+      if(o.refPrice){result=o;source=s.name;
+       // The same candles under the 초단타 rules (never fails the tracking).
+       try{result.fadeSim=pumpFadeSimulation({at:rec.at,dir:rec.dir,rows,now,rules:this.#rules()})}catch{}
+       break}error=error||'NO_CANDLES'}
      catch(e){error=String(e?.code||e?.message||'READ_FAILED').slice(0,60)}
     }
     if(!result){rec.trackError=error||'NO_SOURCE';continue}
     // Keep a source once chosen (both venues' prices are never mixed for one alert).
     if(rec.track?.source&&rec.track.source!==source&&Object.keys(rec.track.horizons||{}).length)continue;
     rec.track={source,refAt:result.refAt,refPrice:result.refPrice,horizons:{...(rec.track?.horizons||{}),...result.horizons}};
+    if(result.fadeSim)rec.fadeSim=result.fadeSim;
     rec.trackError=null;
     if(PUMP_HORIZONS_MIN.every(h=>rec.track.horizons[h]))rec.trackDone=true;
    }

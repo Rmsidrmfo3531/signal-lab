@@ -148,14 +148,16 @@ export function groupStats(list){
 const whaleSplit=x=>whaleSplitOf(x?.score);
 const by=(list,key)=>{const m={};for(const x of list){const k=key(x);if(k==null)continue;(m[k]??=[]).push(x)}return Object.fromEntries(Object.entries(m).map(([k,v])=>[k,groupStats(v)]))};
 /** Stats by side, exit reason, move-size bucket, hour of day (KST, entry) and universe rank bucket. */
+// The 급변 알림 초단타 (pump_fade.mjs) writes its trades to the same journal with strategy PUMP_FADE: they are counted
+// only under byStrategy, never in the reversal scalp's own numbers.
 export function summarizeJournal(lines,{now=Date.now()}={}){
- const list=(lines||[]).filter(x=>x&&x.exit);
+ const every=(lines||[]).filter(x=>x&&x.exit),list=every.filter(x=>x.strategy!=='PUMP_FADE');
  const experiment=list.filter(x=>x.scaleIn?.version===1),filled=experiment.filter(x=>x.scaleIn.fillQty>0);
  const repeated=list.filter(x=>x.scaleIn?.version===2),repeatedFilled=repeated.filter(x=>x.scaleIn.count>0);
  const move=x=>{const m=Number(x.evidence?.movePct);const b=MOVE_BUCKETS.find(([a,c])=>m>=a&&m<c);return b?bucketLabel(b,'%'):null};
  const rank=x=>{const k=Number(x.universe?.rank);const b=RANK_BUCKETS.find(([a,c])=>k>=a&&k<=c);return b?bucketLabel(b,'위'):null};
  const hour=x=>{const t=x.entry?.at??x.barAt;return t?String(kst(t).getUTCHours()).padStart(2,'0'):null};
- return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),byTrigger:by(list,x=>x.trigger||'SCAN'),byManagement:by(list,x=>x.management||'CURRENT'),byWhaleCvd:by(list,whaleSplit),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
+ return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byStrategy:by(every,x=>x.strategy||'SCALP_REVERSAL'),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),byTrigger:by(list,x=>x.trigger||'SCAN'),byManagement:by(list,x=>x.management||'CURRENT'),byWhaleCvd:by(list,whaleSplit),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
   scaleIn:{all:groupStats(experiment),filled:groupStats(filled),withoutFill:groupStats(experiment.filter(x=>!(x.scaleIn.fillQty>0))),
    touched:experiment.filter(x=>x.scaleIn.touchedAt!=null).length,recovered:experiment.filter(x=>x.scaleIn.recoveredAt!=null).length,
    attempted:experiment.filter(x=>x.scaleIn.attemptedAt!=null).length,byDecision:by(experiment,x=>x.scaleIn.reason??x.scaleIn.state)},

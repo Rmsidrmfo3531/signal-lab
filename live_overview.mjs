@@ -104,13 +104,16 @@ export function liveSummary(records=[],mode=null,now=Date.now()){
 /** Totals of the one testnet screen (user 2026-11-17 "합쳐서"): the signal strategy's closed trades of `mode` with a
  * known result and every scalp trade (ScalpExecutor.stats(), journal included). {all, signal, scalp}: trades, wins,
  * winRatePct, profitFactor (null without a loss), netUSD. mode null = no signal trades (signal strategy not on the testnet). */
-export function testnetStats({records=[],mode='TESTNET',scalpStats=null}={}){
+// pumpFadeStats: the 급변 알림 초단타 (PumpFadeExecutor.stats()), its own line, added to the totals (user 2026-11-25).
+export function testnetStats({records=[],mode='TESTNET',scalpStats=null,pumpFadeStats=null}={}){
  const sig=mode?records.filter(r=>r.status==='CLOSED'&&r.test!==true&&r.mode===mode&&r.realized&&r.realized.source!=='UNKNOWN'&&num(r.realized.netUSD)!==null).map(r=>Number(r.realized.netUSD)):[];
  const signal={trades:sig.length,wins:sig.filter(x=>x>0).length,grossProfitUSD:sig.filter(x=>x>0).reduce((a,b)=>a+b,0),grossLossUSD:-sig.filter(x=>x<0).reduce((a,b)=>a+b,0),netUSD:sig.reduce((a,b)=>a+b,0)};
  const s=scalpStats||{},scalp={trades:Number(s.trades)||0,wins:Number(s.wins)||0,grossProfitUSD:Number(s.grossProfitUSD)||0,grossLossUSD:Number(s.grossLossUSD)||0,netUSD:Number(s.netUSD)||0};
  const done=x=>({trades:x.trades,wins:x.wins,winRatePct:x.trades?round(x.wins/x.trades*100,1):null,profitFactor:x.grossLossUSD>0?round(x.grossProfitUSD/x.grossLossUSD,2):null,netUSD:round(x.netUSD,2)});
- const all={trades:signal.trades+scalp.trades,wins:signal.wins+scalp.wins,grossProfitUSD:signal.grossProfitUSD+scalp.grossProfitUSD,grossLossUSD:signal.grossLossUSD+scalp.grossLossUSD,netUSD:signal.netUSD+scalp.netUSD};
- return {all:done(all),signal:done(signal),scalp:done(scalp)};
+ const f=pumpFadeStats||{},pumpFade={trades:Number(f.trades)||0,wins:Number(f.wins)||0,grossProfitUSD:Number(f.grossProfitUSD)||0,grossLossUSD:Number(f.grossLossUSD)||0,netUSD:Number(f.netUSD)||0};
+ const parts=[signal,scalp,pumpFade],sum=k=>parts.reduce((t,x)=>t+x[k],0);
+ const all={trades:sum('trades'),wins:sum('wins'),grossProfitUSD:sum('grossProfitUSD'),grossLossUSD:sum('grossLossUSD'),netUSD:sum('netUSD')};
+ return {all:done(all),signal:done(signal),scalp:done(scalp),...(pumpFadeStats?{pumpFade:done(pumpFade)}:{})};
 }
 
 /** The whole 실매매 screen. status: LiveExecutor.status(); records: its full records. */

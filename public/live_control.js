@@ -711,10 +711,12 @@ const tnCls=v=>!fin(v)?'':Number(v)>0?'paper-profit':Number(v)<0?'paper-loss':''
 const tnWhen=t=>t?new Date(t).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'';
 const tnHeld=(a,b)=>{const m=(b-a)/60000;return !(m>=0)?'':m<90?Math.max(1,Math.round(m))+'분':m<48*60?(+(m/60).toFixed(1))+'시간':(+(m/1440).toFixed(1))+'일'};
 export const TN_BADGE={signal:'<span class="vp-badge tn-signal">신호</span>',scalp:'<span class="vp-badge tn-scalp">단타·급변</span>',
- scalpZone:'<span class="vp-badge tn-scalp tn-scalp-zone">단타·매물대</span>'};
+ scalpZone:'<span class="vp-badge tn-scalp tn-scalp-zone">단타·매물대</span>',
+ // 급변 알림 초단타 (PUMP_FADE, user 2026-11-25): its own badge in the one closed-trade list.
+ pumpFade:'<span class="vp-badge tn-scalp tn-pump-fade">급변 초단타</span>'};
 // Scalp badge by kind (user 2026-11-17 23:12): 단타·급변 = the 5 % move rule (MOVE_REVERSAL, older records too),
 // 단타·매물대 = 매물대 반전 (ZONE_REVERSAL, 2.5 % at a 4H / 1D volume zone).
-export function scalpBadge(kind){return kind==='ZONE_REVERSAL'?TN_BADGE.scalpZone:TN_BADGE.scalp}
+export function scalpBadge(kind){return kind==='PUMP_FADE'?TN_BADGE.pumpFade:kind==='ZONE_REVERSAL'?TN_BADGE.scalpZone:TN_BADGE.scalp}
 
 /** Proportional display scale for legacy uncapped VST items when a testnet capital cap (default $3,000) is active. */
 export function tnScaleOf(item,budget){
@@ -836,7 +838,10 @@ export function testnetCloses(o){
   return {kind:'scalp',scalpKind:x.kind||'MOVE_REVERSAL',key:x.id,symbol:x.symbol,direction:x.direction||'LONG',openedAt:x.openedAt||x.createdAt,closedAt:x.closedAt,reason:x.closeReasonKo||x.closeReason,adds,
    netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',r:x.rMultiple??null,leverage:x.leverage,margin:x.margin,scalpScore:x.scalpScore??x.score??null,capitalBasisUSD:x.capitalBasisUSD??null,initialRiskUSD:x.initialRiskUSD??x.riskUSD??null,initialMarginUSD:x.initialMarginUSD??x.margin?.initialUSD??x.marginUSD??null};
  });
- return [...sig,...sc].sort((a,b)=>(Number(b.closedAt)||0)-(Number(a.closedAt)||0));
+ // 급변 알림 초단타 (PUMP_FADE): its own trades, badge 급변 초단타, no adds.
+ const pf=(o?.pumpFade?.closed||[]).map(x=>({kind:'scalp',scalpKind:'PUMP_FADE',key:x.id,symbol:x.symbol,direction:x.direction||'LONG',openedAt:x.openedAt,closedAt:x.closedAt,reason:x.closeReasonKo||x.closeReason,adds:0,
+  netUSD:x.netUSD??null,source:x.netSource==='EXCHANGE'?'EXCHANGE':'ESTIMATE',leverage:x.leverage,margin:x.margin,capitalBasisUSD:x.capitalBasisUSD??null,initialRiskUSD:x.initialRiskUSD??null,initialMarginUSD:x.margin?.initialUSD??null}));
+ return [...sig,...sc,...pf].sort((a,b)=>(Number(b.closedAt)||0)-(Number(a.closedAt)||0));
 }
 let tnPage=0,lastTestnet=null;
 const tnLeverage=v=>fin(v)&&Number(v)>0?`${esc(v)}배`:'—';
@@ -894,7 +899,7 @@ export function testnetSummaryHTML(st,{scalpOnly=false,open=[],budget=null}={}){
  <div><span>거래</span><strong>${esc(a.trades??0)}건</strong><small>${esc(a.wins??0)}승 ${esc((a.trades??0)-(a.wins??0))}패</small></div>
  <div><span>승률</span><strong>${fin(a.winRatePct)?Number(a.winRatePct).toFixed(1)+'%':'—'}</strong></div>
  <div><span>PF</span><strong>${fin(a.profitFactor)?Number(a.profitFactor).toFixed(2):a.trades?'∞':'—'}</strong></div>
- ${scalpOnly?'':`<p class="copy-split tn-split">신호 <b class="${tnCls(s.netUSD)}">${tnMoney(s.netUSD??0)}</b> (${esc(s.trades??0)}건) · 단타 <b class="${tnCls(c.netUSD)}">${tnMoney(c.netUSD??0)}</b> (${esc(c.trades??0)}건)</p>`}`;
+ ${scalpOnly&&!st?.pumpFade?'':`<p class="copy-split tn-split">${scalpOnly?'':`신호 <b class="${tnCls(s.netUSD)}">${tnMoney(s.netUSD??0)}</b> (${esc(s.trades??0)}건) · `}단타 <b class="${tnCls(c.netUSD)}">${tnMoney(c.netUSD??0)}</b> (${esc(c.trades??0)}건)${st?.pumpFade?` · 급변 초단타 <b class="${tnCls(st.pumpFade.netUSD)}">${tnMoney(st.pumpFade.netUSD??0)}</b> (${esc(st.pumpFade.trades??0)}건)`:''}</p>`}`;
 }
 
 let scalpSimOpen=false,scalpSimCustomized=false,lastScalpSim=null,lastScalpSimParams={days:7,minMovePct:3.5,trendMode:'off',zoneSignals:true,minNetRR:0,minScore:70,sides:'LONG,SHORT'};
@@ -1008,6 +1013,20 @@ export function pumpAlertsHTML(p){
  const stat=(k,v)=>`<span>${k}<b>${v}</b></span>`;
  const horizons=Object.entries(p.byHorizon||{}).map(([h,x])=>stat(`${esc(h)}분 <small>${esc(x?.n??0)}건</small>`,`되돌림 <i class="${cls(x?.fadeNetPct)}">${pct(x?.fadeNetPct)}</i> · 추종 <i class="${cls(x?.followNetPct)}">${pct(x?.followNetPct)}</i>`)).join('');
  return `<div class="copy-stats tn-pump-stats">${stat('알림',`${esc(p.count??0)}건 <small>24시간 ${esc(p.last24h??0)}</small>`)}${stat('알림 단타',`${esc(t.trades??0)}건 · <i class="${cls(t.netUSD)}">${t.trades?tnMoney(t.netUSD):'—'}</i>`)}${horizons}</div>`;
+}
+/** 급변 알림 초단타 (PUMP_FADE, user 2026-11-25 14:23 / 14:34): on / off, open positions, recent alerts with their status (skip
+ * reason or entry) and its own stats. Text only (no buttons: the one testnet switch turns it on and off). */
+export function pumpFadeHTML(f){
+ if(!f)return '';
+ const S=f.settings||{},st=f.stats||{},num=v=>fin(v)?String(+Number(v).toPrecision(6)):'—';
+ const on=f.on===true,state=f.mode!=='TESTNET'?`꺼짐 (${esc(reasonLabel(f.refused||'PUMP_FADE_OFF'))})`:!f.credentials?'API 키 없음':on?'켜짐':'꺼짐 (테스트넷 스위치)';
+ const rules=`1분봉 ${esc(S.pumpFadeConfirmBars??3)}개 같은 색 ${esc(S.pumpFadeMinMovePct??6)}%+ → ${esc(S.pumpFadeTurnWaitMin??5)}분 안 첫 반대 봉 마감에 역추세 · 익절 max(${esc(S.pumpFadeTpMinPct??1.5)}%, R×${esc(S.pumpFadeTpRangeMult??.15)}) · 손절 max(${esc(S.pumpFadeSlMinPct??3)}%, R×${esc(S.pumpFadeSlRangeMult??.3)}) · ${esc(S.pumpFadeMaxHoldMin??15)}분 · 위험 ${esc(S.pumpFadeRiskPct??.5)}%`;
+ const stat=(k,v)=>`<span>${k}<b>${v}</b></span>`;
+ const stats=`<div class="copy-stats tn-pump-stats">${stat('상태',esc(state))}${stat('거래',`${esc(st.trades??0)}건${fin(st.winRatePct)?` <small>승률 ${esc(st.winRatePct)}%</small>`:''}`)}${stat('PF',fin(st.profitFactor)?esc(Number(st.profitFactor).toFixed(2)):st.trades?'∞':'—')}${stat('누적',`<i class="${tnCls(st.netUSD)}">${st.trades?tnMoney(st.netUSD):'—'}</i>`)}</div>`;
+ const pos=(f.positions||[]).map(p=>`<li><b>${esc(p.symbol)}</b> ${side(p.direction)} · 진입 ${num(p.entry)} · 익절 ${num(p.tp)} · 손절 ${num(p.stop)}${p.stopBasis==='EXTREME'?' <small>(3봉 극값)</small>':''} · <i class="${tnCls(p.unrealized)}">${tnMoney(p.unrealized)}</i> <small>${p.deadline?`${esc(tnWhen(p.deadline))} 시간 청산`:esc(p.status||'')}</small></li>`).join('');
+ const status=a=>a.status==='ENTERED'?'<span class="rz-in">진입</span>':a.status==='WAITING'?reasonHTML('PUMP_FADE_WAITING',S):`${reasonHTML(a.reason,S)}${a.detail?` <small>${esc(a.detail)}</small>`:''}`;
+ const alerts=(f.alerts||[]).slice(0,10).map(a=>`<li class="rz-row"><span class="muted">${esc(tnWhen(a.at))}</span> <b>${esc(a.symbol)}</b> ${a.dir==='DOWN'?'↓':'↑'}${fin(a.alertPct)?esc(a.alertPct)+'%':''} → ${side(a.direction)} · ${status(a)}${fin(a.turnMinutes)?` <small>반대 봉 ${esc(a.turnMinutes)}분 뒤</small>`:''}</li>`).join('');
+ return `${stats}<p class="copy-rules">${rules}</p>${pos?`<ul class="copy-list">${pos}</ul>`:''}${alerts?`<ul class="rz-list">${alerts}</ul>`:'<p class="empty-small">아직 들어온 급변 알림이 없습니다.</p>'}`;
 }
 /** 실계좌 준비 점검 (user 2026-11-24): one compact line and a progress bar (trades / required) per group. Read only. */
 export function liveReadinessHTML(r){
@@ -1317,10 +1336,11 @@ function render(o){
  // Testnet: the scalp's own details (rules, skips, journal), collapsed; its switch is the one testnet switch above.
  // Signal strategy not on the testnet (LIVE): the scalp keeps its own panel and buttons as before (review M3).
  if($('livePumpSection')){$('livePumpSection').hidden=!(tn&&o.pumpAlerts);if(tn&&o.pumpAlerts&&$('livePump'))$('livePump').innerHTML=pumpAlertsHTML(o.pumpAlerts)}
+ if($('livePumpFadeSection')){$('livePumpFadeSection').hidden=!(tn&&o.pumpFade);if(tn&&o.pumpFade&&$('livePumpFade'))$('livePumpFade').innerHTML=pumpFadeHTML(o.pumpFade)}
  if($('liveReadySection')){const h=tn?liveReadinessHTML(o.liveReadiness):'';$('liveReadySection').hidden=!h;if(h&&$('liveReady'))$('liveReady').innerHTML=h}
  if($('liveScalpSection')){$('liveScalpSection').hidden=!(tn&&o.scalp);if(tn&&o.scalp&&$('liveScalp')&&!$('liveScalp').contains(document.activeElement))$('liveScalp').innerHTML=scalpDetailsHTML(o.scalp)}
  // 사유 설명 보기 (user 2026-11-24): a static fold, rewritten only when the thresholds change so it stays open.
- if($('liveReasonSection')){$('liveReasonSection').hidden=!(tn&&o.scalp);const g=tn&&o.scalp?reasonGlossaryHTML(o.scalp.settings):'';if(g&&$('liveReasons')&&$('liveReasons').dataset.html!==g){$('liveReasons').innerHTML=g;$('liveReasons').dataset.html=g}bindReasonTips(document)}
+ if($('liveReasonSection')){$('liveReasonSection').hidden=!(tn&&o.scalp);const g=tn&&o.scalp?reasonGlossaryHTML({...o.scalp.settings,...(o.pumpFade?.settings||{})}):'';if(g&&$('liveReasons')&&$('liveReasons').dataset.html!==g){$('liveReasons').innerHTML=g;$('liveReasons').dataset.html=g}bindReasonTips(document)}
  bindScalpButtons($('liveScalpOwn'));
  if($('liveScalpPanel')){$('liveScalpPanel').hidden=Boolean(tn)||!o.scalp;if(!tn&&o.scalp&&$('liveScalpOwn')&&!scalpActionBusy)$('liveScalpOwn').innerHTML=scalpHTML(o.scalp)}
  if($('liveClosedCount'))$('liveClosedCount').textContent=closedCountText(o,{tn:Boolean(tn)});

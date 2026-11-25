@@ -21,9 +21,12 @@ export const READY_BIG_LOSS_EXIT_REASONS=Object.freeze(['EMERGENCY_ROE_STOP','NO
 export const READY_PUMP_MIN_TRACKED=50;           // B1 alerts on BingX-listed coins with a 15-min result
 export const READY_PUMP_HORIZON_MIN=15;           // B2/B3 average fade net % at 15 min > 0, both halves > 0
 export const READY_PUMP_LONG_HORIZON_MIN=60;      // B4 average fade net % at 60 min ≥ 0
+// C. 급변 알림 초단타 (pump_fade.mjs, user 2026-11-25): its own closed trades, the same A1-A4 numbers as the scalp. Its
+// "big loss" exits are the stop (PUMP_FADE_SL) and the emergency close after a failed stop (NO_STOP).
+export const READY_PUMP_SCALP_BIG_LOSS_EXIT_REASONS=Object.freeze(['PUMP_FADE_SL','NO_STOP']);
 export const READY_FILE='live-readiness.json';
-export const READY_GROUPS=Object.freeze(['SCALP_ALL','SCALP_SHORT','SCALP_LONG','PUMP_FADE']);
-export const READY_LABELS=Object.freeze({SCALP_ALL:'단타 전체',SCALP_SHORT:'단타 숏',SCALP_LONG:'단타 롱',PUMP_FADE:'급변 알림 되돌림'});
+export const READY_GROUPS=Object.freeze(['SCALP_ALL','SCALP_SHORT','SCALP_LONG','PUMP_FADE','PUMP_FADE_SCALP']);
+export const READY_LABELS=Object.freeze({SCALP_ALL:'단타 전체',SCALP_SHORT:'단타 숏',SCALP_LONG:'단타 롱',PUMP_FADE:'급변 알림 되돌림',PUMP_FADE_SCALP:'급변 초단타'});
 export const READY_NOT_AUTOMATIC='실계좌 적용은 자동으로 되지 않습니다 — 승인 후 코드 변경 필요 (단타는 지금 실계좌 주문이 막혀 있음)';
 
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:0};
@@ -41,7 +44,7 @@ const withLine=g=>(g.line=readinessLine(g),g);
 const windowOf=(list,at)=>({fromAt:list.length?at(list[0]):null,toAt:list.length?at(list.at(-1)):null,count:list.length});
 
 /** One scalp group. rows: [{direction, netUSD, closedAt, closeReason}] with the stats() PnL (display scale applied). */
-export function scalpGroupReadiness(rows,{group='SCALP_ALL'}={}){
+export function scalpGroupReadiness(rows,{group='SCALP_ALL',bigLossReasons=READY_BIG_LOSS_EXIT_REASONS}={}){
  const side=group==='SCALP_SHORT'?'SHORT':group==='SCALP_LONG'?'LONG':null;
  const list=(Array.isArray(rows)?rows:[]).filter(x=>x&&(!side||(x.direction||'LONG')===side))
   .map((x,i)=>({...x,net:num(x.netUSD),i})).sort((a,b)=>num(a.closedAt)-num(b.closedAt)||a.i-b.i);
@@ -49,7 +52,7 @@ export function scalpGroupReadiness(rows,{group='SCALP_ALL'}={}){
  const gross=sum(wins),loss=sum(losses);
  const pf=loss>0?gross/loss:gross>0?Infinity:null;
  const [older,newer]=splitHalves(list),olderNet=sum(older.map(x=>x.net)),newerNet=sum(newer.map(x=>x.net));
- const big=list.filter(x=>READY_BIG_LOSS_EXIT_REASONS.includes(x.closeReason)&&x.net<0).map(x=>-x.net);
+ const big=list.filter(x=>bigLossReasons.includes(x.closeReason)&&x.net<0).map(x=>-x.net);
  const avgWin=mean(wins),avgBig=mean(big);
  const bigX=!big.length?null:avgWin>0?avgBig/avgWin:Infinity;
  const mddUSD=maxDrawdown(list.map(x=>x.net));
@@ -63,7 +66,7 @@ export function scalpGroupReadiness(rows,{group='SCALP_ALL'}={}){
   trades:n,minTrades:READY_SCALP_MIN_TRADES,progress:Math.min(1,n/READY_SCALP_MIN_TRADES),
   netUSD:r2(sum(list.map(x=>x.net))),winRatePct,maxDrawdownUSD:mddUSD,profitFactor:pf===Infinity?'INF':pf===null?null:r4(pf),minProfitFactor:READY_SCALP_MIN_PROFIT_FACTOR,
   olderHalf:{count:older.length,netUSD:r2(olderNet)},newerHalf:{count:newer.length,netUSD:r2(newerNet)},
-  bigLoss:{count:big.length,avgLossUSD:avgBig===null?null:r2(avgBig),avgWinUSD:avgWin===null?null:r2(avgWin),ratio:bigX===Infinity?'INF':bigX===null?null:r4(bigX),max:READY_SCALP_MAX_BIG_LOSS_X,reasons:[...READY_BIG_LOSS_EXIT_REASONS]},
+  bigLoss:{count:big.length,avgLossUSD:avgBig===null?null:r2(avgBig),avgWinUSD:avgWin===null?null:r2(avgWin),ratio:bigX===Infinity?'INF':bigX===null?null:r4(bigX),max:READY_SCALP_MAX_BIG_LOSS_X,reasons:[...bigLossReasons]},
   // The exact trades measured (closedAt of the first and last, and how many), for a re-check on the same set.
   window:windowOf(list,x=>x.closedAt??null)});
 }
@@ -102,12 +105,15 @@ export function scopedScalpRows(rows,scope=null){
 }
 export const scopeText=scope=>scope?.management?`단타는 카피식 추매(${scope.management}) 거래만 셈${Number(scope.since)>0?` · ${kstTime(scope.since)} KST 전환 이후`:''}`:'';
 /** Every group. scalpRows: ScalpExecutor.readinessRows(); pumpRecords: PumpAlertBook.records; scalpScope:
- * ScalpExecutor.managementScope() (only those trades count). Pure. */
-export function evaluateReadiness({scalpRows=[],pumpRecords=[],now=Date.now(),scalpScope=null}={}){
+ * ScalpExecutor.managementScope() (only those trades count); pumpFadeRows: PumpFadeExecutor.readinessRows() (its own trades,
+ * never mixed with the scalp's). Pure. */
+export function evaluateReadiness({scalpRows=[],pumpRecords=[],pumpFadeRows=[],now=Date.now(),scalpScope=null}={}){
  const rows=scopedScalpRows(scalpRows,scalpScope);
- const groups=[...['SCALP_ALL','SCALP_SHORT','SCALP_LONG'].map(g=>scalpGroupReadiness(rows,{group:g})),pumpReadiness(pumpRecords)];
+ const groups=[...['SCALP_ALL','SCALP_SHORT','SCALP_LONG'].map(g=>scalpGroupReadiness(rows,{group:g})),pumpReadiness(pumpRecords),
+  scalpGroupReadiness(pumpFadeRows,{group:'PUMP_FADE_SCALP',bigLossReasons:READY_PUMP_SCALP_BIG_LOSS_EXIT_REASONS})];
  return {at:now,anyReady:groups.some(g=>g.ready),groups,...(scalpScope?.management?{scope:{management:scalpScope.management,since:Number(scalpScope.since)||null,text:scopeText(scalpScope)}}:{}),
   criteria:{scalp:{minTrades:READY_SCALP_MIN_TRADES,minProfitFactor:READY_SCALP_MIN_PROFIT_FACTOR,halvesNetAbove:0,maxBigLossX:READY_SCALP_MAX_BIG_LOSS_X,bigLossReasons:[...READY_BIG_LOSS_EXIT_REASONS]},
+   pumpScalp:{minTrades:READY_SCALP_MIN_TRADES,minProfitFactor:READY_SCALP_MIN_PROFIT_FACTOR,halvesNetAbove:0,maxBigLossX:READY_SCALP_MAX_BIG_LOSS_X,bigLossReasons:[...READY_PUMP_SCALP_BIG_LOSS_EXIT_REASONS]},
    pump:{minTracked:READY_PUMP_MIN_TRACKED,horizonMin:READY_PUMP_HORIZON_MIN,avgAbovePct:0,halvesAbovePct:0,longHorizonMin:READY_PUMP_LONG_HORIZON_MIN,longMinPct:0}}};
 }
 
@@ -116,7 +122,7 @@ const pfText=v=>v==='INF'?'∞':v===null||v===undefined?'—':(Math.floor(Number
 const xText=v=>v==='INF'?'∞':v===null||v===undefined?'—':(Math.ceil(Number(v)*10)/10).toFixed(1);
 const pct=v=>v===null||v===undefined?'—':`${v>=0?'+':'−'}${Math.abs(v).toFixed(2)}%`;
 const money=v=>v===null||v===undefined?'—':`${v>=0?'+':'−'}$${Math.abs(v).toFixed(2)}`;
-const SHORT={SCALP_ALL:'전체',SCALP_SHORT:'숏',SCALP_LONG:'롱',PUMP_FADE:'급변 되돌림'};
+const SHORT={SCALP_ALL:'전체',SCALP_SHORT:'숏',SCALP_LONG:'롱',PUMP_FADE:'급변 되돌림',PUMP_FADE_SCALP:'급변 초단타'};
 /** Compact one-line progress, e.g. "숏 42/100건 · PF 1.74/1.3 ✓ · 앞·뒤 절반 ✓ · 큰 손실 13.1배/5배 ✗". */
 export function readinessLine(g){
  if(g.kind==='PUMP')return `${SHORT[g.group]} ${g.tracked}/${g.minTracked}건 · 15분 평균 ${pct(g.avg15Pct)} ${ok(g.checks.avg15)} · 앞·뒤 절반 ${ok(g.checks.halves)} · 60분 평균 ${pct(g.avg60Pct)}/0 ${ok(g.checks.avg60)}`;
@@ -143,8 +149,8 @@ export function readinessMessage(g,{again=false,lossLimits=null,scope=null}={}){
   `${ok(g.checks.trades)} 청산 거래 ${g.trades}건 / ${g.minTrades}건 이상${g.winRatePct!=null?` (승률 ${g.winRatePct}% · MDD $${Number(g.maxDrawdownUSD||0).toFixed(2)})`:''}`,
   `${ok(g.checks.profitFactor)} 수수료 뺀 PF ${pfText(g.profitFactor)} / ${g.minProfitFactor} 이상`,
   `${ok(g.checks.halves)} 앞 절반 ${money(g.olderHalf.netUSD)}(${g.olderHalf.count}건) · 뒤 절반 ${money(g.newerHalf.netUSD)}(${g.newerHalf.count}건) / 둘 다 0 초과`,
-  g.bigLoss.count?`${ok(g.checks.bigLoss)} 큰 손실(비상 청산) 평균 ${money(-g.bigLoss.avgLossUSD)} = 평균 수익 ${money(g.bigLoss.avgWinUSD)}의 ${xText(g.bigLoss.ratio)}배 / ${g.bigLoss.max}배 이하 (${g.bigLoss.count}건)`:`✓ 큰 손실(비상 청산) 없음 / ${g.bigLoss.max}배 이하`];
- return [head,...rows,...(g.kind==='SCALP'&&scope?.management?[scopeText(scope)]:[]),`검증 구간: ${windowText(g.window)} — 이 거래들로 다시 한 번 검증한 뒤 결정하세요.`,READY_NOT_AUTOMATIC,lossLimitText(lossLimits||{})].join('\n');
+  g.bigLoss.count?`${ok(g.checks.bigLoss)} 큰 손실(${g.group==='PUMP_FADE_SCALP'?'손절':'비상 청산'}) 평균 ${money(-g.bigLoss.avgLossUSD)} = 평균 수익 ${money(g.bigLoss.avgWinUSD)}의 ${xText(g.bigLoss.ratio)}배 / ${g.bigLoss.max}배 이하 (${g.bigLoss.count}건)`:`✓ 큰 손실(${g.group==='PUMP_FADE_SCALP'?'손절':'비상 청산'}) 없음 / ${g.bigLoss.max}배 이하`];
+ return [head,...rows,...(g.kind==='SCALP'&&g.group!=='PUMP_FADE_SCALP'&&scope?.management?[scopeText(scope)]:[]),`검증 구간: ${windowText(g.window)} — 이 거래들로 다시 한 번 검증한 뒤 결정하세요.`,READY_NOT_AUTOMATIC,lossLimitText(lossLimits||{})].join('\n');
 }
 /** /ready reply: every group's progress line. */
 export function readyReplyText(summary,{lossLimits=null}={}){
@@ -152,6 +158,7 @@ export function readyReplyText(summary,{lossLimits=null}={}){
  return ['📋 실계좌 준비 점검 (테스트넷, 조회 전용)',...summary.groups.map(g=>`${g.ready?'✅':'·'} ${g.line}`),...(summary.scope?.text?[summary.scope.text]:[]),
   `단타 기준: ${READY_SCALP_MIN_TRADES}건 · PF ${READY_SCALP_MIN_PROFIT_FACTOR} 이상 · 앞·뒤 절반 모두 플러스 · 큰 손실 평균 ≤ 평균 수익 ${READY_SCALP_MAX_BIG_LOSS_X}배`,
   `급변 기준: ${READY_PUMP_MIN_TRACKED}건 · 15분 평균·앞뒤 절반 플러스 · 60분 평균 0% 이상`,
+  `급변 초단타 기준: ${READY_SCALP_MIN_TRADES}건 · PF ${READY_SCALP_MIN_PROFIT_FACTOR} 이상 · 앞·뒤 절반 모두 플러스 · 손절 평균 ≤ 평균 수익 ${READY_SCALP_MAX_BIG_LOSS_X}배`,
   READY_NOT_AUTOMATIC,lossLimitText(lossLimits||{})].join('\n');
 }
 

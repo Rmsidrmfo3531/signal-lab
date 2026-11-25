@@ -88,8 +88,8 @@ const G={
  NO_BALANCE:['limit','잔고 확인 실패',()=>'테스트넷 잔고를 읽지 못했거나 오래된 값이라 주문 크기를 정할 수 없습니다.'],
  MAX_OPEN_POSITIONS:['limit','동시 보유 한도',S=>`동시에 가질 수 있는 단타 포지션 수(${fin(S.maxOpen)&&Number(S.maxOpen)>0?n(S.maxOpen)+'개':'제한 없음'})를 채웠습니다.`],
  MAX_SAME_SIDE:['limit','같은 방향 한도',S=>`같은 방향(롱 또는 숏)으로 동시에 보유할 수 있는 최대 종목 수(${n(S.maxSameSide)}개)를 채웠습니다.`],
- SYMBOL_ALREADY_HELD:['limit','같은 종목 보유 중',()=>'이 종목을 이미 단타로 갖고 있거나 진입 중입니다(종목당 1개).'],
- SYMBOL_HELD_BY_OTHER_STRATEGY:['limit','다른 전략 보유',()=>'신호 전략이나 카피가 같은 종목을 갖고 있어 겹치지 않게 건너뜁니다.'],
+ SYMBOL_ALREADY_HELD:['limit','같은 종목 보유 중',()=>'이 종목을 이 전략(단타 또는 초단타)으로 이미 갖고 있거나 진입 중입니다(종목당 1개).'],
+ SYMBOL_HELD_BY_OTHER_STRATEGY:['limit','다른 전략 보유',()=>'다른 전략(신호 전략·카피·되돌림 단타·급변 알림 초단타)이 같은 종목을 갖고 있거나 진입 중이라 겹치지 않게 건너뜁니다(먼저 잡은 쪽이 유지).'],
  SYMBOL_LOSS_COOLDOWN:['limit','종목 손실 휴식',S=>`이 종목에서 손실 뒤 ${n(S.symbolLossCooldownMin)}분 동안, 또는 오늘 ${n(S.symbolDailyMaxLosses)}번 지면 자정까지 쉽니다.`],
  BTC_DUMP_GUARD:['limit','BTC 급변 방어',S=>`BTC가 5분에 ${n(S.btcGuard5mPct)}% 또는 15분에 ${n(S.btcGuard15mPct)}% 넘게 급락(롱 보류)·급등(숏 보류)했습니다(직전 5분봉이 ${n(S.btcGuardRelease5mPct)}% 이상 반전하면 해제).`],
  SHORT_SQUEEZE_GUARD:['limit','스퀴즈 위험 보류',S=>`펀딩비가 ±${n(S.squeezeFundingPct)}% 넘게 쏠리고 30분 미결제약정이 ${n(S.squeezeOiChange30mPct)}% 넘게 늘어 반대로 튈 위험이 큽니다.`],
@@ -108,6 +108,19 @@ const G={
  PUMP_ALERT_STALE:['pump','알림 늦게 도착',S=>`알림이 ${n(S.pumpWatchMin)}분 넘게 늦게 도착해 쓰지 않습니다.`],
  PUMP_EVALUATION_FAILED:['pump','알림 확인 오류',()=>'알림을 단타 조건으로 확인하는 중에 오류가 났습니다.'],
  QUEUED_AFTER_SCAN:['pump','정기 검사 뒤 확인',()=>'정기 5분봉 검사가 도는 중이라 끝난 뒤 이 알림을 확인합니다.'],
+ // 급변 알림 초단타 (PUMP_FADE, pump_fade.mjs, user 2026-11-25 14:23 "1분봉 3개가 연속으로 음봉이거나 양봉으로 떴을 때 역추세용으로 쓰는 초단타"):
+ // its own decisions on the same alerts (the 5m scalp's stay above). Defaults shown when the screen sends no value.
+ PUMP_FADE_OFF:['pump','초단타 꺼짐',()=>'서버 설정(PUMP_FADE=off)으로 급변 알림 초단타가 꺼져 있습니다.'],
+ PUMP_FADE_TESTNET_ONLY:['pump','초단타 테스트넷 전용',()=>'급변 알림 초단타는 BingX 테스트넷에서만 주문하며 실계좌·다른 모드에서는 켜지지 않습니다.'],
+ PUMP_FADE_STALE:['pump','초단타 알림 늦음',S=>`알림이 나온 뒤 ${n(S.pumpFadeMaxAgeSec,'180')}초가 넘어 도착해 초단타에 쓰지 않습니다.`],
+ PUMP_FADE_ALREADY_WATCHING:['pump','같은 코인 확인 중',()=>'같은 코인의 앞 알림을 아직 1분봉으로 확인하는 중이라 새 알림은 건너뜁니다.'],
+ PUMP_FADE_CANDLES_MISSING:['pump','1분봉 아직 없음',()=>'알림 시각까지 닫힌 BingX 1분봉을 1분 안에 받지 못했습니다.'],
+ PUMP_FADE_CANDLES_FAILED:['pump','1분봉 조회 실패',()=>'알림 코인의 BingX 1분봉을 읽지 못했습니다.'],
+ PUMP_FADE_NOT_CONFIRMED:['pump','1분봉 3개 미확인',S=>`알림 시각까지 닫힌 1분봉 ${n(S.pumpFadeConfirmBars,'3')}개가 모두 알림 방향(하락은 음봉, 상승은 양봉)이고 합쳐서 ${n(S.pumpFadeMinMovePct,'6')}% 이상 움직여야 하는데 그렇지 않았습니다.`],
+ PUMP_FADE_WAITING:['pump','반대 봉 기다림',S=>`1분봉 확인과 알림 뒤 ${n(S.pumpFadeTurnWaitMin,'5')}분 안의 첫 반대 색 1분봉(하락 뒤 양봉, 상승 뒤 음봉)을 기다리는 중입니다.`],
+ PUMP_FADE_NO_TURN:['pump','반대 봉 없음',S=>`알림 뒤 ${n(S.pumpFadeTurnWaitMin,'5')}분 안에 반대 색 1분봉이 닫히지 않아 진입하지 않았습니다.`],
+ PUMP_FADE_TURN_LATE:['pump','반대 봉 확인 늦음',S=>`반대 색 1분봉이 닫힌 뒤 ${n(S.pumpFadeTurnLateSec,'30')}초가 지나서야 확인돼 늦은 가격으로 들어가지 않습니다.`],
+ PUMP_FADE_LEVELS_INVALID:['pump','익절·손절가 계산 불가',()=>'진입가와 1분봉 3개 범위로 익절·손절 가격을 정할 수 없습니다.'],
  // 거래소 — data, contract and order problems
  SCALP_INTERVAL_UNSUPPORTED:['venue','지원 안 하는 봉',()=>'1분·5분·15분봉이 아닌 봉은 반전 판정을 하지 않습니다.'],
  KLINE_SCHEMA_OR_SEQUENCE_INVALID:['venue','캔들 자료 오류',()=>'받은 캔들 값이 이상하거나 순서가 끊겨 판정하지 않았습니다.'],
@@ -184,6 +197,9 @@ const G={
  WHALE_BUY_ZONE:['position','고래 매수 매물대 추매',S=>`롱 사다리의 추매 자리가 최근 ${n(S.whaleZoneHours)}시간 고래 매수 매물대(지지)라 4H·1D 강한 매물대처럼 이 추매를 ${n(S.ladderZoneBoost)}배로 넣었습니다.`],
  WHALE_SELL_ZONE:['position','고래 매도 매물대 추매',S=>`숏 사다리의 추매 자리가 최근 ${n(S.whaleZoneHours)}시간 고래 매도 매물대(저항)라 4H·1D 강한 매물대처럼 이 추매를 ${n(S.ladderZoneBoost)}배로 넣었습니다.`],
  REJECTIONS_3:['position','3회 이상 막힌 자리',S=>`4시간봉이 ${n(S.ladderZoneMinRejections)}번 이상 닿고 되돌아간 자리라 이 추매를 ${n(S.ladderZoneBoost)}배로 넣었습니다.`],
+ PUMP_FADE_TP:['position','초단타 익절',S=>`급변 알림 초단타가 비용을 뺀 max(${n(S.pumpFadeTpMinPct,'1.5')}%, 1분봉 3개 범위 R × ${n(S.pumpFadeTpRangeMult,'0.15')}) 익절가에 닿았습니다.`],
+ PUMP_FADE_SL:['position','초단타 손절',S=>`급변 알림 초단타가 거래소 손절(max(${n(S.pumpFadeSlMinPct,'3')}%, R × ${n(S.pumpFadeSlRangeMult,'0.3')}), 3봉 극값이 더 가까우면 그 한 틱 너머)에 닿았습니다.`],
+ PUMP_FADE_TIME:['position','초단타 시간 청산',S=>`급변 알림 초단타를 ${n(S.pumpFadeMaxHoldMin,'15')}분 보유해 시장가로 정리했습니다.`],
  NO_STOP:['position','보호 손절 실패',()=>'보호 손절 주문을 걸지 못해 긴급 청산하고 단타를 멈췄습니다.'],
 };
 /** Codes that mean the same thing to the user share one entry (listed once). */

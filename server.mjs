@@ -13,7 +13,8 @@ import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig,scalpLiveExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
 import {scalpReportFiles} from './scalp_journal.mjs';
-import {PumpAlertBook,pumpAlertEndpoint} from './pump_alert.mjs';
+import {PumpAlertBook,pumpAlertEndpoint,pumpAlertRows} from './pump_alert.mjs';
+import {PumpFadeExecutor,pumpFadeConfig,pumpFadeEventText} from './pump_fade.mjs';
 import {simulateScalpSignals} from './scalp_simulator.mjs';
 import {BingXMarketData} from './bingx_market.mjs';
 import {liveEventText,realTradeMessage} from './live_telegram.mjs';
@@ -300,7 +301,7 @@ function liveClients(){
  if(process.env.GATEIO_API_KEY&&process.env.GATEIO_API_SECRET)clients.GATEIO=new GateTradeClient({apiKey:process.env.GATEIO_API_KEY,secret:process.env.GATEIO_API_SECRET,mode,now:venueNow('GATEIO')});
  return clients;
 }
-let copyTrader=null,scalpExec=null,scalpLiveExec=null;
+let copyTrader=null,scalpExec=null,scalpLiveExec=null,pumpFade=null;
 const signalClients=liveClients();
 const hasTestnetBingx=LIVE.mode==='TESTNET'&&Boolean(signalClients.BINGX)||LIVE.mode!=='LIVE'&&SCALP_EXEC.mode==='TESTNET'&&Boolean(process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET);
 const testnetCapitalCaps=[LIVE.mode==='TESTNET'?LIVE.balanceCapUSD:0,SCALP_EXEC.mode==='TESTNET'?(SCALP_EXEC.balanceCapUSD||LIVE.balanceCapUSD):0].filter(x=>x>0);
@@ -325,7 +326,7 @@ const live=new LiveExecutor({config:LIVE,clients:signalClients,directory:storage
  testnetBingxFunds:hasTestnetBingx?cappedTestnetFunds:null,
  // Copy positions on the same testnet account are kept apart; a real-money copy uses another account.
  // Testnet reversal scalps (scalp_executor.mjs) share the testnet account too; opt-in live scalp shares the real account.
- externalHeld:()=>new Set([...(COPY_ON_SAME_ACCOUNT()?copyTrader?.heldSymbols()??[]:[]),...(LIVE.mode==='TESTNET'?scalpExec?.heldSymbols()??[]:[]),...(LIVE.mode==='LIVE'?scalpLiveExec?.heldSymbols()??[]:[])]),
+ externalHeld:()=>new Set([...(COPY_ON_SAME_ACCOUNT()?copyTrader?.heldSymbols()??[]:[]),...(LIVE.mode==='TESTNET'?scalpExec?.heldSymbols()??[]:[]),...(LIVE.mode==='TESTNET'?pumpFade?.heldSymbols()??[]:[]),...(LIVE.mode==='LIVE'?scalpLiveExec?.heldSymbols()??[]:[])]),
  priceOf:record=>livePublicPrice(record),onEvent:(record,type,detail)=>liveTelegramNotice(record,type,detail)});
 // Copy trading of the followed Telegram channel (copy_executor.mjs): TESTNET only, its own ledger.
 let copyTickers={at:0,rows:[]};
@@ -334,7 +335,7 @@ const COPY=copyConfig(process.env,LIVE.mode);
 // Same account when both run in the same mode (testnet + testnet, or later live + live).
 function COPY_ON_SAME_ACCOUNT(){return COPY.mode===(LIVE.mode==='LIVE'?'LIVE':'TESTNET')}
 // Update restarts wait for the copy queue too (a market fill is saved before the next step).
-function allIdle(){return live.idle()&&(copyTrader?.idle?.()??true)&&(scalpExec?.idle?.()??true)&&(scalpLiveExec?.idle?.()??true)}
+function allIdle(){return live.idle()&&(copyTrader?.idle?.()??true)&&(scalpExec?.idle?.()??true)&&(scalpLiveExec?.idle?.()??true)&&(pumpFade?.idle?.()??true)}
 // Real-money copy (COPY_MODE=LIVE + COPY_LIVE_CONFIRM): its own BingX live client and ledger file.
 const copyClient=COPY.mode!=='LIVE'?live.clients.BINGX:
  process.env.BINGX_API_KEY&&process.env.BINGX_API_SECRET
@@ -466,7 +467,7 @@ copyTrader=new CopyExecutor({config:COPY,client:copyClient,controls:copyControls
  breaker:()=>COPY.mode==='LIVE'&&realSafety?.isTripped()?'DAILY_LOSS_CIRCUIT_BREAKER':null,
  gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:live.updating||live.paused?{ok:false,reason:'UPDATING'}:COPY.mode==='LIVE'?(copyTrader.armed?{ok:true}:{ok:false,reason:'COPY_DISARMED'}):LIVE.mode!=='TESTNET'?{ok:false,reason:'NOT_TESTNET'}:!live.armed?{ok:false,reason:'LIVE_DISARMED'}:{ok:true},
  // Also a symbol the live executor or opt-in live scalp is entering/holding right now (busy).
- isBusy:symbol=>COPY_ON_SAME_ACCOUNT()&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol))||COPY.mode==='TESTNET'&&Boolean(scalpExec?.heldSymbols().has(symbol))||COPY.mode==='LIVE'&&Boolean(scalpLiveExec?.heldSymbols().has(symbol)),
+ isBusy:symbol=>COPY_ON_SAME_ACCOUNT()&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.symbol===symbol))||COPY.mode==='TESTNET'&&Boolean(scalpExec?.heldSymbols().has(symbol)||pumpFade?.heldSymbols().has(symbol))||COPY.mode==='LIVE'&&Boolean(scalpLiveExec?.heldSymbols().has(symbol)),
  // The same balance cap as the signal strategy (a 100,000 virtual USDT testnet trades like the real account).
  // The testnet balance cap does not apply to a real-money copy (its own real equity).
  balance:async()=>{
@@ -549,6 +550,13 @@ const scalpTickerRows=async(maxAgeMs=20000)=>{if(scalpTickers.at&&Date.now()-sca
  if(!scalpTickersInFlight)scalpTickersInFlight=scalpMarket.tickers().then(rows=>{scalpTickers={at:Date.now(),rows};return rows}).finally(()=>{scalpTickersInFlight=null});
  return scalpTickersInFlight};
 const scalpLast=async(venueSymbol,maxAgeMs)=>Number((await scalpTickerRows(maxAgeMs)).find(x=>x.symbol===venueSymbol)?.lastPrice)||null;
+// The testnet balance the scalps size on (capital-capped), shared by the 5m scalp and the 급변 알림 초단타.
+const testnetScalpBalance=async()=>{const f=hasTestnetBingx?await testnetAccountFunds():bingxFunds(await scalpClient.balance());
+ const budgetCap=Number(testnetBudget?.capitalCapUSD)>0?Number(testnetBudget.capitalCapUSD):Infinity;
+ const cap=SCALP_EXEC.balanceCapUSD>0?Math.min(SCALP_EXEC.balanceCapUSD,budgetCap):LIVE.balanceCapUSD>0?Math.min(LIVE.balanceCapUSD,budgetCap):budgetCap;
+ if(!(cap<Infinity)||!(f.equity>cap))return f;
+ const equity=cap,avail=f.available!=null?equity*(f.available/f.equity):equity;
+ return {equity,available:Math.max(0,avail)}};
 scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  contracts:symbol=>venueQuotes.clients.BINGX.contractsFor(symbol),tickers:()=>scalpTickerRows(60000),tickersFresh:()=>scalpTickerRows(5000),
  candles:(symbol,interval,limit)=>scalpMarket.klines(symbol,interval,limit),
@@ -565,14 +573,9 @@ scalpExec=new ScalpExecutor({config:SCALP_EXEC,client:scalpClient,
  priceOf:async(symbol,venueSymbol)=>{try{const b=await scalpMarket.book(symbol);if(b?.ok&&b.mid>0)return b.mid}catch{}return scalpLast(venueSymbol,3000)},
  markOf:venueSymbol=>scalpLast(venueSymbol,20000),
  // Apply live testnet capitalCapUSD (default $3,000) with proportional free margin so huge legacy VST positions don't collapse available to 0.
- balance:async()=>{const f=hasTestnetBingx?await testnetAccountFunds():bingxFunds(await scalpClient.balance());
-  const budgetCap=Number(testnetBudget?.capitalCapUSD)>0?Number(testnetBudget.capitalCapUSD):Infinity;
-  const cap=SCALP_EXEC.balanceCapUSD>0?Math.min(SCALP_EXEC.balanceCapUSD,budgetCap):LIVE.balanceCapUSD>0?Math.min(LIVE.balanceCapUSD,budgetCap):budgetCap;
-  if(!(cap<Infinity)||!(f.equity>cap))return f;
-  const equity=cap,avail=f.available!=null?equity*(f.available/f.equity):equity;
-  return {equity,available:Math.max(0,avail)}},
- // The signal strategy (testnet) and the testnet copy share this account: their symbols are skipped.
- isBusy:(symbol,venueSymbol)=>LIVE.mode==='TESTNET'&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&(r.symbol===symbol||r.venueSymbol===venueSymbol)))
+ balance:testnetScalpBalance,
+ // The signal strategy (testnet), the testnet copy and the 급변 알림 초단타 share this account: their symbols are skipped.
+ isBusy:(symbol,venueSymbol)=>Boolean(pumpFade?.heldSymbols().has(symbol)||pumpFade?.heldSymbols().has(venueSymbol))||LIVE.mode==='TESTNET'&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&(r.symbol===symbol||r.venueSymbol===venueSymbol)))
   ||COPY.mode==='TESTNET'&&(copyTrader.heldSymbols().has(symbol)||Object.values(copyTrader.store.positions).some(p=>p.status==='OPEN'&&p.venueSymbol===venueSymbol)),
  gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:live.updating||live.paused?{ok:false,reason:'UPDATING'}:{ok:true},
  directory:storage.dir,log:(...a)=>console.log(...a),onEvent:scalpNotice,
@@ -582,6 +585,24 @@ if(LIVE.mode==='TESTNET')testnetBudget.register('signal',withTestnetResetRisk(li
 if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',withTestnetResetRisk(scalpExec.budgetSource(),testnetHistoryReset,'scalp'));
 if(hasTestnetBingx)setInterval(()=>{void testnetAccountFunds().catch(()=>{})},TESTNET_BALANCE_REFRESH_MS).unref?.();
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
+// 급변 알림 초단타 (pump_fade.mjs, user 2026-11-25 14:23 / 14:32 "매매 시작해" / 14:34 "단타로 썼던 것 그대로 두고 초단타를 별개로"):
+// a separate TESTNET-only strategy on the same alerts as the 5m scalp's pump hand-off (kept). PUMP_FADE (default on) needs
+// SCALP_EXEC_MODE=TESTNET and the testnet client; LIVE is refused. It follows the one testnet switch (scalpExec.armed), has its
+// own ledger (pump-fade-store.json), writes its trades to the scalp journal tagged PUMP_FADE and shares the testnet budget.
+// One position per symbol across both scalps (each skips the other's coins, SYMBOL_HELD_BY_OTHER_STRATEGY).
+const PUMP_FADE=pumpFadeConfig(process.env);
+if(PUMP_FADE.refused&&PUMP_FADE.refused!=='PUMP_FADE_OFF')console.warn('[PUMP_FADE] refused:',PUMP_FADE.refused,'— 급변 초단타 stays OFF (testnet only)');
+pumpFade=new PumpFadeExecutor({config:PUMP_FADE,client:PUMP_FADE.mode==='TESTNET'&&scalpClient?.mode==='TESTNET'?scalpClient:null,
+ contracts:symbol=>venueQuotes.clients.BINGX.contractsFor(symbol),candles1m:(symbol,limit)=>scalpMarket.klines(symbol,'1m',limit),
+ btcCandles:()=>scalpMarket.klines('BTCUSDT','5m',5),balance:testnetScalpBalance,
+ isBusy:(symbol,venueSymbol)=>Boolean(scalpExec?.heldSymbols().has(symbol)||scalpExec?.heldSymbols().has(venueSymbol))
+  ||LIVE.mode==='TESTNET'&&(live.busy.has(symbol)||live.store.records.some(r=>['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&(r.symbol===symbol||r.venueSymbol===venueSymbol)))
+  ||COPY.mode==='TESTNET'&&(copyTrader.heldSymbols().has(symbol)||Object.values(copyTrader.store.positions).some(p=>p.status==='OPEN'&&p.venueSymbol===venueSymbol)),
+ active:()=>scalpExec?.armed===true,
+ gate:()=>live.store.killSwitch?{ok:false,reason:'KILL_SWITCH'}:live.updating||live.paused?{ok:false,reason:'UPDATING'}:{ok:true},
+ budget:LIVE.mode==='LIVE'?null:testnetBudget,directory:storage.dir,journalFile:scalpExec.journalFile,log:(...a)=>console.log(...a),onEvent:e=>pumpFadeNotice(e)});
+if(LIVE.mode!=='LIVE'&&PUMP_FADE.mode==='TESTNET')testnetBudget.register('pumpFade',withTestnetResetRisk(pumpFade.budgetSource(),testnetHistoryReset,'pumpFade'));
+if(PUMP_FADE.mode==='TESTNET'&&pumpFade.client)setInterval(()=>{void pumpFade.tick().catch(e=>console.error('[PUMP_FADE]',e.message))},2000).unref?.();
 // Opt-in real-money reversal scalp (default OFF; requires SCALP_LIVE_MODE=LIVE + SCALP_LIVE_CONFIRM=REAL_MONEY_SCALP).
 // Runs in a completely separate executor/ledger from testnet scalpExec; starts OFF until first armed from #real,
 // then automatically restores ON across updates & restarts unless manually disarmed or blocked by a safety stop.
@@ -616,18 +637,21 @@ if(SCALP_LIVE_EXEC.mode==='LIVE'&&realBingxClient?.mode==='LIVE'){
 // +1/+5/+15/+60 min from public 1m klines (BingX first; Binance only for coins Binance lists, so an unknown symbol never
 // marks the Binance feed offline). Read only. The testnet scalp evaluates each alert's coin (scalp_executor.mjs pumpAlert).
 const pumpBook=new PumpAlertBook({directory:storage.dir,log:(...a)=>console.warn(...a),
+ // The per-alert 초단타 simulation (mode A / B) under the rules in force.
+ fadeRules:()=>pumpFade.rules(),
  // lists: from the cached BingX contract list / Binance listing only (no read); null while not loaded yet.
  sources:[{name:'BINGX',lists:symbol=>{const m=venueQuotes.clients.BINGX.contracts;return m?.size?m.has(symbol):null},klines:(symbol,limit)=>venueQuotes.clients.BINGX.klines(symbol,'1m',limit)},
   {name:'BINANCE',lists:symbol=>state.activeSet?.size?state.activeSet.has(symbol):null,klines:(symbol,limit)=>{if(!state.activeSet.has(symbol))throw Object.assign(Error('NOT_ON_BINANCE'),{code:'NOT_ON_BINANCE'});return klines(symbol,'1m',Math.min(1500,limit))}}],
  listed:async symbol=>{const c=(await venueQuotes.clients.BINGX.contractsFor(symbol))?.get?.(symbol);return c?c.tradable===true:false}});
 scalpExec.onPumpResult=(key,result)=>{if(key)pumpBook.attachScalp(key,result)};
+pumpFade.onResult=(key,result)=>{if(key)pumpBook.attachFade(key,result)};
 setInterval(()=>{void pumpBook.track().catch(e=>console.warn('[PUMP]',e.message))},60000).unref?.();
 // 실계좌 준비 점검 (ready_check.mjs, user 2026-11-24 13:35 "조건이 완료되면 알림으로 알려줄 수 있나 실계좌에 쓸 상황이
 // 되었다고", 13:37 "2주는 너무 멀어 100건으로 잡고 다시 한 번 검증해보자고"): hourly, read only. One message to the allowed
 // chat per group when it first meets the criteria (live-readiness.json). Never changes a setting, never arms, no orders.
 const readyLossLimits=()=>({dailyLossPct:Number(realSafety?.store?.dailyLossLimitPct)||0,copyLedgerLossPct:COPY.mode==='LIVE'?Number(copyTrader?.config?.ledgerLossPct)||0:0});
 // Only TRADER_LADDER scalp trades from its switch time count (user 2026-11-24, 카피식 추매).
-const readySummary=()=>evaluateReadiness({scalpRows:scalpExec.readinessRows(),pumpRecords:pumpBook.records,scalpScope:(s=>s?.active||Number(s?.since)>0?s:null)(scalpExec.managementScope())});
+const readySummary=()=>evaluateReadiness({scalpRows:scalpExec.readinessRows(),pumpRecords:pumpBook.records,pumpFadeRows:pumpFade.readinessRows(),scalpScope:(s=>s?.active||Number(s?.since)>0?s:null)(scalpExec.managementScope())});
 const readyNotifier=new ReadinessNotifier({directory:storage.dir,log:(...a)=>console.warn(...a),
  send:async text=>{
   if(accountAlerts)return accountAlerts.sendToAllowedChat(text);
@@ -643,6 +667,14 @@ if(COPY.enabled){
  setInterval(()=>{void copyListenerHealth.check().catch(e=>console.warn('[COPY LISTENER]',e.message))},30000).unref?.();
 }
 setInterval(()=>{void readyCheck()},3600000).unref?.();setTimeout(()=>{void readyCheck()},180000).unref?.();
+// 급변 알림 초단타: the screen notice, and entries / exits / problems to the allowed private chat (the readiness path).
+const PUMP_FADE_TG_EVENTS=new Set(['OPENED','CLOSED','STOP_FAILED','EMERGENCY_CLOSE_FAILED','ENTRY_OUTCOME_UNKNOWN']);
+function pumpFadeNotice(e){
+ if(e?.type==='CLOSED'||e?.type==='OPENED')try{reportsDirty=true}catch{}
+ const text=pumpFadeEventText(e);if(!text)return;
+ try{send('live-notice',{type:'PUMP_FADE_'+e.type,symbol:e.symbol??null,text,at:Date.now()})}catch{}
+ if(PUMP_FADE_TG_EVENTS.has(e?.type))void Promise.resolve().then(()=>readyNotifier.send(text)).catch(err=>console.warn('[PUMP_FADE] 텔레그램',err?.message));
+}
 function scalpNotice(e){
  if(e?.type==='CLOSED')try{reportsDirty=true}catch{} // the journal line follows within minutes; the report picks it up
  const text=scalpEventText(e);if(!text)return;
@@ -1375,7 +1407,10 @@ async function uploadReport(force=false){
   report.newsTranslation={provider:NEWS_PROVIDER.providerId,translated:state.newsTranslation?.done??null,total:state.newsTranslation?.total??null};
   if(report.scalp)report.scalp.runtime=scalpExec.runtimeSummary();
   // 급변 알림: count, fade / follow averages after costs by horizon, and the testnet scalp trades it triggered.
-  try{report.pumpAlerts={...pumpBook.summary(),scalpTrades:scalpExec.stats().byTrigger?.PUMP_ALERT??null}}catch(e){console.warn('[REPORTS] pump',e.message)}
+  // 급변 알림 초단타: its own stats and the per-alert calibration list (last 200: fade best / worst by horizon, 1m ATR %, R,
+  // confirmation, opposite candle, mode A / B hypothetical results, both strategies' decisions).
+  try{report.pumpAlerts={...pumpBook.summary(),scalpTrades:scalpExec.stats().byTrigger?.PUMP_ALERT??null,pumpFadeTrades:pumpFade.stats(),
+   pumpFade:{mode:pumpFade.config.mode,refused:pumpFade.config.refused,on:pumpFade.status().on,rules:pumpFade.rules(),open:pumpFade.store.open.length},alerts:pumpAlertRows(pumpBook.records)}}catch(e){console.warn('[REPORTS] pump',e.message)}
   // 실계좌 준비 점검: every group's criteria, values and the trade window measured (for a re-check on the same trades).
   try{report.liveReadiness=readyNotifier.status(readySummary())}catch(e){console.warn('[REPORTS] readiness',e.message)}
   const r=await pushReport(REPORTS_DIR,report,{keyFile:fs.existsSync(REPORTS_KEY)?REPORTS_KEY:null,files:scalpExport?.files??{}});
@@ -2522,8 +2557,10 @@ const server=http.createServer(async(req,res)=>{
   if(pathname==='/api/pump-alert'&&req.method==='POST'){
    const token=String(req.headers['x-copy-token']||''),want=String(process.env.COPY_LISTENER_TOKEN||'');
    if(!(want.length>=24&&safeTokenEqual(token,want)))return response(res,403,{error:'FORBIDDEN'});
+   // Both testnet strategies see each alert (user 2026-11-25 14:34): the 5m scalp's hand-off as before, and the 급변 알림 초단타.
    const r=pumpAlertEndpoint({token,want,body:await bodyJson(req),book:pumpBook,
-    onAlert:SCALP_EXEC.mode==='TESTNET'&&scalpClient?.mode==='TESTNET'?alert=>scalpExec.pumpAlert(alert):null});
+    onAlert:SCALP_EXEC.mode==='TESTNET'&&scalpClient?.mode==='TESTNET'?alert=>scalpExec.pumpAlert(alert):null,
+    onFade:PUMP_FADE.mode==='TESTNET'&&pumpFade.client?.mode==='TESTNET'?alert=>pumpFade.onAlert(alert):null});
    if(r.body?.recorded)reportsDirty=true;
    return response(res,r.status,r.body);
   }
@@ -2539,11 +2576,12 @@ const server=http.createServer(async(req,res)=>{
    const [scalp,rawBalance]=await Promise.all([SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?scalpExec.liveStatus():null,liveBalanceSnapshot()]);
    // One testnet screen (user 2026-11-17): one switch, the shared budget, totals over both strategies. Not for LIVE.
    const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(rawBalance?.usd)>0?Math.min(Number(rawBalance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
-    return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
+    return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY?'TESTNET':null,scalpStats:scalp?.stats??null,pumpFadeStats:pumpFade.config.mode==='TESTNET'||pumpFade.store.closed.length?pumpFade.stats():null})}})();
    const b=testnet?.budget,balance=hasTestnetBingx&&rawBalance?.venue==='BINGX'&&b?{...rawBalance,usd:b.balanceError?null:b.accountEquityUSD,at:b.balanceAt,error:b.balanceError}:rawBalance;
-   const pumpAlerts=testnet?{...pumpBook.summary(),scalpTrades:scalp?.stats?.byTrigger?.PUMP_ALERT??null}:null;
+   const pumpAlerts=testnet?{...pumpBook.summary(),scalpTrades:scalp?.stats?.byTrigger?.PUMP_ALERT??null,pumpFadeTrades:pumpFade.stats()}:null;
+   const pumpFadeView=testnet&&(pumpFade.config.mode==='TESTNET'||pumpFade.store.closed.length||pumpFade.store.open.length)?pumpFade.status():null;
    let liveReadiness=null;if(testnet)try{liveReadiness=readyNotifier.status(readySummary())}catch{}
-   return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,pumpAlerts,liveReadiness,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
+   return response(res,200,{readiness:readiness(),copy:COPY.enabled||copyTrader.store.closed.length?await copyLiveStatus():null,scalp,testnet,pumpAlerts,pumpFade:pumpFadeView,liveReadiness,...liveOverview({status:live.status(),records:live.store.records.map(r=>({...r,deletable:live.deleteBlock(r)===null})),
    priceOf:liveRecordPrice,balance,paperTrading:CONFIG.paperTrading})})}
   if(pathname.startsWith('/api/live/')&&req.method==='POST'){
    const body=await bodyJson(req);
@@ -2569,12 +2607,14 @@ const server=http.createServer(async(req,res)=>{
     try{
      const sigRes=live.resetTestnetHistory?.()||{removed:0};
      const scalpRes=scalpExec?.resetHistory?.()||{removed:0};
+     // The scalp's reset removes the shared journal file: the 초단타's history goes with it.
+     const pumpFadeRes=pumpFade?.resetHistory?.()||{removed:0};
      const copyRes=COPY.mode==='TESTNET'&&copyTrader?.resetTestnetHistory?copyTrader.resetTestnetHistory():{removed:0};
      const autoTestnet=x=>x?.source==='LIVE_AUTO'&&x.mode==='TESTNET';
      const journalRemoved=persisted.journal.filter(autoTestnet).length;
      if(journalRemoved>0){persisted.journal=persisted.journal.filter(x=>!autoTestnet(x));save()}
      testnetBudget.clearStop();
-     const removed={signal:sigRes.removed||0,scalp:scalpRes.removed||0,copy:copyRes.removed||0,journal:journalRemoved};
+     const removed={signal:sigRes.removed||0,scalp:scalpRes.removed||0,pumpFade:pumpFadeRes.removed||0,copy:copyRes.removed||0,journal:journalRemoved};
      testnetHistoryReset=recordManualTestnetPnlReset(storage.dir,{now:Date.now(),removed});
      if(hasTestnetBingx)await refreshTestnetBudgetBalance().catch(()=>{});
      reportsDirty=true;
