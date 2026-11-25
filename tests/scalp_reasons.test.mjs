@@ -43,6 +43,9 @@ test('reason codes from the helpers the scalp calls (squeeze guard, maker entry,
  for(const f of ['orderflow.mjs','maker_order.mjs','bingx_position_mode.mjs','pump_alert.mjs']){
   for(const [,code] of src(f).matchAll(/(?:reason|code)\s*:\s*'([A-Z][A-Z0-9_]{3,})'|\|\|\s*'(?:PUMP_[A-Z_]+)'/g))if(code&&!reasonInfo(code))missing.push(`${f}: ${code}`);
  }
+ // 고래 CVD (whale_cvd.mjs, user 2026-11-25): every result code and the six FireCharts series have an entry.
+ for(const [,code] of src('whale_cvd.mjs').matchAll(/'(WHALE_[A-Z_]+)'/g))if(!reasonInfo(code))missing.push(`whale_cvd.mjs: ${code}`);
+ for(const k of ['ORANGE','GREEN','RED','PURPLE','BROWN','BLUE'])if(!reasonInfo('WHALE_'+k))missing.push('WHALE_'+k);
  for(const code of ['SHORT_SQUEEZE_GUARD','LONG_SQUEEZE_GUARD','MAKER_STATE_UNCONFIRMED','BINGX_POSITION_MODE_UNKNOWN','PUMP_EVALUATION_FAILED','ENTRY_NOT_SENT','POST_ONLY_REJECTED','MARKET_FAILED'])
   if(!reasonInfo(code))missing.push(code);
  assert.deepEqual(missing,[]);

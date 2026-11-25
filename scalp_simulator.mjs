@@ -69,8 +69,9 @@ function signalScoreOf(sig,dir,rr){
  const saved=sig?.score??sig?.scalpScore??null;
  if(!sig?.evidence)return num(saved?.score);
  const inferred4h=sig.trend4h??(sig.withTrend===true?(dir==='LONG'?'up':'down'):sig.withTrend===false?(dir==='LONG'?'down':'up'):null);
- const bonus=Math.max(0,num(saved?.oiBonus)??0)+Math.max(0,num(saved?.cvdBonus)??0);
- return Math.min(100,scoreScalpSetup({direction:dir,evidence:sig.evidence,trend4h:inferred4h,btcTrend4h:sig.btcTrend4h??null,netRR:rr}).score+bonus);
+ // 고래 CVD (2026-11-25) is signed (±5): it can lower the total too.
+ const bonus=Math.max(0,num(saved?.oiBonus)??0)+Math.max(0,num(saved?.cvdBonus)??0)+(saved?.whaleCvd?(num(saved?.whaleBonus)??0):0);
+ return Math.max(0,Math.min(100,scoreScalpSetup({direction:dir,evidence:sig.evidence,trend4h:inferred4h,btcTrend4h:sig.btcTrend4h??null,netRR:rr}).score+bonus));
 }
 
 function evaluateSignal(sig,params){
