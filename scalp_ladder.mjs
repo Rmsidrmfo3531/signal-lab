@@ -15,7 +15,8 @@ import {roundDecimalToStep} from './decimal_grid.mjs';
 export const SCALP_MANAGEMENTS=Object.freeze({LADDER:'TRADER_LADDER',CURRENT:'CURRENT'});
 export const TRADER_LADDER=Object.freeze({
  version:1,
- steps:Object.freeze([1,1,2,4,8,16]),
+ // User 2026-11-25: doubled initial entry weight (2·2·4·8·16 = 5 steps, 32 total units kept).
+ steps:Object.freeze([2,2,4,8,16]),
  totalUnits:32,
  spacingMinPct:1.5,spacingAtrMult:1,
  // A strong zone counts as the add level when it lies at least this share of the spacing away from the last fill.
@@ -23,7 +24,7 @@ export const TRADER_LADDER=Object.freeze({
  tpNetPct:.6,
  maxHoldMin:2880, // 48 h (user 2026-11-25 01:10 "48시간까지 해보자 또 생기면 상한없음으로"; measured trader 99 % ≤ 24 h)
  // Spacing cap so the next add comes before the emergency line: the price distance from the average to the next add
- // is at most ~1.94 spacings on this ladder, kept under 90 % of the final line: spacing <= 0.45 x line / leverage.
+ // is at most ~1.88 spacings on this ladder, kept under 90 % of the final line: spacing <= 0.45 x line / leverage.
  spacingCapShare:.45,
  // A raised unit keeps 10 % over the venue minimum (a SHORT add at a higher price buys a little less per margin).
  minQtyHeadroom:1.1,
@@ -56,8 +57,8 @@ export function ladderSpacing({atrPct:atr=null,leverage=10,finalLineRoePct=75,mi
  return {spacingPct:+spacingPct.toFixed(4),basePct:+base.toFixed(4),capPct:Number.isFinite(cap)?+cap.toFixed(4):null,capped:spacingPct<base-1e-12,atrPct:Number.isFinite(Number(atr))?+Number(atr).toFixed(4):null};
 }
 
-/** The ladder for a new entry. unit = symbolCapUSD / 32 x sizeMult, held so the whole ladder fits min(symbolCap, room).
- * A unit under the venue minimum is raised to it and the ladder shortened from the END to stay within the cap;
+/** The ladder for a new entry. unit = symbolCapUSD / sum(steps) x sizeMult, held so the whole ladder fits min(symbolCap, room).
+ * A first step under the venue minimum is raised to it and the ladder shortened from the END to stay within the cap;
  * fewer than two steps (entry + one add) cannot be placed: LADDER_BELOW_MINIMUM. */
 export function planLadder({symbolCapUSD,roomUSD=Infinity,leverage,price,quantityStep,minQty=0,minNotional=0,sizeMult=1,steps=TRADER_LADDER.steps}){
  const fail=(reason,extra={})=>({ok:false,reason,...extra});
@@ -66,14 +67,16 @@ export function planLadder({symbolCapUSD,roomUSD=Infinity,leverage,price,quantit
  const capUSD=Math.min(symCap??0,Number.isFinite(Number(roomUSD))?Math.max(0,Number(roomUSD)):Infinity);
  if(!(capUSD>0))return fail('MARGIN_CAP');
  const mult=pos(sizeMult)??1;
- let units=[...steps],unit=symCap/TRADER_LADDER.totalUnits*mult,capped=false,raised=false;
+ let units=[...steps],unit=symCap/sum(steps)*mult,capped=false,raised=false;
  if(unit*sum(units)>capUSD+1e-9){unit=capUSD/sum(units);capped=true}
  const minQ=grid(Math.max(Number(minQty)||0,(Number(minNotional)||0)*1.02/px,step),quantityStep,'UP')||step;
- const minUnit=minQ*px/lev*TRADER_LADDER.minQtyHeadroom;
+ const minStepUnits=Math.max(1,Math.min(...units));
+ const minOrderMargin=minQ*px/lev*TRADER_LADDER.minQtyHeadroom;
+ const minUnit=minOrderMargin/minStepUnits;
  if(unit<minUnit){unit=minUnit;raised=true;while(units.length&&unit*sum(units)>capUSD+1e-9)units.pop()}
- if(units.length<2)return fail('LADDER_BELOW_MINIMUM',{minUnitMarginUSD:+minUnit.toFixed(4),capUSD:+capUSD.toFixed(4)});
- const qty0=Math.max(minQ,grid(unit*lev/px*(1+1e-9),quantityStep,'DOWN')||0);
- return {ok:true,unitMarginUSD:+unit.toFixed(6),units,totalUnits:sum(units),totalMarginUSD:+(unit*sum(units)).toFixed(6),symbolCapUSD:symCap,capUSD:+capUSD.toFixed(6),
+ if(units.length<2)return fail('LADDER_BELOW_MINIMUM',{minUnitMarginUSD:+minOrderMargin.toFixed(4),capUSD:+capUSD.toFixed(4)});
+ const qty0=Math.max(minQ,grid(units[0]*unit*lev/px*(1+1e-9),quantityStep,'DOWN')||0);
+ return {ok:true,unitMarginUSD:+unit.toFixed(6),firstMarginUSD:+(units[0]*unit).toFixed(6),units,totalUnits:sum(units),totalMarginUSD:+(unit*sum(units)).toFixed(6),symbolCapUSD:symCap,capUSD:+capUSD.toFixed(6),
   sizeMult:mult,capped,raised,shortened:units.length<steps.length,qty0,minQty:minQ};
 }
 

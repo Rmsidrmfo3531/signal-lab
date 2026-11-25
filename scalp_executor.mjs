@@ -1195,7 +1195,7 @@ export class ScalpExecutor{
   const symbolCapUSD=funds.equity*this.config.maxMarginPct/100;
   const roomUSD=Math.min((shared?.marginCapUSD??funds.equity*this.config.maxTotalMarginPct/100)-(shared?.marginUSD??this.#usedMargin()),funds.available!=null?funds.available*.9:Infinity);
   const lad=planLadder({symbolCapUSD,roomUSD,leverage:lev,price:plan.entry,quantityStep:c.quantityStep,minQty:c.minQuantityBase,minNotional:c.minNotionalUSDT,sizeMult});
-  if(!lad.ok)return {ok:false,reason:lad.reason,detail:lad.reason==='LADDER_BELOW_MINIMUM'?`1단위 최소 $${lad.minUnitMarginUSD} · 한도 $${lad.capUSD}`:null};
+  if(!lad.ok)return {ok:false,reason:lad.reason,detail:lad.reason==='LADDER_BELOW_MINIMUM'?`첫 진입 최소 $${lad.minUnitMarginUSD} · 한도 $${lad.capUSD}`:null};
   const sp=ladderSpacing({atrPct:await this.#atr1h(u.symbol),leverage:lev,finalLineRoePct:finalLine,minPct:this.config.ladderSpacingMinPct});
   const reservePct=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/1e4+SCALP_EXEC_COSTS.fundingRate;
   const reserve=ladderReserve({totalMarginUSD:lad.totalMarginUSD,leverage:lev,finalLineRoePct:finalLine,takerRate:plan.takerRate,reservePct});
