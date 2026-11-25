@@ -8,7 +8,8 @@
 //   LONG  +5 when a whale BUY zone sits at or under the entry within K (support under us);
 //         −5 when a whale SELL zone sits at or over the entry within K (resistance right overhead) and there is no support;
 //   SHORT mirrored (SELL zone at / above = +5, BUY zone at / below = −5 without a SELL zone);
-//   0 otherwise, and always 0 when the lookback was not read to at least 80 % (WHALE_ZONE_PARTIAL: never extrapolated).
+//   0 otherwise, and always 0 when the lookback was not read to at least 80 % or the read stops more than 60 s before now
+//   (WHALE_ZONE_PARTIAL: never extrapolated, never the old zones).
 //
 // Source: Binance USDT-M public /fapi/v1/aggTrades (weight 20 a page of 1000). There is no lighter Binance source with a
 // per-price split by order size: /futures/data/takerlongshortRatio (taker buy / sell volume per 5m) and the long / short
@@ -37,6 +38,9 @@ export const WHALE_ZONE_DEFAULTS=Object.freeze({
  // and only the 8 largest |net| bins are kept (then adjacent same-side bins merged).
  topN:8,floorPurpleMult:2,floorSharePct:5,
  minCoveragePct:80,     // below this the score is 0 (WHALE_ZONE_PARTIAL)
+ // The read must reach within 60 s of now (twice the 30 s memory), else 0 too (WHALE_ZONE_PARTIAL): a newer read that
+ // failed (budget, cooldown, error) or did not catch up leaves the newest prints out (review 2026-11-25).
+ maxStaleMs:60_000,
  maxPages:10,pageLimit:1000,reservePct:40,
  refreshMs:30_000,      // a symbol read less than 30 s ago is answered from memory
  storeTtlMs:15*60_000,  // a symbol unused for 15 min is dropped
@@ -107,14 +111,16 @@ const sameEdges=(a,b)=>{const x=Number(a?.purpleMinUSD),y=Number(b?.purpleMinUSD
 /** The snapshot of a symbol over [startMs, endMs]: coverage, whale trades (for the zones), series sums (record). */
 function snapshotOf(e,{startMs,endMs,pages=0,stopped=null,cached=false}){
  const from=e.reachedStart?startMs:Math.max(startMs,Number(e.firstAt)||endMs);
- // Covered up to now when the last forward read came back short (no newer trade at that moment), else to the last trade.
- const to=e.caughtUpAt!=null&&e.lastAt!=null&&e.caughtUpAt>=e.lastAt?endMs:Math.min(endMs,Number(e.lastAt)||startMs);
+ // Covered up to the moment the last forward read came back short (nothing newer then), else to the newest trade read.
+ // Never "to now" by itself: a later read that failed (budget, cooldown, error) does not move it (review 2026-11-25:
+ // it claimed 100 % on hours-old trades while every newer read failed).
+ const to=Math.min(endMs,Math.max(Number(e.lastAt)||startMs,Number(e.caughtUpAt)||0));
  const span=endMs-startMs,coveragePct=span>0?r2(clamp((to-from)/span,0,1)*100):0;
  const minutes=[...e.minutes.values()].filter(m=>m.at+60_000>startMs&&m.at<=endMs).sort((a,b)=>a.at-b.at);
  const scaled=sumMinutes(minutes,startMs,endMs,'scaled'),fixed=sumMinutes(minutes,startMs,endMs,'fixed');
  const whaleTrades=e.whale.filter(t=>t.at>=startMs&&t.at<=endMs);
  return {ok:true,rule:WHALE_ZONE_RULE,source:'BINANCE_AGG_TRADES',sourceNote:WHALE_CVD_SOURCE_NOTE,symbol:e.symbol,startMs,endMs,lookbackMin:r2(span/60000),
-  coveredFromMs:from,coveredToMs:to,coveragePct,complete:coveragePct>=99.9,pages,weight:pages*AGG_TRADES_WEIGHT,totalPages:e.pages,cached,...(stopped?{stopped}:{}),
+  coveredFromMs:from,coveredToMs:to,staleMs:Math.max(0,endMs-to),coveragePct,complete:coveragePct>=99.9,pages,weight:pages*AGG_TRADES_WEIGHT,totalPages:e.pages,cached,...(stopped?{stopped}:{}),
   thresholds:e.thresholds,...scaled,fixed:{thresholds:{...WHALE_CVD_FIXED},buckets:fixed.buckets,whaleCvdUSD:fixed.whaleCvdUSD,whaleCount:fixed.whaleCount},
   whaleTrades,minutes};
 }
@@ -258,6 +264,21 @@ export function buildWhaleZones(snap,{price,atrPct=null,...o}={}){
  return {...base,binWidth:p8(width),bins:bins.size,zones:zones.map(z=>({side:z.side,low:p8(z.lo*width),high:p8((z.hi+1)*width),netUSD:r0(z.netUSD),buyUSD:r0(z.buyUSD),sellUSD:r0(z.sellUSD),count:z.count,bins:z.bins}))};
 }
 
+/**
+ * Whether a snapshot may be used at all (score, ladder, API bands): read, at least minCoveragePct of the lookback (never
+ * under 80), and reaching within maxStaleMs (never over 60 s) of its end. {usable:true} or {usable:false,code,detail}.
+ */
+export function whaleSnapshotUsable(snap,{minCoveragePct=WHALE_ZONE_DEFAULTS.minCoveragePct,maxStaleMs=WHALE_ZONE_DEFAULTS.maxStaleMs}={}){
+ const C=WHALE_ZONE_CODES;
+ if(!snap?.ok)return {usable:false,code:C.UNAVAILABLE,detail:snap?.error||'NO_DATA'};
+ const minCov=Math.max(WHALE_ZONE_DEFAULTS.minCoveragePct,Number(minCoveragePct)||0);
+ if(!(Number(snap.coveragePct)>=minCov))return {usable:false,code:C.PARTIAL,detail:`${snap.coveragePct}% < ${minCov}%`};
+ const maxStale=Math.min(WHALE_ZONE_DEFAULTS.maxStaleMs,Number(maxStaleMs)>0?Number(maxStaleMs):WHALE_ZONE_DEFAULTS.maxStaleMs);
+ const lag=Number(snap.endMs)-Number(snap.coveredToMs);
+ if(!(lag<=maxStale))return {usable:false,code:C.PARTIAL,detail:`STALE ${Number.isFinite(lag)?Math.round(lag/1000):'?'}s > ${maxStale/1000}s`};
+ return {usable:true};
+}
+
 /** Zones near a price within K (% of the price): `under` = at or below (low <= price, price − high <= K),
  * `over` = at or above (high >= price, low − price <= K); the nearest first. */
 export function zonesNear(zones,price,nearPct){
@@ -272,7 +293,8 @@ export function zonesNear(zones,price,nearPct){
  * ± points for a trade direction at `entry` from a snapshot and its zones.
  * LONG: support = a BUY zone at or under the entry within K -> +bonus; else resistance = a SELL zone at or over it within
  * K -> −bonus; else 0. SHORT: support = a SELL zone at or over the entry within K, resistance = a BUY zone at or under it.
- * Coverage under minCoveragePct, no data, no whale prints or no zone: 0 (codes PARTIAL / UNAVAILABLE / NO_PRINTS / NO_ZONES).
+ * Coverage under minCoveragePct or a read older than maxStaleMs (whaleSnapshotUsable), no data, no whale prints or no zone:
+ * 0 (codes PARTIAL / UNAVAILABLE / NO_PRINTS / NO_ZONES).
  */
 export function evaluateWhaleZoneBonus(snap,zr,{direction,entry,atrPct=null,...o}={}){
  const D={...WHALE_ZONE_DEFAULTS,...o};
@@ -281,7 +303,8 @@ export function evaluateWhaleZoneBonus(snap,zr,{direction,entry,atrPct=null,...o
  const head={nearPct:near.pct,nearSource:near.source,minCoveragePct:minCov};
  if(!snap?.ok)return {...head,available:false,bonus:0,code:C.UNAVAILABLE,detail:snap?.error||'NO_DATA'};
  const cov={...head,available:true,coveragePct:snap.coveragePct};
- if(!(Number(snap.coveragePct)>=minCov))return {...cov,available:false,bonus:0,code:C.PARTIAL,detail:`${snap.coveragePct}% < ${minCov}%`};
+ const use=whaleSnapshotUsable(snap,{minCoveragePct:minCov});
+ if(!use.usable)return {...cov,available:false,bonus:0,code:C.PARTIAL,detail:use.detail};
  if(!(snap.whaleTrades?.length>0||Number(snap.whaleCount)>0))return {...cov,bonus:0,code:C.NO_PRINTS};
  if(!zr?.ok||!zr.zones?.length)return {...cov,bonus:0,code:C.NO_ZONES};
  const px=Number(entry)>0?Number(entry):Number(zr.price);
@@ -348,7 +371,7 @@ export function whaleZonesPayload(snap,zr,{atrPct=null,maxZones=WHALE_ZONE_DEFAU
  const near=whaleZoneNearPct(atrPct);
  const zones=(zr?.zones||[]).slice().sort((a,b)=>Math.abs(b.netUSD)-Math.abs(a.netUSD)).slice(0,maxZones).sort((a,b)=>a.low-b.low);
  return {ok:true,symbol:snap.symbol,rule:WHALE_ZONE_RULE,source:snap.source,sourceNote:snap.sourceNote,startMs:snap.startMs,endMs:snap.endMs,lookbackMin:snap.lookbackMin,
-  coveragePct:snap.coveragePct,partial:!(snap.coveragePct>=minCoveragePct),cached:snap.cached===true,price:zr?.price??null,atrPct:fin(atrPct)?r4(atrPct):null,
+  coveragePct:snap.coveragePct,staleMs:snap.staleMs??null,partial:!whaleSnapshotUsable(snap,{minCoveragePct}).usable,cached:snap.cached===true,price:zr?.price??null,atrPct:fin(atrPct)?r4(atrPct):null,
   binPct:zr?.binPct??null,binSource:zr?.binSource??null,nearPct:near.pct,floorUSD:zr?.floorUSD??null,purpleMinUSD:zr?.purpleMinUSD??null,brownMinUSD:snap.thresholds?.brownMinUSD??null,
   scale:{mode:snap.thresholds?.mode??'fixed',source:snap.thresholds?.source??'FIXED',factor:snap.thresholds?.factor??1},
   whaleNotionalUSD:zr?.whaleNotionalUSD??null,whaleCvdUSD:snap.whaleCvdUSD,shrimpCvdUSD:snap.shrimpCvdUSD,

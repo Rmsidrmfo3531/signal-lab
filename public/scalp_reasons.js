@@ -64,7 +64,7 @@ const G={
  WHALE_ZONE_NONE:['score','근처 고래 매물대 없음',S=>`고래 매물대는 있지만 진입가에서 1시간 ATR×${n(S.whaleZoneNearAtrMult)}(ATR이 없으면 ${n(S.whaleZoneNearPct)}%) 안에 없어 0점입니다.`],
  WHALE_ZONE_NO_ZONES:['score','고래 매물대 없음',S=>`최근 ${n(S.whaleZoneHours)}시간 고래 주문은 있었지만 기준(보라 기준의 ${n(S.whaleZoneFloorPurpleMult)}배·고래 거래대금의 ${n(S.whaleZoneFloorSharePct)}%)을 넘는 가격 구간이 없어 0점입니다.`],
  WHALE_ZONE_NO_PRINTS:['score','매물대 고래 주문 없음',S=>`최근 ${n(S.whaleZoneHours)}시간 보라·갈색 크기의 시장가 주문이 없어 0점입니다.`],
- WHALE_ZONE_PARTIAL:['score','고래 체결 일부만',S=>`최근 ${n(S.whaleZoneHours)}시간 체결을 ${n(S.whaleZoneMinCoveragePct)}% 미만만 읽어(한 번에 최대 ${n(S.whaleZoneMaxPages)}쪽, 큰 코인은 체결이 많음) 짐작하지 않고 0점으로 둡니다(진입은 막지 않음).`],
+ WHALE_ZONE_PARTIAL:['score','고래 체결 일부만',S=>`최근 ${n(S.whaleZoneHours)}시간 체결을 ${n(S.whaleZoneMinCoveragePct)}% 미만만 읽었거나(한 번에 최대 ${n(S.whaleZoneMaxPages)}쪽, 큰 코인은 체결이 많음) 최근 ${n(S.whaleZoneMaxStaleSec)}초 안까지 새 체결을 읽지 못해(공개 조회 한도·오류) 짐작하지 않고 0점으로 둡니다(진입은 막지 않음, 추매 2배 자리에도 쓰지 않음).`],
  WHALE_ZONE_UNAVAILABLE:['score','고래 매물대 확인 불가',()=>'Binance 체결 내역(aggTrades)을 읽지 못해(바이낸스 미상장·공개 조회 한도·시간 초과) 진입을 막지 않고 0점으로 둡니다.'],
  // 한도·차단 — #blocked / #precheck / testnet_budget.mjs
  NOT_ARMED:['limit','단타 꺼짐',()=>'테스트넷 스위치가 꺼져 있거나 켜고 끄는 사이에 들어온 신호라 새로 진입하지 않습니다.'],
@@ -206,7 +206,7 @@ export const SCORE_ITEMS=Object.freeze([
  ['rsiExtreme','RSI',5,()=>'RSI(14) 극단 — 롱은 30에서 0점, 18 이하 5점 · 숏은 70에서 0점, 82 이상 5점 (사이는 1점 단위로 비례)'],
  ['oiBonus','수급',null,S=>`30분 미결제약정(OI)이 1% 넘게 줄면(청산 소진) +${n(S.orderflowOiBonus)}점 보너스`],
  ['cvdBonus','CVD',null,S=>`5분 CVD가 진입 방향으로 15% 넘게 강하게 반전하면 +${n(S.orderflowCvdBonus)}점 보너스`],
- ['whaleBonus','고래매물대',null,S=>`최근 ${n(S.whaleZoneHours)}시간 보라(주문 $10만~$100만)+갈색 고래($100만~$1,000만)의 가격대별 순매수·순매도로 만든 고래 매물대 — 롱은 진입가 아래 1시간 ATR×${n(S.whaleZoneNearAtrMult)}(없으면 ${n(S.whaleZoneNearPct)}%) 안 매수 매물대(지지)면 +${n(S.whaleCvdBonus)}점, 지지 없이 바로 위 매도 매물대(저항)면 −${n(S.whaleCvdBonus)}점, 아니면 0점 (숏은 반대 · 체결 ${n(S.whaleZoneMinCoveragePct)}% 미만이면 0점 · 주황 새우 $100~$1,000·초록·빨강·파랑 전체와 예전 급변 구간 규칙은 기록만 · ${WHALE_SRC} · 알트는 BTC 대비 24시간 거래대금의 제곱근 비율로 모든 기준 축소, 보라 최소 ${man(S.whaleCvdMinPurpleUSD)})`]]);
+ ['whaleBonus','고래매물대',null,S=>`최근 ${n(S.whaleZoneHours)}시간 보라(주문 $10만~$100만)+갈색 고래($100만~$1,000만)의 가격대별 순매수·순매도로 만든 고래 매물대 — 롱은 진입가 아래 1시간 ATR×${n(S.whaleZoneNearAtrMult)}(없으면 ${n(S.whaleZoneNearPct)}%) 안 매수 매물대(지지)면 +${n(S.whaleCvdBonus)}점, 지지 없이 바로 위 매도 매물대(저항)면 −${n(S.whaleCvdBonus)}점, 아니면 0점 (숏은 반대 · 체결 ${n(S.whaleZoneMinCoveragePct)}% 미만이거나 최근 ${n(S.whaleZoneMaxStaleSec)}초 안까지 못 읽으면 0점 · 주황 새우 $100~$1,000·초록·빨강·파랑 전체와 예전 급변 구간 규칙은 기록만 · ${WHALE_SRC} · 알트는 BTC 대비 24시간 거래대금의 제곱근 비율로 모든 기준 축소, 보라 최소 ${man(S.whaleCvdMinPurpleUSD)})`]]);
 
 const entry=code=>{const c=REASON_ALIASES[code]||code,g=G[c];return g?{code:c,cat:g[0],label:g[1],desc:g[2]}:null};
 /** Every glossary code (canonical, each once). */

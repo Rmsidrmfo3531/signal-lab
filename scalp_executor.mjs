@@ -35,7 +35,7 @@ import {scalpReasonKo} from './scalp_telegram.mjs';
 import {livePositionView} from './live_overview.mjs';
 import {evaluateScalpOrderflowBoost,evaluateScalpSqueezeGuard} from './orderflow.mjs';
 import {evaluateWhaleCvdBonus,whaleCvdRecord,whaleCvdSummaryKo,whaleScaleMode,WHALE_CVD_DEFAULTS} from './whale_cvd.mjs';
-import {buildWhaleZones,evaluateWhaleZoneBonus,whaleZoneRecord,whaleZoneSummaryKo,whaleWindowSnapshot,whaleLadderZones,whaleSplitOf,whaleZoneLookbackMs,whaleZoneBinPct,whaleZoneNearPct,WHALE_SPLIT_KEYS,WHALE_ZONE_DEFAULTS,WHALE_ZONE_RULE} from './whale_zones.mjs';
+import {buildWhaleZones,evaluateWhaleZoneBonus,whaleZoneRecord,whaleZoneSummaryKo,whaleWindowSnapshot,whaleLadderZones,whaleSplitOf,whaleSnapshotUsable,whaleZoneLookbackMs,whaleZoneBinPct,whaleZoneNearPct,WHALE_SPLIT_KEYS,WHALE_ZONE_DEFAULTS,WHALE_ZONE_RULE} from './whale_zones.mjs';
 import {waitForFlat} from './live_orders.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,scalpMargin,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
@@ -2488,10 +2488,12 @@ export class ScalpExecutor{
   const lookbackMs=whaleZoneLookbackMs(this.config.whaleZoneHours);
   const snap=await withTimeout(Promise.resolve().then(()=>this.whaleZones(p.symbol,{lookbackMs,endMs:now,direction:p.direction,scale:this.config.whaleCvdScale??'auto',maxPages:this.config.whaleZoneMaxPages??WHALE_ZONE_DEFAULTS.maxPages})),
    WHALE_ZONE_DEFAULTS.timeoutMs,{ok:false,error:'timeout'}).catch(e=>({ok:false,error:String(e?.message||e).slice(0,80)}));
-  const enough=snap?.ok&&Number(snap.coveragePct)>=WHALE_ZONE_DEFAULTS.minCoveragePct;
+  // The score's own test (whaleSnapshotUsable): >= 80 % of the lookback read and reaching within 60 s of now; a read whose
+  // newer pages failed is never used with its old zones (review 2026-11-25).
+  const use=whaleSnapshotUsable(snap),enough=use.usable;
   const zr=enough?buildWhaleZones(snap,{price:L.lastFill??p.avg,atrPct:L.atrPct}):null;
   const list=zr?whaleLadderZones(zr,p.direction):[];
-  L.whaleZones={at:now,list,coveragePct:snap?.ok?snap.coveragePct:null,code:!snap?.ok?'WHALE_ZONE_UNAVAILABLE':enough?null:'WHALE_ZONE_PARTIAL',...(enough?{}:{retryAt:now+5*60000})};
+  L.whaleZones={at:now,list,coveragePct:snap?.ok?snap.coveragePct:null,code:enough?null:use.code,...(enough?{}:{detail:use.detail,retryAt:now+5*60000})};
   return list;
  }
  /** Strong 4H / 1D zones of this coin (scalp_ladder.mjs strongZones), read again once per 4H candle. */
@@ -3076,7 +3078,7 @@ export class ScalpExecutor{
     whaleCvd:c.whaleCvd!==false,whaleCvdBonus:c.whaleCvdBonus??WHALE_CVD_DEFAULTS.bonus,whaleCvdMinSharePct:c.whaleCvdMinSharePct??WHALE_CVD_DEFAULTS.minSharePct,whaleCvdScale:c.whaleCvdScale??'auto',whaleCvdMaxPages:c.whaleCvdMaxPages??WHALE_CVD_DEFAULTS.maxPages,whaleCvdWindowMin:WHALE_CVD_DEFAULTS.maxWindowMs/60000,whaleCvdMinPurpleUSD:WHALE_CVD_DEFAULTS.minPurpleUSD,whaleCvdFixedPurpleUSD:100_000,whaleCvdFixedBrownUSD:1_000_000,
     whaleZoneHours:c.whaleZoneHours??WHALE_ZONE_DEFAULTS.lookbackHours,whaleZoneMaxPages:c.whaleZoneMaxPages??WHALE_ZONE_DEFAULTS.maxPages,whaleZoneBinAtrMult:WHALE_ZONE_DEFAULTS.binAtrMult,whaleZoneBinPct:WHALE_ZONE_DEFAULTS.binPctFallback,
     whaleZoneNearAtrMult:WHALE_ZONE_DEFAULTS.nearAtrMult,whaleZoneNearPct:WHALE_ZONE_DEFAULTS.nearPctFallback,whaleZoneTopN:WHALE_ZONE_DEFAULTS.topN,whaleZoneFloorPurpleMult:WHALE_ZONE_DEFAULTS.floorPurpleMult,
-    whaleZoneFloorSharePct:WHALE_ZONE_DEFAULTS.floorSharePct,whaleZoneMinCoveragePct:WHALE_ZONE_DEFAULTS.minCoveragePct,whaleZoneRefreshMin:WHALE_ZONE_DEFAULTS.storeTtlMs/60000,
+    whaleZoneFloorSharePct:WHALE_ZONE_DEFAULTS.floorSharePct,whaleZoneMinCoveragePct:WHALE_ZONE_DEFAULTS.minCoveragePct,whaleZoneMaxStaleSec:WHALE_ZONE_DEFAULTS.maxStaleMs/1000,whaleZoneRefreshMin:WHALE_ZONE_DEFAULTS.storeTtlMs/60000,
     sessionWeighting:c.sessionWeighting!==false,sessionEuMult:c.sessionEuMult??0.5,sessionUsMult:c.sessionUsMult??1.15,
     bounceSizing:c.bounceSizing!==false,bounceThresholdPct:c.bounceThresholdPct??20,bounceHighMult:c.bounceHighMult??1.35,bounceLowMult:c.bounceLowMult??0.8,
     symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,

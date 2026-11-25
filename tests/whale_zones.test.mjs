@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {WHALE_CVD_FIXED,WHALE_CVD_CODES,whaleThresholds} from '../whale_cvd.mjs';
 import {
- WhaleTradeStore,buildWhaleZones,evaluateWhaleZoneBonus,whaleZoneRecord,whaleWindowSnapshot,whaleSplitOf,whaleLadderZones,whaleZonesPayload,
+ WhaleTradeStore,buildWhaleZones,evaluateWhaleZoneBonus,whaleZoneRecord,whaleWindowSnapshot,whaleSplitOf,whaleLadderZones,whaleZonesPayload,whaleSnapshotUsable,
  whaleZoneSummaryKo,whaleZoneBinPct,whaleZoneNearPct,whaleZoneLookbackMs,WHALE_ZONE_CODES,WHALE_ZONE_DEFAULTS,
 } from '../whale_zones.mjs';
 import {PublicReadBudget} from '../public_read_budget.mjs';
@@ -128,6 +128,35 @@ test('coverage gate: under 80 % of the lookback read is 0 (WHALE_ZONE_PARTIAL), 
  // The whole 3 h history but a 4 h lookback: everything was read (the first trade is the coin's first) -> 100 %.
  const full=await new WhaleTradeStore({now:()=>end}).read('SOLUSDT',{request,lookbackMs:4*H,endMs:end,maxPages:5});
  assert.equal(full.coveragePct,100);
+});
+
+test('review 2026-11-25: a newer read that fails never claims coverage to now; a read older than 60 s scores 0 (PARTIAL)',async()=>{
+ let clock=10*H,fail=false;
+ const all=Array.from({length:500},(_,i)=>agg(i+1,clock-3*H+i*20_000,i%50===0?500_000:200,'BUY',99.7));
+ const request=async route=>{if(fail)throw Error('Binance HTTP 429');const u=new URL(route,'https://x'),lim=Number(u.searchParams.get('limit')),from=u.searchParams.get('fromId');
+  return from==null?all.slice(-lim):all.filter(t=>t.a>=Number(from)).slice(0,lim)};
+ const store=new WhaleTradeStore({now:()=>clock}),opts={request,lookbackMs:4*H};
+ let s=await store.read('SOLUSDT',opts);
+ assert.equal(s.coveragePct,100);assert.equal(s.coveredToMs,clock);assert.equal(s.staleMs,0);
+ // Within the 30 s memory: from memory, still fresh enough to score.
+ clock+=20_000;s=await store.read('SOLUSDT',opts);assert.equal(s.cached,true);assert.equal(s.staleMs,20_000);
+ let zr=buildWhaleZones(s,{price:100});assert.equal(evaluateWhaleZoneBonus(s,zr,{direction:'LONG',entry:100}).code,C.SUPPORT);
+ // Every newer read fails for 10 min (429 / budget / cooldown) while whales sell right over the price.
+ fail=true;const t=clock;for(let k=0;k<20;k++)all.push(agg(all.length+1,t+k*1000,600_000,'SELL',100.3));
+ for(let i=0;i<10;i++){clock+=60_000;s=await store.read('SOLUSDT',opts)}
+ assert.equal(s.ok,true);assert.equal(s.coveredToMs,t-20_000,'covered only up to the last read that caught up');
+ assert.ok(s.coveragePct<100&&s.coveragePct>95,String(s.coveragePct));assert.equal(s.staleMs,clock-(t-20_000));
+ zr=buildWhaleZones(s,{price:100});
+ const e=evaluateWhaleZoneBonus(s,zr,{direction:'LONG',entry:100});
+ assert.equal(e.bonus,0);assert.equal(e.code,C.PARTIAL,'never the old zones');assert.match(e.detail,/^STALE \d+s > 60s$/);
+ assert.equal(whaleSnapshotUsable(s).usable,false);assert.equal(whaleSnapshotUsable(s,{maxStaleMs:3600_000}).usable,false,'60 s is a ceiling');
+ const p=whaleZonesPayload(s,zr);assert.equal(p.partial,true);
+ // Reads work again: one forward read catches up, fresh and full again.
+ fail=false;clock+=31_000;s=await store.read('SOLUSDT',opts);
+ assert.equal(s.coveredToMs,clock);assert.equal(s.coveragePct,100);assert.equal(whaleSnapshotUsable(s).usable,true);
+ zr=buildWhaleZones(s,{price:100});assert.ok(zr.zones.some(z=>z.side==='SELL'),'the new SELL zone is in');
+ // A snapshot without its end / covered-to times is never used.
+ assert.equal(whaleSnapshotUsable({ok:true,coveragePct:100}).usable,false);
 });
 
 // A fake Binance aggTrades feed: ids 1..n, one trade a second; `more(k)` appends k newer trades later.
@@ -401,15 +430,19 @@ test('ladder: whale zones on our side count as strong zones for the ×2 step (ki
  const partial={...snap,coveragePct:50};const keep=snap;snap=partial;
  v.setMark(+(f*.99).toFixed(2));clock.t+=10_000;await ex.reconcile();
  assert.equal(whaleReads,1);assert.deepEqual(p.ladder.whaleZones.list,[]);assert.equal(p.ladder.whaleZones.code,'WHALE_ZONE_PARTIAL');assert.equal(p.ladder.filled,1,'0.99 f is above the spacing level');
+ // A full-coverage read whose newest pages failed (stops 2 min before its end): stale, no whale zone either (review 2026-11-25).
+ snap={...keep,coveredToMs:keep.endMs-120_000};clock.t+=6*60_000;await ex.reconcile();
+ assert.equal(whaleReads,2);assert.deepEqual(p.ladder.whaleZones.list,[]);assert.equal(p.ladder.whaleZones.code,'WHALE_ZONE_PARTIAL');assert.match(p.ladder.whaleZones.detail,/^STALE 120s/);
+ assert.equal(p.ladder.filled,1);
  // Full read (after the 5 min retry): the BUY zone is the add level, step 2 doubled, kind WHALE recorded.
  snap=keep;clock.t+=6*60_000;v.setMark(+(f*.9885).toFixed(2));await ex.reconcile();
- assert.equal(whaleReads,2);assert.equal(p.ladder.whaleZones.list.length,1);assert.equal(p.ladder.whaleZones.list[0].side,'BUY');
+ assert.equal(whaleReads,3);assert.equal(p.ladder.whaleZones.list.length,1);assert.equal(p.ladder.whaleZones.list[0].side,'BUY');
  assert.equal(p.ladder.filled,2,JSON.stringify({next:p.ladder.next,last:p.ladder.lastReason}));
  const fill=p.ladder.fills[1];
  assert.equal(fill.zone.kind,'WHALE');assert.deepEqual(fill.zone.why,['WHALE_BUY_ZONE']);assert.ok(fill.boost>0,'×2 step');assert.equal(fill.units,2);
  const ev=ex.store.events.find(e=>e.type==='LADDER_ADD');assert.equal(ev.zone.kind,'WHALE');
  // Read again only after 15 min.
- clock.t+=60_000;v.setMark(+(p.ladder.lastFill*.99).toFixed(2));await ex.reconcile();assert.equal(whaleReads,2);
+ clock.t+=60_000;v.setMark(+(p.ladder.lastFill*.99).toFixed(2));await ex.reconcile();assert.equal(whaleReads,3);
 });
 
 test('server: /api/whale-zones read-only route and the scalp reader on budgetedPublicRead (no binance() side effects)',()=>{
