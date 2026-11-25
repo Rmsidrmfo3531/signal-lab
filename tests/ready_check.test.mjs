@@ -196,3 +196,19 @@ test('readiness sample keeps TRADER_LADDER managementSince without score-rules r
  assert.match(src,/managementScope\(\)\{return \{management:SCALP_MANAGEMENTS\.LADDER,since:Number\(this\.store\.managementSince\?\.\[SCALP_MANAGEMENTS\.LADDER\]\)\|\|null,active:this\.#management\(\)===SCALP_MANAGEMENTS\.LADDER\}\}/);
 });
 
+test('P1-4: readiness exposes MDD/winRate on scalp groups and median15/winRate15/maxMae15 on pump fade',()=>{
+ const g=scalpGroupReadiness(trades(100,{win:2,loss:1,lossEvery:4}),{group:'SCALP_SHORT'});
+ assert.equal(g.winRatePct,75);
+ assert.equal(g.maxDrawdownUSD,1);
+ assert.match(readinessMessage(g),/승률 75% · MDD \$1\.00/);
+ const p=pumpReadiness([
+  ...Array.from({length:25},(_,i)=>({at:T0+i*60000,symbol:'AUSDT',dir:'UP',bingx:{listed:true},track:{horizons:{15:{fade:{netPct:0.4,maePct:-1.2}},60:{fade:{netPct:0.2}}}}})),
+  ...Array.from({length:25},(_,i)=>({at:T0+(25+i)*60000,symbol:'BUSDT',dir:'UP',bingx:{listed:true},track:{horizons:{15:{fade:{netPct:1.0,maePct:-2.5}},60:{fade:{netPct:0.3}}}}})),
+ ]);
+ assert.equal(p.median15Pct,0.7);
+ assert.equal(p.winRate15Pct,100);
+ assert.equal(p.maxMae15Pct,-2.5);
+ assert.match(readinessMessage(p),/중앙값 \+0\.70% · 승률 100%/);
+});
+
+

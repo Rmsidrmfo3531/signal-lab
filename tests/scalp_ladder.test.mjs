@@ -366,3 +366,38 @@ test('position cards align CURRENT and TRADER_LADDER into identical 12-cell unif
  assert.ok(lad.indexOf('마지막 선')<lad.indexOf('익절'));
 });
 
+test('P1-1/P1-2: STOPPED ladder releases unspent tail budget, journalLine uses ladder reserveRiskUSD, and TP retry allows 1-tick profitable buffer',async()=>{
+ const {v,clock,ex,p}=await opened();
+ const fullMargin=ex.budgetSource().usedMargin(),fullRisk=ex.budgetSource().openRisk();
+ assert.equal(fullMargin,1000);
+ assert.equal(fullRisk,766);
+ // Once ladder stops adding, only actual open margin + its final-line risk stay reserved.
+ p.ladder.state='STOPPED';
+ assert.ok(ex.budgetSource().usedMargin()<100,'stopped ladder releases unspent tail margin');
+ assert.ok(ex.budgetSource().openRisk()<100,'stopped ladder releases unspent tail risk');
+
+ // journalLine uses ladder reserveRiskUSD rather than phantom 0.25 ATR stop
+ const line=journalLine({...p,initialStop:p.avg*0.999,closedAt:clock.t+60000,closeReason:'LADDER_TAKE_PROFIT',netUSD:7.66});
+ assert.equal(line.pnl.riskUSDActual,766);
+ assert.equal(line.pnl.r,0.01);
+
+ // TP retry (n>=2) applies 1-tick profitable buffer when 1st IOC expires
+ const {v:v2,clock:c2,ex:ex2,p:p2}=await opened();
+ const origPlace=v2.client.placeOrder;
+ let iocCalls=[];
+ v2.client.placeOrder=async(ord,opt)=>{
+  if(ord.type==='LIMIT'&&ord.timeInForce==='IOC'){
+   iocCalls.push(Number(ord.price));
+   if(iocCalls.length===1)return {order:{orderId:'ioc1',status:'EXPIRED',executedQty:'0'}};
+  }
+  return origPlace(ord,opt);
+ };
+ const tp=p2.ladder.tpPrice||+(p2.avg*1.008).toFixed(2);
+ setMark(v2,'SOLUSDT',tp);
+ c2.t+=5000;await ex2.reconcile();
+ c2.t+=5000;await ex2.reconcile();
+ assert.equal(iocCalls.length,2);
+ assert.ok(iocCalls[1]<iocCalls[0],'LONG TP retry steps down 1 tick while staying profitable');
+});
+
+

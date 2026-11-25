@@ -14,7 +14,7 @@ export const READY_SCALP_MIN_PROFIT_FACTOR=1.3;   // A2 profit factor after fees
 export const READY_SCALP_MAX_BIG_LOSS_X=5;        // A4 average big loss ≤ 5 × the average winning trade
 // A4 "big loss" exits: the −75 % ROE catastrophe cut, the emergency close after a failed protective stop, and the
 // TRADER_LADDER final line (the same −75 % ROE after the last ladder step, user 2026-11-24 "(나) 마지막 선에서 정리"),
-// and a losing 24 h ladder expiry (it can close a full ladder at a large loss; counted only when the trade lost).
+// and a losing 48 h ladder expiry (it can close a full ladder at a large loss; counted only when the trade lost).
 export const READY_BIG_LOSS_EXIT_REASONS=Object.freeze(['EMERGENCY_ROE_STOP','NO_STOP','LADDER_FINAL_LINE','LADDER_MAX_HOLD']);
 // A3: both the older and the newer half of the group's trades (by count, oldest first) have net PnL > 0.
 // B. 급변 알림 되돌림 (fade): every criterion must hold.
@@ -31,6 +31,8 @@ const r2=x=>Number.isFinite(x)?Math.round(x*100)/100:x;
 const r4=x=>Number.isFinite(x)?Math.round(x*1e4)/1e4:null;
 const sum=a=>a.reduce((s,v)=>s+v,0);
 const mean=a=>a.length?sum(a)/a.length:null;
+const median=a=>{if(!a.length)return null;const s=[...a].sort((x,y)=>x-y),m=Math.floor(s.length/2);return s.length%2?s[m]:(s[m-1]+s[m])/2};
+const maxDrawdown=nets=>{let eq=0,peak=0,mdd=0;for(const v of nets){eq+=v;if(eq>peak)peak=eq;if(peak-eq>mdd)mdd=peak-eq}return r2(mdd)};
 // Boundaries are inclusive as written (PF ≥ 1.3, ratio ≤ 5); EPS absorbs float sums such as 50 × 1.3 / 50.
 const EPS=1e-9;
 /** Older / newer half by count (oldest first); an odd middle trade goes to the newer half. */
@@ -50,6 +52,8 @@ export function scalpGroupReadiness(rows,{group='SCALP_ALL'}={}){
  const big=list.filter(x=>READY_BIG_LOSS_EXIT_REASONS.includes(x.closeReason)&&x.net<0).map(x=>-x.net);
  const avgWin=mean(wins),avgBig=mean(big);
  const bigX=!big.length?null:avgWin>0?avgBig/avgWin:Infinity;
+ const mddUSD=maxDrawdown(list.map(x=>x.net));
+ const winRatePct=n?r2(wins.length/n*100):null;
  const checks={
   trades:n>=READY_SCALP_MIN_TRADES,
   profitFactor:pf!==null&&pf>=READY_SCALP_MIN_PROFIT_FACTOR-EPS,
@@ -57,7 +61,7 @@ export function scalpGroupReadiness(rows,{group='SCALP_ALL'}={}){
   bigLoss:bigX===null||bigX<=READY_SCALP_MAX_BIG_LOSS_X+EPS};
  return withLine({group,label:READY_LABELS[group],kind:'SCALP',ready:Object.values(checks).every(Boolean),checks,
   trades:n,minTrades:READY_SCALP_MIN_TRADES,progress:Math.min(1,n/READY_SCALP_MIN_TRADES),
-  netUSD:r2(sum(list.map(x=>x.net))),profitFactor:pf===Infinity?'INF':pf===null?null:r4(pf),minProfitFactor:READY_SCALP_MIN_PROFIT_FACTOR,
+  netUSD:r2(sum(list.map(x=>x.net))),winRatePct,maxDrawdownUSD:mddUSD,profitFactor:pf===Infinity?'INF':pf===null?null:r4(pf),minProfitFactor:READY_SCALP_MIN_PROFIT_FACTOR,
   olderHalf:{count:older.length,netUSD:r2(olderNet)},newerHalf:{count:newer.length,netUSD:r2(newerNet)},
   bigLoss:{count:big.length,avgLossUSD:avgBig===null?null:r2(avgBig),avgWinUSD:avgWin===null?null:r2(avgWin),ratio:bigX===Infinity?'INF':bigX===null?null:r4(bigX),max:READY_SCALP_MAX_BIG_LOSS_X,reasons:[...READY_BIG_LOSS_EXIT_REASONS]},
   // The exact trades measured (closedAt of the first and last, and how many), for a re-check on the same set.
@@ -70,8 +74,12 @@ export function pumpReadiness(records){
  const listed=(Array.isArray(records)?records:[]).filter(x=>x?.bingx?.listed===true).map((x,i)=>({x,i}))
   .sort((a,b)=>num(a.x.at)-num(b.x.at)||a.i-b.i).map(r=>r.x);
  const f=(x,k)=>{const v=x?.track?.horizons?.[k]?.fade?.netPct;return v===null||v===undefined||v===''?null:Number.isFinite(Number(v))?Number(v):null};
+ const mae=(x,k)=>{const v=x?.track?.horizons?.[k]?.fade?.maePct;return v===null||v===undefined||v===''?null:Number.isFinite(Number(v))?Number(v):null};
  const t15=listed.filter(x=>f(x,h)!==null),t60=listed.filter(x=>f(x,h2)!==null);
- const a15=mean(t15.map(x=>f(x,h))),a60=mean(t60.map(x=>f(x,h2)));
+ const vals15=t15.map(x=>f(x,h)),maes15=t15.map(x=>mae(x,h)).filter(v=>v!==null);
+ const a15=mean(vals15),a60=mean(t60.map(x=>f(x,h2))),med15=median(vals15);
+ const winRate15Pct=vals15.length?r2(vals15.filter(v=>v>0).length/vals15.length*100):null;
+ const maxMae15Pct=maes15.length?r4(Math.min(...maes15)):null;
  const [older,newer]=splitHalves(t15),o=mean(older.map(x=>f(x,h))),w=mean(newer.map(x=>f(x,h)));
  const checks={
   tracked:t15.length>=READY_PUMP_MIN_TRACKED,
@@ -80,7 +88,7 @@ export function pumpReadiness(records){
   avg60:a60!==null&&a60>=0};
  return withLine({group:'PUMP_FADE',label:READY_LABELS.PUMP_FADE,kind:'PUMP',ready:Object.values(checks).every(Boolean),checks,
   tracked:t15.length,minTracked:READY_PUMP_MIN_TRACKED,progress:Math.min(1,t15.length/READY_PUMP_MIN_TRACKED),
-  avg15Pct:r4(a15),olderHalf:{count:older.length,avgPct:r4(o)},newerHalf:{count:newer.length,avgPct:r4(w)},
+  avg15Pct:r4(a15),median15Pct:r4(med15),winRate15Pct,maxMae15Pct,olderHalf:{count:older.length,avgPct:r4(o)},newerHalf:{count:newer.length,avgPct:r4(w)},
   avg60Pct:r4(a60),tracked60:t60.length,window:windowOf(t15,x=>x.at??null)});
 }
 
@@ -129,10 +137,10 @@ export function readinessMessage(g,{again=false,lossLimits=null,scope=null}={}){
  const head=`✅ 실계좌 후보 — 검증 필요 · ${g.label} (테스트넷)${again?' · 다시 충족':''}`;
  const rows=g.kind==='PUMP'?[
   `${ok(g.checks.tracked)} 15분 결과가 있는 BingX 상장 알림 ${g.tracked}건 / ${g.minTracked}건 이상`,
-  `${ok(g.checks.avg15)} 15분 되돌림 평균(비용 차감) ${pct(g.avg15Pct)} / 0% 초과`,
+  `${ok(g.checks.avg15)} 15분 되돌림 평균(비용 차감) ${pct(g.avg15Pct)} / 0% 초과${g.median15Pct!=null?` (중앙값 ${pct(g.median15Pct)}${g.winRate15Pct!=null?` · 승률 ${g.winRate15Pct}%`:''})`:''}`,
   `${ok(g.checks.halves)} 앞 절반 ${pct(g.olderHalf.avgPct)}(${g.olderHalf.count}건) · 뒤 절반 ${pct(g.newerHalf.avgPct)}(${g.newerHalf.count}건) / 둘 다 0% 초과`,
   `${ok(g.checks.avg60)} 60분 되돌림 평균 ${pct(g.avg60Pct)}(${g.tracked60}건) / 0% 이상`]:[
-  `${ok(g.checks.trades)} 청산 거래 ${g.trades}건 / ${g.minTrades}건 이상`,
+  `${ok(g.checks.trades)} 청산 거래 ${g.trades}건 / ${g.minTrades}건 이상${g.winRatePct!=null?` (승률 ${g.winRatePct}% · MDD $${Number(g.maxDrawdownUSD||0).toFixed(2)})`:''}`,
   `${ok(g.checks.profitFactor)} 수수료 뺀 PF ${pfText(g.profitFactor)} / ${g.minProfitFactor} 이상`,
   `${ok(g.checks.halves)} 앞 절반 ${money(g.olderHalf.netUSD)}(${g.olderHalf.count}건) · 뒤 절반 ${money(g.newerHalf.netUSD)}(${g.newerHalf.count}건) / 둘 다 0 초과`,
   g.bigLoss.count?`${ok(g.checks.bigLoss)} 큰 손실(비상 청산) 평균 ${money(-g.bigLoss.avgLossUSD)} = 평균 수익 ${money(g.bigLoss.avgWinUSD)}의 ${xText(g.bigLoss.ratio)}배 / ${g.bigLoss.max}배 이하 (${g.bigLoss.count}건)`:`✓ 큰 손실(비상 청산) 없음 / ${g.bigLoss.max}배 이하`];
