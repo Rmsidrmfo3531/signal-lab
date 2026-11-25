@@ -192,7 +192,7 @@ export function renderEconomicCalendarHTML(d){
   </summary>
   <div class="econ-body">
    <div class="econ-top-row">
-    <p class="econ-desc"><b>Investing.com 미국 중요도 ★★★(높은 변동성 예상)</b> 기준 주요 지표 일정과 최근 2년 BTC 5분봉 실측 변동성 등급(<b>S초강력 · A강력 · B주요</b>)을 함께 표시합니다. 중국·타국 지표와 별 1~2개 저중요 지표(주택·원유재고·주간 ADP 등)는 제외했습니다.</p>
+    <p class="econ-desc"><b>Investing.com 미국 중요도 ★★★(별 3개 이상 · 높은 변동성 예상)</b> 지표만 취급하며, 최근 2년 BTC 5분봉 실측 변동성 등급(<b>S초강력 · A강력 · B주요</b>)을 함께 표시합니다. 중국·타국 지표와 별 1~2개 지표(미시간대 소비심리·주택·산업생산·단독 근원 PPI·주간 ADP 등)는 모두 제외했습니다.</p>
     <div class="econ-actions"><small>${esc(d.source||'')} · ${kstTime(d.updatedAt)} KST</small><button type="button" class="outline-btn small" data-econ-refresh="1">↻ 갱신</button></div>
    </div>
    ${errNote}
