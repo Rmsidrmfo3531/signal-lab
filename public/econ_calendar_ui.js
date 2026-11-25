@@ -191,7 +191,7 @@ export function renderEconomicCalendarHTML(d){
   </summary>
   <div class="econ-body">
    <div class="econ-top-row">
-    <p class="econ-desc">최근 2년 BTC 5분봉 백테스트로 실측한 <b>미국 핵심 지표</b>(FOMC·CPI·NFP·PCE·PPI·GDP·실업수당·소매판매·ISM·JOLTS·미시간대)와 동시 발표 세부 지표만 선별합니다. 중국·주택 등 저영향 노이즈는 제외했습니다.</p>
+    <p class="econ-desc">최근 2년 BTC 5분봉 백테스트에서 평상시 대비 변동성이 뚜렷하게 큰 <b>미국 고변동 지표 9종</b>(FOMC·CPI·NFP·미시간대·JOLTS·ISM·PPI·PCE)과 동시 세부 지표만 표시합니다. 변동성이 낮았던 중국·유로존 및 주택·ADP·실업수당·소매판매·GDP 단독 일정은 제외했습니다.</p>
     <div class="econ-actions"><small>${esc(d.source||'')} · ${kstTime(d.updatedAt)} KST</small><button type="button" class="outline-btn small" data-econ-refresh="1">↻ 갱신</button></div>
    </div>
    ${errNote}
