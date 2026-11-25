@@ -4,6 +4,7 @@
 // Pure functions, zero network / I/O.
 
 import {scoreScalpSetup} from './scalp_reversal.mjs';
+import {WHALE_ZONE_RULE} from './whale_zones.mjs';
 
 const DAY_MS=86400000;
 const r2=v=>Math.round(Number(v)*100)/100;
@@ -69,8 +70,9 @@ function signalScoreOf(sig,dir,rr){
  const saved=sig?.score??sig?.scalpScore??null;
  if(!sig?.evidence)return num(saved?.score);
  const inferred4h=sig.trend4h??(sig.withTrend===true?(dir==='LONG'?'up':'down'):sig.withTrend===false?(dir==='LONG'?'down':'up'):null);
- // 고래 CVD (2026-11-25) is signed (±5): it can lower the total too.
- const bonus=Math.max(0,num(saved?.oiBonus)??0)+Math.max(0,num(saved?.cvdBonus)??0)+(saved?.whaleCvd?(num(saved?.whaleBonus)??0):0);
+ // 고래 매물대 (2026-11-25 09:51) is signed (±5): it can lower the total too. Only a zone-rule record counts: the PR #316
+ // window rule is a comparison record now, so its old ±5 is not the current rule (as an unread orderflow: 0).
+ const bonus=Math.max(0,num(saved?.oiBonus)??0)+Math.max(0,num(saved?.cvdBonus)??0)+(saved?.whaleCvd?.rule===WHALE_ZONE_RULE?(num(saved?.whaleBonus)??0):0);
  return Math.max(0,Math.min(100,scoreScalpSetup({direction:dir,evidence:sig.evidence,trend4h:inferred4h,btcTrend4h:sig.btcTrend4h??null,netRR:rr}).score+bonus));
 }
 

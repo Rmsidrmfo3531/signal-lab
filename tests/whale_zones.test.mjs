@@ -13,7 +13,8 @@ import {
 } from '../whale_zones.mjs';
 import {PublicReadBudget} from '../public_read_budget.mjs';
 import {ScalpExecutor,scalpExecConfig} from '../scalp_executor.mjs';
-import {detectScalpReversal} from '../scalp_reversal.mjs';
+import {detectScalpReversal,scoreScalpSetup} from '../scalp_reversal.mjs';
+import {simulateScalpSignals} from '../scalp_simulator.mjs';
 import {ladderNextAdd,strongZones} from '../scalp_ladder.mjs';
 import {summarizeJournal} from '../scalp_journal.mjs';
 import {scalpEventText} from '../scalp_telegram.mjs';
@@ -507,6 +508,19 @@ test('server: /api/whale-zones read-only route and the scalp reader on budgetedP
  assert.doesNotMatch(src,/fetchWhaleCvd/,'the old window fetch is no longer used');
  // SCALP_SCORE_RULES_SINCE is set at merge (TODO left for the coordinator).
  assert.match(fs.readFileSync(new URL('../scalp_executor.mjs',import.meta.url),'utf8'),/TODO\(merge\): set to the merge time of the 고래 매물대 change/);
+});
+
+test('simulator: a zone-rule ±5 counts on the re-score, the old window rule ±5 (record only now) does not',async()=>{
+ const det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0});assert.equal(det.ok,true);
+ const rr=1.5,base=scoreScalpSetup({direction:'LONG',evidence:det.evidence,trend4h:'up',btcTrend4h:null,netRR:rr}).score;
+ const sig=score=>({symbol:'SOLUSDT',direction:'LONG',barAt:det.barAt,at:T0,kind:'MOVE_REVERSAL',evidence:det.evidence,trend4h:'up',btcTrend4h:null,
+  entered:false,reason:'SCORE_BELOW_MINIMUM',plan:{netRR:rr},score});
+ const run=(score,minScore)=>simulateScalpSignals({signals:[sig(score)],params:{minScore,minMovePct:2.5,trendMode:'off',days:30},now:T0+1000,includePresets:false}).simulated.unlockedSignals;
+ const zone=b=>({score:base+b,whaleBonus:b,whaleCvd:{rule:'ZONES',bonus:b,code:b>0?C.SUPPORT:C.RESISTANCE}});
+ assert.equal(run(zone(5),base+3),1,'zone +5 lifts it over');
+ assert.equal(run(zone(-5),base-3),0,'zone −5 drops it under');
+ assert.equal(run({score:base+5,whaleBonus:5,whaleCvd:{bonus:5,code:WHALE_CVD_CODES.WITH}},base+3),0,'the old window +5 is not re-added');
+ assert.equal(run({score:base-5,whaleBonus:-5,whaleCvd:{bonus:-5,code:WHALE_CVD_CODES.AGAINST}},base-3),1,'nor the old window −5');
 });
 
 test('record + split helpers: window snapshot from minutes, split keys, defaults never relax the gate',async()=>{
