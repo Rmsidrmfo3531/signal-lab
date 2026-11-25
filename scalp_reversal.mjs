@@ -85,6 +85,8 @@ export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={},inte
   const extreme=dir===1?window[ex].low:window[ex].high;
   if(ex<window.length-s.extremeWithin)reasons.push('EXTREME_NOT_RECENT');
   const prior=window.slice(0,ex+1),origin=dir===1?Math.max(...prior.map(c=>c.high)):Math.min(...prior.map(c=>c.low));
+  // Open time of the move's first candle (the origin): the 고래 CVD window starts here (whale_cvd.mjs, record / score only).
+  const originAt=prior.find(c=>(dir===1?c.high:c.low)===origin)?.openTime??null;
   const move=dir*(origin-extreme),movePct=move/origin*100;
   if(!(movePct>=s.minMovePct))reasons.push('MOVE_TOO_SMALL');
   if(!(move>=s.minMoveAtr*baseAtr))reasons.push('MOVE_NOT_UNUSUAL_FOR_ATR');
@@ -113,7 +115,7 @@ export function detectScalpReversal(rows,{symbol,now=Date.now(),settings={},inte
    evidence:{symbol,origin,extreme,movePct:Number(movePct.toFixed(3)),moveAtr:Number((move/baseAtr).toFixed(2)),
     climaxVolumeRatio:positive(baseVolume)?Number((climax/baseVolume).toFixed(2)):null,rsiPeak:Number.isFinite(rsiPeak)?Number(rsiPeak.toFixed(1)):null,
     retracedPct:Number((retraced*100).toFixed(1)),rejection:recovered?'CLOSE_BEYOND_PREVIOUS':rejected?'WICK':'NONE',
-    candleCloseAt:last.closeTime,interval}});
+    candleCloseAt:last.closeTime,originAt,interval}});
  }
  const hit=results.find(r=>r.ok);
  if(hit)return {ok:true,...hit,strategy:scalpStrategy(interval)};

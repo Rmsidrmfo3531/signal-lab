@@ -23,3 +23,17 @@ export class PublicReadBudget{
   const seconds=Number(retryAfterSeconds),delay=Number.isFinite(seconds)&&seconds>0?Math.max(60,Math.min(300,seconds)):60;
   this.cooldownUntil=Math.max(this.cooldownUntil,this.now()+delay*1000);}
 }
+/** One Binance public GET under the shared budget for an optional side read (고래 CVD aggTrades, review 2026-11-25):
+ * the weight is reserved synchronously at the call (so a caller's room check and the reservation cannot interleave),
+ * 418/429 start the shared cooldown, and its own timeout aborts the fetch. Unlike server.mjs binance() it never
+ * touches the scanner's REST state (state.rest / state.error) or its response cache: a failed best-effort read must
+ * not mark Binance offline for the signal strategy, and a page read once is not kept in memory. Throws on any failure. */
+export async function budgetedPublicRead(route,{budget,fetcher=globalThis.fetch,timeoutMs=4000,base='https://fapi.binance.com'}={}){
+ const r=budget.reserve(route);if(!r.ok)throw Error(r.code);
+ const ctrl=new AbortController(),timer=setTimeout(()=>ctrl.abort(),Math.max(100,Math.min(12000,Number(timeoutMs)||4000)));
+ try{
+  const res=await fetcher(base+route,{signal:ctrl.signal,headers:{'User-Agent':'SignalLab/1.0','Accept':'application/json'}});
+  if(!res.ok){budget.rateLimited(res.status,res.headers?.get?.('retry-after'));throw Error(`Binance HTTP ${res.status}: 공개 조회 일시 보류`)}
+  return await res.json();
+ }finally{clearTimeout(timer)}
+}

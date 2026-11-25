@@ -141,6 +141,8 @@ export function groupStats(list){
  return {trades:n,wins:wins.length,winRatePct:n?r2(wins.length/n*100):null,profitFactor:loss>0?r2(gross/loss):null,netUSD:r2(list.reduce((t,x)=>t+net(x),0)),
   avgR:avg(rs),avgMfeR:avg(mfe),avgMaeR:avg(mae),avgHoldMin:avg(list.map(x=>x.exit?.holdMin).filter(Number.isFinite))};
 }
+// 고래 CVD split (user 2026-11-25 "(나) 진행"): the recorded bonus sign; trades without a record apart.
+const whaleSplit=x=>{const s=x?.score;return s&&typeof s==='object'&&s.whaleCvd?(Number(s.whaleBonus)>0?'plus':Number(s.whaleBonus)<0?'minus':'zero'):'unmeasured'};
 const by=(list,key)=>{const m={};for(const x of list){const k=key(x);if(k==null)continue;(m[k]??=[]).push(x)}return Object.fromEntries(Object.entries(m).map(([k,v])=>[k,groupStats(v)]))};
 /** Stats by side, exit reason, move-size bucket, hour of day (KST, entry) and universe rank bucket. */
 export function summarizeJournal(lines,{now=Date.now()}={}){
@@ -150,7 +152,7 @@ export function summarizeJournal(lines,{now=Date.now()}={}){
  const move=x=>{const m=Number(x.evidence?.movePct);const b=MOVE_BUCKETS.find(([a,c])=>m>=a&&m<c);return b?bucketLabel(b,'%'):null};
  const rank=x=>{const k=Number(x.universe?.rank);const b=RANK_BUCKETS.find(([a,c])=>k>=a&&k<=c);return b?bucketLabel(b,'위'):null};
  const hour=x=>{const t=x.entry?.at??x.barAt;return t?String(kst(t).getUTCHours()).padStart(2,'0'):null};
- return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),byTrigger:by(list,x=>x.trigger||'SCAN'),byManagement:by(list,x=>x.management||'CURRENT'),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
+ return {generatedAt:new Date(now).toISOString(),all:groupStats(list),byKind:by(list,x=>x.kind||'MOVE_REVERSAL'),byTrigger:by(list,x=>x.trigger||'SCAN'),byManagement:by(list,x=>x.management||'CURRENT'),byWhaleCvd:by(list,whaleSplit),bySide:by(list,x=>x.direction),byExitReason:by(list,x=>x.exit?.reason),
   scaleIn:{all:groupStats(experiment),filled:groupStats(filled),withoutFill:groupStats(experiment.filter(x=>!(x.scaleIn.fillQty>0))),
    touched:experiment.filter(x=>x.scaleIn.touchedAt!=null).length,recovered:experiment.filter(x=>x.scaleIn.recoveredAt!=null).length,
    attempted:experiment.filter(x=>x.scaleIn.attemptedAt!=null).length,byDecision:by(experiment,x=>x.scaleIn.reason??x.scaleIn.state)},

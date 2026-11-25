@@ -13,6 +13,9 @@ const fin=v=>v!==null&&v!==''&&Number.isFinite(Number(v));
 const n=(v,d='설정값')=>fin(v)?String(+Number(v).toFixed(4)):d;
 const fr=(v,d='설정값')=>fin(v)?String(+(Number(v)*100).toFixed(1)):d;           // 0.35 -> "35"
 const list=v=>Array.isArray(v)&&v.length?v.map(x=>fr(x)+'%').join('·'):'설정값';
+// $ in 만 units for the 고래 CVD text: 20000 -> "$2만", 1000000 -> "$100만".
+const man=v=>fin(v)?`$${(+(Number(v)/1e4).toFixed(1)).toLocaleString('en-US')}만`:'설정값';
+const WHALE_SRC='Material Indicators FireCharts 분류';
 const sidesKo=v=>Array.isArray(v)&&v.length?v.map(d=>d==='SHORT'?'숏':'롱').join('·'):'없음';
 
 /** code -> {cat,label,desc(S)}. desc is a sentence; S = the scalp settings sent to the screen. */
@@ -40,6 +43,19 @@ const G={
  SPREAD_TOO_WIDE:['entry','호가 스프레드 큼',S=>`매수·매도 호가 차이가 기준 ${n(S.maxSpreadPct)}%보다 넓어 실거래 슬리피지 위험이 큽니다.`],
  // 점수 항목 — scoreScalpSetup (items are in SCORE_ITEMS below)
  SCORE_BELOW_MINIMUM:['score','점수 미달',S=>`8개 항목 100점 만점 점수가 기준 ${n(S.minScore)}점(B급)보다 낮아 진입하지 않았습니다(등급별 비중 ${scoreTierRangesText(S)}).`],
+ // 고래 CVD (user 2026-11-25 09:05 "갈색 고래, 보라 고래, 빨강 고래", 09:12 "(나) 진행", 09:20 FireCharts 범례; whale_cvd.mjs):
+ // the six series in the legend's colours and the ±points. Scored: 보라 + 갈색 고래. Recorded: all six.
+ WHALE_ORANGE:['score','주황 새우',()=>`주황 "새우"는 시장가 주문 한 건이 $100~$1,000인 층입니다(${WHALE_SRC}). 새우 CVD가 줄면 매도 경향이고, 고래와 반대로 가면 따로 기록만 합니다(점수 없음).`],
+ WHALE_GREEN:['score','초록 주문층',()=>`초록은 시장가 주문 한 건이 $1,000~$1만인 층입니다(${WHALE_SRC}).`],
+ WHALE_RED:['score','빨강 주문층',()=>`빨강은 시장가 주문 한 건이 $1만~$10만인 층입니다(${WHALE_SRC}).`],
+ WHALE_PURPLE:['score','보라 주문층',S=>`보라는 시장가 주문 한 건이 $10만~$100만인 층으로 BTC 가격에 가장 큰 영향을 준 층이며, 갈색과 합쳐 고래 CVD로 점수에 씁니다(${WHALE_SRC}; 알트는 24시간 거래대금에 맞춰 모든 기준을 함께 낮추되 보라는 ${man(S.whaleCvdMinPurpleUSD)} 아래로 내리지 않습니다).`],
+ WHALE_BROWN:['score','갈색 고래',()=>`갈색 "고래"는 시장가 주문 한 건이 $100만~$1,000만인 가장 큰 층입니다(${WHALE_SRC}, 드문 $1,000만 초과 주문도 여기에 넣음). 고래 CVD가 늘면 매집 경향입니다.`],
+ WHALE_BLUE:['score','파랑 전체 CVD',()=>`파랑은 크기와 관계없이 모든 시장가 주문(All Orders)의 CVD입니다(${WHALE_SRC}, $100 미만 주문은 여기에만 들어감).`],
+ WHALE_CVD_WITH:['score','고래CVD 같은 방향',S=>`보라+갈색(고래)의 순매수(롱)·순매도(숏)가 진입 방향과 같고 의미 있는 크기(구간 거래대금의 ${n(S.whaleCvdMinSharePct)}% 이상)라 +${n(S.whaleCvdBonus)}점을 더했습니다.`],
+ WHALE_CVD_AGAINST:['score','고래CVD 반대 방향',S=>`보라+갈색(고래)의 순매수·순매도가 진입 반대 방향으로 의미 있는 크기(구간 거래대금의 ${n(S.whaleCvdMinSharePct)}% 이상)라 −${n(S.whaleCvdBonus)}점을 뺐습니다.`],
+ WHALE_CVD_WEAK:['score','고래CVD 약함',S=>`고래 순매수·순매도가 급변 시작부터 지금까지(최대 ${n(S.whaleCvdWindowMin)}분) 거래대금의 ${n(S.whaleCvdMinSharePct)}%와 보라 고래 기준 금액 중 큰 값보다 작아 0점입니다.`],
+ WHALE_CVD_NO_PRINTS:['score','고래 주문 없음',S=>`급변 시작부터 지금까지(최대 ${n(S.whaleCvdWindowMin)}분) 보라·갈색 크기의 시장가 주문이 없어 0점입니다.`],
+ WHALE_CVD_UNAVAILABLE:['score','고래CVD 확인 불가',()=>'Binance 체결 내역(aggTrades)을 읽지 못해(바이낸스 미상장·공개 조회 한도·시간 초과) 진입을 막지 않고 0점으로 둡니다.'],
  // 한도·차단 — #blocked / #precheck / testnet_budget.mjs
  NOT_ARMED:['limit','단타 꺼짐',()=>'테스트넷 스위치가 꺼져 있거나 켜고 끄는 사이에 들어온 신호라 새로 진입하지 않습니다.'],
  SCALP_MODE_OFF:['limit','단타 모드 꺼짐',()=>'서버 설정(SCALP_EXEC_MODE)이 OFF라 단타 주문을 하지 않습니다.'],
@@ -177,7 +193,8 @@ export const SCORE_ITEMS=Object.freeze([
  ['netRR','손익비',5,()=>'비용을 뺀 1차 목표 손익비 — 0.8 0점, 1.4 이상 5점 (사이는 1점 단위로 비례)'],
  ['rsiExtreme','RSI',5,()=>'RSI(14) 극단 — 롱은 30에서 0점, 18 이하 5점 · 숏은 70에서 0점, 82 이상 5점 (사이는 1점 단위로 비례)'],
  ['oiBonus','수급',null,S=>`30분 미결제약정(OI)이 1% 넘게 줄면(청산 소진) +${n(S.orderflowOiBonus)}점 보너스`],
- ['cvdBonus','CVD',null,S=>`5분 CVD가 진입 방향으로 15% 넘게 강하게 반전하면 +${n(S.orderflowCvdBonus)}점 보너스`]]);
+ ['cvdBonus','CVD',null,S=>`5분 CVD가 진입 방향으로 15% 넘게 강하게 반전하면 +${n(S.orderflowCvdBonus)}점 보너스`],
+ ['whaleBonus','고래CVD',null,S=>`보라(주문 $10만~$100만)+갈색 고래($100만~$1,000만)의 순매수−순매도(CVD)가 급변 시작부터(최대 ${n(S.whaleCvdWindowMin)}분) 구간 거래대금의 ${n(S.whaleCvdMinSharePct)}% 이상이면 진입 방향과 같을 때 +${n(S.whaleCvdBonus)}점, 반대일 때 −${n(S.whaleCvdBonus)}점, 아니면 0점 (주황 새우 $100~$1,000·초록·빨강·파랑 전체는 기록만 · ${WHALE_SRC} · 알트는 BTC 대비 24시간 거래대금의 제곱근 비율로 모든 기준 축소, 보라 최소 ${man(S.whaleCvdMinPurpleUSD)})`]]);
 
 const entry=code=>{const c=REASON_ALIASES[code]||code,g=G[c];return g?{code:c,cat:g[0],label:g[1],desc:g[2]}:null};
 /** Every glossary code (canonical, each once). */
@@ -237,13 +254,28 @@ export function scoreParts(x){
   if(p)parts=Object.fromEntries(SCORE_ITEMS.slice(0,8).map(([k],i)=>[k,Number(p[i+1])]))}
  if(parts&&fin(x?.oiBonus)&&Number(x.oiBonus)>0)parts.oiBonus=Number(x.oiBonus);
  if(parts&&fin(x?.cvdBonus)&&Number(x.cvdBonus)>0)parts.cvdBonus=Number(x.cvdBonus);
- return parts||score!=null?{parts,score,min,grade}:null;
+ // 고래 CVD: shown whenever it was read (+, − or 0), with its bucket CVDs.
+ if(parts&&x?.whaleCvd&&typeof x.whaleCvd==='object')parts.whaleBonus=fin(x.whaleBonus)?Number(x.whaleBonus):Number(x.whaleCvd.bonus)||0;
+ return parts||score!=null?{parts,score,min,grade,whale:x?.whaleCvd&&typeof x.whaleCvd==='object'?x.whaleCvd:null}:null;
+}
+const wusd=v=>{const x=Number(v)||0,a=Math.abs(x),s=x>0?'+':x<0?'−':'';return a>=1e6?`${s}$${+(a/1e6).toFixed(2)}M`:a>=1e3?`${s}$${+(a/1e3).toFixed(1)}K`:`${s}$${Math.round(a)}`};
+/** 고래CVD ±5 item, then the six series in the FireCharts legend colours (주황 새우 / 초록 / 빨강 / 보라 / 갈색 고래 / 파랑 전체). */
+export const WHALE_SERIES_KO=Object.freeze([['orange','새우'],['green','초록'],['red','빨강'],['purple','보라'],['brown','고래'],['blue','전체']]);
+export function whaleItemHTML(points,rec,rule=''){
+ const p=Number(points)||0,cls=`rz-i rz-whale ${p>0?'rz-whale-plus':p<0?'rz-whale-minus':'rz-whale-zero'}`;
+ const why=rec?.code?reasonInfo(rec.code)?.label:null;
+ const item=tipHTML(`고래CVD ${p>0?'+':p<0?'−':''}${Math.abs(p)}`,`${why?why+' — ':''}${rule}`,cls);
+ const b=rec?.buckets;if(!b)return item;
+ const chip=(k,name)=>b[k]?`<span class="wcv wcv-${k}" title="${esc(reasonInfo('WHALE_'+k.toUpperCase())?.label||name)} CVD (${esc(WHALE_SRC)})">${esc(name)} ${esc(wusd(b[k].cvdUSD))}</span>`:'';
+ const div=rec.shrimpDivergence?` <small class="wcv-div">새우↔고래 반대</small>`:'';
+ return `${item} <span class="wcv-row">${WHALE_SERIES_KO.map(([k,name])=>chip(k,name)).filter(Boolean).join(' ')}${div}</span>`;
 }
 /** "급변 5 · 4H 추세 0 · … / 합계 30 (기준 65 · D급)" with a tooltip per item (what it measures, max points). */
 export function scoreItemsHTML(x,S={}){
  const sp=scoreParts(x);if(!sp)return '';
- const isBonus=k=>k==='oiBonus'||k==='cvdBonus';
- const items=sp.parts?SCORE_ITEMS.filter(([k])=>!isBonus(k)||fin(sp.parts[k])&&sp.parts[k]>0).map(([k,label,max,rule])=>
+ const isBonus=k=>k==='oiBonus'||k==='cvdBonus'||k==='whaleBonus';
+ const shown=k=>!isBonus(k)||fin(sp.parts[k])&&(sp.parts[k]>0||k==='whaleBonus');
+ const items=sp.parts?SCORE_ITEMS.filter(([k])=>shown(k)).map(([k,label,max,rule])=>k==='whaleBonus'?whaleItemHTML(sp.parts[k],sp.whale,rule(S||{})):
   tipHTML(`${label} ${fin(sp.parts[k])?(isBonus(k)?'+':'')+Number(sp.parts[k]):'—'}`,`${rule(S||{})}${max?` (최대 ${max}점)`:''}`,max?scoreItemClass(sp.parts[k],max):'rz-i rz-i-full rz-w-lo')).join(' · '):'';
  const min=sp.min??(fin(S?.minScore)?Number(S.minScore):null),tier=scoreTier(sp.score,{...S,minScore:min});
  // The pass / fail line (the minimum score) is said in words too, not by colour alone.

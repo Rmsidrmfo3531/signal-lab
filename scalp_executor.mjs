@@ -34,6 +34,7 @@ import {roundDecimalToStep} from './decimal_grid.mjs';
 import {scalpReasonKo} from './scalp_telegram.mjs';
 import {livePositionView} from './live_overview.mjs';
 import {evaluateScalpOrderflowBoost,evaluateScalpSqueezeGuard} from './orderflow.mjs';
+import {evaluateWhaleCvdBonus,whaleCvdRecord,whaleCvdSummaryKo,whaleScaleMode,WHALE_CVD_DEFAULTS} from './whale_cvd.mjs';
 import {waitForFlat} from './live_orders.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,scalpMargin,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
@@ -126,6 +127,10 @@ const kstDay=t=>new Date(t+9*3600000).toISOString().slice(0,10);
 const grid=(v,step,mode)=>{try{return roundDecimalToStep(v,step,mode)}catch{return null}};
 const withTimeout=(p,ms,fallback=null)=>Promise.race([Promise.resolve(p).catch(()=>fallback),new Promise(r=>setTimeout(()=>r(fallback),ms).unref?.())]);
 const err=(code,status=409)=>Object.assign(Error(code),{code,httpStatus:status});
+// 고래 CVD stats: the recorded bonus of a trade (null = read before / without it) and its split key.
+const whaleKey=s=>s&&typeof s==='object'&&s.whaleCvd?Number(s.whaleBonus)||0:null;
+export const WHALE_STATS_KEYS=Object.freeze(['plus','zero','minus','unmeasured']);
+export const whaleStatsKey=b=>b===null||b===undefined||!Number.isFinite(Number(b))?'unmeasured':Number(b)>0?'plus':Number(b)<0?'minus':'zero';
 const dirOf=d=>d==='SHORT'?-1:1;
 const POSITION_LIMIT_ERROR='VENUE_ERROR_101429';
 // TRADER_LADDER positions hold their whole ladder budget from the entry on (user 2026-11-24, budget): margin = the larger of
@@ -242,6 +247,14 @@ export function scalpExecConfig(env=process.env){
   orderflowOiBonus:n('SCALP_ORDERFLOW_OI_BONUS',5,0,15),
   orderflowCvdBonus:n('SCALP_ORDERFLOW_CVD_BONUS',5,0,15),
   orderflowCvdSizeMult:n('SCALP_ORDERFLOW_CVD_SIZE_MULT',1.5,1,2),
+  // 고래 CVD (user 2026-11-25 09:05, 09:12 "(나) 진행", 09:20 legend; whale_cvd.mjs, Material Indicators FireCharts 분류): Binance
+  // aggTrades from the move start (max 30 min) in orange 새우 $100~$1k / green ~$10k / red ~$100k / purple ~$1M / brown 고래 $1M~$10M /
+  // blue all; ±5 on the total before the gate when purple + brown CVD is >= max(purple edge, 10 % of the window's notional).
+  whaleCvd:!['off','false','0','no'].includes(String(env.SCALP_WHALE_CVD??'').trim().toLowerCase()),
+  whaleCvdBonus:n('SCALP_WHALE_CVD_BONUS',WHALE_CVD_DEFAULTS.bonus,0,5),
+  whaleCvdMinSharePct:n('SCALP_WHALE_CVD_MIN_SHARE_PCT',WHALE_CVD_DEFAULTS.minSharePct,10,100),
+  whaleCvdScale:whaleScaleMode(env.SCALP_WHALE_CVD_SCALE),
+  whaleCvdMaxPages:n('SCALP_WHALE_CVD_MAX_PAGES',WHALE_CVD_DEFAULTS.maxPages,1,10),
   // Extreme funding + surging 30m OI squeeze guard: block SHORT on <=-0.10% funding + >=+2% OI, LONG on >=+0.10% + >=+2% OI.
   squeezeGuard:!['off','false','0','no'].includes(String(env.SCALP_SQUEEZE_GUARD??'').trim().toLowerCase()),
   squeezeFundingPct:n('SCALP_SQUEEZE_FUNDING_PCT',0.10,0.01,2),
@@ -525,14 +538,14 @@ function scalpCloseReasonLabel(x){
 }
 
 export class ScalpExecutor{
- constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,zoneCandles=null,orderflow=null,priceOf=async()=>null,markOf=async()=>null,bookOf=null,
+ constructor({config,client=null,contracts=async()=>new Map(),tickers=async()=>[],tickersFresh=null,candles=async()=>[],trendCandles=null,zoneCandles=null,orderflow=null,whaleCvd=null,priceOf=async()=>null,markOf=async()=>null,bookOf=null,
   balance=async()=>null,isBusy=()=>false,gate=()=>({ok:true}),directory=null,fileName='scalp-store.json',journalFileName=SCALP_JOURNAL_FILE,signalsFileName=SCALP_SIGNALS_FILE,now=()=>Date.now(),log=()=>{},onEvent=()=>{},budget=null}){
   const isLiveAllowed=config?.mode==='LIVE'&&config?.allowLive===true;
   if(!SCALP_EXEC_MODES.includes(config?.mode)&&!isLiveAllowed)throw err('SCALP_TESTNET_ONLY',500);
   const expectedClientMode=isLiveAllowed?'LIVE':'TESTNET';
   if(client&&client.mode!==expectedClientMode)throw err('SCALP_TESTNET_ONLY',500);
   this.execMode=isLiveAllowed?'LIVE':'TESTNET';
-  Object.assign(this,{config,client,contracts,tickers,tickersFresh,candles,orderflow,priceOf,markOf,bookOf,balance,isBusy,gate,now,log,onEvent});
+  Object.assign(this,{config,client,contracts,tickers,tickersFresh,candles,orderflow,whaleCvd,priceOf,markOf,bookOf,balance,isBusy,gate,now,log,onEvent});
   this.trendCandles=trendCandles??(symbol=>this.candles(symbol,'4h',301));
   // 4H / 1D candles for the volume zones (BingX public market data, the scan's paced queue); cached per symbol and
   // timeframe until the next candle of that timeframe closes.
@@ -558,7 +571,7 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,journalFileName):null;this.signalsFile=directory?path.join(directory,signalsFileName):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,scoreTotal:x.score?.score??x.scalpScore?.score??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
+  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,scoreTotal:x.score?.score??x.scalpScore?.score??null,whaleBonus:whaleKey(x.score??x.scalpScore),capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
@@ -574,7 +587,7 @@ export class ScalpExecutor{
  #save(){if(!this.file)return;const s=this.store;s.closed=s.closed.slice(-MAX_CLOSED);s.events=s.events.slice(-MAX_EVENTS);s.skips=s.skips.slice(-MAX_SKIPS);s.sent=s.sent.slice(-MAX_KEYS);
   fs.mkdirSync(path.dirname(this.file),{recursive:true});atomicWriteStore(this.file,{version:1,strategy:SCALP_EXEC_STRATEGY,...s})}
  #event(type,detail={}){const e={type,at:this.now(),mode:this.execMode,strategy:SCALP_EXEC_STRATEGY,...detail};this.store.events.push(e);this.log(`[SCALP${this.execMode==='LIVE'?':LIVE':''}] ${type} ${detail.symbol||''} ${detail.reason||''}`.trim());try{this.onEvent(e)}catch{}return e}
- #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null,kind:this.cur.kind||SCALP_KINDS.MOVE}:{}),...(this.cur?.symbol===symbol&&this.cur.score?{score:this.cur.score.score,grade:this.cur.score.grade,minScore:this.cur.score.minScore,...(this.cur.score.breakdown?{breakdown:{...this.cur.score.breakdown}}:{}),...(this.cur.score.oiBonus>0?{oiBonus:this.cur.score.oiBonus}:{}),...(this.cur.score.cvdBonus>0?{cvdBonus:this.cur.score.cvdBonus}:{})}:{}),...(this.cur?.symbol===symbol&&this.cur.trigger?{trigger:this.cur.trigger}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
+ #skip(symbol,reason,detail=null){if(this.cur?.symbol===symbol){this.cur.reason=reason;this.cur.detail=detail==null?null:String(detail).slice(0,160)}this.store.skipCounts[reason]=(this.store.skipCounts[reason]||0)+1;this.store.skips.push({at:this.now(),symbol,reason,...(this.cur?.symbol===symbol&&this.cur.direction?{direction:this.cur.direction,movePct:this.cur.evidence?.movePct??null,kind:this.cur.kind||SCALP_KINDS.MOVE}:{}),...(this.cur?.symbol===symbol&&this.cur.score?{score:this.cur.score.score,grade:this.cur.score.grade,minScore:this.cur.score.minScore,...(this.cur.score.breakdown?{breakdown:{...this.cur.score.breakdown}}:{}),...(this.cur.score.oiBonus>0?{oiBonus:this.cur.score.oiBonus}:{}),...(this.cur.score.cvdBonus>0?{cvdBonus:this.cur.score.cvdBonus}:{}),...(this.cur.score.whaleCvd?{whaleBonus:this.cur.score.whaleBonus||0,whaleCvd:this.cur.score.whaleCvd}:{})}:{}),...(this.cur?.symbol===symbol&&this.cur.trigger?{trigger:this.cur.trigger}:{}),...(detail?{detail:String(detail).slice(0,160)}:{})})}
  #gate(){try{return this.gate()||{ok:true}}catch{return {ok:false,reason:'GATE_ERROR'}}}
  // With the shared budget only a stop written under it counts (review L2: a scalp-only 3 % stop saved before is ignored).
  #todayStopped(day=kstDay(this.now())){
@@ -1002,6 +1015,17 @@ export class ScalpExecutor{
   const freePct=accAv/accEq*100;
   return freePct<minPct?`여유 마진 ${freePct.toFixed(1)}% < ${minPct}%`:null;
  }
+ /** 고래 CVD of a candidate (whale_cvd.mjs) from the move start (evidence.originAt, at most 30 min back) to now.
+  * Never throws and never waits more than 4 s: a failure or a timeout is bonus 0 with WHALE_CVD_UNAVAILABLE. */
+ async #whaleCvdFor(u,det){
+  const end=this.now(),maxWin=WHALE_CVD_DEFAULTS.maxWindowMs,origin=Number(det.evidence?.originAt);
+  const start=Math.max(end-maxWin,origin>0&&origin<end?origin:end-maxWin);
+  const read=Promise.resolve().then(()=>this.whaleCvd(u.symbol,{startMs:start,endMs:end,direction:det.direction,scale:this.config.whaleCvdScale??'auto',maxPages:this.config.whaleCvdMaxPages??WHALE_CVD_DEFAULTS.maxPages}))
+   .catch(e=>({ok:false,error:String(e?.code||e?.message||e).slice(0,80)}));
+  const snap=await withTimeout(read,WHALE_CVD_DEFAULTS.timeoutMs,{ok:false,error:`timeout ${WHALE_CVD_DEFAULTS.timeoutMs/1000}s`});
+  const ev=evaluateWhaleCvdBonus(snap,det.direction,{bonus:this.config.whaleCvdBonus??WHALE_CVD_DEFAULTS.bonus,minSharePct:this.config.whaleCvdMinSharePct??WHALE_CVD_DEFAULTS.minSharePct});
+  return whaleCvdRecord(snap,ev);
+ }
  async #btcTrend4h(symbol){
   if(symbol==='BTCUSDT')return this.cur?.trend4h??await this.#trend('BTCUSDT');
   if(!this.universe.some(x=>x.symbol==='BTCUSDT'))return null;
@@ -1048,7 +1072,10 @@ export class ScalpExecutor{
    let scalpScore=scoreScalpSetup({direction:det.direction,evidence:det.evidence,trend4h:this.cur?.trend4h??null,btcTrend4h,netRR:plan.netRR,config:this.config});
    // Backtest-validated confirmed-bounce sizing (C7, 40 coins Train/OOS): >=20% bounce (PF 3.55) -> 1.35x, <20% (PF 1.64) -> 0.8x.
    const minSc=Number(this.config.minScore)||0,oiBonusCfg=Number(this.config.orderflowOiBonus??5),cvdBonusCfg=Number(this.config.orderflowCvdBonus??5);
-   const maxOfBonus=Math.max(0,oiBonusCfg)+Math.max(0,cvdBonusCfg);
+   // 고래 CVD ±whaleBonusCfg (user 2026-11-25 "(나) 진행"): only with the score gate on.
+   const whaleOn=minSc>0&&this.config.whaleCvd!==false&&typeof this.whaleCvd==='function',whaleBonusCfg=whaleOn?Math.max(0,Math.min(5,Number(this.config.whaleCvdBonus??WHALE_CVD_DEFAULTS.bonus))):0;
+   // Every candidate a bonus could lift to the gate (OI + CVD + whale) has its orderflow read; at or above the gate too, so a −whale can drop it.
+   const maxOfBonus=Math.max(0,oiBonusCfg)+Math.max(0,cvdBonusCfg)+whaleBonusCfg;
    const bounce=minSc>0?scalpBounceMultiplier(det.evidence?.retracedPct,this.config):{active:false,confirmed:false,mult:1,retracedPct:null};
    const tierEnabled=minSc>0&&this.config.scoreTierSizing!==false;
    if(bounce.active&&scalpScore.pass)scalpScore={...scalpScore,sizeMult:bounce.mult,bounce};
@@ -1057,22 +1084,30 @@ export class ScalpExecutor{
    const wantOrderflowBoost=this.config.orderflowBoost!==false&&scalpScore.score>=Math.max(0,minSc-maxOfBonus);
    const wantSqueezeGuard=this.config.squeezeGuard!==false&&(minSc<=0||scalpScore.score>=Math.max(0,minSc-maxOfBonus));
    const wantPreFunding=Number(this.config.preFundingWindowMin)>0&&Number(this.config.preFundingExtremePct)>0&&(minSc<=0||scalpScore.score>=Math.max(0,minSc-maxOfBonus));
-   let ofSnap=null;
-   if((wantOrderflowBoost||wantSqueezeGuard||wantPreFunding)&&typeof this.orderflow==='function'){
-    ofSnap=await withTimeout(Promise.resolve().then(()=>this.orderflow(u.symbol)),3500).catch(()=>null);
-   }
+   const wantWhale=whaleOn&&scalpScore.score>=Math.max(0,minSc-maxOfBonus);
+   // The orderflow and the whale trades are read side by side; a failure or a timeout of either never blocks (0 points).
+   const [ofSnap,whale]=await Promise.all([
+    (wantOrderflowBoost||wantSqueezeGuard||wantPreFunding)&&typeof this.orderflow==='function'
+     ?withTimeout(Promise.resolve().then(()=>this.orderflow(u.symbol)),3500).catch(()=>null):null,
+    wantWhale?this.#whaleCvdFor(u,det):null]);
+   let ofBoost=null;
    if(wantOrderflowBoost&&ofSnap){
     const boost=evaluateScalpOrderflowBoost(ofSnap,det.direction,{oiBonus:oiBonusCfg,cvdBonus:cvdBonusCfg,cvdSizeMult:Number(this.config.orderflowCvdSizeMult??1.5)});
-    if(boost.available){
-     const nextScore=Math.min(100,scalpScore.score+(boost.oiBonus||0)+(boost.cvdBonus||0));
-     const nextGrade=scalpScoreGrade(nextScore,scalpScore); // the gate / A / S edges scoreScalpSetup used
-     const nextPass=minSc>0?nextScore>=minSc:true;
-     const highScore=Number(this.config.highScore??SCALP_SCORE_DEFAULTS.highScore);
-     const baseMult=bounce.active?bounce.mult:(tierEnabled?1:(nextScore>=highScore?Number(this.config.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult):1));
-     const nextMult=boost.cvdBoost?Math.max(baseMult,boost.sizeMult):baseMult;
-     scalpScore={...scalpScore,score:nextScore,grade:nextGrade,pass:nextPass,sizeMult:nextMult,oiBonus:boost.oiBonus,cvdBonus:boost.cvdBonus||0,orderflow:boost,...(bounce.active?{bounce}:{})};
-    }
+    if(boost.available)ofBoost=boost;
    }
+   const whaleBonus=whale?.bonus||0;
+   if(ofBoost||whaleBonus!==0){
+    // OI / CVD (+) and the whale (±) go on the total before the gate and the tier, clamped 0..100.
+    const nextScore=Math.max(0,Math.min(100,scalpScore.score+(ofBoost?.oiBonus||0)+(ofBoost?.cvdBonus||0)+whaleBonus));
+    const nextGrade=scalpScoreGrade(nextScore,scalpScore); // the gate / A / S edges scoreScalpSetup used
+    const nextPass=minSc>0?nextScore>=minSc:true;
+    const highScore=Number(this.config.highScore??SCALP_SCORE_DEFAULTS.highScore);
+    const baseMult=bounce.active?bounce.mult:(tierEnabled?1:(nextScore>=highScore?Number(this.config.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult):1));
+    const nextMult=ofBoost?.cvdBoost?Math.max(baseMult,ofBoost.sizeMult):baseMult;
+    scalpScore={...scalpScore,score:nextScore,grade:nextGrade,pass:nextPass,sizeMult:nextMult,
+     ...(ofBoost?{oiBonus:ofBoost.oiBonus,cvdBonus:ofBoost.cvdBonus||0,orderflow:ofBoost}:{}),...(bounce.active?{bounce}:{})};
+   }
+   if(whale)scalpScore={...scalpScore,whaleBonus,whaleCvd:whale};
    // Score-tier sizing by grade (user 2026-11-25 08:28): B 70~74 0.75x, B+ 75~79 0.9x, A 80~84 1.0x, A+ 85~89 1.2x, S 90+ 1.4x (initial margin cap fixed).
    const scoreTier=minSc>0?scalpScoreTierMultiplier(scalpScore.score,this.config):{active:false,tier:null,mult:1};
    // Backtest-validated session asymmetry (EU 08-14 UTC -> 0.5x, US/Late 14-24 UTC -> 1.15x; only active when scoring is enabled).
@@ -1081,7 +1116,7 @@ export class ScalpExecutor{
    if(scoreTier.active||sess.session!=='OFF')scalpScore={...scalpScore,...(scoreTier.active?{scoreTier}:{}),...(sess.session!=='OFF'?{session:sess}:{}),effectiveMult};
    if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=scalpScore}
    if(minSc>0&&!scalpScore.pass){
-    return skip('SCORE_BELOW_MINIMUM',`${scalpScore.score}점/${this.config.minScore}점 (${scalpScore.grade}급 · ${scalpScore.shortBreakdown})`);
+    return skip('SCORE_BELOW_MINIMUM',`${scalpScore.score}점/${this.config.minScore}점 (${scalpScore.grade}급 · ${scalpScore.shortBreakdown}${whaleBonus?` · 고래CVD${whaleBonus>0?'+':''}${whaleBonus}`:''})`);
    }
    if(wantSqueezeGuard&&ofSnap){
     const sq=evaluateScalpSqueezeGuard(ofSnap,det.direction,{fundingPct:this.config.squeezeFundingPct,oiChange30mPct:this.config.squeezeOiChange30mPct});
@@ -1332,7 +1367,7 @@ export class ScalpExecutor{
    ...(plan.scaleIn?{scaleIn:plan.scaleIn}:{}),
    // Journal context (analysis only).
    atr:det.atr,detectedAt:this.cur?.at??null,candle:this.cur?.candle??null,trend4h:this.cur?.trend4h??null,btcTrend4h:this.cur?.btcTrend4h??null,withTrend:this.cur?.withTrend??null,
-   ...(this.cur?.score?{scalpScore:{score:this.cur.score.score,grade:this.cur.score.grade,minScore:this.cur.score.minScore,sizeMult:this.cur.score.sizeMult,breakdown:this.cur.score.breakdown,summary:this.cur.score.summary,...(this.cur.score.oiBonus?{oiBonus:this.cur.score.oiBonus}:{}),...(this.cur.score.cvdBonus?{cvdBonus:this.cur.score.cvdBonus}:{}),...(this.cur.score.orderflow?{orderflow:this.cur.score.orderflow}:{}),...(this.cur.score.scoreTier?{scoreTier:this.cur.score.scoreTier}:{}),...(this.cur.score.session?{session:this.cur.score.session}:{}),...(Number.isFinite(Number(this.cur.score.effectiveMult))?{effectiveMult:this.cur.score.effectiveMult}:{})}}:{}),
+   ...(this.cur?.score?{scalpScore:{score:this.cur.score.score,grade:this.cur.score.grade,minScore:this.cur.score.minScore,sizeMult:this.cur.score.sizeMult,breakdown:this.cur.score.breakdown,summary:this.cur.score.summary,...(this.cur.score.oiBonus?{oiBonus:this.cur.score.oiBonus}:{}),...(this.cur.score.cvdBonus?{cvdBonus:this.cur.score.cvdBonus}:{}),...(this.cur.score.orderflow?{orderflow:this.cur.score.orderflow}:{}),...(this.cur.score.whaleCvd?{whaleBonus:this.cur.score.whaleBonus||0,whaleCvd:this.cur.score.whaleCvd}:{}),...(this.cur.score.scoreTier?{scoreTier:this.cur.score.scoreTier}:{}),...(this.cur.score.session?{session:this.cur.score.session}:{}),...(Number.isFinite(Number(this.cur.score.effectiveMult))?{effectiveMult:this.cur.score.effectiveMult}:{})}}:{}),
    universe:this.cur?.universe??null,scan:this.cur?.scan?{...this.cur.scan}:null,tpFills:[null,null,null],journalV:1};
   this.store.open.push(p);this.store.sent.push(id);this.#save();
   let fill,executionMode='MARKET';
@@ -1399,7 +1434,7 @@ export class ScalpExecutor{
   trackExcursion(p,p.avg,this.now());
   // BTC 5m / 1h change around the entry: read after the orders are in, never awaited (journal only).
   void withTimeout(this.#btc(),5000).then(b=>{if(b)p.btc=b});
-  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,trigger:p.trigger,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,...(pos(p.hardStopPrice)?{hardStopPrice:p.hardStopPrice}:{}),targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,minScore:p.scalpScore.minScore,...(p.scalpScore.breakdown?{breakdown:{...p.scalpScore.breakdown}}:{}),...(p.scalpScore.oiBonus>0?{oiBonus:p.scalpScore.oiBonus}:{}),...(p.scalpScore.cvdBonus>0?{cvdBonus:p.scalpScore.cvdBonus}:{}),sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.scoreTier?.active?{scoreTierMult:p.scalpScore.scoreTier.mult}:{}),...(Number.isFinite(Number(p.scalpScore.effectiveMult))?{effectiveMult:p.scalpScore.effectiveMult}:{}),...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{}),...(isLadder(p)?{management:p.management,ladder:this.#ladderView(p)}:{})});
+  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,trigger:p.trigger,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,...(pos(p.hardStopPrice)?{hardStopPrice:p.hardStopPrice}:{}),targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,minScore:p.scalpScore.minScore,...(p.scalpScore.breakdown?{breakdown:{...p.scalpScore.breakdown}}:{}),...(p.scalpScore.oiBonus>0?{oiBonus:p.scalpScore.oiBonus}:{}),...(p.scalpScore.cvdBonus>0?{cvdBonus:p.scalpScore.cvdBonus}:{}),...(p.scalpScore.whaleCvd?{whaleBonus:p.scalpScore.whaleBonus||0,whaleCvd:p.scalpScore.whaleCvd,whaleSummary:whaleCvdSummaryKo(p.scalpScore.whaleCvd)}:{}),sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.scoreTier?.active?{scoreTierMult:p.scalpScore.scoreTier.mult}:{}),...(Number.isFinite(Number(p.scalpScore.effectiveMult))?{effectiveMult:p.scalpScore.effectiveMult}:{}),...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{}),...(isLadder(p)?{management:p.management,ladder:this.#ladderView(p)}:{})});
   this.#save();return {entered:true};
  }
  /** BTC change over the last closed 5m candle and the last hour (12 candles), cached per 5m candle. */
@@ -1430,7 +1465,7 @@ export class ScalpExecutor{
    if(this.journalFile&&!appendJsonl(this.journalFile,line))continue; // not written: tried again next check
    if(!this.journalFile)this.journalMem.push(line);
    x.journaled=true;x.rMultiple=line.pnl?.r??null;if(x.id)this.journalIds?.add(x.id);
-   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.openedAt??null,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,scoreGrade:line.score?.grade??x.scalpScore?.grade??null,scoreTotal:line.score?.score??x.scalpScore?.score??null,capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
+   this.journalRows.push({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.openedAt??null,direction:x.direction,netUSD:line.pnl.netUSD,closedAt:x.closedAt,closeReason:x.closeReason,scaleIn:line.scaleIn,scoreGrade:line.score?.grade??x.scalpScore?.grade??null,scoreTotal:line.score?.score??x.scalpScore?.score??null,whaleBonus:whaleKey(line.score??x.scalpScore),capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(line.plan?.riskUSD)??null,initialMarginUSD:pos(line.plan?.marginUSD??line.margin?.initialUSD)??null});
   }
  }
  /** The newest `limit` journal lines (oldest first). */
@@ -2946,6 +2981,9 @@ export class ScalpExecutor{
   all.byGrade=Object.fromEntries(SCALP_GRADES.map(g=>[g,this.#stats(list.filter(x=>gradeOf(x)===g))]));
   // TRADER_LADDER (from 2026-11-24) and the management before it, apart.
   all.byManagement=Object.fromEntries(Object.values(SCALP_MANAGEMENTS).map(k=>[k,this.#stats(list.filter(x=>(x.management||SCALP_MANAGEMENTS.CURRENT)===k))]));
+  // 고래 CVD (user 2026-11-25 "(나) 진행"): +5 / 0 / −5 apart, and the trades before it (no record) apart, to check it later.
+  const whaleOf=x=>x.whaleBonus!==undefined?x.whaleBonus:whaleKey(x.scalpScore??x.score);
+  all.byWhaleCvd=Object.fromEntries(WHALE_STATS_KEYS.map(k=>[k,this.#stats(list.filter(x=>whaleStatsKey(whaleOf(x))===k))]));
   const experiment=list.filter(x=>x.scaleIn?.version===SCALP_SCALE_IN.version);
   const repeated=list.filter(x=>x.scaleIn?.version===SCALP_REPEAT_SCALE_IN.version);
   all.scaleIn={closed:experiment.length,filled:experiment.filter(x=>x.scaleIn.fillQty>0).length};
@@ -2985,6 +3023,7 @@ export class ScalpExecutor{
     emergencyStopRoePct:c.emergencyStopRoePct??75,hardStopRoePct:c.hardStopRoePct??0,minFreeAccountMarginPct:c.minFreeAccountMarginPct??0,maxSpreadPct:c.maxSpreadPct??0,preFundingWindowMin:c.preFundingWindowMin??0,preFundingExtremePct:c.preFundingExtremePct??0,scaleInRetrySlippagePct:c.scaleInRetrySlippagePct??SCALP_REPEAT_SCALE_IN.retrySlippagePct,scaleInMarketFallback:c.scaleInMarketFallback!==false,
     defensiveAddRoePct:c.defensiveAddRoePct??40,defensiveBouncePct:c.defensiveBouncePct??0.4,defensiveForceRoePct:c.defensiveForceRoePct??55,scaleInMinStepPct:c.scaleInMinStepPct??SCALP_REPEAT_SCALE_IN.minStepPct,scaleInMaxStepPct:c.scaleInMaxStepPct??SCALP_REPEAT_SCALE_IN.maxStepPct,scaleInSteps:SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),scaleInMults:SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),
     orderflowBoost:c.orderflowBoost!==false,orderflowOiBonus:c.orderflowOiBonus??5,orderflowCvdBonus:c.orderflowCvdBonus??5,orderflowCvdSizeMult:c.orderflowCvdSizeMult??1.5,
+    whaleCvd:c.whaleCvd!==false,whaleCvdBonus:c.whaleCvdBonus??WHALE_CVD_DEFAULTS.bonus,whaleCvdMinSharePct:c.whaleCvdMinSharePct??WHALE_CVD_DEFAULTS.minSharePct,whaleCvdScale:c.whaleCvdScale??'auto',whaleCvdMaxPages:c.whaleCvdMaxPages??WHALE_CVD_DEFAULTS.maxPages,whaleCvdWindowMin:WHALE_CVD_DEFAULTS.maxWindowMs/60000,whaleCvdMinPurpleUSD:WHALE_CVD_DEFAULTS.minPurpleUSD,
     sessionWeighting:c.sessionWeighting!==false,sessionEuMult:c.sessionEuMult??0.5,sessionUsMult:c.sessionUsMult??1.15,
     bounceSizing:c.bounceSizing!==false,bounceThresholdPct:c.bounceThresholdPct??20,bounceHighMult:c.bounceHighMult??1.35,bounceLowMult:c.bounceLowMult??0.8,
     symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,

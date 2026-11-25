@@ -930,6 +930,13 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .rz-total.rz-pass{border-style:solid}.rz-total.rz-fail{border:2px dashed currentColor;font-weight:600}
 .rz-g-S{color:var(--rz-pass);background:var(--rz-pass-soft);font-weight:700}.rz-g-Ap{color:var(--rz-pass)}.rz-g-A{color:var(--rz-mid)}.rz-g-Bp{color:var(--rz-b);font-weight:600}.rz-g-B{color:var(--rz-b)}
 .rz-g-C{color:var(--rz-warn);background:var(--rz-warn-soft)}.rz-g-D{color:var(--rz-fail);background:var(--rz-fail-soft)}
+/* 고래 CVD (user 2026-11-25, Material Indicators FireCharts 분류): the legend colours — 주황 새우, 초록, 빨강, 보라, 갈색 고래, 파랑 전체. */
+:root{--wcv-orange:#fb923c;--wcv-green:#4ade80;--wcv-red:#f87171;--wcv-purple:#c084fc;--wcv-brown:#d19a66;--wcv-blue:#60a5fa}
+:root[data-theme="light"]{--wcv-orange:#c2410c;--wcv-green:#15803d;--wcv-red:#b91c1c;--wcv-purple:#7e22ce;--wcv-brown:#8b4513;--wcv-blue:#1d4ed8}
+.wcv-row{font-size:11px}.wcv{padding:0 4px;border-radius:4px;border:1px solid currentColor;margin-right:2px;white-space:nowrap}
+.wcv-orange{color:var(--wcv-orange)}.wcv-green{color:var(--wcv-green)}.wcv-red{color:var(--wcv-red)}.wcv-purple{color:var(--wcv-purple)}.wcv-brown{color:var(--wcv-brown)}.wcv-blue{color:var(--wcv-blue)}
+.wcv-div{color:var(--muted)}
+.rz-whale-plus{color:var(--wcv-purple);font-weight:700}.rz-whale-minus{color:var(--rz-fail);font-weight:700}.rz-whale-zero{color:var(--rz-zero-lo)}
 .rz-tip{position:fixed;z-index:200;background:var(--panel-raise,#152031);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.55;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 .rz-cat{border-top:1px solid var(--line-soft,var(--line))}.rz-cat summary{cursor:pointer;padding:7px 0;font-size:12px;color:var(--text)}.rz-cat summary small{color:var(--dim)}.rz-cat[open]{padding-bottom:8px}
 .rz-gloss{display:grid;grid-template-columns:minmax(110px,max-content) 1fr;gap:3px 12px;margin:0;font-size:11.5px}.rz-gloss dt{color:var(--text);font-weight:600}.rz-gloss dd{margin:0;color:var(--muted);line-height:1.5}
