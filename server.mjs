@@ -40,6 +40,7 @@ import {finalTelegramMatch} from './telegram_final.mjs';
 import {createTelegramNetworkRecovery,postTelegramIPv4} from './telegram_transport.mjs';
 import {translateNewsArticles,googleTranslate,googleTranslateStatus,createOpenAINewsTranslator} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
+import {appendDominanceHistory,buildMarketDominanceReport,fetchGlobalDominance} from './market_dominance.mjs';
 import {PublicReadBudget,budgetedPublicRead} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
@@ -1553,6 +1554,44 @@ async function refreshMarketCaps(){
  }
  return mc.caps&&Date.now()-mc.at<3*86400000?mc.caps:null;
 }
+// CoinGecko /api/v3/global dominance cache + rolling 7d history on disk (read-only market regime indicator).
+const dominanceFile=path.join(storage.dir,'dominance-history.json');
+const dominanceCache={global:null,history:[],at:0,error:'',failedAt:0,loaded:false,inflight:null};
+function loadDominanceCache(){
+ if(dominanceCache.loaded)return;
+ dominanceCache.loaded=true;
+ try{
+  const d=JSON.parse(fs.readFileSync(dominanceFile,'utf8'));
+  if(Array.isArray(d?.history))dominanceCache.history=d.history.filter(x=>x&&Number.isFinite(x.at)&&Number.isFinite(x.btcDomPct));
+  if(d?.global&&Number.isFinite(d.global.btcDomPct)){dominanceCache.global=d.global;dominanceCache.at=Number(d.at)||Number(d.global.at)||0}
+ }catch{}
+}
+async function refreshGlobalDominance({force=false}={}){
+ loadDominanceCache();
+ const now=Date.now();
+ const ttl=force?30000:10*60000;
+ if(dominanceCache.global&&now-dominanceCache.at<ttl)return dominanceCache.global;
+ if(!force&&dominanceCache.error&&now-(dominanceCache.failedAt||0)<5*60000)return dominanceCache.global&&now-dominanceCache.at<86400000?dominanceCache.global:null;
+ if(dominanceCache.inflight)return dominanceCache.inflight;
+ dominanceCache.inflight=(async()=>{
+  try{
+   const parsed=await fetchGlobalDominance({apiKey:process.env.COINGECKO_API_KEY||''});
+   dominanceCache.global=parsed;
+   dominanceCache.at=Date.now();
+   dominanceCache.error='';
+   dominanceCache.failedAt=0;
+   dominanceCache.history=appendDominanceHistory(dominanceCache.history,parsed);
+   try{fs.writeFileSync(dominanceFile+'.tmp',JSON.stringify({at:dominanceCache.at,global:parsed,history:dominanceCache.history}));fs.renameSync(dominanceFile+'.tmp',dominanceFile)}catch{}
+   return parsed;
+  }catch(e){
+   dominanceCache.error=String(e.message||e);
+   dominanceCache.failedAt=Date.now();
+   console.warn('[DOMINANCE]',dominanceCache.error);
+   return dominanceCache.global&&Date.now()-dominanceCache.at<86400000?dominanceCache.global:null;
+  }finally{dominanceCache.inflight=null}
+ })();
+ return dominanceCache.inflight;
+}
 async function refreshVenueOnlyList(){
  if(!CONFIG.venueOnly.enabled||!state.activeSymbols.length)return;
  if(Date.now()-state.venueOnlyInfo.at<(state.venueOnlyInfo.error?60000:10*60000))return;
@@ -2799,6 +2838,20 @@ const server=http.createServer(async(req,res)=>{
    try{await refreshMarketStats()}catch{}
    return response(res,200,buildMarketCommentary(rawMarketTickers,{now:Date.now(),receivedAt:marketStatsReceivedAt,eligibleSymbols:state.activeSymbols,dataSource:'BINANCE_FUTURES_PUBLIC_24H'}));
   }
+  if(pathname==='/api/market-dominance'&&req.method==='GET'){
+   const force=url.searchParams.get('force')==='1';
+   const tasks=[refreshGlobalDominance({force}).catch(()=>null)];
+   if(!rawMarketTickers?.length||force)tasks.push(refreshMarketStats().catch(()=>{}));
+   await Promise.all(tasks);
+   return response(res,200,buildMarketDominanceReport({
+    global:dominanceCache.global,
+    history:dominanceCache.history,
+    tickers:rawMarketTickers,
+    eligibleSymbols:state.activeSymbols,
+    now:Date.now(),
+    globalError:dominanceCache.error,
+   }));
+  }
   // One article's main text (fetched when opened, from the RSS sources' own sites) in Korean.
   if(pathname==='/api/news/detail'&&req.method==='GET'){
    const id=url.searchParams.get('id')||'',article=(state.news||[]).find(n=>n.id===id);
@@ -2952,6 +3005,7 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
  connectWS();setTimeout(runScan,1200);setInterval(()=>void runScan(),CONFIG.scanMs);
  // Market caps for every coin (leverage rule), not only for the venue-only list.
  setTimeout(()=>void refreshMarketCaps().catch(()=>{}),15000);setInterval(()=>void refreshMarketCaps().catch(()=>{}),30*60000);
+ setTimeout(()=>void refreshGlobalDominance().catch(()=>{}),25000).unref?.();setInterval(()=>void refreshGlobalDominance().catch(()=>{}),15*60000).unref?.();
  setTimeout(()=>void runVenueOnlyScan(),CONFIG.venueOnly.startDelayMs);setInterval(()=>void runVenueOnlyScan(),CONFIG.venueOnly.intervalMs);
  // Retry market discovery quickly after an API failure rather than staying empty for 4 minutes.
  setInterval(()=>{if(!state.activeSymbols.length&&!state.researchSymbols.length&&!state.scanActive){state.marketLastRetry=Date.now();void runScan()}},20000);

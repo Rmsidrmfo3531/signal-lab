@@ -28,6 +28,7 @@
     <div class="content">
       <div class="banner warning hidden" id="connectBanner" role="alert"><span>⚠</span><div><strong id="errorTitle">시세 연결 오류</strong><div id="errorDetail">바이낸스 접속을 확인하세요.</div></div><button id="dismissError" aria-label="닫기">✕</button></div>
       <div class="banner info hidden" id="updateScheduleBanner" role="status" aria-live="polite"><span>↻</span><div><strong id="updateScheduleTitle">업데이트가 확인되었습니다.</strong><div id="updateScheduleDetail"></div></div><button type="button" class="outline-btn small update-now-btn" id="updateNowButton">지금 업데이트</button></div>
+      <details class="dom-bar" id="dominanceBar"><summary class="dom-summary"><span class="dom-badge neutral">⏳ 시장 주도권 조회 중</span><span class="dom-pills"><span class="dom-pill">BTC.D · 알트 도미넌스 불러오는 중…</span></span><span class="dom-chevron">상세 ▾</span></summary></details>
       <section id="real" class="panel paper-panel live-screen real-screen" data-workspace-route="real">
         <h3 class="sr-only">실계좌 카피 매매</h3>
         <div id="realTradePanel" class="real-trade-wrap" hidden></div>
@@ -108,6 +109,7 @@
 <script type="module" src="/app.js"></script>
 <script type="module" src="/live_control.js"></script>
 <script type="module" src="/orderflow_ui.js"></script>
+<script type="module" src="/dominance_ui.js"></script>
 <nav class="mobile-bottom-nav" aria-label="모바일 빠른 이동">
 <a href="#real"><span>●</span>실계좌</a><a href="#live"><span>◉</span>테스트넷</a><a href="#orderflow"><span>◎</span>호가·CVD·청산맵</a><a href="#news"><span>◈</span>뉴스</a>
 </nav>

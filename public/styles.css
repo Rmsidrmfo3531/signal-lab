@@ -996,3 +996,58 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .ready-bar{display:block;height:6px;border-radius:3px;background:rgba(127,127,127,.25);overflow:hidden}
 .ready-bar i{display:block;height:100%;background:currentColor;opacity:.7}
 .ready-groups li.ok .ready-bar i{opacity:1}
+
+/* BTC vs Altcoin Dominance & Relative Strength bar (user 2026-11-25) */
+.dom-bar{margin-bottom:14px;border:1px solid var(--line);border-radius:11px;background:linear-gradient(180deg,#101c2b,#0d1622);overflow:hidden}
+.dom-summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;user-select:none}
+.dom-summary::-webkit-details-marker{display:none}
+.dom-summary:hover{background:rgba(90,156,255,.05)}
+.dom-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;font-size:11.5px;font-weight:700;letter-spacing:-.1px;white-space:nowrap;border:1px solid transparent}
+.dom-badge.btc-strong{background:rgba(247,147,26,.18);color:#ffb35c;border-color:rgba(247,147,26,.45)}
+.dom-badge.btc{background:rgba(238,189,113,.16);color:#f3cb83;border-color:rgba(238,189,113,.38)}
+.dom-badge.neutral{background:rgba(139,154,176,.14);color:#c3d1e3;border-color:rgba(139,154,176,.32)}
+.dom-badge.alt{background:rgba(66,206,172,.15);color:#6fe4c7;border-color:rgba(66,206,172,.38)}
+.dom-badge.alt-strong{background:rgba(56,225,180,.22);color:#7cf7d4;border-color:rgba(56,225,180,.55)}
+.dom-phase{font-size:11px;color:var(--muted);font-weight:600;white-space:nowrap}
+.dom-pills{display:flex;align-items:center;gap:7px;flex-wrap:wrap;flex:1;min-width:0}
+.dom-pill{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:6px;background:rgba(17,31,48,.85);border:1px solid #24374d;color:#a8bdd2;font-size:11px;font-family:'DM Mono',monospace;white-space:nowrap}
+.dom-pill b{color:var(--text);font-weight:700}
+.dom-pill small{font-size:10px;font-weight:600}
+.dom-pill.dom-btc{border-color:rgba(247,147,26,.3)}
+.dom-pill.dom-eth{border-color:rgba(98,126,234,.35)}
+.dom-pill.dom-alt{border-color:rgba(66,206,172,.32)}
+.dom-chevron{margin-left:auto;color:#7fa3c4;font-size:11px;font-weight:700;white-space:nowrap;transition:transform .16s ease}
+.dom-bar[open] .dom-chevron{transform:rotate(180deg)}
+.dom-body{padding:12px 14px 14px;border-top:1px solid #213247;background:#0b131e;display:grid;gap:12px}
+.dom-top-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.dom-explain{margin:0;color:#cfe0f0;font-size:12px;line-height:1.65;flex:1;min-width:220px}
+.dom-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.dom-actions small{color:var(--dim);font-family:'DM Mono',monospace;font-size:10.5px}
+.dom-err{display:block;font-size:11px;color:var(--amber);background:rgba(238,189,113,.09);border:1px solid rgba(238,189,113,.28);border-radius:7px;padding:6px 10px}
+.dom-stack-wrap{display:grid;gap:6px}
+.dom-stack-head{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px;color:#9eb3c9;flex-wrap:wrap}
+.dom-stack-head small{color:var(--dim);font-size:10px}
+.dom-stack{display:flex;height:10px;border-radius:999px;overflow:hidden;background:#162435;border:1px solid #24374d}
+.dom-stack i{display:block;height:100%;min-width:2px}
+.seg-btc{background:#f7931a}.seg-eth{background:#627eea}.seg-alt{background:#42ceac}.seg-stable{background:#7d8ea3}
+.dom-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:#a5b8cc;font-family:'DM Mono',monospace}
+.dom-legend span{display:inline-flex;align-items:center;gap:5px}
+.dom-legend em{display:inline-block;width:8px;height:8px;border-radius:2px}
+.dom-gauge-wrap{display:grid;gap:5px}
+.dom-gauge-head{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#9bb0c5}
+.dom-gauge-head b{color:var(--text);font-family:'DM Mono',monospace}
+.dom-gauge-track{position:relative;height:8px;border-radius:999px;background:linear-gradient(90deg,rgba(247,147,26,.65) 0%,rgba(139,154,176,.28) 50%,rgba(66,206,172,.7) 100%);border:1px solid #273a50}
+.dom-gauge-mid{position:absolute;left:50%;top:-2px;bottom:-2px;width:2px;background:rgba(240,244,251,.45);transform:translateX(-50%)}
+.dom-gauge-dot{position:absolute;top:50%;width:13px;height:13px;border-radius:50%;transform:translate(-50%,-50%);background:#e6f4ff;border:2px solid #0b131e;box-shadow:0 0 0 2px rgba(255,255,255,.3)}
+.dom-gauge-dot.btc-strong,.dom-gauge-dot.btc{background:#f7931a;box-shadow:0 0 0 2px rgba(247,147,26,.45)}
+.dom-gauge-dot.alt,.dom-gauge-dot.alt-strong{background:#42ceac;box-shadow:0 0 0 2px rgba(66,206,172,.45)}
+.dom-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}
+.dom-card{background:#101c2b;border:1px solid #223449;border-radius:8px;padding:10px 11px;display:grid;gap:4px}
+.dom-k{font-size:10.5px;color:var(--muted)}
+.dom-v{font:700 16px 'DM Mono',monospace;color:var(--text)}
+.dom-card small{font-size:10.5px;color:#94aac0;line-height:1.45}
+.dom-movers{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px 16px;font-size:11px;color:#95abc2;padding-top:4px;border-top:1px dashed #213247}
+.dom-movers b{font-family:'DM Mono',monospace;font-weight:600}
+@media(max-width:1050px){.dom-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:690px){.dom-summary{padding:9px 11px;gap:6px}.dom-badge{font-size:11px;padding:3px 8px}.dom-phase{font-size:10.5px}.dom-pill{font-size:10px;padding:2px 6px}.dom-body{padding:10px 11px 12px}.dom-cards{grid-template-columns:1fr}.dom-v{font-size:14px}}
+
