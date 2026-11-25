@@ -225,5 +225,54 @@ test('server.mjs, public/app.js, public/index.html, public/styles.css, and updat
  assert.match(cssSrc,/\.econ-bar\{/);
  assert.match(cssSrc,/\.econ-actual\{/);
  assert.match(cssSrc,/\.econ-surprise\.above\{/);
+ assert.match(cssSrc,/\.econ-conflict-box\{/);
+ assert.match(cssSrc,/\.econ-sub-box\{/);
  assert.match(updaterSrc,/'economic_calendar\.mjs'/);
 });
+
+test('companion sub-indicators, crypto impact polarity, reversal guides, and simultaneous conflict detection work end-to-end',async()=>{
+ const {evaluateCryptoImpact,analyzeReleaseConflicts}=await import('../economic_calendar.mjs');
+
+ assert.equal(evaluateCryptoImpact({direction:'BELOW',labelKo:'예상 하회'},'INVERSE').tone,'BULLISH');
+ assert.equal(evaluateCryptoImpact({direction:'ABOVE',labelKo:'예상 상회'},'INVERSE').tone,'BEARISH');
+ assert.equal(evaluateCryptoImpact({direction:'ABOVE',labelKo:'예상 상회'},'INVERSE_CLAIMS').tone,'MIXED');
+
+ // CPI Headline hot (BEARISH) vs simultaneous Core CPI MoM cool (BULLISH) -> OPPOSITE_IMPACT reversal alert!
+ const events=parseTradingViewEvents({
+  result:[
+   {id:201,title:'Inflation Rate YoY',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:3.0,forecast:2.8,previous:2.7,scale:'',unit:'%',period:'Oct'},
+   {id:202,title:'Core Inflation Rate MoM',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:0,actual:0.2,forecast:0.3,previous:0.3,scale:'',unit:'%',period:'Oct'},
+   {id:203,title:'Personal Spending MoM',country:'US',currency:'USD',date:'2026-11-25T13:30:00Z',importance:0,actual:null,forecast:0.4,previous:0.5,scale:'',unit:'%'},
+   {id:204,title:'Core PCE Price Index MoM',country:'US',currency:'USD',date:'2026-11-25T13:30:00Z',importance:1,actual:null,forecast:0.3,previous:0.2,scale:'',unit:'%'},
+  ],
+ });
+ assert.equal(events.length,2,'two primary High events with Medium companions attached');
+ const cpi=events.find(e=>e.id==='tv:201');
+ const pce=events.find(e=>e.id==='tv:204');
+ assert.equal(cpi.subEvents.length,1);
+ assert.match(cpi.subEvents[0].titleKo,/근원 CPI/);
+ assert.equal(cpi.subEvents[0].cryptoImpact.tone,'BULLISH');
+ assert.equal(cpi.cryptoImpact.tone,'BEARISH');
+ assert.ok(cpi.conflict?.detected,'detects conflict between hot headline CPI and cool Core CPI');
+ assert.equal(cpi.conflict.kind,'OPPOSITE_IMPACT');
+ assert.match(cpi.conflict.summaryKo,/지표 엇갈림 · 반전 주의/);
+ assert.match(cpi.watchItemsKo,/주거비/);
+ assert.match(cpi.reversalKo,/반전/);
+
+ assert.equal(pce.subEvents.length,1);
+ assert.match(pce.subEvents[0].titleKo,/개인소비지출/);
+
+ const conflicts=analyzeReleaseConflicts(events);
+ assert.equal(conflicts.length,1);
+
+ const report=buildEconomicCalendarReport({events,now:NOW,updatedAt:NOW});
+ assert.ok(report.latestConflict?.detected);
+ const html=renderEconomicCalendarHTML(report);
+ assert.match(html,/econ-badge conflict/);
+ assert.match(html,/지표 엇갈림 · 반전 주의/);
+ assert.match(html,/동시 발표 세부 지표 \(1건\)/);
+ assert.match(html,/세부 항목 · 반전 변수 보기/);
+ assert.match(html,/🔍 세부 체크:/);
+ assert.match(html,/🔄 반전 주의:/);
+});
+
