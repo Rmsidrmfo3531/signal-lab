@@ -1,11 +1,12 @@
-// US ★★★ (Investing.com high-importance) macroeconomic indicator calendar with 24-month empirical BTC impact stats (read-only).
+// US ★★★ (Investing.com 3-star ONLY) macroeconomic indicator calendar with 24-month empirical BTC impact stats (read-only).
 // Primary source: TradingView public economic calendar (includes live `actual`, `forecast`, `previous`).
 // Fallback source: ForexFactory public weekly JSON feeds (thisweek + nextweek).
-// Aligns indicator coverage with Investing.com Korea (kr.investing.com/economic-calendar) US ★★★ (3-star high volatility)
-// releases — FOMC, CPI, NFP/Unemployment, Core PCE, PPI, ISM Mfg/Svc PMI, JOLTS, Michigan Sentiment, GDP,
+// Strictly includes Investing.com Korea (kr.investing.com/economic-calendar) US ★★★ (3-star high volatility)
+// releases ONLY — FOMC, CPI, NFP/Unemployment, Core PCE, PPI, ISM Mfg/Svc PMI, JOLTS, GDP,
 // Initial Jobless Claims, Retail Sales, ADP Employment Change, CB Consumer Confidence, S&P Global Flash PMI,
-// and Durable Goods Orders — while excluding China/non-US and 1-2 star US noise (Housing, Oil, Auctions, ADP Weekly),
-// capturing companion sub-indicators, and grading impact from real 2-year 5m BTC backtest data (econ_impact_stats.json).
+// and Durable Goods Orders — excluding China/non-US and ALL 1-2 star US releases (including 2-star Michigan
+// Consumer Sentiment, Industrial Production, Building Permits, Housing Starts, standalone Core PPI, ADP Weekly),
+// while attaching same-minute companion sub-indicators under ★★★ releases and grading from 2y BTC backtest data.
 
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -15,6 +16,8 @@ const FF_THIS_WEEK_URL='https://nfs.faireconomy.media/ff_calendar_thisweek.json'
 const FF_NEXT_WEEK_URL='https://nfs.faireconomy.media/ff_calendar_nextweek.json';
 const KST_MS=9*3600000;
 const DAY_KO=['일','월','화','수','목','금','토'];
+
+export const MIN_IMPORTANCE_STARS=3;
 
 const COUNTRY_META={USD:{flag:'🇺🇸',nameKo:'미국'}};
 const ISO2_TO_CCY={US:'USD'};
@@ -32,17 +35,18 @@ export function getHistoricalImpact(familyKey){
  return familyKey&&ECON_IMPACT_STATS?.families?.[familyKey]||null;
 }
 
-// Primary US ★★★ (Investing.com 3-star high importance) releases, graded by 24-month empirical 5m BTC impact:
+// Primary US ★★★ ONLY (strictly Investing.com 3-star high importance; all 1-star & 2-star releases excluded):
 // ★★★ S초강력 (>= 1.6x 15m baseline): FOMC, CPI, NFP/Unemployment
-// ★★★ A강력 (>= 1.15x 15m baseline): Michigan Sentiment, JOLTS, ISM Services PMI, PPI, ISM Manufacturing PMI, Core PCE
+// ★★★ A강력 (>= 1.15x 15m baseline): JOLTS, ISM Services PMI, PPI, ISM Manufacturing PMI, Core PCE
 // ★★★ B주요 (Investing.com ★★★ US major releases): GDP QoQ, Initial Jobless Claims, Retail Sales, ADP Employment Change,
 //           CB Consumer Confidence, S&P Global Flash PMI, Durable Goods Orders
-// Excluded: China/non-US countries and Investing.com 1-2 star US noise (Housing, Crude Oil, Treasury Auctions, ADP Weekly, Regional Feds).
-const PRIMARY_US_RE=/^(?:fed interest rate decision|federal funds rate|interest rate|fomc statement|fomc press conference|fomc (?:meeting )?minutes|fomc economic projections|fed chair .*speaks|fed powell speech|powell speaks|core inflation rate (?:mom|yoy)|inflation rate (?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|core pce price index(?:\s*(?:mom|m\/m))?|non[- ]?farm (?:payrolls|employment change)|unemployment rate|ppi\s*(?:mom|m\/m)|core ppi\s*(?:mom|m\/m)|ism manufacturing pmi|ism services pmi|jolts job openings|michigan consumer sentiment.*|prelim uom consumer sentiment|gdp growth rate qoq.*|(?:advance|prelim|final) gdp\s*q\/q|(?:initial jobless|unemployment) claims|retail sales\s*(?:mom|m\/m)|core retail sales\s*(?:mom|m\/m)|adp (?:employment change|non[- ]?farm employment change)|cb consumer confidence|s&p global (?:manufacturing|services) pmi flash|flash (?:manufacturing|services) pmi|(?:core )?durable goods orders\s*(?:mom|m\/m)|jackson hole.*)$/i;
+// Excluded: China/non-US and Investing.com 1-2 star US releases (Michigan Consumer Sentiment ★★, standalone Core PPI ★★,
+//           Industrial Production ★★, Building Permits ★★, Housing Starts ★★, Crude Oil, Treasury Auctions, ADP Weekly).
+const PRIMARY_US_RE=/^(?:fed interest rate decision|federal funds rate|interest rate|fomc statement|fomc press conference|fomc (?:meeting )?minutes|fomc economic projections|fed chair .*speaks|fed powell speech|powell speaks|core inflation rate (?:mom|yoy)|inflation rate (?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|core pce price index(?:\s*(?:mom|m\/m))?|non[- ]?farm (?:payrolls|employment change)|unemployment rate|ppi\s*(?:mom|m\/m)|ism manufacturing pmi|ism services pmi|jolts job openings|gdp growth rate qoq.*|(?:advance|prelim|final) gdp\s*q\/q|(?:initial jobless|unemployment) claims|retail sales\s*(?:mom|m\/m)|core retail sales\s*(?:mom|m\/m)|adp (?:employment change|non[- ]?farm employment change)|cb consumer confidence|s&p global (?:manufacturing|services) pmi flash|flash (?:manufacturing|services) pmi|(?:core )?durable goods orders\s*(?:mom|m\/m)|jackson hole.*)$/i;
 
-// Companion sub-indicators (including importance 0 / -1 on TradingView) released at the exact same minute
-// as a primary US ★★★ release that frequently drive or reverse BTC direction.
-const SUB_INDICATOR_RE=/^(?:core pce price index\s*(?:yoy|y\/y)|pce price index\s*(?:mom|yoy|m\/m|y\/y)|personal spending(?:\s*mom)?|personal income(?:\s*mom)?|core inflation rate\s*(?:mom|yoy)|inflation rate\s*(?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|average hourly earnings.*|participation rate|u6 unemployment rate|nonfarm payrolls private|core ppi\s*(?:mom|yoy|m\/m|y\/y)|ppi\s*(?:yoy|y\/y)|ism manufacturing prices|ism services prices|ism manufacturing employment|ism services employment|continuing jobless claims|retail sales control group.*|retail sales ex autos\s*(?:mom|m\/m)|core retail sales\s*(?:mom|m\/m)|gdp price index.*|core pce prices qoq.*|durable goods orders ex transp\s*(?:mom|m\/m)|s&p global composite pmi flash|michigan.*inflation expectations.*|uom.*inflation expectations.*|fomc economic projections|interest rate projection.*)$/i;
+// Companion sub-indicators released at the exact same minute as a primary US ★★★ release
+// (attached ONLY under an existing ★★★ primary; never shown standalone).
+const SUB_INDICATOR_RE=/^(?:core pce price index\s*(?:yoy|y\/y)|pce price index\s*(?:mom|yoy|m\/m|y\/y)|personal spending(?:\s*mom)?|personal income(?:\s*mom)?|core inflation rate\s*(?:mom|yoy)|inflation rate\s*(?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|average hourly earnings.*|participation rate|u6 unemployment rate|nonfarm payrolls private|core ppi\s*(?:mom|yoy|m\/m|y\/y)|ppi\s*(?:yoy|y\/y)|ism manufacturing prices|ism services prices|ism manufacturing employment|ism services employment|continuing jobless claims|retail sales control group.*|retail sales ex autos\s*(?:mom|m\/m)|core retail sales\s*(?:mom|m\/m)|gdp price index.*|core pce prices qoq.*|durable goods orders ex transp\s*(?:mom|m\/m)|s&p global composite pmi flash|fomc economic projections|interest rate projection.*)$/i;
 
 const NO_ACTUAL_TITLE_RE=/speaks|speech|press conference|minutes|statement|symposium|outlook report|testifies|testimony|holiday/i;
 
@@ -275,10 +279,13 @@ function resolveUsCurrency(raw){
  return ccy==='USD'?'USD':'';
 }
 
-/** Return true if a raw calendar item matches Investing.com US ★★★ (high-importance) releases (excludes China/non-US and 1-2 star US noise). */
+/** Return true if a raw calendar item is strictly an Investing.com US ★★★ (3-star or higher) release. */
 export function isHighImpactCryptoEvent(raw){
  if(!raw||typeof raw!=='object')return false;
  if(!resolveUsCurrency(raw))return false;
+ if(raw.importanceStars!=null&&Number(raw.importanceStars)<MIN_IMPORTANCE_STARS)return false;
+ const ffImpact=String(raw.impact||'').trim().toLowerCase();
+ if(ffImpact==='low'||ffImpact==='holiday'||ffImpact==='non-economic')return false;
  const title=String(raw.title||raw.indicator||'').replace(/\s+/g,' ').trim();
  if(!title)return false;
  // Exclude weekly ADP or NSA duplicates

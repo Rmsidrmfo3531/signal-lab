@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+ MIN_IMPORTANCE_STARS,
  ECON_IMPACT_STATS,
  getHistoricalImpact,
  isHighImpactCryptoEvent,
@@ -24,8 +25,9 @@ import {renderEconomicCalendarHTML,formatClientCountdown} from '../public/econ_c
 
 const NOW=Date.parse('2026-11-25T12:00:00Z'); // 2026-11-25 21:00 KST
 
-test('isHighImpactCryptoEvent matches Investing.com US ★★★ releases and drops China/non-US and 1-2 star US noise',()=>{
- // Kept: Investing.com US ★★★ (S / A / B empirical BTC tiers)
+test('isHighImpactCryptoEvent strictly allows Investing.com US ★★★ (3-star+) releases and drops all 1-2 star & non-US items',()=>{
+ assert.equal(MIN_IMPORTANCE_STARS,3);
+ // Kept: strictly Investing.com US ★★★ (3-star) releases
  assert.equal(isHighImpactCryptoEvent({country:'USD',impact:'High',title:'Core PCE Price Index m/m'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Core Inflation Rate MoM'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Interest Rate'}),true);
@@ -34,7 +36,6 @@ test('isHighImpactCryptoEvent matches Investing.com US ★★★ releases and dr
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'ISM Manufacturing PMI'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'ISM Services PMI'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'JOLTs Job Openings'}),true);
- assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Michigan Consumer Sentiment Prel'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'GDP Growth Rate QoQ 2nd Est'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'Initial Jobless Claims'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Retail Sales MoM'}),true);
@@ -45,7 +46,13 @@ test('isHighImpactCryptoEvent matches Investing.com US ★★★ releases and dr
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Durable Goods Orders MoM'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'USD',impact:'High',title:'Core Durable Goods Orders m/m'}),true);
 
- // Dropped: China, EUR, JPY, and Investing.com 1-2 star US noise (Housing, Oil, Auctions, Weekly ADP, PMI Final)
+ // Dropped: Investing.com ★★ (2-star) & ★ (1-star) US indicators + China/non-US
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Michigan Consumer Sentiment Prel'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'Michigan Consumer Sentiment Final'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'Core PPI MoM'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'Industrial Production MoM'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importanceStars:2,title:'CPI m/m'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'USD',impact:'Low',title:'CPI m/m'}),false);
  assert.equal(isHighImpactCryptoEvent({country:'CN',currency:'CNY',importance:1,title:'GDP Growth Rate YoY'}),false);
  assert.equal(isHighImpactCryptoEvent({country:'CNY',impact:'High',title:'CPI y/y'}),false);
  assert.equal(isHighImpactCryptoEvent({country:'EUR',impact:'High',title:'Main Refinancing Rate'}),false);
