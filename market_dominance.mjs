@@ -20,13 +20,15 @@ function median(arr){
  return s.length%2?s[mid]:(s[mid-1]+s[mid])/2;
 }
 
-/** Parse CoinGecko /api/v3/global JSON payload into clean dominance shares. */
+/** Parse CoinGecko /api/v3/global JSON payload into clean dominance shares (BTC, ETH, SOL, USDT, Stable, Pure Alt). */
 export function parseGlobalDominance(raw,at=Date.now()){
  const d=raw?.data??raw;
  const pct=d?.market_cap_percentage;
  if(!pct||typeof pct!=='object')return null;
  const btc=num(pct.btc);
  const eth=num(pct.eth);
+ const sol=num(pct.sol);
+ const usdt=num(pct.usdt);
  if(btc==null||btc<=0||btc>=100)return null;
  let stable=0;
  for(const [k,v] of Object.entries(pct)){
@@ -36,7 +38,11 @@ export function parseGlobalDominance(raw,at=Date.now()){
   }
  }
  const ethSafe=eth!=null&&eth>=0?eth:0;
+ const solSafe=sol!=null&&sol>=0?sol:null;
+ const usdtSafe=usdt!=null&&usdt>=0?usdt:null;
  const alt=Math.max(0,100-btc-ethSafe-stable);
+ const otherAlt=Math.max(0,alt-(solSafe??0));
+ const otherStable=Math.max(0,stable-(usdtSafe??0));
  const exBtc=Math.max(0,100-btc-stable);
  const totalMcapUSD=num(d?.total_market_cap?.usd);
  const mcapChange24hPct=num(d?.market_cap_change_percentage_24h_usd);
@@ -45,8 +51,12 @@ export function parseGlobalDominance(raw,at=Date.now()){
   at:Number(at)||Date.now(),
   btcDomPct:r2(btc),
   ethDomPct:r2(ethSafe),
+  solDomPct:solSafe!=null?r2(solSafe):null,
+  usdtDomPct:usdtSafe!=null?r2(usdtSafe):null,
   stableDomPct:r2(stable),
+  otherStableDomPct:r2(otherStable),
   altDomPct:r2(alt),
+  otherAltDomPct:r2(otherAlt),
   exBtcDomPct:r2(exBtc),
   totalMcapUSD:totalMcapUSD!=null?Math.round(totalMcapUSD):null,
   totalVol24hUSD:totalVol24hUSD!=null?Math.round(totalVol24hUSD):null,
@@ -60,12 +70,18 @@ export function appendDominanceHistory(history,point){
  if(!point||!Number.isFinite(point.at)||!Number.isFinite(point.btcDomPct))return list;
  const cutoff=point.at-HISTORY_MAX_MS;
  const kept=list.filter(x=>x.at>=cutoff);
+ const entry={
+  at:point.at,
+  btcDomPct:point.btcDomPct,
+  ethDomPct:point.ethDomPct,
+  solDomPct:point.solDomPct??null,
+  usdtDomPct:point.usdtDomPct??null,
+  stableDomPct:point.stableDomPct,
+  altDomPct:point.altDomPct,
+ };
  const last=kept.at(-1);
- if(!last||point.at-last.at>=HISTORY_MIN_GAP_MS){
-  kept.push({at:point.at,btcDomPct:point.btcDomPct,ethDomPct:point.ethDomPct,stableDomPct:point.stableDomPct,altDomPct:point.altDomPct});
- }else{
-  kept[kept.length-1]={at:point.at,btcDomPct:point.btcDomPct,ethDomPct:point.ethDomPct,stableDomPct:point.stableDomPct,altDomPct:point.altDomPct};
- }
+ if(!last||point.at-last.at>=HISTORY_MIN_GAP_MS)kept.push(entry);
+ else kept[kept.length-1]=entry;
  return kept.length>HISTORY_MAX_POINTS?kept.slice(-HISTORY_MAX_POINTS):kept;
 }
 
@@ -93,6 +109,8 @@ export function computeDominanceDeltas(current,history){
   is24h:windowHours>=18&&windowHours<=30,
   btcDomDelta:r2(current.btcDomPct-best.btcDomPct),
   ethDomDelta:r2(current.ethDomPct-best.ethDomPct),
+  solDomDelta:current.solDomPct!=null&&best.solDomPct!=null?r2(current.solDomPct-best.solDomPct):null,
+  usdtDomDelta:current.usdtDomPct!=null&&best.usdtDomPct!=null?r2(current.usdtDomPct-best.usdtDomPct):null,
   altDomDelta:r2(current.altDomPct-best.altDomPct),
   stableDomDelta:r2(current.stableDomPct-best.stableDomPct),
  };
@@ -102,7 +120,7 @@ export function computeDominanceDeltas(current,history){
 export function computeMarketBreadth(tickers,{eligibleSymbols=null,minQuoteVolume=1_000_000}={}){
  const rows=Array.isArray(tickers)?tickers:[];
  const allow=eligibleSymbols instanceof Set?eligibleSymbols:(Array.isArray(eligibleSymbols)&&eligibleSymbols.length?new Set(eligibleSymbols):null);
- let btc=null,eth=null;
+ let btc=null,eth=null,sol=null;
  const alts=[];
  for(const t of rows){
   const sym=String(t?.symbol||'').toUpperCase();
@@ -113,6 +131,7 @@ export function computeMarketBreadth(tickers,{eligibleSymbols=null,minQuoteVolum
   if(pct==null)continue;
   if(sym==='BTCUSDT'){btc={symbol:sym,pct,quoteVolume:qv,price:last};continue}
   if(sym==='ETHUSDT')eth={symbol:sym,pct,quoteVolume:qv,price:last};
+  if(sym==='SOLUSDT')sol={symbol:sym,pct,quoteVolume:qv,price:last};
   if(allow&&!allow.has(sym))continue;
   if(EXCLUDED_ALT_SYMBOLS.has(sym))continue;
   if(qv!=null&&qv<minQuoteVolume)continue;
@@ -130,6 +149,7 @@ export function computeMarketBreadth(tickers,{eligibleSymbols=null,minQuoteVolum
  const advancingPct=advancingCount/alts.length*100;
  const altSpreadPct=altMedianPct24h-btc.pct;
  const ethBtcPct24h=eth&&btc.pct>-99?(((1+eth.pct/100)/(1+btc.pct/100)-1)*100):null;
+ const solBtcPct24h=sol&&btc.pct>-99?(((1+sol.pct/100)/(1+btc.pct/100)-1)*100):null;
  const sortedByPct=[...alts].filter(a=>a.quoteVolume>=5_000_000||alts.length<=25).sort((a,b)=>b.pct-a.pct);
  const topAlts=sortedByPct.slice(0,3).map(a=>({symbol:a.symbol,pct:r2(a.pct)}));
  const bottomAlts=sortedByPct.slice(-3).reverse().map(a=>({symbol:a.symbol,pct:r2(a.pct)}));
@@ -138,6 +158,8 @@ export function computeMarketBreadth(tickers,{eligibleSymbols=null,minQuoteVolum
   btcPrice:btc.price,
   ethPct24h:eth?r2(eth.pct):null,
   ethBtcPct24h:r2(ethBtcPct24h),
+  solPct24h:sol?r2(sol.pct):null,
+  solBtcPct24h:r2(solBtcPct24h),
   altMedianPct24h:r2(altMedianPct24h),
   altMeanPct24h:r2(altMeanPct24h),
   altTop20MedianPct24h:r2(altTop20MedianPct24h),
@@ -205,7 +227,9 @@ export function buildMarketDominanceReport({global=null,history=[],tickers=[],el
   }
   if(global){
    const dTxt=deltas?.btcDomDelta!=null?` (${deltas.is24h?'24h':`${deltas.windowHours}h`} ${deltas.btcDomDelta>=0?'+':''}${deltas.btcDomDelta}%p)`:'';
-   parts.push(`BTC.D ${global.btcDomPct}%${dTxt} · 순수 알트.D ${global.altDomPct}%`);
+   const solTxt=global.solDomPct!=null?` · SOL.D ${global.solDomPct}%`:'';
+   const usdtTxt=global.usdtDomPct!=null?` · USDT.D ${global.usdtDomPct}%`:'';
+   parts.push(`BTC.D ${global.btcDomPct}%${dTxt}${solTxt}${usdtTxt} · 순수 알트.D ${global.altDomPct}%`);
   }
   const advice=regime==='BTC_STRONG'||regime==='BTC_LEAD'
    ?(btcUp?'비트코인 단독 강세 구간으로 알트 추격 매수에 유의하세요.':'리스크오프 하락 구간에서 알트 낙폭이 더 커 방어적 대응이 유리합니다.')
@@ -214,7 +238,9 @@ export function buildMarketDominanceReport({global=null,history=[],tickers=[],el
     :'뚜렷한 쏠림이 없어 개별 수급·매물대 기준 선별 대응이 적합합니다.');
   summaryKo=`${parts.join(' · ')}. ${advice}`;
  }else if(global){
-  summaryKo=`BTC.D ${global.btcDomPct}% · 순수 알트.D ${global.altDomPct}% (바이낸스 실시간 알트 상대강도 수신 대기 중)`;
+  const solTxt=global.solDomPct!=null?` · SOL.D ${global.solDomPct}%`:'';
+  const usdtTxt=global.usdtDomPct!=null?` · USDT.D ${global.usdtDomPct}%`:'';
+  summaryKo=`BTC.D ${global.btcDomPct}%${solTxt}${usdtTxt} · 순수 알트.D ${global.altDomPct}% (바이낸스 실시간 알트 상대강도 수신 대기 중)`;
  }
 
  return {

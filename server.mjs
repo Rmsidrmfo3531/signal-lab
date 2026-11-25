@@ -41,6 +41,7 @@ import {createTelegramNetworkRecovery,postTelegramIPv4} from './telegram_transpo
 import {translateNewsArticles,googleTranslate,googleTranslateStatus,createOpenAINewsTranslator} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {appendDominanceHistory,buildMarketDominanceReport,fetchGlobalDominance} from './market_dominance.mjs';
+import {buildEconomicCalendarReport,fetchEconomicCalendar} from './economic_calendar.mjs';
 import {PublicReadBudget,budgetedPublicRead} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
@@ -1597,6 +1598,42 @@ async function refreshGlobalDominance({force=false}={}){
  })();
  return dominanceCache.inflight;
 }
+// High-impact economic calendar cache on disk (read-only macro schedule, 30m TTL + 7d fallback).
+const econCalendarFile=path.join(storage.dir,'economic-calendar.json');
+const econCache={events:[],at:0,error:'',failedAt:0,loaded:false,inflight:null};
+function loadEconCache(){
+ if(econCache.loaded)return;
+ econCache.loaded=true;
+ try{
+  const d=JSON.parse(fs.readFileSync(econCalendarFile,'utf8'));
+  if(Array.isArray(d?.events)){econCache.events=d.events.filter(x=>x&&Number.isFinite(x.at));econCache.at=Number(d.at)||0}
+ }catch{}
+}
+async function refreshEconomicCalendar({force=false}={}){
+ loadEconCache();
+ const now=Date.now();
+ const ttl=force?60000:30*60000;
+ if(econCache.events.length&&now-econCache.at<ttl)return econCache.events;
+ if(!force&&econCache.error&&now-(econCache.failedAt||0)<10*60000)return econCache.events.length&&now-econCache.at<7*86400000?econCache.events:[];
+ if(econCache.inflight)return econCache.inflight;
+ econCache.inflight=(async()=>{
+  try{
+   const events=await fetchEconomicCalendar();
+   econCache.events=events;
+   econCache.at=Date.now();
+   econCache.error='';
+   econCache.failedAt=0;
+   try{fs.writeFileSync(econCalendarFile+'.tmp',JSON.stringify({at:econCache.at,events}));fs.renameSync(econCalendarFile+'.tmp',econCalendarFile)}catch{}
+   return events;
+  }catch(e){
+   econCache.error=String(e.message||e);
+   econCache.failedAt=Date.now();
+   console.warn('[ECON CALENDAR]',econCache.error);
+   return econCache.events.length&&Date.now()-econCache.at<7*86400000?econCache.events:[];
+  }finally{econCache.inflight=null}
+ })();
+ return econCache.inflight;
+}
 async function refreshVenueOnlyList(){
  if(!CONFIG.venueOnly.enabled||!state.activeSymbols.length)return;
  if(Date.now()-state.venueOnlyInfo.at<(state.venueOnlyInfo.error?60000:10*60000))return;
@@ -2857,6 +2894,16 @@ const server=http.createServer(async(req,res)=>{
     globalError:dominanceCache.error,
    }));
   }
+  if(pathname==='/api/economic-calendar'&&req.method==='GET'){
+   const force=url.searchParams.get('force')==='1';
+   await refreshEconomicCalendar({force}).catch(()=>[]);
+   return response(res,200,buildEconomicCalendarReport({
+    events:econCache.events,
+    now:Date.now(),
+    updatedAt:econCache.at||Date.now(),
+    error:econCache.error,
+   }));
+  }
   // One article's main text (fetched when opened, from the RSS sources' own sites) in Korean.
   if(pathname==='/api/news/detail'&&req.method==='GET'){
    const id=url.searchParams.get('id')||'',article=(state.news||[]).find(n=>n.id===id);
@@ -3011,6 +3058,7 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
  // Market caps for every coin (leverage rule), not only for the venue-only list.
  setTimeout(()=>void refreshMarketCaps().catch(()=>{}),15000);setInterval(()=>void refreshMarketCaps().catch(()=>{}),30*60000);
  setTimeout(()=>void refreshGlobalDominance().catch(()=>{}),25000).unref?.();setInterval(()=>void refreshGlobalDominance().catch(()=>{}),15*60000).unref?.();
+ setTimeout(()=>void refreshEconomicCalendar().catch(()=>{}),30000).unref?.();setInterval(()=>void refreshEconomicCalendar().catch(()=>{}),30*60000).unref?.();
  setTimeout(()=>void runVenueOnlyScan(),CONFIG.venueOnly.startDelayMs);setInterval(()=>void runVenueOnlyScan(),CONFIG.venueOnly.intervalMs);
  // Retry market discovery quickly after an API failure rather than staying empty for 4 minutes.
  setInterval(()=>{if(!state.activeSymbols.length&&!state.researchSymbols.length&&!state.scanActive){state.marketLastRetry=Date.now();void runScan()}},20000);
