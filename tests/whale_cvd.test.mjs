@@ -171,14 +171,14 @@ function mockVenue(fillAt=PX){
 }
 // The whale snapshot a candidate sees: net whale buying of `whale` USD in a $2M window (|whale| >= 10 % = $200k is significant).
 const whaleSnap=whale=>summarizeWhaleCvd(trades([[T0-60_000,Math.abs(whale),whale>=0?'BUY':'SELL'],[T0-50_000,1_000_000-Math.abs(whale)/2,'BUY'],[T0-40_000,1_000_000-Math.abs(whale)/2,'SELL']]),{symbol:'SOLUSDT',startMs:T0-1800_000,endMs:T0,thresholds:WHALE_CVD_FIXED});
-function scalp({minScore,whaleCvd,orderflow=null,trend=up4h}){
- const v=mockVenue();
+function scalp({minScore,whaleCvd,orderflow=null,trend=up4h,rows=crash(),px=PX}){
+ const v=mockVenue(px);
  const ex=new ScalpExecutor({config:{...scalpExecConfig({}),management:'CURRENT',minScore,stopLossEnabled:false},client:v.client,
   contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
   tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
-  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:[]):trend(T0),
+  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?[...rows,[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:[]):trend(T0),
   ...(whaleCvd?{whaleCvd}:{}),...(orderflow?{orderflow}:{}),
-  priceOf:async()=>PX,markOf:async()=>PX,balance:async()=>({equity:10000,available:9000}),now:()=>T0});
+  priceOf:async()=>px,markOf:async()=>px,balance:async()=>({equity:10000,available:9000}),now:()=>T0});
  ex.arm();return {ex,v};
 }
 async function baseScore(trend=up4h){
@@ -305,4 +305,34 @@ test('deadline: no new aggTrades page after the executor’s 4 s wait (no backgr
  clearWhaleCvdCache();clock=0;const g=fakeBinance({n:6000,budget:new PublicReadBudget({now:()=>clock})});
  const t=await fetchWhaleCvd('SOLUSDT',{request:g.request,budget:()=>g.budget.snapshot(),startMs:g.end-5999_000,endMs:g.end,now:()=>clock,maxPages:10,maxWindowMs:2*3600_000});
  assert.equal(t.complete,true);assert.equal(t.stopped,undefined);assert.equal(g.routes.length,6);
+});
+
+test('whale off: the orderflow read range stays gate−10 (OI + CVD only), as before the whale bonus',async()=>{
+ const base=await baseScore(down4h);assert.ok(base+11<=100,String(base));
+ for(const off of [{cfg:{whaleCvd:false}},{cfg:{},noFn:true}]){
+  for(const [minScore,want] of [[base+10,1],[base+11,0]]){
+   let of=0,whale=0;
+   const {ex}=scalp({minScore,trend:down4h,orderflow:async()=>{of++;return null},...(off.noFn?{}:{whaleCvd:async()=>{whale++;return whaleSnap(400_000)}})});
+   ex.config={...ex.config,...off.cfg};
+   await ex.scan();
+   assert.equal(of,want,`orderflow read at gate ${minScore} (base ${base}, ${off.noFn?'no whale reader':'SCALP_WHALE_CVD=off'})`);assert.equal(whale,0);
+  }
+ }
+});
+
+test('SHORT (fade after a pump): the window starts at the open of the candle with the lowest low before the high, max 30 min',async()=>{
+ // The crash fixture mirrored around 100: the same move up, an upper-wick rejection.
+ const mirror=rows=>rows.map(r=>[r[0],String(200-Number(r[1])),String(200-Number(r[3])),String(200-Number(r[2])),String(200-Number(r[4])),r[5],r[6],r[7]]);
+ const rows=mirror(crash()),det=detectScalpReversal(rows,{symbol:'SOLUSDT',now:T0});
+ assert.equal(det.ok,true);assert.equal(det.direction,'SHORT');
+ const originRow=rows.find(r=>r[0]===det.evidence.originAt);assert.ok(originRow);
+ assert.equal(Number(originRow[3]),det.evidence.origin,'SHORT origin = the lowest low, at that candle');
+ const long=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0}),longRow=crash().find(r=>r[0]===long.evidence.originAt);
+ assert.equal(Number(longRow[2]),long.evidence.origin,'LONG origin = the highest high, at that candle');
+ let seen=null;
+ const {ex}=scalp({minScore:1,rows,px:+(det.entry-.02).toFixed(2),whaleCvd:async(sym,o)=>{seen=o;return whaleSnap(-400_000)}});
+ assert.equal((await ex.scan()).entered,1,JSON.stringify(ex.store.skips.at(-1)));
+ assert.equal(seen.direction,'SHORT');assert.equal(seen.startMs,Math.max(T0-1800_000,det.evidence.originAt));assert.equal(seen.endMs,T0);
+ const sc=ex.store.open[0].scalpScore;assert.equal(ex.store.open[0].direction,'SHORT');
+ assert.equal(sc.whaleBonus,5,'whale net selling agrees with the SHORT');assert.equal(sc.whaleCvd.code,WHALE_CVD_CODES.WITH);
 });
