@@ -45,12 +45,16 @@ function makeTickers(btcPct,ethPct,altPcts){
  return rows;
 }
 
-test('parseGlobalDominance computes BTC.D, ETH.D, Stable.D, and pure Alt OTHERS.D accurately',()=>{
+test('parseGlobalDominance computes BTC.D, ETH.D, SOL.D, USDT.D, Stable.D, and pure Alt OTHERS.D accurately',()=>{
  const g=sampleGlobal(58.4,12.1,5.2,2.3);
  assert.equal(g.btcDomPct,58.4);
  assert.equal(g.ethDomPct,12.1);
+ assert.equal(g.solDomPct,3.8);
+ assert.equal(g.usdtDomPct,5.2);
  assert.equal(g.stableDomPct,7.5);
+ assert.equal(g.otherStableDomPct,2.3);
  assert.equal(g.altDomPct,22.0);
+ assert.equal(g.otherAltDomPct,18.2);
  assert.equal(g.exBtcDomPct,34.1);
  assert.equal(g.totalMcapUSD,3_250_000_000_000);
  assert.equal(g.mcapChange24hPct,2.45);
@@ -59,50 +63,61 @@ test('parseGlobalDominance computes BTC.D, ETH.D, Stable.D, and pure Alt OTHERS.
 });
 
 test('appendDominanceHistory deduplicates <9m updates and prunes snapshots older than 7 days',()=>{
- const oldPoint={at:NOW-8*86400000,btcDomPct:55,ethDomPct:13,stableDomPct:8,altDomPct:24};
- const recentPoint={at:NOW-30*60000,btcDomPct:57,ethDomPct:12.5,stableDomPct:7.5,altDomPct:23};
- const h1=appendDominanceHistory([oldPoint,recentPoint],{at:NOW-25*60000,btcDomPct:57.2,ethDomPct:12.4,stableDomPct:7.5,altDomPct:22.9});
+ const oldPoint={at:NOW-8*86400000,btcDomPct:55,ethDomPct:13,solDomPct:3.5,usdtDomPct:5.5,stableDomPct:8,altDomPct:24};
+ const recentPoint={at:NOW-30*60000,btcDomPct:57,ethDomPct:12.5,solDomPct:3.7,usdtDomPct:5.3,stableDomPct:7.5,altDomPct:23};
+ const h1=appendDominanceHistory([oldPoint,recentPoint],{at:NOW-25*60000,btcDomPct:57.2,ethDomPct:12.4,solDomPct:3.75,usdtDomPct:5.25,stableDomPct:7.5,altDomPct:22.9});
  assert.equal(h1.length,1,'pruned >7d point and replaced <9m point in-place');
  assert.equal(h1[0].btcDomPct,57.2);
- const h2=appendDominanceHistory(h1,{at:NOW,btcDomPct:58.0,ethDomPct:12.1,stableDomPct:7.5,altDomPct:22.4});
+ assert.equal(h1[0].solDomPct,3.75);
+ assert.equal(h1[0].usdtDomPct,5.25);
+ const h2=appendDominanceHistory(h1,{at:NOW,btcDomPct:58.0,ethDomPct:12.1,solDomPct:3.8,usdtDomPct:5.2,stableDomPct:7.5,altDomPct:22.4});
  assert.equal(h2.length,2,'appended new point after >=9m gap');
 });
 
 test('computeDominanceDeltas prefers 24h reference and falls back to >=1h window',()=>{
- const current={at:NOW,btcDomPct:59.0,ethDomPct:11.8,stableDomPct:7.2,altDomPct:22.0};
+ const current={at:NOW,btcDomPct:59.0,ethDomPct:11.8,solDomPct:4.1,usdtDomPct:4.9,stableDomPct:7.2,altDomPct:22.0};
  const history24h=[
-  {at:NOW-26*3600000,btcDomPct:57.5,ethDomPct:12.2,stableDomPct:7.5,altDomPct:22.8},
-  {at:NOW-24*3600000,btcDomPct:58.2,ethDomPct:12.0,stableDomPct:7.4,altDomPct:22.4},
-  {at:NOW-2*3600000,btcDomPct:58.8,ethDomPct:11.9,stableDomPct:7.3,altDomPct:22.0},
+  {at:NOW-26*3600000,btcDomPct:57.5,ethDomPct:12.2,solDomPct:3.7,usdtDomPct:5.3,stableDomPct:7.5,altDomPct:22.8},
+  {at:NOW-24*3600000,btcDomPct:58.2,ethDomPct:12.0,solDomPct:3.8,usdtDomPct:5.2,stableDomPct:7.4,altDomPct:22.4},
+  {at:NOW-2*3600000,btcDomPct:58.8,ethDomPct:11.9,solDomPct:4.0,usdtDomPct:5.0,stableDomPct:7.3,altDomPct:22.0},
  ];
  const d24=computeDominanceDeltas(current,history24h);
  assert.equal(d24.is24h,true);
  assert.equal(d24.windowHours,24);
  assert.equal(d24.btcDomDelta,0.8);
+ assert.equal(d24.solDomDelta,0.3);
+ assert.equal(d24.usdtDomDelta,-0.3);
  assert.equal(d24.altDomDelta,-0.4);
 
- const shortHistory=[{at:NOW-3*3600000,btcDomPct:58.5,ethDomPct:12.0,stableDomPct:7.3,altDomPct:22.2}];
+ const shortHistory=[{at:NOW-3*3600000,btcDomPct:58.5,ethDomPct:12.0,solDomPct:3.9,usdtDomPct:5.1,stableDomPct:7.3,altDomPct:22.2}];
  const dShort=computeDominanceDeltas(current,shortHistory);
  assert.equal(dShort.is24h,false);
  assert.equal(dShort.windowHours,3);
  assert.equal(dShort.btcDomDelta,0.5);
+ assert.equal(dShort.solDomDelta,0.2);
+ assert.equal(dShort.usdtDomDelta,-0.2);
 
  assert.equal(computeDominanceDeltas(current,[{at:NOW-20*60000,btcDomPct:58.9}]),null);
 });
 
 test('computeMarketBreadth filters stables/indices/low-volume pairs and computes relative stats',()=>{
- const tickers=makeTickers(4.0,1.0,[-2,-1,0,1,2,3]);
+ const tickers=[
+  ...makeTickers(4.0,1.0,[-2,-1,0,1,2,3]),
+  {symbol:'SOLUSDT',priceChangePercent:'6.0',quoteVolume:'5000000000',lastPrice:'240'},
+ ];
  const b=computeMarketBreadth(tickers);
  assert.ok(b);
- // ETHUSDT + 6 ALT pairs = 7 alts (TINYUSDT, USDCUSDT, BTCDOMUSDT excluded)
- assert.equal(b.sampleCount,7);
+ // ETHUSDT + SOLUSDT + 6 ALT pairs = 8 alts (TINYUSDT, USDCUSDT, BTCDOMUSDT excluded)
+ assert.equal(b.sampleCount,8);
  assert.equal(b.btcPct24h,4);
  assert.equal(b.ethPct24h,1);
+ assert.equal(b.solPct24h,6);
+ assert.ok(b.solBtcPct24h>0);
  assert.equal(b.altMedianPct24h,1);
  assert.equal(b.altSpreadPct,-3);
- assert.equal(b.altBeatBtcPct,0);
+ assert.equal(b.altBeatBtcPct,12.5);
  assert.ok(b.ethBtcPct24h<0);
- assert.equal(b.topAlts[0].symbol,'ALT6USDT');
+ assert.equal(b.topAlts[0].symbol,'SOLUSDT');
  assert.equal(b.bottomAlts[0].symbol,'ALT1USDT');
 });
 
@@ -202,7 +217,11 @@ test('renderDominanceHTML renders regime summary, stack bar, gauge, movers, and 
  const html=renderDominanceHTML(report);
  assert.match(html,/dom-badge btc-strong/);
  assert.match(html,/BTC\.D <b>58\.4%<\/b>/);
+ assert.match(html,/SOL\.D <b>3\.8%<\/b>/);
+ assert.match(html,/USDT\.D <b>5\.2%<\/b>/);
  assert.match(html,/알트\.D <b>22\.0%<\/b>/);
+ assert.match(html,/seg-sol/);
+ assert.match(html,/seg-usdt/);
  assert.match(html,/dom-stack/);
  assert.match(html,/dom-gauge-dot/);
  assert.match(html,/data-dom-refresh="1"/);

@@ -22,28 +22,35 @@ export function renderDominanceHTML(d){
  if(g){
   summaryPills.push(`<span class="dom-pill dom-btc">BTC.D <b>${fmtShare(g.btcDomPct)}</b>${del?.btcDomDelta!=null?` <small class="${clsPct(-del.btcDomDelta)}">${fmtDelta(del.btcDomDelta)}</small>`:''}</span>`);
   summaryPills.push(`<span class="dom-pill dom-eth">ETH.D <b>${fmtShare(g.ethDomPct)}</b></span>`);
+  if(g.solDomPct!=null)summaryPills.push(`<span class="dom-pill dom-sol">SOL.D <b>${fmtShare(g.solDomPct)}</b>${del?.solDomDelta!=null?` <small class="${clsPct(del.solDomDelta)}">${fmtDelta(del.solDomDelta)}</small>`:''}</span>`);
+  if(g.usdtDomPct!=null)summaryPills.push(`<span class="dom-pill dom-usdt">USDT.D <b>${fmtShare(g.usdtDomPct)}</b>${del?.usdtDomDelta!=null?` <small class="${clsPct(-del.usdtDomDelta)}">${fmtDelta(del.usdtDomDelta)}</small>`:''}</span>`);
   summaryPills.push(`<span class="dom-pill dom-alt">알트.D <b>${fmtShare(g.altDomPct)}</b></span>`);
-  summaryPills.push(`<span class="dom-pill dom-stable">스테이블 <b>${fmtShare(g.stableDomPct)}</b></span>`);
  }
  if(b){
   summaryPills.push(`<span class="dom-pill">BTC <b class="${clsPct(b.btcPct24h)}">${fmtPct(b.btcPct24h)}</b> vs 알트중앙 <b class="${clsPct(b.altMedianPct24h)}">${fmtPct(b.altMedianPct24h)}</b></span>`);
   summaryPills.push(`<span class="dom-pill">알트 승률 <b>${b.altBeatBtcPct}%</b></span>`);
  }
 
+ const otherAltPct=g?(g.otherAltDomPct??Math.max(0,g.altDomPct-(g.solDomPct??0))):0;
+ const otherStablePct=g?(g.otherStableDomPct??Math.max(0,g.stableDomPct-(g.usdtDomPct??0))):0;
  const stackBar=g?`
   <div class="dom-stack-wrap">
    <div class="dom-stack-head"><span>시가총액 도미넌스 비중${g.totalMcapUSD?` · 전체 ${fmtTril(g.totalMcapUSD)}`:''}${g.mcapChange24hPct!=null?` (<span class="${clsPct(g.mcapChange24hPct)}">${fmtPct(g.mcapChange24hPct)}</span>)`:''}</span><small>CoinGecko 글로벌</small></div>
-   <div class="dom-stack" role="img" aria-label="BTC ${g.btcDomPct}%, ETH ${g.ethDomPct}%, 순수 알트 ${g.altDomPct}%, 스테이블 ${g.stableDomPct}%">
+   <div class="dom-stack" role="img" aria-label="BTC ${g.btcDomPct}%, ETH ${g.ethDomPct}%, ${g.solDomPct!=null?`SOL ${g.solDomPct}%, `:''}기타 알트 ${otherAltPct.toFixed(1)}%, ${g.usdtDomPct!=null?`USDT ${g.usdtDomPct}%, `:''}기타 스테이블 ${otherStablePct.toFixed(1)}%">
     <i class="seg-btc" style="width:${g.btcDomPct}%" title="BTC.D ${g.btcDomPct}%"></i>
     <i class="seg-eth" style="width:${g.ethDomPct}%" title="ETH.D ${g.ethDomPct}%"></i>
-    <i class="seg-alt" style="width:${g.altDomPct}%" title="순수 알트.D ${g.altDomPct}%"></i>
-    <i class="seg-stable" style="width:${g.stableDomPct}%" title="스테이블.D ${g.stableDomPct}%"></i>
+    ${g.solDomPct!=null?`<i class="seg-sol" style="width:${g.solDomPct}%" title="SOL.D ${g.solDomPct}%"></i>`:''}
+    <i class="seg-alt" style="width:${otherAltPct}%" title="기타 알트 ${otherAltPct.toFixed(2)}%"></i>
+    ${g.usdtDomPct!=null?`<i class="seg-usdt" style="width:${g.usdtDomPct}%" title="USDT.D ${g.usdtDomPct}%"></i>`:''}
+    ${otherStablePct>0?`<i class="seg-stable" style="width:${otherStablePct}%" title="기타 스테이블 ${otherStablePct.toFixed(2)}%"></i>`:''}
    </div>
    <div class="dom-legend">
     <span><em class="seg-btc"></em>BTC ${fmtShare(g.btcDomPct)}</span>
     <span><em class="seg-eth"></em>ETH ${fmtShare(g.ethDomPct)}</span>
-    <span><em class="seg-alt"></em>순수 알트 ${fmtShare(g.altDomPct)}</span>
-    <span><em class="seg-stable"></em>스테이블 ${fmtShare(g.stableDomPct)}</span>
+    ${g.solDomPct!=null?`<span><em class="seg-sol"></em>SOL ${fmtShare(g.solDomPct)}</span>`:''}
+    <span><em class="seg-alt"></em>기타 알트 ${fmtShare(otherAltPct)}</span>
+    ${g.usdtDomPct!=null?`<span><em class="seg-usdt"></em>USDT ${fmtShare(g.usdtDomPct)}</span>`:''}
+    ${otherStablePct>0?`<span><em class="seg-stable"></em>기타 스테이블 ${fmtShare(otherStablePct)}</span>`:''}
    </div>
   </div>`:'';
 
@@ -61,19 +68,24 @@ export function renderDominanceHTML(d){
     <small>${del?.btcDomDelta!=null?`${deltaLabel} ${fmtDelta(del.btcDomDelta)} · `:''}BTC 24h <span class="${clsPct(b?.btcPct24h)}">${fmtPct(b?.btcPct24h)}</span></small>
    </div>
    <div class="dom-card">
-    <span class="dom-k">ETH.D · ETH/BTC</span>
+    <span class="dom-k">ETH 도미넌스 (ETH.D)</span>
     <strong class="dom-v">${g?fmtShare(g.ethDomPct):'—'}</strong>
     <small>ETH 24h <span class="${clsPct(b?.ethPct24h)}">${fmtPct(b?.ethPct24h)}</span> · ETH/BTC <span class="${clsPct(b?.ethBtcPct24h)}">${fmtPct(b?.ethBtcPct24h)}</span></small>
    </div>
    <div class="dom-card">
-    <span class="dom-k">순수 알트 (OTHERS.D)</span>
-    <strong class="dom-v">${g?fmtShare(g.altDomPct):'—'}</strong>
-    <small>중앙값 <span class="${clsPct(b?.altMedianPct24h)}">${fmtPct(b?.altMedianPct24h)}</span> · BTC 대비 <span class="${clsPct(b?.altSpreadPct)}">${b?.altSpreadPct!=null?`${b.altSpreadPct>=0?'+':''}${b.altSpreadPct}%p`:'—'}</span></small>
+    <span class="dom-k">SOL 도미넌스 (SOL.D)</span>
+    <strong class="dom-v">${g?.solDomPct!=null?fmtShare(g.solDomPct):'—'}</strong>
+    <small>${del?.solDomDelta!=null?`${deltaLabel} ${fmtDelta(del.solDomDelta)} · `:''}SOL 24h <span class="${clsPct(b?.solPct24h)}">${fmtPct(b?.solPct24h)}</span> · SOL/BTC <span class="${clsPct(b?.solBtcPct24h)}">${fmtPct(b?.solBtcPct24h)}</span></small>
    </div>
    <div class="dom-card">
-    <span class="dom-k">스테이블 · 알트 강세 폭</span>
-    <strong class="dom-v">${g?fmtShare(g.stableDomPct):'—'}</strong>
-    <small>${b?`BTC 상회 ${b.altBeatBtcPct}% · 상승 ${b.advancingPct}% (${b.sampleCount}종)`:'Binance 24h 대기'}</small>
+    <span class="dom-k">USDT 도미넌스 (USDT.D)</span>
+    <strong class="dom-v">${g?.usdtDomPct!=null?fmtShare(g.usdtDomPct):'—'}</strong>
+    <small>${del?.usdtDomDelta!=null?`${deltaLabel} <span class="${clsPct(-del.usdtDomDelta)}">${fmtDelta(del.usdtDomDelta)}</span> · `:''}전체 스테이블 ${g?fmtShare(g.stableDomPct):'—'}</small>
+   </div>
+   <div class="dom-card">
+    <span class="dom-k">순수 알트 (OTHERS.D)</span>
+    <strong class="dom-v">${g?fmtShare(g.altDomPct):'—'}</strong>
+    <small>중앙값 <span class="${clsPct(b?.altMedianPct24h)}">${fmtPct(b?.altMedianPct24h)}</span> · ${b?`BTC 상회 ${b.altBeatBtcPct}% (${b.sampleCount}종)`:'대기'}</small>
    </div>
   </div>`;
 
