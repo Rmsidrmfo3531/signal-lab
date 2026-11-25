@@ -190,8 +190,9 @@ test('scalp executor exposes the stats() rows read only',async()=>{
  assert.match(server,/setInterval\(\(\)=>\{void readyCheck\(\)\},3600000\)/);
 });
 
-test('readiness sample restarts at the score-rules change (user 2026-11-25 "진행해")',async()=>{
- const {SCALP_SCORE_RULES_SINCE}=await import('../scalp_executor.mjs');
- assert.equal(new Date(SCALP_SCORE_RULES_SINCE).toISOString(),'2026-11-24T23:44:31.000Z');
+test('readiness sample keeps TRADER_LADDER managementSince without score-rules reset',async()=>{
+ const src=fs.readFileSync(new URL('../scalp_executor.mjs',import.meta.url),'utf8');
+ assert.doesNotMatch(src,/SCALP_SCORE_RULES_SINCE/);
+ assert.match(src,/managementScope\(\)\{return \{management:SCALP_MANAGEMENTS\.LADDER,since:Number\(this\.store\.managementSince\?\.\[SCALP_MANAGEMENTS\.LADDER\]\)\|\|null,active:this\.#management\(\)===SCALP_MANAGEMENTS\.LADDER\}\}/);
 });
 
