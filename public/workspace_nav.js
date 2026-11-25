@@ -6,13 +6,14 @@
 const workspaceRoutes = Object.freeze({
   real: '실계좌 · 카피 매매',
   live: '테스트넷 · 신호 전략',
-  orderflow: '수급 · 청산맵',
+  orderflow: '호가·CVD·청산맵', // renamed from '수급 · 청산맵' (user 2026-11-25 09:51); the #orderflow hash stays
   news: '시황 · 뉴스'
 });
 const defaultRoute = 'real';
 // Old bookmarks of the removed 자동 모의매매 page open the 테스트넷 page.
 // Every other old or unknown hash (#overview, #alerts, #chartPanel, #venues, #scanner, #journal, ...) opens 실계좌.
-const workspaceAliases = Object.freeze({ paper: 'live' });
+// #firechart, #cvd and #liquidation also open 호가·CVD·청산맵 (its features' names); #orderflow keeps working.
+const workspaceAliases = Object.freeze({ paper: 'live', firechart: 'orderflow', cvd: 'orderflow', liquidation: 'orderflow' });
 const workspaceSections = [...document.querySelectorAll('.content > [data-workspace-route]')];
 
 function workspaceRouteForHash(hash = window.location.hash) {

@@ -348,7 +348,7 @@ test('rankOrderflowAnomalies ranks OI flush, strong CVD flips, divergences and r
   assert.match(html, /data-of-radar-refresh/);
 });
 
-test('FireCharts engine builds 4-cohort real-trade CVD (Normalized & Absolute), liquidity heatmap, and FireCharts SVG', async () => {
+test('FireCharts engine builds the 6-class real-trade CVD (Normalized & Absolute), liquidity heatmap, and FireCharts SVG', async () => {
   const {
     buildTradeCohortSeries,
     buildHistoricalCohortSeries,
@@ -360,26 +360,27 @@ test('FireCharts engine builds 4-cohort real-trade CVD (Normalized & Absolute), 
   const { firechartSvg } = await import('../public/orderflow_ui.js');
 
   clearFirechartHistory();
-  // Real signed trade ticks spanning retail (<$1K), mid ($1K-$10K), large ($10K-$100K), whale ($100K+)
+  // Real signed trade ticks spanning orange ($100~$1K), green ($1K~$10K), red ($10K~$100K), purple ($100K~$1M)
   const trades = [];
   for (let i = 0; i < 80; i++) {
     const t = BASE_T + i * 5000;
-    trades.push({ t, price: 100 + i * 0.02, quoteUsd: 400, isBuy: i % 3 !== 0 }); // retail
-    trades.push({ t: t + 500, price: 100 + i * 0.02, quoteUsd: 3500, isBuy: i % 2 === 0 }); // mid
-    if (i % 4 === 0) trades.push({ t: t + 1000, price: 100 + i * 0.02, quoteUsd: 25_000, isBuy: true }); // large
-    if (i % 16 === 0) trades.push({ t: t + 1500, price: 100 + i * 0.02, quoteUsd: 180_000, isBuy: i > 30 }); // whale step
+    trades.push({ t, price: 100 + i * 0.02, quoteUsd: 400, isBuy: i % 3 !== 0 }); // orange
+    trades.push({ t: t + 500, price: 100 + i * 0.02, quoteUsd: 3500, isBuy: i % 2 === 0 }); // green
+    if (i % 4 === 0) trades.push({ t: t + 1000, price: 100 + i * 0.02, quoteUsd: 25_000, isBuy: true }); // red
+    if (i % 16 === 0) trades.push({ t: t + 1500, price: 100 + i * 0.02, quoteUsd: 180_000, isBuy: i > 30 }); // purple
   }
   const realCohorts = buildTradeCohortSeries(trades, { buckets: 40 });
   assert.equal(realCohorts.cohortMode, 'REAL_TRADES');
-  assert.equal(realCohorts.thresholds.mode, 'MAJOR');
+  assert.equal(realCohorts.thresholds.mode, 'FIRECHARTS_FIXED');
   assert.ok(realCohorts.series.length >= 12);
   // Every normalized point must sit in [0, 1]
   for (const pt of realCohorts.series) {
-    for (const k of ['retail', 'mid', 'large', 'whale']) {
+    for (const k of ['orange', 'green', 'red', 'purple', 'brown', 'blue']) {
       assert.ok(pt.norm[k] >= 0 && pt.norm[k] <= 1, `${k} norm out of bounds: ${pt.norm[k]}`);
     }
   }
-  assert.ok(realCohorts.latest.abs.large > 0, 'large cohort net positive');
+  assert.ok(realCohorts.latest.abs.red > 0, 'red class net positive');
+  assert.equal(realCohorts.classCounts.brown, 0, 'no $1M+ order in the fixture');
 
   // Historical decomposition + live L2 orderbook heatmap + snapshot recorder
   const candles = makeCandles(36, i => ({
@@ -391,7 +392,12 @@ test('FireCharts engine builds 4-cohort real-trade CVD (Normalized & Absolute), 
   }));
   const histCohorts = buildHistoricalCohortSeries(candles);
   assert.equal(histCohorts.cohortMode, 'ESTIMATED_BY_BAR_SIZE');
-  assert.ok(histCohorts.latest.abs.whale > 0, 'whale impulse triggers on high-intensity bar');
+  assert.ok(histCohorts.latest.abs.brown > 0, 'brown whale impulse triggers on high-intensity bar');
+  // All Orders (blue) is the real taker delta sum; the five classes split exactly that
+  const totalDelta = candles.reduce((a, c) => a + c.delta, 0);
+  assert.equal(histCohorts.latest.abs.blue, Math.round(totalDelta));
+  const classSum = ['orange', 'green', 'red', 'purple', 'brown'].reduce((a, k) => a + histCohorts.latest.abs[k], 0);
+  assert.ok(Math.abs(classSum - totalDelta) <= 5, `classes ${classSum} vs total ${totalDelta}`);
 
   const book = {
     bids: [{ p: 101.5, usd: 450_000 }, { p: 100.5, usd: 920_000 }],
@@ -418,7 +424,11 @@ test('FireCharts engine builds 4-cohort real-trade CVD (Normalized & Absolute), 
   assert.match(svgNorm, /<svg class="of-fc-svg"/);
   assert.match(svgNorm, /Normalized CVD \(0~1\)/);
   assert.match(svgNorm, /fcFireScale/);
-  assert.match(svgNorm, /<path d="M /); // stepped whale red line
+  assert.match(svgNorm, /<path class="of-fc-line of-fc-l-brown" d="M /); // stepped brown whale line
+  for (const k of ['orange', 'green', 'red', 'purple', 'brown', 'blue']) assert.match(svgNorm, new RegExp(`data-cvd-line="${k}"`));
+  assert.match(svgNorm, /색이 밝을수록 매물대가 두터움/);
+  assert.match(svgNorm, />Fire Chart</);
+  assert.match(svgNorm, /data-fc-scale/);
 
   const svgAbs = firechartSvg(mockData, { cvdMode: 'absolute', minPct: 90, maxPct: 99 });
   assert.match(svgAbs, /Absolute CVD \(USD\)/);
@@ -428,6 +438,14 @@ test('FireCharts engine builds 4-cohort real-trade CVD (Normalized & Absolute), 
   assert.match(page, /Normalized CVD/);
   assert.match(page, /Absolute CVD/);
   assert.match(page, /data-of-range="1M"/);
+  assert.match(page, /data-of-range="3Y"/);
+  assert.match(page, /aria-label="CVD 표시 모드"/);
+  assert.match(page, /고래 : CVD 증가 = 매집 경향/);
+  assert.match(page, /새우 : CVD 감소 = 매도 경향/);
+  assert.match(page, /\$100~\$1000 \(새우\)/);
+  assert.match(page, /\$1M~\$10M \(고래\)/);
+  assert.match(page, /All Orders/);
+  assert.doesNotMatch(page, /개미/);
   assert.match(page, /data-of-fc-inspect/);
   assert.match(page, /data-of-wall-strip/);
   clearFirechartHistory();
@@ -529,27 +547,37 @@ test('Whale vs Retail CVD cohort divergence badge, L2 snapshot disk persistence,
   const accumPts = Array.from({ length: 10 }, (_, i) => ({
     t: BASE_T + i * 60_000,
     price: 100 + i * 0.1,
-    retail: -50_000 * (i + 1),
-    mid: -10_000 * (i + 1),
-    large: 120_000 * (i + 1),
-    whale: 350_000 * (i + 1),
+    orange: -50_000 * (i + 1),
+    green: -10_000 * (i + 1),
+    red: 120_000 * (i + 1),
+    purple: 200_000 * (i + 1),
+    brown: 150_000 * (i + 1),
+    blue: 410_000 * (i + 1),
   }));
   const accum = normalizeCohortSeries(accumPts);
   assert.equal(accum.divergence.type, 'WHALE_ACCUMULATION');
-  assert.match(accum.divergence.badgeKo, /고래 매집 · 개미 투매 역행/);
+  assert.match(accum.divergence.badgeKo, /고래 매집 · 새우 매도 역행/);
 
   // 2) Whale distribution into retail buying
   const distPts = Array.from({ length: 10 }, (_, i) => ({
     t: BASE_T + i * 60_000,
     price: 100 - i * 0.1,
-    retail: 60_000 * (i + 1),
-    mid: 15_000 * (i + 1),
-    large: -100_000 * (i + 1),
-    whale: -400_000 * (i + 1),
+    orange: 60_000 * (i + 1),
+    green: 15_000 * (i + 1),
+    red: -100_000 * (i + 1),
+    purple: -300_000 * (i + 1),
+    brown: -100_000 * (i + 1),
+    blue: -425_000 * (i + 1),
   }));
   const dist = normalizeCohortSeries(distPts);
   assert.equal(dist.divergence.type, 'WHALE_DISTRIBUTION');
-  assert.match(dist.divergence.badgeKo, /고래 매도 · 개미 추격 역행/);
+  assert.match(dist.divergence.badgeKo, /고래 매도 · 새우 추격 역행/);
+  // An old retail/mid/large/whale point (before 2026-11-25) maps onto orange/green/red/brown
+  const legacy = normalizeCohortSeries(Array.from({ length: 10 }, (_, i) => ({ t: BASE_T + i, price: 1, retail: -50_000 * (i + 1), mid: 0, large: 0, whale: 350_000 * (i + 1) })));
+  assert.equal(legacy.latest.abs.orange, -500_000);
+  assert.equal(legacy.latest.abs.brown, 3_500_000);
+  assert.equal(legacy.latest.abs.blue, 3_000_000);
+  assert.equal(legacy.divergence.type, 'WHALE_ACCUMULATION');
 
   // 3) Disk persistence of L2 orderbook snapshots across restarts
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fc-snap-'));
@@ -577,6 +605,8 @@ test('FireCharts wide price span (tight/normal/wide/ultra), 6M/1Y ranges, and se
   assert.equal(FIRECHART_RANGES['6M'].limit, 180);
   assert.equal(FIRECHART_RANGES['1Y'].interval, '1d');
   assert.equal(FIRECHART_RANGES['1Y'].limit, 365);
+  assert.equal(FIRECHART_RANGES['3Y'].interval, '1d');
+  assert.equal(FIRECHART_RANGES['3Y'].limit, 1095);
 
   // ORCA-like 1M swing ($1.05 .. $1.60 around $1.25)
   const candles = makeCandles(30, i => ({
@@ -621,6 +651,7 @@ test('FireCharts wide price span (tight/normal/wide/ultra), 6M/1Y ranges, and se
   const page = orderflowHTML({ ...data, ok: true, cvd: {}, oi: {}, ratios: {}, funding: {}, liquidations: {}, liquidationMap: { above: [], below: [] }, scalpSignal: {} }, { priceSpan: 'wide' });
   assert.match(page, /data-of-range="6M"/);
   assert.match(page, /data-of-range="1Y"/);
+  assert.match(page, /data-of-range="3Y"/);
   assert.match(page, /data-of-price-span="tight"/);
   assert.match(page, /data-of-price-span="wide"/);
   assert.match(page, /data-of-price-span="ultra"/);

@@ -17,10 +17,10 @@ test('the update completion popup uses the running server state rather than the 
  context.showCompletedUpdate({displayVersion:'fixture',runtime:{copy:false,signal:true,scalp:false}});
  assert.match(notices[0],/카피 꺼짐 · 신호 전략 켜짐 · 되돌림 단타 꺼짐/);
 });
-// The dashboard shows these four pages: 실계좌·카피 / 테스트넷 / 수급·청산 / 뉴스.
+// The dashboard shows these four pages: 실계좌·카피 / 테스트넷 / 호가·CVD·청산맵 (was 수급·청산 until 2026-11-25) / 뉴스.
 const routes=['real','live','orderflow','news'];
 
-test('dashboard shows 실계좌·카피 / 테스트넷 / 수급·청산 / 뉴스',()=>{
+test('dashboard shows 실계좌·카피 / 테스트넷 / 호가·CVD·청산맵 / 뉴스',()=>{
  const markers=[...html.matchAll(/<section\b[^>]*data-workspace-route="([^"]+)"/g)].map(x=>x[1]);
  assert.deepEqual(markers,routes);
  for(const id of ['real','realCopy','live','liveControl','liveCopySection','liveScalpSection','orderflow','orderflowRoot','news'])
@@ -32,6 +32,13 @@ test('dashboard shows 실계좌·카피 / 테스트넷 / 수급·청산 / 뉴스
  // Mobile bottom navigation: the four pages.
  const bottom=html.match(/<nav class="mobile-bottom-nav"[\s\S]*?<\/nav>/)[0];
  assert.deepEqual([...bottom.matchAll(/href="#([a-z]+)"/g)].map(x=>x[1]),routes);
+ // Renamed section (user 2026-11-25 09:51): every label says 호가·CVD·청산맵 and the old 수급·청산 name is gone.
+ assert.match(html,/<title>[^<]*호가·CVD·청산맵[^<]*<\/title>/);
+ assert.match(html,/href="#orderflow" class="navlink">[\s\S]*?<span>호가·CVD·청산맵<\/span>/);
+ assert.match(bottom,/href="#orderflow"><span>◎<\/span>호가·CVD·청산맵<\/a>/);
+ assert.match(html,/<h3 class="sr-only">호가·CVD·청산맵<\/h3>/);
+ assert.match(html,/호가·CVD·청산맵 데이터를 불러오는 중입니다/);
+ assert.doesNotMatch(html,/수급 ?· ?청산/);
  // Topbar keeps connection status, clock, browser-notification and update buttons.
  for(const id of ['socketStatus','clock','notificationButton','updateButton'])assert.match(html,new RegExp('id="'+id+'"'));
  assert.match(html,/<script type="module" src="\/workspace_nav\.js"><\/script>/);
@@ -78,8 +85,10 @@ test('default landing is #real; old and unknown hashes redirect to #real',()=>{
  h.go('#paper');assert.deepEqual(h.shown(),['live']);assert.equal(h.window.location.hash,'#live');
  h.go('#live');assert.deepEqual(h.shown(),['live']);assert.equal(h.crumb.textContent,'테스트넷 · 신호 전략');
  assert.equal(h.links[1].attributes['aria-current'],'page');assert.equal(h.links[0].attributes['aria-current'],undefined);
- h.go('#orderflow');assert.deepEqual(h.shown(),['orderflow']);assert.equal(h.crumb.textContent,'수급 · 청산맵');
+ h.go('#orderflow');assert.deepEqual(h.shown(),['orderflow']);assert.equal(h.crumb.textContent,'호가·CVD·청산맵');assert.equal(h.document.title,'Signal Lab · 호가·CVD·청산맵');
  assert.equal(h.links[2].attributes['aria-current'],'page');
+ // Links named after the section's features open it too (the #orderflow hash stays the address).
+ for(const alias of ['#firechart','#cvd','#liquidation']){h.go(alias);assert.deepEqual(h.shown(),['orderflow'],alias);assert.equal(h.window.location.hash,'#orderflow',alias);}
  h.go('#news');assert.deepEqual(h.shown(),['news']);
  // The removed 매매일지 tab: old #journal bookmarks open 실계좌.
  h.go('#journal');assert.deepEqual(h.shown(),['real']);assert.equal(h.window.location.hash,'#real');assert.equal(h.document.title,'Signal Lab · 실계좌 · 카피 매매');
