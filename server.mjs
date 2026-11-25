@@ -1,6 +1,6 @@
 import http from 'node:http';
 import {exec,execFile} from 'node:child_process';
-import {gitUpdateAvailable,gitCheck,gitApply,checkTree,displayVersionOf,headDisplayVersionSync,checkPostUpdateNotice} from './git_update.mjs';
+import {gitUpdateAvailable,gitCheck,gitApply,checkTree,displayVersionOf,headDisplayVersionSync,detectPostUpdateNotice,localizeUpdateChanges,formatUpdateCompletedNotice,formatUpdateErrorNotice} from './git_update.mjs';
 import {liveReadiness,readinessText} from './live_readiness.mjs';
 import {articleDetail} from './news_article.mjs';
 import {journalEntryFor,patternInsights} from './live_review.mjs';
@@ -806,8 +806,13 @@ async function sendRealTradeTelegram(e){
   try{scalpLiveExec.arm();restored.push('실계좌 단타 ●');console.log(`[SCALP:LIVE] ${updateMarker?'업데이트':'재시작'} 후 자동 활성화 (실계좌)`)}catch(e){console.warn('[SCALP:LIVE] 복원 안 함:',e.message)}
  }
  try{
-  const postUpdateMsg=checkPostUpdateNotice({dir:storage.dir,appVersion,marker:updateMarker,restored});
-  if(postUpdateMsg)setTimeout(()=>{updateNotice(postUpdateMsg)},3000).unref?.();
+  const postUpdateEvent=detectPostUpdateNotice({dir:storage.dir,appVersion,marker:updateMarker,restored});
+  if(postUpdateEvent)setTimeout(async()=>{
+   try{
+    const changes=await localizeUpdateChanges(postUpdateEvent.changes,{translate:googleTranslate});
+    updateNotice({text:formatUpdateCompletedNotice({...postUpdateEvent,changes,html:true}),parse_mode:'HTML'});
+   }catch(e){console.warn('[UPDATE NOTICE]',e.message)}
+  },3000).unref?.();
  }catch(e){console.warn('[UPDATE NOTICE]',e.message)}
 }
 // Shared real-account position operator (used by Telegram /close+#confirm and dashboard one-click actions).
@@ -1284,7 +1289,7 @@ async function runGitUpdate(source='button'){
    else step(25,'새 버전 적용 · 파일 검사 시작');
   },
    checkSyntax:async root=>{await checkTree(root,{nodeCheck,onFile:(i,n)=>step(25+55*i/n,`파일 검사 ${i}/${n}`)});step(82,'모듈 연결 검사');await linkCheck(root);step(86,'검사 통과')}});
-  if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,source,at:Date.now()};emitUpdateProgress();live.updating=false;if(wasArmed)live.arm();if(source==='auto'&&result.state!=='current')updateNotice(`⚠️ 자동 업데이트 중단: ${result.message||result.state}`);return {status:result.ok?200:409,body:result}}
+  if(result.state!=='applied'){updateJob={active:false,pct:100,label:result.state==='current'?'이미 최신 버전':'업데이트 중단',state:result.state,source,at:Date.now()};emitUpdateProgress();live.updating=false;if(wasArmed)live.arm();if(source==='auto'&&result.state!=='current')updateNotice({text:formatUpdateErrorNotice({kind:'aborted',source,state:result.state,message:result.message,html:true}),parse_mode:'HTML'});return {status:result.ok?200:409,body:result}}
   // User 2026-11-16 "업데이트 후 항상 전부 켜기": after an update everything is switched on, whatever it
   // was before (the guards at start-up still apply: kill switch, loss limit, mode, 15 min). Written just
   // before the restart, so a crash or manual restart before that finds no marker (review 2026-11-16).
@@ -1300,9 +1305,9 @@ async function runGitUpdate(source='button'){
    // Paused only once idle; if never idle in 10 minutes the restart waits for the next try.
    if(allIdle()){writeMarker();step(92,'서버 재시작');process.kill(process.pid,'SIGTERM')}else{live.paused=false;live.updating=false;updateJob={...updateJob,active:false,state:'postponed',label:'주문 완료 후 자동 재시작 예정',at:Date.now()};emitUpdateProgress();pendingRestart={writeMarker,from:result.from,to:result.to,toDisplayVersion:result.toDisplayVersion||null,source};if(wasArmed)live.arm();try{fs.rmSync(path.join(storage.dir,'rearm-after-update.json'),{force:true})}catch{}console.warn('[UPDATE] not idle for 10 min, restart postponed (code is on disk, applied at the next restart)')}})();
   return {status:200,body:{...result,rearm:LIVE.mode==='TESTNET',rearmCopy:copyRearmable(),rearmScalp:!!scalpExec,rearmScalpLive:scalpLiveRearmable()}};
- }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,source,at:Date.now()};emitUpdateProgress();live.updating=false;if(wasArmed)live.arm();if(source==='auto')updateNotice(`⚠️ 자동 업데이트 실패: ${e.message}`);return {status:502,body:{error:e.message}}}
+ }catch(e){updateJob={active:false,pct:100,label:'업데이트 실패',error:e.message,source,at:Date.now()};emitUpdateProgress();live.updating=false;if(wasArmed)live.arm();if(source==='auto')updateNotice({text:formatUpdateErrorNotice({kind:'failed',source,state:'failed',message:e.message,html:true}),parse_mode:'HTML'});return {status:502,body:{error:e.message}}}
 }
-function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,text,disable_web_page_preview:true}).catch(()=>{})}catch{}}
+function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({chat_id:CONFIG.tgChat,...(typeof text==='object'&&text?text:{text}),disable_web_page_preview:true}).catch(()=>{})}catch{}}
 // Automatic update (AUTO_UPDATE=off disables): GitHub is checked every AUTO_UPDATE_EVERY_MS; a new version is
 // applied with the same checks as the button. A failed version is not retried until a newer one appears.
 const AUTO_UPDATE=!/^(off|0|false|no)$/i.test(String(process.env.AUTO_UPDATE||'on'));
