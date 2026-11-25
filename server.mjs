@@ -1307,9 +1307,9 @@ function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({c
 const AUTO_UPDATE=!/^(off|0|false|no)$/i.test(String(process.env.AUTO_UPDATE||'on'));
 // Checked every 2 minutes (user 2026-11-16: 10 felt slow); AUTO_UPDATE_EVERY_MIN 1~60.
 const AUTO_UPDATE_EVERY_MS=Math.max(1,Math.min(60,Number(process.env.AUTO_UPDATE_EVERY_MIN)||2))*60000;
-// Countdown notice before applying a detected update (AUTO_UPDATE_DELAY_MIN 0~30, default 2 min).
+// Apply detected updates immediately by default (AUTO_UPDATE_DELAY_MIN 0~30, default 0).
 const rawAutoDelay=process.env.AUTO_UPDATE_DELAY_MIN;
-const AUTO_UPDATE_DELAY_MS=Math.max(0,Math.min(30,rawAutoDelay!==undefined&&rawAutoDelay!==''&&Number.isFinite(Number(rawAutoDelay))?Number(rawAutoDelay):2))*60000;
+const AUTO_UPDATE_DELAY_MS=Math.max(0,Math.min(30,rawAutoDelay!==undefined&&rawAutoDelay!==''&&Number.isFinite(Number(rawAutoDelay))?Number(rawAutoDelay):0))*60000;
 let autoUpdateFailedAt=null,pendingRestart=null,scheduledAutoUpdate=null;
 function scheduledUpdateSnapshot(s=scheduledAutoUpdate){
  if(!s)return null;
@@ -1330,7 +1330,7 @@ async function triggerScheduledAutoUpdate(){
  if(updateJob.active){clearScheduledAutoUpdate();return}
  if(!allIdle()||scalpExec?.scanning||scalpLiveExec?.scanning){
   s.waitingIdle=true;
-  s.timer=setTimeout(()=>{void triggerScheduledAutoUpdate()},15000);
+  s.timer=setTimeout(()=>{void triggerScheduledAutoUpdate()},5000);
   s.timer.unref?.();
   emitUpdateSchedule();
   return;
@@ -1340,31 +1340,33 @@ async function triggerScheduledAutoUpdate(){
  const r=await runGitUpdate('auto');
  if(r.status>=400&&!(r.status===409&&(r.body?.error==='UPDATE_IN_PROGRESS'||r.body?.error==='ORDER_IN_PROGRESS')))autoUpdateFailedAt=targetLatest;
 }
-function scheduleAutoUpdate(check){
+function scheduleAutoUpdate(check,{waitingIdle=false}={}){
  if(!GIT_UPDATE||!AUTO_UPDATE||updateJob.active||!check||check.state!=='available'||check.latest===autoUpdateFailedAt)return false;
- if(AUTO_UPDATE_DELAY_MS<=0)return false;
+ if(AUTO_UPDATE_DELAY_MS<=0&&!waitingIdle)return false;
  const now=Date.now();
  const changesCount=Array.isArray(check.changes)?check.changes.length:0;
  if(scheduledAutoUpdate){
-  const changed=scheduledAutoUpdate.latest!==check.latest||scheduledAutoUpdate.latestDisplayVersion!==(check.latestDisplayVersion||null)||scheduledAutoUpdate.changesCount!==changesCount;
+  const changed=scheduledAutoUpdate.latest!==check.latest||scheduledAutoUpdate.latestDisplayVersion!==(check.latestDisplayVersion||null)||scheduledAutoUpdate.changesCount!==changesCount||(waitingIdle&&!scheduledAutoUpdate.waitingIdle);
   scheduledAutoUpdate.latest=check.latest;
   scheduledAutoUpdate.latestDisplayVersion=check.latestDisplayVersion||null;
   scheduledAutoUpdate.changesCount=changesCount;
+  if(waitingIdle)scheduledAutoUpdate.waitingIdle=true;
   if(changed)emitUpdateSchedule();
   return true;
  }
- const scheduledAt=now+AUTO_UPDATE_DELAY_MS;
+ const delayMs=waitingIdle?5000:AUTO_UPDATE_DELAY_MS;
+ const scheduledAt=now+(waitingIdle?0:AUTO_UPDATE_DELAY_MS);
  scheduledAutoUpdate={
   latest:check.latest,
   latestDisplayVersion:check.latestDisplayVersion||null,
   changesCount,
   detectedAt:now,
   scheduledAt,
-  waitingIdle:false,
-  timer:setTimeout(()=>{void triggerScheduledAutoUpdate()},AUTO_UPDATE_DELAY_MS),
+  waitingIdle:waitingIdle===true,
+  timer:setTimeout(()=>{void triggerScheduledAutoUpdate()},delayMs),
  };
  scheduledAutoUpdate.timer.unref?.();
- console.log('[UPDATE] 새 버전 확인:',check.latestDisplayVersion||check.latest,`— ${Math.round(AUTO_UPDATE_DELAY_MS/60000)}분 후 자동 업데이트 예정`);
+ console.log('[UPDATE] 새 버전 확인:',check.latestDisplayVersion||check.latest,waitingIdle?'— 진행 중인 작업 완료 즉시 자동 업데이트 예정':`— ${Math.round(AUTO_UPDATE_DELAY_MS/60000)}분 후 자동 업데이트 예정`);
  emitUpdateSchedule();
  return true;
 }
@@ -1376,7 +1378,7 @@ if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
   if(c?.state==='current'){clearScheduledAutoUpdate();return}
   if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
   if(AUTO_UPDATE_DELAY_MS>0){scheduleAutoUpdate(c);return}
-  if(!allIdle()||scalpExec?.scanning||scalpLiveExec?.scanning)return;
+  if(!allIdle()||scalpExec?.scanning||scalpLiveExec?.scanning){scheduleAutoUpdate(c,{waitingIdle:true});return}
   const r=await runGitUpdate('auto');
   if(r.status>=400&&!(r.status===409&&(r.body?.error==='UPDATE_IN_PROGRESS'||r.body?.error==='ORDER_IN_PROGRESS')))autoUpdateFailedAt=c.latest;
  }catch(e){console.warn('[UPDATE] auto check:',e.message)}

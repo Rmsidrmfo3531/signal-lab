@@ -194,6 +194,8 @@ test('scheduled update banner formats remaining minutes/seconds and wires SSE + 
  const appJs=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
  assert.match(server,/send\('update-schedule'/);
  assert.match(server,/scheduledUpdate:scheduledUpdateSnapshot\(\)/);
+ assert.match(server,/Number\(rawAutoDelay\):0\)\)\*60000/);
+ assert.match(server,/scheduleAutoUpdate\(c,\{waitingIdle:true\}\)/);
  assert.match(html,/id="updateScheduleBanner"/);
  assert.match(appJs,/es\.addEventListener\('update-schedule'/);
  assert.match(appJs,/formatUpdateSchedule\(scheduledUpdate/);
