@@ -460,7 +460,7 @@ test('screen: 고래매물대 ±5 item with the zone chip, glossary entries with
 test('ladder: whale zones on our side count as strong zones for the ×2 step (kind recorded); none from a partial read',async()=>{
  const clock={t:T0};let whaleReads=0,snap=null;
  const v=mockVenue(PX);
- const ex=new ScalpExecutor({config:{...scalpExecConfig({}),minScore:0,makerEntry:false,makerExit:false,dailyLossPct:10,stopLossEnabled:false},client:v.client,
+ const ex=new ScalpExecutor({config:{...scalpExecConfig({}),minScore:0,makerEntry:false,makerExit:false,dailyLossPct:20,stopLossEnabled:false},client:v.client,
   contracts:async()=>new Map([['SOLUSDT',SOL]]),tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'}],
   candles:async(s,iv)=>iv==='5m'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:iv==='1h'?hourly(clock.t):up4h(clock.t),
   zoneCandles:async()=>[],whaleZones:async()=>{whaleReads++;return snap},

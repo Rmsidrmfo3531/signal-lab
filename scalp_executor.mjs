@@ -212,8 +212,8 @@ export function scalpExecConfig(env=process.env){
   // Pillar 4: PostOnly-first profit exits (1.2s wait -> IOC fallback for remainder; emergency/max-hold exits remain instant MARKET).
   makerExit:!['off','false','0','no'].includes(String(env.SCALP_MAKER_EXIT??'').trim().toLowerCase()),
   makerExitWaitMs:n('SCALP_MAKER_EXIT_WAIT_MS',1200,100,5000),
-  // Margin per position and for all scalps together, as a share of the equity; quantity is cut to fit.
-  maxMarginPct:n('SCALP_MAX_MARGIN_PCT',10,1,50),maxTotalMarginPct:n('SCALP_MAX_TOTAL_MARGIN_PCT',30,1,80),
+  // Margin per position and for all scalps together, as a share of the equity; quantity is cut to fit (user 2026-11-25: 20% per symbol on testnet).
+  maxMarginPct:n('SCALP_MAX_MARGIN_PCT',20,1,50),maxTotalMarginPct:n('SCALP_MAX_TOTAL_MARGIN_PCT',60,1,80),
   dailyLossPct:n('SCALP_DAILY_LOSS_PCT',3,.5,10),
   // Entry price check against the planned entry (the signal candle's close): within 0.4 % and 1 ATR (the
   // pre-move ATR the stop buffer uses), either way; the TP1 net RR is checked again at the price found.
@@ -318,6 +318,8 @@ export function scalpLiveExecConfig(env=process.env){
   balanceCapUSD:n('SCALP_LIVE_CAPITAL_CAP_USD',500,50,1e7),
   maxOpen:n('SCALP_LIVE_MAX_OPEN',3,1,20),
   maxSameSide:n('SCALP_LIVE_MAX_SAME_SIDE',2,1,10),
+  maxMarginPct:n('SCALP_LIVE_MAX_MARGIN_PCT',10,1,50),
+  maxTotalMarginPct:n('SCALP_LIVE_MAX_TOTAL_MARGIN_PCT',30,1,80),
   dailyLossPct:n('SCALP_LIVE_DAILY_LOSS_PCT',3,0.5,15),
   profitOnlyTargetMarginPct:n('SCALP_LIVE_TARGET_MARGIN_PCT',3.0,0.5,10),
   // Exchange-side catastrophic STOP_MARKET safety net on BingX servers when local reconcile/network stalls.
@@ -1170,10 +1172,10 @@ export class ScalpExecutor{
      if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty??null,riskUSD:plan.riskUSD??null,sizeMult:effectiveMult});
     }
    }
-   // TRADER_LADDER (user 2026-11-24): the entry above is unchanged; the size becomes the first ladder unit and the whole
-   // ladder is reserved in the budget. Score / session / bounce multipliers scale the unit, never past the symbol cap.
+   // TRADER_LADDER (user 2026-11-24; 2026-11-25 fixed 1st-step sizing): keep full 2·2·4·8·16 ladder units (sizeMult=1)
+   // so score/session/bounce/againstTrend downsizing multipliers never shrink the 1st entry below 2/32 of the symbol cap.
    if(this.#management()===SCALP_MANAGEMENTS.LADDER){
-    const lad=await this.#ladderPlan({u,c,plan,funds,shared,lev,sizeMult:(againstTrend?SCALP_AGAINST_TREND_RISK_SCALE:1)*effectiveMult});
+    const lad=await this.#ladderPlan({u,c,plan,funds,shared,lev,sizeMult:1});
     if(!lad.ok)return skip(lad.reason,lad.detail);
     plan=lad.plan;
     if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty,riskUSD:plan.riskUSD,management:SCALP_MANAGEMENTS.LADDER,ladderUnits:plan.ladder.units,unitMarginUSD:plan.ladder.unitMarginUSD,reserveMarginUSD:plan.ladder.reserveMarginUSD,spacingPct:plan.ladder.spacingPct});
