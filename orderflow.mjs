@@ -563,11 +563,12 @@ async function fetchFromBinance(symbol, interval, limit, { fetcher, binanceBase,
   const sym = normalizeOrderflowSymbol(symbol);
   const [kl, oiH, lsr, topLsr, prem, liqMap] = await Promise.all([
     fetchJson(`${binanceBase}/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=${limit}`, { fetcher, timeoutMs: 4000 }),
-    fetchJson(`${binanceBase}/futures/data/openInterestHist?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=${limit}`, { fetcher, timeoutMs: 4000 }).catch(() => []),
+    // openInterestHist allows limit <= 500 (and only the last 30 days): a longer chart shows OI for its recent part.
+    fetchJson(`${binanceBase}/futures/data/openInterestHist?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=${Math.min(500, limit)}`, { fetcher, timeoutMs: 4000 }).catch(() => []),
     fetchJson(`${binanceBase}/futures/data/globalLongShortAccountRatio?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=30`, { fetcher, timeoutMs: 4000 }).catch(() => []),
     fetchJson(`${binanceBase}/futures/data/topLongShortPositionRatio?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=30`, { fetcher, timeoutMs: 4000 }).catch(() => []),
     fetchJson(`${binanceBase}/fapi/v1/premiumIndex?symbol=${encodeURIComponent(sym)}`, { fetcher, timeoutMs: 4000 }).catch(() => ({})),
-    fetchGateLiquidations(sym, interval, limit, { fetcher, gateBase }),
+    fetchGateLiquidations(sym, interval, Math.min(400, limit), { fetcher, gateBase }),
   ]);
 
   if (!Array.isArray(kl) || kl.length < 4) throw new Error('BINANCE_EMPTY_KLINES');
@@ -768,7 +769,8 @@ async function fetchFromBingX(symbol, interval, limit, { fetcher, bingxBase }) {
 export async function fetchOrderflow(symbol, opts = {}) {
   const sym = normalizeOrderflowSymbol(symbol);
   const interval = Object.hasOwn(VALID_INTERVALS, opts.interval) ? opts.interval : '5m';
-  const limit = Math.min(400, Math.max(24, Number(opts.limit) || 72));
+  // Daily candles may go to 1,100 (FireCharts 3Y = 1,095 bars; Binance klines allow 1,500 per call); others stay <= 400.
+  const limit = Math.min(interval === '1d' ? 1100 : 400, Math.max(24, Number(opts.limit) || 72));
   const fetcher = opts.fetcher || fetch;
   const binanceBase = opts.binanceBase || 'https://fapi.binance.com';
   const gateBase = opts.gateBase || 'https://api.gateio.ws';
@@ -946,7 +948,7 @@ export async function scanOrderflowAnomalies(symbols = ORDERFLOW_RADAR_DEFAULTS,
 /**
  * Enrich standard orderflow data with Material Indicators FireCharts-style
  * Liquidity Heatmap (live L2 walls + recorded snapshots + volume shelves) and
- * 4-Cohort (Whale/Large/Mid/Retail) Normalized & Absolute CVD.
+ * order-size CVD in the 6 FireCharts classes (새우 $100~$1000 .. 고래 $1M~$10M, All Orders), Normalized & Absolute.
  */
 export async function fetchOrderflowWithFirechart(symbol, opts = {}) {
   const sym = normalizeOrderflowSymbol(symbol);
