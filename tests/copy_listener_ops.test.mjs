@@ -215,7 +215,8 @@ test('copy dedupe: the same message id sent twice at once (catch-up + live/retry
 const PY=process.platform==='win32'?null:(()=>{const r=spawnSync('python3',['--version'],{encoding:'utf8'});return r.status===0?'python3':null})();
 const LISTENER=path.join(ROOT,'deploy/linux/copy_listener.py');
 
-test('copy_listener.py compiles',{skip:!PY&&'python3 not available'},()=>{
+if(PY){
+test('copy_listener.py compiles',()=>{
  const r=spawnSync(PY,['-c','import sys,py_compile;py_compile.compile(sys.argv[1],cfile=sys.argv[2],doraise=True)',LISTENER,path.join(tmp(),'x.pyc')],{encoding:'utf8'});
  assert.equal(r.status,0,r.stderr);
 });
@@ -246,7 +247,7 @@ function runListener({script,port,dataDir,scriptPath=LISTENER,env={}}){
 }
 const until=async(fn,ms=8000)=>{const end=Date.now()+ms;while(Date.now()<end){if(fn())return true;await new Promise(r=>setTimeout(r,50))}return false};
 
-test('listener: start catch-up forwards only recent missed messages in id order, live ones after, each id once; heartbeat fields',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+test('listener: start catch-up forwards only recent missed messages in id order, live ones after, each id once; heartbeat fields',{timeout:30000},async()=>{
  const {server,got,port}=await fakeServer(),dataDir=tmp();
  fs.writeFileSync(path.join(dataDir,'copy-listener-state.json'),JSON.stringify({lastId:10}));
  const L=runListener({port,dataDir,script:{
@@ -266,7 +267,7 @@ test('listener: start catch-up forwards only recent missed messages in id order,
  }finally{L.child.kill('SIGTERM');await L.exited;server.close()}
 });
 
-test('listener: catch-up skips cards older than the age limit; no state file = age limit only',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+test('listener: catch-up skips cards older than the age limit; no state file = age limit only',{timeout:30000},async()=>{
  const {server,got,port}=await fakeServer(),dataDir=tmp();
  const L=runListener({port,dataDir,script:{history:[{id:5,age:400,text:'stale'},{id:6,age:20,text:'recent'}],live:[]}});
  try{
@@ -282,7 +283,7 @@ test('listener: catch-up skips cards older than the age limit; no state file = a
 // new entries / adds (an open copy was tripled in a repro), a close cut off before a re-entry turns it into an add.
 // Then none of the missed messages go out (as before the catch-up existed); live ones still do.
 const STATE=(lastId,channel=-100123)=>JSON.stringify({channel,lastId});
-test('listener: a missed message older than the age limit means none of the missed ones are sent (no gap before them)',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+test('listener: a missed message older than the age limit means none of the missed ones are sent (no gap before them)',{timeout:30000},async()=>{
  const {server,got,port}=await fakeServer(),dataDir=tmp();
  fs.writeFileSync(path.join(dataDir,'copy-listener-state.json'),STATE(10));
  const L=runListener({port,dataDir,script:{
@@ -298,7 +299,7 @@ test('listener: a missed message older than the age limit means none of the miss
  }finally{L.child.kill('SIGTERM');await L.exited;server.close()}
 });
 
-test('listener: more missed messages than the cap (a monitor restart re-announcing positions) are not sent in part',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+test('listener: more missed messages than the cap (a monitor restart re-announcing positions) are not sent in part',{timeout:30000},async()=>{
  const {server,got,port}=await fakeServer(),dataDir=tmp();
  fs.writeFileSync(path.join(dataDir,'copy-listener-state.json'),STATE(10));
  const history=[{id:11,age:20,text:'Gate.io 모니터 시작'},...Array.from({length:21},(_,i)=>({id:12+i,age:15-i*0.5,text:`snapshot ${12+i}`}))];
@@ -311,7 +312,7 @@ test('listener: more missed messages than the cap (a monitor restart re-announci
  }finally{L.child.kill('SIGTERM');await L.exited;server.close()}
 });
 
-test('listener: an old post without text is not a gap; a fetch that fails midway sends nothing it read',{skip:!PY&&'python3 not available',timeout:40000},async()=>{
+test('listener: an old post without text is not a gap; a fetch that fails midway sends nothing it read',{timeout:40000},async()=>{
  {const {server,got,port}=await fakeServer(),dataDir=tmp();
   fs.writeFileSync(path.join(dataDir,'copy-listener-state.json'),STATE(10));
   const L=runListener({port,dataDir,script:{history:[{id:11,age:300,text:''},{id:12,age:10,text:'recent'}],live:[]}});
@@ -330,7 +331,7 @@ test('listener: an old post without text is not a gap; a fetch that fails midway
   }finally{L.child.kill('SIGTERM');await L.exited;server.close()}}
 });
 
-test('listener: the saved last id belongs to one channel; another channel\'s id or a non-id value is ignored',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+test('listener: the saved last id belongs to one channel; another channel\'s id or a non-id value is ignored',{timeout:30000},async()=>{
  const {server,got,port}=await fakeServer(),dataDir=tmp(),file=path.join(dataDir,'copy-listener-state.json');
  fs.writeFileSync(file,STATE(5000,-100999));
  const L=runListener({port,dataDir,script:{history:[{id:7,age:10,text:'new channel'}],live:[]}});
@@ -347,7 +348,7 @@ test('listener: the saved last id belongs to one channel; another channel\'s id 
  finally{L2.child.kill('SIGTERM');await L2.exited;s2.server.close()}
 });
 
-test('listener: a hanging heartbeat never holds up copy delivery; disconnected state is reported',{skip:!PY&&'python3 not available',timeout:30000},async()=>{
+test('listener: a hanging heartbeat never holds up copy delivery; disconnected state is reported',{timeout:30000},async()=>{
  const {server,got,port}=await fakeServer({heartbeatHang:true}),dataDir=tmp();
  const L=runListener({port,dataDir,env:{COPY_CATCHUP_MAX_AGE_SEC:'0'},script:{disconnectedAfter:0,live:[{delay:1.5,id:21,text:'a'},{delay:0.2,id:22,text:'b'}]}});
  try{
@@ -357,7 +358,7 @@ test('listener: a hanging heartbeat never holds up copy delivery; disconnected s
  }finally{L.child.kill('SIGTERM');await L.exited;server.close()}
 });
 
-test('listener: exits with code 0 after its file changed (systemd Restart=always restarts it); a broken file is not restarted into',{skip:!PY&&'python3 not available',timeout:40000},async()=>{
+test('listener: exits with code 0 after its file changed (systemd Restart=always restarts it); a broken file is not restarted into',{timeout:40000},async()=>{
  const {server,got,port}=await fakeServer(),dataDir=tmp();
  const copyPath=path.join(dataDir,'copy_listener.py');fs.copyFileSync(LISTENER,copyPath);
  const L=runListener({port,dataDir,scriptPath:copyPath,env:{COPY_CATCHUP_MAX_AGE_SEC:'0'},script:{live:[{delay:0.2,id:31,text:'x'}]}});
@@ -372,6 +373,7 @@ test('listener: exits with code 0 after its file changed (systemd Restart=always
   assert.match(L.log(),/새 버전 감지 \([0-9a-f]{12} → [0-9a-f]{12}\)/);
  }finally{if(L.child.exitCode===null)L.child.kill('SIGTERM');await L.exited;server.close()}
 });
+}
 
 test('copy.sh unit restarts on a clean exit (Restart=always)',()=>{
  const sh=fs.readFileSync(path.join(ROOT,'deploy/linux/copy.sh'),'utf8');
