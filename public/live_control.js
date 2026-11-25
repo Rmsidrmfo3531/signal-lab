@@ -813,8 +813,8 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
  <header><b>${esc(p.symbol)}</b>${scalpBadge(p.kind)}${scoreBadge}${scaleBadge}${side(p.direction||'LONG')}${ofJump}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · BingX</span><span class="live-state s-${esc(p.status||'OPEN')}">${esc(p.status==='OPEN'||!p.status?'보유 중':p.status)}</span></header>
  <div class="paper-trade-values live-values">
   ${positionMetricsHTML(details)}
-  ${lv?`<span class="tp-cell">익절<b>${px(lv.tpPrice)}</b><small>평단 +${esc(lv.tpNetPct)}% (수수료 뺀)</small></span>
-  <span>마지막 선<b>−${esc(lv.finalLineRoePct)}% ROE</b><small>사다리 다 채운 뒤</small></span>
+  ${lv?`<span>마지막 선<b>−${esc(lv.finalLineRoePct)}% ROE</b><small>사다리 다 채운 뒤</small></span>
+  <span class="tp-cell">익절<b>${px(lv.tpPrice)}</b><small>평단 +${esc(lv.tpNetPct)}% (수수료 뺀)</small></span>
   <span>예약 위험<b>${tnUsd(riskVal)}</b><small>증거금 ${tnUsd(fin(lv.reserveMarginUSD)?Number(lv.reserveMarginUSD)*sc:null)}</small></span>
   <span>보유<b>${tnHeld(p.openedAt||p.createdAt,Date.now())}째</b><small>최대 ${esc(Math.round((Number(lv.maxHoldMin)||0)/60))}시간</small></span>`:`${p.stopLossEnabled===false?'<span>자동 손절<b>없음</b></span>':`<span>손절가<b>${px(p.stop)}</b>${p.breakevenMoved?'<small>1차 목표 뒤 본전</small>':''}</span>`}
   <span class="tp-cell">목표<b>${tgt}</b></span>
