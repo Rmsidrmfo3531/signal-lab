@@ -1269,6 +1269,7 @@ function emitUpdateProgress(){
 async function runGitUpdate(source='button'){
  if(updateJob.active)return {status:409,body:{error:'UPDATE_IN_PROGRESS',message:'업데이트가 이미 진행 중입니다.'}};
  if(!allIdle())return {status:409,body:{error:'ORDER_IN_PROGRESS',message:'주문 처리 중입니다. 잠시 뒤 다시 누르세요.'}};
+ clearScheduledAutoUpdate();
  const wasArmed=live.armed;live.updating=true;live.disarm();
  const step=(pct,label)=>{updateJob={...updateJob,active:true,pct:Math.max(updateJob.pct||0,Math.round(pct*10)/10),label,at:Date.now()};emitUpdateProgress()};
  updateJob={active:true,pct:0,label:source==='auto'?'자동 업데이트 시작':'업데이트 시작',source,fromDisplayVersion:appVersion.displayVersion,startedAt:Date.now()};step(2,'GitHub에서 새 버전 확인');
@@ -1306,12 +1307,76 @@ function updateNotice(text){try{if(CONFIG.tgToken&&CONFIG.tgChat)telegramPost({c
 const AUTO_UPDATE=!/^(off|0|false|no)$/i.test(String(process.env.AUTO_UPDATE||'on'));
 // Checked every 2 minutes (user 2026-11-16: 10 felt slow); AUTO_UPDATE_EVERY_MIN 1~60.
 const AUTO_UPDATE_EVERY_MS=Math.max(1,Math.min(60,Number(process.env.AUTO_UPDATE_EVERY_MIN)||2))*60000;
-let autoUpdateFailedAt=null,pendingRestart=null;
+// Countdown notice before applying a detected update (AUTO_UPDATE_DELAY_MIN 0~30, default 2 min).
+const rawAutoDelay=process.env.AUTO_UPDATE_DELAY_MIN;
+const AUTO_UPDATE_DELAY_MS=Math.max(0,Math.min(30,rawAutoDelay!==undefined&&rawAutoDelay!==''&&Number.isFinite(Number(rawAutoDelay))?Number(rawAutoDelay):2))*60000;
+let autoUpdateFailedAt=null,pendingRestart=null,scheduledAutoUpdate=null;
+function scheduledUpdateSnapshot(s=scheduledAutoUpdate){
+ if(!s)return null;
+ return {latest:s.latest,latestDisplayVersion:s.latestDisplayVersion||null,changesCount:s.changesCount||0,detectedAt:s.detectedAt,scheduledAt:s.scheduledAt,waitingIdle:s.waitingIdle===true};
+}
+function emitUpdateSchedule(){
+ try{send('update-schedule',{scheduled:scheduledUpdateSnapshot(),bootId:SERVER_BOOT_ID})}catch{}
+}
+function clearScheduledAutoUpdate(){
+ if(!scheduledAutoUpdate)return;
+ if(scheduledAutoUpdate.timer)clearTimeout(scheduledAutoUpdate.timer);
+ scheduledAutoUpdate=null;
+ emitUpdateSchedule();
+}
+async function triggerScheduledAutoUpdate(){
+ const s=scheduledAutoUpdate;
+ if(!s)return;
+ if(updateJob.active){clearScheduledAutoUpdate();return}
+ if(!allIdle()||scalpExec?.scanning||scalpLiveExec?.scanning){
+  s.waitingIdle=true;
+  s.timer=setTimeout(()=>{void triggerScheduledAutoUpdate()},15000);
+  s.timer.unref?.();
+  emitUpdateSchedule();
+  return;
+ }
+ const targetLatest=s.latest;
+ clearScheduledAutoUpdate();
+ const r=await runGitUpdate('auto');
+ if(r.status>=400&&!(r.status===409&&(r.body?.error==='UPDATE_IN_PROGRESS'||r.body?.error==='ORDER_IN_PROGRESS')))autoUpdateFailedAt=targetLatest;
+}
+function scheduleAutoUpdate(check){
+ if(!GIT_UPDATE||!AUTO_UPDATE||updateJob.active||!check||check.state!=='available'||check.latest===autoUpdateFailedAt)return false;
+ if(AUTO_UPDATE_DELAY_MS<=0)return false;
+ const now=Date.now();
+ const changesCount=Array.isArray(check.changes)?check.changes.length:0;
+ if(scheduledAutoUpdate){
+  const changed=scheduledAutoUpdate.latest!==check.latest||scheduledAutoUpdate.latestDisplayVersion!==(check.latestDisplayVersion||null)||scheduledAutoUpdate.changesCount!==changesCount;
+  scheduledAutoUpdate.latest=check.latest;
+  scheduledAutoUpdate.latestDisplayVersion=check.latestDisplayVersion||null;
+  scheduledAutoUpdate.changesCount=changesCount;
+  if(changed)emitUpdateSchedule();
+  return true;
+ }
+ const scheduledAt=now+AUTO_UPDATE_DELAY_MS;
+ scheduledAutoUpdate={
+  latest:check.latest,
+  latestDisplayVersion:check.latestDisplayVersion||null,
+  changesCount,
+  detectedAt:now,
+  scheduledAt,
+  waitingIdle:false,
+  timer:setTimeout(()=>{void triggerScheduledAutoUpdate()},AUTO_UPDATE_DELAY_MS),
+ };
+ scheduledAutoUpdate.timer.unref?.();
+ console.log('[UPDATE] 새 버전 확인:',check.latestDisplayVersion||check.latest,`— ${Math.round(AUTO_UPDATE_DELAY_MS/60000)}분 후 자동 업데이트 예정`);
+ emitUpdateSchedule();
+ return true;
+}
 if(GIT_UPDATE&&AUTO_UPDATE)setInterval(async()=>{
- try{if(updateJob.active||!allIdle()||scalpExec?.scanning||scalpLiveExec?.scanning)return;
+ try{if(updateJob.active)return;
   // A restart postponed earlier (never idle for 10 minutes): the new code is on disk; restart now when idle.
-  if(pendingRestart){const was=live.armed;live.updating=true;live.disarm();live.paused=true;if(allIdle()){console.log('[UPDATE] postponed restart',pendingRestart.from,'→',pendingRestart.to);updateJob={active:true,pct:92,label:'서버 재시작',source:pendingRestart.source||'auto',fromDisplayVersion:appVersion.displayVersion,toDisplayVersion:pendingRestart.toDisplayVersion||null,at:Date.now()};emitUpdateProgress();pendingRestart.writeMarker();process.kill(process.pid,'SIGTERM');return}live.paused=false;live.updating=false;if(was)live.arm();return}
-  const c=await gitCheck(__dirname);if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
+  if(pendingRestart){if(!allIdle()||scalpExec?.scanning||scalpLiveExec?.scanning)return;const was=live.armed;live.updating=true;live.disarm();live.paused=true;if(allIdle()){console.log('[UPDATE] postponed restart',pendingRestart.from,'→',pendingRestart.to);updateJob={active:true,pct:92,label:'서버 재시작',source:pendingRestart.source||'auto',fromDisplayVersion:appVersion.displayVersion,toDisplayVersion:pendingRestart.toDisplayVersion||null,at:Date.now()};emitUpdateProgress();pendingRestart.writeMarker();process.kill(process.pid,'SIGTERM');return}live.paused=false;live.updating=false;if(was)live.arm();return}
+  const c=await gitCheck(__dirname);
+  if(c?.state==='current'){clearScheduledAutoUpdate();return}
+  if(c?.state!=='available'||c.latest===autoUpdateFailedAt)return;
+  if(AUTO_UPDATE_DELAY_MS>0){scheduleAutoUpdate(c);return}
+  if(!allIdle()||scalpExec?.scanning||scalpLiveExec?.scanning)return;
   const r=await runGitUpdate('auto');
   if(r.status>=400&&!(r.status===409&&(r.body?.error==='UPDATE_IN_PROGRESS'||r.body?.error==='ORDER_IN_PROGRESS')))autoUpdateFailedAt=c.latest;
  }catch(e){console.warn('[UPDATE] auto check:',e.message)}
@@ -2170,7 +2235,7 @@ const server=http.createServer(async(req,res)=>{
    pulse.unref?.();
    res._sseCleanup=()=>clearInterval(pulse);
    state.clients.add(res);
-   try{res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`)}catch{dropSseClient(res);return}
+   try{res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);if(scheduledAutoUpdate)res.write(`event: update-schedule\ndata: ${JSON.stringify({scheduled:scheduledUpdateSnapshot(),bootId:SERVER_BOOT_ID})}\n\n`)}catch{dropSseClient(res);return}
    const onClose=()=>dropSseClient(res);
    req.on('close',onClose);res.on('close',onClose);res.on('error',onClose);return;
   }
@@ -2658,7 +2723,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/scan'&&req.method==='POST'){if(state.scanActive)return response(res,202,{accepted:false,reason:'스캔 진행 중',status:getStatus()});void runScan();return response(res,202,{accepted:true,message:'백그라운드 스캔 시작',status:getStatus()})}
   // Cloud server (git checkout under systemd): check / apply from GitHub with one tap.
-  if(pathname==='/api/update/git'&&req.method==='GET'){if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});if(updateJob.active)return response(res,200,{state:'updating',...updateJob,...appVersion,bootId:SERVER_BOOT_ID});try{return response(res,200,{...await gitCheck(__dirname),bootId:SERVER_BOOT_ID})}catch(e){return response(res,502,{error:e.message})}}
+  if(pathname==='/api/update/git'&&req.method==='GET'){if(!GIT_UPDATE)return response(res,404,{error:'GIT_UPDATE_UNAVAILABLE'});if(updateJob.active)return response(res,200,{state:'updating',...updateJob,...appVersion,bootId:SERVER_BOOT_ID});try{const c=await gitCheck(__dirname);if(c?.state==='available')scheduleAutoUpdate(c);else if(c?.state==='current')clearScheduledAutoUpdate();return response(res,200,{...c,scheduledUpdate:scheduledUpdateSnapshot(),bootId:SERVER_BOOT_ID})}catch(e){return response(res,502,{error:e.message})}}
   // Progress of a one-tap update (for the progress bar): phase and percent, polled by the screen.
   if(pathname==='/api/update/git/progress'&&req.method==='GET')return response(res,200,{...updateJob,...appVersion,bootId:SERVER_BOOT_ID});
   if(pathname==='/api/update/git'&&req.method==='POST'){
@@ -2670,7 +2735,7 @@ const server=http.createServer(async(req,res)=>{
    const signal=LIVE.mode==='TESTNET'&&live.armed===true&&!live.store.killSwitch;
    const runtime={signal,scalp:SCALP_EXEC.mode==='TESTNET'&&scalpExec?.armed===true&&!live.store.killSwitch,
     copy:COPY.enabled&&!copyTrader.store.killed&&!live.store.killSwitch&&(COPY.mode==='LIVE'?copyTrader.armed===true:signal)};
-   return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,updating:updateJob.active===true,updateJob:updateJob.active?{...updateJob}:null,bootId:SERVER_BOOT_ID,configured:Boolean(CONFIG.updateManifestURL),...appVersion,runtime,pending:pendingInfo(__dirname)?.version||null});
+   return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,updating:updateJob.active===true,updateJob:updateJob.active?{...updateJob}:null,bootId:SERVER_BOOT_ID,scheduledUpdate:scheduledUpdateSnapshot(),configured:Boolean(CONFIG.updateManifestURL),...appVersion,runtime,pending:pendingInfo(__dirname)?.version||null});
   }
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
   if(pathname==='/api/orderflow/radar'&&req.method==='GET'){

@@ -385,6 +385,10 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .update-pct{font-variant-numeric:tabular-nums;color:var(--text);font-size:14px}
 .update-note{margin:12px 0 0;font-size:12px;color:var(--dim)}
 .update-close{margin-top:14px;width:100%}
+.banner.info{background:#11293d;border-color:#2d658c;color:#d6f1ff}
+.banner.info div div{color:#9bc5de}
+.banner.info .update-now-btn{margin-left:auto;border:1px solid #3f7ea8;background:#173852;color:#e6f6ff;padding:6px 12px;font-size:11px;border-radius:7px;flex-shrink:0}
+.banner.info .update-now-btn:hover{background:#214b6d}
 .readiness-stats>span small{font-size:10px;color:var(--dim)}
 
 /* Live screen: mode and state in the header row; one status list, no split box. */
