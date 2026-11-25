@@ -1,19 +1,15 @@
 // 고래 CVD (user 2026-11-25 09:05 "CVD 관련으로 갈색 고래, 보라 고래, 빨강 고래 등이 뭔지 찾아보고 적용해줘",
-// 09:12 "(나) 진행"): Material Indicators FireCharts buckets on Binance aggTrades, ±5 on the scalp score.
+// 09:12 "(나) 진행"): Material Indicators FireCharts buckets on Binance aggTrades. The pure bucket / scaling / window-rule
+// functions stay here (the window rule is kept as a comparison record). Since 2026-11-25 09:51 the score comes from the
+// 고래 매물대 (whale_zones.mjs): the executor, stats, screen and server tests moved to tests/whale_zones.test.mjs.
 // Mocks only: no network, no orders, no production data.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import {
  whaleThresholds,whaleBucketOf,aggTradeSide,parseAggTrades,bucketWhaleCvd,evaluateWhaleCvdBonus,summarizeWhaleCvd,
  fetchWhaleCvd,clearWhaleCvdCache,whaleCvdRecord,whaleCvdSummaryKo,WHALE_CVD_FIXED,WHALE_CVD_CODES,WHALE_CVD_SOURCE_NOTE,
 } from '../whale_cvd.mjs';
 import {PublicReadBudget} from '../public_read_budget.mjs';
-import {ScalpExecutor,scalpExecConfig} from '../scalp_executor.mjs';
-import {detectScalpReversal} from '../scalp_reversal.mjs';
-import {summarizeJournal} from '../scalp_journal.mjs';
-import {scalpEventText} from '../scalp_telegram.mjs';
-import {reasonInfo,SCORE_ITEMS,scoreItemsHTML,skipRowHTML,reasonGlossaryHTML} from '../public/scalp_reasons.js';
 
 const tr=(id,at,notionalUSD,side,price=100)=>({a:id,p:String(price),q:String(notionalUSD/price),f:id,l:id,T:at,m:side==='SELL'});
 const trades=rows=>parseAggTrades(rows.map((r,i)=>tr(i+1,...r)));
@@ -142,157 +138,6 @@ test('fetch: newest first by fromId, from the move start, bounded pages; budget 
  assert.equal((await fetchWhaleCvd('SOLUSDT',{request:null})).ok,false);assert.equal((await fetchWhaleCvd('bad sym!',{request:f.request})).error,'BAD_SYMBOL');
 });
 
-// ---- Executor integration (as tests/scalp_score.test.mjs: mocked BingX testnet client) ----
-const I=300000,BUCKET=Math.floor(Date.parse('2026-11-22T03:00:00Z')/I),T0=BUCKET*I+5000;
-function crash({move=6,volume=10,lastOpen=(BUCKET-1)*I,wick=.8}={}){
- const rows=[];let p=100;const push=(o,h,l,c,v)=>rows.push([0,o,h,l,c,v]);
- for(let i=0;i<50;i++){const o=p,c=p+(i%2?.05:-.05);push(o,Math.max(o,c)+.1,Math.min(o,c)-.1,c,100);p=c}
- for(let i=0;i<4;i++){const o=p,c=p-move/4;push(o,o+.05,c-.1,c,100*volume*(i===3?1:.5));p=c}
- push(p,p+.15,p-wick,p+.1,80*volume);
- return rows.map((r,i)=>{const t=lastOpen-(rows.length-1-i)*I;return [t,...r.slice(1,6).map(String),t+I-1,String(r[5]*r[4])]});
-}
-const up4h=now=>Array.from({length:301},(_,i)=>{const t=now-(301-i)*4*3600000-1000,c=50+i*.1;return [t,String(c),String(c+.2),String(c-.2),String(c),'1000',t+4*3600000-1,'1']});
-const down4h=now=>up4h(now).map((r,i)=>{const c=200-i*.1;return [r[0],String(c),String(c+.2),String(c-.2),String(c),'1000',r[6],'1']});
-const ENTRY=Number(crash().at(-1)[4]),PX=+(ENTRY+.02).toFixed(2);
-const SOL={symbol:'SOLUSDT',venueSymbol:'SOL-USDT',tickSize:'0.01',quantityStep:'0.01',minQuantityBase:'0.01',minNotionalUSDT:2,tradable:true};
-const BTC={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',tickSize:'0.1',quantityStep:'0.001',minQuantityBase:'0.001',minNotionalUSDT:5,tradable:true};
-function mockVenue(fillAt=PX){
- let amt=0,avg=0,id=1;const calls=[];
- const client={mode:'TESTNET',
-  positionMode:async()=>({dualSidePosition:false}),marginType:async()=>({marginType:'CROSSED'}),setMarginType:async()=>({}),
-  leverage:async()=>({maxLongLeverage:20,maxShortLeverage:20}),setLeverage:async(s,side,l)=>({leverage:l}),
-  positions:async()=>amt!==0?[{symbol:'SOL-USDT',positionSide:'BOTH',positionAmt:String(amt),avgPrice:String(avg),markPrice:String(avg),unrealizedProfit:'0'}]:[],
-  openOrders:async()=>({orders:[]}),getOrder:async()=>({order:null}),cancelOrder:async()=>({}),
-  placeOrder:async(p)=>{calls.push(p);const q=Number(p.quantity);
-   if(p.type==='LIMIT'&&p.timeInForce==='PostOnly'){const px=Number(p.price)||fillAt;avg=px;amt=p.side==='SELL'?-q:q;return {order:{orderId:String(id++),status:'FILLED',executedQty:String(q),avgPrice:String(px)}}}
-   if(p.type==='MARKET'){avg=fillAt;amt=p.side==='SELL'?-q:q;return {order:{orderId:String(id++),status:'FILLED',executedQty:String(q),avgPrice:String(avg)}}}
-   return {order:{orderId:String(id++),status:'NEW'}}}};
- return {client,calls};
-}
-// The whale snapshot a candidate sees: net whale buying of `whale` USD in a $2M window (|whale| >= 10 % = $200k is significant).
-const whaleSnap=whale=>summarizeWhaleCvd(trades([[T0-60_000,Math.abs(whale),whale>=0?'BUY':'SELL'],[T0-50_000,1_000_000-Math.abs(whale)/2,'BUY'],[T0-40_000,1_000_000-Math.abs(whale)/2,'SELL']]),{symbol:'SOLUSDT',startMs:T0-1800_000,endMs:T0,thresholds:WHALE_CVD_FIXED});
-function scalp({minScore,whaleCvd,orderflow=null,trend=up4h,rows=crash(),px=PX}){
- const v=mockVenue(px);
- const ex=new ScalpExecutor({config:{...scalpExecConfig({}),management:'CURRENT',minScore,stopLossEnabled:false},client:v.client,
-  contracts:async()=>new Map([['SOLUSDT',SOL],['BTCUSDT',BTC]]),
-  tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'500000000'}],
-  candles:async(s,iv)=>iv==='5m'?(s==='SOLUSDT'?[...rows,[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:[]):trend(T0),
-  ...(whaleCvd?{whaleCvd}:{}),...(orderflow?{orderflow}:{}),
-  priceOf:async()=>px,markOf:async()=>px,balance:async()=>({equity:10000,available:9000}),now:()=>T0});
- ex.arm();return {ex,v};
-}
-async function baseScore(trend=up4h){
- const {ex}=scalp({minScore:1,trend});const st=await ex.scan();assert.equal(st.entered,1);return ex.store.open[0].scalpScore.score;
-}
-
-test('gate: gate−1 +5 passes, gate+2 −5 fails; the window starts at the move start; a fetch failure gives 0 and never blocks',async()=>{
- const base=await baseScore();
- assert.ok(base>20&&base<90,String(base));
- // base = gate − 1 (as 69 vs 70) + whale with the LONG -> enters at gate + 4.
- let seen=null;
- let {ex}=scalp({minScore:base+1,whaleCvd:async(sym,o)=>{seen={sym,...o};return whaleSnap(400_000)}});
- assert.equal((await ex.scan()).entered,1,'69 + 5 passes');
- const sc=ex.store.open[0].scalpScore;
- assert.equal(sc.score,base+5);assert.equal(sc.whaleBonus,5);assert.equal(sc.whaleCvd.code,WHALE_CVD_CODES.WITH);
- assert.equal(sc.whaleCvd.buckets.purple.cvdUSD,400_000);assert.equal(sc.whaleCvd.thresholds.purpleMinUSD,100_000);
- const det=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0});
- assert.equal(seen.sym,'SOLUSDT');assert.equal(seen.direction,'LONG');assert.equal(seen.endMs,T0);
- assert.equal(seen.startMs,Math.max(T0-1800_000,det.evidence.originAt),'from the move start, at most 30 min');assert.equal(seen.scale,'auto');assert.equal(seen.maxPages,5);
- const opened=ex.store.events.find(e=>e.type==='OPENED');
- assert.equal(opened.whaleBonus,5);assert.match(opened.whaleSummary,/^고래CVD \+5 \(보라 \+\$400K/);
- assert.match(scalpEventText(opened),/고래CVD \+5 \(보라/);
- // base = gate + 2 (as 72 vs 70) − whale against the LONG -> skipped at gate − 3, recorded on the skip.
- ({ex}=scalp({minScore:base-2,whaleCvd:async()=>whaleSnap(-400_000)}));
- assert.equal((await ex.scan()).entered,0,'72 − 5 fails');
- const sk=ex.store.skips.at(-1);
- assert.equal(sk.reason,'SCORE_BELOW_MINIMUM');assert.equal(sk.score,base-5);assert.equal(sk.whaleBonus,-5);assert.equal(sk.whaleCvd.code,WHALE_CVD_CODES.AGAINST);
- assert.match(sk.detail,/고래CVD-5/);
- // Not significant -> 0, enters on its own score.
- ({ex}=scalp({minScore:base,whaleCvd:async()=>whaleSnap(150_000)}));
- assert.equal((await ex.scan()).entered,1);assert.equal(ex.store.open[0].scalpScore.score,base);assert.equal(ex.store.open[0].scalpScore.whaleCvd.code,WHALE_CVD_CODES.WEAK);
- // Failure (throw / ok:false) -> 0, WHALE_CVD_UNAVAILABLE, the entry goes on.
- for(const whaleCvd of [async()=>{throw Error('Binance HTTP 503')},async()=>({ok:false,error:'NOT_ON_BINANCE'})]){
-  ({ex}=scalp({minScore:base,whaleCvd}));
-  assert.equal((await ex.scan()).entered,1,'never blocks');
-  const w=ex.store.open[0].scalpScore;assert.equal(w.score,base);assert.equal(w.whaleBonus,0);assert.equal(w.whaleCvd.code,WHALE_CVD_CODES.UNAVAILABLE);
- }
- // SCALP_WHALE_CVD=off: no read, no record.
- let called=0;
- ({ex}=scalp({minScore:base,whaleCvd:async()=>{called++;return whaleSnap(400_000)}}));ex.config={...ex.config,whaleCvd:false};
- assert.equal((await ex.scan()).entered,1);assert.equal(called,0);assert.equal(ex.store.open[0].scalpScore.whaleCvd,undefined);
-});
-
-test('the orderflow / whale read covers every candidate a +5 (with OI + CVD, 15 in all) could lift, and those at the gate',async()=>{
- // Coin and BTC 4H trend against the LONG: a base far enough under 100 for gate = base + 15.
- const base=await baseScore(down4h);assert.ok(base+16<=100,String(base));
- for(const [minScore,want] of [[base+15,1],[base+16,0],[base-3,1]]){
-  let whale=0,of=0;
-  const {ex}=scalp({minScore,trend:down4h,whaleCvd:async()=>{whale++;return {ok:false,error:'x'}},orderflow:async()=>{of++;return null}});
-  await ex.scan();
-  assert.equal(whale,want,`whale read at gate ${minScore} (base ${base})`);assert.equal(of,want,`orderflow read at gate ${minScore}`);
- }
- // A +5 from 15 under the gate does not pass alone; with OI + CVD (+10) it does (clamped total).
- const of={ok:true,source:'BINANCE',funding:{ratePct:0},oi:{change30mPct:-2},cvd:{lastDeltaNorm:0.3}};
- const {ex}=scalp({minScore:base+15,trend:down4h,whaleCvd:async()=>whaleSnap(400_000),orderflow:async()=>of});
- assert.equal((await ex.scan()).entered,1,JSON.stringify(ex.store.skips.at(-1)));
- const sc=ex.store.open[0].scalpScore;assert.equal(sc.score,base+15);assert.equal(sc.oiBonus,5);assert.equal(sc.cvdBonus,5);assert.equal(sc.whaleBonus,5);
-});
-
-test('settings, byWhaleCvd stats split (+5 / 0 / −5, before apart) and the journal summary',()=>{
- const c=scalpExecConfig({});
- assert.equal(c.whaleCvd,true);assert.equal(c.whaleCvdBonus,5);assert.equal(c.whaleCvdMinSharePct,10);assert.equal(c.whaleCvdScale,'auto');assert.equal(c.whaleCvdMaxPages,5);
- assert.equal(scalpExecConfig({SCALP_WHALE_CVD_BONUS:'9'}).whaleCvdBonus,5,'never more than ±5');
- assert.equal(scalpExecConfig({SCALP_WHALE_CVD_MIN_SHARE_PCT:'3'}).whaleCvdMinSharePct,10,'the 10 % significance is not relaxed');
- assert.equal(scalpExecConfig({SCALP_WHALE_CVD_SCALE:'fixed'}).whaleCvdScale,'fixed');assert.equal(scalpExecConfig({SCALP_WHALE_CVD:'off'}).whaleCvd,false);
- const ex=new ScalpExecutor({config:scalpExecConfig({}),now:()=>T0});
- const row=(net,bonus)=>({id:'x'+Math.random(),direction:'LONG',netUSD:net,closedAt:T0,closeReason:'ALL_TARGETS',...(bonus===undefined?{}:{scalpScore:{score:75,whaleBonus:bonus,whaleCvd:{bonus,code:'X'}}})});
- ex.store.closed.push(row(10,5),row(-4,5),row(3,0),row(-2,-5),row(1));
- const st=ex.stats();
- assert.equal(st.byWhaleCvd.plus.trades,2);assert.equal(st.byWhaleCvd.plus.netUSD,6);assert.equal(st.byWhaleCvd.zero.trades,1);
- assert.equal(st.byWhaleCvd.minus.trades,1);assert.equal(st.byWhaleCvd.unmeasured.trades,1);
- const S=ex.status().settings;assert.equal(S.whaleCvdBonus,5);assert.equal(S.whaleCvdMinSharePct,10);assert.equal(S.whaleCvdWindowMin,30);
- const sum=summarizeJournal([{exit:{reason:'X'},pnl:{netUSD:2},score:{whaleBonus:5,whaleCvd:{}}},{exit:{reason:'X'},pnl:{netUSD:-1},score:{whaleBonus:-5,whaleCvd:{}}},{exit:{reason:'X'},pnl:{netUSD:1}}]);
- assert.equal(sum.byWhaleCvd.plus.trades,1);assert.equal(sum.byWhaleCvd.minus.trades,1);assert.equal(sum.byWhaleCvd.unmeasured.trades,1);
-});
-
-test('screen: 고래CVD ±5 in the breakdown with the six FireCharts colours, glossary entries and the source note',()=>{
- const S=new ScalpExecutor({config:scalpExecConfig({})}).status().settings;
- const SERIES=['WHALE_ORANGE','WHALE_GREEN','WHALE_RED','WHALE_PURPLE','WHALE_BROWN','WHALE_BLUE'];
- for(const code of [...Object.values(WHALE_CVD_CODES),...SERIES])assert.ok(reasonInfo(code,S),code);
- const d=c=>reasonInfo(c,S).desc;
- assert.match(d('WHALE_ORANGE'),/새우.*\$100~\$1,000/);assert.match(d('WHALE_GREEN'),/\$1,000~\$1만/);assert.match(d('WHALE_RED'),/\$1만~\$10만/);
- assert.match(d('WHALE_PURPLE'),/\$10만~\$100만/);assert.match(d('WHALE_BROWN'),/고래.*\$100만~\$1,000만/);assert.match(d('WHALE_BLUE'),/모든 시장가 주문\(All Orders\)/);
- assert.match(d('WHALE_PURPLE'),/\$2만/);assert.match(d('WHALE_BROWN'),/매집 경향/);assert.match(d('WHALE_ORANGE'),/매도 경향/);
- for(const c of SERIES)assert.match(d(c),/Material Indicators FireCharts 분류/);
- assert.match(d('WHALE_CVD_WITH'),/\+5점/);assert.match(d('WHALE_CVD_AGAINST'),/−5점/);
- const item=SCORE_ITEMS.find(([k])=>k==='whaleBonus');assert.ok(item);assert.match(item[3](S),/\+5점.*−5점.*0점/);assert.match(item[3](S),/10%/);
- const g=reasonGlossaryHTML(S);for(const t of ['주황 새우','초록 주문층','빨강 주문층','보라 주문층','갈색 고래','파랑 전체 CVD','고래CVD 같은 방향'])assert.ok(g.includes(`>${t}</dt>`),t);
- const breakdown={movePct:15,trend4h:20,btcTrend4h:10,moveAtr:15,retracedPct:5,climaxVolume:5,netRR:0,rsiExtreme:0};
- const rec=whaleCvdRecord(summarizeWhaleCvd(trades([[1,300_000,'BUY'],[2,2_000_000,'SELL'],[3,9_000,'SELL'],[4,700,'BUY']]),{startMs:0,endMs:100}),{available:true,bonus:-5,code:WHALE_CVD_CODES.AGAINST,shrimpDivergence:false});
- const minus=scoreItemsHTML({score:65,minScore:70,breakdown,whaleBonus:-5,whaleCvd:rec},S);
- assert.match(minus,/class="rz-i rz-whale rz-whale-minus"[^>]*>고래CVD −5</);assert.doesNotMatch(minus,/\+-5/);
- for(const [cls,text] of [['orange','새우 \\+\\$700'],['green','초록 −\\$9K'],['red','빨강 \\$0'],['purple','보라 \\+\\$300K'],['brown','고래 −\\$2M'],['blue','전체 −\\$1\\.71M']])
-  assert.match(minus,new RegExp(`class="wcv wcv-${cls}"[^>]*>${text}<`),cls);
- assert.ok(minus.indexOf('wcv-orange')<minus.indexOf('wcv-green')&&minus.indexOf('wcv-brown')<minus.indexOf('wcv-blue'),'legend order');
- assert.match(scoreItemsHTML({score:75,minScore:70,breakdown,whaleBonus:5,whaleCvd:{...rec,bonus:5,shrimpDivergence:true}},S),/rz-whale-plus"[^>]*>고래CVD \+5<.*새우↔고래 반대/);
- assert.match(scoreItemsHTML({score:70,minScore:70,breakdown,whaleBonus:0,whaleCvd:{bonus:0,code:WHALE_CVD_CODES.UNAVAILABLE}},S),/rz-whale-zero"[^>]*>고래CVD 0</);
- assert.doesNotMatch(scoreItemsHTML({score:70,minScore:70,breakdown},S),/고래CVD/,'no record (older rows): no item');
- assert.match(skipRowHTML({at:1,symbol:'SOLUSDT',reason:'SCORE_BELOW_MINIMUM',score:65,minScore:70,breakdown,whaleBonus:-5,whaleCvd:rec},S),/고래CVD −5/);
- const css=fs.readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');
- for(const [k,hex] of [['orange','#fb923c'],['green','#4ade80'],['red','#f87171'],['purple','#c084fc'],['brown','#d19a66'],['blue','#60a5fa']]){
-  assert.ok(css.includes(`--wcv-${k}:${hex}`),k);assert.ok(css.includes(`.wcv-${k}{color:var(--wcv-${k})}`),k);
- }
-});
-
-test('server wiring: the whale read uses budgetedPublicRead (no state.rest / state.error / apiCache side effect), never binance()',()=>{
- const src=fs.readFileSync(new URL('../server.mjs',import.meta.url),'utf8');
- const body=src.match(/function scalpWhaleCvd\([^)]*\)\{([\s\S]*?)\n\}/)?.[1];
- assert.ok(body,'scalpWhaleCvd found');
- assert.match(body,/budgetedPublicRead\(url,\{budget:publicReadBudget,timeoutMs:WHALE_CVD_DEFAULTS\.timeoutMs\}\)/);
- assert.doesNotMatch(body,/\bbinance\(/,'a failed aggTrades page must not mark the Binance REST offline');
- assert.match(body,/budget:\(\)=>publicReadBudget\.snapshot\(\)/,'the 60 % room check reads the same shared budget');
-});
-
 test('deadline: no new aggTrades page after the executor’s 4 s wait (no background paging on shared weight)',async()=>{
  clearWhaleCvdCache();
  // 6,000 trades, a window needing 6 pages; each page takes 1.5 s on a fake clock.
@@ -305,34 +150,4 @@ test('deadline: no new aggTrades page after the executor’s 4 s wait (no backgr
  clearWhaleCvdCache();clock=0;const g=fakeBinance({n:6000,budget:new PublicReadBudget({now:()=>clock})});
  const t=await fetchWhaleCvd('SOLUSDT',{request:g.request,budget:()=>g.budget.snapshot(),startMs:g.end-5999_000,endMs:g.end,now:()=>clock,maxPages:10,maxWindowMs:2*3600_000});
  assert.equal(t.complete,true);assert.equal(t.stopped,undefined);assert.equal(g.routes.length,6);
-});
-
-test('whale off: the orderflow read range stays gate−10 (OI + CVD only), as before the whale bonus',async()=>{
- const base=await baseScore(down4h);assert.ok(base+11<=100,String(base));
- for(const off of [{cfg:{whaleCvd:false}},{cfg:{},noFn:true}]){
-  for(const [minScore,want] of [[base+10,1],[base+11,0]]){
-   let of=0,whale=0;
-   const {ex}=scalp({minScore,trend:down4h,orderflow:async()=>{of++;return null},...(off.noFn?{}:{whaleCvd:async()=>{whale++;return whaleSnap(400_000)}})});
-   ex.config={...ex.config,...off.cfg};
-   await ex.scan();
-   assert.equal(of,want,`orderflow read at gate ${minScore} (base ${base}, ${off.noFn?'no whale reader':'SCALP_WHALE_CVD=off'})`);assert.equal(whale,0);
-  }
- }
-});
-
-test('SHORT (fade after a pump): the window starts at the open of the candle with the lowest low before the high, max 30 min',async()=>{
- // The crash fixture mirrored around 100: the same move up, an upper-wick rejection.
- const mirror=rows=>rows.map(r=>[r[0],String(200-Number(r[1])),String(200-Number(r[3])),String(200-Number(r[2])),String(200-Number(r[4])),r[5],r[6],r[7]]);
- const rows=mirror(crash()),det=detectScalpReversal(rows,{symbol:'SOLUSDT',now:T0});
- assert.equal(det.ok,true);assert.equal(det.direction,'SHORT');
- const originRow=rows.find(r=>r[0]===det.evidence.originAt);assert.ok(originRow);
- assert.equal(Number(originRow[3]),det.evidence.origin,'SHORT origin = the lowest low, at that candle');
- const long=detectScalpReversal(crash(),{symbol:'SOLUSDT',now:T0}),longRow=crash().find(r=>r[0]===long.evidence.originAt);
- assert.equal(Number(longRow[2]),long.evidence.origin,'LONG origin = the highest high, at that candle');
- let seen=null;
- const {ex}=scalp({minScore:1,rows,px:+(det.entry-.02).toFixed(2),whaleCvd:async(sym,o)=>{seen=o;return whaleSnap(-400_000)}});
- assert.equal((await ex.scan()).entered,1,JSON.stringify(ex.store.skips.at(-1)));
- assert.equal(seen.direction,'SHORT');assert.equal(seen.startMs,Math.max(T0-1800_000,det.evidence.originAt));assert.equal(seen.endMs,T0);
- const sc=ex.store.open[0].scalpScore;assert.equal(ex.store.open[0].direction,'SHORT');
- assert.equal(sc.whaleBonus,5,'whale net selling agrees with the SHORT');assert.equal(sc.whaleCvd.code,WHALE_CVD_CODES.WITH);
 });

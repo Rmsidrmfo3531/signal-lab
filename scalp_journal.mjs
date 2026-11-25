@@ -2,6 +2,7 @@
 // scalp-journal.jsonl: one line per finished scalp trade, appended, never truncated.
 // scalp-signals.jsonl: one line per detected signal (entered or why not), rotated at a size cap.
 // Pure helpers plus small synchronous file appends: no network, no orders, no keys.
+import {whaleSplitOf} from './whale_zones.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -141,8 +142,9 @@ export function groupStats(list){
  return {trades:n,wins:wins.length,winRatePct:n?r2(wins.length/n*100):null,profitFactor:loss>0?r2(gross/loss):null,netUSD:r2(list.reduce((t,x)=>t+net(x),0)),
   avgR:avg(rs),avgMfeR:avg(mfe),avgMaeR:avg(mae),avgHoldMin:avg(list.map(x=>x.exit?.holdMin).filter(Number.isFinite))};
 }
-// 고래 CVD split (user 2026-11-25 "(나) 진행"): the recorded bonus sign; trades without a record apart.
-const whaleSplit=x=>{const s=x?.score;return s&&typeof s==='object'&&s.whaleCvd?(Number(s.whaleBonus)>0?'plus':Number(s.whaleBonus)<0?'minus':'zero'):'unmeasured'};
+// 고래 매물대 split (user 2026-11-25 09:51): plus / zero / minus / unavailable (no data or under 80 % read); trades without a
+// zone record (before it, the old window rule's included) apart as unmeasured (whale_zones.mjs whaleSplitOf).
+const whaleSplit=x=>whaleSplitOf(x?.score);
 const by=(list,key)=>{const m={};for(const x of list){const k=key(x);if(k==null)continue;(m[k]??=[]).push(x)}return Object.fromEntries(Object.entries(m).map(([k,v])=>[k,groupStats(v)]))};
 /** Stats by side, exit reason, move-size bucket, hour of day (KST, entry) and universe rank bucket. */
 export function summarizeJournal(lines,{now=Date.now()}={}){
