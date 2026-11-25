@@ -98,7 +98,8 @@ export function journalLine(x){
  const firstAvg=Number(x.firstEntryPrice??x.scaleIn?.initialEntry??x.avg)||avg,firstQty=Number(x.initialQty??x.scaleIn?.initialQty??x.filled??x.qty);
  const firstRiskUSD=Number(x.initialRiskUSD??x.scaleIn?.initialRiskUSD??x.riskUSD),firstMarginUSD=Number(x.initialMarginUSD??x.scaleIn?.initialMarginUSD??x.marginUSD);
  const repeat=x.scaleIn?.version===2;
- const riskUnit=dir*(firstAvg-Number(x.initialStop)),riskActual=riskUnit>0?riskUnit*firstQty:null;
+ const isLadderTrade=x.management==='TRADER_LADDER'&&Boolean(x.ladder);
+ const riskUnit=dir*(firstAvg-Number(x.initialStop)),riskActual=isLadderTrade?(positive(x.ladder?.reserveRiskUSD)??positive(firstRiskUSD)):(riskUnit>0?riskUnit*firstQty:null);
  const realized=x.realized??null,net=realized?.netUSD??x.netUSD??null;
  const a=x.scaleIn,scaleIn=a?{version:a.version,state:a.state,reason:a.reason??null,riskPct:a.riskPct,budgetUSD:r4(a.budgetUSD),
   touchedAt:a.touchedAt??null,recoveredAt:a.recoveredAt??null,attemptedAt:a.attemptedAt??null,requestedQty:a.requestedQty??null,

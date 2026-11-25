@@ -151,3 +151,13 @@ test('deadline: no new aggTrades page after the executor’s 4 s wait (no backgr
  const t=await fetchWhaleCvd('SOLUSDT',{request:g.request,budget:()=>g.budget.snapshot(),startMs:g.end-5999_000,endMs:g.end,now:()=>clock,maxPages:10,maxWindowMs:2*3600_000});
  assert.equal(t.complete,true);assert.equal(t.stopped,undefined);assert.equal(g.routes.length,6);
 });
+
+test('P1-4: evaluateWhaleCvdBonus suppresses ±5 bonus when coveragePct is below minCoveragePct (50%)',()=>{
+ const partial={ok:true,coveragePct:32,whaleCvdUSD:500_000,whaleCount:3,totalNotionalUSD:1_000_000,thresholds:{purpleMinUSD:100_000},buckets:{orange:{cvdUSD:-10_000}}};
+ const ev=evaluateWhaleCvdBonus(partial,'LONG');
+ assert.equal(ev.bonus,0);
+ assert.equal(ev.code,'PARTIAL_COVERAGE');
+ const full={...partial,coveragePct:80};
+ assert.equal(evaluateWhaleCvdBonus(full,'LONG').bonus,5);
+});
+

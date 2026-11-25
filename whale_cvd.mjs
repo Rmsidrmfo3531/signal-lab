@@ -110,16 +110,19 @@ const sign=v=>v>0?1:v<0?-1:0;
  * recorded (divergence ACCUMULATION: whale buy / shrimp sell, DISTRIBUTION: the reverse; shrimpDivergence when the
  * whale side is also the trade's side) but is not required and adds no points.
  */
-export function evaluateWhaleCvdBonus(snapshot,direction,{bonus=WHALE_CVD_DEFAULTS.bonus,minSharePct=WHALE_CVD_DEFAULTS.minSharePct}={}){
+export function evaluateWhaleCvdBonus(snapshot,direction,{bonus=WHALE_CVD_DEFAULTS.bonus,minSharePct=WHALE_CVD_DEFAULTS.minSharePct,minCoveragePct=50}={}){
  const pts=Math.max(0,Math.min(5,fin(bonus)?Number(bonus):WHALE_CVD_DEFAULTS.bonus)),share=Math.max(0,fin(minSharePct)?Number(minSharePct):WHALE_CVD_DEFAULTS.minSharePct);
+ const minCov=Math.max(0,Math.min(100,fin(minCoveragePct)?Number(minCoveragePct):50));
  const dir=direction==='SHORT'?-1:1;
  if(!snapshot?.ok)return {available:false,bonus:0,code:WHALE_CVD_CODES.UNAVAILABLE,detail:snapshot?.error||'NO_DATA',minSharePct:share};
+ const cov=fin(snapshot.coveragePct)?Number(snapshot.coveragePct):null;
  const w=Number(snapshot.whaleCvdUSD)||0,shrimp=Number(snapshot.buckets?.orange?.cvdUSD)||0;
  const floorUSD=Number(snapshot.thresholds?.purpleMinUSD)||WHALE_CVD_FIXED.purpleMinUSD;
  const thresholdUSD=r0(Math.max(floorUSD,share/100*(Number(snapshot.totalNotionalUSD)||0)));
  const sharePct=snapshot.totalNotionalUSD>0?+(Math.abs(w)/snapshot.totalNotionalUSD*100).toFixed(2):null;
  const divergence=sign(w)!==0&&sign(shrimp)!==0&&sign(w)!==sign(shrimp)?(w>0?'ACCUMULATION':'DISTRIBUTION'):null;
- const base={available:true,whaleCvdUSD:w,shrimpCvdUSD:shrimp,thresholdUSD,floorUSD,minSharePct:share,sharePct,divergence,shrimpDivergence:divergence!==null&&sign(w)===dir};
+ const base={available:true,whaleCvdUSD:w,shrimpCvdUSD:shrimp,thresholdUSD,floorUSD,minSharePct:share,sharePct,coveragePct:cov,divergence,shrimpDivergence:divergence!==null&&sign(w)===dir};
+ if(cov!==null&&minCov>0&&cov<minCov)return {...base,bonus:0,code:'PARTIAL_COVERAGE',detail:`${cov}% < ${minCov}%`};
  if(!(snapshot.whaleCount>0))return {...base,bonus:0,code:WHALE_CVD_CODES.NO_PRINTS};
  if(!(Math.abs(w)>=thresholdUSD))return {...base,bonus:0,code:WHALE_CVD_CODES.WEAK};
  const agrees=sign(w)===dir;
@@ -154,7 +157,7 @@ export async function fetchWhaleCvd(symbol,{request,budget=null,startMs,endMs=Da
  if(typeof request!=='function')return {ok:false,error:'NO_REQUEST'};
  const end=Number(endMs),start=Math.max(fin(startMs)?Number(startMs):end-maxWindowMs,end-maxWindowMs);
  if(!(end>start))return {ok:false,error:'BAD_WINDOW'};
- const key=`${sym}|${Math.floor(start/60000)}|${thresholds?.purpleMinUSD}`,hit=cache.get(key),t0=now();
+ const key=`${sym}|${Math.floor(start/60000)}|${Math.floor(end/30000)}|${thresholds?.purpleMinUSD}`,hit=cache.get(key),t0=now();
  if(hit&&t0-hit.at<cacheTtlMs)return hit.pending??hit.data;
  const task=(async()=>{
   const pages=Math.max(1,Math.min(10,Math.floor(Number(maxPages)||1))),limit=Math.max(100,Math.min(1000,Math.floor(Number(pageLimit)||1000)));

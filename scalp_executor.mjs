@@ -139,8 +139,9 @@ const POSITION_LIMIT_ERROR='VENUE_ERROR_101429';
 // the margin in use and the reserved ladder margin, risk = the reserved worst case (every step filled, closed at the final
 // line). Many small first entries laddering down together can then never commit more than the shared limits allow.
 const isLadder=p=>p?.management===SCALP_MANAGEMENTS.LADDER&&Boolean(p.ladder);
-const ladderHeldMargin=p=>Math.max((p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1),Number(p.ladder?.reserveMarginUSD)||0);
-const ladderHeldRisk=p=>Number(p.ladder?.reserveRiskUSD)||0;
+const ladderOpenMargin=p=>(p.size||p.qty||0)*(p.avg||p.entry||0)/(p.leverage||1);
+const ladderHeldMargin=p=>{const open=ladderOpenMargin(p);if(p.ladder?.state==='STOPPED')return open;return Math.max(open,Number(p.ladder?.reserveMarginUSD)||0)};
+const ladderHeldRisk=p=>{if(p.ladder?.state==='STOPPED')return ladderReserve({totalMarginUSD:ladderOpenMargin(p),leverage:p.leverage,finalLineRoePct:p.ladder?.finalLineRoePct??75,takerRate:p.takerRate||SCALP_EXEC_COSTS.takerRate,reservePct:p.ladder?.reservePct??.0004}).riskUSD;return Number(p.ladder?.reserveRiskUSD)||0};
 // An order read back by client id: {order:null} (or an empty answer) is no order at all.
 const ladderOrderOf=d=>d&&typeof d==='object'&&'order' in d?d.order:d;
 const LADDER_TERMINAL=new Set(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED']);
@@ -793,6 +794,7 @@ export class ScalpExecutor{
   finally{
    try{await this.#recordWyckoff(observations,st)}finally{this.scanning=false;this.lastScan=st;this.#save()}
   }
+  if(this.pumpWatch.size&&this.armed&&!this.scanning)await this.#pumpTick();
   return st;
  }
  /** Add context to the existing signal journal after all entry decisions. No context result gates an order. */
@@ -1087,6 +1089,11 @@ export class ScalpExecutor{
    const basePlanConfig=againstTrend?{...this.config,riskPct:this.config.riskPct*SCALP_AGAINST_TREND_RISK_SCALE}:this.config;
    let plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
     usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:basePlanConfig});
+   if(!plan.ok&&this.#management()===SCALP_MANAGEMENTS.LADDER&&price>0&&Array.isArray(plan.reasons)&&plan.reasons.length
+    &&plan.reasons.every(r=>r==='TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY'||r==='TP1_NET_RR_BELOW_MINIMUM')){
+    const takerRate=Math.max(Number(c?.takerFeeRate)||0,SCALP_EXEC_COSTS.takerRate);
+    plan={ok:true,entry:price,stop:det.stop,targets:det.targets||[],parts:[1,0,0],takerRate,netRR:plan.netRR??0,driftPct:plan.driftPct??0,qty:0,riskUSD:0,marginUSD:0,ladderBypassedFib:true};
+   }
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
    // Data-calibrated 100-point setup score (40-coin BingX 5m Train/OOS): filter negative-EV (<minScore) & scale up A/S setups.
@@ -2562,12 +2569,23 @@ export class ScalpExecutor{
   if(!(tp>0&&mark>0&&dir*(mark-tp)>=0))return false;
   const qty=Number(grid(size,p.quantityStep,'DOWN'));if(!(qty>0))return false;
   const n=L.exitTries=(L.exitTries||0)+1,cid=(p.id+'lx'+n).slice(0,40);
-  L.exit={clientOrderId:cid,qty,price:tp,at:this.now()};this.#save();
+  // First attempt uses exact tp; on unfilled retries (thin alt spread), allow a 1-tick marketable buffer if strictly above fee-net breakeven.
+  let limitPrice=tp;
+  const tick=pos(p.tickSize);
+  if(n>=2&&tick&&p.avg>0){
+   const fee=Math.max(p.takerRate||0,SCALP_EXEC_COSTS.takerRate);
+   const reserve=Number(L.reservePct)||0;
+   const be=p.avg*(1+dir*(2*fee+reserve));
+   const buf=Number(grid(tp-dir*tick,p.tickSize,dir>0?'DOWN':'UP'));
+   if(buf>0&&dir*(buf-be)>0)limitPrice=buf;
+  }
+  L.exit={clientOrderId:cid,qty,price:limitPrice,at:this.now()};this.#save();
   let o;
   try{
    o=orderOf(await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),
-    type:'LIMIT',timeInForce:'IOC',price:String(tp),quantity:String(qty),reduceOnly:'true',clientOrderId:cid},p.hedge===true)));
+    type:'LIMIT',timeInForce:'IOC',price:String(limitPrice),quantity:String(qty),reduceOnly:'true',clientOrderId:cid},p.hedge===true)));
   }catch(e){
+   if(e?.code==='HTTP_429'||e?.code==='VENUE_ERROR_109429')this.cooldownUntil=this.now()+60000;
    // A refusal from the venue: nothing was placed. Anything else (no answer): looked up by its id at the next check.
    if(/^(?:VENUE_ERROR_\d+|HTTP_4\d\d)$/.test(String(e?.code||''))){delete L.exit;L.lastReason=e.code;this.#save()}
    else this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message});

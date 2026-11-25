@@ -150,6 +150,9 @@ export class PumpAlertBook{
   try{
    const now=this.now();
    for(const rec of this.records){
+    if((rec.bingx===null||rec.bingx?.listed===null)&&typeof this.listed==='function'&&now-(Number(rec.bingx?.at)||0)>=MIN&&now-rec.at<=EXPIRE_MS){
+     try{const v=await this.listed(rec.symbol);if(v===true||v===false){rec.bingx={listed:v,at:now};changed=true}else{rec.bingx={listed:null,at:now}}}catch{rec.bingx={listed:null,at:now}}
+    }
     if(rec.trackDone)continue;
     const m0=Math.floor(rec.at/MIN)*MIN;
     if(now-m0>EXPIRE_MS){rec.trackDone=true;if(!rec.track?.horizons?.[PUMP_HORIZONS_MIN.at(-1)])rec.trackError=rec.trackError||'EXPIRED';changed=true;continue}
