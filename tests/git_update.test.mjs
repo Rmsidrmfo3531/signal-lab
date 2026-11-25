@@ -167,3 +167,35 @@ test('header version follows the running commit: commit time in KST + short hash
  assert.equal(c.currentDisplayVersion,'2026-11-23 14:56 KST · aaa1111');
  assert.equal(c.latestDisplayVersion,'2026-11-24 23:05 KST · bbb2222');
 });
+
+test('scheduled update banner formats remaining minutes/seconds and wires SSE + /api/update',async()=>{
+ const {formatUpdateSchedule}=await import('../public/update_schedule.js');
+ const base=Date.UTC(2026,10,25,6,0,0); // 15:00:00 KST
+ assert.equal(formatUpdateSchedule(null,base),null);
+
+ const twoMin=formatUpdateSchedule({latest:'abc1234',latestDisplayVersion:'2026-11-25 14:58 KST · abc1234',changesCount:3,scheduledAt:base+120000},base);
+ assert.equal(twoMin.title,'업데이트가 확인되어 2분 뒤에 업데이트 진행 예정입니다.');
+ assert.match(twoMin.detail,/새 버전 2026-11-25 14:58 KST · abc1234 · 변경 3건 · 예정 시각 15:02:00 KST/);
+
+ const minSec=formatUpdateSchedule({scheduledAt:base+105000},base);
+ assert.equal(minSec.title,'업데이트가 확인되어 1분 45초 뒤에 업데이트 진행 예정입니다.');
+
+ const secs=formatUpdateSchedule({scheduledAt:base+30000},base);
+ assert.equal(secs.title,'업데이트가 확인되어 30초 뒤에 업데이트 진행 예정입니다.');
+
+ const soon=formatUpdateSchedule({scheduledAt:base-1000},base);
+ assert.equal(soon.title,'업데이트가 확인되어 곧 업데이트 진행 예정입니다.');
+
+ const idleWait=formatUpdateSchedule({scheduledAt:base-5000,waitingIdle:true},base);
+ assert.equal(idleWait.title,'업데이트가 확인되어 진행 중인 작업이 끝나면 곧 업데이트 진행 예정입니다.');
+
+ const server=fs.readFileSync(new URL('../server.mjs',import.meta.url),'utf8');
+ const html=fs.readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
+ const appJs=fs.readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
+ assert.match(server,/send\('update-schedule'/);
+ assert.match(server,/scheduledUpdate:scheduledUpdateSnapshot\(\)/);
+ assert.match(html,/id="updateScheduleBanner"/);
+ assert.match(appJs,/es\.addEventListener\('update-schedule'/);
+ assert.match(appJs,/formatUpdateSchedule\(scheduledUpdate/);
+});
+
