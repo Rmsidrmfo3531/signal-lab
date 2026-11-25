@@ -306,7 +306,7 @@ export async function executeRealManualOrder({
   ...(plan.tpPrice!=null?{takeProfit:JSON.stringify({type:'TAKE_PROFIT_MARKET',stopPrice:plan.tpPrice,workingType:'MARK_PRICE'})}:{}),
   ...(plan.slPrice!=null?{stopLoss:JSON.stringify({type:'STOP_MARKET',stopPrice:plan.slPrice,workingType:'MARK_PRICE'})}:{}),
  };
- let orderId=null,executionMode=plan.orderType==='LIMIT'?(plan.postOnly?'POST_ONLY':'LIMIT'):'MARKET';
+ let orderId=null,executionMode=plan.orderType==='LIMIT'?(plan.postOnly?'POST_ONLY':'LIMIT'):'MARKET',filledQty=plan.qty,marketError=null;
  if(plan.orderType==='MARKET'&&plan.makerFirst){
   const r=await placeMakerThenMarket({
    client,
@@ -326,6 +326,8 @@ export async function executeRealManualOrder({
   });
   orderId=r.orderId;
   executionMode=r.executionMode;
+  if(pos(r.filledQty))filledQty=r.filledQty;
+  if(r.marketError)marketError=r.marketError;
  }else{
   const params=forMode({
    symbol:plan.venueSymbol,
@@ -344,16 +346,19 @@ export async function executeRealManualOrder({
  const sideKo=plan.side==='LONG'?'롱':'숏';
  const typeKo=plan.orderType==='LIMIT'
   ?`${plan.postOnly?'지정가(Post-Only)':'지정가'} ${plan.limitPrice}`
-  :executionMode==='MAKER'?'메이커 지정가 체결'
+  :executionMode==='MAKER'?(marketError?'메이커 일부 체결(잔량 시장가 실패)':'메이커 지정가 체결')
    :executionMode==='HYBRID'?'메이커+시장가 체결'
     :plan.makerFirst?'시장가 폴백':'시장가';
+ const partialNote=marketError?` (계획 ${plan.qty} 중 ${filledQty} 체결, 잔량 오류: ${marketError})`:'';
  return {
   ok:true,
   orderId,
   clientOrderId:cid,
   executionMode,
+  filledQty,
+  ...(marketError?{partialFill:true,marketError}:{}),
   plan,
-  summary:`${plan.displaySymbol} ${sideKo} ${typeKo} · 수량 ${plan.qty} (약 $${plan.marginUSD} · ${plan.leverage}배 ${plan.marginMode==='ISOLATED'?'격리':'교차'})${plan.tpPrice?` · TP ${plan.tpPrice}`:''}${plan.slPrice?` · SL ${plan.slPrice}`:''}`,
+  summary:`${plan.displaySymbol} ${sideKo} ${typeKo} · 수량 ${filledQty}${partialNote} (약 $${plan.marginUSD} · ${plan.leverage}배 ${plan.marginMode==='ISOLATED'?'격리':'교차'})${plan.tpPrice?` · TP ${plan.tpPrice}`:''}${plan.slPrice?` · SL ${plan.slPrice}`:''}`,
  };
 }
 

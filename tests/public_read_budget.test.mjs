@@ -33,3 +33,15 @@ test('budgetedPublicRead reserves the weight synchronously, shares the 429 coold
  await assert.rejects(budgetedPublicRead('/fapi/v1/aggTrades',{budget,fetcher:hang,timeoutMs:150}),/aborted/);
  assert.ok(Date.now()-t0<2000,'aborted on its own timeout');
 });
+test('P0-4: depth?limit=1000 weighs 50 and orderflow/firechart respect shared PublicReadBudget cooldown',async()=>{
+ assert.equal(binanceReadWeight('/fapi/v1/depth?symbol=BTCUSDT&limit=1000'),50);
+ assert.equal(binanceReadWeight('/fapi/v1/depth?symbol=BTCUSDT&limit=500'),10);
+ const {fetchFirechartExtras}=await import('../firechart.mjs');
+ let now=200000;const budget=new PublicReadBudget({now:()=>now,maxWeight:100});
+ budget.rateLimited(429,'60');
+ const called=[];
+ const fetcher=async u=>{called.push(u);return {ok:true,status:200,json:async()=>({bids:[],asks:[]})}};
+ await fetchFirechartExtras('BTCUSDT',{needTrades:true,budget,fetcher,gateContract:'BTC_USDT',bingxSymbol:'BTC-USDT'});
+ assert.equal(called.filter(u=>u.includes('fapi.binance.com')).length,0,'Binance calls skipped while PublicReadBudget is in 429 cooldown');
+});
+

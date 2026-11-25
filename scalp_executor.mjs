@@ -2770,7 +2770,7 @@ export class ScalpExecutor{
   if(this.reconciling||!this.client)return;this.reconciling=true;this.lastReconcileAt=this.now();
   try{
    let list=null;
-   if(this.store.open.length){try{list=await this.client.positions()}catch(e){if(e?.code==='HTTP_429')this.cooldownUntil=this.now()+60000;this.#event('RECONCILE_ERROR',{reason:e?.code||e?.message});return}}
+   if(this.store.open.length){try{list=await this.client.positions()}catch(e){if(e?.code==='HTTP_429'||e?.code==='VENUE_ERROR_109429')this.cooldownUntil=this.now()+60000;this.#event('RECONCILE_ERROR',{reason:e?.code||e?.message});return}}
    let unrealized=0;
    for(const p of [...this.store.open]){
     // An entry still being placed (its stop / targets not yet sent) is left to the entry path.
@@ -2792,8 +2792,13 @@ export class ScalpExecutor{
      let {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true);const mark=pos(row?.markPrice);
      if(p.earlyTakeProfit){
       try{this.#recordEarlyTakeProfit(p,await this.client.getOrder(p.venueSymbol,{clientOrderId:p.earlyTakeProfit.clientOrderId}))}
-      catch(e){if(e?.code!=='VENUE_ERROR_80016')throw e;delete p.earlyTakeProfit}
+      catch(e){
+       const oldEt=this.now()-(Number(p.earlyTakeProfit?.at)||0)>=10*60000;
+       if(!orderAbsent(e)&&e?.code!=='VENUE_ERROR_109421'&&!(oldEt&&/^VENUE_ERROR_\d+$/.test(String(e?.code||''))))throw e;
+       delete p.earlyTakeProfit;this.#save();
+      }
      }
+     if(size>0&&p.reconcileRetryAfter&&this.now()<p.reconcileRetryAfter){continue}
      const noStop=this.config.stopLossEnabled===false;
      // Hedge mode: a position on the other side of this coin at any check -> this trade is not settled from the
      // symbol's fund flow (its PnL and funding would be mixed in, review 2026-11-17); the fill estimate stays.
@@ -2927,7 +2932,14 @@ export class ScalpExecutor{
      if(p.status==='OPEN'&&await this.#tryEarlyTakeProfit(p,mark))continue;
      if(p.status==='OPEN')await this.#placeTargets(p);
      if(p.status==='OPEN')await this.#considerAdd(p,mark);
-     }catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;break}this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message})}
+     if(p.reconcileErrCount){p.reconcileErrCount=0;p.reconcileRetryAfter=0}
+     }catch(e){
+      if(e?.code==='HTTP_429'||e?.code==='VENUE_ERROR_109429'){this.cooldownUntil=this.now()+60000;this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e.code});break}
+      p.reconcileErrCount=(p.reconcileErrCount||0)+1;
+      const delay=Math.min(300000,15000*(2**Math.min(4,p.reconcileErrCount-1)));
+      p.reconcileRetryAfter=this.now()+delay;
+      this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message});
+     }
      finally{this.reconcilingSymbol=null}
    }
    for(const x of this.store.closed.filter(x=>!x.realized&&!x.otherSideSeen&&(x.settleTries||0)<SETTLE_TRIES&&this.now()-x.closedAt>=SETTLE_DELAY_MS&&this.now()-x.closedAt<2*3600000))await this.#settle(x).catch(()=>{});

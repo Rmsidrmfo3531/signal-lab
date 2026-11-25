@@ -529,12 +529,17 @@ export function evaluateScalpSqueezeGuard(snapshot, direction, opts = {}) {
   return { blocked: false, reason: null, detail: null };
 }
 
-async function fetchJson(url, { fetcher = fetch, timeoutMs = 4500 } = {}) {
+async function fetchJson(url, { fetcher = fetch, timeoutMs = 4500, budget = null } = {}) {
+  if (budget) {
+    const r = budget.reserve(url);
+    if (!r.ok) { const err = new Error(r.code); err.code = r.code; throw err; }
+  }
   const res = await fetcher(url, {
     signal: AbortSignal.timeout(timeoutMs),
     headers: { 'User-Agent': 'SignalLab/1.0', Accept: 'application/json' },
   });
   if (!res.ok) {
+    if (budget) budget.rateLimited(res.status, res.headers?.get?.('retry-after'));
     const err = new Error(`HTTP_${res.status}`);
     err.status = res.status;
     throw err;
@@ -558,16 +563,16 @@ async function fetchGateLiquidations(symbol, interval, limit, { fetcher, gateBas
   return liqMap;
 }
 
-async function fetchFromBinance(symbol, interval, limit, { fetcher, binanceBase, gateBase }) {
+async function fetchFromBinance(symbol, interval, limit, { fetcher, binanceBase, gateBase, budget = null }) {
   if (Date.now() < binanceBlockedUntil) throw Object.assign(new Error('BINANCE_GEO_SKIP'), { status: 451 });
   const sym = normalizeOrderflowSymbol(symbol);
   const [kl, oiH, lsr, topLsr, prem, liqMap] = await Promise.all([
-    fetchJson(`${binanceBase}/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=${limit}`, { fetcher, timeoutMs: 4000 }),
+    fetchJson(`${binanceBase}/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=${limit}`, { fetcher, timeoutMs: 4000, budget }),
     // openInterestHist allows limit <= 500 (and only the last 30 days): a longer chart shows OI for its recent part.
-    fetchJson(`${binanceBase}/futures/data/openInterestHist?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=${Math.min(500, limit)}`, { fetcher, timeoutMs: 4000 }).catch(() => []),
-    fetchJson(`${binanceBase}/futures/data/globalLongShortAccountRatio?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=30`, { fetcher, timeoutMs: 4000 }).catch(() => []),
-    fetchJson(`${binanceBase}/futures/data/topLongShortPositionRatio?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=30`, { fetcher, timeoutMs: 4000 }).catch(() => []),
-    fetchJson(`${binanceBase}/fapi/v1/premiumIndex?symbol=${encodeURIComponent(sym)}`, { fetcher, timeoutMs: 4000 }).catch(() => ({})),
+    fetchJson(`${binanceBase}/futures/data/openInterestHist?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=${Math.min(500, limit)}`, { fetcher, timeoutMs: 4000, budget }).catch(() => []),
+    fetchJson(`${binanceBase}/futures/data/globalLongShortAccountRatio?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=30`, { fetcher, timeoutMs: 4000, budget }).catch(() => []),
+    fetchJson(`${binanceBase}/futures/data/topLongShortPositionRatio?symbol=${encodeURIComponent(sym)}&period=${interval}&limit=30`, { fetcher, timeoutMs: 4000, budget }).catch(() => []),
+    fetchJson(`${binanceBase}/fapi/v1/premiumIndex?symbol=${encodeURIComponent(sym)}`, { fetcher, timeoutMs: 4000, budget }).catch(() => ({})),
     fetchGateLiquidations(sym, interval, Math.min(400, limit), { fetcher, gateBase }),
   ]);
 
@@ -783,7 +788,7 @@ export async function fetchOrderflow(symbol, opts = {}) {
   const errors = [];
   if (!opts.skipBinance) {
     try {
-      const data = await fetchFromBinance(sym, interval, limit, { fetcher, binanceBase, gateBase });
+      const data = await fetchFromBinance(sym, interval, limit, { fetcher, binanceBase, gateBase, budget: opts.budget || null });
       cache.set(key, { at: Date.now(), data });
       if (cache.size > 120) cache.delete(cache.keys().next().value);
       return data;
@@ -968,6 +973,7 @@ export async function fetchOrderflowWithFirechart(symbol, opts = {}) {
       needTrades: rangeDef.useRealTrades,
       skipBinance: Boolean(opts.skipBinance) || Date.now() < binanceBlockedUntil,
       fetcher: opts.fetcher,
+      budget: opts.budget || null,
       binanceBase: opts.binanceBase,
       gateBase: opts.gateBase,
       bingxBase: opts.bingxBase,

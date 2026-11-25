@@ -84,8 +84,10 @@ export async function placeMakerThenMarket({
   ...extraParams,
  },hedge);
 
- const sendMarket=async(remQty,cid)=>{
-  const res=orderOf(await client.placeOrder({...baseParams,type:'MARKET',quantity:String(remQty),clientOrderId:cid},{beforeSend}));
+ const sendMarket=async(remQty,cid,{omitTpSl=false}={})=>{
+  const params={...baseParams,type:'MARKET',quantity:String(remQty),clientOrderId:cid};
+  if(omitTpSl){delete params.takeProfit;delete params.stopLoss}
+  const res=orderOf(await client.placeOrder(params,{beforeSend}));
   const filled=pos(res?.executedQty)??remQty;
   return {res,orderId:res?.orderId!=null?String(res.orderId):null,filledQty:filled,avg:pos(res?.avgPrice),status:res?.status??'FILLED'};
  };
@@ -193,9 +195,9 @@ export async function placeMakerThenMarket({
   };
  }
 
- // Fallback MARKET strictly for the remaining unfilled quantity.
+ // Fallback MARKET strictly for the remaining unfilled quantity (if maker already filled partially, omit duplicate TP/SL).
  let m;
- try{m=await sendMarket(remQty,marketCid)}
+ try{m=await sendMarket(remQty,marketCid,{omitTpSl:makerQty>0})}
  catch(e){
   if(!(makerQty>0))throw e;
   // The PostOnly part is filled: it is reported, never thrown away as "nothing filled" (a caller would drop a real
