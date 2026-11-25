@@ -76,28 +76,93 @@ test('link check finds a missing named export without running the module',async(
  assert.match(run(fileURLToPath(new URL('../server.mjs',import.meta.url))),/LINK_OK/);
 });
 
-test('formatUpdateCompletedNotice formats auto, manual, and restart version notices cleanly',()=>{
+test('formatUpdateCompletedNotice formats auto, manual, button, and HTML notices with high visibility and no duplicate hash',()=>{
  const autoMsg=formatUpdateCompletedNotice({
   version:'5.8.0',
-  displayVersion:'2026-11-22 23:25 KST',
-  fromDisplayVersion:'2026-11-22 23:16 KST',
+  displayVersion:'2026-11-22 23:25 KST · abc1234',
+  fromDisplayVersion:'2026-11-22 23:16 KST · 9998888',
   to:'abc1234',
   source:'auto',
-  changes:['텔레그램 업데이트 완료 알림 추가','테스트넷 자금 한도 100% 상향'],
+  changes:['텔레그램 업데이트 완료 알림 추가','feat(scalp): 테스트넷 자금 한도 100% 상향 (#327)'],
   restored:['실계좌 카피 ●','테스트넷 단타 ●'],
+  html:true,
  });
- assert.match(autoMsg,/✅ \[Signal Lab 자동 업데이트 완료\] v5\.8\.0 \(2026-11-22 23:25 KST\)/);
- assert.match(autoMsg,/버전: 2026-11-22 23:16 KST → 2026-11-22 23:25 KST \(abc1234\)/);
- assert.match(autoMsg,/· 텔레그램 업데이트 완료 알림 추가/);
- assert.match(autoMsg,/자동 복원: 실계좌 카피 ● · 테스트넷 단타 ●/);
+ assert.match(autoMsg,/✅ <b>Signal Lab 자동 업데이트 완료<\/b>/);
+ assert.match(autoMsg,/📦 <b>버전<\/b>\s+<code>v5\.8\.0<\/code>/);
+ assert.match(autoMsg,/🕒 <b>적용<\/b>\s+2026-11-22 23:25 KST \(<code>abc1234<\/code>\)/);
+ assert.doesNotMatch(autoMsg,/abc1234.*abc1234/,'commit hash is never duplicated');
+ assert.match(autoMsg,/🔁 <b>이전<\/b>\s+2026-11-22 23:16 KST \(<code>9998888<\/code>\)/);
+ assert.match(autoMsg,/📝 <b>주요 변경 내역 \(2건\)<\/b>/);
+ assert.match(autoMsg,/1\. 텔레그램 업데이트 완료 알림 추가/);
+ assert.match(autoMsg,/2\. <b>\[단타·신규\]<\/b> 테스트넷 자금 한도 100% 상향 <code>#327<\/code>/);
+ assert.match(autoMsg,/⚡ <b>자동 복원 현황<\/b>\n• 실계좌 카피 ●\n• 테스트넷 단타 ●/);
 
  const manualMsg=formatUpdateCompletedNotice({
   version:'5.8.0',
   displayVersion:'2026-11-22 23:25 KST',
-  source:'manual',
+  source:'button',
  });
- assert.match(manualMsg,/✅ \[Signal Lab 수동 업데이트 완료\]/);
+ assert.match(manualMsg,/✅ Signal Lab 수동 업데이트 완료/);
  assert.match(manualMsg,/새 버전으로 서버가 정상 시작되었습니다\./);
+
+ const xssMsg=formatUpdateCompletedNotice({
+  version:'5.8.0',
+  displayVersion:'2026-11-22 23:25 KST',
+  source:'auto',
+  changes:['fix: handle a < b & c > d'],
+  html:true,
+ });
+ assert.match(xssMsg,/handle a &lt; b &amp; c &gt; d/);
+});
+
+test('localizeUpdateChanges translates English commits to Korean, protects crypto terms, skips Korean, and degrades safely',async()=>{
+ const {parseCommitSubject,needsKoreanTranslation,localizeUpdateChanges,formatUpdateErrorNotice}=await import('../git_update.mjs');
+ assert.deepEqual(parseCommitSubject('feat(scalp): raise testnet maxMarginPct to 20% (#327)'),{
+  badge:'[단타·신규]',
+  body:'raise testnet maxMarginPct to 20%',
+  pr:'#327',
+ });
+ assert.equal(needsKoreanTranslation('add BTC vs Altcoin dominance indicator'),true);
+ assert.equal(needsKoreanTranslation('BTC 도미넌스 지표 추가'),false);
+
+ const seen=[];
+ const localized=await localizeUpdateChanges([
+  'feat: add BTC vs Altcoin dominance indicator (#328)',
+  'feat(scalp): raise testnet maxMarginPct to 20% and fix TRADER_LADDER sizeMult to 1 (#327)',
+  'fix(telegram): 텔레그램 알림 한글화 개선 (#329)',
+ ],{
+  translate:async({text})=>{
+   seen.push(text);
+   if(text.includes('dominance'))return {translatedText:'비트 코인 대비 알트 코인 도미 넌스 지표 추가'};
+   return {translatedText:'테스트 넷 최대 증거금 비중을 20%로 상향하고 카피식 추매 수량 배수를 1로 수정'};
+  },
+ });
+ assert.equal(seen.length,2,'already-Korean commit skipped external translator');
+ assert.match(seen[1],/테스트넷/,'protected testnet term before translation');
+ assert.match(seen[1],/카피식 추매/,'protected TRADER_LADDER term before translation');
+ assert.equal(localized[0].badge,'[신규]');
+ assert.equal(localized[0].text,'비트코인 대비 알트코인 도미넌스 지표 추가');
+ assert.equal(localized[0].pr,'#328');
+ assert.equal(localized[1].badge,'[단타·신규]');
+ assert.equal(localized[1].text,'테스트넷 최대 증거금 비중을 20%로 상향하고 카피식 추매 수량 배수를 1로 수정');
+ assert.equal(localized[2].badge,'[텔레그램·수정]');
+ assert.equal(localized[2].text,'텔레그램 알림 한글화 개선');
+
+ // Translator failure still returns clean badge + original text without throwing
+ const fallback=await localizeUpdateChanges(['fix(copy): prevent duplicate <order> (#330)'],{
+  translate:async()=>{throw Error('network down')},
+ });
+ assert.equal(fallback[0].badge,'[카피·수정]');
+ assert.equal(fallback[0].text,'prevent duplicate <order>');
+ assert.equal(fallback[0].pr,'#330');
+
+ // Error notices format English states/messages into readable Korean HTML
+ const aborted=formatUpdateErrorNotice({kind:'aborted',source:'auto',state:'diverged',message:'',html:true});
+ assert.match(aborted,/⚠️ <b>Signal Lab 자동 업데이트 중단<\/b>/);
+ assert.match(aborted,/서버 코드가 GitHub와 달라 자동 적용을 건너뛰었습니다\./);
+ const failed=formatUpdateErrorNotice({kind:'failed',source:'auto',state:'failed',message:'git merge <failed>',html:true});
+ assert.match(failed,/🚨 <b>Signal Lab 자동 업데이트 실패<\/b>/);
+ assert.match(failed,/<code>git merge &lt;failed&gt;<\/code>/);
 });
 
 test('checkPostUpdateNotice stays silent on fresh boot and same-version restart, notifies on update marker or version change',()=>{
@@ -117,8 +182,9 @@ test('checkPostUpdateNotice stays silent on fresh boot and same-version restart,
  // 3) External restart with new version (e.g. Windows supervisor or manual git pull) -> notifies once
  const restartNotice=checkPostUpdateNotice({dir,appVersion:v2,now:t0+120000});
  assert.ok(restartNotice);
- assert.match(restartNotice,/✅ \[Signal Lab 버전 업데이트 완료\] v5\.8\.0 \(2026-11-22 23:25 KST\)/);
- assert.match(restartNotice,/버전: 2026-11-22 23:16 KST → 2026-11-22 23:25 KST/);
+ assert.match(restartNotice,/✅ Signal Lab 버전 업데이트 완료/);
+ assert.match(restartNotice,/🕒 적용\s+2026-11-22 23:25 KST/);
+ assert.match(restartNotice,/🔁 이전\s+2026-11-22 23:16 KST/);
  assert.equal(checkPostUpdateNotice({dir,appVersion:v2,now:t0+180000}),null,'does not repeat on next restart');
 
  // 4) One-tap / auto update with fresh rearm marker -> includes source, commit list, and restored services
@@ -130,10 +196,10 @@ test('checkPostUpdateNotice stays silent on fresh boot and same-version restart,
   now:t0+240000,
  });
  assert.ok(markerNotice);
- assert.match(markerNotice,/✅ \[Signal Lab 수동 업데이트 완료\] v5\.8\.0 \(2026-11-22 23:40 KST\)/);
- assert.match(markerNotice,/버전: 2026-11-22 23:25 KST → 2026-11-22 23:40 KST \(bbb2222\)/);
- assert.match(markerNotice,/· UI 개선/);
- assert.match(markerNotice,/자동 복원: 신호 전략 ● · 테스트넷 단타 ●/);
+ assert.match(markerNotice,/✅ Signal Lab 수동 업데이트 완료/);
+ assert.match(markerNotice,/🕒 적용\s+2026-11-22 23:40 KST \(bbb2222\)/);
+ assert.match(markerNotice,/1\. UI 개선/);
+ assert.match(markerNotice,/⚡ 자동 복원 현황\n• 신호 전략 ●\n• 테스트넷 단타 ●/);
 });
 
 test('auto-update streams live progress via SSE and locks manual update button against overlapping clicks',()=>{
