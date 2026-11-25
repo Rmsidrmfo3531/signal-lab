@@ -1435,3 +1435,32 @@ test('live copy in hedge mode handles resting manual LIMIT order and venue setLe
  assert.equal(failRes.reason,'VENUE_ERROR_101400');
 });
 
+test('#5 directional PRICE_MISMATCH allows favorable better-price fills (<=25%) on direct contracts while blocking >10% adverse chasing and keeping strict ±10% on aliases',async()=>{
+ const {checkCopyPriceDrift}=await import('../copy_executor.mjs');
+ // Direct LONG: cheaper venue (-15%) is favorable -> allowed; pricier venue (+12%) is adverse -> blocked; extreme (-30%) -> blocked
+ assert.equal(checkCopyPriceDrift({cardPrice:100,venuePrice:85,direction:'LONG',isAlias:false}).ok,true);
+ assert.equal(checkCopyPriceDrift({cardPrice:100,venuePrice:112,direction:'LONG',isAlias:false}).ok,false);
+ assert.equal(checkCopyPriceDrift({cardPrice:100,venuePrice:70,direction:'LONG',isAlias:false}).ok,false);
+ // Direct SHORT: higher venue (+18%) is favorable -> allowed; lower venue (-12%) is adverse -> blocked; extreme (+30%) -> blocked
+ assert.equal(checkCopyPriceDrift({cardPrice:100,venuePrice:118,direction:'SHORT',isAlias:false}).ok,true);
+ assert.equal(checkCopyPriceDrift({cardPrice:100,venuePrice:88,direction:'SHORT',isAlias:false}).ok,false);
+ assert.equal(checkCopyPriceDrift({cardPrice:100,venuePrice:130,direction:'SHORT',isAlias:false}).ok,false);
+ // Alias contract keeps strict symmetric ±10% even in favorable direction
+ assert.equal(checkCopyPriceDrift({cardPrice:100,venuePrice:85,direction:'LONG',isAlias:true}).ok,false);
+ assert.equal(checkCopyPriceDrift({cardPrice:100,venuePrice:118,direction:'SHORT',isAlias:true}).ok,false);
+
+ // End-to-end CopyExecutor: OPEN is TNSRUSDT SHORT at card price 0.051
+ // 1) Favorable higher price (+15% -> 0.05865): enters!
+ let v=venue();
+ let ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.05865,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const fav=await ex.handle({id:1,date:1e12,text:OPEN});
+ assert.equal(fav.ok,true,'SHORT at higher venue price (+15%) is favorable and allowed');
+ // 2) Adverse lower price (-15% -> 0.04335): skipped as PRICE_MISMATCH
+ v=venue();
+ ex=new CopyExecutor({config:copyConfig({COPY_SIZING:'FIRST_1USD'},'TESTNET'),client:v.client,contractOf:async()=>contract,markOf:async()=>0.04335,balance:async()=>({equity:400,available:300}),now:()=>1e12});
+ const adv=await ex.handle({id:2,date:1e12,text:OPEN});
+ assert.equal(adv.ok,false);
+ assert.equal(adv.reason,'PRICE_MISMATCH');
+});
+
+

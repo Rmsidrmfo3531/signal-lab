@@ -135,6 +135,30 @@ export function resolveCopyContract(contracts,symbol){
  for(const [key,c] of contracts)if(re.test(key))return {...c,alias:key};
  return null;
 }
+/** Directional copy entry price-drift check (#5):
+ * - Alias contracts (stock perpetuals / 1000-coin aliases) keep strict symmetric ±maxAdversePct% so wrong-asset
+ *   mappings (e.g. 0.05 vs 250) are always refused.
+ * - Direct non-alias contracts block unfavorable chasing drift (> maxAdversePct%, e.g. LONG venue > card+10% or
+ *   SHORT venue < card-10%) while allowing favorable better-price fills up to maxFavorablePct% (default 25%), still
+ *   refusing extreme > maxFavorablePct% anomalies. */
+export function checkCopyPriceDrift({cardPrice,venuePrice,direction,isAlias=false,maxAdversePct=10,maxFavorablePct=25}={}){
+ const cp=Number(cardPrice),vp=Number(venuePrice);
+ if(!(cp>0)||!(vp>0))return {ok:true,driftPct:0,adverse:false,favorable:false};
+ const driftPct=+((vp/cp-1)*100).toFixed(2);
+ const dir=String(direction||'').toUpperCase();
+ if(isAlias||(dir!=='LONG'&&dir!=='SHORT')){
+  const bad=Math.abs(cp/vp-1)>(Number(maxAdversePct)||10)/100;
+  return {ok:!bad,driftPct,adverse:bad,favorable:false};
+ }
+ const adverseRatio=dir==='LONG'?(vp-cp)/cp:(cp-vp)/cp;
+ if(adverseRatio>0){
+  const bad=adverseRatio>(Number(maxAdversePct)||10)/100;
+  return {ok:!bad,driftPct,adverse:bad,favorable:false};
+ }
+ const favorableRatio=-adverseRatio;
+ const tooExtreme=favorableRatio>(Number(maxFavorablePct)||25)/100;
+ return {ok:!tooExtreme,driftPct,adverse:false,favorable:!tooExtreme};
+}
 // Real money (user 2026-11-14, "실계좌, 지금 설정 그대로"): only with COPY_MODE=LIVE and
 // COPY_LIVE_CONFIRM=REAL_MONEY_COPY in the server's .env (set by the user), on its own BingX live client,
 // independent of the signal strategy (which stays on the testnet). Starts disarmed after every restart;
@@ -1039,7 +1063,10 @@ export class CopyExecutor{
   // traded without that check.
   {const cardPrice=(pos(m.price)??pos(m.entry))*(Number(c.unitMultiplier)||1);
    if(!(venuePrice>0)){if(c.alias){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}}
-   else if(Math.abs(cardPrice/venuePrice-1)>.1){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice}`});return {ok:false,reason:'PRICE_MISMATCH'}}}
+   else{
+    const chk=checkCopyPriceDrift({cardPrice,venuePrice,direction:m.direction,isAlias:c.alias===true});
+    if(!chk.ok){this.#event('SKIPPED',{symbol:m.symbol,reason:'PRICE_MISMATCH',detail:`카드 ${cardPrice} / 거래소 ${venuePrice} (${chk.driftPct>=0?'+':''}${chk.driftPct}%${chk.adverse?' 불리':' 괴리'})`});return {ok:false,reason:'PRICE_MISMATCH'}}
+   }}
   let leverage=Math.max(1,Math.min(Math.round(m.leverage||this.store.leverageOf[m.symbol]||10),this.#effectiveMaxLeverage()));
   {const maxL=Number((m.direction==='SHORT'?levInfo?.maxShortLeverage:levInfo?.maxLongLeverage)??levInfo?.maxLongLeverage??levInfo?.maxLeverage);if(maxL>0)leverage=Math.min(leverage,maxL)}
   // The account's position mode (one-way: positionSide BOTH; hedge: LONG / SHORT, user 2026-11-17), read

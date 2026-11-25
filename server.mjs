@@ -8,7 +8,7 @@ import {buildReport,pushReport} from './reports_push.mjs';
 import {exchangePnl,bingxBalanceRows,balanceOf} from './exchange_pnl.mjs';
 import {createDailyPnl,PNL_CALENDAR_RESET_AT} from './daily_pnl.mjs';
 import {CopyExecutor,copyConfig,resolveCopyContract} from './copy_executor.mjs';
-import {lookupRealTradeSymbol,executeRealManualOrder,listRealOpenOrders,cancelRealOpenOrder,buildBingxMarketList,REAL_CHART_INTERVALS} from './real_manual_trade.mjs';
+import {lookupRealTradeSymbol,executeRealManualOrder,listRealOpenOrders,cancelRealOpenOrder,buildBingxMarketList,REAL_CHART_INTERVALS,executeRealPanicFlat,REAL_PANIC_CONFIRM_TOKEN} from './real_manual_trade.mjs';
 import {copyEventText} from './copy_telegram.mjs';
 import {ScalpExecutor,scalpExecConfig,scalpLiveExecConfig} from './scalp_executor.mjs';
 import {scalpEventText} from './scalp_telegram.mjs';
@@ -386,8 +386,9 @@ async function readRealOpenStops(positions){
  return realOpenStops;
 }
 const realScalpPositions=()=>SCALP_LIVE_EXEC.mode==='LIVE'&&scalpLiveExec?scalpLiveExec.store.open:[];
+const realScalpClosed=()=>SCALP_LIVE_EXEC.mode==='LIVE'&&scalpLiveExec?scalpLiveExec.store.closed:[];
 async function copyLiveStatus(){const s0=await copyTrader.liveStatus(),s=dailyPnl?{...s0,daily:dailyPnl.status(),settlementRefreshing:Boolean(historyRefresh)}:s0;
- const analytics=buildCopyAnalytics({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:s0.funds?.equity??null,confirmedOnly:COPY.mode==='LIVE',exchangeCosts:dailyPnl?.costSummary?.()??null});
+ const analytics=buildCopyAnalytics({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],scalpClosed:realScalpClosed(),dailyByDay:dailyPnl?.status()?.byDay??null,equityUSD:s0.funds?.equity??null,confirmedOnly:COPY.mode==='LIVE',exchangeCosts:dailyPnl?.costSummary?.()??null});
  const liveScalp=scalpLiveExec&&SCALP_LIVE_EXEC.mode==='LIVE'?await scalpLiveExec.liveStatus():null;
  const extra={analytics,...(accountAlerts?{accountAlerts:accountAlerts.status()}:{}),...(realMarginAlert?{marginAlert:realMarginAlert.status()}:{}),...(copyListenerHealth?{listener:copyListenerHealth.status()}:{}),...(realTrailing?{trailing:realTrailing.status()}:{}),...(realSafety?{safety:realSafety.status()}:{}),...(liveScalp?{liveScalp}:{})};
  if(!venuePositionsReader)return {...s,...extra};
@@ -895,6 +896,24 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
  void refreshRealTradeNotices();
  return {ok:true,action,closePct:action==='CLOSE_HALF'?partPct:100,closed:results,summary:`${action==='CLOSE_HALF'?`${partPct}% 부분 청산`:'전량 청산'}: ${results.join(', ')}`};
 }
+async function runRealPanicFlat(confirm){
+ if(COPY.mode!=='LIVE'||!realBingxClient)throw Object.assign(Error('실계좌 BingX 클라이언트가 연결되어 있지 않습니다'),{code:'LIVE_ACCOUNT_UNAVAILABLE',httpStatus:409});
+ const r=await executeRealPanicFlat({
+  confirm,
+  client:realBingxClient,
+  onDisarmAll:()=>{
+   try{live.kill('PANIC_FLAT')}catch{}
+   try{copyTrader.disarm({user:true})}catch{}
+   try{scalpLiveExec?.disarm('KILL_SWITCH')}catch{}
+  },
+  sendText:sendTradeTelegram,
+  log:(...a)=>console.warn('[PANIC_FLAT]',...a),
+ });
+ reportsDirty=true;
+ void refreshRealTradeNotices();
+ void readRealWallet().catch(()=>{});
+ return r;
+}
 if(COPY.mode==='LIVE'){
  const sendAccountAlertTelegram=async text=>{
   if(!/<(?:b|pre)>[\s\S]*<\/(?:b|pre)>/.test(String(text||'')))return sendTradeTelegram(text);
@@ -936,6 +955,7 @@ if(COPY.mode==='LIVE'){
    return {ok:true};
   },
   onClose:({symbol,direction})=>executeRealPositionAction({symbol,direction,action:'CLOSE_ALL'}),
+  onPanic:()=>runRealPanicFlat(REAL_PANIC_CONFIRM_TOKEN),
  });
  // Margin usage alert (real_margin_alert.mjs): only with the real copy client; read only, alert only.
  if(copyClient?.mode==='LIVE')realMarginAlert=new RealMarginAlert({directory:storage.dir,env:process.env,
@@ -2236,6 +2256,7 @@ const server=http.createServer(async(req,res)=>{
    return response(res,200,buildCopyAnalytics({
     copyClosed:copyTrader.store.closed,
     manualClosed:manualLedger?.store.closed??[],
+    scalpClosed:realScalpClosed(),
     dailyByDay:dailyPnl?.status()?.byDay??null,
     equityUSD:copyTrader.funds?.equity??null,
     confirmedOnly:COPY.mode==='LIVE',
@@ -2244,7 +2265,15 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/copy/export'&&req.method==='GET'){
    res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="signal-lab-real-trades.csv"','Cache-Control':'no-store',...SECURITY_HEADERS});
-   return res.end(exportCopyTradesCSV({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[]}));
+   return res.end(exportCopyTradesCSV({copyClosed:copyTrader.store.closed,manualClosed:manualLedger?.store.closed??[],scalpClosed:realScalpClosed()}));
+  }
+  if(pathname==='/api/real/panic'&&req.method==='POST'){
+   const body=await bodyJson(req);
+   if(body?.confirm!==REAL_PANIC_CONFIRM_TOKEN)return response(res,400,{ok:false,error:'CONFIRM_REQUIRED',message:`확인 문구(${REAL_PANIC_CONFIRM_TOKEN})가 필요합니다`});
+   try{
+    const r=await runRealPanicFlat(body.confirm);
+    return response(res,r.ok?200:207,r);
+   }catch(e){return response(res,e.httpStatus||502,{ok:false,error:e.code||'PANIC_FLAT_FAILED',message:e.message})}
   }
   if(pathname==='/api/real/position-action'&&req.method==='POST'){
    const body=await bodyJson(req);
@@ -2342,7 +2371,7 @@ const server=http.createServer(async(req,res)=>{
      confirm:body?.confirm,symbol:body?.symbol,side:body?.side,
      orderType:body?.orderType,amountMode:body?.amountMode,amount:body?.amount,
      price:body?.price,leverage:body?.leverage,marginMode:body?.marginMode,
-     tpPrice:body?.tpPrice,slPrice:body?.slPrice,makerFirst:body?.makerFirst===true,
+     tpPrice:body?.tpPrice,slPrice:body?.slPrice,makerFirst:body?.makerFirst===true,postOnly:body?.postOnly===true,
      client:realBingxClient,
      contractsFor:sym=>venueQuotes.clients.BINGX.contractsFor(sym),
      markOf,

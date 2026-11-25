@@ -238,3 +238,43 @@ test('open-position PnL summary sends clean readable Telegram list (no code bloc
   assert.equal((await alerts.checkPositionSummary({positions,now,force:true})).sent,true);
  }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
+
+test('#10 Telegram /panic (/비상청산) requires 2-step /confirm within 60s and invokes onPanic',async()=>{
+ let now=1795000000000,panicCalls=0;
+ const alerts=new AccountAlerts({
+  now:()=>now,
+  allowedChatId:'123456',
+  onPanic:async()=>{panicCalls++;return {ok:true,summary:'전체 자동매매 중지 + 미체결 2건 취소 + 포지션 1건 청산'}},
+ });
+ const help=await alerts.handleCommand('/help','123456',now);
+ assert.match(help,/\/panic/);
+
+ const ask=await alerts.handleCommand('/panic','123456',now);
+ assert.match(ask,/비상 일괄 청산 확인/);
+ const code=ask.match(/\/confirm (\d{4})/)?.[1];
+ assert.ok(code);
+ assert.equal(panicCalls,0);
+
+ // Wrong code rejected without executing
+ const bad=await alerts.handleCommand('/confirm 0000','123456',now);
+ assert.match(bad,/일치하지 않습니다/);
+ assert.equal(panicCalls,0);
+
+ // Valid code executes onPanic once
+ const ok=await alerts.handleCommand(`/confirm ${code}`,'123456',now);
+ assert.match(ok,/비상 일괄 청산 완료/);
+ assert.equal(panicCalls,1);
+
+ // Expiry after 60s
+ const ask2=await alerts.handleCommand('/비상청산','123456',now);
+ const code2=ask2.match(/\/confirm (\d{4})/)?.[1];
+ now+=61000;
+ const exp=await alerts.handleCommand(`/confirm ${code2}`,'123456',now);
+ assert.match(exp,/만료되었습니다/);
+ assert.equal(panicCalls,1);
+
+ // Unwired onPanic returns clear message
+ const unwired=new AccountAlerts({now:()=>now,allowedChatId:'123456'});
+ assert.match(await unwired.handleCommand('/panic','123456',now),/연결되어 있지 않습니다/);
+});
+

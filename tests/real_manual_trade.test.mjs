@@ -184,3 +184,91 @@ test('realTradePanelHTML, computeOrderPreview, roundToTick, and venuePositionsHT
  assert.match(vpHtml,/data-trade-fill/);
  assert.match(vpHtml,/주문\/추매/);
 });
+
+test('#2 Post-Only LIMIT order sends timeInForce:PostOnly and previews round-trip fee & breakeven ROE',async()=>{
+ const {planRealManualOrder,executeRealManualOrder}=await import('../real_manual_trade.mjs');
+ const BTC={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',tradable:true,tickSize:'0.1',quantityStep:'0.001',minQuantityBase:0.001,minNotionalUSDT:5,unitMultiplier:1};
+ const plan=planRealManualOrder({
+  contract:BTC,price:50000,side:'LONG',orderType:'LIMIT',postOnly:true,
+  amountMode:'MARGIN_USDT',amount:100,leverage:10,marginMode:'CROSSED',availableUSD:1000,
+ });
+ assert.equal(plan.postOnly,true);
+ // notional $1,000 (0.02 BTC @ 50,000), maker entry 0.02% + taker exit 0.05% = 0.07% -> $0.70, breakeven ROE = 0.7%
+ assert.equal(plan.estRoundTripFeeUSD,0.7);
+ assert.equal(plan.breakevenMovePct,0.07);
+ assert.equal(plan.breakevenRoePct,0.7);
+
+ const placed=[];
+ const client={
+  mode:'LIVE',
+  balance:async()=>({balance:{asset:'USDT',availableMargin:'1000',equity:'1000'}}),
+  positionMode:async()=>({dualSidePosition:true}),
+  leverage:async()=>({maxLongLeverage:100,maxShortLeverage:100}),
+  setMarginType:async()=>({}),
+  setLeverage:async()=>({}),
+  placeOrder:async p=>{placed.push(p);return {order:{orderId:'po-1',status:'NEW'}}},
+ };
+ const res=await executeRealManualOrder({
+  confirm:'REAL_MANUAL_ORDER',symbol:'BTCUSDT',side:'LONG',orderType:'LIMIT',postOnly:true,
+  amountMode:'MARGIN_USDT',amount:100,price:50000,leverage:10,marginMode:'CROSSED',
+  client,contractsFor:async()=>new Map([['BTCUSDT',BTC]]),markOf:async()=>50500,
+ });
+ assert.equal(res.ok,true);
+ assert.equal(res.executionMode,'POST_ONLY');
+ assert.equal(placed[0].type,'LIMIT');
+ assert.equal(placed[0].timeInForce,'PostOnly');
+ assert.match(res.summary,/Post-Only/);
+
+ const html=realTradePanelHTML({
+  open:true,symbol:'BTCUSDT',marginMode:'CROSSED',leverage:10,orderType:'LIMIT',postOnly:true,limitPrice:'50000',
+  amountMode:'MARGIN_USDT',amount:'100',tpPrice:'',slPrice:'',availableUSD:1000,interval:'15m',showEma:true,
+  markets:[],heldPositions:[],openOrders:[],favorites:new Set(),
+  info:{symbol:'BTCUSDT',displaySymbol:'BTCUSDT',venueSymbol:'BTC-USDT',price:50500,quantityStep:'0.001',minQuantityBase:0.001,minNotionalUSDT:5,unitMultiplier:1,maxLeverage:{long:100},copyHolding:[]},
+ });
+ assert.match(html,/data-rt-post-only/);
+ assert.match(html,/왕복 수수료/);
+ assert.match(html,/본전 \+0\.07%/);
+ assert.match(html,/\(Post-Only\)/);
+});
+
+test('#10 executeRealPanicFlat disarms all automation first, cancels open orders, market-closes all positions, and verifies flat',async()=>{
+ const {executeRealPanicFlat,REAL_PANIC_CONFIRM_TOKEN}=await import('../real_manual_trade.mjs');
+ const steps=[];
+ let openPos=[
+  {symbol:'BTC-USDT',positionAmt:'0.02',positionSide:'LONG',avgPrice:'60000',markPrice:'59500'},
+  {symbol:'ETH-USDT',positionAmt:'-0.5',positionSide:'SHORT',avgPrice:'3000',markPrice:'3050'},
+ ];
+ const client={
+  mode:'LIVE',
+  openOrders:async()=>{steps.push('listOrders');return {orders:[{orderId:'o1',symbol:'BTC-USDT',type:'LIMIT',side:'BUY',positionSide:'LONG',origQty:'0.01',price:'58000'}]}},
+  cancelOrder:async(sym,id)=>{steps.push(`cancel:${sym}:${id}`);return {}},
+  positionMode:async()=>({dualSidePosition:true}),
+  positions:async()=>openPos,
+  placeOrder:async p=>{
+   steps.push(`close:${p.symbol}:${p.side}:${p.positionSide}:${p.type}:${p.quantity}`);
+   openPos=openPos.filter(x=>!(x.symbol===p.symbol&&x.positionSide===p.positionSide));
+   return {order:{orderId:'cl-'+steps.length}};
+  },
+ };
+
+ await assert.rejects(()=>executeRealPanicFlat({confirm:'WRONG',client}),e=>e.code==='CONFIRM_REQUIRED');
+ const notices=[];
+ const r=await executeRealPanicFlat({
+  confirm:REAL_PANIC_CONFIRM_TOKEN,
+  client,
+  onDisarmAll:()=>{steps.push('disarmAll')},
+  sendText:async txt=>{notices.push(txt)},
+ });
+ assert.equal(r.ok,true);
+ assert.equal(r.disarmed,true);
+ assert.equal(r.cancelledOrders.length,1);
+ assert.equal(r.closedPositions.length,2);
+ assert.equal(r.remainingCount,0);
+ assert.equal(steps[0],'disarmAll','disarms automation before touching any orders or positions');
+ assert.equal(steps[2],'cancel:BTC-USDT:o1');
+ assert.ok(steps.includes('close:BTC-USDT:SELL:LONG:MARKET:0.02'));
+ assert.ok(steps.includes('close:ETH-USDT:BUY:SHORT:MARKET:0.5'));
+ assert.equal(notices.length,1);
+ assert.match(notices[0],/비상 전량 청산 완료/);
+});
+

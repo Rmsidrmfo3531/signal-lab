@@ -86,7 +86,13 @@ export function computeOrderPreview(st){
   :minN>0&&notionalUSD<minN?`최소 주문 금액($${minN}) 미만`
   :safeMaxMargin&&marginUSD>safeMaxMargin+0.01?`단일 증거금 안전 한도(${fmtUsd(safeMaxMargin)} · ${sf.manualMaxMarginPct}%) 초과`
   :avail!==null&&marginUSD>avail*0.98?`가용 증거금(${fmtUsd(avail)}) 초과`:null;
- return {qty:cleanQty,coinQty:cleanQty,execPrice,notionalUSD,marginUSD,warn};
+ const makerEntry=(st.orderType==='LIMIT'&&st.postOnly===true)||(st.orderType==='MARKET'&&st.makerFirst===true);
+ const entryRate=makerEntry?0.0002:0.0005;
+ const rtRate=entryRate+0.0005;
+ const estRoundTripFeeUSD=+(notionalUSD*rtRate).toFixed(4);
+ const breakevenMovePct=+(rtRate*100).toFixed(3);
+ const breakevenRoePct=+(rtRate*lev*100).toFixed(2);
+ return {qty:cleanQty,coinQty:cleanQty,execPrice,notionalUSD,marginUSD,warn,makerEntry,estRoundTripFeeUSD,breakevenMovePct,breakevenRoePct};
 }
 
 export function marketDropdownRowsHTML(st){
@@ -154,9 +160,10 @@ export function realTradePanelHTML(st){
      <span>예상 수량 <b>${esc(fmtQty(preview.coinQty))}</b></span>
      <span>명목가치 <b>${fmtUsd(preview.notionalUSD)}</b></span>
      <span>필요 증거금 <b>${fmtUsd(preview.marginUSD)}</b></span>
+     <span title="${preview.makerEntry?'메이커 진입(0.02%)+시장가 청산(0.05%) 기준':'시장가 진입(0.05%)+시장가 청산(0.05%) 기준'}">왕복 수수료 <b>$${esc(preview.estRoundTripFeeUSD.toFixed(2))}</b> <small>(본전 +${esc(preview.breakevenMovePct)}% · ROE +${esc(preview.breakevenRoePct)}%)</small></span>
      ${preview.warn?`<span class="rt-prev-warn">⚠ ${esc(preview.warn)}</span>`:''}
     </div>`
-  :`<div class="rt-preview muted">수량 또는 금액을 입력하면 예상 증거금이 자동 계산됩니다.</div>`;
+  :`<div class="rt-preview muted">수량 또는 금액을 입력하면 예상 증거금·수수료가 자동 계산됩니다.</div>`;
  const orders=Array.isArray(st.openOrders)?st.openOrders:[];
  const ordersHtml=orders.length
   ?`<ul class="rt-orders-list">${orders.map(o=>{
@@ -254,12 +261,12 @@ export function realTradePanelHTML(st){
        <div class="rt-seg">
         <button type="button" class="${st.orderType==='MARKET'?'is-current':''}" data-rt-otype="MARKET">시장가</button>
         <button type="button" class="${st.orderType==='LIMIT'?'is-current':''}" data-rt-otype="LIMIT">지정가</button>
-        ${st.orderType==='MARKET'?`<button type="button" class="${st.makerFirst?'is-current':''}" data-rt-maker title="지정가(PostOnly 0.02%)로 2.5초 먼저 체결 시도 후 미체결 잔량만 시장가(0.05%) 체결">⚡ 메이커 우선</button>`:''}
+        ${st.orderType==='MARKET'?`<button type="button" class="${st.makerFirst?'is-current':''}" data-rt-maker title="지정가(PostOnly 0.02%)로 2.5초 먼저 체결 시도 후 미체결 잔량만 시장가(0.05%) 체결">⚡ 메이커 우선</button>`:`<button type="button" class="${st.postOnly?'is-current':''}" data-rt-post-only title="Post-Only(메이커 전용): 호가에 걸릴 때만 0.02% 수수료로 체결되고 즉시 테이커 체결이면 자동 취소">🛡 Post-Only</button>`}
        </div>
       </div>
       <div class="rt-group">
        <span class="rt-lbl">지정가 (USDT)${st.orderType==='LIMIT'&&livePrice?` <button type="button" class="rt-link-btn" data-rt-fill-price>현재가</button>`:''}</span>
-       <input type="number" step="any" data-rt-limit-price value="${esc(st.limitPrice)}" placeholder="${st.orderType==='MARKET'?(st.makerFirst?'메이커 0.02% 우선 (2.5초 후 시장가)':'시장가 체결'):'지정가 입력'}"${st.orderType==='MARKET'?' disabled':''} aria-label="지정가 가격">
+       <input type="number" step="any" data-rt-limit-price value="${esc(st.limitPrice)}" placeholder="${st.orderType==='MARKET'?(st.makerFirst?'메이커 0.02% 우선 (2.5초 후 시장가)':'시장가 체결'):(st.postOnly?'Post-Only 지정가 (0.02% 메이커)':'지정가 입력')}"${st.orderType==='MARKET'?' disabled':''} aria-label="지정가 가격">
       </div>
      </div>
      <div class="rt-group">
@@ -289,8 +296,8 @@ export function realTradePanelHTML(st){
      ${!st.slPrice&&!st.slRoePct?`<p class="rt-hint-sl">💡 손절가(SL) 미설정 상태입니다. 위 <b>-15%</b> 버튼을 누르면 롱·숏 방향에 맞춰 손절이 자동 부착됩니다.</p>`:''}
      ${previewHtml}
      <div class="rt-submit-row">
-      <button type="button" class="rt-btn-long" data-rt-submit="LONG"${st.busy?' disabled':''}>🟢 롱 / 매수${st.orderType==='LIMIT'?' (지정가)':st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
-      <button type="button" class="rt-btn-short" data-rt-submit="SHORT"${st.busy?' disabled':''}>🔴 숏 / 매도${st.orderType==='LIMIT'?' (지정가)':st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
+      <button type="button" class="rt-btn-long" data-rt-submit="LONG"${st.busy?' disabled':''}>🟢 롱 / 매수${st.orderType==='LIMIT'?(st.postOnly?' (Post-Only)':' (지정가)'):st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
+      <button type="button" class="rt-btn-short" data-rt-submit="SHORT"${st.busy?' disabled':''}>🔴 숏 / 매도${st.orderType==='LIMIT'?(st.postOnly?' (Post-Only)':' (지정가)'):st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
      </div>
      <div class="rt-status-msg${st.msgErr?' err':''}" role="status">${esc(st.msg||'')}</div>
     </div>
@@ -309,6 +316,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   leverage:10,
   orderType:'MARKET',
   makerFirst:true,
+  postOnly:true,
   limitPrice:'',
   amountMode:'MARGIN_USDT',
   amount:'',
@@ -421,10 +429,10 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   const box=mountEl.querySelector('.rt-preview');
   if(box){
    const p=computeOrderPreview(state);
-   if(!p){box.className='rt-preview muted';box.innerHTML='수량 또는 금액을 입력하면 예상 증거금이 자동 계산됩니다.'}
+   if(!p){box.className='rt-preview muted';box.innerHTML='수량 또는 금액을 입력하면 예상 증거금·수수료가 자동 계산됩니다.'}
    else{
     box.className=`rt-preview${p.warn?' is-warn':''}`;
-    box.innerHTML=`<span>예상 수량 <b>${esc(fmtQty(p.coinQty))}</b></span><span>명목가치 <b>${fmtUsd(p.notionalUSD)}</b></span><span>필요 증거금 <b>${fmtUsd(p.marginUSD)}</b></span>${p.warn?`<span class="rt-prev-warn">⚠ ${esc(p.warn)}</span>`:''}`;
+    box.innerHTML=`<span>예상 수량 <b>${esc(fmtQty(p.coinQty))}</b></span><span>명목가치 <b>${fmtUsd(p.notionalUSD)}</b></span><span>필요 증거금 <b>${fmtUsd(p.marginUSD)}</b></span><span title="${p.makerEntry?'메이커 진입(0.02%)+시장가 청산(0.05%) 기준':'시장가 진입(0.05%)+시장가 청산(0.05%) 기준'}">왕복 수수료 <b>$${esc(p.estRoundTripFeeUSD.toFixed(2))}</b> <small>(본전 +${esc(p.breakevenMovePct)}% · ROE +${esc(p.breakevenRoePct)}%)</small></span>${p.warn?`<span class="rt-prev-warn">⚠ ${esc(p.warn)}</span>`:''}`;
    }
   }
   pushChartData();
@@ -530,7 +538,8 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
    if(raw>0)resolvedSl=Number(raw.toPrecision(6));
   }
   const useMaker=orderType==='MARKET'&&state.makerFirst===true;
-  if(!window.confirm(confirmMsg+(resolvedSl!=null&&state.slPrice===''?`\n자동 손절(−${state.slRoePct}% ROE): ${resolvedSl} USDT`:'')+(useMaker?'\n방식: 메이커(0.02%) 지정가 2.5초 우선 → 미체결 잔량 시장가':'')))return;
+  const usePostOnly=orderType==='LIMIT'&&state.postOnly===true;
+  if(!window.confirm(confirmMsg+(resolvedSl!=null&&state.slPrice===''?`\n자동 손절(−${state.slRoePct}% ROE): ${resolvedSl} USDT`:'')+(useMaker?'\n방식: 메이커(0.02%) 지정가 2.5초 우선 → 미체결 잔량 시장가':usePostOnly?'\n방식: Post-Only 지정가 (0.02% 메이커 보장 · 즉시 체결 시 자동 취소)':'')))return;
   state.busy=true;state.msg='주문 전송 중…';state.msgErr=false;render();
   try{
    const r=await fetch('/api/real/trade/order',{
@@ -541,6 +550,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
      side,
      orderType,
      makerFirst:useMaker,
+     postOnly:usePostOnly,
      amountMode:state.amountMode,
      amount:Number(state.amount),
      price:orderType==='LIMIT'?Number(limitPrice):null,
@@ -670,6 +680,10 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   }
   if(e.target.closest('[data-rt-maker]')){
    state.makerFirst=!state.makerFirst;
+   render();return;
+  }
+  if(e.target.closest('[data-rt-post-only]')){
+   state.postOnly=!state.postOnly;
    render();return;
   }
   const slRoe=e.target.closest('[data-rt-sl-roe]');
