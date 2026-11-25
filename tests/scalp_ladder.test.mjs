@@ -350,3 +350,19 @@ test('restart before the add was sent: the step waits 2 minutes, then is tried a
  assert.equal(adds(v).length,1);assert.match(adds(v)[0].clientOrderId,/L2n2$/);assert.equal(again.store.open[0].ladder.filled,2);
  fs.rmSync(dir,{recursive:true,force:true});
 });
+
+test('position cards align CURRENT and TRADER_LADDER into identical 12-cell uniform grid columns',()=>{
+ const css=fs.readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');
+ assert.match(css,/\.live-values\{display:grid;grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
+ assert.match(css,/@media\(max-width:1100px\)\{\.live-values\{grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
+ assert.match(css,/@media\(max-width:690px\)\{\.live-values\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+ assert.doesNotMatch(css,/\.live-values\{display:flex;flex-wrap:wrap/);
+ const cur=scalpPositionCardHTML({symbol:'BLURUSDT',direction:'SHORT',status:'OPEN',stopLossEnabled:false,avg:0.008336,mark:0.008672,size:87462,targets:[0.008288,0.008248,0.008209],parts:[.4,.35,.25],riskUSD:9.23,leverage:10,openedAt:T0});
+ const lad=scalpPositionCardHTML({symbol:'PROMUSDT',direction:'SHORT',status:'OPEN',management:'TRADER_LADDER',avg:4.608,mark:4.66,size:40.636,riskUSD:229.8,leverage:10,openedAt:T0,ladderView:{step:2,of:6,tpPrice:4.573,tpNetPct:.6,finalLineRoePct:75,reserveMarginUSD:300,maxHoldMin:2880,avg:4.608,nextAdd:{price:4.75241}}});
+ const cells=html=>(html.match(/<div class="paper-trade-values live-values">([\s\S]*?)<\/div>/)?.[1]||'').match(/<span(?:\s[^>]*)?>/g)||[];
+ assert.equal(cells(cur).length,12);
+ assert.equal(cells(lad).length,12);
+ assert.ok(cur.indexOf('자동 손절')<cur.indexOf('목표'));
+ assert.ok(lad.indexOf('마지막 선')<lad.indexOf('익절'));
+});
+
