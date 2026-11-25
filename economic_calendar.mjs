@@ -1,11 +1,11 @@
-// US core macroeconomic indicator calendar with 24-month empirical BTC impact stats (read-only).
+// US ★★★ (Investing.com high-importance) macroeconomic indicator calendar with 24-month empirical BTC impact stats (read-only).
 // Primary source: TradingView public economic calendar (includes live `actual`, `forecast`, `previous`).
 // Fallback source: ForexFactory public weekly JSON feeds (thisweek + nextweek).
-// Focuses strictly on US core BTC-moving releases (FOMC, CPI, NFP, PCE, PPI, GDP, Retail Sales,
-// Initial Jobless Claims, ISM Mfg/Svc PMI, JOLTS, Michigan Sentiment) — excluding non-US/China and
-// low-impact housing/ADP noise — while capturing companion sub-indicators (Core PCE YoY, GDP Price
-// Index, Continuing Claims, ISM Prices Paid, Michigan Inflation Expectations, Avg Hourly Earnings)
-// and grading impact from real 2-year 5m BTC backtest data (econ_impact_stats.json).
+// Aligns indicator coverage with Investing.com Korea (kr.investing.com/economic-calendar) US ★★★ (3-star high volatility)
+// releases — FOMC, CPI, NFP/Unemployment, Core PCE, PPI, ISM Mfg/Svc PMI, JOLTS, Michigan Sentiment, GDP,
+// Initial Jobless Claims, Retail Sales, ADP Employment Change, CB Consumer Confidence, S&P Global Flash PMI,
+// and Durable Goods Orders — while excluding China/non-US and 1-2 star US noise (Housing, Oil, Auctions, ADP Weekly),
+// capturing companion sub-indicators, and grading impact from real 2-year 5m BTC backtest data (econ_impact_stats.json).
 
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -32,16 +32,17 @@ export function getHistoricalImpact(familyKey){
  return familyKey&&ECON_IMPACT_STATS?.families?.[familyKey]||null;
 }
 
-// Primary US high-volatility BTC movers ONLY (empirically verified >= 1.15x normal 15m BTC volatility over 24m):
-// S-tier (1.7~1.9x): FOMC, CPI, NFP/Unemployment
-// A-tier (1.17~1.41x): Michigan Sentiment, JOLTS, ISM Services PMI, PPI, ISM Manufacturing PMI, PCE
-// Excluded as low-volatility noise (<1.0x baseline): China/non-US, Housing, ADP, Durable Goods,
-// standalone Initial Jobless Claims, standalone Retail Sales, standalone GDP, CB Consumer Confidence.
-const PRIMARY_US_RE=/^(?:fed interest rate decision|federal funds rate|interest rate|fomc statement|fomc press conference|fomc (?:meeting )?minutes|fomc economic projections|fed chair .*speaks|fed powell speech|powell speaks|core inflation rate (?:mom|yoy)|inflation rate (?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|core pce price index(?:\s*(?:mom|m\/m))?|non[- ]?farm (?:payrolls|employment change)|unemployment rate|ppi\s*(?:mom|m\/m)|core ppi\s*(?:mom|m\/m)|ism manufacturing pmi|ism services pmi|jolts job openings|michigan consumer sentiment.*|prelim uom consumer sentiment|jackson hole.*)$/i;
+// Primary US ★★★ (Investing.com 3-star high importance) releases, graded by 24-month empirical 5m BTC impact:
+// ★★★ S초강력 (>= 1.6x 15m baseline): FOMC, CPI, NFP/Unemployment
+// ★★★ A강력 (>= 1.15x 15m baseline): Michigan Sentiment, JOLTS, ISM Services PMI, PPI, ISM Manufacturing PMI, Core PCE
+// ★★★ B주요 (Investing.com ★★★ US major releases): GDP QoQ, Initial Jobless Claims, Retail Sales, ADP Employment Change,
+//           CB Consumer Confidence, S&P Global Flash PMI, Durable Goods Orders
+// Excluded: China/non-US countries and Investing.com 1-2 star US noise (Housing, Crude Oil, Treasury Auctions, ADP Weekly, Regional Feds).
+const PRIMARY_US_RE=/^(?:fed interest rate decision|federal funds rate|interest rate|fomc statement|fomc press conference|fomc (?:meeting )?minutes|fomc economic projections|fed chair .*speaks|fed powell speech|powell speaks|core inflation rate (?:mom|yoy)|inflation rate (?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|core pce price index(?:\s*(?:mom|m\/m))?|non[- ]?farm (?:payrolls|employment change)|unemployment rate|ppi\s*(?:mom|m\/m)|core ppi\s*(?:mom|m\/m)|ism manufacturing pmi|ism services pmi|jolts job openings|michigan consumer sentiment.*|prelim uom consumer sentiment|gdp growth rate qoq.*|(?:advance|prelim|final) gdp\s*q\/q|(?:initial jobless|unemployment) claims|retail sales\s*(?:mom|m\/m)|core retail sales\s*(?:mom|m\/m)|adp (?:employment change|non[- ]?farm employment change)|cb consumer confidence|s&p global (?:manufacturing|services) pmi flash|flash (?:manufacturing|services) pmi|(?:core )?durable goods orders\s*(?:mom|m\/m)|jackson hole.*)$/i;
 
 // Companion sub-indicators (including importance 0 / -1 on TradingView) released at the exact same minute
-// as a primary high-volatility US release that frequently drive or reverse BTC direction.
-const SUB_INDICATOR_RE=/^(?:core pce price index\s*(?:yoy|y\/y)|pce price index\s*(?:mom|yoy|m\/m|y\/y)|personal spending(?:\s*mom)?|personal income(?:\s*mom)?|core inflation rate\s*(?:mom|yoy)|inflation rate\s*(?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|average hourly earnings.*|participation rate|u6 unemployment rate|nonfarm payrolls private|core ppi\s*(?:mom|yoy|m\/m|y\/y)|ppi\s*(?:yoy|y\/y)|ism manufacturing prices|ism services prices|ism manufacturing employment|ism services employment|gdp growth rate qoq.*|gdp price index.*|core pce prices qoq.*|michigan.*inflation expectations.*|uom.*inflation expectations.*|fomc economic projections|interest rate projection.*)$/i;
+// as a primary US ★★★ release that frequently drive or reverse BTC direction.
+const SUB_INDICATOR_RE=/^(?:core pce price index\s*(?:yoy|y\/y)|pce price index\s*(?:mom|yoy|m\/m|y\/y)|personal spending(?:\s*mom)?|personal income(?:\s*mom)?|core inflation rate\s*(?:mom|yoy)|inflation rate\s*(?:mom|yoy)|core cpi\s*(?:m\/m|y\/y)|cpi\s*(?:m\/m|y\/y)|average hourly earnings.*|participation rate|u6 unemployment rate|nonfarm payrolls private|core ppi\s*(?:mom|yoy|m\/m|y\/y)|ppi\s*(?:yoy|y\/y)|ism manufacturing prices|ism services prices|ism manufacturing employment|ism services employment|continuing jobless claims|retail sales control group.*|retail sales ex autos\s*(?:mom|m\/m)|core retail sales\s*(?:mom|m\/m)|gdp price index.*|core pce prices qoq.*|durable goods orders ex transp\s*(?:mom|m\/m)|s&p global composite pmi flash|michigan.*inflation expectations.*|uom.*inflation expectations.*|fomc economic projections|interest rate projection.*)$/i;
 
 const NO_ACTUAL_TITLE_RE=/speaks|speech|press conference|minutes|statement|symposium|outlook report|testifies|testimony|holiday/i;
 
@@ -111,6 +112,14 @@ const EVENT_RULES=[
   hint:'예상치 대비 ±0.1%p 괴리만으로도 급변동',
   watch:'헤드라인 CPI(전월비) · 근원 CPI(전월비·전년비)',
   reversal:'유가 일시 상승으로 헤드라인만 튀고 근원 CPI가 낮으면 초반 하락이 매수 기회로 반전됩니다.'},
+ {re:/adp (?:employment change|non[- ]?farm)/i,familyKey:'ADP',ko:'미국 ADP 비농업 고용변화',critical:false,polarity:'PRO_GROWTH_CAVEAT',
+  hint:'본 고용보고서(NFP) 이틀 전 선행 민간고용 체크',
+  watch:'ADP 민간고용 · 이전 달 수정치 · 이틀 뒤 본 NFP 괴리 여부',
+  reversal:'ADP가 크게 튀어도 본 NFP와의 상관성이 낮아 초반 반응이 빠르게 되돌려지는 경우가 많습니다.'},
+ {re:/non[- ]?farm payrolls private/i,familyKey:'NFP',ko:'미국 민간 비농업 고용',critical:false,polarity:'PRO_GROWTH_CAVEAT',
+  hint:'정부 고용을 제외한 민간 실질 고용',
+  watch:'민간 NFP · 전체 NFP · 실업률',
+  reversal:'전체 NFP가 정부 채용으로 부풀려지고 민간 고용이 부진하면 방향이 반전됩니다.'},
  {re:/non[- ]?farm (?:employment change|payrolls)/i,familyKey:'NFP',ko:'미국 비농업 고용 (NFP)',critical:true,polarity:'PRO_GROWTH_CAVEAT',
   hint:'고용 과열·둔화 여부가 금리 인하 속도 좌우',
   watch:'NFP 고용자 수 · 실업률 · 시간당 평균임금 · 이전 2개월 수정치',
@@ -123,18 +132,18 @@ const EVENT_RULES=[
   hint:'예상 상회 시 경기 침체 우려 vs 금리 인하 기대 충돌',
   watch:'실업률 · 경제활동참가율 · 비농업 고용(NFP) · 시간당 임금',
   reversal:'실업률이 올라도 경제활동참가율 상승 때문이거나 NFP가 강하면 침체 공포가 해소되며 반전합니다.'},
- {re:/average hourly earnings/i,familyKey:'NFP',ko:'미국 시간당 평균임금',critical:false,polarity:'INVERSE',
-  hint:'고용보고서 핵심 세부 지표 — 임금 인플레이션 압력 확인',
+ {re:/average hourly earnings.*(?:y\/?y|yoy)/i,familyKey:'NFP',ko:'미국 시간당 평균임금 (전년비)',critical:false,polarity:'INVERSE',
+  hint:'고용보고서 핵심 세부 지표 — 연간 임금 인플레이션 압력 확인',
+  watch:'시간당 임금(전년비·전월비) · 주당 평균근로시간',
+  reversal:'NFP 고용이 강하게 나와도 임금 상승률이 둔화되면 인플레 우려가 꺾이며 반등 전환합니다.'},
+ {re:/average hourly earnings/i,familyKey:'NFP',ko:'미국 시간당 평균임금 (전월비)',critical:false,polarity:'INVERSE',
+  hint:'고용보고서 핵심 세부 지표 — 월간 임금 인플레이션 압력 확인',
   watch:'시간당 임금(전월비·전년비) · 주당 평균근로시간',
   reversal:'NFP 고용이 강하게 나와도 임금 상승률이 둔화되면 인플레 우려가 꺾이며 반등 전환합니다.'},
  {re:/participation rate/i,familyKey:'NFP',ko:'미국 경제활동참가율',critical:false,polarity:'NEUTRAL',
   hint:'실업률 해석의 핵심 세부 지표',
   watch:'경제활동참가율 · 실업률 · NFP',
   reversal:'실업률 상승이 구직자 유입(참가율 상승)에 따른 것이면 경기 악화 해석이 완화됩니다.'},
- {re:/nonfarm payrolls private/i,familyKey:'NFP',ko:'미국 민간 비농업 고용',critical:false,polarity:'PRO_GROWTH_CAVEAT',
-  hint:'정부 고용을 제외한 민간 실질 고용',
-  watch:'민간 NFP · 전체 NFP · 실업률',
-  reversal:'전체 NFP가 정부 채용으로 부풀려지고 민간 고용이 부진하면 방향이 반전됩니다.'},
  {re:/core ppi.*(?:y\/?y|yoy)/i,familyKey:'PPI',ko:'미국 근원 PPI (전년비)',critical:false,polarity:'INVERSE',
   hint:'소비자물가(CPI)·PCE 선행 지표',
   watch:'근원 PPI(전월비·전년비) · 헤드라인 PPI',
@@ -179,6 +188,26 @@ const EVENT_RULES=[
   hint:'미국 경제 비중이 큰 서비스업 경기 지표',
   watch:'헤드라인 PMI · 서비스 물가지수(Prices Paid) · 고용지수',
   reversal:'서비스 PMI가 좋아도 물가지수 급등이 동반되면 연준 매파 우려로 급반락할 수 있습니다.'},
+ {re:/(?:s&p global|flash) manufacturing pmi/i,familyKey:'SP_GLOBAL_PMI',ko:'미국 S&P 글로벌 제조업 PMI (속보)',critical:false,polarity:'PRO_GROWTH_CAVEAT',
+  hint:'ISM 대비 선행 발표되는 민간 경기 체감 속보치',
+  watch:'제조업 PMI · 동시 발표 서비스업 PMI · 종합 PMI · 투입물가',
+  reversal:'제조업 PMI가 부진해도 동시 발표되는 서비스업 PMI가 강하면(또는 반대) 방향이 즉시 뒤집힙니다.'},
+ {re:/(?:s&p global|flash) services pmi/i,familyKey:'SP_GLOBAL_PMI',ko:'미국 S&P 글로벌 서비스업 PMI (속보)',critical:false,polarity:'PRO_GROWTH_CAVEAT',
+  hint:'미국 경제 비중이 큰 서비스업 선행 체감 지표',
+  watch:'서비스업 PMI · 제조업 PMI · 가격 압력 코멘트',
+  reversal:'서비스업 PMI와 제조업 PMI 방향이 엇갈리면 초반 급변동 후 반전하는 경우가 잦습니다.'},
+ {re:/s&p global composite pmi/i,familyKey:'SP_GLOBAL_PMI',ko:'미국 S&P 글로벌 종합 PMI (속보)',critical:false,polarity:'PRO_GROWTH_CAVEAT',
+  hint:'제조업+서비스업 통합 경기 속보치',
+  watch:'종합 PMI · 서비스업/제조업 세부 비중',
+  reversal:'종합 PMI가 50을 유지해도 세부 업종 간 괴리가 크면 방향성이 빠르게 바뀝니다.'},
+ {re:/core durable goods orders|durable goods orders ex transp/i,familyKey:'DURABLE_GOODS',ko:'미국 근원 내구재 수주 (운송 제외)',critical:false,polarity:'PRO_GROWTH_CAVEAT',
+  hint:'항공기 등 변동성 품목을 제외한 실질 설비투자 지표',
+  watch:'근원 내구재 수주 · 헤드라인 내구재 수주 · 비국방 자본재',
+  reversal:'항공기 주문 급증으로 헤드라인이 튀어도 운송 제외 근원 내구재가 부진하면 반전합니다.'},
+ {re:/durable goods orders/i,familyKey:'DURABLE_GOODS',ko:'미국 내구재 수주 (전월비)',critical:false,polarity:'PRO_GROWTH_CAVEAT',
+  hint:'제조업 설비투자 및 경기 선행 수요 확인',
+  watch:'헤드라인 내구재 수주 · 운송 제외 근원 내구재 · 이전치 수정',
+  reversal:'헤드라인이 예상 상회해도 운송 제외 근원 수주가 하회하면 상승분을 되돌립니다.'},
  {re:/retail sales control group/i,familyKey:'RETAIL_SALES',ko:'미국 소매판매 통제그룹 (GDP 반영)',critical:false,polarity:'PRO_GROWTH_CAVEAT',
   hint:'소매판매 핵심 세부 지표 — GDP 소비 계산에 직접 반영',
   watch:'통제그룹 · 근원 소매판매 · 헤드라인 소매판매',
@@ -215,8 +244,8 @@ const EVENT_RULES=[
   hint:'거시 경기 성장세 확인 지표',
   watch:'실질 GDP · 물가 세부 항목 · 소비/투자 기여도',
   reversal:'헤드라인 성장률과 내부 물가 지표 방향이 다르면 초반 움직임이 반전될 수 있습니다.'},
- {re:/cb consumer confidence/i,familyKey:'MICHIGAN',ko:'미국 컨퍼런스보드 소비자신뢰지수',critical:false,polarity:'PRO_GROWTH_CAVEAT',
-  hint:'소비 심리 변화 확인',
+ {re:/cb consumer confidence/i,familyKey:'CB_CONFIDENCE',ko:'미국 컨퍼런스보드 소비자신뢰지수',critical:false,polarity:'PRO_GROWTH_CAVEAT',
+  hint:'소비 심리 변화 확인 — 기대지수·고용 체감 동시 주목',
   watch:'신뢰지수 본체 · 기대지수(80 하회 여부) · 노동시장 체감지수',
   reversal:'헤드라인이 반등해도 향후 경기 기대지수가 악화되면 상승분을 반납합니다.'},
  {re:/(?:uom|michigan).*5\s*year.*inflation expectations/i,familyKey:'MICHIGAN',ko:'미시간대 5년 기대 인플레이션',critical:false,polarity:'INVERSE',
@@ -246,7 +275,7 @@ function resolveUsCurrency(raw){
  return ccy==='USD'?'USD':'';
 }
 
-/** Return true if a raw calendar item is a primary US core BTC-moving release (excludes China/non-US and housing/ADP noise). */
+/** Return true if a raw calendar item matches Investing.com US ★★★ (high-importance) releases (excludes China/non-US and 1-2 star US noise). */
 export function isHighImpactCryptoEvent(raw){
  if(!raw||typeof raw!=='object')return false;
  if(!resolveUsCurrency(raw))return false;
@@ -265,18 +294,20 @@ function isCompanionSubEvent(raw){
  return SUB_INDICATOR_RE.test(title);
 }
 
-/** Localize a US economic event with empirical 24-month BTC backtest grade, checklist, and reversal guide. */
+/** Localize a US ★★★ economic event with Investing.com importance stars, empirical 24-month BTC backtest grade, checklist, and reversal guide. */
 export function localizeEconomicEvent(raw){
  const title=String(raw?.title||'').replace(/\s+/g,' ').trim();
  for(const rule of EVENT_RULES){
   if(rule.re.test(title)){
    const bt=getHistoricalImpact(rule.familyKey);
-   const grade=bt?(bt.vsBaseline15mX>=1.6?'S':(bt.vsBaseline15mX>=1.15?'A':'B')):(rule.critical?'S':'A');
+   const grade=bt?(bt.vsBaseline15mX>=1.6?'S':(bt.vsBaseline15mX>=1.15?'A':'B')):(rule.critical?'S':'B');
    const tier=grade==='S'?'CRITICAL':(grade==='A'?'HIGH':'WATCH');
-   const tierLabelKo=grade==='S'?'S 초강력':(grade==='A'?'A 강력':'B 참고');
+   const tierLabelKo=grade==='S'?'★★★ S초강력':(grade==='A'?'★★★ A강력':'★★★ B주요');
    return {
     familyKey:rule.familyKey||null,
     titleKo:rule.ko,
+    importanceStars:3,
+    starsLabel:'★★★',
     grade,
     tier,
     tierLabelKo,
@@ -291,11 +322,13 @@ export function localizeEconomicEvent(raw){
  return {
   familyKey:null,
   titleKo:`미국 ${title}`,
+  importanceStars:3,
+  starsLabel:'★★★',
   grade:'B',
   tier:'WATCH',
-  tierLabelKo:'B 참고',
+  tierLabelKo:'★★★ B주요',
   polarity:'NEUTRAL',
-  hintKo:'미국 주요 거시지표 — 발표 전후 변동성 유의',
+  hintKo:'미국 ★★★ 주요 거시지표 — 발표 전후 변동성 유의',
   watchItemsKo:'헤드라인 수치 · 세부 구성 항목 · 이전 발표치 수정 여부',
   reversalKo:'동시 발표되는 타 세부 지표나 이전치 수정에 따라 초기 방향이 반전될 수 있습니다.',
   backtest:null,
@@ -435,6 +468,8 @@ function normalizeEventRecord({id='',at,country='USD',title,forecast='',previous
   title:cleanTitle,
   titleKo:loc.titleKo,
   period:String(period||'').trim(),
+  importanceStars:loc.importanceStars||3,
+  starsLabel:loc.starsLabel||'★★★',
   grade:loc.grade,
   tier:loc.tier,
   tierLabelKo:loc.tierLabelKo,
@@ -466,8 +501,8 @@ export function attachCompanionSubEvents(primaryEvents,subEvents){
  // 1) Collapse same-timestamp same-family primaries (keep highest-priority lead, fold siblings into subEvents)
  const familyPriority=title=>{
   const t=String(title||'').toLowerCase();
-  if(/core (?:cpi|inflation rate).*(?:m\/m|mom)|core pce price index.*(?:m\/m|mom)|non[- ]?farm|fed interest rate|^interest rate$|federal funds rate|gdp growth rate|advance gdp|retail sales\s*(?:mom|m\/m)|initial jobless|unemployment claims|ism manufacturing pmi|ism services pmi/.test(t))return 0;
-  if(/(?:cpi|inflation rate).*(?:y\/y|yoy)|unemployment rate|core ppi/.test(t))return 1;
+  if(/core (?:cpi|inflation rate).*(?:m\/m|mom)|core pce price index.*(?:m\/m|mom)|non[- ]?farm|fed interest rate|^interest rate$|federal funds rate|gdp growth rate|(?:advance|prelim|final) gdp|^retail sales\s*(?:mom|m\/m)|initial jobless|unemployment claims|ism manufacturing pmi|ism services pmi|(?:s&p global|flash) manufacturing pmi|^durable goods orders\s*(?:mom|m\/m)/.test(t))return 0;
+  if(/(?:cpi|inflation rate).*(?:y\/y|yoy)|unemployment rate|core ppi|core retail sales|core durable goods|(?:s&p global|flash) services pmi/.test(t))return 1;
   return 2;
  };
 
