@@ -24,8 +24,8 @@ import {renderEconomicCalendarHTML,formatClientCountdown} from '../public/econ_c
 
 const NOW=Date.parse('2026-11-25T12:00:00Z'); // 2026-11-25 21:00 KST
 
-test('isHighImpactCryptoEvent keeps only proven high-volatility US BTC movers and drops China/non-US and low-vol US noise',()=>{
- // Kept: proven high-volatility US movers (>= 1.15x 15m baseline over 24m)
+test('isHighImpactCryptoEvent matches Investing.com US ★★★ releases and drops China/non-US and 1-2 star US noise',()=>{
+ // Kept: Investing.com US ★★★ (S / A / B empirical BTC tiers)
  assert.equal(isHighImpactCryptoEvent({country:'USD',impact:'High',title:'Core PCE Price Index m/m'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Core Inflation Rate MoM'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Interest Rate'}),true);
@@ -35,28 +35,40 @@ test('isHighImpactCryptoEvent keeps only proven high-volatility US BTC movers an
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'ISM Services PMI'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'JOLTs Job Openings'}),true);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Michigan Consumer Sentiment Prel'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'GDP Growth Rate QoQ 2nd Est'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'Initial Jobless Claims'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Retail Sales MoM'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'ADP Employment Change'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'CB Consumer Confidence'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'S&P Global Manufacturing PMI Flash'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'S&P Global Services PMI Flash'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Durable Goods Orders MoM'}),true);
+ assert.equal(isHighImpactCryptoEvent({country:'USD',impact:'High',title:'Core Durable Goods Orders m/m'}),true);
 
- // Dropped: China, EUR, JPY, and low-volatility US indicators (<1.0x baseline)
+ // Dropped: China, EUR, JPY, and Investing.com 1-2 star US noise (Housing, Oil, Auctions, Weekly ADP, PMI Final)
  assert.equal(isHighImpactCryptoEvent({country:'CN',currency:'CNY',importance:1,title:'GDP Growth Rate YoY'}),false);
  assert.equal(isHighImpactCryptoEvent({country:'CNY',impact:'High',title:'CPI y/y'}),false);
  assert.equal(isHighImpactCryptoEvent({country:'EUR',impact:'High',title:'Main Refinancing Rate'}),false);
  assert.equal(isHighImpactCryptoEvent({country:'JPY',impact:'High',title:'BOJ Policy Rate'}),false);
- assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'Initial Jobless Claims'}),false);
- assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'GDP Growth Rate QoQ 2nd Est'}),false);
- assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Retail Sales MoM'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'ADP Employment Change Weekly'}),false);
  assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Housing Starts'}),false);
- assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'ADP Employment Change'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Building Permits'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:1,title:'Existing Home Sales'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:0,title:'EIA Crude Oil Stocks Change'}),false);
+ assert.equal(isHighImpactCryptoEvent({country:'US',currency:'USD',importance:-1,title:'S&P Global Manufacturing PMI Final'}),false);
 });
 
-test('localizeEconomicEvent attaches real 24-month empirical BTC backtest stats and data-driven S/A tiers',()=>{
+test('localizeEconomicEvent attaches Investing.com ★★★ stars and real 24-month empirical BTC backtest S/A/B tiers',()=>{
  assert.ok(ECON_IMPACT_STATS?.families?.CPI?.sampleCount>=12,'24-month empirical stats loaded');
  assert.ok(getHistoricalImpact('FOMC_RATE')?.whipsawRatePct>0);
 
  const cpi=localizeEconomicEvent({country:'US',currency:'USD',title:'Core Inflation Rate MoM'});
  assert.equal(cpi.familyKey,'CPI');
+ assert.equal(cpi.importanceStars,3);
+ assert.equal(cpi.starsLabel,'★★★');
  assert.equal(cpi.grade,'S');
  assert.equal(cpi.tier,'CRITICAL');
- assert.equal(cpi.tierLabelKo,'S 초강력');
+ assert.equal(cpi.tierLabelKo,'★★★ S초강력');
  assert.ok(cpi.backtest?.avgRange15mPct>0.5);
 
  const fomc=localizeEconomicEvent({country:'US',currency:'USD',title:'Interest Rate'});
@@ -68,13 +80,33 @@ test('localizeEconomicEvent attaches real 24-month empirical BTC backtest stats 
  assert.equal(ppi.familyKey,'PPI');
  assert.equal(ppi.grade,'A');
  assert.equal(ppi.tier,'HIGH');
- assert.equal(ppi.tierLabelKo,'A 강력');
+ assert.equal(ppi.tierLabelKo,'★★★ A강력');
 
  const pce=localizeEconomicEvent({country:'USD',title:'Core PCE Price Index m/m'});
  assert.equal(pce.familyKey,'PCE');
  assert.equal(pce.tier,'HIGH');
  assert.match(pce.titleKo,/근원 PCE/);
  assert.ok(pce.backtest?.maxRange60mPct>1);
+
+ const gdp=localizeEconomicEvent({country:'US',currency:'USD',title:'GDP Growth Rate QoQ 2nd Est'});
+ assert.equal(gdp.familyKey,'GDP');
+ assert.equal(gdp.importanceStars,3);
+ assert.equal(gdp.grade,'B');
+ assert.equal(gdp.tier,'WATCH');
+ assert.equal(gdp.tierLabelKo,'★★★ B주요');
+ assert.ok(gdp.backtest?.sampleCount>=12);
+
+ const adp=localizeEconomicEvent({country:'US',currency:'USD',title:'ADP Employment Change'});
+ assert.equal(adp.familyKey,'ADP');
+ assert.equal(adp.tier,'WATCH');
+ assert.equal(adp.tierLabelKo,'★★★ B주요');
+ assert.ok(adp.backtest?.sampleCount>=12);
+
+ const spPmi=localizeEconomicEvent({country:'US',currency:'USD',title:'S&P Global Manufacturing PMI Flash'});
+ assert.equal(spPmi.familyKey,'SP_GLOBAL_PMI');
+ assert.equal(spPmi.importanceStars,3);
+ assert.equal(spPmi.tier,'WATCH');
+ assert.equal(spPmi.tierLabelKo,'★★★ B주요');
 });
 
 test('formatTvValue and computeEventSurprise format units and surprise directions accurately',()=>{
@@ -107,23 +139,34 @@ test('formatKstEventTime, formatCountdownKo, and formatClientCountdown produce l
  assert.equal(formatClientCountdown(NOW-2*60000,NOW,{hasActual:true}),'발표 완료');
 });
 
-test('parseTradingViewEvents keeps high-vol primary PCE, folds simultaneous sub-indicators (Core PCE YoY, GDP Price Index), and detects conflict',()=>{
+test('parseTradingViewEvents keeps US ★★★ primaries, folds companion sub-indicators, drops China/1-2 star noise, and detects conflict',()=>{
  const events=parseTradingViewEvents({
   result:[
    {id:1,title:'Core PCE Price Index MoM',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:0.3,forecast:0.3,previous:0.3,scale:'',unit:'%'},
    {id:2,title:'Core PCE Price Index YoY',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:-1,actual:3.3,forecast:3.2,previous:3.2,scale:'',unit:'%'},
    {id:3,title:'GDP Growth Rate QoQ 2nd Est',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:4.3,forecast:3.5,previous:3.4,scale:'',unit:'%'},
    {id:4,title:'GDP Price Index QoQ 2nd Est',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:0,actual:1.8,forecast:2.3,previous:2.3,scale:'',unit:'%'},
-   // Standalone low-vol Thursday claims on another day -> dropped completely
+   // US ★★★ Thursday Initial Jobless Claims + Continuing Claims sub-indicator
    {id:5,title:'Initial Jobless Claims',country:'US',currency:'USD',date:'2026-12-03T13:30:00Z',importance:0,actual:null,forecast:200,previous:202,scale:'K',unit:''},
-   // China GDP -> dropped completely
+   {id:6,title:'Continuing Jobless Claims',country:'US',currency:'USD',date:'2026-12-03T13:30:00Z',importance:-1,actual:null,forecast:1850,previous:1860,scale:'K',unit:''},
+   // US ★★★ Retail Sales + Control Group sub-indicator
+   {id:8,title:'Retail Sales MoM',country:'US',currency:'USD',date:'2026-12-04T13:30:00Z',importance:1,actual:null,forecast:0.4,previous:0.3,scale:'',unit:'%'},
+   {id:9,title:'Retail Sales Control Group',country:'US',currency:'USD',date:'2026-12-04T13:30:00Z',importance:-1,actual:null,forecast:0.3,previous:0.2,scale:'',unit:'%'},
+   // China GDP & US Housing -> dropped completely
    {id:7,title:'GDP Growth Rate YoY',country:'CN',currency:'CNY',date:'2026-11-25T11:55:00Z',importance:1,actual:5.0,forecast:4.8,previous:4.7,scale:'',unit:'%'},
+   {id:10,title:'Existing Home Sales',country:'US',currency:'USD',date:'2026-12-05T15:00:00Z',importance:1,actual:null,forecast:4.0,previous:3.9,scale:'M',unit:''},
   ],
  });
- assert.equal(events.length,1,'only high-volatility PCE primary remains; standalone claims & China dropped');
- const pce=events[0];
- assert.equal(pce.familyKey,'PCE');
- assert.equal(pce.subEvents.length,3,'Core PCE YoY, GDP QoQ, and GDP Price Index attached as simultaneous sub-indicators');
+ assert.equal(events.length,4,'PCE, GDP, Initial Jobless Claims, Retail Sales kept; China & Housing dropped');
+ const pce=events.find(e=>e.familyKey==='PCE');
+ const gdp=events.find(e=>e.familyKey==='GDP');
+ const claims=events.find(e=>e.familyKey==='JOBLESS_CLAIMS');
+ const retail=events.find(e=>e.familyKey==='RETAIL_SALES');
+ assert.equal(pce.importanceStars,3);
+ assert.equal(pce.subEvents.length,1,'Core PCE YoY attaches to PCE');
+ assert.equal(gdp.subEvents.length,1,'GDP Price Index attaches to GDP');
+ assert.equal(claims.subEvents.length,1,'Continuing Jobless Claims attaches to Initial Jobless Claims');
+ assert.equal(retail.subEvents.length,1,'Retail Sales Control Group attaches to Retail Sales');
  assert.ok(pce.conflict?.detected,'detects opposite-impact conflict between Core PCE YoY hot vs GDP Price Index cool');
  assert.equal(pce.conflict.kind,'OPPOSITE_IMPACT');
  assert.equal(analyzeReleaseConflicts(events).length,1);
@@ -211,15 +254,25 @@ test('fetchEconomicCalendar queries US-only on TradingView and falls back to For
  assert.equal(ffEvents[0].source,'ForexFactory');
 });
 
-test('renderEconomicCalendarHTML renders 2-year BTC backtest metrics, sub-indicators, conflict badge, and escapes XSS',()=>{
+test('renderEconomicCalendarHTML renders Investing.com ★★★ badges, 2-year BTC backtest metrics, sub-indicators, conflict badge, and escapes XSS',()=>{
  assert.equal(evaluateCryptoImpact({direction:'BELOW',labelKo:'예상 하회'},'INVERSE').tone,'BULLISH');
  const events=parseTradingViewEvents({
   result:[
    {id:201,title:'Inflation Rate YoY',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:3.0,forecast:2.8,previous:2.7,scale:'',unit:'%',period:'Oct'},
    {id:202,title:'Core Inflation Rate MoM',country:'US',currency:'USD',date:'2026-11-25T11:55:00Z',importance:1,actual:0.2,forecast:0.3,previous:0.3,scale:'',unit:'%',period:'Oct'},
    {id:203,title:'ISM Manufacturing PMI',country:'US',currency:'USD',date:'2026-11-25T13:30:00Z',importance:1,actual:null,forecast:55.0,previous:54.5,scale:'',unit:''},
+   {id:204,title:'Durable Goods Orders MoM',country:'US',currency:'USD',date:'2026-11-26T13:30:00Z',importance:1,actual:null,forecast:0.5,previous:-0.4,scale:'',unit:'%'},
+   {id:205,title:'Durable Goods Orders Ex Transp MoM',country:'US',currency:'USD',date:'2026-11-26T13:30:00Z',importance:0,actual:null,forecast:0.2,previous:0.1,scale:'',unit:'%'},
+   {id:206,title:'S&P Global Manufacturing PMI Flash',country:'US',currency:'USD',date:'2026-11-27T14:45:00Z',importance:0,actual:null,forecast:51.0,previous:50.8,scale:'',unit:''},
+   {id:207,title:'S&P Global Services PMI Flash',country:'US',currency:'USD',date:'2026-11-27T14:45:00Z',importance:0,actual:null,forecast:53.0,previous:52.9,scale:'',unit:''},
+   {id:208,title:'S&P Global Composite PMI Flash',country:'US',currency:'USD',date:'2026-11-27T14:45:00Z',importance:0,actual:null,forecast:52.5,previous:52.4,scale:'',unit:''},
   ],
  });
+ const spPmi=events.find(e=>e.familyKey==='SP_GLOBAL_PMI');
+ assert.equal(spPmi.subEvents.length,2,'S&P Global Services & Composite Flash fold under Manufacturing Flash');
+ const durable=events.find(e=>e.familyKey==='DURABLE_GOODS');
+ assert.equal(durable.subEvents.length,1,'Durable Goods Ex Transp attaches under Durable Goods MoM');
+
  const report=buildEconomicCalendarReport({
   events,
   now:NOW,
@@ -229,6 +282,10 @@ test('renderEconomicCalendarHTML renders 2-year BTC backtest metrics, sub-indica
  const html=renderEconomicCalendarHTML(report);
  assert.match(html,/econ-badge conflict/);
  assert.match(html,/지표 엇갈림 · 반전 주의/);
+ assert.match(html,/Investing\.com 미국 중요도 ★★★/);
+ assert.match(html,/★★★ S초강력/);
+ assert.match(html,/★★★ A강력/);
+ assert.match(html,/★★★ B주요/);
  assert.match(html,/2년 BTC 실측/);
  assert.match(html,/휩소 반전/);
  assert.match(html,/동시 발표 세부 지표 \(1건\)/);

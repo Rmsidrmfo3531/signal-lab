@@ -130,13 +130,14 @@ export function renderEconomicCalendarHTML(d){
  const latestResult=justReleased[0]||null;
  const activeConflict=justReleased.find(e=>e.conflict?.detected)?.conflict||null;
 
- let badgeCls='neutral',badgeTxt='📅 주요 경제지표';
+ let badgeCls='neutral',badgeTxt='📅 ★★★ 미국 경제지표';
  if(activeConflict){badgeCls='conflict';badgeTxt='⚡ 지표 엇갈림 · 반전 주의'}
  else if(next?.isAwaitingResult){badgeCls='imminent';badgeTxt='⏳ 지표 결과 수집 중'}
  else if(latestResult){badgeCls='released';badgeTxt='📢 지표 발표 결과'}
- else if(next?.isImminent){badgeCls='imminent';badgeTxt='⚠️ 지표 발표 임박'}
- else if(next?.tier==='CRITICAL'){badgeCls='critical';badgeTxt='🔥 초강력 경제지표'}
- else if(next){badgeCls='high';badgeTxt='🔴 주요 경제지표'}
+ else if(next?.isImminent){badgeCls='imminent';badgeTxt='⚠️ ★★★ 지표 발표 임박'}
+ else if(next?.tier==='CRITICAL'){badgeCls='critical';badgeTxt='🔥 ★★★ 초강력 경제지표'}
+ else if(next?.tier==='HIGH'){badgeCls='high';badgeTxt='🔴 ★★★ 강력 경제지표'}
+ else if(next){badgeCls='high';badgeTxt='🟡 ★★★ 주요 경제지표'}
 
  const pills=[];
  if(latestResult){
@@ -161,7 +162,7 @@ export function renderEconomicCalendarHTML(d){
  }else if(!latestResult&&d.error){
   pills.push(`<span class="econ-pill">경제지표 일정 일시 조회 지연 (${esc(d.error)})</span>`);
  }else if(!latestResult){
-  pills.push(`<span class="econ-pill">이번 주 남은 고영향 경제지표 일정이 없습니다</span>`);
+  pills.push(`<span class="econ-pill">이번 주 남은 미국 ★★★ 경제지표 일정이 없습니다</span>`);
  }
 
  const errNote=d.error?`<span class="econ-err">캘린더 조회 참고: ${esc(d.error)}${upcoming.length||recent.length?' (마지막 캐시 일정 표시 중)':''}</span>`:'';
@@ -174,7 +175,7 @@ export function renderEconomicCalendarHTML(d){
 
  const upcomingHtml=upcoming.length
   ?`<div class="econ-list">${upcoming.map(ev=>renderEventRow(ev,false)).join('')}</div>`
-  :`<div class="econ-empty">현재 표시할 예정 고영향 경제지표(미국 CPI·PCE·FOMC·고용 및 주요국 금리)가 없습니다.</div>`;
+  :`<div class="econ-empty">현재 표시할 예정 미국 ★★★ 주요 경제지표(FOMC·CPI·PCE·NFP·PPI·ISM·JOLTS·GDP·소매판매·실업수당 등)가 없습니다.</div>`;
 
  const olderRecent=recent.filter(ev=>!ev.isJustReleased);
  const recentHtml=olderRecent.length?`
@@ -191,7 +192,7 @@ export function renderEconomicCalendarHTML(d){
   </summary>
   <div class="econ-body">
    <div class="econ-top-row">
-    <p class="econ-desc">최근 2년 BTC 5분봉 백테스트에서 평상시 대비 변동성이 뚜렷하게 큰 <b>미국 고변동 지표 9종</b>(FOMC·CPI·NFP·미시간대·JOLTS·ISM·PPI·PCE)과 동시 세부 지표만 표시합니다. 변동성이 낮았던 중국·유로존 및 주택·ADP·실업수당·소매판매·GDP 단독 일정은 제외했습니다.</p>
+    <p class="econ-desc"><b>Investing.com 미국 중요도 ★★★(높은 변동성 예상)</b> 기준 주요 지표 일정과 최근 2년 BTC 5분봉 실측 변동성 등급(<b>S초강력 · A강력 · B주요</b>)을 함께 표시합니다. 중국·타국 지표와 별 1~2개 저중요 지표(주택·원유재고·주간 ADP 등)는 제외했습니다.</p>
     <div class="econ-actions"><small>${esc(d.source||'')} · ${kstTime(d.updatedAt)} KST</small><button type="button" class="outline-btn small" data-econ-refresh="1">↻ 갱신</button></div>
    </div>
    ${errNote}
