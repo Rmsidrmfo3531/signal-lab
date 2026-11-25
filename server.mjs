@@ -41,7 +41,7 @@ import {createTelegramNetworkRecovery,postTelegramIPv4} from './telegram_transpo
 import {translateNewsArticles,googleTranslate,googleTranslateStatus,createOpenAINewsTranslator} from './news_translation.mjs';
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {appendDominanceHistory,buildMarketDominanceReport,fetchGlobalDominance} from './market_dominance.mjs';
-import {buildEconomicCalendarReport,fetchEconomicCalendar} from './economic_calendar.mjs';
+import {buildEconomicCalendarReport,fetchEconomicCalendar,isReleaseWatchWindow,findNewlyReleasedEvents} from './economic_calendar.mjs';
 import {PublicReadBudget,budgetedPublicRead} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
@@ -1612,18 +1612,26 @@ function loadEconCache(){
 async function refreshEconomicCalendar({force=false}={}){
  loadEconCache();
  const now=Date.now();
- const ttl=force?60000:30*60000;
+ const watch=isReleaseWatchWindow(econCache.events,now);
+ const ttl=watch?12000:(force?20000:30*60000);
  if(econCache.events.length&&now-econCache.at<ttl)return econCache.events;
- if(!force&&econCache.error&&now-(econCache.failedAt||0)<10*60000)return econCache.events.length&&now-econCache.at<7*86400000?econCache.events:[];
+ if(!force&&!watch&&econCache.error&&now-(econCache.failedAt||0)<10*60000)return econCache.events.length&&now-econCache.at<7*86400000?econCache.events:[];
+ if(watch&&econCache.error&&now-(econCache.failedAt||0)<20000)return econCache.events;
  if(econCache.inflight)return econCache.inflight;
+ const prevEvents=econCache.events;
  econCache.inflight=(async()=>{
   try{
-   const events=await fetchEconomicCalendar();
+   const events=await fetchEconomicCalendar({now:Date.now()});
    econCache.events=events;
    econCache.at=Date.now();
    econCache.error='';
    econCache.failedAt=0;
    try{fs.writeFileSync(econCalendarFile+'.tmp',JSON.stringify({at:econCache.at,events}));fs.renameSync(econCalendarFile+'.tmp',econCalendarFile)}catch{}
+   const released=findNewlyReleasedEvents(prevEvents,events);
+   if(released.length){
+    console.log('[ECON RELEASE]',released.map(e=>`${e.titleKo}: 실제 ${e.actual}${e.forecast?` (예상 ${e.forecast})`:''}`).join(' | '));
+    try{send('economic-calendar',buildEconomicCalendarReport({events,now:Date.now(),updatedAt:econCache.at,error:''}))}catch{}
+   }
    return events;
   }catch(e){
    econCache.error=String(e.message||e);
@@ -3059,6 +3067,7 @@ server.listen(CONFIG.port,CONFIG.host,()=>{
  setTimeout(()=>void refreshMarketCaps().catch(()=>{}),15000);setInterval(()=>void refreshMarketCaps().catch(()=>{}),30*60000);
  setTimeout(()=>void refreshGlobalDominance().catch(()=>{}),25000).unref?.();setInterval(()=>void refreshGlobalDominance().catch(()=>{}),15*60000).unref?.();
  setTimeout(()=>void refreshEconomicCalendar().catch(()=>{}),30000).unref?.();setInterval(()=>void refreshEconomicCalendar().catch(()=>{}),30*60000).unref?.();
+ setInterval(()=>{if(isReleaseWatchWindow(econCache.events,Date.now()))void refreshEconomicCalendar().catch(()=>{})},15000).unref?.();
  setTimeout(()=>void runVenueOnlyScan(),CONFIG.venueOnly.startDelayMs);setInterval(()=>void runVenueOnlyScan(),CONFIG.venueOnly.intervalMs);
  // Retry market discovery quickly after an API failure rather than staying empty for 4 minutes.
  setInterval(()=>{if(!state.activeSymbols.length&&!state.researchSymbols.length&&!state.scanActive){state.marketLastRetry=Date.now();void runScan()}},20000);
