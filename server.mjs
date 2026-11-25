@@ -872,14 +872,14 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
   });
   const cid=((action==='BREAKEVEN_STOP'?'opbe':action==='TRAIL_STOP'?'optr':'opsl')+Date.now().toString(36)).slice(0,32);
   let placed,canceledBefore=false;
-  const staleOrderIds=[];
+  const staleOrderIds=[],canceledOrderIds=[];
   try{
    placed=await realBingxClient.placeOrder(stopPayload(cid));
   }catch(e){
    // BingX allows only one closePosition stop per position (110406): cancel prior stop(s) first, then place once.
    if(action==='TRAIL_STOP'&&oldStopIds.length&&e?.code==='VENUE_ERROR_110406'){
     canceledBefore=true;
-    for(const oid of oldStopIds){try{await realBingxClient.cancelOrder(p.venueSymbol,oid)}catch(ce){staleOrderIds.push(oid);console.warn('[REAL_TRAIL] pre-replace stop cancel',ce?.code||ce?.message)}}
+    for(const oid of oldStopIds){try{await realBingxClient.cancelOrder(p.venueSymbol,oid);canceledOrderIds.push(oid)}catch(ce){staleOrderIds.push(oid);console.warn('[REAL_TRAIL] pre-replace stop cancel',ce?.code||ce?.message)}}
     placed=await realBingxClient.placeOrder(stopPayload((cid.slice(0,30)+'r2').slice(0,32)));
    }else throw e;
   }
@@ -890,12 +890,12 @@ async function executeRealPositionAction({symbol,direction=null,action,stopPrice
   if(action==='TRAIL_STOP'&&!canceledBefore&&oldStopIds.length){
    for(const oid of oldStopIds){
     if(oid===String(newOrderId??''))continue;
-    try{await realBingxClient.cancelOrder(p.venueSymbol,oid)}catch(e){staleOrderIds.push(oid);console.warn('[REAL_TRAIL] old stop cancel',e?.code||e?.message)}
+    try{await realBingxClient.cancelOrder(p.venueSymbol,oid);canceledOrderIds.push(oid)}catch(e){staleOrderIds.push(oid);console.warn('[REAL_TRAIL] old stop cancel',e?.code||e?.message)}
    }
   }
   const staleOrderId=staleOrderIds[0]??null;
   const label=action==='BREAKEVEN_STOP'?'본전 스탑(수수료 포함)':action==='TRAIL_STOP'?'트레일링 잠금 스탑':`손절 스탑${Number(lossRoePct)>0?` (-${Number(lossRoePct)}% ROE)`:''}`;
-  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),orderId:newOrderId!=null?String(newOrderId):null,venueSymbol:p.venueSymbol,...(staleOrderId?{staleOrderId,staleOrderIds}:{}),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
+  return {ok:true,action,symbol:displaySymbol(p.symbol),direction:p.direction,stopPrice:Number(targetStop),orderId:newOrderId!=null?String(newOrderId):null,venueSymbol:p.venueSymbol,...(canceledOrderIds.length?{canceledOrderIds}:{}),...(staleOrderId?{staleOrderId,staleOrderIds}:{}),summary:`${displaySymbol(p.symbol)} ${p.direction==='LONG'?'롱':'숏'} ${label} 설정 (${targetStop} USDT)`};
  }
  const partPct=Number.isFinite(Number(closePct))&&Number(closePct)>0&&Number(closePct)<100?Math.round(Number(closePct)):50;
  const results=[];

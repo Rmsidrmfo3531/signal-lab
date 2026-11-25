@@ -339,7 +339,8 @@ export class RealTrailingManager{
         const first=st.lockStopRoe===null;st.lockRetryAt=0;
         const staleList=[...(Array.isArray(res.staleOrderIds)?res.staleOrderIds:[]),...(res.staleOrderId!=null?[res.staleOrderId]:[])].map(String);
         if(staleList.length)st.staleStopIds=[...new Set([...(st.staleStopIds||[]),...staleList])].slice(-10);
-        if(st.breakevenOrderId&&!staleList.includes(String(st.breakevenOrderId)))st.breakevenOrderId=null;
+        const canceledList=Array.isArray(res.canceledOrderIds)?res.canceledOrderIds.map(String):[];
+        if(st.breakevenOrderId&&canceledList.includes(String(st.breakevenOrderId)))st.breakevenOrderId=null;
         st.lockStopOrderId=res.orderId!=null?String(res.orderId):null;
         st.lockStopPrice=Number(res.stopPrice)||stopPrice;st.lockStopRoe=stopRoe;
         if(first){try{await this.sendText(`${copyPrefix}🛡️ [실계좌 트레일링] ${disp} ${sideKo(dir)} 거래소 잠금 스탑 설정 ${st.lockStopPrice} (순 ROE +${stopRoe.toFixed(1)}% 지점, 서버가 꺼져도 유지)`)}catch{}}
