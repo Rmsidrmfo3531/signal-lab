@@ -144,6 +144,8 @@ const G={
  HTTP_429:['venue','요청 과다',()=>'거래소 요청 한도에 닿아 잠시 쉬었다가 다시 봅니다.'],
  NETWORK_UNREACHABLE:['venue','연결 실패',()=>'거래소에 연결하지 못했습니다.'],
  POSITION_CHECK_FAILED:['venue','포지션 확인 실패',()=>'거래소 포지션 목록을 읽지 못했습니다.'],
+ BAD_POSITIONS_RESPONSE:['venue','포지션 응답 오류',()=>'거래소 전체 포지션 목록 응답이 비정상이라 이번 확인을 건너뜁니다.'],
+ POSITION_BULK_MISS:['venue','전체 목록 일시 누락',()=>'거래소 전체 포지션 목록에서 빠졌지만 종목별 재확인에서 보유 중으로 확인돼 계속 관리합니다.'],
  VENUE_ERROR_110401:['venue','주문 수량 초과',()=>'청산·목표 주문 수량이 남은 포지션보다 커서 거래소가 거부했습니다.'],
  VENUE_ERROR_80016:['venue','주문 없음',()=>'취소·조회하려는 주문이 거래소에 없습니다.'],
  // 추매·청산 — scale-in decisions and close reasons
@@ -174,6 +176,7 @@ const G={
  EMERGENCY_ROE_STOP:['position','비상 손절',S=>`손실이 −${n(S.emergencyStopRoePct)}% ROE에 닿아 비상 청산했습니다.`],
  EARLY_TAKE_PROFIT:['position','조기 익절',()=>'비용을 넘는 수익에서 일찍 이익을 확정했습니다.'],
  EXTERNAL:['position','외부 청산',()=>'거래소에서 직접(수동·강제) 닫힌 포지션입니다.'],
+ POSITION_RECOVERED:['position','포지션 복구',()=>'오인 종료(EXTERNAL) 처리됐지만 거래소에 실제로 남아 있는 테스트넷 포지션을 다시 원장으로 복구했습니다.'],
  MANUAL:['position','수동 청산',()=>'화면 버튼으로 직접 청산했습니다.'],
  // 카피식 추매 TRADER_LADDER (user 2026-11-24, scalp_ladder.mjs): exits and the strong-zone add reasons.
  LADDER_TAKE_PROFIT:['position','평단 익절',S=>`평단에서 수수료·비용을 뺀 +${n(S.ladderTpNetPct)}% 자리에 닿아 전량 익절했습니다.`],
@@ -192,7 +195,8 @@ export const REASON_ALIASES=Object.freeze({
  GATE_ERROR:'GATE_CLOSED',BALANCE_STALE:'NO_BALANCE',BALANCE_UNAVAILABLE:'NO_BALANCE',INVALID_BUDGET_METRIC:'TESTNET_BUDGET_UNAVAILABLE',
  INVALID_TESTNET_BUDGET:'TESTNET_BUDGET_UNAVAILABLE',READ_FAILED:'TESTNET_BUDGET_UNAVAILABLE',BTC_PUMP_GUARD:'BTC_DUMP_GUARD',LONG_SQUEEZE_GUARD:'SHORT_SQUEEZE_GUARD',
  UNKNOWN:'ENTRY_OUTCOME_UNKNOWN',ENTRY_FILL_UNCONFIRMED:'ENTRY_OUTCOME_UNKNOWN',LEVERAGE_NOT_CONFIRMED:'MARGIN_SETUP_FAILED',CROSS_NOT_CONFIRMED:'MARGIN_SETUP_FAILED',
- VENUE_ERROR_101429:'VENUE_POSITION_LIMIT',VENUE_ERROR_100410:'HTTP_429',NO_PROTECTIVE_STOP:'NO_STOP',DAILY_LOSS_CIRCUIT_BREAKER:'DAILY_LOSS_LIMIT'});
+ VENUE_ERROR_101429:'VENUE_POSITION_LIMIT',VENUE_ERROR_100410:'HTTP_429',NO_PROTECTIVE_STOP:'NO_STOP',DAILY_LOSS_CIRCUIT_BREAKER:'DAILY_LOSS_LIMIT',
+ FALSE_EXTERNAL_RECOVERED:'POSITION_RECOVERED'});
 
 /** The 8 items of scoreScalpSetup (scalp_reversal.mjs; max = SCALP_SCORE_WEIGHTS) and the orderflow OI/CVD bonuses. */
 export const SCORE_ITEMS=Object.freeze([
