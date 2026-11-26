@@ -519,9 +519,11 @@ function scalpPositionDetails(p,now){
  const position={size:p.size,entryPrice:p.avg,...(snapshot&&snapshot.size===p.size&&snapshot.entryPrice===p.avg?snapshot:{})};
  const view=livePositionView({...p,venue:'BINGX',firstEntryPrice:first,position,
   quantity:{total:p.size,unit:'BASE_ASSET'}},{price:ticker,now});
- const a=p.scaleIn,repeat=a?.version===SCALP_REPEAT_SCALE_IN.version;
- return {...view,tickSize:p.tickSize,currentPriceSource:view.currentPriceSource==='VENUE_BOOK'?'VENUE_TICKER':view.currentPriceSource,
-  adds:{filled:repeat?a.count??0:a?.fillQty>0?1:0,max:a?1:0,repeat}};
+const a=p.scaleIn,repeat=a?.version===SCALP_REPEAT_SCALE_IN.version;
+ const adds=isLadder(p)
+  ?{filled:Math.max(0,(Number(p.ladder.filled)||1)-1),max:Math.max(0,(Array.isArray(p.ladder.units)?p.ladder.units.length:1)-1),repeat:false}
+  :{filled:repeat?a.count??0:a?.fillQty>0?1:0,max:a?1:0,repeat};
+ return {...view,tickSize:p.tickSize,currentPriceSource:view.currentPriceSource==='VENUE_BOOK'?'VENUE_TICKER':view.currentPriceSource,adds};
 }
 
 export function scalpAddCount(x){
