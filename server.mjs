@@ -42,6 +42,7 @@ import {translateNewsArticles,googleTranslate,googleTranslateStatus,createOpenAI
 import {buildMarketCommentary} from './market_commentary.mjs';
 import {appendDominanceHistory,buildMarketDominanceReport,fetchGlobalDominance} from './market_dominance.mjs';
 import {buildEconomicCalendarReport,fetchEconomicCalendar,isReleaseWatchWindow,findNewlyReleasedEvents} from './economic_calendar.mjs';
+import {ExternalSignalInbox,parseExternalSignalText,verifyWebhookSecret,formatExternalSignalNotice,formatExternalSignalTelegram} from './external_signal_inbox.mjs';
 import {PublicReadBudget,budgetedPublicRead} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
@@ -1642,6 +1643,29 @@ async function refreshEconomicCalendar({force=false}={}){
  })();
  return econCache.inflight;
 }
+// External signal alert inbox & manual-order helper (NEVER executes orders automatically).
+const externalWebhookSecret=String(process.env.EXTERNAL_SIGNAL_WEBHOOK_SECRET||'').trim();
+const externalSignals=new ExternalSignalInbox({filePath:path.join(storage.dir,'external-signals.json')});
+function externalSignalsSnapshot(){return externalSignals.snapshot({webhookConfigured:Boolean(externalWebhookSecret)})}
+function notifyExternalSignal(item,{notifyTelegram=true}={}){
+ if(!item)return;
+ const prefill={
+  symbol:item.symbol,
+  side:item.side,
+  orderType:item.orderType,
+  limitPrice:item.entryPrice,
+  tpPrice:item.tpPrice,
+  slPrice:item.slPrice,
+  leverage:item.leverage,
+  marginMode:item.marginMode,
+  note:`🔔 [${item.source}] ${item.symbol} ${item.side==='LONG'?'롱':'숏'} 수동 확인`,
+ };
+ try{send('external-signal',{item,inbox:externalSignalsSnapshot()})}catch{}
+ try{send('live-notice',{type:'EXTERNAL_SIGNAL',hash:'#real',symbol:item.symbol,text:formatExternalSignalNotice(item),prefill,at:item.receivedAt})}catch{}
+ if(notifyTelegram){
+  try{void sendTradeTelegram(formatExternalSignalTelegram(item))}catch{}
+ }
+}
 async function refreshVenueOnlyList(){
  if(!CONFIG.venueOnly.enabled||!state.activeSymbols.length)return;
  if(Date.now()-state.venueOnlyInfo.at<(state.venueOnlyInfo.error?60000:10*60000))return;
@@ -2294,6 +2318,26 @@ function bodyJson(req){return new Promise((resolve,reject)=>{
  req.on('error',()=>settle(reject,clientError('Request aborted',400)));
  req.on('close',()=>settle(reject,clientError('Request aborted',400)));
 })}
+function bodyTextOrJson(req){return new Promise((resolve,reject)=>{
+ const chunks=[];let totalBytes=0,settled=false;
+ const timer=setTimeout(()=>{req.pause();settle(reject,clientError('Request body timeout',408))},15000);
+ timer.unref?.();
+ const settle=(fn,value)=>{if(settled)return;settled=true;clearTimeout(timer);fn(value)};
+ req.on('data',chunk=>{if(settled)return;const buf=Buffer.isBuffer(chunk)?chunk:Buffer.from(String(chunk));totalBytes+=buf.length;if(totalBytes>32768){req.pause();settle(reject,clientError('Body too large',413));return}chunks.push(buf)});
+ req.on('end',()=>{
+  const raw=Buffer.concat(chunks,totalBytes).toString('utf8').trim();
+  if(!raw)return settle(reject,clientError('Empty request body',400));
+  if(raw.startsWith('{')){
+   try{
+    const parsed=JSON.parse(raw);
+    if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))return settle(resolve,parsed);
+   }catch{}
+  }
+  settle(resolve,{text:raw});
+ });
+ req.on('error',()=>settle(reject,clientError('Request aborted',400)));
+ req.on('close',()=>settle(reject,clientError('Request aborted',400)));
+})}
 const server=http.createServer(async(req,res)=>{
  try{
   let url;
@@ -2310,8 +2354,9 @@ const server=http.createServer(async(req,res)=>{
     res.writeHead(429,{'Retry-After':String(Math.max(1,Math.ceil(lock.retryAfterMs/1000))),'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS});
     res.end(JSON.stringify({error:'AUTH_RATE_LIMITED',retryAfterMs:lock.retryAfterMs}));return;
    }
+   const webhookAuthed=pathname==='/api/external-signals/webhook'&&req.method==='POST'&&Boolean(externalWebhookSecret)&&verifyWebhookSecret(req,url,externalWebhookSecret);
    const activePassword=lanMode?lanPassword:proxyPassword;
-   const ok=authorizedRequest(req.socket.remoteAddress,req.headers.authorization,activePassword,{headers:req.headers,allowedTailscaleUsers,requireProxyAuth});
+   const ok=webhookAuthed||authorizedRequest(req.socket.remoteAddress,req.headers.authorization,activePassword,{headers:req.headers,allowedTailscaleUsers,requireProxyAuth});
    if(!ok){
     authLimiter.recordFailure(authKey);
     res.writeHead(401,{'WWW-Authenticate':'Basic realm="Signal Lab mobile - username signal", charset="UTF-8"','Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store',...SECURITY_HEADERS});
@@ -2911,6 +2956,45 @@ const server=http.createServer(async(req,res)=>{
     updatedAt:econCache.at||Date.now(),
     error:econCache.error,
    }));
+  }
+  // External signal alert inbox & manual-order helper (NEVER places automatic orders).
+  if(pathname==='/api/external-signals'&&req.method==='GET'){
+   return response(res,200,externalSignalsSnapshot());
+  }
+  if(pathname==='/api/external-signals/parse'&&req.method==='POST'){
+   const body=await bodyJson(req);
+   const parsed=parseExternalSignalText(body?.text??body,{defaultSource:body?.source||'직접 붙여넣기'});
+   return response(res,200,{ok:true,parsed});
+  }
+  if(pathname==='/api/external-signals/ingest'&&req.method==='POST'){
+   const body=await bodyJson(req);
+   const r=externalSignals.ingest(body?.text??body,{source:body?.source,channel:'manual'});
+   if(!r.ok)return response(res,400,{ok:false,error:r.error||'INVALID_SIGNAL',parsed:r.parsed});
+   if(!r.duplicate)notifyExternalSignal(r.item,{notifyTelegram:body?.notifyTelegram!==false});
+   return response(res,r.duplicate?200:201,{ok:true,duplicate:r.duplicate,item:r.item,inbox:externalSignalsSnapshot()});
+  }
+  if(pathname==='/api/external-signals/webhook'&&req.method==='POST'){
+   if(!externalWebhookSecret)return response(res,403,{ok:false,error:'WEBHOOK_NOT_CONFIGURED',message:'.env에 EXTERNAL_SIGNAL_WEBHOOK_SECRET을 설정하면 공식 웹훅 수신이 활성화됩니다.'});
+   if(!verifyWebhookSecret(req,url,externalWebhookSecret))return response(res,401,{ok:false,error:'INVALID_WEBHOOK_SECRET',message:'웹훅 시크릿이 일치하지 않습니다.'});
+   const body=await bodyTextOrJson(req);
+   const r=externalSignals.ingest(body,{source:body?.source||'공식 웹훅',channel:'webhook'});
+   if(!r.ok)return response(res,400,{ok:false,error:r.error||'INVALID_SIGNAL',parsed:r.parsed});
+   if(!r.duplicate)notifyExternalSignal(r.item,{notifyTelegram:true});
+   return response(res,r.duplicate?200:201,{ok:true,duplicate:r.duplicate,item:r.item});
+  }
+  if(pathname==='/api/external-signals/status'&&req.method==='POST'){
+   const body=await bodyJson(req);
+   if(body?.clear===true){
+    externalSignals.clear();
+    const inbox=externalSignalsSnapshot();
+    try{send('external-signal',{inbox})}catch{}
+    return response(res,200,inbox);
+   }
+   const item=externalSignals.setStatus(body?.id,body?.status);
+   if(!item)return response(res,404,{ok:false,error:'NOT_FOUND'});
+   const inbox=externalSignalsSnapshot();
+   try{send('external-signal',{item,inbox})}catch{}
+   return response(res,200,{ok:true,item,inbox});
   }
   // One article's main text (fetched when opened, from the RSS sources' own sites) in Korean.
   if(pathname==='/api/news/detail'&&req.method==='GET'){
