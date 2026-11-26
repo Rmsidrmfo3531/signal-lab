@@ -46,6 +46,7 @@ export function scalpEventText(e){
  // Manual first (user 2026-11-25, real account): a manual position shares the lane / our own size is unknown.
  if(e.type==='MANUAL_FIRST')return `🛡 ${head} ${side(e)} 수동 포지션 우선 — 단타는 자기 수량만 관리${e.detail?` (${e.detail})`:''}`;
  if(e.type==='MANUAL_PROTECT_HOLD')return `🛡 ${head} ${side(e)} 단타 몫 불명 — 수동 보호로 청산 보류`;
+ if(e.type==='POSITION_RECOVERED')return `🔄 ${head} ${side(e)} 거래소 포지션 복구 — 오인 종료(EXTERNAL) 해제 · 수량 ${fmt(e.qty)} · 평단 ${fmt(e.entry)}`;
  if(e.type==='STOP_TO_BREAKEVEN')return `🎯 ${head} ${side(e)} 1차 목표 도달 · 손절을 진입가 ${fmt(e.price)}로 올림`;
  if(e.type==='SCALE_IN_FILLED'&&e.qty>0){
   const avgLine=Number(e.prevAvg)>0&&Number(e.avg)>0?`\n평단 ${fmt(e.prevAvg)} → ${fmt(e.avg)}${Number(e.avgImprovePct)>0?` (${Number(e.avgImprovePct).toFixed(2)}% 개선)`:''}`:'';

@@ -586,6 +586,77 @@ if(LIVE.mode==='TESTNET')testnetBudget.register('signal',withTestnetResetRisk(li
 if(LIVE.mode!=='LIVE')testnetBudget.register('scalp',withTestnetResetRisk(scalpExec.budgetSource(),testnetHistoryReset,'scalp'));
 if(hasTestnetBingx)setInterval(()=>{void testnetAccountFunds().catch(()=>{})},TESTNET_BALANCE_REFRESH_MS).unref?.();
 if(SCALP_EXEC.mode==='TESTNET'&&scalpClient)setInterval(()=>{void scalpExec.tick().catch(e=>console.error('[SCALP]',e.message))},5000).unref?.();
+// Testnet venue position mirror: compares actual BingX Demo positions against server ledgers so orphaned/manual
+// positions (e.g. after a transient bulk-read miss or manual Demo trade) are always visible and closeable on #live.
+const testnetBingxClient=LIVE.mode!=='LIVE'?(scalpClient?.mode==='TESTNET'?scalpClient:signalClients.BINGX?.mode==='TESTNET'?signalClients.BINGX:null):null;
+const testnetVenuePositionsReader=testnetBingxClient?createVenuePositionsReader({
+ read:()=>testnetBingxClient.positions(),
+ markOf:vs=>Number(scalpTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null,
+ ttlMs:3000,waitMs:2500,
+}):null;
+async function readTestnetVenuePositions(){
+ if(!testnetVenuePositionsReader)return null;
+ const snap=await testnetVenuePositionsReader.snapshot([],[]);
+ const rows=Array.isArray(snap.venuePositions)?snap.venuePositions:null;
+ if(!rows)return {venuePositions:null,venuePositionsAt:snap.venuePositionsAt,venuePositionsError:snap.venuePositionsError,untrackedPositions:[],missingOnVenue:[]};
+ const openScalp=(scalpExec?.store?.open||[]).filter(p=>p&&p.status!=='CLOSED');
+ const openSignal=(live?.store?.records||[]).filter(r=>r&&r.mode==='TESTNET'&&['SUBMITTING','OPEN','UNKNOWN'].includes(r.status)&&r.test!==true);
+ const openCopy=COPY.mode==='TESTNET'?Object.values(copyTrader?.store?.positions||{}).filter(p=>p&&p.status==='OPEN'):[];
+ const tagged=rows.map(r=>{
+  const sc=r.direction?openScalp.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
+  if(sc)return {...r,origin:'scalp',...(sc.symbol?{symbol:sc.symbol}:{})};
+  const sg=r.direction?openSignal.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
+  if(sg)return {...r,origin:'signal',...(sg.symbol?{symbol:sg.symbol}:{})};
+  const cp=r.direction?openCopy.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
+  if(cp)return {...r,origin:'copy',...(cp.symbol?{symbol:cp.symbol}:{})};
+  return {...r,origin:'untracked'};
+ });
+ const untrackedPositions=tagged.filter(r=>r.origin==='untracked');
+ const missingOnVenue=[
+  ...openScalp.filter(p=>p.status==='OPEN'&&!tagged.some(r=>r.venueSymbol===p.venueSymbol&&r.direction===p.direction)).map(p=>({strategy:'scalp',symbol:p.symbol,venueSymbol:p.venueSymbol,direction:p.direction,size:p.size})),
+  ...openSignal.filter(p=>p.status==='OPEN'&&!tagged.some(r=>r.venueSymbol===p.venueSymbol&&r.direction===p.direction)).map(p=>({strategy:'signal',symbol:p.symbol,venueSymbol:p.venueSymbol,direction:p.direction,size:p.position?.size??p.quantity?.total??null})),
+ ];
+ return {venuePositions:tagged,venuePositionsAt:snap.venuePositionsAt,venuePositionsError:snap.venuePositionsError,untrackedPositions,missingOnVenue};
+}
+async function closeUntrackedTestnetPosition(key){
+ if(LIVE.mode==='LIVE'||!testnetBingxClient||testnetBingxClient.mode!=='TESTNET')return {status:409,ok:false,error:'TESTNET_CLOSE_ONLY'};
+ const [venueSymbol,direction]=String(key||'').split('|');
+ if(!venueSymbol||!/^[A-Z0-9-]{3,32}$/.test(venueSymbol)||!['LONG','SHORT'].includes(direction))return {status:400,ok:false,error:'INVALID_POSITION'};
+ const mode=await readPositionMode(testnetBingxClient);
+ if(!mode.ok)return {status:502,ok:false,error:mode.reason||'POSITION_MODE_UNKNOWN'};
+ const hedge=mode.hedge===true;
+ const readSide=async()=>{
+  const raw=await testnetBingxClient.positions(venueSymbol);
+  const rows=venueRows(raw);
+  if(!rows)throw Error('POSITION_CHECK_FAILED');
+  const norm=rows.map(r=>normalizeVenuePosition(r)).filter(Boolean);
+  return norm.find(r=>r.venueSymbol===venueSymbol&&r.direction===direction)||null;
+ };
+ let current;
+ try{current=await readSide()}catch(e){return {status:502,ok:false,error:e?.code||e?.message||'POSITION_CHECK_FAILED'}}
+ if(!current||!(current.size>0))return {status:200,ok:true,alreadyFlat:true};
+ let cleanupPending=false;
+ try{
+  const oo=await testnetBingxClient.openOrders(venueSymbol);
+  const orders=Array.isArray(oo?.orders)?oo.orders:Array.isArray(oo)?oo:[];
+  for(const o of orders){
+   const side=String(o?.positionSide||'').toUpperCase();
+   if(hedge&&side&&side!==direction)continue;
+   const oid=o?.orderId??o?.orderID;
+   if(oid)try{await testnetBingxClient.cancelOrder(venueSymbol,oid)}catch{cleanupPending=true}
+  }
+ }catch{cleanupPending=true}
+ try{
+  const closeSide=direction==='LONG'?'SELL':'BUY';
+  await testnetBingxClient.placeOrder({symbol:venueSymbol,side:closeSide,type:'MARKET',quantity:String(current.size),...sideParams({hedge,direction,closing:true})});
+ }catch(e){return {status:502,ok:false,error:e?.code||e?.message||'CLOSE_ORDER_FAILED'}}
+ await new Promise(r=>setTimeout(r,800));
+ try{
+  const after=await readSide();
+  if(after&&after.size>0)return {status:502,ok:false,error:'CLOSE_UNCONFIRMED',left:after.size};
+ }catch{return {status:502,ok:false,error:'CLOSE_UNCONFIRMED'}}
+ return {status:200,ok:true,closed:true,symbol:current.symbol,venueSymbol,direction,qty:current.size,cleanupPending};
+}
 // Opt-in real-money reversal scalp (default OFF; requires SCALP_LIVE_MODE=LIVE + SCALP_LIVE_CONFIRM=REAL_MONEY_SCALP).
 // Runs in a completely separate executor/ledger from testnet scalpExec; starts OFF until first armed from #real,
 // then automatically restores ON across updates & restarts unless manually disarmed or blocked by a safety stop.
@@ -2764,10 +2835,14 @@ const server=http.createServer(async(req,res)=>{
   // 실매매 screen (read only): positions with prices, closed trades with realized results, summary.
   if(pathname==='/api/live/overview'&&req.method==='GET'){
    if(hasTestnetBingx)await refreshTestnetBudgetBalance();
-   const [scalp,rawBalance]=await Promise.all([SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?scalpExec.liveStatus():null,liveBalanceSnapshot()]);
+   const [scalp,rawBalance,tnVenue]=await Promise.all([
+    SCALP_EXEC.mode==='TESTNET'||scalpExec.store.closed.length||scalpExec.store.open.length?scalpExec.liveStatus():null,
+    liveBalanceSnapshot(),
+    LIVE.mode!=='LIVE'?readTestnetVenuePositions():null,
+   ]);
    // One testnet screen (user 2026-11-17): one switch, the shared budget, totals over both strategies. Not for LIVE.
    const testnet=LIVE.mode==='LIVE'?null:(()=>{const eq=Number(scalp?.funds?.equity)>0?Number(scalp.funds.equity):Number(rawBalance?.usd)>0?Math.min(Number(rawBalance.usd),LIVE.balanceCapUSD>0?LIVE.balanceCapUSD:Infinity):null;
-    return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY?'TESTNET':null,scalpStats:scalp?.stats??null})}})();
+    return {...testnetSwitch({live,scalp:scalpExec}),budget:testnetBudget.status(eq??undefined),stats:testnetStats({records:live.store.records,mode:LIVE.mode==='TESTNET'&&!TESTNET_SCALP_ONLY?'TESTNET':null,scalpStats:scalp?.stats??null}),...(tnVenue||{})}})();
    const b=testnet?.budget,balance=hasTestnetBingx&&rawBalance?.venue==='BINGX'&&b?{...rawBalance,usd:b.balanceError?null:b.accountEquityUSD,at:b.balanceAt,error:b.balanceError}:rawBalance;
    const pumpAlerts=testnet?{...pumpBook.summary(),scalpTrades:scalp?.stats?.byTrigger?.PUMP_ALERT??null}:null;
    let liveReadiness=null;if(testnet)try{liveReadiness=readyNotifier.status(readySummary())}catch{}
@@ -2779,6 +2854,11 @@ const server=http.createServer(async(req,res)=>{
     if(body?.confirm!=='CLOSE_TESTNET')return response(res,400,{error:'CONFIRM_REQUIRED'});
     if(updateJob.active||live.updating||shuttingDown)return response(res,409,{error:'UPDATING'});
     if(LIVE.mode==='LIVE'||LIVE.mode!=='TESTNET'&&SCALP_EXEC.mode!=='TESTNET')return response(res,409,{error:'TESTNET_CLOSE_ONLY'});
+    if(body.strategy==='venue'){
+     const {status,...result}=await closeUntrackedTestnetPosition(body.key);
+     if(result.ok)reportsDirty=true;
+     return response(res,status??200,result);
+    }
     const executor=body.strategy==='scalp'?scalpExec:body.strategy==='signal'?live:null;
     if(!executor||typeof body.key!=='string'||!body.key.trim()||body.key.length>256)return response(res,400,{error:'INVALID_POSITION'});
     const {status,...result}=await executor.closeTestnetPosition(body.key);
