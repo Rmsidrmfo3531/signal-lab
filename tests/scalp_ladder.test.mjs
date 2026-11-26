@@ -183,7 +183,7 @@ test('entry: same gates, first ladder step (2 units), whole ladder reserved; the
  assert.equal(pos.ladderView.step,1);assert.equal(pos.ladderView.of,5);
  assert.ok(Math.abs(pos.ladderView.nextAdd.price-p.avg*.985)<1e-6);
  const card=scalpPositionCardHTML({...pos,kind:'MOVE_REVERSAL',scalpScore:{score:87,grade:'A+'}});
- assert.match(card,/paper-long">롱/);assert.match(card,/tn-scalp-score"[^>]*>87점 A\+급/);
+ assert.match(card,/paper-long">롱/);assert.match(card,/tn-scalp-score grade-a-plus"[^>]*>87점 A\+급/);
  assert.match(scalpPositionCardHTML({...pos,direction:'SHORT'}),/paper-short">숏/);
  assert.match(card,/다음 추매<b>[\d.]+<\/b>/);assert.match(card,/익절/);
  assert.doesNotMatch(card,/자동 손절|마지막 선|예약 위험|보유\s*중|<span>보유<|급변|카피식 추매|1\/5 단계/);

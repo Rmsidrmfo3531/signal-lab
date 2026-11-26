@@ -819,7 +819,9 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
  const lv=p.management==='TRADER_LADDER'?p.ladderView??null:null;
  const nextAdd=lv?.nextAdd?.price;
  const showMult=!lv&&Number.isFinite(Number(p.scalpScore?.sizeMult))&&Math.abs(Number(p.scalpScore.sizeMult)-1)>1e-4;
- const scoreBadge=fin(p.scalpScore?.score)?`<span class="vp-badge tn-scalp-score" title="${esc(p.scalpScore.summary||'')}">${esc(p.scalpScore.score)}점${p.scalpScore.grade?` ${esc(p.scalpScore.grade)}급`:''}${showMult?` · ${esc(p.scalpScore.sizeMult)}x`:''}</span>`:'';
+ const grade=p.scalpScore?.grade;
+ const gradeClass=['S','A+','A','B+','B'].includes(grade)?' grade-'+grade.toLowerCase().replace('+','-plus'):'';
+ const scoreBadge=fin(p.scalpScore?.score)?`<span class="vp-badge tn-scalp-score${gradeClass}" title="${esc(p.scalpScore.summary||'')}">${esc(p.scalpScore.score)}점${p.scalpScore.grade?` ${esc(p.scalpScore.grade)}급`:''}${showMult?` · ${esc(p.scalpScore.sizeMult)}x`:''}</span>`:'';
  const ofJump=p.symbol?`<button type="button" class="vp-act-btn" data-open-orderflow="${esc(p.symbol)}" title="이 종목의 호가·CVD·청산맵(FireCharts 호가 히트맵·금액대별 새우~고래 CVD) 보기">수급/CVD</button>`:'';
  const status=p.status&&p.status!=='OPEN'?p.status:null;
  return `<article class="paper-trade live-position tn-scalp-card${status?' live-warn':''}">
