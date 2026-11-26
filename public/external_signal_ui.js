@@ -202,10 +202,27 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
    return true;
   };
 
+  const syncNavBadge=()=>{
+   const navBadge=document.getElementById('navExtBadge');
+   if(!navBadge)return;
+   const unread=Number(inbox?.unreadCount)||0;
+   if(unread>0){
+    navBadge.textContent=`대기 ${unread}`;
+    navBadge.className='navright tone-warn';
+   }else if(inbox?.webhookConfigured){
+    navBadge.textContent='웹훅';
+    navBadge.className='navright tone-pos';
+   }else{
+    navBadge.textContent='수동';
+    navBadge.className='navright';
+   }
+  };
+
   const syncDom=()=>{
    if(!mounted){
     host.innerHTML=renderExternalSignalBarHTML(inbox,{parsed:lastParsed,webhookOrigin:location.origin});
     mounted=true;
+    syncNavBadge();
     return;
    }
    const sumEl=host.querySelector('[data-ext-summary-slot]');
@@ -220,6 +237,7 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
     whEl.classList.toggle('on',Boolean(inbox.webhookConfigured));
     whEl.classList.toggle('off',!inbox.webhookConfigured);
    }
+   syncNavBadge();
   };
 
   const updatePreview=parsed=>{

@@ -128,7 +128,15 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
     const r=await fetch('/api/market-dominance'+(force?'?force=1':''),{cache:'no-store',signal:AbortSignal.timeout(15000)});
     if(!r.ok)return;
     const data=await r.json().catch(()=>null);
-    if(data)host.innerHTML=renderDominanceHTML(data);
+    if(data){
+     host.innerHTML=renderDominanceHTML(data);
+     const navBadge=document.getElementById('navDomBadge');
+     if(navBadge){
+      const btcPct=data.global?.btcDomPct;
+      navBadge.textContent=btcPct!=null?`${Number(btcPct).toFixed(1)}%`:(data.tone==='alt'||data.tone==='alt-strong'?'알트↑':data.tone==='btc'||data.tone==='btc-strong'?'BTC↑':'중립');
+      navBadge.className='navright'+(data.tone==='alt'||data.tone==='alt-strong'?' tone-pos':data.tone==='btc'||data.tone==='btc-strong'?' tone-warn':'');
+     }
+    }
    }catch{}
    finally{
     busy=false;

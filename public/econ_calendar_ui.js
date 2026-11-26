@@ -211,11 +211,30 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
   let clockOffsetMs=0;
   let lastFastFetchAt=0;
 
+  const syncNavBadge=(data,now=Date.now()+clockOffsetMs)=>{
+   const navBadge=document.getElementById('navEconBadge');
+   if(!navBadge||!data)return;
+   const just=Array.isArray(data.justReleased)?data.justReleased:[];
+   const hasConflict=just.some(e=>e.conflict?.detected);
+   const next=data.nextEvent||null;
+   if(hasConflict){navBadge.textContent='반전주의';navBadge.className='navright tone-neg';return}
+   if(just.length){navBadge.textContent='발표됨';navBadge.className='navright tone-pos';return}
+   if(next?.isAwaitingResult){navBadge.textContent='수집중';navBadge.className='navright tone-warn';return}
+   if(next&&Number(next.at)-now<=3600000&&Number(next.at)-now>0){
+    navBadge.textContent=formatClientCountdown(next.at,now,{hasActual:false,expectsActual:next.expectsActual!==false});
+    navBadge.className='navright tone-neg';return;
+   }
+   const cnt=Array.isArray(data.upcoming)?data.upcoming.length:0;
+   navBadge.textContent=cnt>0?`${cnt}건`:'★★★';
+   navBadge.className='navright'+(next?.isImminent?' tone-neg':'');
+  };
+
   const applyData=data=>{
    if(!data)return;
    lastData=data;
    if(Number.isFinite(Number(data.serverNow)))clockOffsetMs=Number(data.serverNow)-Date.now();
    host.innerHTML=renderEconomicCalendarHTML(data);
+   syncNavBadge(data);
   };
 
   const load=async(force=false)=>{
@@ -246,6 +265,7 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
     const diffMs=at-now;
     if(expects&&diffMs<=15000&&diffMs>=-15*60000)needsFastRefresh=true;
    }
+   syncNavBadge(lastData,now);
    if(needsFastRefresh&&now-lastFastFetchAt>=15000){
     lastFastFetchAt=now;
     void load(false);

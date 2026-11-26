@@ -7,13 +7,24 @@ const workspaceRoutes = Object.freeze({
   real: '실계좌 · 카피 매매',
   live: '테스트넷 · 신호 전략',
   orderflow: '호가·CVD·청산맵', // renamed from '수급 · 청산맵' (user 2026-11-25 09:51); the #orderflow hash stays
-  news: '시황 · 뉴스'
+  news: '시황 · 뉴스',
+  dominance: '도미넌스 · 시장 주도권',
+  calendar: '미국 ★★★ 경제지표',
+  signals: '외부 신호 · 수동 매매'
 });
 const defaultRoute = 'real';
 // Old bookmarks of the removed 자동 모의매매 page open the 테스트넷 page.
 // Every other old or unknown hash (#overview, #alerts, #chartPanel, #venues, #scanner, #journal, ...) opens 실계좌.
 // #firechart, #cvd and #liquidation also open 호가·CVD·청산맵 (its features' names); #orderflow keeps working.
-const workspaceAliases = Object.freeze({ paper: 'live', firechart: 'orderflow', cvd: 'orderflow', liquidation: 'orderflow' });
+const workspaceAliases = Object.freeze({
+  paper: 'live',
+  firechart: 'orderflow',
+  cvd: 'orderflow',
+  liquidation: 'orderflow',
+  dom: 'dominance',
+  econ: 'calendar',
+  external: 'signals'
+});
 const workspaceSections = [...document.querySelectorAll('.content > [data-workspace-route]')];
 
 function workspaceRouteForHash(hash = window.location.hash) {
