@@ -41,12 +41,18 @@ export function copyEventText(e){
  if(e.type==='CLOSED')return `${head} 청산 ${e.mode==='LIVE'?'(실계좌)':'(테스트넷)'} · ${why(e.reason)}${e.evidence==='MANUAL_CLOSE'?' · 수동 청산 확인(트레이더 추매·진입 시 다시 따라감)':e.evidence==='UNCONFIRMED'?' · 확인 불가로 다시 따라가지 않음':''}\n손익 ${money(e.netUSD)} (수수료 전 추정)${e.theirPnlUSD!=null&&Number.isFinite(Number(e.theirPnlUSD))?` · 트레이더 ${money(e.theirPnlUSD)}`:''} · 추매 ${e.adds||0}회`;
  if(e.type==='CUT_INCOMPLETE')return `${head} ⚠️ 부분청산 목표 미달\n요청 ${e.requested}개 중 ${e.filled}개 체결 · 카피 목표 잔량 ${e.targetLeft}개`;
  if(e.type==='ADD_SKIPPED')return `${head} 추매 건너뜀 · ${why(e.reason)}${e.need!=null&&Number.isFinite(Number(e.free))?` (필요 $${e.need} / 여유 $${Number(e.free).toFixed(2)})`:''}${e.detail?` (${e.detail})`:''}`;
- // Manual first (user 2026-11-25): the copy left a manual position alone.
+ // Manual first (user 2026-11-25) & manual ratio-follow link (user 2026-11-26):
+ if(e.type==='MANUAL_LINKED')return `[카피] 🔗 ${symHead?symHead+' ':''}수동 포지션 비율 연결 (첫 진입 생략)\n내 수동 ${e.qty} : 트레이더 ${e.theirQty} (${e.ratio}배) — TP/SL 미설정 시 추매·부분/전량 청산 비율 추종`;
+ if(e.type==='MANUAL_RELEASED')return `[카피] 🔓 ${symHead?symHead+' ':''}수동 비율 연결 해제 (주문 미발주)\n${e.detail||'수동 TP/SL 보호를 위해 카피 연결을 해제하고 수동 관리로 전환했습니다.'}`;
  if(e.type==='SKIPPED'&&e.reason==='MANUAL_FIRST')return `${head} 🛡 수동 포지션 우선 — 카피 진입 건너뜀${e.detail?` (${e.detail})`:''}`;
  if(e.type==='MANUAL_ON_LANE')return Number(e.manualQty)>0
   ?`[카피] 🛡 ${symHead?symHead+' ':''}같은 자리에 수동 ${e.manualQty} 확인 — 카피는 자기 수량 ${e.ownQty}만 관리합니다 (추매 안 함 · 청산은 ${e.ownQty}까지만)${e.source==='STEPS'?'\n카피 수량은 이전 체결 기록으로 계산했습니다 — 수동 포지션이 아니라면 실계좌 화면에서 확인해 주세요.':''}`
   :`[카피] 🛡 ${symHead?symHead+' ':''}같은 자리의 수동 몫이 0이 되었습니다 (이전 ${e.prevManualQty}) — 남은 ${e.ownQty}는 카피 수량이라 트레이더 청산 때 함께 청산합니다. 수동 몫이 남아 있다면 확인해 주세요.`;
- if(e.type==='MANUAL_PROTECT_HOLD')return `[카피] 🛡 ${symHead?symHead+' ':''}카피 몫 불명 — 수동 보호로 청산 보류${e.detail&&!/카피 몫 불명/.test(e.detail)?` (${e.detail})`:''}\n카피 원장 수량을 확인할 수 없어 주문을 보내지 않았습니다. 정기 확인에서 계속 다시 봅니다 — 실계좌 화면에서 확인해 주세요.`;
+ if(e.type==='MANUAL_PROTECT_HOLD'){
+  if(e.reason==='MANUAL_FIRST')return `[카피] 🛡 ${symHead?symHead+' ':''}수동 TP/SL 보호 — 카피 작업 건너뜀${e.detail?`\n${e.detail}`:''}`;
+  if(e.reason==='COPY_ORDERS_UNREADABLE')return `[카피] ⚠️ ${symHead?symHead+' ':''}미체결 주문 조회 실패 — 수동 TP/SL 확인 불가로 청산 보류${e.detail?`\n${e.detail}`:''}\n정기 확인에서 주문 목록이 다시 읽히면 이어서 처리합니다.`;
+  return `[카피] 🛡 ${symHead?symHead+' ':''}카피 몫 불명 — 수동 보호로 청산 보류${e.detail&&!/카피 몫 불명/.test(e.detail)?` (${e.detail})`:''}\n카피 원장 수량을 확인할 수 없어 주문을 보내지 않았습니다. 정기 확인에서 계속 다시 봅니다 — 실계좌 화면에서 확인해 주세요.`;
+ }
  if(e.type==='SKIPPED'&&!['NOT_COPIED','COPY_OFF'].includes(e.reason))return `${head} 진입 안 함 · ${why(e.reason)}${e.detail?` (${e.detail})`:''}`;
  if(e.type==='UNCONFIRMED_ADOPT')return `[카피] ⚠️ ${symHead?symHead+' ':''}거래소 포지션을 카피 원장에 넣지 않았습니다 (${e.reason==='ENTRY_ORDER_NOT_FOUND'?'우리 진입 주문이 거래소에 없음':'진입 체결 확인 실패'})\n거래소에 ${e.size??''} 보유 중 — 직접 확인해 주세요.`;
  if(e.type==='ERROR')return `[카피] ⚠️ ${symHead?symHead+' ':''}주문 문제 (${e.kind||''}) · ${e.reason||''}\n실매매 화면에서 확인해 주세요.`;

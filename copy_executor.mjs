@@ -57,7 +57,7 @@ const orderReadCode=e=>/^(?:HTTP_\d{3}|VENUE_ERROR_\d{1,12}|NETWORK_UNREACHABLE|
 // order history showed a FILLED closing order whose clientOrderId is not ours ('cp…'). No such order, a
 // failed query, or any other or unknown reason: ours / unconfirmed, keeps blocking until the trader closes.
 export const EXTERNAL_CLOSE_REASONS=Object.freeze(['STOP_OR_EXTERNAL','POSITION_GONE']);
-export function externalClose(p){return Boolean(p)&&!p.closing&&EXTERNAL_CLOSE_REASONS.includes(p.closeReason)&&!p.stopOrderId&&!(Number(p.stop)>0)&&p.closeEvidence?.kind==='MANUAL_CLOSE'}
+export function externalClose(p){return Boolean(p)&&!p.manualLinked&&!p.closing&&EXTERNAL_CLOSE_REASONS.includes(p.closeReason)&&!p.stopOrderId&&!(Number(p.stop)>0)&&p.closeEvidence?.kind==='MANUAL_CLOSE'}
 /** The label key for a blocking close: EXTERNAL_UNCONFIRMED when it looked external but was not confirmed. */
 export function closeLabelKey(p){return EXTERNAL_CLOSE_REASONS.includes(p?.closeReason)&&p?.closeEvidence?.kind==='UNCONFIRMED'?'EXTERNAL_UNCONFIRMED':p?.closeReason??null}
 const CLOSE_KO={EXTERNAL_UNCONFIRMED:'바깥 청산 확인 불가',LIQUIDATION:'강제청산',ADL:'자동 감축(ADL)',COPY_LOSS_LIMIT:'카피 손실 한도',NO_STOP:'보호 손절 실패',LOSS_CAP_REACHED:'손실 한도 도달',ZONE_BREAK_VOLUME:'매물대 이탈',STOP_OR_EXTERNAL:'보호 손절 또는 외부 청산'};
@@ -114,8 +114,10 @@ export function userProtectOrder(o,{hedge,direction,ownIds=null}){
  if(!hedge&&lane&&lane!=='BOTH')return false;
  const st=String(o.status||'').toUpperCase();if(st&&TERMINAL_ORDER.has(st))return false;
  const reduce=String(o.reduceOnly).toLowerCase()==='true'||String(o.closePosition).toLowerCase()==='true';
+ // Hedge mode: BingX forbids reduceOnly; a closing-side order on this lane (e.g. Limit TP: LONG+SELL or SHORT+BUY) protects it (matches real_trailing.mjs).
+ const hedgeClosing=Boolean(hedge&&lane===direction&&(!side||side===closeSide));
  // One-way: any closing order of the symbol protects some manual position (either direction shares the lane).
- return reduce||CLOSING_TYPE.test(String(o.type||''))&&(!hedge?true:side===closeSide);
+ return reduce||hedgeClosing||CLOSING_TYPE.test(String(o.type||''))&&(!hedge?true:(!side||side===closeSide));
 }
 
 /** BingX contract for a channel symbol: the same name, a 1000-coin contract (1000PEPEUSDT), or a stock
@@ -474,6 +476,7 @@ export class CopyExecutor{
   const ledger=this.#ownQty(p);
   if(sp.flipped){p.ownQty=0;return}
   if(ledger==null||Math.abs(sp.own-ledger)>1e-12)p.ownQty=sp.own;
+  if(p.manualLinked&&this.audit&&sp.manual===0&&sp.own>0&&p.auditQty!=null&&sp.own<p.auditQty)p.auditQty=sp.own;
  }
  /** Our reduce order took this much of the copy's own part (the fill when known, else the venue drop). */
  #consumeOwn(p,{executed=null,venueBefore=null,venueAfter=null}){
@@ -536,6 +539,29 @@ export class CopyExecutor{
    const keys=Object.keys(this.store.manualFirstSkips);if(keys.length>200)for(const k of keys.slice(0,keys.length-200))delete this.store.manualFirstSkips[k]}
   this.#event('SKIPPED',{symbol:m.symbol,direction:m.direction,reason:'MANUAL_FIRST',detail,...extra});
   return {ok:false,reason:'MANUAL_FIRST'};
+ }
+ #ownOrderIds(p){
+  return new Set([p?.stopOrderId,...(p?.fillOrders||[]).map(x=>x?.id)].filter(x=>x!=null).map(String));
+ }
+ /** Check whether the user has a manual TP/SL/reduce-only protection order on the lane (Option 2, user 2026-11-26).
+  * Fails closed (protected:true, readable:false) when openOrders exists on the client but cannot be read. */
+ async #checkUserProtect(venueSymbol,{hedge,direction,ownIds=null,cachedOrders=undefined}){
+  let res=cachedOrders;
+  if(res===undefined){
+   if(typeof this.client.openOrders!=='function')return this.#live()?{readable:false,protected:true,orders:null,detail:'OPEN_ORDERS_UNAVAILABLE'}:{readable:true,protected:false,orders:[]};
+   res=await this.#auditOpenOrders(venueSymbol);
+  }
+  if(!Array.isArray(res?.orders))return {readable:false,protected:true,orders:null,detail:res?.detail||null};
+  const hit=res.orders.some(o=>userProtectOrder(o,{hedge,direction,ownIds}));
+  return {readable:true,protected:hit,orders:res.orders};
+ }
+ /** Detach a manualLinked ledger entry without placing any venue order (user placed TP/SL and trader closed). */
+ #releaseManualLinked(p,detail){
+  const key=this.#key(p);
+  if(this.store.positions[key]===p)delete this.store.positions[key];
+  delete p.closing;delete p.inflight;
+  this.#event('MANUAL_RELEASED',{symbol:p.symbol,direction:p.direction,reason:'MANUAL_FIRST',detail});
+  this.#save();
  }
  async #contract(symbol){const c=await this.contractOf(symbol);if(!c||c.tradable===false)throw Object.assign(Error('NO_BINGX_CONTRACT'),{code:'NO_BINGX_CONTRACT'});return c}
  #qty(c,raw,mode='DOWN'){try{return Number(roundDecimalToStep(mode==='DOWN'?raw*(1+1e-9):raw,c.quantityStep,mode))}catch{return 0}} // 1e-9: 299.99999… is 300
@@ -626,14 +652,14 @@ export class CopyExecutor{
   if(p.closing){if(this.now()-p.closing.at>=CLOSE_DELAY)issues.push('CLOSE_DELAYED')}
   else if(!(qty>0))issues.push('POSITION_MISSING');
   else if(expected==null||!sameSize(qty,expected))issues.push('SIZE_MISMATCH');
-  let stop=this.config.stops?'UNKNOWN':'OFF';
+  let stop=p.manualLinked?'MANUAL':this.config.stops?'UNKNOWN':'OFF';
   if(orders===null)issues.push('ORDERS_UNREADABLE');
   const onSide=o=>!p.hedge||!o.positionSide||String(o.positionSide).toUpperCase()===p.direction;
   const opening=p.direction==='LONG'?'BUY':'SELL';
   if(orders?.some(o=>onSide(o)&&String(o.side).toUpperCase()===opening&&
    String(o.reduceOnly).toLowerCase()!=='true'&&String(o.closePosition).toLowerCase()!=='true'&&
    !this.#isUnfilledManualLimit(o)))issues.push('UNEXPECTED_OPEN_ORDER');
-  if(orders&&this.config.stops&&qty>0){
+  if(orders&&this.config.stops&&qty>0&&!p.manualLinked){
    const o=p.stopOrderId==null?null:orders.find(o=>String(o.orderId)===String(p.stopOrderId));
    if(!o){stop='MISSING';issues.push('STOP_MISSING')}
    else{
@@ -846,6 +872,7 @@ export class CopyExecutor{
   // Manual first: the copy's own part only; the lane's avg is blended when a manual position shares it.
   p.qty=sp.known?sp.own:now.size;if(now.avg&&!(sp.manual>0))p.avg=now.avg;p.manualQty=sp.known?sp.manual:null;
   if(this.audit&&ownFill&&p.qty>0)p.auditQty=p.qty;
+  if(p.manualLinked){p.stopOrderId=null;p.stop=null;p.stopStale=false;p.stopSource='MANUAL';return}
   if(!this.config.stops){if(p.stopOrderId){try{await this.client.cancelOrder(p.venueSymbol,p.stopOrderId)}catch{}}p.stopOrderId=null;p.stop=null;p.stopStale=false;p.stopSource='NONE';
    return}
   if(!(p.qty>0))return;
@@ -920,6 +947,11 @@ export class CopyExecutor{
   * read got no venue answer; booked (#closed) only once the size reads 0. */
  async #emergency(p,reason){
   if(p.status!=='OPEN'||this.store.positions[this.#key(p)]!==p)return;
+  if(p.manualLinked&&this.#live()){
+   const prot=await this.#checkUserProtect(p.venueSymbol,{hedge:p.hedge===true,direction:p.direction,ownIds:this.#ownOrderIds(p)});
+   if(!prot.readable){this.#manualHold(p,'COPY_ORDERS_UNREADABLE','미체결 주문 조회 실패 — 수동 TP/SL 확인 불가로 긴급 청산 보류');this.#save();return}
+   if(prot.protected){this.#releaseManualLinked(p,'수동 포지션에 TP/SL 설정됨 — 보호를 위해 긴급 청산 건너뛰고 수동 관리로 전환');return}
+  }
   if(!p.closing){p.closing={reason,at:this.now()};this.#save()}
   const delays=Array.isArray(this.retryDelaysMs)?this.retryDelaysMs:[],started=Date.now();let last=null,lastErr=null;
   p.inflight=true;
@@ -1086,7 +1118,42 @@ export class CopyExecutor{
   let keepMarginMode=false;
   {const list=checkedPositions(rawPos.data,venueSymbol),row=positionRow(list,venueSymbol,{hedge,direction:m.direction}),size=row?Math.abs(Number(row.positionAmt)):0;
    if(size>0){
-    if(this.#live())return this.#manualFirstSkip(m,`거래소 같은 자리에 수동 ${size} 보유 — 카피 진입 건너뜀`,{size});
+    if(this.#live()){
+     const rowAmt=Number(row.positionAmt),rowDir=directionOf(row);
+     const sameDir=hedge?true:(rowAmt<0?m.direction==='SHORT':rowDir===m.direction);
+     // User 2026-11-26 (Option 2): when the user already holds a same-direction manual position with NO TP/SL on
+     // a fresh trader entry, skip the copy's initial entry order but link the position so subsequent trader adds,
+     // partial closes, and full closes are mirrored at the exact (manualBaseQty / theirFirstQty) ratio.
+     if(sameDir&&!m.late&&m.quantity>0){
+      const preGate=this.#gate();
+      if(!preGate?.ok){const reason=preGate?.reason||'GATE_CLOSED';this.#event('SKIPPED',{symbol:m.symbol,reason});return {ok:false,reason}}
+      if(entry&&(entry.revision!==this.entryRevision||entry.gateRevision!==this.entryGateRevision())){this.#event('SKIPPED',{symbol:m.symbol,reason:'ENTRY_INTERRUPTED'});return {ok:false,reason:'ENTRY_INTERRUPTED'}}
+      const prot=await this.#checkUserProtect(venueSymbol,{hedge,direction:m.direction,cachedOrders:this.audit?(auditRes||{orders:null}):undefined});
+      if(!prot.readable){this.#event('SKIPPED',{symbol:m.symbol,reason:'COPY_ORDERS_UNREADABLE',detail:`거래소 미체결 주문 조회 실패 — 수동 TP/SL 확인 불가로 카피 진입 건너뜀`,size});return {ok:false,reason:'COPY_ORDERS_UNREADABLE'}}
+      if(prot.protected)return this.#manualFirstSkip(m,`수동 포지션(${size})에 TP/SL 설정됨 — 보호를 위해 카피 진입·추종 건너뜀`,{size});
+      const mult=Number(c.unitMultiplier)||1;
+      const cardUnitPrice=(pos(m.price)??pos(m.entry))*mult;
+      if(m.marginUSD>0&&m.leverage>0&&cardUnitPrice>0){const implied=m.quantity*(cardUnitPrice/mult)/(m.marginUSD*m.leverage);
+       if(implied<.7||implied>1.3)throw Object.assign(Error('QUANTITY_UNIT_UNCLEAR'),{code:'QUANTITY_UNIT_UNCLEAR'})}
+      const manualScale=size*mult/m.quantity;
+      const venueAvg=pos(row.avgPrice)??pos(venuePrice)??(cardUnitPrice>0?cardUnitPrice:null);
+      const venueLev=pos(row.leverage)??pos(m.direction==='SHORT'?levInfo?.shortLeverage:levInfo?.longLeverage)??pos(levInfo?.longLeverage)??leverage;
+      const mlRec=this.#manualLedgerOnLane(venueSymbol,m.direction,hedge);
+      const manualOpenedAt=pos(mlRec?.openedAt)??pos(row.updateTime)??this.now();
+      const p={id:`${key}|${at}`,symbol:m.symbol,venueSymbol,direction:m.direction,hedge,leverage:venueLev,tickSize:c.tickSize,status:'OPEN',openedAt:this.now(),manualOpenedAt,
+       manualLinked:true,manualBaseQty:size,manualScale,scale:null,mult,sizing:'MANUAL_RATIO',firstQty:size,qtyStep:pos(c.quantityStep),venueAlias:c.alias??null,
+       minOrder:false,matchTraderQty:false,theirEntry:m.entry??null,theirQty:m.quantity,theirFirstQty:m.quantity,theirTotal:m.quantity,
+       lastTheirEntry:m.entry??null,lastTheirQty:m.quantity,lastTheirAt:at,theirMarginUSD:m.marginUSD??null,
+       qty:size,ownQty:size,manualQty:0,avg:venueAvg,mark:pos(row.markPrice)??pos(venuePrice)??venueAvg,adds:0,reduces:0,
+       stop:null,stopOrderId:null,stopSource:'MANUAL',steps:[{kind:'MANUAL_LINKED',at:this.now(),qty:size,avg:venueAvg,theirFirstQty:m.quantity}],fillTracked:true,
+       ...(this.audit?{auditQty:size}:{})};
+      this.store.positions[key]=p;this.#save();
+      this.#event('MANUAL_LINKED',{symbol:m.symbol,direction:m.direction,qty:size,theirQty:m.quantity,ratio:+manualScale.toFixed(6),
+       detail:`수동 ${size} 보유 중 — 첫 카피 진입 생략 후 비율 연결 (내 ${size} : 트레이더 ${m.quantity}, ${+manualScale.toFixed(4)}배 · 이후 추매·청산 비율 추종)`});
+      return {ok:true,skippedEntry:true,manualLinked:true,reason:'MANUAL_LINKED'};
+     }
+     return this.#manualFirstSkip(m,`거래소 같은 자리에 수동 ${size} 보유 — 카피 진입 건너뜀`,{size});
+    }
     this.#event('SKIPPED',{symbol:m.symbol,reason:'VENUE_POSITION_EXISTS',detail:`거래소에 이미 ${size} 보유`});return {ok:false,reason:'VENUE_POSITION_EXISTS'}}
    if(hedge&&this.#live()){
     const other=m.direction==='LONG'?'SHORT':'LONG',orow=positionRow(list,venueSymbol,{hedge:true,direction:other});
@@ -1344,7 +1411,7 @@ export class CopyExecutor{
   }
   this.#applyCutFill(p,cut,order);
   this.#save();
-  if(this.config.stops||p.stopOrderId){
+  if(!p.manualLinked&&(this.config.stops||p.stopOrderId)){
    try{await this.#protect(p)}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}
   }
   const execMs=Math.max(0,Math.round(performance.now()-execStart));
@@ -1420,6 +1487,18 @@ export class CopyExecutor{
    return res;
   }else{
    if(p.theirTotal===m.to&&!p.pendingCut)return {ok:true,already:true};
+   if(p.manualLinked&&this.#live()){
+    const prot=await this.#checkUserProtect(p.venueSymbol,{hedge:p.hedge===true,direction:p.direction,ownIds:this.#ownOrderIds(p)});
+    if(!prot.readable){
+     this.#manualHold(p,'COPY_ORDERS_UNREADABLE','미체결 주문 조회 실패 — 수동 TP/SL 확인 불가로 부분 청산 보류');
+     throw Object.assign(Error('COPY_ORDERS_UNREADABLE'),{code:'COPY_ORDERS_UNREADABLE'});
+    }
+    if(prot.protected){
+     p.theirTotal=m.to;this.#save();
+     this.#manualHold(p,'MANUAL_FIRST','수동 포지션에 TP/SL 설정됨 — 보호를 위해 부분 청산 건너뜀');
+     return {ok:false,reason:'MANUAL_FIRST'};
+    }
+   }
    const samePending=p.pendingCut&&p.pendingCut.from===m.from&&p.pendingCut.to===m.to;
    const baseQty=samePending?p.pendingCut.beforeQty:p.qty;
    const down=this.#qty(c,baseQty*(1-ratio)),up=this.#qty(c,baseQty*(1-ratio),'UP'),want=baseQty*(1-ratio);
@@ -1435,16 +1514,17 @@ export class CopyExecutor{
     delete p.pendingCut;
     p.theirTotal=m.to;
     p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:filledCut,ratio});this.#save();
-    if(!this.config.stops&&!p.stopOrderId){if(this.audit)p.auditQty=p.qty}
+    if((!this.config.stops||p.manualLinked)&&!p.stopOrderId){if(this.audit)p.auditQty=p.qty}
     else{try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}}
     const execMs=Math.max(0,Math.round(performance.now()-execStart));
     this.#event('REDUCED',{symbol:m.symbol,direction:p.direction,qty:filledCut,left:p.qty,execMs});
     return {ok:true,execMs};
    }
-   const cut=samePending?Number(Math.max(0,p.qty-targetLeft).toFixed(12)):totalWantCut;
-   if(!(cut>0))return {ok:true,tooSmall:true};
+   let cut=samePending?Number(Math.max(0,p.qty-targetLeft).toFixed(12)):totalWantCut;
+   if(p.manualLinked&&ratio>0&&cut>=p.qty){cut=down>0&&down<p.qty?down:0}
+   if(!(cut>0)){p.theirTotal=m.to;this.#save();return {ok:true,tooSmall:true}}
    if(cut>=p.qty)return this.#close(m,'TRADER_CUT_ALL');
-   const pending={from:m.from,to:m.to,beforeQty:baseQty,wantCut:totalWantCut,targetLeft,manualFloor:samePending?p.pendingCut.manualFloor:sp.manual,sentQty:p.qty};
+   const pending={from:m.from,to:m.to,beforeQty:baseQty,wantCut:totalWantCut,targetLeft:p.manualLinked&&cut!==totalWantCut?Number(Math.max(0,baseQty-cut).toFixed(12)):targetLeft,manualFloor:samePending?p.pendingCut.manualFloor:sp.manual,sentQty:p.qty};
    if(this.#live()&&typeof this.client.getOrder==='function')return this.#submitTrackedCut(p,m,pending,Math.min(cut,p.qty),execStart);
    p.pendingCut=pending;this.#save();
    const order=await this.#market(p,p.direction==='LONG'?'SELL':'BUY',Math.min(cut,p.qty),{reduceOnly:true,tag:'cut'+(p.reduces+1)});
@@ -1453,7 +1533,7 @@ export class CopyExecutor{
    delete p.pendingCut;
    p.theirTotal=m.to; // set after our cut went through, so a retried cut uses the same from / to
    p.reduces++;p.steps.push({kind:'REDUCE',at:this.now(),qty:filledCut,ratio});this.#save();
-   if(!this.config.stops&&!p.stopOrderId&&String(order?.status).toUpperCase()==='FILLED'&&pos(order?.executedQty)){
+   if((!this.config.stops||p.manualLinked)&&!p.stopOrderId&&String(order?.status).toUpperCase()==='FILLED'&&pos(order?.executedQty)){
     if(this.audit)p.auditQty=p.qty;
    }else{
     try{await this.#protect(p,{ownFill:true})}catch(e){p.stopStale=true;this.#event('STOP_NOT_SET',{symbol:p.symbol,reason:e?.code||e?.message||'UNKNOWN'})}
@@ -1483,11 +1563,13 @@ export class CopyExecutor{
   const symBlock=this.controls?.checkSymbol(p.symbol);if(symBlock){this.#event('ADD_SKIPPED',{symbol:p.symbol,...symBlock});return {ok:false,reason:symBlock.reason}}
   price=price!=null?price*(p.mult||1):now.mark; // the message price is per coin; the venue price per contract unit
   const activeSizing=this.#effectiveSizing();
+  const isManualRatio=p.manualLinked===true&&p.manualBaseQty>0&&p.theirFirstQty>0;
   // A 1x-matched entry's adds follow the normal balance ratio with carry-over (user decision 2026-11-23 (b)).
-  const needFunds=p.matchTraderQty===true||activeSizing==='BALANCE_RATIO'&&(this.config.mode==='LIVE'||p.scale!=null);
+  const needFunds=isManualRatio||p.matchTraderQty===true||activeSizing==='BALANCE_RATIO'&&(this.config.mode==='LIVE'||p.scale!=null);
   const auditPreReason=this.audit?this.#auditBlock(p.symbol,p.venueSymbol):null;
+  const needOrdersCheck=(this.audit&&!auditPreReason)||(p.manualLinked&&this.#live()&&typeof this.client.openOrders==='function');
   const [checkedAudit,funds]=await Promise.all([
-   this.audit&&!auditPreReason?this.#auditOpenOrders(p.venueSymbol):Promise.resolve(null),
+   needOrdersCheck?this.#auditOpenOrders(p.venueSymbol):Promise.resolve(null),
    needFunds?this.#readFunds():Promise.resolve(undefined),
   ]);
   if(this.audit){
@@ -1497,27 +1579,36 @@ export class CopyExecutor{
     const {issues}=this.#compareLane(p,now.size,checkedAudit?.orders??null);
     if(issues.length||!p.steps?.length||now.direction!==p.direction)reason=checkedAudit?.orders?'COPY_AUDIT_BLOCKED':'COPY_ORDERS_UNREADABLE';
     // A user TP / SL / reduce-only order on the lane is a manual position's protection (manual first).
-    else if(checkedAudit?.orders?.some(o=>userProtectOrder(o,{hedge:p.hedge===true,direction:p.direction,ownIds:new Set([p.stopOrderId,...(p.fillOrders||[]).map(x=>x.id)].filter(x=>x!=null).map(String))}))){reason='MANUAL_FIRST';detail='같은 자리에 사용자 TP/SL 주문 있음 — 카피 추매 건너뜀'}
+    else if(checkedAudit?.orders?.some(o=>userProtectOrder(o,{hedge:p.hedge===true,direction:p.direction,ownIds:this.#ownOrderIds(p)}))){reason='MANUAL_FIRST';detail='같은 자리에 사용자 TP/SL 주문 있음 — 카피 추매 건너뜀'}
    }
    if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason,...(detail?{detail}:{})});return {ok:false,reason}}
+  }else if(p.manualLinked&&this.#live()){
+   const prot=await this.#checkUserProtect(p.venueSymbol,{hedge:p.hedge===true,direction:p.direction,ownIds:this.#ownOrderIds(p),cachedOrders:needOrdersCheck?(checkedAudit||{orders:null}):undefined});
+   if(!prot.readable){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_ORDERS_UNREADABLE',detail:'미체결 주문 조회 실패 — 수동 TP/SL 확인 불가로 추매 건너뜀'});return {ok:false,reason:'COPY_ORDERS_UNREADABLE'}}
+   if(prot.protected){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MANUAL_FIRST',detail:'수동 포지션에 TP/SL 설정됨 — 보호를 위해 카피 추매 건너뜀'});return {ok:false,reason:'MANUAL_FIRST'}}
   }
   // Manual first (user 2026-11-25): never add into a lane that holds a manual position (or whose own part is unknown).
   if(!sp.known){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'COPY_QTY_UNKNOWN',detail:'카피 몫 불명'});return {ok:false,reason:'COPY_QTY_UNKNOWN'}}
   if(sp.manual>0){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MANUAL_FIRST',detail:`같은 자리에 수동 ${sp.manual} 보유 — 카피 추매 건너뜀`});return {ok:false,reason:'MANUAL_FIRST'}}
-  {const ml=this.#live()?this.#manualLedgerOnLane(p.venueSymbol,p.direction,p.hedge===true):null;
+  if(!p.manualLinked){const ml=this.#live()?this.#manualLedgerOnLane(p.venueSymbol,p.direction,p.hedge===true):null;
    if(ml){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'MANUAL_FIRST',detail:'같은 종목에 수동 포지션 기록 있음 — 카피 추매 건너뜀'});return {ok:false,reason:'MANUAL_FIRST'}}}
   if(!(price>0)){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:'PRICE_UNVERIFIED'});return {ok:false,reason:'PRICE_UNVERIFIED'}}
   let scale=p.scale;
-  if(needFunds){
+  if(isManualRatio){
+   const blockReason=this.#sendBlock(p,entry);
+   if(blockReason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason:blockReason});return {ok:false,reason:blockReason}}
+  }else if(needFunds){
    const ratioRes=this.#balanceRatio(funds),reason=this.#sendBlock(p,entry)??ratioRes.reason;
    if(reason){this.#event('ADD_SKIPPED',{symbol:p.symbol,reason});return {ok:false,reason}}
    scale=ratioRes.scale;
    if(p.scale!=null||p.matchTraderQty)p.scale=scale;
   }
+  // Manual-linked ratio (user 2026-11-26): our add = manualBaseQty * (theirAdd / theirFirstQty) in venue units.
+  const manualRatioQty=isManualRatio?p.manualBaseQty*(theirQty/p.theirFirstQty):null;
   // MIN_ORDER positions: our first quantity x their add / their first quantity (in venue units).
-  const byFirst=scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
-  const marginUSD=scale==null&&byFirst==null&&p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
-  const sized=scale!=null?theirQty*scale/(p.mult||1):byFirst??(marginUSD!=null?marginUSD*p.leverage/price:null);
+  const byFirst=manualRatioQty==null&&scale==null&&p.sizing==='MIN_ORDER'&&p.firstQty>0&&p.theirFirstQty>0?p.firstQty*theirQty/p.theirFirstQty:null;
+  const marginUSD=manualRatioQty==null&&scale==null&&byFirst==null&&p.theirFirstQty>0?this.config.marginUSD*theirQty/p.theirFirstQty:null;
+  const sized=manualRatioQty??(scale!=null?theirQty*scale/(p.mult||1):byFirst??(marginUSD!=null?marginUSD*p.leverage/price:null));
   let buy;
   // Adds below the venue minimum are carried in venue units.
   if(sized!=null){const raw=sized+(p.addCarry||0),minQ=pos(c.minQuantityBase)??0,minN=pos(c.minNotionalUSDT)??0;
@@ -1542,7 +1633,7 @@ export class CopyExecutor{
   p.ownQty=Number(((this.#ownQty(p)??prevQty)+addedQty).toFixed(12));
   p.adds++;
   p.steps.push({kind:'ADD',at:this.now(),qty:addedQty,avg:fill.avg,theirQty,marginUSD});this.#save();
-  if(!this.config.stops&&!p.stopOrderId&&String(fill.status).toUpperCase()==='FILLED'&&pos(fill.executedQty)&&pos(fill.avg)){
+  if((!this.config.stops||p.manualLinked)&&!p.stopOrderId&&String(fill.status).toUpperCase()==='FILLED'&&pos(fill.executedQty)&&pos(fill.avg)){
    const newQty=Number((prevQty+fill.executedQty).toFixed(12));
    p.qty=newQty;
    if(prevQty>0&&prevAvg>0)p.avg=+((prevQty*prevAvg+fill.executedQty*fill.avg)/newQty).toPrecision(10);
@@ -1553,7 +1644,7 @@ export class CopyExecutor{
   }
   if(p.status!=='OPEN')return {ok:false,reason:p.closeReason};
   const execMs=Math.max(0,Math.round(performance.now()-execStart));
-  this.#event('ADDED',{symbol:p.symbol,direction:p.direction,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null,scale,matchTraderQty:p.matchTraderQty===true,execMs});
+  this.#event('ADDED',{symbol:p.symbol,direction:p.direction,qty:buy,total:p.qty,avg:p.avg,stop:p.stop,n:p.adds,marginUSD:marginUSD!=null?+marginUSD.toFixed(2):null,scale:isManualRatio?p.manualScale:scale,matchTraderQty:p.matchTraderQty===true,manualLinked:p.manualLinked===true,execMs});
   return {ok:true,execMs};
  }
  async #close(m,reason){
@@ -1569,6 +1660,19 @@ export class CopyExecutor{
   let now=await this.#recheck(p,await this.#position(p));
   if(!(now.size>0)){p.ownQty=0;await this.#completeClose(p,p.closing?.reason??'POSITION_GONE',now,m.theirPnlUSD);return {ok:true}}
   if(p.closing&&!['TRADER_CLOSE','TRADER_CUT_ALL'].includes(p.closing.reason))return {ok:false,reason:'CLOSE_PENDING'};
+  if(!p.closing?.pending&&p.manualLinked&&this.#live()){
+   p.closing??={reason,at:this.now(),theirPnlUSD:m.theirPnlUSD??null};
+   this.#save();
+   const prot=await this.#checkUserProtect(p.venueSymbol,{hedge:p.hedge===true,direction:p.direction,ownIds:this.#ownOrderIds(p)});
+   if(!prot.readable){
+    this.#manualHold(p,'COPY_ORDERS_UNREADABLE','미체결 주문 조회 실패 — 수동 TP/SL 확인 불가로 청산 보류');
+    throw Object.assign(Error('COPY_ORDERS_UNREADABLE'),{code:'COPY_ORDERS_UNREADABLE'});
+   }
+   if(prot.protected){
+    this.#releaseManualLinked(p,'수동 포지션에 TP/SL 설정됨 — 트레이더 전량 청산 건너뛰고 수동 관리로 전환');
+    return {ok:false,reason:'MANUAL_FIRST',released:true};
+   }
+  }
   if(!cutSettled){
    p.closing??={reason,at:this.now(),theirPnlUSD:m.theirPnlUSD??null};
    this.#save();
@@ -1605,6 +1709,18 @@ export class CopyExecutor{
    delete close.pending;
    now=await this.#recheck(p,await this.#position(p));
    if(!(now.size>0)){p.ownQty=0;await this.#completeClose(p,reason,now);return {ok:true}}
+   if(p.manualLinked&&this.#live()){
+    const prot=await this.#checkUserProtect(p.venueSymbol,{hedge:p.hedge===true,direction:p.direction,ownIds:this.#ownOrderIds(p)});
+    if(!prot.readable){
+     this.#manualHold(p,'COPY_ORDERS_UNREADABLE','미체결 주문 조회 실패 — 수동 TP/SL 확인 불가로 청산 보류');
+     this.#save();
+     throw Object.assign(Error('COPY_ORDERS_UNREADABLE'),{code:'COPY_ORDERS_UNREADABLE'});
+    }
+    if(prot.protected){
+     this.#releaseManualLinked(p,'수동 포지션에 TP/SL 설정됨 — 트레이더 전량 청산 건너뛰고 수동 관리로 전환');
+     return {ok:false,reason:'MANUAL_FIRST',released:true};
+    }
+   }
    sp=await this.#laneSplit(p,now,{floor:close.manualFloor});
    if(!sp.known){this.#manualHold(p,'COPY_QTY_UNKNOWN','카피 몫 불명 — 수동 보호로 청산 보류');this.#save();return {ok:false,reason:'COPY_QTY_UNKNOWN'}}
    this.#syncOwn(p,sp);
@@ -1691,7 +1807,8 @@ export class CopyExecutor{
    this.settleAttempts.set(p.id,now);
    const mark=(state,error=null)=>{if(this.store.closed.includes(p)){p.settlement={state,checkedAt:this.now(),...(error?{error}:{})};this.#save()}};
    try{
-    const window={startTs:Math.max(1,p.openedAt-60000),endTs:Math.min(now,p.closedAt+30000)};
+    const startBase=p.manualLinked&&pos(p.manualOpenedAt)?Math.min(p.openedAt,p.manualOpenedAt):p.openedAt;
+    const window={startTs:Math.max(1,startBase-60000),endTs:Math.min(now,p.closedAt+30000)};
     let orders=new Map((p.fillOrders||[]).map(o=>[String(o.id),o]));
     if(p.closeEvidence?.orderId){const cid=String(p.closeEvidence.orderId);if(!orders.has(cid))orders.set(cid,{id:cid,side:p.direction==='LONG'?'SELL':'BUY',confirmed:false})}
     if(!p.fillTracked||new Set([...orders.values()].map(o=>o.side)).size<2)orders=await this.#legacyOrders(p,window);
@@ -1783,18 +1900,19 @@ export class CopyExecutor{
     return orders;
    }
   }
-  // Isolated hedge-lane recovery: in hedge mode (positionSide LONG/SHORT), manual adds/closes on a copy-held position
-  // live on that exact isolated lane. Recover all executed orders on the lane within [openedAt-5s, closedAt+10s] ONLY
-  // when no other copy position of the same symbol+direction overlaps and open/close quantities balance cleanly.
-  if(p.hedge===true&&orders.size>0){
+  // Isolated hedge-lane recovery (and manualLinked pre-link opening recovery): recover all executed orders on the lane
+  // within [startTs, closedAt+10s] ONLY when no other copy position of the same symbol+direction overlaps and open/close
+  // quantities balance cleanly.
+  if((p.hedge===true||p.manualLinked===true)&&orders.size>0){
+   const winStart=p.manualLinked?startTs:p.openedAt-5000;
    const overlap=[...Object.values(this.store.positions||{}),...(this.store.closed||[])].some(other=>
     other&&other!==p&&other.symbol===p.symbol&&other.direction===p.direction&&
-    Number(other.openedAt)<=p.closedAt+10000&&(other.closedAt==null||Number(other.closedAt)>=p.openedAt-5000));
+    Number(other.openedAt)<=p.closedAt+10000&&(other.closedAt==null||Number(other.closedAt)>=winStart));
    if(!overlap){
     const inWin=ownLane.filter(row=>{
      const t=Number(row.updateTime??row.time);
      return row.orderId&&pos(row.executedQty)&&[openSide,closeSide].includes(String(row.side).toUpperCase())
-      &&t>=p.openedAt-5000&&t<=p.closedAt+10000;
+      &&t>=winStart&&t<=p.closedAt+10000;
     });
     if(inWin.some(row=>orders.has(String(row.orderId)))){
      let oq=0,cq=0;
@@ -1873,7 +1991,7 @@ export class CopyExecutor{
    if(inflight(job)){this.store.pending.push(job);continue} // an order of that position is waiting for its retry
    if(this.store.positions[this.#key(job.m)]?.closing)retried.add(this.#key(job.m));
    job.tries++;
-   try{const r=job.m.kind==='CLOSE'?await this.#close(job.m,'TRADER_CLOSE'):await this.#change(job.m,job.at);if(r?.ok===false&&!['NOT_COPIED','POSITION_GONE'].includes(r.reason)&&job.tries<5)this.store.pending.push(job)}
+   try{const r=job.m.kind==='CLOSE'?await this.#close(job.m,'TRADER_CLOSE'):await this.#change(job.m,job.at);if(r?.ok===false&&!['NOT_COPIED','POSITION_GONE','MANUAL_FIRST'].includes(r.reason)&&job.tries<5)this.store.pending.push(job)}
    catch(error){if(error.cutTracked)continue;if(job.tries<5)this.store.pending.push(job);else this.#event('ERROR',{symbol:job.m.symbol,kind:'RETRY_GAVE_UP',reason:error.code||error.message})}
   }
   let unrealized=0;
@@ -1882,7 +2000,7 @@ export class CopyExecutor{
    try{
     if(p.closing&&['TRADER_CLOSE','TRADER_CUT_ALL'].includes(p.closing.reason)){
      if(!retried.has(this.#key(p)))await this.#close(p,p.closing.reason);
-     if(p.status==='OPEN')unrealized+=Number(p.unrealized)||0;
+     if(p.status==='OPEN'&&!p.manualLinked)unrealized+=Number(p.unrealized)||0;
      continue;
     }
     await this.#refreshCutOrder(p);
@@ -1913,10 +2031,10 @@ export class CopyExecutor{
      if(!(sp.manual>0))p.avg=now.avg??p.avg;
      // A whole-position (closePosition) stop of ours — older records have no stopWhole — would close the manual part
      // too when it triggers: placed again for the own quantity (#protect places the new one, then cancels the old).
-     if(this.config.stops&&p.stopOrderId&&p.stopWhole!==false&&sp.known&&sp.manual>0)p.stopStale=true;
-     p.mark=now.mark;p.unrealized=sp.known?this.#ownUnrealized(p,now,sp):now.unrealized;unrealized+=Number(p.unrealized)||0;}
-    if(this.config.stops&&(!p.stopOrderId||p.stopStale)||!this.config.stops&&p.stopOrderId)await this.#protect(p);
-    if(this.config.stops&&p.stopZone&&await this.#zoneBroken(p).catch(()=>false)){await this.#emergency(p,'ZONE_BREAK_VOLUME');continue}
+     if(this.config.stops&&!p.manualLinked&&p.stopOrderId&&p.stopWhole!==false&&sp.known&&sp.manual>0)p.stopStale=true;
+     p.mark=now.mark;p.unrealized=sp.known?this.#ownUnrealized(p,now,sp):now.unrealized;if(!p.manualLinked)unrealized+=Number(p.unrealized)||0;}
+    if(!p.manualLinked&&(this.config.stops&&(!p.stopOrderId||p.stopStale)||!this.config.stops&&p.stopOrderId))await this.#protect(p);
+    if(!p.manualLinked&&this.config.stops&&p.stopZone&&await this.#zoneBroken(p).catch(()=>false)){await this.#emergency(p,'ZONE_BREAK_VOLUME');continue}
    }catch(error){if(error.code==='HTTP_429')break}
   }
   const bal=await this.balance().catch(()=>null),eq=pos(bal?.equity);
@@ -1924,7 +2042,7 @@ export class CopyExecutor{
   // 0 = off (user 2026-11-23 17:20 "다 없애 필요없어"): no automatic full close / stop on the copy's open loss.
   if(this.config.ledgerLossPct>0&&eq&&!this.store.killed&&unrealized<=-eq*this.config.ledgerLossPct/100){
    this.store.killed=true;
-   for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'))p.closing??={reason:'COPY_LOSS_LIMIT',at:this.now()};
+   for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'&&!x.manualLinked))p.closing??={reason:'COPY_LOSS_LIMIT',at:this.now()};
    this.#event('COPY_LOSS_LIMIT',{reason:`open loss ${unrealized.toFixed(2)} ≤ -${this.config.ledgerLossPct}% of ${eq.toFixed(2)}`});this.#save(); // on disk before any order
    for(const p of Object.values(this.store.positions).filter(x=>x.status==='OPEN'&&!x.closing?.pending))await this.#emergency(p,'COPY_LOSS_LIMIT');
   }else if(this.store.killed){

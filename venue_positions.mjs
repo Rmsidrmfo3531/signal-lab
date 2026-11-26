@@ -55,7 +55,7 @@ export function ledgerOwnQty(p){
  const steps=Array.isArray(p.steps)?p.steps:[];if(!steps.length)return null;
  let q=0;
  for(const s of steps){const n=Number(s?.qty);
-  if(['OPEN','ADD','ADOPTED'].includes(s?.kind)){if(!(n>0))return null;q+=n}
+  if(['OPEN','ADD','ADOPTED','MANUAL_LINKED'].includes(s?.kind)){if(!(n>0))return null;q+=n}
   else if(s?.kind==='REDUCE'){if(!(n>=0))return null;q-=n}
   else return null;
  }
@@ -73,7 +73,7 @@ export function tagOrigins(rows,copyPositions=[],scalpPositions=[]){
   const c=r.direction?openCopy.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
   if(c){const own=ledgerOwnQty(c),step=Number(c.qtyStep)>0?Number(c.qtyStep):0;
    const extra=own==null?null:Math.max(0,r.size-own),manualQty=extra==null?null:extra>=(step?step/2:Math.max(1e-10,r.size*1e-8))?Number(extra.toFixed(12)):0;
-   return {...r,origin:'copy',...(c.symbol?{symbol:c.symbol}:{}),manualQty}}
+   return {...r,origin:'copy',...(c.symbol?{symbol:c.symbol}:{}),manualQty,...(c.manualLinked?{manualLinked:true,manualScale:c.manualScale??null}:{})}}
   const s=r.direction?openScalp.find(x=>x.venueSymbol===r.venueSymbol&&x.direction===r.direction):null;
   if(s)return {...r,origin:'scalp',...(s.symbol?{symbol:s.symbol}:{})};
   return {...r,origin:'manual'};

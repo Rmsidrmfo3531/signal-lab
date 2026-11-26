@@ -238,6 +238,15 @@ export class RealTrailingManager{
     openKeys.add(key);
     if(!cfg.enabled){const st=this.tracked.get(key);if(st?.missing){st.missing=0;dirty=true}continue}
     if(p.origin==='scalp')continue;
+    if(p.manualLinked){
+     const prior=this.tracked.get(key);
+     if(prior){
+      await this.#cancelStops(prior);this.tracked.delete(key);dirty=true;
+      this.log?.('MANUAL_PROTECTED',key,'manualLinked ratio-follow');
+      try{await this.sendText(`🛡 [실계좌 트레일링] ${disp} ${sideKo(dir)} 카피 비율 연결됨 — 충돌 방지를 위해 자동 트레일링을 해제했습니다`)}catch{}
+     }
+     continue;
+    }
     const isCopy=p.origin==='copy';
     if(isCopy&&!cfg.applyToCopy)continue;
     if(!isCopy&&!cfg.applyToManual)continue;
