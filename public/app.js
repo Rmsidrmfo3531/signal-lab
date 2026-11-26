@@ -115,7 +115,7 @@ function liveNotice(n){
  const [title,...rest]=String(n.text).split('\n'),body=rest.join('\n');
  toast(title);
  if('Notification' in window&&Notification.permission==='granted'){
-  try{const x=new Notification(title,{body,tag:'live-'+(n.symbol||'')+'-'+(n.type||''),renotify:true,requireInteraction:/문제|긴급/.test(title)});x.onclick=()=>{window.focus();location.hash='#live';x.close()}}catch{}
+  try{const x=new Notification(title,{body,tag:'live-'+(n.symbol||'')+'-'+(n.type||''),renotify:true,requireInteraction:/문제|긴급/.test(title)});x.onclick=()=>{window.focus();const targetHash=n.hash||(n.type==='EXTERNAL_SIGNAL'?'#real':'#live');if(n.prefill&&n.prefill.symbol){window.__signalLabPendingRealOrder=n.prefill;if(location.hash!==targetHash)location.hash=targetHash;window.dispatchEvent(new CustomEvent('signal-lab:prefill-real-trade',{detail:n.prefill}))}else{location.hash=targetHash}x.close()}}catch{}
  }
  if(notifyOn('sound'))try{ping()}catch{}
 }
@@ -128,6 +128,7 @@ function connectEvents(){let es=new EventSource('/events');app.stream=es;
  es.addEventListener('update-progress',e=>{try{handleUpdateProgressEvent(JSON.parse(e.data))}catch{}});
  es.addEventListener('update-schedule',e=>{try{const d=JSON.parse(e.data);scheduledUpdate=d?.scheduled||null;renderUpdateSchedule()}catch{}});
  es.addEventListener('economic-calendar',e=>{try{window.dispatchEvent(new CustomEvent('signal-lab:econ-calendar',{detail:JSON.parse(e.data)}))}catch{}});
+ es.addEventListener('external-signal',e=>{try{window.dispatchEvent(new CustomEvent('signal-lab:external-signal',{detail:JSON.parse(e.data)}))}catch{}});
  es.onerror=()=>{if(es.readyState===EventSource.CLOSED)banner('서버 연결 종료','Node.js 서버를 다시 실행하세요.');$('socketStatus').innerHTML='<i class="dot red"></i><span>서버 재접속</span>'};
 }
 async function loadAll(){
