@@ -506,6 +506,16 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .tn-scalp-card header .paper-long{color:var(--up)}
 .tn-scalp-card header .paper-short{color:var(--down)}
 .tn-scalp-card header .tn-scalp-score{color:var(--rz-score);border-color:currentColor}
+.tn-scalp-card header .grade-s{color:#f5c66d}
+:root[data-theme="light"] .tn-scalp-card header .grade-s{color:#855200}
+.tn-scalp-card header .grade-a-plus{color:#d2a8ff}
+:root[data-theme="light"] .tn-scalp-card header .grade-a-plus{color:#7739a8}
+.tn-scalp-card header .grade-a{color:#91c7ff}
+:root[data-theme="light"] .tn-scalp-card header .grade-a{color:#195c9f}
+.tn-scalp-card header .grade-b-plus{color:#68ddc3}
+:root[data-theme="light"] .tn-scalp-card header .grade-b-plus{color:#006e5d}
+.tn-scalp-card header .grade-b{color:#b6becd}
+:root[data-theme="light"] .tn-scalp-card header .grade-b{color:#505c70}
 .tn-scalp-card .tn-zone{margin:6px 0 0}
 .paper-trade header .vp-badge{flex:none}
 .live-closed-list.tn-closed{display:block}
