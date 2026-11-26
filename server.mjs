@@ -1752,8 +1752,11 @@ function notifyExternalSignal(item,{notifyTelegram=true}={}){
  }
 }
 async function pollTelegramChannels({force=false}={}){
- if(!watchedTelegramChannels.length)return {ok:true,newAlerts:[],snapshot:telegramChannelWatch.snapshot()};
+ if(!watchedTelegramChannels.length)return {ok:true,checked:false,errors:[],newAlerts:[],snapshot:telegramChannelWatch.snapshot()};
  const r=await telegramChannelWatch.poll({force});
+ if(r.errors?.length){
+  for(const err of r.errors)console.warn(`[TG CHANNEL @${err.channel}]`,err.error);
+ }
  if(r.newAlerts?.length){
   for(const post of r.newAlerts){
    const prefill=channelPostPrefill(post);
@@ -1762,7 +1765,7 @@ async function pollTelegramChannels({force=false}={}){
    console.log(`[TG CHANNEL @${post.channel}]`,post.actionKo,post.symbol||'',post.side||'',post.url);
   }
   try{send('external-signal',{inbox:externalSignalsSnapshot()})}catch{}
- }else if(r.bootstrapped||force){
+ }else if(r.bootstrapped||r.checked||force){
   try{send('external-signal',{inbox:externalSignalsSnapshot()})}catch{}
  }
  return r;
@@ -2476,7 +2479,7 @@ const server=http.createServer(async(req,res)=>{
    pulse.unref?.();
    res._sseCleanup=()=>clearInterval(pulse);
    state.clients.add(res);
-   try{res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);if(scheduledAutoUpdate)res.write(`event: update-schedule\ndata: ${JSON.stringify({scheduled:scheduledUpdateSnapshot(),bootId:SERVER_BOOT_ID})}\n\n`)}catch{dropSseClient(res);return}
+   try{res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);res.write(`event: external-signal\ndata: ${JSON.stringify({inbox:externalSignalsSnapshot()})}\n\n`);if(scheduledAutoUpdate)res.write(`event: update-schedule\ndata: ${JSON.stringify({scheduled:scheduledUpdateSnapshot(),bootId:SERVER_BOOT_ID})}\n\n`)}catch{dropSseClient(res);return}
    const onClose=()=>dropSseClient(res);
    req.on('close',onClose);res.on('close',onClose);res.on('error',onClose);return;
   }
