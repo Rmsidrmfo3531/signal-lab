@@ -22,7 +22,7 @@ export const TRADER_LADDER=Object.freeze({
  // A strong zone counts as the add level when it lies at least this share of the spacing away from the last fill.
  zoneMinFrac:.5,zoneTouchPct:.3,zoneMinRejections:3,zoneBoost:2,
  tpNetPct:.6,
- maxHoldMin:2880, // 48 h (user 2026-11-25 01:10 "48시간까지 해보자 또 생기면 상한없음으로"; measured trader 99 % ≤ 24 h)
+ maxHoldMin:1440, // 24 h (user 2026-11-26: reduced from 48 h to 24 h; measured trader 99.1 % ≤ 24 h)
  // Spacing cap so the next add comes before the emergency line: the price distance from the average to the next add
  // is at most ~1.88 spacings on this ladder, kept under 90 % of the final line: spacing <= 0.45 x line / leverage.
  spacingCapShare:.45,

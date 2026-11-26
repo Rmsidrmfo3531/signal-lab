@@ -264,6 +264,7 @@ export function scalpExecConfig(env=process.env){
   // read with at most SCALP_WHALE_ZONE_MAX_PAGES aggTrades pages a call (1..30, default 10 = weight 200), 0 under 80 % read.
   whaleZoneHours:n('SCALP_WHALE_ZONE_HOURS',WHALE_ZONE_DEFAULTS.lookbackHours,1,24),
   whaleZoneMaxPages:n('SCALP_WHALE_ZONE_MAX_PAGES',WHALE_ZONE_DEFAULTS.maxPages,1,30),
+  whaleZoneTimeoutMs:n('SCALP_WHALE_ZONE_TIMEOUT_MS',5000,1000,15000),
   // Extreme funding + surging 30m OI squeeze guard: block SHORT on <=-0.10% funding + >=+2% OI, LONG on >=+0.10% + >=+2% OI.
   squeezeGuard:!['off','false','0','no'].includes(String(env.SCALP_SQUEEZE_GUARD??'').trim().toLowerCase()),
   squeezeFundingPct:n('SCALP_SQUEEZE_FUNDING_PCT',0.10,0.01,2),
@@ -284,12 +285,13 @@ export function scalpExecConfig(env=process.env){
   // 급변 알림 trigger (user 2026-11-24): on by default; only ever acts in TESTNET mode (LIVE is refused above).
   pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_PUMP_ALERTS??'').trim().toLowerCase()),
   // Position management (user 2026-11-24 21:33-21:35, scalp_ladder.mjs): TRADER_LADDER (default; copy-trader style
-  // 1·1·2·4·8·16 ladder, take profit on the average, 24 h, final line) or CURRENT (the management before). TESTNET only,
+  // 2·2·4·8·16 ladder, take profit on the average, 24 h, final line) or CURRENT (the management before). TESTNET only,
   // and only without the automatic stop (SCALP_STOP_LOSS=on keeps CURRENT).
   management:scalpManagementOf(env),
   ladderSpacingMinPct:n('SCALP_LADDER_SPACING_MIN_PCT',TRADER_LADDER.spacingMinPct,.3,10),
   ladderTpNetPct:n('SCALP_LADDER_TP_PCT',TRADER_LADDER.tpNetPct,.1,5),
   ladderMaxHoldMin:n('SCALP_LADDER_MAX_HOLD_MIN',TRADER_LADDER.maxHoldMin,60,4320),
+  ladderMakerWaitMs:n('SCALP_LADDER_MAKER_WAIT_MS',5000,200,15000),
   // Live-account safety rails (disabled = 0 on TESTNET by default so testnet verification is unaffected; active in scalpLiveExecConfig).
   hardStopRoePct:n('SCALP_HARD_STOP_ROE_PCT',0,0,95),
   minFreeAccountMarginPct:n('SCALP_MIN_FREE_MARGIN_PCT',0,0,90),
@@ -1090,15 +1092,23 @@ export class ScalpExecutor{
   if(this.cur?.symbol===symbol&&Number.isFinite(a)){this.cur.atr1hRead=true;this.cur.atr1h=a}
   return a;
  }
+ /** Outer timeout (default 5 s via SCALP_WHALE_ZONE_TIMEOUT_MS) and inner paging deadline (3.5 s at default) so
+  * WhaleTradeStore stops starting new pages cleanly before the outer timeout discards already-fetched pages. */
+ #whaleZoneTimeouts(){
+  const outerMs=Math.max(1000,Number(this.config.whaleZoneTimeoutMs)||5000);
+  const deadlineMs=Math.max(500,Math.min(outerMs-500,Math.round(outerMs*0.7)));
+  return {outerMs,deadlineMs};
+ }
  /** 고래 매물대 of a candidate (whale_zones.mjs, user 2026-11-25 09:51): whale (purple + brown) buy / sell zones by price over
   * the last whaleZoneHours, scored at the plan's entry price. The old window rule (move start .. now, at most 30 min) is
   * computed from the same read and kept under `window` for comparison only (never scored).
-  * Never throws and never waits more than 4 s: a failure or a timeout is 0 with WHALE_ZONE_UNAVAILABLE. */
+  * Never throws and never waits more than whaleZoneTimeoutMs (default 5 s; inner paging deadline 3.5 s). */
  async #whaleZoneFor(u,det,entry){
   const end=this.now(),lookbackMs=whaleZoneLookbackMs(this.config.whaleZoneHours);
-  const read=Promise.resolve().then(()=>this.whaleZones(u.symbol,{lookbackMs,endMs:end,direction:det.direction,scale:this.config.whaleCvdScale??'auto',maxPages:this.config.whaleZoneMaxPages??WHALE_ZONE_DEFAULTS.maxPages}))
+  const {outerMs,deadlineMs}=this.#whaleZoneTimeouts();
+  const read=Promise.resolve().then(()=>this.whaleZones(u.symbol,{lookbackMs,endMs:end,direction:det.direction,scale:this.config.whaleCvdScale??'auto',maxPages:this.config.whaleZoneMaxPages??WHALE_ZONE_DEFAULTS.maxPages,deadlineMs}))
    .catch(e=>({ok:false,error:String(e?.code||e?.message||e).slice(0,80)}));
-  const [snap,atr]=await Promise.all([withTimeout(read,WHALE_ZONE_DEFAULTS.timeoutMs,{ok:false,error:`timeout ${WHALE_ZONE_DEFAULTS.timeoutMs/1000}s`}),this.#atr1h(u.symbol).catch(()=>null)]);
+  const [snap,atr]=await Promise.all([withTimeout(read,outerMs,{ok:false,error:`timeout ${outerMs/1000}s`}),this.#atr1h(u.symbol).catch(()=>null)]);
   const zr=buildWhaleZones(snap,{price:entry,atrPct:atr});
   const ev=evaluateWhaleZoneBonus(snap,zr,{direction:det.direction,entry,atrPct:atr,bonus:this.config.whaleCvdBonus??WHALE_ZONE_DEFAULTS.bonus});
   // Comparison only: the PR #316 window rule on the same trades (review M3: it includes the spike itself).
@@ -1126,14 +1136,23 @@ export class ScalpExecutor{
   // cannot enter the same coin in between (review 2026-11-16).
   this.reserved.add(u.symbol);this.reservedDirections.set(u.symbol,det.direction);
   try{
-   const c=(await this.contracts(u.symbol).catch(()=>null))?.get?.(u.symbol);if(!c?.tradable)return skip('CONTRACT_UNAVAILABLE');
-   const price=pos(await withTimeout(this.priceOf(u.symbol,u.venueSymbol),3000));
-   const funds=await this.#funds();if(!funds)return skip('NO_BALANCE');
+   const maxSpread=Number(this.config.maxSpreadPct)||0;
+   const [contractsMap,rawPrice,funds,bk,levInfo,btcTrend4h]=await Promise.all([
+    this.contracts(u.symbol).catch(()=>null),
+    withTimeout(Promise.resolve().then(()=>this.priceOf(u.symbol,u.venueSymbol)),3000),
+    this.#funds(),
+    maxSpread>0&&typeof this.bookOf==='function'
+     ?withTimeout(Promise.resolve().then(()=>this.bookOf(u.symbol,u.venueSymbol)),2500).catch(()=>null):null,
+    typeof this.client.leverage==='function'
+     ?Promise.resolve().then(()=>this.client.leverage(u.venueSymbol)).catch(()=>null):null,
+    this.config.trendMode==='off'?null:this.#btcTrend4h(u.symbol).catch(()=>null),
+   ]);
+   const c=contractsMap?.get?.(u.symbol);if(!c?.tradable)return skip('CONTRACT_UNAVAILABLE');
+   const price=pos(rawPrice);
+   if(!funds)return skip('NO_BALANCE');
    const lowMargin=this.#accountMarginLow(funds);
    if(lowMargin)return skip('ACCOUNT_MARGIN_RESERVE',lowMargin);
-   const maxSpread=Number(this.config.maxSpreadPct)||0;
-   if(maxSpread>0&&typeof this.bookOf==='function'){
-    const bk=await withTimeout(Promise.resolve().then(()=>this.bookOf(u.symbol,u.venueSymbol)),2500).catch(()=>null);
+   if(maxSpread>0&&bk){
     const bid=pos(bk?.bid),ask=pos(bk?.ask),mid=bid&&ask?(bid+ask)/2:0;
     if(mid>0&&ask>=bid){
      const spPct=(ask-bid)/mid*100;
@@ -1141,7 +1160,7 @@ export class ScalpExecutor{
     }
    }
    let maxVenueLev=null;
-   try{const info=await this.client.leverage(u.venueSymbol),max=Number((det.direction==='SHORT'?info?.maxShortLeverage:info?.maxLongLeverage)??info?.maxLeverage);if(max>0)maxVenueLev=Math.floor(max)}catch{}
+   {const max=Number((det.direction==='SHORT'?levInfo?.maxShortLeverage:levInfo?.maxLongLeverage)??levInfo?.maxLeverage);if(max>0)maxVenueLev=Math.floor(max)}
    const lev=scalpAdaptiveLeverage({atr:det.atr,price:price??det.entry,baseLeverage:this.config.leverage,maxLeverage:maxVenueLev,config:this.config});
    const shared=this.budget?.snapshot(funds.equity,{who:'scalp'});
    if(shared&&!shared.ok)return skip('TESTNET_BUDGET_UNAVAILABLE');
@@ -1158,7 +1177,6 @@ export class ScalpExecutor{
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
    // Data-calibrated 100-point setup score (40-coin BingX 5m Train/OOS): filter negative-EV (<minScore) & scale up A/S setups.
-   const btcTrend4h=this.config.trendMode==='off'?null:await this.#btcTrend4h(u.symbol);
    let scalpScore=scoreScalpSetup({direction:det.direction,evidence:det.evidence,trend4h:this.cur?.trend4h??null,btcTrend4h,netRR:plan.netRR,config:this.config});
    // Backtest-validated confirmed-bounce sizing (C7, 40 coins Train/OOS): >=20% bounce (PF 3.55) -> 1.35x, <20% (PF 1.64) -> 0.8x.
    const minSc=Number(this.config.minScore)||0,oiBonusCfg=Number(this.config.orderflowOiBonus??5),cvdBonusCfg=Number(this.config.orderflowCvdBonus??5);
@@ -2548,8 +2566,9 @@ export class ScalpExecutor{
   // A full read is kept 15 min; a partial / failed one (retryAt) only until its 5 min retry.
   if(L.whaleZones&&(L.whaleZones.retryAt!=null?L.whaleZones.retryAt>now:now-L.whaleZones.at<WHALE_ZONE_DEFAULTS.storeTtlMs))return L.whaleZones.list||[];
   const lookbackMs=whaleZoneLookbackMs(this.config.whaleZoneHours);
-  const snap=await withTimeout(Promise.resolve().then(()=>this.whaleZones(p.symbol,{lookbackMs,endMs:now,direction:p.direction,scale:this.config.whaleCvdScale??'auto',maxPages:this.config.whaleZoneMaxPages??WHALE_ZONE_DEFAULTS.maxPages})),
-   WHALE_ZONE_DEFAULTS.timeoutMs,{ok:false,error:'timeout'}).catch(e=>({ok:false,error:String(e?.message||e).slice(0,80)}));
+  const {outerMs,deadlineMs}=this.#whaleZoneTimeouts();
+  const snap=await withTimeout(Promise.resolve().then(()=>this.whaleZones(p.symbol,{lookbackMs,endMs:now,direction:p.direction,scale:this.config.whaleCvdScale??'auto',maxPages:this.config.whaleZoneMaxPages??WHALE_ZONE_DEFAULTS.maxPages,deadlineMs})),
+   outerMs,{ok:false,error:`timeout ${outerMs/1000}s`}).catch(e=>({ok:false,error:String(e?.message||e).slice(0,80)}));
   // The score's own test (whaleSnapshotUsable): >= 80 % of the lookback read and reaching within 60 s of now; a read whose
   // newer pages failed is never used with its old zones (review 2026-11-25).
   const use=whaleSnapshotUsable(snap),enough=use.usable;
@@ -2622,14 +2641,15 @@ export class ScalpExecutor{
   else this.#save();
   return true;
  }
- /** Whole position at the average + tpNetPct % net of fees: a reduce-only IOC limit AT the take-profit price (never a
-  * worse fill), sent when the mark is there. Unfilled: tried again at the next check. */
+ /** Whole position at the average + tpNetPct % net of fees: when makerExit !== false, tries a reduce-only PostOnly
+  * limit at/above tp first and falls back to IOC ONLY for the unfilled remainder (never a worse fill). */
  async #ladderTakeProfit(p,mark,size){
   const L=p.ladder,dir=dirOf(p.direction),tp=this.#ladderTp(p);
   L.tpPrice=tp;
   if(!(tp>0&&mark>0&&dir*(mark-tp)>=0))return false;
   const qty=Number(grid(size,p.quantityStep,'DOWN'));if(!(qty>0))return false;
   const n=L.exitTries=(L.exitTries||0)+1,cid=(p.id+'lx'+n).slice(0,40);
+  const side=closeSide(p.direction),posSide=positionSideFor({hedge:p.hedge===true,direction:p.direction});
   // First attempt uses exact tp; on unfilled retries (thin alt spread), allow a 1-tick marketable buffer if strictly above fee-net breakeven.
   let limitPrice=tp;
   const tick=pos(p.tickSize);
@@ -2640,11 +2660,76 @@ export class ScalpExecutor{
    const buf=Number(grid(tp-dir*tick,p.tickSize,dir>0?'DOWN':'UP'));
    if(buf>0&&dir*(buf-be)>0)limitPrice=buf;
   }
-  L.exit={clientOrderId:cid,qty,price:limitPrice,at:this.now()};this.#save();
+  let remQty=qty;
+  // Maker-first profit exit: try PostOnly (0.02% fee) for makerExitWaitMs, then cancel & IOC only the unfilled remainder.
+  if(this.config.makerExit!==false&&typeof this.client.getOrder==='function'&&typeof this.client.cancelOrder==='function'){
+   const rawMakerPx=makerLimitPrice({side,markPrice:mark,tickSize:p.tickSize});
+   const safeMakerPx=rawMakerPx>0?(dir>0?Math.max(rawMakerPx,tp):Math.min(rawMakerPx,tp)):tp;
+   const makerPxStr=safeMakerPx>0?(grid(safeMakerPx,p.tickSize,beMode(p.direction))??String(safeMakerPx)):null;
+   if(makerPxStr){
+    const makerCid=(cid.slice(0,39)+'p');
+    L.exit={clientOrderId:makerCid,qty,price:Number(makerPxStr),at:this.now(),maker:true};this.#save();
+    let makerRes=null,makerRejected=false;
+    try{
+     makerRes=orderOf(await this.client.placeOrder(forMode({symbol:p.venueSymbol,side,positionSide:posSide,
+      type:'LIMIT',timeInForce:'PostOnly',price:makerPxStr,quantity:String(qty),reduceOnly:'true',clientOrderId:makerCid},p.hedge===true)));
+    }catch(e){
+     if(e?.code==='HTTP_429'||e?.code==='VENUE_ERROR_109429')this.cooldownUntil=this.now()+60000;
+     if(/^(?:VENUE_ERROR_\d+|HTTP_4\d\d)$/.test(String(e?.code||''))||/post.?only|gtx|immediately|would match|cross|101415|101400|80014/i.test(String(e?.code||'')+' '+String(e?.message||''))){
+      makerRejected=true;delete L.exit;this.#save();
+     }else{
+      this.#event('RECONCILE_ERROR',{symbol:p.symbol,reason:e?.code||e?.message});
+      return true;
+     }
+    }
+    if(!makerRejected){
+     const TERMINAL=new Set(['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED']);
+     let latest=makerRes,status=String(latest?.status||'NEW').toUpperCase(),oid=orderId(latest);
+     const waitMs=Math.max(0,Number(this.config.makerExitWaitMs??1200));
+     const pollMs=Math.max(20,Math.min(300,waitMs||20));
+     const deadline=Date.now()+waitMs;
+     const readOrder=async()=>{
+      const fresh=orderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:makerCid,...(oid?{orderId:oid}:{})}));
+      if(fresh){latest=fresh;status=String(fresh.status||'').toUpperCase()||status;if(!oid&&orderId(fresh))oid=orderId(fresh)}
+     };
+     while(!TERMINAL.has(status)&&Date.now()<deadline){
+      await sleep(Math.min(pollMs,Math.max(0,deadline-Date.now())));
+      try{await readOrder()}catch{break}
+     }
+     if(!TERMINAL.has(status)){
+      for(let attempt=0;attempt<3&&!TERMINAL.has(status);attempt++){
+       if(attempt===0||attempt===2){try{await this.client.cancelOrder(p.venueSymbol,oid??undefined,{clientOrderId:makerCid})}catch{}}
+       if(attempt>0)await sleep(Math.min(200,pollMs));
+       try{await readOrder()}catch{}
+      }
+     }
+     if(!TERMINAL.has(status)){
+      // State still unconfirmed: leave L.exit tracking makerCid so next reconcile resolves without double-closing.
+      return this.#ladderExitResult(p,latest);
+     }
+     const mid=orderId(latest);
+     if(mid&&!p.exitIds.includes(mid))p.exitIds.push(mid);
+     const makerFilled=pos(latest?.executedQty)??0;
+     if(makerFilled>0)L.size=Math.max(0,+(L.size-makerFilled).toFixed(12));
+     remQty=Number(grid(Math.max(0,Number((qty-makerFilled).toPrecision(12))),p.quantityStep,'DOWN'))||0;
+     delete L.exit;
+     if(!(remQty>0)){
+      p.exitReason='LADDER_TAKE_PROFIT';
+      this.#save();
+      const nowPos=await this.#position(p.venueSymbol,p.direction,p.hedge===true).catch(()=>null);
+      if(nowPos&&!(nowPos.size>0))await this.#finish(p,'LADDER_TAKE_PROFIT');
+      return true;
+     }
+     if(makerFilled>0)p.everReduced=true;
+     this.#save();
+    }
+   }
+  }
+  L.exit={clientOrderId:cid,qty:remQty,price:limitPrice,at:this.now()};this.#save();
   let o;
   try{
-   o=orderOf(await this.client.placeOrder(forMode({symbol:p.venueSymbol,side:closeSide(p.direction),positionSide:positionSideFor({hedge:p.hedge===true,direction:p.direction}),
-    type:'LIMIT',timeInForce:'IOC',price:String(limitPrice),quantity:String(qty),reduceOnly:'true',clientOrderId:cid},p.hedge===true)));
+   o=orderOf(await this.client.placeOrder(forMode({symbol:p.venueSymbol,side,positionSide:posSide,
+    type:'LIMIT',timeInForce:'IOC',price:String(limitPrice),quantity:String(remQty),reduceOnly:'true',clientOrderId:cid},p.hedge===true)));
   }catch(e){
    if(e?.code==='HTTP_429'||e?.code==='VENUE_ERROR_109429')this.cooldownUntil=this.now()+60000;
    // A refusal from the venue: nothing was placed. Anything else (no answer): looked up by its id at the next check.
@@ -2673,6 +2758,11 @@ export class ScalpExecutor{
   try{o=ladderOrderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:L.exit.clientOrderId}))}
   catch(e){if(orderAbsent(e)||old){delete L.exit;this.#save();return true}return false}
   if(!o){if(old){delete L.exit;this.#save();return true}return false}
+  const st=String(o?.status||'').toUpperCase();
+  if(L.exit?.maker&&!['FILLED','CANCELED','CANCELLED','EXPIRED','REJECTED','FAILED'].includes(st)&&typeof this.client.cancelOrder==='function'){
+   try{await this.client.cancelOrder(p.venueSymbol,orderId(o)??undefined,{clientOrderId:L.exit.clientOrderId})}catch{}
+   try{const fresh=ladderOrderOf(await this.client.getOrder(p.venueSymbol,{clientOrderId:L.exit.clientOrderId}));if(fresh)o=fresh}catch{}
+  }
   await this.#ladderExitResult(p,o);
   return p.status==='OPEN'&&!L.exit;
  }
@@ -2723,7 +2813,7 @@ export class ScalpExecutor{
    if(maker){
     const exec=await placeMakerThenMarket({client:cl,symbol:vs,side:openSide(p.direction),positionSide:positionSideFor({hedge,direction:p.direction}),
      quantity:qty,quantityStep:p.quantityStep,minQuantity:L.minQty,tickSize:p.tickSize,markPrice:price,hedge,clientOrderId:id,
-     waitMs:this.config.makerWaitMs??2500,pollMs:this.config.makerPollMs??400,beforeSend:guard});
+     waitMs:this.config.ladderMakerWaitMs??this.config.makerWaitMs??5000,pollMs:this.config.makerPollMs??400,beforeSend:guard});
     Object.assign(L.pending,{executionMode:exec.executionMode||'MARKET',reportedQty:pos(exec.filledQty),reportedPrice:pos(exec.avg)});
    }else{
     const o=orderOf(await cl.placeOrder({symbol:vs,side:openSide(p.direction),positionSide:positionSideFor({hedge,direction:p.direction}),type:'MARKET',quantity:String(qty),clientOrderId:id},{beforeSend:guard}));

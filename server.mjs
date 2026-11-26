@@ -1246,10 +1246,10 @@ function whaleZoneThresholds(symbol,scale){
  const qv=sym=>Number((rawMarketTickers||[]).find(t=>t?.symbol===sym)?.quoteVolume)||null;
  return whaleThresholds({mode:scale,quoteVolume24h:qv(symbol),referenceQuoteVolume24h:qv(WHALE_CVD_DEFAULTS.referenceSymbol)});
 }
-function scalpWhaleZones(symbol,{lookbackMs,endMs,scale='auto',maxPages=WHALE_ZONE_DEFAULTS.maxPages,reservePct=WHALE_ZONE_DEFAULTS.reservePct}={}){
+function scalpWhaleZones(symbol,{lookbackMs,endMs,scale='auto',maxPages=WHALE_ZONE_DEFAULTS.maxPages,reservePct=WHALE_ZONE_DEFAULTS.reservePct,deadlineMs=WHALE_ZONE_DEFAULTS.timeoutMs}={}){
  if(!state.activeSet.has(symbol))return {ok:false,error:'NOT_ON_BINANCE'};
  return whaleTradeStore.read(symbol,{request:url=>budgetedPublicRead(url,{budget:publicReadBudget,timeoutMs:WHALE_ZONE_DEFAULTS.timeoutMs}),budget:()=>publicReadBudget.snapshot(),
-  thresholds:whaleZoneThresholds(symbol,scale),lookbackMs,endMs,maxPages,reservePct});
+  thresholds:whaleZoneThresholds(symbol,scale),lookbackMs,endMs,maxPages,reservePct,deadlineMs});
 }
 // ATR(1H) for GET /api/whale-zones (bin width / K): Binance 1H klines (weight 1) on the same budget path, 5 min per symbol.
 const whaleAtrCache=new Map();
