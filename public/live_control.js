@@ -816,9 +816,10 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
  }:rawDetails;
  const riskVal=fin(p.riskUSD)?Number(p.riskUSD)*sc:p.riskUSD;
  const scaleBadge=sc<1?`<span class="vp-badge" title="기존 VST 포지션을 기준 자본(${tnUsd(budget?.capitalCapUSD)})에 비례 환산해 표시 (신규 매매는 1:1)">비례환산</span>`:'';
- const scoreBadge=fin(p.scalpScore?.score)?`<span class="vp-badge" title="${esc(p.scalpScore.summary||'')}">${esc(p.scalpScore.score)}점 ${esc(p.scalpScore.grade||'')}급${Number.isFinite(Number(p.scalpScore.sizeMult))&&Math.abs(Number(p.scalpScore.sizeMult)-1)>1e-4?` · ${esc(p.scalpScore.sizeMult)}x`:''}</span>`:'';
  // 카피식 추매 (TRADER_LADDER, user 2026-11-24): step, average, next add, take profit instead of stop / targets.
  const lv=p.management==='TRADER_LADDER'?p.ladderView??null:null;
+ const showMult=!lv&&Number.isFinite(Number(p.scalpScore?.sizeMult))&&Math.abs(Number(p.scalpScore.sizeMult)-1)>1e-4;
+ const scoreBadge=fin(p.scalpScore?.score)?`<span class="vp-badge" title="${esc(p.scalpScore.summary||'')}">${esc(p.scalpScore.score)}점 ${esc(p.scalpScore.grade||'')}급${showMult?` · ${esc(p.scalpScore.sizeMult)}x`:''}</span>`:'';
  const ofJump=p.symbol?`<button type="button" class="vp-act-btn" data-open-orderflow="${esc(p.symbol)}" title="이 종목의 호가·CVD·청산맵(FireCharts 호가 히트맵·금액대별 새우~고래 CVD) 보기">수급/CVD</button>`:'';
  return `<article class="paper-trade live-position tn-scalp-card${p.status&&p.status!=='OPEN'?' live-warn':''}">
  <header><b>${esc(p.symbol)}</b>${scalpBadge(p.kind)}${scoreBadge}${scaleBadge}${side(p.direction||'LONG')}${ofJump}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · BingX</span><span class="live-state s-${esc(p.status||'OPEN')}">${esc(p.status==='OPEN'||!p.status?'보유 중':p.status)}</span></header>
