@@ -127,6 +127,64 @@ export function renderExternalSignalListHTML(items){
  }).join('');
 }
 
+export function renderChannelWatchHTML(cw){
+ if(!cw||!cw.enabled)return '';
+ const channels=Array.isArray(cw.channels)?cw.channels:[];
+ const posts=Array.isArray(cw.posts)?cw.posts:[];
+ const chChips=channels.map(c=>{
+  const safeChUrl=/^https:\/\/t\.me\/[A-Za-z0-9_]+$/.test(c.url||'')?c.url:'';
+  const err=c.lastError?` · ⚠️ ${esc(c.lastError)}`:'';
+  const filt=c.filteredCount>0?` · 비매매 ${c.filteredCount}건 제외`:'';
+  const ts=c.lastCheckedAt?` · ${esc(kstClock(c.lastCheckedAt))} 확인`:'';
+  const label=`@${esc(c.handle)}${c.title&&c.title!==c.handle?` (${esc(c.title)})`:''}`;
+  return `<span class="ext-ch-pill">${safeChUrl?`<a href="${esc(safeChUrl)}" target="_blank" rel="noopener noreferrer">${label} ↗</a>`:label}<small>${ts}${filt}${err}</small></span>`;
+ }).join('');
+ const cards=posts.length?posts.slice(0,15).map(p=>{
+  const sideCls=p.side==='LONG'?'long':p.side==='SHORT'?'short':'';
+  const sideKo=p.side==='LONG'?'🟢 롱 (LONG)':p.side==='SHORT'?'🔴 숏 (SHORT)':'';
+  const canFill=Boolean(p.symbol&&['LONG','SHORT'].includes(p.side)&&!['CLOSE','LIQUIDATION','REDUCE'].includes(p.action));
+  const safePostUrl=/^https:\/\/t\.me\/[A-Za-z0-9_]+\/\d+$/.test(p.url||'')?p.url:'';
+  const chips=[];
+  chips.push(`<span class="ext-chip">${esc(p.emoji||'📌')} <b>${esc(p.actionKo||'매매')}</b></span>`);
+  if(p.symbol)chips.push(`<span class="ext-chip sym">${esc(p.symbol)}</span>`);
+  if(sideKo)chips.push(`<span class="ext-chip ${sideCls}">${sideKo}</span>`);
+  if(p.entryPrice)chips.push(`<span class="ext-chip">평단 <b>${esc(fmtPrice(p.entryPrice))}</b></span>`);
+  if(p.markPrice)chips.push(`<span class="ext-chip">마크 <b>${esc(fmtPrice(p.markPrice))}</b></span>`);
+  if(p.liqPrice)chips.push(`<span class="ext-chip sl">청산가 <b>${esc(fmtPrice(p.liqPrice))}</b></span>`);
+  if(p.leverage)chips.push(`<span class="ext-chip">${esc(p.leverage)}x</span>`);
+  if(p.marginMode)chips.push(`<span class="ext-chip">${p.marginMode==='ISOLATED'?'격리':'교차'}</span>`);
+  if(p.pnlText)chips.push(`<span class="ext-chip rr">${esc(p.pnlText)}</span>`);
+  return `
+   <article class="ext-card ext-ch-card">
+    <div class="ext-card-top">
+     <div class="ext-card-meta">
+      <span class="ext-src-tag">@${esc(p.channel)} #${esc(p.postNum)}</span>
+      <small class="ext-time">${esc(kstShort(p.publishedAt||p.receivedAt))} KST</small>
+      ${p.bootstrapped?'<span class="ext-ch-tag">최근 기록</span>':'<span class="ext-status-tag is-new">실시간 알림</span>'}
+     </div>
+     <div class="ext-card-actions">
+      ${canFill?`<button type="button" class="outline-btn small ext-fill-btn" data-ext-ch-prefill="${esc(p.id)}">⚡ 주문창 채우기</button>`:''}
+      ${safePostUrl?`<a class="outline-btn small ext-link-btn" href="${esc(safePostUrl)}" target="_blank" rel="noopener noreferrer">원문 ↗</a>`:''}
+     </div>
+    </div>
+    <div class="ext-chips">${chips.join('')}</div>
+    <div class="ext-ko-body">${esc(p.translatedText||p.text||'')}</div>
+    <details class="ext-orig-fold"><summary>중국어 원문 보기</summary><div class="ext-raw">${esc(p.text||'')}</div></details>
+   </article>`;
+ }).join(''):`<div class="ext-empty">아직 수집된 매매 게시글이 없습니다. 30초마다 자동 확인하며 광고·비매매·무포지션 글은 자동 제외됩니다.</div>`;
+ return `
+  <div class="ext-channel-wrap">
+   <div class="ext-inbox-head">
+    <span class="ext-subhead">📡 텔레그램 공개 채널 한국어 번역 알림 (매매 글만 · 자동 주문 없음)</span>
+    <div class="ext-inbox-tools">
+     <button type="button" class="outline-btn small" data-ext-ch-refresh="1">↻ 지금 확인</button>
+    </div>
+   </div>
+   <div class="ext-ch-pills">${chChips}</div>
+   <div class="ext-list">${cards}</div>
+  </div>`;
+}
+
 export function renderExternalSignalBarHTML(inbox,{parsed=null,webhookOrigin=''}={}){
  const items=Array.isArray(inbox?.items)?inbox.items:[];
  const webhookConfigured=Boolean(inbox?.webhookConfigured);
@@ -152,6 +210,7 @@ export function renderExternalSignalBarHTML(inbox,{parsed=null,webhookOrigin=''}
      <span class="ext-feedback" data-ext-feedback="1" role="status" aria-live="polite"></span>
     </div>
    </div>
+   <div data-ext-channel-slot="1">${renderChannelWatchHTML(inbox?.channelWatch)}</div>
    <div class="ext-inbox-wrap">
     <div class="ext-inbox-head">
      <span class="ext-subhead">최근 외부 신호 알림함 (<b data-ext-count="1">${items.length}</b>건)</span>
@@ -167,7 +226,7 @@ export function renderExternalSignalBarHTML(inbox,{parsed=null,webhookOrigin=''}
     <div class="ext-guide-body">
      <p>1. 외부 사이트(<code>ggang-study.fly.dev</code> 등)가 <b>공식 웹훅 전송</b>이나 <b>본인 텔레그램 봇/포워더</b>를 지원할 때만 연결하세요. 로그인 우회나 무단 크롤링은 수행하지 않습니다.</p>
      <p>2. Signal Lab 데이터 폴더의 <code>.env</code>에 <code>EXTERNAL_SIGNAL_WEBHOOK_SECRET=원하는_긴_비밀키</code>를 추가하고 서버를 재시작하면 아래 엔드포인트가 활성화됩니다.</p>
-     <p>3. 웹훅이 들어오면 <b>자동 주문 없이</b> 대시보드 브라우저/사운드 알림과 기존 설정된 텔레그램(<code>TELEGRAM_BOT_TOKEN</code> / <code>TELEGRAM_CHAT_ID</code>)으로 즉시 알림이 오며, 알림 클릭 또는 <b>⚡ 주문창 채우기</b>로 수동 주문을 진행할 수 있습니다.</p>
+     <p>3. 공개 텔레그램 채널 번역 감시 대상은 <code>.env</code>의 <code>WATCH_TELEGRAM_CHANNELS</code>로 변경·추가할 수 있습니다 (기본값: <code>aoying999</code>, 끄기: <code>off</code>).</p>
      <pre class="ext-code"><code>${esc(curlExample)}</code></pre>
     </div>
    </details>
@@ -177,7 +236,7 @@ export function renderExternalSignalBarHTML(inbox,{parsed=null,webhookOrigin=''}
 if(typeof document!=='undefined'&&typeof window!=='undefined'){
  const host=document.getElementById('externalSignalBar');
  if(host){
-  let inbox={ok:true,webhookConfigured:false,webhookPath:'/api/external-signals/webhook',unreadCount:0,totalCount:0,items:[]};
+  let inbox={ok:true,webhookConfigured:false,webhookPath:'/api/external-signals/webhook',unreadCount:0,totalCount:0,items:[],channelWatch:null};
   let lastParsed=null;
   let parseTimer=null;
   let mounted=false;
@@ -209,6 +268,9 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
    if(unread>0){
     navBadge.textContent=`대기 ${unread}`;
     navBadge.className='navright tone-warn';
+   }else if(inbox?.channelWatch?.enabled){
+    navBadge.textContent='감시중';
+    navBadge.className='navright tone-pos';
    }else if(inbox?.webhookConfigured){
     navBadge.textContent='웹훅';
     navBadge.className='navright tone-pos';
@@ -227,6 +289,8 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
    }
    const sumEl=host.querySelector('[data-ext-summary-slot]');
    if(sumEl)sumEl.innerHTML=renderExternalSignalSummaryHTML(inbox);
+   const chEl=host.querySelector('[data-ext-channel-slot]');
+   if(chEl)chEl.innerHTML=renderChannelWatchHTML(inbox.channelWatch);
    const listEl=host.querySelector('[data-ext-list-slot]');
    if(listEl)listEl.innerHTML=renderExternalSignalListHTML(inbox.items);
    const cntEl=host.querySelector('[data-ext-count]');
@@ -297,6 +361,39 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
     const id=prefillBtn.getAttribute('data-ext-prefill');
     const item=(inbox.items||[]).find(x=>x.id===id);
     if(item&&prefillManualOrder(item))void setItemStatus(id,'LOADED');
+    return;
+   }
+   const chPrefillBtn=e.target.closest?.('[data-ext-ch-prefill]');
+   if(chPrefillBtn){
+    e.preventDefault();e.stopPropagation();
+    const id=chPrefillBtn.getAttribute('data-ext-ch-prefill');
+    const post=(inbox.channelWatch?.posts||[]).find(x=>x.id===id);
+    if(post){
+     prefillManualOrder({
+      symbol:post.symbol,
+      side:post.side,
+      orderType:'MARKET',
+      entryPrice:null,
+      leverage:post.leverage&&post.leverage>=1&&post.leverage<=125?Math.round(post.leverage):null,
+      marginMode:post.marginMode||null,
+      source:`@${post.channel}`,
+     });
+    }
+    return;
+   }
+   const chRefreshBtn=e.target.closest?.('[data-ext-ch-refresh]');
+   if(chRefreshBtn){
+    e.preventDefault();
+    chRefreshBtn.disabled=true;
+    setFeedback('공개 채널 최신 매매 글 확인 중…');
+    try{
+     const r=await fetch('/api/external-signals/channels/refresh',{method:'POST'});
+     const d=await r.json().catch(()=>null);
+     if(d?.inbox){inbox=d.inbox;syncDom()}
+     setFeedback(d?.newCount>0?`🔔 새 매매 글 ${d.newCount}건을 번역해 알림 발송했습니다.`:'최신 매매 글 확인 완료 (새 글 없음).');
+    }catch(err){
+     setFeedback('채널 확인 오류: '+(err?.message||err),true);
+    }finally{chRefreshBtn.disabled=false}
     return;
    }
    const dismissBtn=e.target.closest?.('[data-ext-dismiss]');

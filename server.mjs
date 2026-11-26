@@ -43,6 +43,7 @@ import {buildMarketCommentary} from './market_commentary.mjs';
 import {appendDominanceHistory,buildMarketDominanceReport,fetchGlobalDominance} from './market_dominance.mjs';
 import {buildEconomicCalendarReport,fetchEconomicCalendar,isReleaseWatchWindow,findNewlyReleasedEvents} from './economic_calendar.mjs';
 import {ExternalSignalInbox,parseExternalSignalText,verifyWebhookSecret,formatExternalSignalNotice,formatExternalSignalTelegram} from './external_signal_inbox.mjs';
+import {TelegramChannelWatcher,parseChannelHandles,formatChannelAlertNotice,formatChannelAlertTelegram,channelPostPrefill} from './telegram_channel_watch.mjs';
 import {PublicReadBudget,budgetedPublicRead} from './public_read_budget.mjs';
 import {FEEDS,prepareNews,shouldNotifyArticle} from './news.mjs';
 import {VenueQuoteService,parseVenueSymbols} from './venue_service.mjs';
@@ -1717,7 +1718,20 @@ async function refreshEconomicCalendar({force=false}={}){
 // External signal alert inbox & manual-order helper (NEVER executes orders automatically).
 const externalWebhookSecret=String(process.env.EXTERNAL_SIGNAL_WEBHOOK_SECRET||'').trim();
 const externalSignals=new ExternalSignalInbox({filePath:path.join(storage.dir,'external-signals.json')});
-function externalSignalsSnapshot(){return externalSignals.snapshot({webhookConfigured:Boolean(externalWebhookSecret)})}
+// Public Telegram channel monitor (default: aoying999) — trading posts only, translated Chinese -> Korean, zero auto-orders.
+const watchedTelegramChannels=parseChannelHandles(process.env.WATCH_TELEGRAM_CHANNELS);
+const watchedTelegramPollMs=Math.max(15000,Number(process.env.WATCH_TELEGRAM_POLL_MS)||30000);
+const telegramChannelWatch=new TelegramChannelWatcher({
+ channels:watchedTelegramChannels,
+ filePath:path.join(storage.dir,'telegram-channel-watch.json'),
+ translate:googleTranslate,
+});
+function externalSignalsSnapshot(){
+ return {
+  ...externalSignals.snapshot({webhookConfigured:Boolean(externalWebhookSecret)}),
+  channelWatch:telegramChannelWatch.snapshot(),
+ };
+}
 function notifyExternalSignal(item,{notifyTelegram=true}={}){
  if(!item)return;
  const prefill={
@@ -1736,6 +1750,26 @@ function notifyExternalSignal(item,{notifyTelegram=true}={}){
  if(notifyTelegram){
   try{void sendTradeTelegram(formatExternalSignalTelegram(item))}catch{}
  }
+}
+async function pollTelegramChannels({force=false}={}){
+ if(!watchedTelegramChannels.length)return {ok:true,newAlerts:[],snapshot:telegramChannelWatch.snapshot()};
+ const r=await telegramChannelWatch.poll({force});
+ if(r.newAlerts?.length){
+  for(const post of r.newAlerts){
+   const prefill=channelPostPrefill(post);
+   try{send('live-notice',{type:'EXTERNAL_SIGNAL',hash:prefill?'#real':'#signals',symbol:post.symbol||post.channel,text:formatChannelAlertNotice(post),prefill,at:post.receivedAt})}catch{}
+   try{void sendTradeTelegram(formatChannelAlertTelegram(post))}catch{}
+   console.log(`[TG CHANNEL @${post.channel}]`,post.actionKo,post.symbol||'',post.side||'',post.url);
+  }
+  try{send('external-signal',{inbox:externalSignalsSnapshot()})}catch{}
+ }else if(r.bootstrapped||force){
+  try{send('external-signal',{inbox:externalSignalsSnapshot()})}catch{}
+ }
+ return r;
+}
+if(watchedTelegramChannels.length){
+ setTimeout(()=>{void pollTelegramChannels({force:true}).catch(e=>console.warn('[TG CHANNEL]',e.message))},4000).unref?.();
+ setInterval(()=>{void pollTelegramChannels().catch(e=>console.warn('[TG CHANNEL]',e.message))},watchedTelegramPollMs).unref?.();
 }
 async function refreshVenueOnlyList(){
  if(!CONFIG.venueOnly.enabled||!state.activeSymbols.length)return;
@@ -3040,6 +3074,10 @@ const server=http.createServer(async(req,res)=>{
   // External signal alert inbox & manual-order helper (NEVER places automatic orders).
   if(pathname==='/api/external-signals'&&req.method==='GET'){
    return response(res,200,externalSignalsSnapshot());
+  }
+  if(pathname==='/api/external-signals/channels/refresh'&&req.method==='POST'){
+   const r=await pollTelegramChannels({force:true});
+   return response(res,200,{ok:true,newCount:r.newAlerts?.length||0,inbox:externalSignalsSnapshot()});
   }
   if(pathname==='/api/external-signals/parse'&&req.method==='POST'){
    const body=await bodyJson(req);
