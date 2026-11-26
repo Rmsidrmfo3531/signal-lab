@@ -37,6 +37,7 @@ import {evaluateScalpOrderflowBoost,evaluateScalpSqueezeGuard} from './orderflow
 import {evaluateWhaleCvdBonus,whaleCvdRecord,whaleCvdSummaryKo,whaleScaleMode,WHALE_CVD_DEFAULTS} from './whale_cvd.mjs';
 import {buildWhaleZones,evaluateWhaleZoneBonus,whaleZoneRecord,whaleZoneSummaryKo,whaleWindowSnapshot,whaleLadderZones,whaleSplitOf,whaleSnapshotUsable,whaleZoneLookbackMs,whaleZoneBinPct,whaleZoneNearPct,WHALE_SPLIT_KEYS,WHALE_ZONE_DEFAULTS,WHALE_ZONE_RULE} from './whale_zones.mjs';
 import {waitForFlat} from './live_orders.mjs';
+import {venueRows,normalizeVenuePosition} from './venue_positions.mjs';
 import {appendJsonl,readJsonl,tailJsonl,candleShape,trackExcursion,journalLine,scalpMargin,signalsPath,SCALP_JOURNAL_FILE,SCALP_SIGNALS_FILE,SIGNALS_MAX_BYTES} from './scalp_journal.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,forMode,positionRow,orderOnSide,otherSideAmount} from './bingx_position_mode.mjs';
 import {detectScalpReversal,buildScalpPlan,SCALP_DEFAULTS,SCALP_TIMEFRAMES,fourHourTrend,trendAllows,scoreScalpSetup,scalpScoreGrade,parseScalpScoreTiers,SCALP_SCORE_DEFAULTS,SCALP_SCORE_TIERS,SCALP_SCORE_TIER_MULTS,SCALP_GRADES} from './scalp_reversal.mjs';
@@ -675,7 +676,8 @@ export class ScalpExecutor{
   // 급변 알림 candidates: after this candle's scan, once per 5m close each.
   if(this.pumpWatch.size&&!this.scanning&&this.lastScanBucket===bucket)await this.#pumpTick();
   const every=this.store.open.length?(this.config.stopLossEnabled===false?5000:15000):60000;
-  if(!this.reconciling&&this.client&&now-this.lastReconcileAt>=every&&(this.store.open.length||this.armed||this.store.closed.some(x=>!x.journaled)))await this.reconcile();
+  const hasRecoverableExternal=this.config.mode==='TESTNET'&&this.store.closed.some(x=>x.closeReason==='EXTERNAL'&&!x.realized&&now-(x.closedAt||0)<7*86400000);
+  if(!this.reconciling&&this.client&&now-this.lastReconcileAt>=every&&(this.store.open.length||this.armed||hasRecoverableExternal||this.store.closed.some(x=>!x.journaled)))await this.reconcile();
  }
  async #refreshUniverse(now){
   if(this.universe.length&&now-this.universeAt<this.config.universeRefreshMs)return;
@@ -2792,7 +2794,14 @@ export class ScalpExecutor{
   if(this.reconciling||!this.client)return;this.reconciling=true;this.lastReconcileAt=this.now();
   try{
    let list=null;
-   if(this.store.open.length){try{list=await this.client.positions()}catch(e){if(e?.code==='HTTP_429'||e?.code==='VENUE_ERROR_109429')this.cooldownUntil=this.now()+60000;this.#event('RECONCILE_ERROR',{reason:e?.code||e?.message});return}}
+   const hasRecoverableExternal=this.config.mode==='TESTNET'&&this.store.closed.some(x=>x.closeReason==='EXTERNAL'&&!x.realized&&this.now()-(x.closedAt||0)<7*86400000);
+   if(this.store.open.length||hasRecoverableExternal){
+    try{
+     const rawList=await this.client.positions();
+     list=venueRows(rawList);
+     if(!list){this.#event('RECONCILE_ERROR',{reason:'BAD_POSITIONS_RESPONSE'});return}
+    }catch(e){if(e?.code==='HTTP_429'||e?.code==='VENUE_ERROR_109429')this.cooldownUntil=this.now()+60000;this.#event('RECONCILE_ERROR',{reason:e?.code||e?.message});return}
+   }
    let unrealized=0;
    for(const p of [...this.store.open]){
     // An entry still being placed (its stop / targets not yet sent) is left to the entry path.
@@ -2811,7 +2820,7 @@ export class ScalpExecutor{
       if(this.config.stopLossEnabled===false&&!(Number(this.config.hardStopRoePct)>0))await this.#retireStop(p);
       await this.#recoverAdd(p);continue;
      }
-     let {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true);const mark=pos(row?.markPrice);
+     let {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true);let mark=pos(row?.markPrice);
      if(p.earlyTakeProfit){
       try{this.#recordEarlyTakeProfit(p,await this.client.getOrder(p.venueSymbol,{clientOrderId:p.earlyTakeProfit.clientOrderId}))}
       catch(e){
@@ -2826,16 +2835,7 @@ export class ScalpExecutor{
      // symbol's fund flow (its PnL and funding would be mixed in, review 2026-11-17); the fill estimate stays.
      if(other>0&&!p.otherSideSeen){p.otherSideSeen=true;this.#event('OTHER_SIDE_SEEN',{symbol:p.symbol,direction:p.direction,reason:`${other}`})}
      if(p.status==='UNKNOWN'){
-      if(size>0){
-       const uo=p.unknownOrder;
-       if(uo&&(uo.makerOrderId||uo.makerClientOrderId)&&typeof this.client.cancelOrder==='function'){
-        try{await this.client.cancelOrder(p.venueSymbol,uo.makerOrderId??undefined,{...(uo.makerClientOrderId?{clientOrderId:uo.makerClientOrderId}:{})})}catch{}
-       }
-       delete p.unknownOrder;
-       p.status='OPEN';p.filled=p.size=size;p.avg=pos(row.avgPrice)??p.entry;p.firstEntryPrice??=pos(row.avgPrice);p.openedAt??=this.now();this.#event('ENTRY_RECOVERED',{symbol:p.symbol,qty:size});
-       if(noStop){p.steps.push({kind:'OPEN',at:this.now(),qty:size,avg:p.avg});if(isLadder(p)){this.#ladderOpened(p);p.riskUSD=p.initialRiskUSD=ladderHeldRisk(p)}else this.#enableRepeat(p)}
-       const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts;if(await this.#protect(p))await this.#placeTargets(p);
-      }else{
+      if(!(size>0)){
        const uo=p.unknownOrder;
        let cleared=false,stillResting=false;
        if(uo&&(uo.makerClientOrderId||uo.makerOrderId)&&typeof this.client.getOrder==='function'){
@@ -2862,13 +2862,46 @@ export class ScalpExecutor{
          stillResting=true;
         }
        }
-       if(cleared||(!stillResting&&(p.zeroSeen=(p.zeroSeen||0)+1)>=2)){
-        this.store.open=this.store.open.filter(x=>x!==p);this.#event('ENTRY_NOT_FILLED',{symbol:p.symbol});
+       if(!cleared&&!stillResting&&(p.zeroSeen=(p.zeroSeen||0)+1)>=2){
+        // Confirm symbol-specifically before dropping UNKNOWN as ENTRY_NOT_FILLED in case bulk positions() missed it.
+        const symRows=venueRows(await this.client.positions(p.venueSymbol));
+        if(!symRows)throw err('POSITION_CHECK_FAILED',502);
+        const verified=positionOf(symRows,p.venueSymbol,p.direction,p.hedge===true);
+        if(verified.size>0){size=verified.size;row=verified.row;other=verified.other||0;mark=pos(row?.markPrice);p.zeroSeen=0}
+        else{this.store.open=this.store.open.filter(x=>x!==p);this.#event('ENTRY_NOT_FILLED',{symbol:p.symbol});continue}
+       }else if(cleared){
+        this.store.open=this.store.open.filter(x=>x!==p);this.#event('ENTRY_NOT_FILLED',{symbol:p.symbol});continue;
+       }else continue;
+      }
+      if(size>0){
+       const uo=p.unknownOrder;
+       if(uo&&(uo.makerOrderId||uo.makerClientOrderId)&&typeof this.client.cancelOrder==='function'){
+        try{await this.client.cancelOrder(p.venueSymbol,uo.makerOrderId??undefined,{...(uo.makerClientOrderId?{clientOrderId:uo.makerClientOrderId}:{})})}catch{}
        }
+       delete p.unknownOrder;
+       p.status='OPEN';p.filled=p.size=size;p.avg=pos(row.avgPrice)??p.entry;p.firstEntryPrice??=pos(row.avgPrice);p.openedAt??=this.now();this.#event('ENTRY_RECOVERED',{symbol:p.symbol,qty:size});
+       if(noStop){p.steps.push({kind:'OPEN',at:this.now(),qty:size,avg:p.avg});if(isLadder(p)){this.#ladderOpened(p);p.riskUSD=p.initialRiskUSD=ladderHeldRisk(p)}else this.#enableRepeat(p)}
+       const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts;if(await this.#protect(p))await this.#placeTargets(p);
       }
       continue;
      }
-     if(!(size>0)){if((p.zeroSeen=(p.zeroSeen||0)+1)>=2)await this.#finish(p);continue}
+     if(!(size>0)){
+      if((p.zeroSeen=(p.zeroSeen||0)+1)<2)continue;
+      if(!p.exitReason){
+       // Confirm symbol-specifically before closing as EXTERNAL (guards against BingX bulk positions() omitting a live coin).
+       const symRows=venueRows(await this.client.positions(p.venueSymbol));
+       if(!symRows)throw err('POSITION_CHECK_FAILED',502);
+       const verified=positionOf(symRows,p.venueSymbol,p.direction,p.hedge===true);
+       if(verified.size>0){
+        size=verified.size;row=verified.row;other=verified.other||0;mark=pos(row?.markPrice);p.zeroSeen=0;
+        this.#event('POSITION_BULK_MISS',{symbol:p.symbol,direction:p.direction,qty:size});
+       }else{
+        await this.#finish(p);continue;
+       }
+      }else{
+       await this.#finish(p);continue;
+      }
+     }
      p.zeroSeen=0;
      // Manual first (real account): a lane that grew beyond our own size holds a manual position: never adopted as ours
      // (closes stay at our own size, adds see POSITION_CHANGED), told once.
@@ -2964,6 +2997,9 @@ export class ScalpExecutor{
      }
      finally{this.reconcilingSymbol=null}
    }
+   if(this.config.mode==='TESTNET'&&Array.isArray(list)&&list.length){
+    this.#recoverFalseExternalPositions(list);
+   }
    for(const x of this.store.closed.filter(x=>!x.realized&&!x.otherSideSeen&&(x.settleTries||0)<SETTLE_TRIES&&this.now()-x.closedAt>=SETTLE_DELAY_MS&&this.now()-x.closedAt<2*3600000))await this.#settle(x).catch(()=>{});
    this.#flushJournal();
    // A check that runs only to finish the journal (disarmed, nothing open) changes nothing else.
@@ -2995,6 +3031,38 @@ export class ScalpExecutor{
     }
    }
   }finally{this.reconciling=false;this.#save()}
+ }
+ /** TESTNET only: if a recently EXTERNAL-closed (unsettled) scalp position is still live on BingX with matching entry/size, restore it to open. */
+ #recoverFalseExternalPositions(list){
+  const now=this.now();
+  for(const raw of list){
+   const v=normalizeVenuePosition(raw);
+   if(!v||!(v.size>0)||!v.direction)continue;
+   if(this.reserved.has(v.symbol)||this.store.open.some(o=>o.venueSymbol===v.venueSymbol&&o.direction===v.direction))continue;
+   let matchIdx=-1;
+   for(let i=this.store.closed.length-1;i>=0;i--){
+    const c=this.store.closed[i];
+    if(!c||c.venueSymbol!==v.venueSymbol||c.direction!==v.direction)continue;
+    if(c.closeReason!=='EXTERNAL'||c.realized)continue;
+    if(c.closedAt&&now-c.closedAt>7*86400000)continue;
+    const avgMatch=pos(c.avg)&&pos(v.avg)&&Math.abs(v.avg-c.avg)/c.avg<=0.02;
+    const sizeMatch=pos(c.filled)&&Math.abs(v.size-c.filled)/c.filled<=0.05;
+    if(avgMatch||sizeMatch){matchIdx=i;break}
+   }
+   if(matchIdx<0)continue;
+   const [c]=this.store.closed.splice(matchIdx,1);
+   delete c.closedAt;delete c.closeReason;delete c.estimate;delete c.netUSD;delete c.netSource;
+   delete c.holdMs;delete c.rMultiple;delete c.exitFills;delete c.exitReason;delete c.closeMeta;delete c.settleTries;
+   c.status='OPEN';c.zeroSeen=0;c.journaled=false;c.reconcileErrCount=0;c.reconcileRetryAfter=0;
+   c.size=v.size;
+   if(pos(v.avg))c.avg=v.avg;
+   if(pos(v.mark))c.mark=v.mark;
+   if(v.unrealized!==null)c.unrealized=v.unrealized;
+   if(pos(v.leverage))c.leverage=v.leverage;
+   c.exchangePosition={size:v.size,entryPrice:c.avg,markPrice:v.mark??c.mark,unrealizedPnLUSD:v.unrealized,marginUSD:v.margin,at:now};
+   this.store.open.push(c);
+   this.#event('POSITION_RECOVERED',{symbol:c.symbol,direction:c.direction,qty:c.size,entry:c.avg,reason:'FALSE_EXTERNAL_RECOVERED'});
+  }
  }
  /** Flat on the venue: leftover orders cancelled, the fills read, close reason and estimated result booked. */
  async #finish(p,forced=null,{verifyCleanup=false}={}){

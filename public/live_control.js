@@ -829,6 +829,29 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
  </article>`;
 }
 
+/** Untracked BingX Testnet position (open on exchange but absent from server ledgers) with direct close button. */
+export function testnetUntrackedCardHTML(p){
+ const px=v=>fin(v)?esc(+Number(v).toPrecision(6)):'—';
+ const dir=p.direction==='SHORT'?'SHORT':'LONG';
+ const u=fin(p.unrealized)?Number(p.unrealized):null;
+ const roe=fin(p.roePct)?Number(p.roePct):null;
+ const roeStr=roe!==null?` (${roe>=0?'+':''}${roe.toFixed(2)}%)`:'';
+ const mm=p.marginMode==='ISOLATED'?'격리':'교차';
+ const key=`${p.venueSymbol||''}|${dir}`;
+ return `<article class="paper-trade live-position live-warn tn-untracked-card">
+ <header><b>${esc(p.symbol||p.venueSymbol)}</b><span class="vp-badge" title="BingX 테스트넷 거래소에 열려 있지만 서버 원장에 없는 포지션입니다">거래소 미추적</span>${side(dir)}<span>${fin(p.leverage)?esc(p.leverage)+'배 '+mm:mm} · BingX</span><span class="live-state s-UNKNOWN">원장 미등록</span></header>
+ <div class="paper-trade-values live-values">
+  <span>진입 평단<b>${px(p.avg)}</b></span>
+  <span>현재 마크<b>${px(p.mark)}</b></span>
+  <span>보유 수량<b>${fin(p.size)?esc(Number(p.size).toLocaleString('en-US',{maximumFractionDigits:6})):'—'}</b></span>
+  <span>증거금<b>${tnUsd(p.margin)}</b></span>
+  <span>미실현 손익<b class="${tnCls(u)}">${u!==null?esc(tnMoney(u)+roeStr):'—'}</b></span>
+ </div>
+ <p class="copy-rules">BingX 테스트넷 거래소에 실제로 열려 있지만 서버 원장에 없는 포지션입니다(일시 조회 누락·수동 진입 등). 아래 버튼으로 거래소에서 바로 정리할 수 있습니다.</p>
+ ${p.venueSymbol?testnetCloseButton('venue',key,{symbol:p.symbol||p.venueSymbol,direction:dir}):''}
+ </article>`;
+}
+
 /** Signal closes (liveClosedView rows) and scalp closes in one list, newest first. */
 export function testnetCloses(o){
  // Only the testnet's own signal trades, tests left out (the testnetStats filter, review L3).
@@ -1283,14 +1306,20 @@ function render(o){
  if(box&&!liveLevelsBusy.size){
   // Keep an open stop/TP editor (and what was typed) across the periodic refresh.
   const drafts=new Map();box.querySelectorAll('[data-live-levels-key]').forEach(d=>{if(d.open){const v={};d.querySelectorAll('input').forEach(i=>{v[i.name]=i.value});drafts.set(d.dataset.liveLevelsKey,v)}});
-  // Testnet: the signal strategy's cards (badge 신호, stop/TP editor) and the scalp's (badge 단타) in one list.
+  // Testnet: the signal strategy's cards (badge 신호, stop/TP editor), the scalp's (badge 단타), and any untracked venue positions in one list.
   const scalpOpen=tn?(o.scalp?.positions||[]):[],signalCards=(o.positions||[]).map(p=>positionCardHTML(p,tn?{badge:scalpOnly?'<span class="vp-badge">기존 신호</span>':TN_BADGE.signal,allowClose:true}:{}));
-  const scalpCards=scalpOpen.map(p=>scalpPositionCardHTML(p,{allowClose:true,budget:tn?.budget??null})),cards=scalpOnly?[...scalpCards,...signalCards]:[...signalCards,...scalpCards];
+  const scalpCards=scalpOpen.map(p=>scalpPositionCardHTML(p,{allowClose:true,budget:tn?.budget??null}));
+  const untracked=tn&&Array.isArray(tn.untrackedPositions)?tn.untrackedPositions:[];
+  const untrackedCards=untracked.map(testnetUntrackedCardHTML);
+  const cards=scalpOnly?[...scalpCards,...signalCards,...untrackedCards]:[...signalCards,...scalpCards,...untrackedCards];
   box.innerHTML=cards.length?cards.join(''):`<p class="empty-small">${o.mode==='OFF'&&!tn?.scalp?'실매매가 꺼져 있습니다.':on||some?`보유 중인 포지션이 없습니다. ${scalpOnly?'단타':'신호·단타'} 진입을 기다리는 중입니다.`:'보유 중인 포지션이 없습니다. “활성화”를 눌러야 주문이 나갑니다.'}</p>`;
   box.querySelectorAll('[data-live-levels-key]').forEach(d=>{const v=drafts.get(d.dataset.liveLevelsKey);if(!v)return;d.open=true;d.querySelectorAll('input').forEach(i=>{if(!i.disabled&&v[i.name]!==undefined)i.value=v[i.name]})});
  }
  const nSig=o.positions?.length||0,nSc=tn?(o.scalp?.positions||[]).length:0;
- if($('livePositionCount'))$('livePositionCount').textContent=tn?(scalpOnly?`단타 ${nSc}개${nSig?` · 기존 신호 ${nSig}개`:''}`:`${nSig+nSc}개 · 신호 ${nSig} · 단타 ${nSc}`):`${nSig}개`;
+ const nVenue=tn&&Array.isArray(tn.venuePositions)?tn.venuePositions.length:null;
+ const nUntracked=tn&&Array.isArray(tn.untrackedPositions)?tn.untrackedPositions.length:0;
+ const venueSyncTxt=nVenue===null?'':(nUntracked>0?` · 거래소 ${nVenue}개 (미추적 ${nUntracked}개)`:` · 거래소 ${nVenue}개 일치 ✓`);
+ if($('livePositionCount'))$('livePositionCount').textContent=tn?(scalpOnly?`단타 ${nSc}개${nSig?` · 기존 신호 ${nSig}개`:''}${venueSyncTxt}`:`${nSig+nSc}개 · 신호 ${nSig} · 단타 ${nSc}${venueSyncTxt}`):`${nSig}개`;
  const pnlSummary=$('liveSummary'),testnetSummary=$('testnetSummary'),testnetSummarySection=$('testnetSummarySection');
  if(pnlSummary){pnlSummary.hidden=Boolean(tn);if(!tn)pnlSummary.innerHTML=summaryHTML(o.summary)}
  if(testnetSummarySection)testnetSummarySection.hidden=!tn;
