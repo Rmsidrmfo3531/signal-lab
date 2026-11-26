@@ -525,7 +525,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
 
  const submitOrder=async(side,{overrideType=null,overridePrice=null}={})=>{
   if(state.busy)return;
-  const symbol=state.symbol;
+  const symbol=state.symbol,revision=infoRevision;
   if(state.loadingInfo||state.info?.symbol!==symbol){
    state.msg='선택한 종목의 거래 정보를 먼저 확인하세요.';state.msgErr=true;render();return;
   }
@@ -584,9 +584,12 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
    });
    const d=await r.json().catch(()=>({}));
    if(!r.ok)throw Error(d.message||d.error||`HTTP ${r.status}`);
-   state.msg=`✅ 주문 완료: ${d.summary||symDisp}`;state.msgErr=false;
-   state.amount='';state.tpPrice='';state.slPrice='';state.selectedPrice=null;
-   await Promise.all([fetchOrders(),fetchInfo(state.symbol)]);
+   // A new draft may already be open when the submitted order is acknowledged.
+   if(revision===infoRevision){
+    state.msg=`✅ 주문 완료: ${d.summary||symDisp}`;state.msgErr=false;
+    state.amount='';state.tpPrice='';state.slPrice='';state.selectedPrice=null;
+    await Promise.all([fetchOrders(),fetchInfo(symbol)]);
+   }else await fetchOrders();
    onOrderDone();
   }catch(e){
    state.msg=`❌ 주문 실패: ${e.message}`;state.msgErr=true;
