@@ -17,24 +17,27 @@ test('the update completion popup uses the running server state rather than the 
  context.showCompletedUpdate({displayVersion:'fixture',runtime:{copy:false,signal:true,scalp:false}});
  assert.match(notices[0],/카피 꺼짐 · 신호 전략 켜짐 · 되돌림 단타 꺼짐/);
 });
-// The dashboard shows these four pages: 실계좌·카피 / 테스트넷 / 호가·CVD·청산맵 (was 수급·청산 until 2026-11-25) / 뉴스.
-const routes=['real','live','orderflow','news'];
+// The dashboard shows seven pages: 실계좌·카피 / 테스트넷 / 호가·CVD·청산맵 / 뉴스 + separated 시장·보조 도구 (도미넌스 / 경제지표 / 외부 신호).
+const routes=['real','live','orderflow','news','dominance','calendar','signals'];
 
-test('dashboard shows 실계좌·카피 / 테스트넷 / 호가·CVD·청산맵 / 뉴스',()=>{
+test('dashboard shows 실계좌·카피 / 테스트넷 / 호가·CVD·청산맵 / 뉴스 / 도미넌스 / 경제지표 / 외부신호',()=>{
  const markers=[...html.matchAll(/<section\b[^>]*data-workspace-route="([^"]+)"/g)].map(x=>x[1]);
  assert.deepEqual(markers,routes);
- for(const id of ['real','realCopy','live','liveControl','liveCopySection','liveScalpSection','orderflow','orderflowRoot','news'])
+ for(const id of ['real','realCopy','live','liveControl','liveCopySection','liveScalpSection','orderflow','orderflowRoot','news','dominance','dominanceBar','calendar','econCalendarBar','signals','externalSignalBar'])
   assert.match(html,new RegExp('id="'+id+'"'),'missing view '+id);
  // Removed pages: 대시보드 · 차트 (hero, metrics, chart, quote check, scanner) and 알림 · 시스템.
  for(const id of ['overview','scanner','workGrid','chartPanel','execution','matched','alerts','notifySettings','scanButton','refreshButton','testNotificationButton','journal','journalForm','closeTradeDialog'])
   assert.doesNotMatch(html,new RegExp('id="'+id+'"'),'removed view still present: '+id);
  assert.doesNotMatch(html,/class="page-head"|class="metrics"|tradingview|href="#(?:overview|alerts|chartPanel|venues|scanner|journal)"/i);
- // Mobile bottom navigation: the four pages.
+ // Mobile bottom navigation: all seven pages.
  const bottom=html.match(/<nav class="mobile-bottom-nav"[\s\S]*?<\/nav>/)[0];
  assert.deepEqual([...bottom.matchAll(/href="#([a-z]+)"/g)].map(x=>x[1]),routes);
  // Renamed section (user 2026-11-25 09:51): every label says 호가·CVD·청산맵 and the old 수급·청산 name is gone.
  assert.match(html,/<title>[^<]*호가·CVD·청산맵[^<]*<\/title>/);
  assert.match(html,/href="#orderflow" class="navlink">[\s\S]*?<span>호가·CVD·청산맵<\/span>/);
+ assert.match(html,/href="#dominance" class="navlink">[\s\S]*?<span>도미넌스 · 주도권<\/span>/);
+ assert.match(html,/href="#calendar" class="navlink">[\s\S]*?<span>경제지표 캘린더<\/span>/);
+ assert.match(html,/href="#signals" class="navlink">[\s\S]*?<span>외부 신호 · 수동<\/span>/);
  assert.match(bottom,/href="#orderflow"><span>◎<\/span>호가·CVD·청산맵<\/a>/);
  assert.match(html,/<h3 class="sr-only">호가·CVD·청산맵<\/h3>/);
  assert.match(html,/호가·CVD·청산맵 데이터를 불러오는 중입니다/);
@@ -90,6 +93,13 @@ test('default landing is #real; old and unknown hashes redirect to #real',()=>{
  // Links named after the section's features open it too (the #orderflow hash stays the address).
  for(const alias of ['#firechart','#cvd','#liquidation']){h.go(alias);assert.deepEqual(h.shown(),['orderflow'],alias);assert.equal(h.window.location.hash,'#orderflow',alias);}
  h.go('#news');assert.deepEqual(h.shown(),['news']);
+ // Separated sidebar tools: dominance, calendar, and signals (+ short aliases).
+ h.go('#dominance');assert.deepEqual(h.shown(),['dominance']);assert.equal(h.crumb.textContent,'도미넌스 · 시장 주도권');assert.equal(h.links[4].attributes['aria-current'],'page');
+ h.go('#dom');assert.deepEqual(h.shown(),['dominance']);assert.equal(h.window.location.hash,'#dominance');
+ h.go('#calendar');assert.deepEqual(h.shown(),['calendar']);assert.equal(h.crumb.textContent,'미국 ★★★ 경제지표');assert.equal(h.links[5].attributes['aria-current'],'page');
+ h.go('#econ');assert.deepEqual(h.shown(),['calendar']);assert.equal(h.window.location.hash,'#calendar');
+ h.go('#signals');assert.deepEqual(h.shown(),['signals']);assert.equal(h.crumb.textContent,'외부 신호 · 수동 매매');assert.equal(h.links[6].attributes['aria-current'],'page');
+ h.go('#external');assert.deepEqual(h.shown(),['signals']);assert.equal(h.window.location.hash,'#signals');
  // The removed 매매일지 tab: old #journal bookmarks open 실계좌.
  h.go('#journal');assert.deepEqual(h.shown(),['real']);assert.equal(h.window.location.hash,'#real');assert.equal(h.document.title,'Signal Lab · 실계좌 · 카피 매매');
 });

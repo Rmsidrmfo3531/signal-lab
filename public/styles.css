@@ -1219,5 +1219,19 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .ext-code{margin:2px 0 0;padding:8px 10px;border-radius:6px;background:#08101a;border:1px solid #1d3147;overflow-x:auto;font-size:10.5px;line-height:1.5;color:#cde4fb}
 @media(max-width:690px){.ext-summary{padding:9px 11px;gap:6px}.ext-badge{font-size:11px;padding:3px 8px}.ext-pill{font-size:10px;padding:2px 6px;white-space:normal}.ext-body{padding:10px 11px 12px}.ext-src-input{min-width:100%;max-width:none}}
 
+/* Sidebar separated market & tool tabs (dominance, economic calendar, external signals) */
+.sidebar-label-sub{margin-top:22px;padding-top:14px;border-top:1px solid #1b2a3c}
+.navlink .navright.tone-pos{color:#6fe4c7;font-weight:700}
+.navlink .navright.tone-warn{color:#ffc06b;font-weight:700}
+.navlink .navright.tone-neg{color:#ff9dad;font-weight:700}
+.workspace-widget-panel{background:transparent;border:0;border-radius:0;overflow:visible}
+.workspace-widget-panel>.dom-bar,.workspace-widget-panel>.econ-bar,.workspace-widget-panel>.ext-bar{margin-bottom:0}
+@media(max-width:960px){
+ .mobile-bottom-nav{display:flex;gap:4px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+ .mobile-bottom-nav::-webkit-scrollbar{display:none}
+ .mobile-bottom-nav a{flex:0 0 auto;min-width:66px;padding:5px 7px;white-space:nowrap}
+}
+
+
 
 
