@@ -585,7 +585,14 @@ export function copyHTML(c){
   (!isLive&&(st.all.n||st.all.unknown)?`<p class="copy-rules muted">거래소 확인 ${st.all.settled}건 · 추정 ${st.all.estimated}건${st.all.unknown?` · 손익 미확인 ${st.all.unknown}건`:''}</p>`:'');
  // Exchange margin usage (user decision 2026-11-24 17:34, alert only) and the copy listener's heartbeat (same day, "2번").
  const mu=isLive?c.marginAlert?.current:null,muLv=c.marginAlert?.levels||[];
- const marginLine=mu&&Number.isFinite(Number(mu.pct))?`<p class="copy-stamp" data-margin-usage>증거금 사용률 <b class="${Number(mu.pct)>=(muLv[0]??101)?'paper-loss':''}">${Number(mu.pct).toFixed(1)}%</b> · ${muLv.length?`경보 ${muLv.map(esc).join('·')}%`:'경보 꺼짐'} <small class="muted">(알림만)</small></p>`:'';
+ const vpMarginSum=a=>(a||[]).reduce((t,p)=>t+(Number(p.margin)||0),0);
+ const vpCopyM=vpList?vpMarginSum(vpList.filter(p=>p.origin==='copy')):null;
+ const vpScalpM=vpList?vpMarginSum(vpList.filter(p=>p.origin==='scalp')):0;
+ const vpManM=vpList?vpMarginSum(vpList.filter(p=>p.origin!=='copy'&&p.origin!=='scalp')):null;
+ const muFirst=muLv.length&&Number.isFinite(Number(muLv[0]))?Number(muLv[0]):null;
+ const muHeadroom=mu&&Number.isFinite(Number(mu.pct))&&muFirst!=null?(Number(mu.pct)>=muFirst?` · <b class="paper-loss">${esc(muFirst)}% 경보 초과</b>`:` · ${esc(muFirst)}% 경보까지 +${(muFirst-Number(mu.pct)).toFixed(1)}%p 여유`):'';
+ const vpSplitLine=vpList?` · 카피 <b>${usd(vpCopyM)}</b>${vpScalpM>0?` · 단타 <b>${usd(vpScalpM)}</b>`:''} · 수동 <b>${usd(vpManM)}</b>`:'';
+ const marginLine=mu&&Number.isFinite(Number(mu.pct))?`<p class="copy-stamp" data-margin-usage>증거금 사용률 <b class="${Number(mu.pct)>=(muLv[0]??101)?'paper-loss':''}">${Number(mu.pct).toFixed(1)}%</b>${muHeadroom}${vpSplitLine} · ${muLv.length?`경보 ${muLv.map(esc).join('·')}%`:'경보 꺼짐'} <small class="muted">(알림만)</small></p>`:(vpList&&vpList.length?`<p class="copy-stamp" data-margin-usage>사용 증거금 카피 <b>${usd(vpCopyM)}</b>${vpScalpM>0?` · 단타 <b>${usd(vpScalpM)}</b>`:''} · 수동 <b>${usd(vpManM)}</b></p>`:'');
  const ls_=c.listener||null;
  const listenerLine=ls_?`<p class="copy-stamp" data-copy-listener>카피 수신 ${ls_.state==='OK'?'<b class="paper-profit">OK</b>':ls_.state==='DOWN'?'<b class="paper-loss">끊김</b>':'<b>확인 대기</b>'} · 마지막 신호 ${ls_.lastBeatAt?esc(new Date(ls_.lastBeatAt).toLocaleTimeString('ko-KR',{hour12:false})):'없음'}${ls_.state==='DOWN'&&ls_.reason==='TELEGRAM_DISCONNECTED'?' <small class="muted">(텔레그램 연결 끊김)</small>':''}</p>`:'';
  const sizingBasis=isLive?'내 가용 증거금':'내 잔고';
