@@ -344,7 +344,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .add-chip small{color:var(--dim);font-size:10px}
 .live-position .paper-levels summary{font-size:11.5px;margin-top:6px}
 @media(max-width:690px){.live-values{grid-template-columns:repeat(2,minmax(0,1fr))}.live-line{flex-direction:column;gap:3px}.live-line>span:first-child{flex:none}}
-/* Uniform responsive grid across position cards: 6×2 (desktop), 4×3 (tablet), 2×6 (mobile) for 12-cell scalp cards. */
+/* Uniform responsive grid across position cards: six, four, or two columns. */
 .live-values{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px 14px;padding:10px 12px;align-items:start}
 .live-values>span{min-width:0}
 .live-values>span b{white-space:normal;overflow-wrap:anywhere;line-height:1.3}
@@ -503,6 +503,9 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .vp-badge.tn-signal{background:#132a3f;color:#8fc4ff;border-color:#2d5c8c}
 .vp-badge.tn-scalp{background:rgba(180,140,255,.12);color:#c9b2ff;border-color:rgba(180,140,255,.4)}
 .vp-badge.tn-scalp-zone{background:rgba(255,190,90,.12);color:#ffcf85;border-color:rgba(255,190,90,.45)}
+.tn-scalp-card header .paper-long{color:var(--up)}
+.tn-scalp-card header .paper-short{color:var(--down)}
+.tn-scalp-card header .tn-scalp-score{color:var(--rz-score);border-color:currentColor}
 .tn-scalp-card .tn-zone{margin:6px 0 0}
 .paper-trade header .vp-badge{flex:none}
 .live-closed-list.tn-closed{display:block}

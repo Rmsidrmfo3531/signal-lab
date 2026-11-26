@@ -169,7 +169,7 @@ test('management: TRADER_LADDER by default on the testnet; CURRENT on request, w
  assert.equal(tn.status().settings.management,'TRADER_LADDER');assert.equal(tn.managementScope().since,T0);
 });
 
-test('entry: same gates, first ladder step (2 units), whole ladder reserved; the card and Telegram show the step',async()=>{
+test('entry: same gates, first ladder step (2 units), whole ladder reserved; the card shows the next add',async()=>{
  const {v,ex,p}=await opened();
  assert.equal(p.management,'TRADER_LADDER');assert.equal(p.scaleIn,undefined);
  assert.deepEqual(p.ladder.units,[2,2,4,8,16]);assert.equal(p.ladder.unitMarginUSD,62.5);assert.equal(p.ladder.filled,1);
@@ -182,8 +182,11 @@ test('entry: same gates, first ladder step (2 units), whole ladder reserved; the
  const s=ex.status(),pos=s.positions[0];
  assert.equal(pos.ladderView.step,1);assert.equal(pos.ladderView.of,5);
  assert.ok(Math.abs(pos.ladderView.nextAdd.price-p.avg*.985)<1e-6);
- const card=scalpPositionCardHTML(pos);
- assert.match(card,/카피식 추매 1\/5 단계 · 평단 [\d.]+ · 다음 추매 [\d.]+/);assert.match(card,/익절/);assert.doesNotMatch(card,/자동 손절/);
+ const card=scalpPositionCardHTML({...pos,kind:'MOVE_REVERSAL',scalpScore:{score:87,grade:'A+'}});
+ assert.match(card,/paper-long">롱/);assert.match(card,/tn-scalp-score"[^>]*>87점 A\+급/);
+ assert.match(scalpPositionCardHTML({...pos,direction:'SHORT'}),/paper-short">숏/);
+ assert.match(card,/다음 추매<b>[\d.]+<\/b>/);assert.match(card,/익절/);
+ assert.doesNotMatch(card,/자동 손절|마지막 선|예약 위험|보유\s*중|<span>보유<|급변|카피식 추매|1\/5 단계/);
  const opened_=ex.store.events.find(e=>e.type==='OPENED');
  const text=scalpEventText(opened_);
  assert.match(text,/카피식 추매/);assert.match(text,/1\/5 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 24시간/);
@@ -198,6 +201,12 @@ test('adds: at the spacing from the LAST fill, one per step, unique client ids; 
  assert.equal(adds(v).length,0);assert.equal(ex.store.open.length,1);
  setMark(v,'SOLUSDT',below(first*.985));clock.t+=10000;await ex.reconcile();
  assert.equal(adds(v).length,1);assert.equal(p.ladder.filled,2);assert.equal(p.ladder.fills[1].units,2);assert.equal(p.ladder.fills[1].zone,null);
+ const view=ex.status().positions[0];
+ assert.equal(view.details.averageEntryPrice,p.avg);
+ assert.notEqual(view.details.averageEntryPrice,first);
+ const card=scalpPositionCardHTML(view);
+ assert.ok(card.includes(`평균 진입가<b>${p.avg.toFixed(2)}</b>`));
+ assert.ok(card.includes(`첫 진입가<b>${first.toFixed(2)}</b>`));
  assert.ok(Math.abs(p.ladder.lastFill-first*.985)<.03);
  // Next level from the last fill (not the first entry): 1.5 % under the add.
  const lvl=p.ladder.lastFill*.985;
@@ -260,7 +269,7 @@ test('final line: after the last step -75 % ROE closes as LADDER_FINAL_LINE; bef
  for(let i=0;i<4;i++){setMark(v,'SOLUSDT',+(p.ladder.lastFill*.985-.01).toFixed(2));clock.t+=10000;await ex.reconcile()}
  assert.equal(p.ladder.filled,5);assert.equal(p.ladder.state,'COMPLETE');assert.equal(adds(v).length,4);
  const used=p.ladder.fills.reduce((t,f)=>t+f.qty*f.price/10,0);assert.ok(used<=p.ladder.capUSD+1e-6,`${used}`);
- assert.match(scalpPositionCardHTML(ex.status().positions[0]),/5\/5 단계 · 평단 [\d.]+ · 추매 끝 · 마지막 선만 남음/);
+ assert.doesNotMatch(scalpPositionCardHTML(ex.status().positions[0]),/다음 추매|마지막 선|5\/5 단계/);
  setMark(v,'SOLUSDT',+(p.avg*(1-.07)).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(ex.store.open.length,1);assert.equal(adds(v).length,4);
  setMark(v,'SOLUSDT',+(p.avg*(1-.0751)).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.equal(ex.store.open.length,0);const x=ex.store.closed[0];
@@ -352,7 +361,7 @@ test('restart before the add was sent: the step waits 2 minutes, then is tried a
  fs.rmSync(dir,{recursive:true,force:true});
 });
 
-test('position cards align CURRENT and TRADER_LADDER into identical 12-cell uniform grid columns',()=>{
+test('position cards use the same responsive grid with only the metrics for their management',()=>{
  const css=fs.readFileSync(new URL('../public/styles.css',import.meta.url),'utf8');
  assert.match(css,/\.live-values\{display:grid;grid-template-columns:repeat\(6,minmax\(0,1fr\)\)/);
  assert.match(css,/@media\(max-width:1100px\)\{\.live-values\{grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
@@ -361,10 +370,10 @@ test('position cards align CURRENT and TRADER_LADDER into identical 12-cell unif
  const cur=scalpPositionCardHTML({symbol:'BLURUSDT',direction:'SHORT',status:'OPEN',stopLossEnabled:false,avg:0.008336,mark:0.008672,size:87462,targets:[0.008288,0.008248,0.008209],parts:[.4,.35,.25],riskUSD:9.23,leverage:10,openedAt:T0});
  const lad=scalpPositionCardHTML({symbol:'PROMUSDT',direction:'SHORT',status:'OPEN',management:'TRADER_LADDER',avg:4.608,mark:4.66,size:40.636,riskUSD:229.8,leverage:10,openedAt:T0,ladderView:{step:2,of:6,tpPrice:4.573,tpNetPct:.6,finalLineRoePct:75,reserveMarginUSD:300,maxHoldMin:1440,avg:4.608,nextAdd:{price:4.75241}}});
  const cells=html=>(html.match(/<div class="paper-trade-values live-values">([\s\S]*?)<\/div>/)?.[1]||'').match(/<span(?:\s[^>]*)?>/g)||[];
- assert.equal(cells(cur).length,12);
- assert.equal(cells(lad).length,12);
+ assert.equal(cells(cur).length,11);
+ assert.equal(cells(lad).length,10);
  assert.ok(cur.indexOf('자동 손절')<cur.indexOf('목표'));
- assert.ok(lad.indexOf('마지막 선')<lad.indexOf('익절'));
+ assert.match(lad,/익절<b>4\.573<\/b>[\s\S]*다음 추매<b>4\.75241<\/b>/);
 });
 
 test('P1-1/P1-2: STOPPED ladder releases unspent tail budget, journalLine uses ladder reserveRiskUSD, and TP retry allows 1-tick profitable buffer',async()=>{
