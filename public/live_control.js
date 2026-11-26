@@ -1483,7 +1483,7 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
   }catch(e){s.textContent='시험 주문 요청 실패: '+e.message}
   finally{liveTestBusy=false;if(btn)btn.disabled=false;await load().catch(()=>{})}
  });
-const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 삭제할 수 없습니다',TODAY_COUNTS_FOR_DAILY_RISK:'오늘 종료된 거래는 하루 손실 한도 계산에 쓰여 내일부터 삭제할 수 있습니다',NOT_FOUND:'이미 삭제된 기록입니다',POSITION_NOT_FOUND:'이미 삭제된 기록입니다',SCALP_TESTNET_ONLY:'테스트넷 단타 기록만 삭제할 수 있습니다',SAFETY_RECORD:'긴급 정지를 일으킨 기록이라 남겨 둡니다'};
+const DELETE_REASONS={JOURNAL_READ_FAILED:'거래일지를 읽을 수 없어 기록을 보존했습니다',AMBIGUOUS_JOURNAL_MATCH:'일치하는 거래가 여러 건이어서 기록을 보존했습니다',ACTIVE:'보유 중이거나 확인이 필요한 거래는 삭제할 수 없습니다',TODAY_COUNTS_FOR_DAILY_RISK:'오늘 종료된 거래는 하루 손실 한도 계산에 쓰여 내일부터 삭제할 수 있습니다',NOT_FOUND:'이미 삭제된 기록입니다',POSITION_NOT_FOUND:'이미 삭제된 기록입니다',SCALP_TESTNET_ONLY:'테스트넷 단타 기록만 삭제할 수 있습니다',SAFETY_RECORD:'긴급 정지를 일으킨 기록이라 남겨 둡니다'};
  document.addEventListener('click',async e=>{
   if(e.target.closest?.('[data-scalp-sim-toggle]')){scalpSimOpen=!e.target.closest('details')?.open;return}
   const b=e.target.closest?.('[data-live-delete],[data-scalp-delete]');if(!b)return;

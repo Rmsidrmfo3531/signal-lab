@@ -80,6 +80,7 @@ test('executeRealManualOrder enforces confirmation, sets margin/leverage, submit
   rawSymbol:'ake',client,contractsFor,markOf:async()=>0.005,availableUSD:2500,
   copyPositions:[{symbol:'AKEUSDT',status:'OPEN',direction:'LONG',qty:360,leverage:7}],
  });
+ assert.equal(info.requestedSymbol,'AKEUSDT');
  assert.equal(info.displaySymbol,'AKEUSDT');
  assert.equal(info.copyHolding.length,1);
  assert.equal(info.maxLeverage.long,20);

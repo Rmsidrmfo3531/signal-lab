@@ -596,8 +596,7 @@ export class ScalpExecutor{
  #journalRowOf(x){
   return {kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,scoreTotal:x.score?.score??x.scalpScore?.score??null,whaleBonus:whaleKey(x.score??x.scalpScore),whaleSplit:whaleSplitOf(x.score??x.scalpScore),capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null};
  }
- #rewriteJournal(keepFn){
-  const source=this.journalFile?readJsonl(this.journalFile):this.journalMem;
+ #rewriteJournal(keepFn,source=this.journalFile?readJsonl(this.journalFile):this.journalMem){
   const kept=source.filter(keepFn);
   const removed=source.length-kept.length;
   if(removed>0){
@@ -671,19 +670,23 @@ export class ScalpExecutor{
   const key=String(id||'').trim();
   if(!key)return {ok:false,reason:'POSITION_NOT_FOUND'};
   const target=this.store.closed.find(x=>x?.id===key)||null;
-  const beforeClosed=this.store.closed.length;
-  this.store.closed=this.store.closed.filter(x=>x?.id!==key);
-  const removedClosed=beforeClosed-this.store.closed.length;
-  const matchJournal=row=>{
-   if(!row)return false;
-   if(row.id===key||row.tradeKey===key)return true;
-   if(target&&row.symbol===target.symbol&&row.direction===target.direction&&target.openedAt&&row.entry?.at&&Math.abs(Number(row.entry.at)-Number(target.openedAt))<=60000)return true;
-   return false;
-  };
-  const removedJournal=this.#rewriteJournal(row=>!matchJournal(row));
-  if(!removedClosed&&!removedJournal)return {ok:false,reason:'POSITION_NOT_FOUND'};
+  let journal;
+  try{journal=this.journalFile?readJsonl(this.journalFile,{strict:true}):this.journalMem}
+  catch{return {ok:false,reason:'JOURNAL_READ_FAILED'}}
+  const tradeKey=target?.barAt?`${target.symbol}|${target.direction}|${target.barAt}`:key;
+  let matches=journal.filter(row=>row&&(row.id?row.id===key:row.tradeKey===tradeKey));
+  if(!matches.length&&target){
+   // Old journal rows can lack an ID. Only use exact recorded timestamps on such rows.
+   matches=journal.filter(row=>row&&!row.id&&!row.tradeKey&&row.symbol===target.symbol&&row.direction===target.direction&&
+    target.openedAt>0&&Number(row.entry?.at)===Number(target.openedAt)&&
+    target.closedAt>0&&Number(row.exit?.at)===Number(target.closedAt));
+  }
+  if(matches.length>1)return {ok:false,reason:'AMBIGUOUS_JOURNAL_MATCH'};
+  if(!target&&!matches.length)return {ok:false,reason:'POSITION_NOT_FOUND'};
+  if(matches.length)this.#rewriteJournal(row=>row!==matches[0],journal);
+  if(target)this.store.closed=this.store.closed.filter(row=>row!==target);
   this.#save();
-  return {ok:true,removed:Math.max(removedClosed,removedJournal),status:this.status()};
+  return {ok:true,removed:1,status:this.status()};
  }
  /** Why no new entry may be sent now (null = may). */
  #blocked(ignoreAddId=null){

@@ -26,7 +26,7 @@ import {atomicWriteStore,readStore} from './persistence.mjs';
 import {placeMakerThenMarket,makerChildIds} from './maker_order.mjs';
 import {roundDecimalToStep} from './decimal_grid.mjs';
 import {confirmedBingxFills,summarizeBalancedFills} from './live_clients.mjs';
-import {directionOf,venueRows,ledgerOwnQty,normalizeVenuePosition} from './venue_positions.mjs';
+import {directionOf,checkedPositions,ledgerOwnQty,normalizeVenuePosition} from './venue_positions.mjs';
 import {parseCopyMessage} from './copy_parser.mjs';
 import {readPositionMode,leverageSideFor,positionSideFor,positionRow} from './bingx_position_mode.mjs';
 
@@ -67,13 +67,6 @@ function rowsOf(d){
  if(Array.isArray(d))return d;
  if(d&&typeof d==='object'&&Object.hasOwn(d,'orders')&&(Array.isArray(d.orders)||d.orders===null))return d.orders||[];
  throw Object.assign(Error('UNEXPECTED_HISTORY_SHAPE'),{code:'UNEXPECTED_HISTORY_SHAPE'});
-}
-function checkedPositions(data,symbol=null){
- const rows=venueRows(data);
- if(!rows||rows.some(r=>typeof r?.symbol!=='string'||!r.symbol||(!symbol||r.symbol===symbol)&&
-  !((typeof r.positionAmt==='number'||typeof r.positionAmt==='string')&&String(r.positionAmt).trim()&&Number.isFinite(Number(r.positionAmt)))))
-  throw Object.assign(Error('UNEXPECTED_POSITION_RESPONSE'),{code:'UNEXPECTED_POSITION_RESPONSE'});
- return rows;
 }
 const sameSize=(a,b)=>Math.abs(a-b)<=Math.max(1e-10,Math.max(Math.abs(a),Math.abs(b))*1e-8);
 const settlementSource=p=>['EXCHANGE','EXCHANGE_FILLS'].includes(p.netSource);

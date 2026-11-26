@@ -273,3 +273,38 @@ test('deleteClosedTrade is refused in LIVE mode',()=>{
  }finally{cleanup()}
 });
 
+
+test('deleting one scalp trade preserves a nearby same-side trade in the journal after restart',()=>{
+ const openedAt=1700000000000;
+ const closed=[0,45000].map((offset,i)=>({...sampleOpen(),id:'trade-'+i,status:'CLOSED',openedAt:openedAt+offset,
+  closedAt:openedAt+offset+1000,netUSD:i+1,journaled:true}));
+ const {ex,dir,cleanup}=makeExec({closed});
+ try{
+  const file=path.join(dir,'scalp-journal.jsonl');
+  const lines=closed.map(x=>({id:x.id,symbol:x.symbol,direction:x.direction,entry:{at:x.openedAt},exit:{at:x.closedAt},pnl:{netUSD:x.netUSD}}));
+  fs.writeFileSync(file,lines.map(x=>JSON.stringify(x)).join('\n')+'\n');
+  assert.equal(ex.deleteClosedTrade('trade-0').removed,1);
+  const restored=new ScalpExecutor({config:ex.config,directory:dir});
+  assert.deepEqual(restored.store.closed.map(x=>x.id),['trade-1']);
+  assert.equal(restored.stats().netUSD,2);
+  assert.equal(restored.stats().trades,1);
+ }finally{cleanup()}
+});
+
+test('legacy journal deletion requires one exact entry and exit and a readable journal',()=>{
+ const target={...sampleOpen(),id:'legacy',status:'CLOSED',closedAt:Date.now(),journaled:true};
+ const {ex,dir,cleanup}=makeExec({closed:[target]});
+ try{
+  const file=path.join(dir,'scalp-journal.jsonl');
+  const line=JSON.stringify({symbol:target.symbol,direction:target.direction,entry:{at:target.openedAt},exit:{at:target.closedAt},pnl:{netUSD:1}});
+  for(const [contents,reason] of [[line+'\n{','JOURNAL_READ_FAILED'],[line+'\n'+line,'AMBIGUOUS_JOURNAL_MATCH']]){
+   fs.writeFileSync(file,contents);
+   assert.equal(ex.deleteClosedTrade(target.id).reason,reason);
+   assert.equal(fs.readFileSync(file,'utf8'),contents);
+   assert.equal(ex.store.closed.length,1);
+  }
+  fs.writeFileSync(file,line);
+  assert.equal(ex.deleteClosedTrade(target.id).removed,1);
+  assert.equal(fs.readFileSync(file,'utf8'),'');
+ }finally{cleanup()}
+});

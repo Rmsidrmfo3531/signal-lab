@@ -201,6 +201,7 @@ export async function lookupRealTradeSymbol({
   .filter(p=>p&&p.status==='OPEN'&&(p.symbol===c.symbol||displaySymbol(p.symbol)===disp))
   .map(p=>({direction:p.direction,qty:p.qty,leverage:p.leverage}));
  return {
+  requestedSymbol:symbol,
   symbol:c.symbol,
   displaySymbol:disp,
   venueSymbol:c.venueSymbol,

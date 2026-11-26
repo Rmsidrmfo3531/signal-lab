@@ -150,6 +150,7 @@ export function realTradePanelHTML(st){
  const avail=fin(st.availableUSD)?Number(st.availableUSD):null;
  const maxLev=info?.maxLeverage?.long||info?.maxLeverage?.short||125;
  const preview=computeOrderPreview(st);
+ const submitDisabled=st.busy||st.loadingInfo||!info||info.symbol!==st.symbol;
  const symPositions=(st.heldPositions||[]).filter(p=>displaySymbol(p.symbol)===symDisp);
  const copyHold=info?.copyHolding?.length
   ?`<p class="rt-copy-warn">⚠️ 카피 매매 보유 중 (${info.copyHolding.map(h=>`${h.direction==='LONG'?'롱':'숏'} ${h.qty} · ${h.leverage}배`).join(', ')}) — 수동 추가 주문 가능</p>`:'';
@@ -296,8 +297,8 @@ export function realTradePanelHTML(st){
      ${!st.slPrice&&!st.slRoePct?`<p class="rt-hint-sl">💡 손절가(SL) 미설정 상태입니다. 위 <b>-15%</b> 버튼을 누르면 롱·숏 방향에 맞춰 손절이 자동 부착됩니다.</p>`:''}
      ${previewHtml}
      <div class="rt-submit-row">
-      <button type="button" class="rt-btn-long" data-rt-submit="LONG"${st.busy?' disabled':''}>🟢 롱 / 매수${st.orderType==='LIMIT'?(st.postOnly?' (Post-Only)':' (지정가)'):st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
-      <button type="button" class="rt-btn-short" data-rt-submit="SHORT"${st.busy?' disabled':''}>🔴 숏 / 매도${st.orderType==='LIMIT'?(st.postOnly?' (Post-Only)':' (지정가)'):st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
+      <button type="button" class="rt-btn-long" data-rt-submit="LONG"${submitDisabled?' disabled':''}>🟢 롱 / 매수${st.orderType==='LIMIT'?(st.postOnly?' (Post-Only)':' (지정가)'):st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
+      <button type="button" class="rt-btn-short" data-rt-submit="SHORT"${submitDisabled?' disabled':''}>🔴 숏 / 매도${st.orderType==='LIMIT'?(st.postOnly?' (Post-Only)':' (지정가)'):st.makerFirst?' (메이커 우선)':' (시장가)'}</button>
      </div>
      <div class="rt-status-msg${st.msgErr?' err':''}" role="status">${esc(st.msg||'')}</div>
     </div>
@@ -353,7 +354,9 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
  let chartInst=null;
  let chartCanvas=null;
 
- const symDisplay=()=>displaySymbol(state.info?.symbol||state.symbol);
+ let infoRevision=0;
+ let chartRequest=0,lastChartApplied=0;
+ const symDisplay=()=>displaySymbol(state.symbol);
 
  const pushChartData=()=>{
   if(!chartInst)return;
@@ -459,12 +462,14 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
  };
 
  const fetchKlines=async({silent=false}={})=>{
-  const sym=state.info?.symbol||state.symbol;
+  const sym=state.symbol,interval=state.interval,revision=infoRevision,request=++chartRequest;
   if(!sym)return;
   try{
-   const r=await fetch(`/api/real/trade/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(state.interval)}&limit=160`,{cache:'no-store'});
+   const r=await fetch(`/api/real/trade/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&limit=160`,{cache:'no-store'});
    const d=await r.json().catch(()=>({}));
+   if(revision!==infoRevision||sym!==state.symbol||interval!==state.interval||request<lastChartApplied)return;
    if(r.ok&&Array.isArray(d.candles)){
+    lastChartApplied=request;
     state.candles=d.candles;
     if(d.candles.length&&state.info&&!fin(state.info.price))state.info.price=d.candles.at(-1)[4];
     pushChartData();
@@ -474,26 +479,31 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
  };
 
  const fetchInfo=async(symOverride=null)=>{
-  const raw=(symOverride??state.symbol??'').trim().toUpperCase();
-  if(!raw)return;
-  state.symbol=raw.endsWith('USDT')?raw:`${raw.replace(/[^A-Z0-9]/g,'')}USDT`;
-  state.loadingInfo=true;state.infoError='';render();
+  const raw=String(symOverride??state.symbol).trim().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const requested=raw.endsWith('USDT')?raw:raw+'USDT';
+  const revision=++infoRevision;
+  state.symbol=requested;
+  state.info=null;state.loadingInfo=true;state.infoError='';render();
   try{
-   const r=await fetch(`/api/real/trade/info?symbol=${encodeURIComponent(state.symbol)}`,{cache:'no-store'});
+   const r=await fetch(`/api/real/trade/info?symbol=${encodeURIComponent(requested)}`,{cache:'no-store'});
    const d=await r.json().catch(()=>({}));
+   if(revision!==infoRevision)return;
    if(!r.ok)throw Error(d.message||d.error||`HTTP ${r.status}`);
+   // The server may resolve an alias to its tradable BingX contract.
+   if(!d.symbol||(d.requestedSymbol??d.symbol)!==requested)throw Error('선택한 종목과 조회된 종목이 다릅니다.');
    state.info=d;
-   state.symbol=d.symbol||state.symbol;
+   state.symbol=d.symbol;
    if(fin(d.availableUSD))state.availableUSD=Number(d.availableUSD);
    const maxL=d.maxLeverage?.long||d.maxLeverage?.short||125;
    if(Number(state.leverage)>maxL)state.leverage=maxL;
    if(state.orderType==='LIMIT'&&!state.limitPrice&&d.price)state.limitPrice=String(d.price);
   }catch(e){
-   state.info=null;state.infoError=e.message;
+   if(revision===infoRevision){state.info=null;state.infoError=e.message}
   }finally{
-   state.loadingInfo=false;
-   render();
-   void fetchKlines({silent:true});
+   if(revision===infoRevision){
+    state.loadingInfo=false;render();
+    if(state.info)void fetchKlines({silent:true});
+   }
   }
  };
 
@@ -514,6 +524,11 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
  };
 
  const submitOrder=async(side,{overrideType=null,overridePrice=null}={})=>{
+  if(state.busy)return;
+  const symbol=state.symbol;
+  if(state.loadingInfo||state.info?.symbol!==symbol){
+   state.msg='선택한 종목의 거래 정보를 먼저 확인하세요.';state.msgErr=true;render();return;
+  }
   const orderType=overrideType||state.orderType;
   const limitPrice=overridePrice!=null?String(overridePrice):state.limitPrice;
   const p=computeOrderPreview({...state,orderType,limitPrice});
@@ -553,7 +568,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
      confirm:'REAL_MANUAL_ORDER',
-     symbol:state.info?.symbol||state.symbol,
+     symbol,
      side,
      orderType,
      makerFirst:useMaker,
@@ -783,7 +798,7 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
   prefill({symbol,side,leverage,marginMode,orderType,limitPrice,tpPrice,slPrice,note}={}){
    if(!state.visible)return;
    state.open=true;state.dropdownOpen=false;
-   if(symbol)state.symbol=displaySymbol(symbol);
+   if(symbol)state.symbol=symbol;
    const normSide=String(side||'').toUpperCase();
    state.suggestedSide=['LONG','SHORT'].includes(normSide)?normSide:null;
    if(Number(leverage)>=1)state.leverage=Math.round(Number(leverage));
@@ -799,14 +814,14 @@ export function createRealTradeController(mountEl,{onOrderDone=()=>{}}={}){
     state.limitPrice='';state.selectedPrice=null;
    }
    const tp=Number(tpPrice);
-   if(Number.isFinite(tp)&&tp>0)state.tpPrice=String(+tp.toPrecision(6));
+   state.tpPrice=Number.isFinite(tp)&&tp>0?String(+tp.toPrecision(6)):'';
    const sl=Number(slPrice);
-   if(Number.isFinite(sl)&&sl>0)state.slPrice=String(+sl.toPrecision(6));
+   state.slPrice=Number.isFinite(sl)&&sl>0?String(+sl.toPrecision(6)):'';
+   state.slRoePct=null;
    state.candles=[];
    state.msg=note?String(note):(state.suggestedSide?`📌 ${state.suggestedSide==='LONG'?'롱':'숏'} 방향 지정가 입력됨`:'');state.msgErr=false;
-   render();
-   if(!state.markets.length)void fetchMarkets();
    void fetchInfo(state.symbol);
+   if(!state.markets.length)void fetchMarkets();
    void fetchOrders();
    mountEl.scrollIntoView?.({behavior:'smooth',block:'nearest'});
   },

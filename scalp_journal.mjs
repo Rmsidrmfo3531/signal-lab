@@ -25,9 +25,15 @@ export function appendJsonl(file,obj,{maxBytes=0}={}){
  }catch{return false}
 }
 /** All lines of a JSONL file (bad lines skipped); [] when it does not exist. */
-export function readJsonl(file){
- let text='';try{text=fs.readFileSync(file,'utf8')}catch{return []}
- const out=[];for(const line of text.split('\n')){if(!line.trim())continue;try{out.push(JSON.parse(line))}catch{}}return out;
+export function readJsonl(file,{strict=false}={}){
+ let text;
+ try{text=fs.readFileSync(file,'utf8')}catch(e){if(strict&&e.code!=='ENOENT')throw e;return []}
+ const out=[];
+ for(const line of text.split('\n')){
+  if(!line.trim())continue;
+  try{out.push(JSON.parse(line))}catch(e){if(strict)throw e}
+ }
+ return out;
 }
 /** The newest `limit` lines (oldest first), reading the file from its end in chunks. */
 export function tailJsonl(file,limit=200){
