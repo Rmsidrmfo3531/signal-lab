@@ -186,8 +186,8 @@ test('entry: same gates, first ladder step (2 units), whole ladder reserved; the
  assert.match(card,/카피식 추매 1\/5 단계 · 평단 [\d.]+ · 다음 추매 [\d.]+/);assert.match(card,/익절/);assert.doesNotMatch(card,/자동 손절/);
  const opened_=ex.store.events.find(e=>e.type==='OPENED');
  const text=scalpEventText(opened_);
- assert.match(text,/카피식 추매/);assert.match(text,/1\/5 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 48시간/);
- assert.equal(s.settings.management,'TRADER_LADDER');assert.equal(s.settings.ladderTpNetPct,.6);assert.equal(s.settings.ladderMaxHoldMin,2880);
+ assert.match(text,/카피식 추매/);assert.match(text,/1\/5 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 24시간/);
+ assert.equal(s.settings.management,'TRADER_LADDER');assert.equal(s.settings.ladderTpNetPct,.6);assert.equal(s.settings.ladderMaxHoldMin,1440);
 });
 
 test('adds: at the spacing from the LAST fill, one per step, unique client ids; no 240-min cut, no -40 % defensive add',async()=>{
@@ -243,12 +243,12 @@ test('take profit: the whole position at the average + 0.6 % net of fees, booked
  assert.equal(summarizeJournal([line]).byManagement.TRADER_LADDER.trades,1);
 });
 
-test('max hold: closed after 48 hours whatever the result (user 2026-11-25)',async()=>{
+test('max hold: closed after 24 hours whatever the result (user 2026-11-26)',async()=>{
  const {v,clock,ex,p}=await opened();
- setMark(v,'SOLUSDT',+(p.avg*1.001).toFixed(2));clock.t+=(48*60-1)*60000;await ex.reconcile();assert.equal(ex.store.open.length,1);
+ setMark(v,'SOLUSDT',+(p.avg*1.001).toFixed(2));clock.t+=(24*60-1)*60000;await ex.reconcile();assert.equal(ex.store.open.length,1);
  clock.t+=2*60000;await ex.reconcile();
  assert.equal(ex.store.open.length,0);assert.equal(ex.store.closed[0].closeReason,'LADDER_MAX_HOLD');
- assert.ok(reasonInfo('LADDER_MAX_HOLD',ex.status().settings).desc.includes('48시간'));
+ assert.ok(reasonInfo('LADDER_MAX_HOLD',ex.status().settings).desc.includes('24시간'));
 });
 
 test('final line: after the last step -75 % ROE closes as LADDER_FINAL_LINE; before it the emergency line still protects',async()=>{
@@ -359,7 +359,7 @@ test('position cards align CURRENT and TRADER_LADDER into identical 12-cell unif
  assert.match(css,/@media\(max-width:690px\)\{\.live-values\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
  assert.doesNotMatch(css,/\.live-values\{display:flex;flex-wrap:wrap/);
  const cur=scalpPositionCardHTML({symbol:'BLURUSDT',direction:'SHORT',status:'OPEN',stopLossEnabled:false,avg:0.008336,mark:0.008672,size:87462,targets:[0.008288,0.008248,0.008209],parts:[.4,.35,.25],riskUSD:9.23,leverage:10,openedAt:T0});
- const lad=scalpPositionCardHTML({symbol:'PROMUSDT',direction:'SHORT',status:'OPEN',management:'TRADER_LADDER',avg:4.608,mark:4.66,size:40.636,riskUSD:229.8,leverage:10,openedAt:T0,ladderView:{step:2,of:6,tpPrice:4.573,tpNetPct:.6,finalLineRoePct:75,reserveMarginUSD:300,maxHoldMin:2880,avg:4.608,nextAdd:{price:4.75241}}});
+ const lad=scalpPositionCardHTML({symbol:'PROMUSDT',direction:'SHORT',status:'OPEN',management:'TRADER_LADDER',avg:4.608,mark:4.66,size:40.636,riskUSD:229.8,leverage:10,openedAt:T0,ladderView:{step:2,of:6,tpPrice:4.573,tpNetPct:.6,finalLineRoePct:75,reserveMarginUSD:300,maxHoldMin:1440,avg:4.608,nextAdd:{price:4.75241}}});
  const cells=html=>(html.match(/<div class="paper-trade-values live-values">([\s\S]*?)<\/div>/)?.[1]||'').match(/<span(?:\s[^>]*)?>/g)||[];
  assert.equal(cells(cur).length,12);
  assert.equal(cells(lad).length,12);
@@ -419,6 +419,121 @@ test('TRADER_LADDER keeps full 2/32 first-step margin on 20% testnet cap even un
  assert.equal(p.ladder.unitMarginUSD,62.5);
  assert.ok(Math.abs(p.size*p.avg/p.leverage-125)<.4,`expected full 2/32 ($125) first step, got ${(p.size*p.avg/p.leverage).toFixed(2)}`);
  assert.equal(p.ladder.reserveMarginUSD,2000);
+});
+
+test('#consider parallelizes pre-entry reads and passes 3.5s inner deadlineMs under 5s SCALP_WHALE_ZONE_TIMEOUT_MS',async()=>{
+ const cfg=scalpExecConfig({});
+ assert.equal(cfg.whaleZoneTimeoutMs,5000);
+ assert.equal(cfg.ladderMakerWaitMs,5000);
+ const custom=scalpExecConfig({SCALP_WHALE_ZONE_TIMEOUT_MS:'6000',SCALP_LADDER_MAKER_WAIT_MS:'7500'});
+ assert.equal(custom.whaleZoneTimeoutMs,6000);
+ assert.equal(custom.ladderMakerWaitMs,7500);
+
+ const v=venue(),clock={t:T0};
+ let inflight=0,maxInflight=0;
+ const delay=fn=>async(...a)=>{inflight++;maxInflight=Math.max(maxInflight,inflight);await new Promise(r=>setTimeout(r,25));try{return await fn(...a)}finally{inflight--}};
+ const origLev=v.client.leverage;
+ v.client.leverage=delay(origLev);
+ let whaleOpts=null;
+ const ex=new ScalpExecutor({
+  config:{...cfg,minScore:50,makerEntry:false,makerExit:false,dailyLossPct:20,maxSpreadPct:1},
+  client:v.client,
+  contracts:delay(async()=>new Map([['SOLUSDT',contract('SOLUSDT')],['BTCUSDT',contract('BTCUSDT')]])),
+  tickers:async()=>[{symbol:'SOL-USDT',quoteVolume:'90000000'},{symbol:'BTC-USDT',quoteVolume:'900000000'}],
+  candles:async(s,iv)=>s==='BTCUSDT'&&iv==='4h'?await delay(async()=>up4h(clock.t))():s==='BTCUSDT'&&iv==='5m'?Array.from({length:60},(_,i)=>{const t=(BUCKET-60+i)*I;return [t,'100','100.1','99.9','100','100',t+I-1,'10000']}):iv==='5m'?[...crash(),[BUCKET*I,'100','100','100','100','1',BUCKET*I+I-1,'1']]:iv==='1h'?hourly(clock.t):up4h(clock.t),
+  zoneCandles:async()=>[],
+  priceOf:delay(async()=>PX),
+  markOf:async()=>PX,
+  bookOf:delay(async()=>({bid:PX-0.01,ask:PX+0.01})),
+  balance:delay(async()=>({equity:10000,available:9000})),
+  whaleZones:async(sym,o)=>{whaleOpts={sym,...o};return {ok:false,error:'NO_DATA'}},
+  gate:()=>({ok:true}),isBusy:()=>false,now:()=>clock.t,
+ });
+ ex.arm();await ex.scan();
+ assert.ok(maxInflight>=4,`expected >=4 concurrent pre-entry reads via Promise.all, got ${maxInflight}`);
+ assert.equal(whaleOpts?.sym,'SOLUSDT');
+ assert.equal(whaleOpts?.deadlineMs,3500);
+});
+
+test('#ladderTakeProfit tries PostOnly maker first when makerExit !== false and falls back to IOC only for unfilled remainder',async()=>{
+ // 1) Full PostOnly fill -> no IOC fallback order sent
+ {
+  const {v,clock,ex,p}=await opened({config:{makerExit:true,makerExitWaitMs:40}});
+  const origPlace=v.client.placeOrder;
+  const tpOrders=[];
+  v.client.placeOrder=async(o,opt)=>{
+   if(o.reduceOnly){
+    tpOrders.push({tif:o.timeInForce,qty:Number(o.quantity),price:Number(o.price)});
+    if(o.timeInForce==='PostOnly'){
+     const cur=v.st('SOL-USDT');cur.amt=0;
+     return {order:{orderId:'mk1',status:'FILLED',executedQty:o.quantity,avgPrice:o.price,clientOrderId:o.clientOrderId}};
+    }
+   }
+   return origPlace(o,opt);
+  };
+  const tp=ladderTpPrice({direction:'LONG',avg:p.avg,takerRate:.0006,tpNetPct:.6,reservePct:p.ladder.reservePct,tickSize:'0.01'});
+  setMark(v,'SOLUSDT',tp);
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(tpOrders.length,1);
+  assert.equal(tpOrders[0].tif,'PostOnly');
+  assert.ok(tpOrders[0].price>=tp);
+  assert.equal(ex.store.open.length,0);
+  assert.equal(ex.store.closed[0].closeReason,'LADDER_TAKE_PROFIT');
+ }
+
+ // 2) Partial PostOnly fill -> cancelled after wait and ONLY remainder sent via IOC
+ {
+  const {v,clock,ex,p}=await opened({config:{makerExit:true,makerExitWaitMs:30}});
+  const totalQty=p.size,partQty=+(Math.floor(totalQty*40)/100).toFixed(2);
+  const remExpected=+(totalQty-partQty).toFixed(2);
+  const origPlace=v.client.placeOrder;
+  const tpOrders=[];
+  let resting=null;
+  v.client.placeOrder=async(o,opt)=>{
+   if(o.reduceOnly){
+    tpOrders.push({tif:o.timeInForce,qty:Number(o.quantity),price:Number(o.price)});
+    if(o.timeInForce==='PostOnly'){
+     const cur=v.st('SOL-USDT');cur.amt=+(cur.amt-partQty).toFixed(8);
+     resting={orderId:'mk2',status:'PARTIALLY_FILLED',executedQty:String(partQty),avgPrice:o.price,clientOrderId:o.clientOrderId};
+     return {order:resting};
+    }
+   }
+   return origPlace(o,opt);
+  };
+  v.client.getOrder=async()=>({order:resting});
+  v.client.cancelOrder=async()=>{if(resting)resting={...resting,status:'CANCELED'};return {order:resting}};
+  const tp=ladderTpPrice({direction:'LONG',avg:p.avg,takerRate:.0006,tpNetPct:.6,reservePct:p.ladder.reservePct,tickSize:'0.01'});
+  setMark(v,'SOLUSDT',tp);
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(tpOrders.length,2);
+  assert.equal(tpOrders[0].tif,'PostOnly');assert.equal(tpOrders[0].qty,totalQty);
+  assert.equal(tpOrders[1].tif,'IOC');assert.ok(Math.abs(tpOrders[1].qty-remExpected)<0.02,`expected IOC remainder ${remExpected}, got ${tpOrders[1].qty}`);
+  assert.equal(ex.store.open.length,0);
+  assert.equal(ex.store.closed[0].closeReason,'LADDER_TAKE_PROFIT');
+ }
+
+ // 3) PostOnly rejected by venue -> immediate IOC fallback for full quantity
+ {
+  const {v,clock,ex,p}=await opened({config:{makerExit:true,makerExitWaitMs:30}});
+  const origPlace=v.client.placeOrder;
+  const tpOrders=[];
+  v.client.placeOrder=async(o,opt)=>{
+   if(o.reduceOnly){
+    tpOrders.push({tif:o.timeInForce,qty:Number(o.quantity)});
+    if(o.timeInForce==='PostOnly')throw Object.assign(Error('PostOnly would cross book'),{code:'VENUE_ERROR_101415'});
+   }
+   return origPlace(o,opt);
+  };
+  const tp=ladderTpPrice({direction:'LONG',avg:p.avg,takerRate:.0006,tpNetPct:.6,reservePct:p.ladder.reservePct,tickSize:'0.01'});
+  setMark(v,'SOLUSDT',tp);
+  clock.t+=10000;await ex.reconcile();
+  assert.equal(tpOrders.length,2);
+  assert.equal(tpOrders[0].tif,'PostOnly');
+  assert.equal(tpOrders[1].tif,'IOC');
+  assert.equal(tpOrders[1].qty,tpOrders[0].qty);
+  assert.equal(ex.store.open.length,0);
+  assert.equal(ex.store.closed[0].closeReason,'LADDER_TAKE_PROFIT');
+ }
 });
 
 

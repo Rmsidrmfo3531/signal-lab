@@ -502,7 +502,7 @@ test('server: /api/whale-zones read-only route and the scalp reader on budgetedP
  // Not on Binance is not a 404 (the screen reads 404 as "no endpoint" and stops for 10 min); the screen's pages yield to the score's.
  assert.match(route,/response\(res,422,\{ok:false,symbol,error:'NOT_ON_BINANCE'\}\)/);assert.doesNotMatch(route,/response\(res,404/);
  assert.match(route,/reservePct:WHALE_ZONE_DEFAULTS\.apiReservePct/);assert.equal(WHALE_ZONE_DEFAULTS.apiReservePct,60);
- assert.match(body,/lookbackMs,endMs,maxPages,reservePct\}/);
+ assert.match(body,/lookbackMs,endMs,maxPages,reservePct,deadlineMs\}/);
  assert.doesNotMatch(route,/placeOrder|client\.|\bbinance\(/,'read-only');
  assert.equal((src.match(/whaleZones:\(symbol,o\)=>scalpWhaleZones\(symbol,o\)/g)||[]).length,2,'testnet and the opt-in live scalp');
  assert.doesNotMatch(src,/fetchWhaleCvd/,'the old window fetch is no longer used');
