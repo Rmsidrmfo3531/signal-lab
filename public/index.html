@@ -29,7 +29,7 @@
   <main class="main">
     <header class="topbar">
       <div class="topbar-left"><button class="mobile-menu" id="menuButton" aria-label="메뉴">☰</button><div class="topbar-identity"><div class="breadcrumb">Signal Lab <span>/</span> <b id="crumbPage">실계좌 · 카피 매매</b></div><span class="app-version" id="appVersion" hidden></span></div></div>
-      <div class="topbar-right"><div class="dot-status" id="socketStatus"><i class="dot amber"></i><span>연결 대기</span></div><div class="kst-clock" id="clock">--:--:-- KST</div><button class="outline-btn" id="notificationButton">♧ 알림 켜기</button><button class="outline-btn" id="updateButton" title="신뢰할 수 있는 업데이트 서버를 설정해야 작동합니다">↻ 업데이트 확인</button></div>
+      <div class="topbar-right"><div class="dot-status" id="socketStatus"><i class="dot amber"></i><span>연결 대기</span></div><div class="kst-clock" id="clock">--:--:-- KST</div><button class="outline-btn" id="miniHudButton" title="항상 위에 떠 있는 미니 창 열기 (BTC · 실계좌 포지션 · 도미넌스) · Shift+클릭 시 독립 팝업">📌 미니 창</button><button class="outline-btn" id="notificationButton">♧ 알림 켜기</button><button class="outline-btn" id="updateButton" title="신뢰할 수 있는 업데이트 서버를 설정해야 작동합니다">↻ 업데이트 확인</button></div>
     </header>
     <div class="content">
       <div class="banner warning hidden" id="connectBanner" role="alert"><span>⚠</span><div><strong id="errorTitle">시세 연결 오류</strong><div id="errorDetail">바이낸스 접속을 확인하세요.</div></div><button id="dismissError" aria-label="닫기">✕</button></div>
@@ -129,6 +129,7 @@
 <script type="module" src="/dominance_ui.js"></script>
 <script type="module" src="/econ_calendar_ui.js"></script>
 <script type="module" src="/external_signal_ui.js"></script>
+<script type="module" src="/mini_launcher.js"></script>
 <nav class="mobile-bottom-nav" aria-label="모바일 빠른 이동">
 <a href="#real"><span>●</span>실계좌</a><a href="#live"><span>◉</span>테스트넷</a><a href="#orderflow"><span>◎</span>호가·CVD·청산맵</a><a href="#news"><span>◈</span>뉴스</a><a href="#dominance"><span>◐</span>도미넌스</a><a href="#calendar"><span>◫</span>경제지표</a><a href="#signals"><span>⚡</span>외부신호</a>
 </nav>

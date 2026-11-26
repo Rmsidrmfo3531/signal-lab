@@ -3230,7 +3230,7 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname==='/api/ping')return response(res,200,{ok:true,ts:Date.now()});
   if(pathname.startsWith('/api/'))return response(res,404,{error:'Not found'});
-  let file=pathname==='/'?'/index.html':pathname;
+  let file=pathname==='/'?'/index.html':pathname==='/mini'?'/mini.html':pathname;
   const safe=path.resolve(path.join(__dirname,'public'),'.'+file), root=path.resolve(__dirname,'public');
   if(!safe.startsWith(root+path.sep)&&safe!==root)return response(res,403,{error:'Forbidden'});
   fs.readFile(safe,(err,buf)=>{
