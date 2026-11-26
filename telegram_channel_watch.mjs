@@ -4,11 +4,13 @@
 // translates Chinese trading terminology + free-form commentary into Korean, and NEVER places automatic orders.
 
 import fs from 'node:fs';
+import https from 'node:https';
 import path from 'node:path';
 
 const DEFAULT_CHANNELS=['aoying999'];
 const MAX_STORED_POSTS=40;
 const MIN_POLL_MS=15_000;
+const PARSER_VERSION=2;
 
 /** Normalize WATCH_TELEGRAM_CHANNELS env value into public Telegram channel handles. */
 export function parseChannelHandles(raw,{defaultChannels=DEFAULT_CHANNELS}={}){
@@ -100,15 +102,67 @@ function parseNum(raw){
  return Number.isFinite(n)?n:null;
 }
 
-function extractSymbolFromPost(text){
- const s=String(text||'');
- const m=s.match(/\b([A-Z0-9]{2,14})(?:[/-]?)USDT\b/i)
-  ||s.match(/(?:^|[\s·:：(\[#])([A-Z0-9]{2,14})(?:\s*永续)/i)
+/** True when the extracted symbol is a standard ASCII USDT futures ticker usable for BingX manual order prefill. */
+export function isAsciiFuturesSymbol(sym){
+ return /^[A-Z0-9]{2,14}USDT$/.test(String(sym||''));
+}
+
+const BAD_SYMBOL_BASES=new Set(['USDT','USD','UID','VIP','APP']);
+
+function extractSymbolFromChunk(chunk){
+ const s=String(chunk||'');
+ if(!s)return '';
+ // 1) Explicit trade action headline (supports ASCII and CJK-named Binance perps like 牛来USDT).
+ const act=s.match(/(?:开仓|加仓|补仓|减仓|平仓|爆仓)\s*·\s*([A-Za-z0-9\u4e00-\u9fff]{1,16})(?:[/-]?)USDT\b/i);
+ if(act){
+  const raw=act[1].trim();
+  const base=/^[A-Za-z0-9]+$/.test(raw)?raw.toUpperCase():raw;
+  if(base&&!/^\d+$/.test(base)&&!BAD_SYMBOL_BASES.has(base.toUpperCase()))return `${base}USDT`;
+ }
+ // 2) Direct <BASE>USDT token (ASCII or CJK, no whitespace before USDT so "0.04 USDT" is excluded).
+ const direct=s.match(/(?:^|[\s·:：(\[#|])([A-Za-z0-9\u4e00-\u9fff]{1,16})(?:[/-]?)USDT\b/i);
+ if(direct){
+  const raw=direct[1].trim();
+  const isAscii=/^[A-Za-z0-9]+$/.test(raw);
+  const base=isAscii?raw.toUpperCase():raw;
+  const minLen=isAscii?2:1;
+  if(base.length>=minLen&&!/^\d+$/.test(base)&&!BAD_SYMBOL_BASES.has(base.toUpperCase()))return `${base}USDT`;
+ }
+ // 3) "<BASE> 永续" or "$TICKER"/"#TICKER" fallback.
+ const m=s.match(/(?:^|[\s·:：(\[#])([A-Za-z0-9\u4e00-\u9fff]{1,16})(?:\s*永续)/i)
   ||s.match(/[$#]([A-Z][A-Z0-9]{1,12})\b/i);
  if(!m)return '';
- const base=m[1].toUpperCase().replace(/[^A-Z0-9]/g,'');
- if(!base||base.length<2||/^\d+$/.test(base)||['USDT','USD','UID','VIP','APP'].includes(base))return '';
+ const raw=m[1].trim();
+ const isAscii=/^[A-Za-z0-9]+$/.test(raw);
+ const base=isAscii?raw.toUpperCase():raw;
+ if(!base||base.length<(isAscii?2:1)||/^\d+$/.test(base)||BAD_SYMBOL_BASES.has(base.toUpperCase()))return '';
  return `${base}USDT`;
+}
+
+function splitHoldingsSection(text){
+ const s=String(text||'');
+ const idx=s.search(/\n\s*当前持仓(?:\s*·|\s|$)/);
+ if(idx<0)return {actionSection:s,holdingsSection:''};
+ return {actionSection:s.slice(0,idx),holdingsSection:s.slice(idx+1)};
+}
+
+function findMatchingHoldingBlock(holdingsSection,symbol){
+ if(!holdingsSection||!symbol)return '';
+ const blocks=holdingsSection.split(/\n{2,}/).map(b=>b.trim()).filter(Boolean);
+ const target=symbol.toLowerCase();
+ for(const block of blocks){
+  const firstLine=block.split('\n')[0]||'';
+  if(firstLine.toLowerCase().includes(target))return block;
+ }
+ // Fallback: if there is only one position block in the holdings section, use it.
+ const posBlocks=blocks.filter(b=>/【(?:持仓量|持仓均价|浮动收益|实际杠杆|强平价格)】/.test(b));
+ return posBlocks.length===1?posBlocks[0]:'';
+}
+
+function extractSymbolFromPost(text){
+ const {actionSection}=splitHoldingsSection(text);
+ const head=actionSection.split('\n').slice(0,6).join('\n');
+ return extractSymbolFromChunk(head)||extractSymbolFromChunk(actionSection)||extractSymbolFromChunk(text);
 }
 
 function extractDirectionFromPost(text){
@@ -161,16 +215,21 @@ export function classifyTradingChannelPost(rawText){
 
  if(!action)return {isTrading:false,reason:'NON_TRADING'};
 
+ // Scope position metrics to the acted-on coin so multi-position summaries don't bleed another coin's leverage/liq/PnL.
+ const {actionSection,holdingsSection}=splitHoldingsSection(text);
+ const matchedBlock=findMatchingHoldingBlock(holdingsSection,symbol);
+ const metricScope=holdingsSection?(matchedBlock?`${actionSection}\n${matchedBlock}`:actionSection):text;
+
  const entryPrice=parseNum(
-  text.match(/【(?:本次开仓均价|本次加仓均价|开仓后持仓均价|加仓后持仓均价|持仓均价|平仓前持仓均价|入场价|进场价)】\s*([\d,]+(?:\.\d+)?)/)?.[1]
+  metricScope.match(/【(?:本次开仓均价|本次加仓均价|开仓后持仓均价|加仓后持仓均价|持仓均价|平仓前持仓均价|入场价|进场价)】\s*([\d,]+(?:\.\d+)?)/)?.[1]
  );
- const avgPrice=parseNum(text.match(/【(?:开仓后持仓均价|加仓后持仓均价|持仓均价|平仓前持仓均价)】\s*([\d,]+(?:\.\d+)?)/)?.[1]);
- const markPrice=parseNum(text.match(/【标记价格】\s*([\d,]+(?:\.\d+)?)/)?.[1]);
- const liqPrice=parseNum(text.match(/【强平价格】\s*([\d,]+(?:\.\d+)?)/)?.[1]);
- const leverage=parseNum(text.match(/【实际杠杆】\s*([\d.]+)\s*x/i)?.[1]||text.match(/\b(\d{1,3})\s*x\b/i)?.[1]);
- const marginMode=/逐仓|isolated/i.test(text)?'ISOLATED':/全仓|cross/i.test(text)?'CROSSED':null;
- const pnlText=(text.match(/【(?:浮动收益|总浮动收益|本次已实现盈亏)】\s*([^\n]+)/)?.[1]||'').trim()||null;
- const qtyChange=(text.match(/【原仓位】\s*([^\n]+)/)?.[1]||text.match(/【(?:开仓量|加仓量|平仓量|持仓量)】\s*([^\n·]+)/)?.[1]||'').trim()||null;
+ const avgPrice=parseNum(metricScope.match(/【(?:开仓后持仓均价|加仓后持仓均价|持仓均价|平仓前持仓均价)】\s*([\d,]+(?:\.\d+)?)/)?.[1]);
+ const markPrice=parseNum(metricScope.match(/【标记价格】\s*([\d,]+(?:\.\d+)?)/)?.[1]);
+ const liqPrice=parseNum(metricScope.match(/【强平价格】\s*([\d,]+(?:\.\d+)?)/)?.[1]);
+ const leverage=parseNum(metricScope.match(/【实际杠杆】\s*([\d.]+)\s*x/i)?.[1]||metricScope.match(/\b(\d{1,3})\s*x\b/i)?.[1]);
+ const marginMode=/逐仓|isolated/i.test(metricScope)?'ISOLATED':/全仓|cross/i.test(metricScope)?'CROSSED':null;
+ const pnlText=(metricScope.match(/【(?:浮动收益|总浮动收益|本次已实现盈亏)】\s*([^\n]+)/)?.[1]||'').trim()||null;
+ const qtyChange=(actionSection.match(/【原仓位】\s*([^\n]+)/)?.[1]||metricScope.match(/【(?:开仓量|加仓量|平仓量|持仓量)】\s*([^\n·]+)/)?.[1]||'').trim()||null;
  const meta=ACTION_META[action]||ACTION_META.SIGNAL;
 
  return {
@@ -219,7 +278,9 @@ const ZH_KO_REPLACEMENTS=[
  [/【账户保证金】/g,'[계좌 증거금]'],
  [/【持仓快照】/g,'[포지션 스냅샷 시각]'],
  [/（按成交推算）/g,' (체결 기준 추정)'],
+ [/（按持仓均价）/g,' (보유 평단 기준)'],
  [/（北京时间）/g,' (중국시간)'],
+ [/暂无数据/g,'데이터 없음'],
  [/待成交记录确认/g,'체결 기록 확인 대기'],
  [/已全部平仓/g,'전량 청산 완료'],
  [/当前持仓\s*·\s*(\d+)\s*个/g,'현재 보유 포지션 · $1개'],
@@ -343,7 +404,7 @@ export function formatChannelAlertTelegram(post){
 
 /** Build a manual-order prefill payload for actionable LONG/SHORT channel posts (OPEN/ADD/SNAPSHOT/SIGNAL). */
 export function channelPostPrefill(post){
- if(!post||!post.symbol||!['LONG','SHORT'].includes(post.side))return null;
+ if(!post||!isAsciiFuturesSymbol(post.symbol)||!['LONG','SHORT'].includes(post.side))return null;
  if(['CLOSE','LIQUIDATION','REDUCE'].includes(post.action))return null;
  return {
   symbol:post.symbol,
@@ -358,11 +419,53 @@ export function channelPostPrefill(post){
  };
 }
 
+function formatFetchError(e){
+ const causes=[e,e?.cause,...(Array.isArray(e?.cause?.errors)?e.cause.errors:[])];
+ const code=causes.map(x=>x?.code).find(Boolean);
+ if(code)return String(code).slice(0,80);
+ if(causes.some(x=>x?.name==='AbortError'||x?.name==='TimeoutError'))return 'TIMEOUT';
+ return String(e?.message||e||'FETCH_ERROR').slice(0,80);
+}
+
+/** IPv4-only HTTPS GET fallback for hosts with broken IPv6 routes to t.me (mirrors telegram_transport.mjs). */
+export function fetchHtmlIPv4(url,{headers={},timeoutMs=12000,maxRedirects=3}={}){
+ return new Promise((resolve,reject)=>{
+  const req=https.get(url,{family:4,headers,signal:AbortSignal.timeout(timeoutMs)},res=>{
+   const status=Number(res.statusCode)||0;
+   if([301,302,303,307,308].includes(status)&&res.headers.location&&maxRedirects>0){
+    res.resume();
+    try{
+     const next=new URL(res.headers.location,url);
+     if(next.protocol!=='https:'||!/(?:^|\.)(?:t\.me|telegram\.me|telegram\.org)$/i.test(next.hostname)){
+      reject(Error('UNSAFE_REDIRECT'));return;
+     }
+     fetchHtmlIPv4(next.toString(),{headers,timeoutMs,maxRedirects:maxRedirects-1}).then(resolve,reject);
+    }catch(err){reject(err)}
+    return;
+   }
+   const chunks=[];let total=0;
+   res.on('data',chunk=>{
+    total+=chunk.length;
+    if(total>4*1024*1024){res.destroy(Error('RESPONSE_TOO_LARGE'));return}
+    chunks.push(chunk);
+   });
+   res.on('error',reject);
+   res.on('end',()=>{
+    const body=Buffer.concat(chunks).toString('utf8');
+    resolve({ok:status>=200&&status<300,status,text:async()=>body});
+   });
+  });
+  req.on('error',reject);
+ });
+}
+
 export class TelegramChannelWatcher{
- constructor({channels=DEFAULT_CHANNELS,filePath=null,fetcher=fetch,translate=null,now=()=>Date.now(),maxPosts=MAX_STORED_POSTS}={}){
+ constructor({channels=DEFAULT_CHANNELS,filePath=null,fetcher=fetch,ipv4Fetcher=null,translate=null,now=()=>Date.now(),maxPosts=MAX_STORED_POSTS}={}){
   this.channels=Array.isArray(channels)?channels.map(c=>String(c).toLowerCase()):[];
   this.filePath=filePath;
   this.fetcher=fetcher;
+  this.ipv4Fetcher=ipv4Fetcher||(fetcher===fetch?fetchHtmlIPv4:null);
+  this.preferIPv4=false;
   this.translate=translate;
   this.now=now;
   this.maxPosts=Math.max(10,Number(maxPosts)||MAX_STORED_POSTS);
@@ -378,7 +481,17 @@ export class TelegramChannelWatcher{
    const d=JSON.parse(fs.readFileSync(this.filePath,'utf8'));
    if(d&&typeof d==='object'){
     if(d.channels&&typeof d.channels==='object')this.state.channels=d.channels;
-    if(Array.isArray(d.posts))this.state.posts=d.posts.slice(0,this.maxPosts);
+    if(Array.isArray(d.posts)){
+     let repaired=false;
+     this.state.posts=d.posts.slice(0,this.maxPosts).map(p=>{
+      if(!p||typeof p!=='object'||!p.text||Number(p.parserVersion)>=PARSER_VERSION)return p;
+      const cls=classifyTradingChannelPost(p.text);
+      if(!cls.isTrading)return p;
+      repaired=true;
+      return {...p,...cls,parserVersion:PARSER_VERSION};
+     });
+     if(repaired)this._save();
+    }
    }
   }catch{}
  }
@@ -393,36 +506,65 @@ export class TelegramChannelWatcher{
   }catch{}
  }
 
- async _fetchChannel(channel){
-  const url=`https://t.me/s/${encodeURIComponent(channel)}`;
+ async _requestHtml(url,headers,{useIPv4=false}={}){
+  if(useIPv4&&typeof this.ipv4Fetcher==='function'){
+   const res=await this.ipv4Fetcher(url,{headers,timeoutMs:12000});
+   if(!res.ok)throw Error(`HTTP_${res.status}`);
+   return await res.text();
+  }
   const ctrl=new AbortController();
   const timer=setTimeout(()=>ctrl.abort(),12000);
   timer.unref?.();
   try{
-   const res=await this.fetcher(url,{
-    signal:ctrl.signal,
-    headers:{
-     'User-Agent':'Mozilla/5.0 (compatible; SignalLab/1.0)',
-     'Accept':'text/html,application/xhtml+xml',
-     'Accept-Language':'zh-CN,zh;q=0.9,ko;q=0.8,en;q=0.7',
-    },
-   });
+   const res=await this.fetcher(url,{signal:ctrl.signal,cache:'no-store',headers});
    if(!res.ok)throw Error(`HTTP_${res.status}`);
-   const html=await res.text();
-   return parseTelegramWebPosts(html,channel);
+   return await res.text();
   }finally{clearTimeout(timer)}
  }
 
+ async _fetchChannel(channel){
+  const url=`https://t.me/s/${encodeURIComponent(channel)}`;
+  const headers={
+   'User-Agent':'Mozilla/5.0 (compatible; SignalLab/1.0)',
+   'Accept':'text/html,application/xhtml+xml',
+   'Accept-Language':'zh-CN,zh;q=0.9,ko;q=0.8,en;q=0.7',
+   'Cache-Control':'no-cache',
+   'Pragma':'no-cache',
+  };
+  const firstIPv4=this.preferIPv4&&typeof this.ipv4Fetcher==='function';
+  let html;
+  try{
+   html=await this._requestHtml(url,headers,{useIPv4:firstIPv4});
+  }catch(err){
+   const isHttpErr=/^HTTP_\d+$/.test(String(err?.message||''));
+   if(!isHttpErr&&typeof this.ipv4Fetcher==='function'){
+    const altIPv4=!firstIPv4;
+    try{
+     html=await this._requestHtml(url,headers,{useIPv4:altIPv4});
+     this.preferIPv4=altIPv4;
+    }catch(fallbackErr){
+     throw Error(`${altIPv4?'IPV4':'FETCH'}_${formatFetchError(fallbackErr)}`);
+    }
+   }else{
+    throw Error(isHttpErr?err.message:formatFetchError(err));
+   }
+  }
+  return parseTelegramWebPosts(html,channel);
+ }
+
  async poll({force=false}={}){
-  if(!this.channels.length)return {ok:true,bootstrapped:false,newAlerts:[],snapshot:this.snapshot()};
+  if(!this.channels.length)return {ok:true,checked:false,bootstrapped:false,errors:[],newAlerts:[],snapshot:this.snapshot()};
   if(this.inflight)return this.inflight;
   this.inflight=(async()=>{
    const now=this.now();
    const newTradingPosts=[];
+   const errors=[];
    let bootstrapped=false;
+   let checked=false;
    for(const ch of this.channels){
     const meta=this.state.channels[ch]||(this.state.channels[ch]={lastPostNum:0,lastCheckedAt:0,lastError:'',filteredCount:0,title:ch});
     if(!force&&meta.lastCheckedAt&&now-meta.lastCheckedAt<MIN_POLL_MS)continue;
+    checked=true;
     try{
      const rawPosts=await this._fetchChannel(ch);
      meta.lastCheckedAt=now;
@@ -439,7 +581,7 @@ export class TelegramChannelWatcher{
        const cls=classifyTradingChannelPost(p.text);
        if(!cls.isTrading){meta.filteredCount=(meta.filteredCount||0)+1;continue}
        const translatedText=await translateChineseTradeText(p.text,{translate:this.translate});
-       this._upsertPost({...p,...cls,translatedText,receivedAt:p.publishedAt||now,bootstrapped:true});
+       this._upsertPost({...p,...cls,translatedText,receivedAt:p.publishedAt||now,bootstrapped:true,parserVersion:PARSER_VERSION});
       }
       meta.lastPostNum=maxNum;
       continue;
@@ -449,19 +591,20 @@ export class TelegramChannelWatcher{
       const cls=classifyTradingChannelPost(p.text);
       if(!cls.isTrading){meta.filteredCount=(meta.filteredCount||0)+1;continue}
       const translatedText=await translateChineseTradeText(p.text,{translate:this.translate});
-      const enriched={...p,...cls,translatedText,receivedAt:now,bootstrapped:false};
+      const enriched={...p,...cls,translatedText,receivedAt:now,bootstrapped:false,parserVersion:PARSER_VERSION};
       this._upsertPost(enriched);
       newTradingPosts.push(enriched);
      }
      if(maxNum>meta.lastPostNum)meta.lastPostNum=maxNum;
     }catch(e){
      meta.lastCheckedAt=now;
-     meta.lastError=String(e?.message||e).slice(0,80);
+     meta.lastError=formatFetchError(e);
+     errors.push({channel:ch,error:meta.lastError});
     }
    }
-   this._save();
+   if(checked)this._save();
    const newAlerts=collapseBatchAlerts(newTradingPosts);
-   return {ok:true,bootstrapped,newAlerts,snapshot:this.snapshot()};
+   return {ok:true,checked,bootstrapped,errors,newAlerts,snapshot:this.snapshot()};
   })().finally(()=>{this.inflight=null});
   return this.inflight;
  }

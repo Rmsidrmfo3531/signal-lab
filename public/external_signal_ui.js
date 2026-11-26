@@ -142,7 +142,7 @@ export function renderChannelWatchHTML(cw){
  const cards=posts.length?posts.slice(0,15).map(p=>{
   const sideCls=p.side==='LONG'?'long':p.side==='SHORT'?'short':'';
   const sideKo=p.side==='LONG'?'🟢 롱 (LONG)':p.side==='SHORT'?'🔴 숏 (SHORT)':'';
-  const canFill=Boolean(p.symbol&&['LONG','SHORT'].includes(p.side)&&!['CLOSE','LIQUIDATION','REDUCE'].includes(p.action));
+  const canFill=Boolean(/^[A-Z0-9]{2,14}USDT$/.test(String(p.symbol||''))&&['LONG','SHORT'].includes(p.side)&&!['CLOSE','LIQUIDATION','REDUCE'].includes(p.action));
   const safePostUrl=/^https:\/\/t\.me\/[A-Za-z0-9_]+\/\d+$/.test(p.url||'')?p.url:'';
   const chips=[];
   chips.push(`<span class="ext-chip">${esc(p.emoji||'📌')} <b>${esc(p.actionKo||'매매')}</b></span>`);
@@ -240,6 +240,7 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
   let lastParsed=null;
   let parseTimer=null;
   let mounted=false;
+  let lastSyncedAt=0;
 
   const setFeedback=(msg,isErr=false)=>{
    const el=host.querySelector('[data-ext-feedback]');
@@ -265,8 +266,12 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
    const navBadge=document.getElementById('navExtBadge');
    if(!navBadge)return;
    const unread=Number(inbox?.unreadCount)||0;
+   const chErrors=(inbox?.channelWatch?.channels||[]).filter(c=>c.lastError);
    if(unread>0){
     navBadge.textContent=`대기 ${unread}`;
+    navBadge.className='navright tone-warn';
+   }else if(chErrors.length>0){
+    navBadge.textContent='연결오류';
     navBadge.className='navright tone-warn';
    }else if(inbox?.channelWatch?.enabled){
     navBadge.textContent='감시중';
@@ -332,7 +337,7 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
     const r=await fetch('/api/external-signals',{cache:'no-store',signal:AbortSignal.timeout(10000)});
     if(!r.ok)return;
     const d=await r.json().catch(()=>null);
-    if(d&&Array.isArray(d.items)){inbox=d;syncDom()}
+    if(d&&Array.isArray(d.items)){inbox=d;lastSyncedAt=Date.now();syncDom()}
    }catch{}
   };
 
@@ -344,7 +349,7 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
      body:JSON.stringify({id,status}),
     });
     const d=await r.json().catch(()=>null);
-    if(d?.inbox){inbox=d.inbox;syncDom()}
+    if(d?.inbox){inbox=d.inbox;lastSyncedAt=Date.now();syncDom()}
    }catch{}
   };
 
@@ -389,8 +394,13 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
     try{
      const r=await fetch('/api/external-signals/channels/refresh',{method:'POST'});
      const d=await r.json().catch(()=>null);
-     if(d?.inbox){inbox=d.inbox;syncDom()}
-     setFeedback(d?.newCount>0?`🔔 새 매매 글 ${d.newCount}건을 번역해 알림 발송했습니다.`:'최신 매매 글 확인 완료 (새 글 없음).');
+     if(d?.inbox){inbox=d.inbox;lastSyncedAt=Date.now();syncDom()}
+     const chErrs=(d?.inbox?.channelWatch?.channels||[]).filter(c=>c.lastError);
+     if(chErrs.length){
+      setFeedback(`⚠️ 채널 확인 실패: ${chErrs.map(c=>`@${c.handle} (${c.lastError})`).join(', ')}`,true);
+     }else{
+      setFeedback(d?.newCount>0?`🔔 새 매매 글 ${d.newCount}건을 번역해 알림 발송했습니다.`:'최신 매매 글 확인 완료 (새 글 없음).');
+     }
     }catch(err){
      setFeedback('채널 확인 오류: '+(err?.message||err),true);
     }finally{chRefreshBtn.disabled=false}
@@ -433,7 +443,7 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
       setFeedback(d?.error||'신호 인식에 실패했습니다.',true);
       return;
      }
-     if(d.inbox){inbox=d.inbox;syncDom()}
+     if(d.inbox){inbox=d.inbox;lastSyncedAt=Date.now();syncDom()}
      if(inputEl)inputEl.value='';
      updatePreview(null);
      setFeedback(d.duplicate?'최근 1분 내 동일 신호가 이미 등록되어 있습니다.':'🔔 알림함에 등록하고 브라우저·텔레그램 알림을 발송했습니다.');
@@ -464,7 +474,7 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
       body:JSON.stringify({clear:true}),
      });
      const d=await r.json().catch(()=>null);
-     if(d&&Array.isArray(d.items)){inbox=d;syncDom();setFeedback('외부 신호 알림함을 비웠습니다.')}
+     if(d&&Array.isArray(d.items)){inbox=d;lastSyncedAt=Date.now();syncDom();setFeedback('외부 신호 알림함을 비웠습니다.')}
     }catch{}
    }
   });
@@ -473,11 +483,24 @@ if(typeof document!=='undefined'&&typeof window!=='undefined'){
    const nextInbox=e?.detail?.inbox;
    if(nextInbox&&Array.isArray(nextInbox.items)){
     inbox=nextInbox;
+    lastSyncedAt=Date.now();
     syncDom();
    }else{
     void loadInbox();
    }
   });
+
+  window.addEventListener('hashchange',()=>{
+   if(location.hash==='#signals')void loadInbox();
+  });
+  document.addEventListener('visibilitychange',()=>{
+   if(document.visibilityState==='visible'&&Date.now()-lastSyncedAt>15000)void loadInbox();
+  });
+  setInterval(()=>{
+   if(document.visibilityState!=='visible')return;
+   const staleMs=location.hash==='#signals'?25000:60000;
+   if(Date.now()-lastSyncedAt>staleMs)void loadInbox();
+  },15000);
 
   syncDom();
   void loadInbox();

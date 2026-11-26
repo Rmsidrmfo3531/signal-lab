@@ -210,6 +210,107 @@ test('parseTelegramWebPosts and TelegramChannelWatcher bootstrap cleanly and ale
  }
 });
 
+const SAMPLE_CN_MULTI_POS=`【熬鹰币安实盘】
+
+🟢 开仓 · 牛来USDT 永续 · 做多
+【开仓量】 480,192 牛来
+【本次开仓均价】 0.04 USDT（按持仓均价）
+【开仓后持仓均价】 0.04 USDT
+2026/11/26 12:15:34（北京时间）
+
+当前持仓 · 2 个
+
+NVDAUSDT · 多
+【持仓量】 6,912.02 NVDA · 【持仓均价】 144.02 USDT
+【浮动收益】 +63,867.06 USDT（12.06%）
+【实际杠杆】 2x · 【强平价格】 73.01 USDT
+
+牛来USDT · 多
+【持仓量】 480,192 牛来 · 【持仓均价】 0.04 USDT
+【浮动收益】 +3,268.14 USDT（14.01%）
+【实际杠杆】 1.03x · 【强平价格】 暂无数据
+
+【账户保证金】 545,083.87 USDT
+
+✅点击欧易币安绑定永久8折
+✅点击订阅其它大神开单通知群`;
+
+test('classifyTradingChannelPost extracts Chinese-named USDT symbol and scopes multi-position metrics to the traded coin',async()=>{
+ const cls=classifyTradingChannelPost(SAMPLE_CN_MULTI_POS);
+ assert.equal(cls.isTrading,true);
+ assert.equal(cls.action,'OPEN');
+ assert.equal(cls.symbol,'牛来USDT');
+ assert.equal(cls.side,'LONG');
+ assert.equal(cls.entryPrice,0.04);
+ assert.equal(cls.avgPrice,0.04);
+ assert.equal(cls.leverage,1.03);
+ assert.equal(cls.liqPrice,null);
+ assert.equal(cls.pnlText,'+3,268.14 USDT（14.01%）');
+ assert.equal(cls.qtyChange,'480,192 牛来');
+ assert.equal(channelPostPrefill({channel:'aoying999',postNum:144,...cls}),null);
+
+ const ko=await translateChineseTradeText(SAMPLE_CN_MULTI_POS);
+ assert.ok(ko.includes('(보유 평단 기준)'));
+ assert.ok(ko.includes('[청산가] 데이터 없음'));
+ assert.ok(!ko.includes('点击欧易'));
+
+ const html=renderChannelWatchHTML({
+  enabled:true,
+  channels:[{handle:'aoying999',url:'https://t.me/aoying999',title:'熬鹰',lastCheckedAt:Date.now(),lastError:'',filteredCount:0}],
+  posts:[{id:'aoying999/144',channel:'aoying999',postNum:144,url:'https://t.me/aoying999/144',publishedAt:Date.now(),...cls,translatedText:ko,text:SAMPLE_CN_MULTI_POS}],
+ });
+ assert.ok(html.includes('牛来USDT'));
+ assert.ok(!html.includes('data-ext-ch-prefill="aoying999/144"'));
+});
+
+test('TelegramChannelWatcher falls back to IPv4 on connect errors and repairs legacy cached multi-position posts on load',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tg-watch-ipv4-'));
+ const filePath=path.join(dir,'watch.json');
+ try{
+  let primaryCalls=0;
+  let ipv4Calls=0;
+  const pagePosts=[{num:143,text:SAMPLE_SNAPSHOT},{num:144,text:SAMPLE_CN_MULTI_POS}];
+  const failingFetch=async()=>{
+   primaryCalls++;
+   const err=new TypeError('fetch failed');
+   err.cause=Object.assign(new Error('connect ENETUNREACH'),{code:'ENETUNREACH'});
+   throw err;
+  };
+  const okIPv4=async()=>{
+   ipv4Calls++;
+   return {ok:true,status:200,text:async()=>buildFakeTelegramHtml(pagePosts)};
+  };
+  const watcher=new TelegramChannelWatcher({channels:['aoying999'],filePath,fetcher:failingFetch,ipv4Fetcher:okIPv4});
+  const boot=await watcher.poll({force:true});
+  assert.equal(primaryCalls,1);
+  assert.equal(ipv4Calls,1);
+  assert.equal(watcher.preferIPv4,true);
+  assert.equal(boot.checked,true);
+  assert.equal(boot.errors.length,0);
+  const p144=boot.snapshot.posts.find(p=>p.postNum===144);
+  assert.equal(p144.symbol,'牛来USDT');
+  assert.equal(p144.leverage,1.03);
+
+  // Subsequent poll uses IPv4 directly without wasting a failing primary call
+  await watcher.poll({force:true});
+  assert.equal(primaryCalls,1);
+  assert.equal(ipv4Calls,2);
+
+  // Legacy cached file with stale NVDAUSDT metadata on post #144 is auto-repaired on reload
+  fs.writeFileSync(filePath,JSON.stringify({
+   channels:{aoying999:{lastPostNum:144,lastCheckedAt:Date.now(),lastError:'',filteredCount:0,title:'熬鹰'}},
+   posts:[{id:'aoying999/144',channel:'aoying999',postNum:144,symbol:'NVDAUSDT',side:'LONG',action:'OPEN',leverage:2,liqPrice:73.01,text:SAMPLE_CN_MULTI_POS}],
+  }),'utf8');
+  const reloaded=new TelegramChannelWatcher({channels:['aoying999'],filePath,fetcher:okIPv4});
+  const fixed=reloaded.snapshot().posts.find(p=>p.postNum===144);
+  assert.equal(fixed.symbol,'牛来USDT');
+  assert.equal(fixed.leverage,1.03);
+  assert.equal(fixed.liqPrice,null);
+ }finally{
+  fs.rmSync(dir,{recursive:true,force:true});
+ }
+});
+
 test('static wiring across server.mjs, updater.mjs, external_signal_ui.js, and styles.css',()=>{
  const serverSrc=fs.readFileSync(new URL('../server.mjs',import.meta.url),'utf8');
  const updaterSrc=fs.readFileSync(new URL('../updater.mjs',import.meta.url),'utf8');
@@ -219,7 +320,10 @@ test('static wiring across server.mjs, updater.mjs, external_signal_ui.js, and s
  assert.match(serverSrc,/from '\.\/telegram_channel_watch\.mjs'/);
  assert.match(serverSrc,/\/api\/external-signals\/channels\/refresh/);
  assert.match(serverSrc,/sendTradeTelegram\(formatChannelAlertTelegram\(post\)\)/);
+ assert.match(serverSrc,/event: external-signal\\ndata:/);
+ assert.match(serverSrc,/r\.bootstrapped\|\|r\.checked\|\|force/);
  assert.match(updaterSrc,/'telegram_channel_watch\.mjs'/);
  assert.match(uiSrc,/renderChannelWatchHTML/);
+ assert.match(uiSrc,/visibilitychange/);
  assert.match(cssSrc,/\.ext-channel-wrap\{/);
 });
