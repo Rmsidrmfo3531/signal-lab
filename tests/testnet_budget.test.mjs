@@ -180,7 +180,7 @@ test('totals over both strategies and the 신호 / 단타 breakdown line; budget
  assert.match(positionCardHTML({symbol:'ETHUSDT',direction:'LONG',status:'OPEN',venue:'BINGX',targets:[]},{badge:TN_BADGE.signal}),/vp-badge tn-signal">신호/);
  assert.doesNotMatch(positionCardHTML({symbol:'ETHUSDT',direction:'LONG',status:'OPEN',venue:'BINGX',targets:[]}),/tn-signal/,'LIVE cards unchanged');
  const sc=scalpPositionCardHTML({symbol:'SOLUSDT',direction:'SHORT',status:'OPEN',avg:100,mark:99,size:2,stop:101,targets:[99,98,97],parts:[1,1,0],riskUSD:2,unrealized:2,leverage:10,openedAt:NOW});
- assert.match(sc,/vp-badge tn-scalp">단타/);assert.match(sc,/paper-short">숏/);assert.match(sc,/\+\$2\.00/);
+ assert.doesNotMatch(sc,/vp-badge tn-scalp">단타/);assert.match(sc,/paper-short">숏/);assert.match(sc,/\+\$2\.00/);
 });
 
 // ---- Review regressions (testnet-unify b636b19, M1-M5 / L1-L7), from the reviewer's repro tests ----

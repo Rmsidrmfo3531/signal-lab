@@ -3,7 +3,7 @@
 import {priceFmt} from './price_format.js';
 import {displaySymbol} from './symbol_display.js';
 import {createRealTradeController} from './real_trade.js';
-import {reasonHTML,skipRowHTML,enteredRowHTML,reasonGlossaryHTML,bindReasonTips,ladderStepText,reasonLabel,scoreTierRangesText,scoreGradeLabels} from './scalp_reasons.js';
+import {reasonHTML,skipRowHTML,enteredRowHTML,reasonGlossaryHTML,bindReasonTips,scoreTierRangesText,scoreGradeLabels} from './scalp_reasons.js';
 
 const LABEL={BINGX:'BingX',GATEIO:'Gate.io'};
 const MODE={OFF:{badge:'OFF',text:'주문 없음',title:'실매매 (꺼짐)',cls:'off'},TESTNET:{badge:'TESTNET',text:'모의 자금',title:'실매매 (테스트넷)',cls:'testnet'},
@@ -805,7 +805,7 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
  const px=v=>fin(v)?esc(+Number(v).toPrecision(6)):'—';
  const tgt=(p.targets||[]).map((t,i)=>p.parts?.[i]>0?`<i class="tn-tp${p.tpDone?.[i]?' paper-profit':''}">${px(t)}</i>`:null).filter(Boolean).join(' · ')||'—'; // <i>: the card styles every <span> as a cell
  const sc=tnScaleOf(p,budget);
- const rawDetails=p.details??{firstEntryPrice:p.scaleIn?.initialEntry??p.avg,averageEntryPrice:p.avg,currentPrice:p.mark,
+ const rawDetails=p.details?{...p.details,averageEntryPrice:p.details.averageEntryPrice??p.avg}:{firstEntryPrice:p.scaleIn?.initialEntry??p.avg,averageEntryPrice:p.avg,currentPrice:p.mark,
   currentPriceSource:fin(p.mark)?'VENUE_TICKER':null,asset:String(p.symbol||'').replace(/USDT$/,''),
   quantity:{base:p.size},unrealized:fin(p.unrealized)?{usd:p.unrealized,source:'ESTIMATE'}:null,tickSize:p.tickSize};
  const details=sc<1?{
@@ -816,23 +816,21 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
  }:rawDetails;
  const riskVal=fin(p.riskUSD)?Number(p.riskUSD)*sc:p.riskUSD;
  const scaleBadge=sc<1?`<span class="vp-badge" title="기존 VST 포지션을 기준 자본(${tnUsd(budget?.capitalCapUSD)})에 비례 환산해 표시 (신규 매매는 1:1)">비례환산</span>`:'';
- // 카피식 추매 (TRADER_LADDER, user 2026-11-24): step, average, next add, take profit instead of stop / targets.
  const lv=p.management==='TRADER_LADDER'?p.ladderView??null:null;
+ const nextAdd=lv?.nextAdd?.price;
  const showMult=!lv&&Number.isFinite(Number(p.scalpScore?.sizeMult))&&Math.abs(Number(p.scalpScore.sizeMult)-1)>1e-4;
- const scoreBadge=fin(p.scalpScore?.score)?`<span class="vp-badge" title="${esc(p.scalpScore.summary||'')}">${esc(p.scalpScore.score)}점 ${esc(p.scalpScore.grade||'')}급${showMult?` · ${esc(p.scalpScore.sizeMult)}x`:''}</span>`:'';
+ const scoreBadge=fin(p.scalpScore?.score)?`<span class="vp-badge tn-scalp-score" title="${esc(p.scalpScore.summary||'')}">${esc(p.scalpScore.score)}점${p.scalpScore.grade?` ${esc(p.scalpScore.grade)}급`:''}${showMult?` · ${esc(p.scalpScore.sizeMult)}x`:''}</span>`:'';
  const ofJump=p.symbol?`<button type="button" class="vp-act-btn" data-open-orderflow="${esc(p.symbol)}" title="이 종목의 호가·CVD·청산맵(FireCharts 호가 히트맵·금액대별 새우~고래 CVD) 보기">수급/CVD</button>`:'';
- return `<article class="paper-trade live-position tn-scalp-card${p.status&&p.status!=='OPEN'?' live-warn':''}">
- <header><b>${esc(p.symbol)}</b>${scalpBadge(p.kind)}${scoreBadge}${scaleBadge}${side(p.direction||'LONG')}${ofJump}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · BingX</span><span class="live-state s-${esc(p.status||'OPEN')}">${esc(p.status==='OPEN'||!p.status?'보유 중':p.status)}</span></header>
+ const status=p.status&&p.status!=='OPEN'?p.status:null;
+ return `<article class="paper-trade live-position tn-scalp-card${status?' live-warn':''}">
+ <header><b>${esc(p.symbol)}</b>${p.kind==='ZONE_REVERSAL'?scalpBadge(p.kind):''}${side(p.direction||'LONG')}${scoreBadge}${scaleBadge}${ofJump}<span>${fin(p.leverage)?esc(p.leverage)+'배 교차':'배율 —'} · BingX</span>${status?`<span class="live-state s-${esc(status)}">${esc(LIVE_STATUS[status]??status)}</span>`:''}</header>
  <div class="paper-trade-values live-values">
   ${positionMetricsHTML(details)}
-  ${lv?`<span>마지막 선<b>−${esc(lv.finalLineRoePct)}% ROE</b><small>사다리 다 채운 뒤</small></span>
-  <span class="tp-cell">익절<b>${px(lv.tpPrice)}</b><small>평단 +${esc(lv.tpNetPct)}% (수수료 뺀)</small></span>
-  <span>예약 위험<b>${tnUsd(riskVal)}</b><small>증거금 ${tnUsd(fin(lv.reserveMarginUSD)?Number(lv.reserveMarginUSD)*sc:null)}</small></span>
-  <span>보유<b>${tnHeld(p.openedAt||p.createdAt,Date.now())}째</b><small>최대 ${esc(Math.round((Number(lv.maxHoldMin)||0)/60))}시간</small></span>`:`${p.stopLossEnabled===false?'<span>자동 손절<b>없음</b></span>':`<span>손절가<b>${px(p.stop)}</b>${p.breakevenMoved?'<small>1차 목표 뒤 본전</small>':''}</span>`}
+  ${lv?`<span class="tp-cell">익절<b>${px(lv.tpPrice)}</b><small>평단 +${esc(lv.tpNetPct)}% (수수료 뺀)</small></span>
+  ${fin(nextAdd)&&Number(nextAdd)>0?`<span>다음 추매<b>${px(nextAdd)}</b></span>`:''}`:`${p.stopLossEnabled===false?'<span>자동 손절<b>없음</b></span>':`<span>손절가<b>${px(p.stop)}</b>${p.breakevenMoved?'<small>1차 목표 뒤 본전</small>':''}</span>`}
   <span class="tp-cell">목표<b>${tgt}</b></span>
-  <span>${p.stopLossEnabled===false?'한도 계산 위험':'위험'}<b>${tnUsd(riskVal)}</b></span>
-  <span>보유<b>${tnHeld(p.openedAt||p.createdAt,Date.now())}째</b>${p.stopLossEnabled===false?'':'<small>최대 2시간</small>'}</span>`}
- </div>${lv?`<p class="copy-rules tn-ladder">카피식 추매 ${esc(ladderStepText(lv,{fmt:v=>fin(v)?String(+Number(v).toPrecision(6)):'—'}))}${lv.pending?' · 추매 주문 확인 중':''}${lv.lastReason&&!lv.pending&&lv.state!=='COMPLETE'?` · ${esc(reasonLabel(lv.lastReason))}`:''}${lv.state==='STOPPED'?' · 추매 멈춤':''}</p>`:''}${p.kind==='ZONE_REVERSAL'&&p.zone?.tf?`<p class="copy-rules tn-zone">매물대 반전 · ${esc(String(p.zone.tf).toUpperCase())} 매물대 ${px(p.zone.low)}~${px(p.zone.high)}${fin(p.zone.sharePct)?` · 거래량 ${esc(Number(p.zone.sharePct).toFixed(1))}% · ${esc(p.zone.rank)}위`:''}${fin(p.zone.distPct)&&p.zone.distPct>0?` · ${esc(Number(p.zone.distPct).toFixed(2))}% 거리`:''}</p>`:''}
+  <span>${p.stopLossEnabled===false?'한도 계산 위험':'위험'}<b>${tnUsd(riskVal)}</b></span>`}
+ </div>${p.kind==='ZONE_REVERSAL'&&p.zone?.tf?`<p class="copy-rules tn-zone">매물대 반전 · ${esc(String(p.zone.tf).toUpperCase())} 매물대 ${px(p.zone.low)}~${px(p.zone.high)}${fin(p.zone.sharePct)?` · 거래량 ${esc(Number(p.zone.sharePct).toFixed(1))}% · ${esc(p.zone.rank)}위`:''}${fin(p.zone.distPct)&&p.zone.distPct>0?` · ${esc(Number(p.zone.distPct).toFixed(2))}% 거리`:''}</p>`:''}
  ${allowClose&&p.status==='OPEN'&&p.size>0&&p.id?testnetCloseButton('scalp',p.id,p):''}
  </article>`;
 }
