@@ -3208,7 +3208,7 @@ export class ScalpExecutor{
    ladderPositions:this.store.open.filter(isLadder).map(p=>({symbol:p.symbol,direction:p.direction,step:p.ladder.filled,of:p.ladder.units.length,state:p.ladder.state,lastReason:short(p.ladder.lastReason),pending:Boolean(p.ladder.pending)})),
    ...(c.mode==='TESTNET'&&!c.stopLossEnabled?{profitHoldTargetMin:SCALP_PROFIT_HOLD_TARGET_MIN,profitCheckStartsMin:0,earlyFallbackMin:c.earlyFallbackMin??PROFIT_ONLY_EARLY_EXIT_MIN,minProfitRoePct:c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT,partialTakeFrac:c.partialTakeFrac??SCALP_PARTIAL_TAKE_FRAC,profitOnlyMaxHoldMin:c.profitOnlyMaxHoldMin??240,minMovePct:c.settings?.minMovePct??null}:{}),
    stopRetirementPending:this.store.open.filter(p=>p.stopRetirementError).length,
-   openAdds:this.store.open.reduce((n,p)=>n+(p.scaleIn?.count||0),0),
+   openAdds:this.store.open.reduce((n,p)=>n+scalpAddCount(p),0),
     ...(c.scaleIn&&!c.stopLossEnabled?{
      availableMarginUSD:this.funds?.available??null,
      maxPositionMarginPct:c.maxMarginPct,
