@@ -123,3 +123,25 @@ test('real-account page shows each fact once (user 2026-11-18 "활성화됨 부�
  const tn=copyHTML({...c,mode:'TESTNET',followArmed:true});assert.doesNotMatch(tn,/copy-state|copy-chip|>잔고<|3초마다/);assert.match(tn,/사용 가능/);
  assert.match(copyHTML({...c,mode:'TESTNET',enabled:false}),/카피 꺼짐/);
 });
+
+test('incomplete BingX reads preserve a manual position until two confirmed flat reads',async()=>{
+ const {ManualLedger}=await import('../manual_ledger.mjs');
+ const row={symbol:'ETH-USDT',positionSide:'LONG',positionAmt:'4',avgPrice:'100'};
+ let time=10000,rows=[row];
+ const reader=createVenuePositionsReader({read:async()=>rows,now:()=>time,ttlMs:0});
+ const ledger=new ManualLedger({now:()=>time});
+ const poll=async()=>{time+=15000;const snapshot=await reader.snapshot();ledger.observe(snapshot);return snapshot};
+ const initial=await poll();
+ for(const amount of [undefined,null,' ','bad',false]){
+  rows=[{...row,positionAmt:amount}];
+  const snap=await poll();
+  assert.ok(snap.venuePositionsError);
+  assert.equal(snap.venuePositionsAt,initial.venuePositionsAt);
+  assert.equal(snap.venuePositions[0].size,4);
+  assert.equal(ledger.store.closed.length,0);
+ }
+ rows=[{...row,positionAmt:'0'}];await poll();
+ assert.equal(ledger.store.closed.length,0);
+ rows=[];await poll();
+ assert.equal(ledger.store.closed.length,1);
+});

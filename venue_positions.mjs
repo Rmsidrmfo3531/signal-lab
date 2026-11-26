@@ -83,11 +83,21 @@ export function tagOrigins(rows,copyPositions=[],scalpPositions=[]){
 /** The rows of a positions answer (an array; null when the answer is not a list). */
 export function venueRows(data){return Array.isArray(data)?data:Array.isArray(data?.positions)?data.positions:null}
 
+/** Validate the entire snapshot before consumers interpret absent rows as closed positions. */
+export function checkedPositions(data,symbol=null){
+ const rows=venueRows(data);
+ if(!rows||rows.some(r=>typeof r?.symbol!=='string'||!r.symbol.trim()||(!symbol||r.symbol===symbol)&&
+  !((typeof r.positionAmt==='number'||typeof r.positionAmt==='string')&&String(r.positionAmt).trim()&&Number.isFinite(Number(r.positionAmt)))))
+  throw Object.assign(Error('UNEXPECTED_POSITION_RESPONSE'),{code:'UNEXPECTED_POSITION_RESPONSE'});
+ return rows;
+}
+
 /** Cached reader: snapshot(copyPositions, scalpPositions) re-reads the venue when the list is older than ttlMs
  * (one request at a time, waiting at most waitMs for it) and never throws. Errors keep the last good list. */
 export function createVenuePositionsReader({read,markOf=()=>null,now=()=>Date.now(),ttlMs=3000,waitMs=2500}){
  let rows=null,at=0,error=null,errorAt=0,pending=null,tried=null;
- const refresh=()=>{tried=now();pending=Promise.resolve().then(read).then(data=>{const list=venueRows(data);if(!list)throw Object.assign(Error('BAD_RESPONSE'),{code:'BAD_RESPONSE'});
+ const refresh=()=>{tried=now();pending=Promise.resolve().then(read).then(data=>{if(!venueRows(data))throw Object.assign(Error('BAD_RESPONSE'),{code:'BAD_RESPONSE'});
+   const list=checkedPositions(data);
    rows=list.map(r=>normalizeVenuePosition(r,{markOf})).filter(Boolean);at=now();error=null;errorAt=0})
   .catch(e=>{error=String(e?.code||e?.message||'READ_FAILED').replace(/[^\w.:\- ]/g,'').slice(0,60)||'READ_FAILED';errorAt=now()})
   .finally(()=>{pending=null});return pending};
