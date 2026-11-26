@@ -8,6 +8,7 @@ import {CopyExecutor,copyConfig,userProtectOrder} from '../copy_executor.mjs';
 import {copyEventText} from '../copy_telegram.mjs';
 import {tagOrigins,ledgerOwnQty} from '../venue_positions.mjs';
 import {RealTrailingManager,userTpSlOnLane} from '../real_trailing.mjs';
+import {ManualLedger} from '../manual_ledger.mjs';
 import {ScalpExecutor,scalpLiveExecConfig,SCALP_LIVE_CONFIRM_TOKEN} from '../scalp_executor.mjs';
 import {scalpEventText} from '../scalp_telegram.mjs';
 import {reasonLabel} from '../public/scalp_reasons.js';
@@ -62,23 +63,39 @@ function copy(v,{audit=false,manualPositions,clock={t:1e12},dir=null}={}){
 }
 const evs=(ex,pred)=>ex.status().events.filter(pred);
 
-test('one-way: a manual position of the coin in EITHER direction skips the copy entry (MANUAL_FIRST), no setting or order is sent',async()=>{
- for(const manual of [50,-30]){ // a manual LONG (opposite to the SHORT copy) and a manual SHORT (same direction)
-  const v=laneVenue();v.manual('BOTH',manual);const ex=copy(v);
+test('one-way: opposite-direction manual or TP/SL-protected same-direction manual skips copy entry (MANUAL_FIRST); unprotected same-direction skips order and links ratio',async()=>{
+ // Opposite direction (manual LONG vs SHORT copy): strict MANUAL_FIRST skip, never linked
+ {const v=laneVenue();v.manual('BOTH',50);const ex=copy(v);
   const r=await ex.msg(OPEN);
   assert.equal(r.reason,'MANUAL_FIRST');
   assert.deepEqual(v.calls.filter(c=>['order','lev','margin','cancel'].includes(c.op)),[],'no leverage, margin mode, order or cancel');
-  const e=evs(ex,x=>x.reason==='MANUAL_FIRST')[0];
-  assert.match(copyEventText(e),/수동 포지션 우선 — 카피 진입 건너뜀/);
-  assert.equal(v.lanes.BOTH,manual,'the manual position is untouched');
- }
+  assert.match(copyEventText(evs(ex,x=>x.reason==='MANUAL_FIRST')[0]),/수동 포지션 우선 — 카피 진입 건너뜀/);
+  assert.equal(v.lanes.BOTH,50);assert.equal(ex.status().positions.length,0)}
+ // Same direction WITH user TP/SL (Option 2): strict MANUAL_FIRST skip, never linked
+ {const v=laneVenue();v.manual('BOTH',-30);
+  v.userOrders=[{symbol:'TNSR-USDT',orderId:'u-sl',clientOrderId:'man-sl',type:'STOP_MARKET',side:'BUY',positionSide:'BOTH',closePosition:'true',status:'NEW'}];
+  const ex=copy(v);
+  const r=await ex.msg(OPEN);
+  assert.equal(r.reason,'MANUAL_FIRST');
+  assert.deepEqual(v.calls.filter(c=>['order','lev','margin','cancel'].includes(c.op)),[]);
+  assert.equal(v.lanes.BOTH,-30);assert.equal(ex.status().positions.length,0)}
+ // Same direction WITHOUT TP/SL (user 2026-11-26): skips initial entry order/settings and links for ratio-following
+ {const v=laneVenue();v.manual('BOTH',-30);const ex=copy(v);
+  const r=await ex.msg(OPEN);
+  assert.equal(r.ok,true);assert.equal(r.skippedEntry,true);assert.equal(r.manualLinked,true);
+  assert.deepEqual(v.calls.filter(c=>['order','lev','margin','cancel'].includes(c.op)),[],'no initial entry order, leverage, margin, or cancel');
+  assert.equal(v.lanes.BOTH,-30,'manual position untouched on initial copy entry');
+  const p=ex.status().positions[0];assert.equal(p.manualLinked,true);assert.equal(p.manualBaseQty,30);assert.equal(p.theirFirstQty,880);
+  assert.match(copyEventText(evs(ex,x=>x.type==='MANUAL_LINKED')[0]),/수동 포지션 비율 연결 \(첫 진입 생략\)/)}
 });
 
-test('the trader\'s later adds of a MANUAL_FIRST-skipped entry are not followed (no late entry) until the trader closes; then the next entry is copied',async()=>{
- const v=laneVenue();v.manual('BOTH',-30);const ex=copy(v);
+test('the trader\'s later adds of a MANUAL_FIRST-skipped entry (TP/SL protected or opposite side) are not followed until the trader closes; then the next entry is copied',async()=>{
+ const v=laneVenue();v.manual('BOTH',-30);
+ v.userOrders=[{symbol:'TNSR-USDT',orderId:'u-sl',clientOrderId:'man-sl',type:'STOP_MARKET',side:'BUY',positionSide:'BOTH',closePosition:'true',status:'NEW'}];
+ const ex=copy(v);
  assert.equal((await ex.msg(OPEN)).reason,'MANUAL_FIRST');
  assert.equal((await ex.msg(CHANGE(880,1760))).reason,'MANUAL_FIRST');
- v.manual('BOTH',30); // the user closed the manual position, the trader still holds his
+ v.manual('BOTH',30);v.userOrders=[]; // the user closed the manual position, the trader still holds his
  assert.equal((await ex.msg(CHANGE(1760,2640))).reason,'MANUAL_FIRST','still the skipped trader position');
  assert.equal((await ex.msg(OPEN)).reason,'MANUAL_FIRST','an entry card of the same trader position is an add of it');
  assert.equal(evs(ex,x=>x.type==='LATE_ENTRY').length,0);
@@ -88,9 +105,15 @@ test('the trader\'s later adds of a MANUAL_FIRST-skipped entry are not followed 
  assert.equal(v.lanes.BOTH,-98);assert.equal(ex.status().positions[0].ownQty,98);
 });
 
-test('hedge: a manual position on the same side skips; on the other side the copy enters without touching the margin mode, and never when it is isolated',async()=>{
- {const v=laneVenue({hedge:true});v.manual('SHORT',30);const ex=copy(v);
+test('hedge: TP/SL-protected same-side manual skips; unprotected same-side links without ordering; opposite cross enters without touching margin mode; opposite isolated skips',async()=>{
+ {const v=laneVenue({hedge:true});v.manual('SHORT',30);
+  v.userOrders=[{symbol:'TNSR-USDT',orderId:'u-tp',clientOrderId:'man-tp',type:'TAKE_PROFIT_MARKET',side:'BUY',positionSide:'SHORT',closePosition:'true',status:'NEW'}];
+  const ex=copy(v);
   assert.equal((await ex.msg(OPEN)).reason,'MANUAL_FIRST');assert.equal(v.calls.filter(c=>c.op!=='get').length,0)}
+ {const v=laneVenue({hedge:true});v.manual('SHORT',30);const ex=copy(v);
+  const r=await ex.msg(OPEN);
+  assert.equal(r.manualLinked,true);assert.equal(r.skippedEntry,true);
+  assert.equal(v.calls.filter(c=>['order','lev','margin','cancel'].includes(c.op)).length,0)}
  {const v=laneVenue({hedge:true});v.manual('LONG',30);const ex=copy(v);
   assert.equal((await ex.msg(OPEN)).ok,true);
   assert.equal(v.calls.filter(c=>c.op==='margin').length,0,'the symbol-wide margin mode is not set while a manual position uses it');
@@ -284,4 +307,334 @@ test('live scalp: a manual add on its lane is not adopted, and its close sends o
  const closes=v.calls.filter(c=>c.op==='order'&&c.type==='MARKET'&&c.reduceOnly==='true');
  assert.deepEqual(closes.map(c=>Number(c.quantity)),[own]);
  assert.equal(v.amt,1,'the manual SOL stays');
+});
+
+// ---- User 2026-11-26: manual ratio-following (Option 2: unprotected manual only; TP/SL protected) ----
+const BTC_CONTRACT={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',tickSize:'0.1',quantityStep:'0.001',minQuantityBase:'0.001',minNotionalUSDT:2,tradable:true};
+const BTC_OPEN=(q='0.1',e='100')=>`📌 포지션 진입\n━━━━━━━━━━━━━━━━\n🪙 BTCUSDT  🟢 Long  ×5\n━━━━━━━━━━━━━━━━\n진입가　${e} USDT\n현재가　${e} USDT\n수량　　${q}　마진 2.00 USDT\n손익　　🟢 +0.00 USDT`;
+const BTC_CHANGE=(a,b)=>`📊 포지션 변경\n━━━━━━━━━━━━━━━━\n🪙 BTCUSDT  🟢 Long\n━━━━━━━━━━━━━━━━\n수량　　${a} → ${b}\n현재가　100 USDT\n손익　　🟢 +0.00 USDT`;
+const BTC_CLOSE='✅ 포지션 청산\n━━━━━━━━━━━━━━━━\n🪙 BTCUSDT  🟢 Long\n━━━━━━━━━━━━━━━━\n진입가　100 USDT\n최종손익　🟢 +5.00 USDT';
+
+function btcLaneVenue({hedge=false}={}){
+ const calls=[],orders=new Map();let id=1,mark=100;
+ const lanes={BOTH:0,LONG:0,SHORT:0};
+ const row=(side,amt)=>({symbol:'BTC-USDT',positionSide:side,positionAmt:String(amt),avgPrice:'100',markPrice:String(mark),
+  leverage:'5',unrealizedProfit:String((mark-100)*(side==='SHORT'?-amt:amt)),isolated:false});
+ const client={
+  positionMode:async()=>({dualSidePosition:hedge}),
+  leverage:async()=>({maxLongLeverage:20,maxShortLeverage:20}),
+  setMarginType:async(s,m)=>{calls.push({op:'margin',m});return {}},
+  setLeverage:async(s,side,l)=>{calls.push({op:'lev',side,l});return {}},
+  positions:async()=>hedge?['LONG','SHORT'].filter(k=>lanes[k]>0).map(k=>row(k,lanes[k])):lanes.BOTH!==0?[row('BOTH',lanes.BOTH)]:[],
+  openOrders:async()=>{if(v.failOpenOrders)throw Object.assign(Error('down'),{code:'NETWORK_UNREACHABLE'});return {orders:v.userOrders}},
+  cancelOrder:async(s,o,opt={})=>{calls.push({op:'cancel',o:o==null?null:String(o),cid:opt.clientOrderId??null});return {}},
+  getOrder:async(s,{clientOrderId})=>{const o=orders.get(clientOrderId);if(!o)throw Object.assign(Error('order not exist'),{code:'VENUE_ERROR_80016'});return {order:o}},
+  placeOrder:async p=>{calls.push({op:'order',...p});
+   if(p.type!=='MARKET')return {order:{orderId:String(id++)}};
+   const q=Number(p.quantity);
+   if(hedge){const lane=p.positionSide,closing=lane==='LONG'?p.side==='SELL':p.side==='BUY';
+    if(closing&&q>lanes[lane]+1e-9)throw Object.assign(Error('reduce more than held'),{code:'VENUE_ERROR_101205'});
+    lanes[lane]=+(closing?lanes[lane]-q:lanes[lane]+q).toFixed(8)}
+   else{const signed=p.side==='BUY'?q:-q,cur=lanes.BOTH;
+    if(p.reduceOnly==='true'){if(!(Math.sign(cur)===-Math.sign(signed))||q>Math.abs(cur)+1e-9)throw Object.assign(Error('reduce only'),{code:'VENUE_ERROR_101205'})}
+    lanes.BOTH=+(cur+signed).toFixed(8)}
+   const o={orderId:String(id++),clientOrderId:p.clientOrderId,side:p.side,positionSide:p.positionSide,type:'MARKET',status:'FILLED',executedQty:String(q),avgPrice:String(mark)};
+   orders.set(p.clientOrderId,o);return {order:o}},
+ };
+ const v={client,calls,lanes,userOrders:[],failOpenOrders:false,
+  manual(lane,delta){lanes[lane]=+(lanes[lane]+delta).toFixed(8)},
+  set mark(x){mark=x},
+  orders:()=>calls.filter(c=>c.op==='order'&&c.type==='MARKET')};
+ return v;
+}
+function btcCopy(v,{clock={t:2e12},manualPositions,audit=false,stops='off'}={}){
+ const ex=new CopyExecutor({config:{...copyConfig({COPY_SIZING:'BALANCE_RATIO',COPY_TRADER_BALANCE_USD:'20000',COPY_STOPS:stops,COPY_LEDGER_LOSS_PCT:'50'},'TESTNET'),mode:'LIVE'},
+  client:v.client,contractOf:async()=>BTC_CONTRACT,balance:async()=>({equity:10000,available:8000}),gate:()=>({ok:true}),now:()=>clock.t,
+  auditOrders:audit,manualPositions});
+ ex.sleep=async()=>{};ex.goneRecheckMs=0;
+ let n=0;ex.msg=text=>{clock.t+=1000;return ex.handle({id:++n,date:clock.t,text})};
+ return ex;
+}
+
+for(const hedge of [false,true]){
+ const lane=hedge?'LONG':'BOTH';
+ test(`${hedge?'hedge':'one-way'}: manual 1 vs trader 0.1 links without ordering, then scales add (+0.1 -> +1), partial close (-40%), and full close (-100%)`,async()=>{
+  const clock={t:2e12};
+  const v=btcLaneVenue({hedge});
+  v.manual(lane,1); // user manually entered 1.0 BTC LONG (no TP/SL)
+  // Even while manualLedger still has an open record on that lane, manualLinked adds must proceed cleanly.
+  const ex=btcCopy(v,{clock,manualPositions:()=>[{venueSymbol:'BTC-USDT',direction:'LONG',status:'OPEN',lastSeenAt:clock.t}]});
+
+  // 1) Trader opens 0.1 -> copy initial entry is skipped, ratio 10x linked
+  const rOpen=await ex.msg(BTC_OPEN('0.1','100'));
+  assert.equal(rOpen.ok,true);assert.equal(rOpen.skippedEntry,true);assert.equal(rOpen.manualLinked,true);
+  assert.equal(v.orders().length,0,'initial copy entry skipped');
+  assert.equal(v.lanes[lane],1);
+  assert.equal(ledgerOwnQty(ex.status().positions[0]),1);
+
+  // 2) Trader adds 0.1 (0.1 -> 0.2, +100% of first entry) -> we add 1.0 (total 2.0)
+  const rAdd1=await ex.msg(BTC_CHANGE('0.1','0.2'));
+  assert.equal(rAdd1.ok,true,JSON.stringify(rAdd1));
+  assert.equal(v.orders().length,1);
+  assert.equal(Number(v.orders()[0].quantity),1);
+  assert.equal(v.lanes[lane],2);
+
+  // 3) Trader adds 0.05 via another OPEN card -> we add 0.5 (total 2.5)
+  const rAdd2=await ex.msg(BTC_OPEN('0.05','101'));
+  assert.equal(rAdd2.ok,true,JSON.stringify(rAdd2));
+  assert.equal(v.orders().length,2);
+  assert.equal(Number(v.orders()[1].quantity),0.5);
+  assert.equal(v.lanes[lane],2.5);
+
+  // 4) Trader partially closes 40% (0.25 -> 0.15) -> we reduce 1.0 (40% of 2.5), leaving 1.5
+  const rCut=await ex.msg(BTC_CHANGE('0.25','0.15'));
+  assert.equal(rCut.ok,true,JSON.stringify(rCut));
+  assert.equal(v.orders().length,3);
+  assert.equal(Number(v.orders()[2].quantity),1);
+  assert.equal(v.lanes[lane],1.5);
+
+  // 5) Trader closes 100% -> we close remaining 1.5, leaving 0
+  const rClose=await ex.msg(BTC_CLOSE);
+  assert.equal(rClose.ok,true,JSON.stringify(rClose));
+  assert.equal(v.orders().length,4);
+  assert.equal(Number(v.orders()[3].quantity),1.5);
+  assert.equal(v.lanes[lane],0);
+  assert.equal(ex.status().positions.length,0);
+  assert.equal(ex.status().closed[0].closeReason,'TRADER_CLOSE');
+ });
+}
+
+test('Option 2 runtime protection: adding manual TP/SL after linking blocks add, partial close, full close (releases link), and emergency close',async()=>{
+ const sl={symbol:'BTC-USDT',orderId:'u-sl-1',clientOrderId:'man-sl-1',type:'STOP_MARKET',side:'SELL',positionSide:'BOTH',closePosition:'true',status:'NEW'};
+ // Case A: mid-flight TP/SL blocks add, reduce, and full close (releasing link cleanly so reconcile never touches it)
+ {
+  const v=btcLaneVenue();v.manual('BOTH',1);
+  const ex=btcCopy(v);
+  assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true);
+  v.userOrders=[sl]; // user sets manual SL after linking
+  assert.equal((await ex.msg(BTC_CHANGE('0.1','0.2'))).reason,'MANUAL_FIRST');
+  assert.equal((await ex.msg(BTC_CHANGE('0.2','0.1'))).reason,'MANUAL_FIRST');
+  const rc=await ex.msg(BTC_CLOSE);
+  assert.equal(rc.reason,'MANUAL_FIRST');assert.equal(rc.released,true);
+  assert.equal(v.orders().length,0,'zero orders sent once TP/SL is present');
+  assert.equal(v.lanes.BOTH,1,'manual position completely untouched');
+  assert.equal(ex.status().positions.length,0,'released back to pure manual management');
+  assert.ok(ex.status().events.some(e=>e.type==='MANUAL_RELEASED'),'emits unthrottled MANUAL_RELEASED event');
+  await ex.reconcile();
+  assert.equal(v.orders().length,0);
+ }
+ // Case B: COPY_LOSS_LIMIT / emergency never force-closes a manualLinked position with user TP/SL (and manualLinked drawdown does not trigger copy kill-switch)
+ {
+  const v=btcLaneVenue();v.manual('BOTH',1);
+  const ex=btcCopy(v);
+  assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true);
+  v.userOrders=[sl];
+  v.mark=-6000; // huge unrealized loss on manual position
+  await ex.reconcile();
+  assert.equal(v.orders().length,0,'emergency loss limit never closes TP/SL-protected manual position');
+  assert.equal(ex.store.killed,false,'manualLinked drawdown alone must not trigger copy kill-switch');
+  assert.equal(v.lanes.BOTH,1);
+  // Even if kill-switch was already triggered by another copy position, #emergency detaches TP/SL-protected manualLinked cleanly
+  ex.store.killed=true;
+  await ex.reconcile();
+  assert.equal(v.orders().length,0,'killed copy never force-closes TP/SL-protected manualLinked');
+  assert.equal(v.lanes.BOTH,1);
+  assert.equal(ex.status().positions.length,0,'detached back to manual');
+ }
+ // Case C: fail-closed when openOrders is unreadable (transient error does not permanently add to manualFirstSkips)
+ {
+  const v=btcLaneVenue();v.manual('BOTH',1);v.failOpenOrders=true;
+  const ex=btcCopy(v);
+  assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).reason,'COPY_ORDERS_UNREADABLE','unreadable openOrders does not link');
+  assert.equal(ex.status().positions.length,0);
+  v.failOpenOrders=false;
+  assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true,'links cleanly once openOrders recovers');
+ }
+ {
+  const v=btcLaneVenue();v.manual('BOTH',1);
+  const ex=btcCopy(v);
+  assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true);
+  v.failOpenOrders=true;
+  assert.equal((await ex.msg(BTC_CHANGE('0.1','0.2'))).reason,'COPY_ORDERS_UNREADABLE');
+  assert.equal((await ex.msg(BTC_CHANGE('0.2','0.1'))).reason,'COPY_ORDERS_UNREADABLE');
+  assert.equal((await ex.msg(BTC_CLOSE)).reason,'COPY_ORDERS_UNREADABLE');
+  assert.equal(v.orders().length,0,'fail-closed sends zero orders when openOrders fails');
+  assert.equal(v.lanes.BOTH,1);
+ }
+});
+
+test('manualLinked with COPY_STOPS=on + auditOrders=true: never places copy stop, never blocks adds after user manual partial close',async()=>{
+ const clock={t:2e12};
+ const v=btcLaneVenue();v.manual('BOTH',1);
+ const ex=btcCopy(v,{clock,audit:true,stops:'on'});
+ await ex.reconcile();
+ assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true);
+ await ex.reconcile();
+ assert.equal(v.calls.filter(c=>c.op==='order'&&c.type==='STOP_MARKET').length,0,'COPY_STOPS=on must never place a copy stop on manualLinked');
+ assert.equal(v.orders().length,0,'COPY_STOPS=on must never emergency-close manualLinked');
+ assert.deepEqual(ex.auditStatus().lanes[0].issues,[],'manualLinked must not trigger STOP_MISSING in audit');
+ assert.equal(ex.auditStatus().lanes[0].stop,'MANUAL');
+ // User manually trims 1.0 -> 0.5 on BingX; reconcile syncs auditQty so next trader add is not blocked
+ v.manual('BOTH',-0.5);
+ await ex.reconcile();
+ assert.deepEqual(ex.auditStatus().lanes[0].issues,[],'manual partial close syncs auditQty');
+ const addRes=await ex.msg(BTC_CHANGE('0.1','0.2'));
+ assert.equal(addRes.ok,true,JSON.stringify(addRes));
+ assert.equal(Number(v.orders()[0].quantity),1,'add follows manualBaseQty*(theirAdd/theirFirstQty)');
+ assert.equal(v.lanes.BOTH,1.5);
+ assert.equal(v.calls.filter(c=>c.op==='order'&&c.type==='STOP_MARKET').length,0,'adds also never place copy stop on manualLinked');
+});
+
+test('hedge mode: manual Limit TP (no reduceOnly) blocks linking and protects runtime add/reduce/close',async()=>{
+ const limitTp={symbol:'BTC-USDT',orderId:'u-tp-1',clientOrderId:'',type:'LIMIT',side:'SELL',positionSide:'LONG',price:'120',origQty:'1',executedQty:'0',status:'NEW'};
+ const openingLimit={symbol:'BTC-USDT',orderId:'u-open-1',clientOrderId:'',type:'LIMIT',side:'BUY',positionSide:'LONG',price:'90',origQty:'1',executedQty:'0',status:'NEW'};
+ assert.equal(userProtectOrder(limitTp,{hedge:true,direction:'LONG'}),true,'hedge closing Limit TP counts as protection');
+ assert.equal(userProtectOrder(openingLimit,{hedge:true,direction:'LONG'}),false,'hedge opening Limit order is not TP/SL');
+ const v=btcLaneVenue({hedge:true});v.manual('LONG',1);v.userOrders=[limitTp];
+ const ex=btcCopy(v);
+ assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).reason,'MANUAL_FIRST','hedge Limit TP skips linking');
+ assert.equal(ex.status().positions.length,0);
+ // Clear skip, link without TP, then add hedge Limit TP mid-flight
+ await ex.msg(BTC_CLOSE);v.userOrders=[openingLimit];
+ assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true,'opening limit does not block linking');
+ v.userOrders=[limitTp];
+ assert.equal((await ex.msg(BTC_CHANGE('0.1','0.2'))).reason,'MANUAL_FIRST');
+ assert.equal((await ex.msg(BTC_CHANGE('0.2','0.1'))).reason,'MANUAL_FIRST');
+ const rc=await ex.msg(BTC_CLOSE);
+ assert.equal(rc.reason,'MANUAL_FIRST');assert.equal(rc.released,true);
+ assert.equal(v.orders().length,0);
+});
+
+test('COPY_ORDERS_UNREADABLE on #close keeps p.closing across >5 retries, never turns next OPEN into add, and closes on recovery',async()=>{
+ const clock={t:2e12};
+ const v=btcLaneVenue();v.manual('BOTH',1);
+ const ex=btcCopy(v,{clock});
+ assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true);
+ v.failOpenOrders=true;
+ assert.equal((await ex.msg(BTC_CLOSE)).reason,'COPY_ORDERS_UNREADABLE');
+ // Even after 6 failed reconciles (past pending max tries=5), p.closing stays set and blocks new OPEN from adding
+ for(let i=0;i<6;i++)await ex.reconcile();
+ assert.equal(v.orders().length,0,'zero orders while openOrders unreadable');
+ assert.equal((await ex.msg(BTC_OPEN('0.2','105'))).reason,'CLOSING','next OPEN must not add into a pending-close manualLinked position');
+ // Once openOrders recovers, next reconcile completes the close cleanly
+ v.failOpenOrders=false;
+ await ex.reconcile();
+ assert.equal(v.lanes.BOTH,0,'position closed cleanly on recovery');
+ assert.equal(ex.status().positions.length,0);
+});
+
+test('RealTrailingManager skips manualLinked (even applyToCopy=true) and cancels prior optr stop (even applyToCopy=false)',async()=>{
+ const calls=[];
+ const rt=new RealTrailingManager({
+  executeAction:async a=>{calls.push(a);return {ok:true,orderId:'T'+calls.length,stopPrice:101}},
+  sendText:async()=>{},
+ });
+ rt.configure({enabled:true,applyToManual:true,applyToCopy:false});
+ const baseRow={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',size:1,avg:100,mark:125,leverage:5,margin:20,roePct:25,unrealized:25};
+ // 1) Before copy links, realTrailing places optr lock stop on unprotected manual position
+ await rt.evaluate([{...baseRow,origin:'manual'}],1e12,{openOrders:[]});
+ assert.ok(calls.length>0,'manual position gets trailing actions');
+ assert.ok(rt.tracked.has('BTCUSDT|LONG'));
+ calls.length=0;
+ // 2) Copy links it -> tagOrigins marks origin:'copy', manualLinked:true -> realTrailing cancels prior stops even with applyToCopy=false
+ const tagged=tagOrigins([baseRow],[{symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',status:'OPEN',manualLinked:true,manualScale:10,ownQty:1,qtyStep:0.001}]);
+ assert.equal(tagged[0].manualLinked,true);
+ await rt.evaluate(tagged,1e12+20000,{openOrders:[]});
+ assert.ok(calls.some(c=>c.action==='CANCEL_STOP'),'cancels pre-link trailing stop on manualLinked handoff');
+ assert.equal(rt.tracked.has('BTCUSDT|LONG'),false);
+ // 3) Even with applyToCopy=true, realTrailing never acts on manualLinked
+ rt.configure({applyToCopy:true});calls.length=0;
+ await rt.evaluate(tagged,1e12+40000,{openOrders:[]});
+ assert.equal(calls.length,0,'never acts on manualLinked even when applyToCopy is true');
+});
+
+test('manualLinked settlement recovers pre-link manual opening fill as CONFIRMED and ManualLedger avoids duplicate MIXED_WITH_COPY',async()=>{
+ const clock={t:2e12};
+ const v=btcLaneVenue();v.manual('BOTH',1);
+ const manualOpenAt=clock.t-300000;
+ const manualOrder={orderId:'m-open-1',symbol:'BTC-USDT',side:'BUY',positionSide:'BOTH',type:'MARKET',status:'FILLED',executedQty:'1',avgPrice:'100',updateTime:manualOpenAt};
+ const copyOrders=[];
+ const origPlace=v.client.placeOrder;
+ v.client.placeOrder=async p=>{const r=await origPlace(p);if(p.type==='MARKET')copyOrders.push({...r.order,symbol:'BTC-USDT',updateTime:clock.t});return r};
+ v.client.allOrders=async()=>({orders:[manualOrder,...copyOrders]});
+ v.client.fillHistory=async()=>({fill_orders:[
+  {tradeId:'t1',orderId:'m-open-1',symbol:'BTC-USDT',side:'BUY',filledQty:'1',price:'100',commission:'-0.05',realizedPnl:'0',filledTime:manualOpenAt},
+  ...copyOrders.map((o,i)=>({tradeId:`t${i+2}`,orderId:o.orderId,symbol:'BTC-USDT',side:o.side,filledQty:o.executedQty,price:o.avgPrice,commission:'-0.05',realizedPnl:o.side==='SELL'?'10':'0',filledTime:o.updateTime})),
+ ]});
+ let ex;
+ const ml=new ManualLedger({openReads:1,closeReads:1,now:()=>clock.t,copyRecords:()=>ex?ex.status().positions:[]});
+ ex=btcCopy(v,{clock,manualPositions:()=>Object.values(ml.store.positions)});
+ // ManualLedger observes user's manual position first and keeps it fresh every 15s
+ ml.observe({venuePositions:[{symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',size:1,avg:100,mark:100,leverage:5,origin:'manual'}],venuePositionsAt:manualOpenAt});
+ ml.observe({venuePositions:[{symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',size:1,avg:100,mark:100,leverage:5,origin:'manual'}],venuePositionsAt:clock.t-1000});
+ assert.equal(Object.keys(ml.store.positions).length,1);
+ // Copy links it -> ManualLedger hands off cleanly without leaving a frozen mergedIntoCopy row
+ assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true);
+ ml.observe({venuePositions:tagOrigins([{symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',size:1,avg:100,mark:100,leverage:5}],ex.status().positions),venuePositionsAt:clock.t});
+ assert.equal(Object.keys(ml.store.positions).length,0,'ManualLedger drops open record on manualLinked handoff');
+ // Trader adds (+0.1 -> +1.0) and closes at 105
+ assert.equal((await ex.msg(BTC_CHANGE('0.1','0.2'))).ok,true);
+ v.mark=105;
+ assert.equal((await ex.msg(BTC_CLOSE)).ok,true);
+ clock.t+=20000;
+ await ex.settle({limit:5});
+ const closed=ex.status().closed[0];
+ assert.equal(closed.netSource,'EXCHANGE_FILLS','manualLinked trade settles as CONFIRMED');
+ assert.equal(closed.settlement.state,'CONFIRMED');
+ assert.equal(ml.store.closed.length,0,'no duplicate MIXED_WITH_COPY row in ManualLedger');
+});
+
+test('manualLinked partial close rounding never closes 100% on a partial trim and Telegram formats MANUAL_LINKED/MANUAL_RELEASED/MANUAL_PROTECT_HOLD',async()=>{
+ const v=btcLaneVenue();v.manual('BOTH',0.001); // minimum step = 0.001
+ const ex=btcCopy(v);
+ assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true);
+ // Trader trims 60% (0.1 -> 0.04): 0.0006 would round up to 0.001 (100% close) — manualLinked must skip as tooSmall instead of closing 100%
+ const rc=await ex.msg(BTC_CHANGE('0.1','0.04'));
+ assert.equal(rc.ok,true);assert.equal(rc.tooSmall,true);
+ assert.equal(v.orders().length,0,'partial trim must not round up into a 100% close');
+ assert.equal(v.lanes.BOTH,0.001);
+ assert.equal(ex.status().positions[0].theirTotal,0.04,'theirTotal updated even when cut is tooSmall');
+ // Telegram notification formatting checks
+ assert.match(copyEventText({type:'MANUAL_LINKED',symbol:'BTCUSDT',direction:'LONG',mode:'LIVE',qty:1,theirQty:0.1,ratio:10}),/비율 연결/);
+ assert.match(copyEventText({type:'MANUAL_RELEASED',symbol:'BTCUSDT',direction:'LONG',mode:'LIVE',detail:'TP/SL 설정'}),/연결 해제/);
+ assert.match(copyEventText({type:'MANUAL_PROTECT_HOLD',symbol:'BTCUSDT',direction:'LONG',mode:'LIVE',reason:'MANUAL_FIRST',detail:'TP/SL 보호'}),/수동 TP\/SL 보호/);
+ assert.doesNotMatch(copyEventText({type:'MANUAL_PROTECT_HOLD',symbol:'BTCUSDT',direction:'LONG',mode:'LIVE',reason:'MANUAL_FIRST',detail:'TP/SL 보호'}),/카피 몫 불명/);
+ assert.match(copyEventText({type:'MANUAL_PROTECT_HOLD',symbol:'BTCUSDT',direction:'LONG',mode:'LIVE',reason:'COPY_ORDERS_UNREADABLE'}),/미체결 주문 조회 실패/);
+});
+
+test('ManualLedger re-adopts a released manualLinked position cleanly as manual without stranded managedPositions or [카피] alerts',async()=>{
+ const clock={t:2e12};
+ const v=btcLaneVenue();v.manual('BOTH',1);
+ let ex;
+ const ml=new ManualLedger({openReads:1,closeReads:1,now:()=>clock.t,
+  copyRecords:()=>ex?[...ex.status().positions,...ex.status().closed].map(p=>({...p,alertOrigin:'COPY',alertOwnerId:p.id})):[]});
+ ex=btcCopy(v,{clock,manualPositions:()=>Object.values(ml.store.positions)});
+ const row={symbol:'BTCUSDT',venueSymbol:'BTC-USDT',direction:'LONG',size:1,avg:100,mark:100,leverage:5};
+ // 1) Manual open observed
+ ml.observe({venuePositions:[{...row,origin:'manual'}],venuePositionsAt:clock.t});
+ assert.equal(Object.keys(ml.store.positions).length,1);
+ // 2) Copy links -> handed off to managedPositions with manualLinked:true
+ assert.equal((await ex.msg(BTC_OPEN('0.1','100'))).manualLinked,true);
+ clock.t+=5000;
+ ml.observe({venuePositions:tagOrigins([row],ex.status().positions),venuePositionsAt:clock.t});
+ assert.equal(Object.keys(ml.store.positions).length,0);
+ assert.equal(ml.store.managedPositions['BTC-USDT|LONG']?.manualLinked,true);
+ // 3) User sets manual SL and trader closes -> #releaseManualLinked detaches copy without closing venue position
+ v.userOrders=[{symbol:'BTC-USDT',orderId:'u-sl-9',clientOrderId:'man-sl-9',type:'STOP_MARKET',side:'SELL',positionSide:'BOTH',closePosition:'true',status:'NEW'}];
+ const rc=await ex.msg(BTC_CLOSE);
+ assert.equal(rc.reason,'MANUAL_FIRST');assert.equal(rc.released,true);
+ assert.equal(ex.status().positions.length,0);
+ // 4) Next ManualLedger observe drops stranded managedPositions and re-adopts cleanly as manual
+ clock.t+=5000;
+ ml.observe({venuePositions:tagOrigins([row],ex.status().positions),venuePositionsAt:clock.t});
+ assert.equal(ml.store.managedPositions['BTC-USDT|LONG'],undefined,'managedPositions cleared on release');
+ assert.equal(Object.keys(ml.store.positions).length,1,'re-adopted into manual store.positions');
+ assert.equal(ml.store.positions['BTC-USDT|LONG'].origin,'manual');
+ // 5) User manually closes on BingX -> recorded as manual close, zero COPY alerts queued
+ clock.t+=5000;
+ ml.observe({venuePositions:[],venuePositionsAt:clock.t});
+ assert.equal(Object.keys(ml.store.positions).length,0);
+ assert.equal(ml.store.closed.length,1);
+ assert.equal(ml.store.closed[0].origin,'manual');
+ assert.equal(ml.store.pendingAlerts.some(a=>a.alertOrigin==='COPY'),false,'no [카피] alerts queued for detached manual close');
 });

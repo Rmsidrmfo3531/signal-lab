@@ -171,7 +171,7 @@ export class ManualLedger{
    if(owners.has(key)&&ownerOf(owners.get(key))!==ownerOf(p))continue;
    window.unchanged.push({...p,from:p.size,to:row.size,fromAvg:p.avg,toAvg:row.avg,leverage:row.leverage??p.leverage,fromAt:window.from,observedAt:window.to});
   }
-  changed=this.#observeManaged(byKey,owners,at,priorAt,priorKeys,first)||changed;
+  changed=this.#observeManaged(byKey,owners,managed,at,priorAt,priorKeys,first)||changed;
   for(const [key,p] of Object.entries(this.store.positions)){
    const row=byKey.get(key);
    if(!row){p.missing=(p.missing||0)+1;if(p.missing===1)p.goneAt=at;changed=true;
@@ -179,6 +179,9 @@ export class ManualLedger{
    if(p.missing){p.missing=0;delete p.goneAt;changed=true}
    const fromAt=p.lastSeenAt;p.lastSeenAt=at;
    if(row.origin==='copy'||owners.has(key)||this.store.managedPositions[key]){
+    // Ratio-linked manual position (user 2026-11-26): handed off to copy ledger so it settles as one trade;
+    // if copy later detaches (#releaseManualLinked), #observeManaged re-adopts it cleanly into store.positions.
+    if(row.manualLinked||owners.get(key)?.manualLinked){delete this.store.positions[key];changed=true;continue}
     // The copy ledger entered the same symbol and side: the venue position is shared from here on.
     if(!p.mergedIntoCopy){p.mergedIntoCopy=at;this.#event('MANUAL_MERGED_INTO_COPY',{symbol:p.symbol,direction:p.direction,size:p.size});changed=true}
     continue;
@@ -202,11 +205,19 @@ export class ManualLedger{
   if(changed)this.#save();
   return changed;
  }
- #observeManaged(byKey,owners,at,priorAt,priorKeys,first){
+ #observeManaged(byKey,owners,managed,at,priorAt,priorKeys,first){
   const positions=this.store.managedPositions;let changed=false;
   for(const [key,p] of Object.entries(positions)){
    const row=byKey.get(key),owner=owners.get(key);
    if(owners.has(key)&&(!owner||ownerOf(owner)!==ownerOf(p))){delete positions[key];changed=true;continue}
+   if(p.manualLinked&&!owners.has(key)&&row){
+    const justClosed=managed.some(c=>c.status==='CLOSED'&&c.id===p.alertOwnerId&&num(c.closedAt)!=null&&c.closedAt>=at-this.copyCloseGraceMs);
+    if(!justClosed){
+     delete positions[key];
+     if(!this.store.positions[key])this.#open(row,at,true);
+     changed=true;continue;
+    }
+   }
    if(!row){
     p.missing=(p.missing??0)+1;p.goneAt??=at;changed=true;
     if(p.missing>=this.closeReads){this.#queueAlert(p,{from:p.size,to:0,observedAt:p.goneAt},p.lastSeenAt);delete positions[key]}
@@ -222,7 +233,8 @@ export class ManualLedger{
    const row=byKey.get(key);
    if(!owner||!row||positions[key])continue;
    const p={symbol:owner.symbol??row.symbol,venueSymbol:row.venueSymbol,direction:row.direction,hedge:owner.hedge===true||['LONG','SHORT'].includes(row.positionSide),
-    leverage:row.leverage??owner.leverage,alertOrigin:owner.alertOrigin,alertOwnerId:owner.alertOwnerId,size:row.size,lastSeenAt:at};
+    leverage:row.leverage??owner.leverage,alertOrigin:owner.alertOrigin,alertOwnerId:owner.alertOwnerId,size:row.size,lastSeenAt:at,
+    ...(owner.manualLinked?{manualLinked:true}:{})};
    positions[key]=p;changed=true;
    if(!first&&!priorKeys.has(key)&&!this.store.positions[key])
     this.#queueAlert(p,{from:0,to:row.size,observedAt:at},priorAt);

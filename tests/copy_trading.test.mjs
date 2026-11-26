@@ -1496,8 +1496,19 @@ test('live copy enters and adds when only unfilled resting manual LIMIT orders e
  assert.equal((await ex.handle({id:6,date:1e12+5000,text:OPEN})).reason,'COPY_OPEN_ORDERS_EXIST','partially filled manual LIMIT must still block entry');
 
  v.setSize(10);
+ orders=[
+  {symbol:'TNSR-USDT',orderId:'m4',type:'LIMIT',side:'SELL',positionSide:'BOTH',executedQty:'0',status:'NEW'},
+  {symbol:'TNSR-USDT',orderId:'m5',type:'STOP_MARKET',side:'BUY',positionSide:'BOTH',stopPrice:'0.06',status:'NEW',closePosition:'true'},
+ ];
+ assert.equal((await ex.handle({id:7,date:1e12+6000,text:OPEN})).reason,'MANUAL_FIRST','TP/SL-protected filled manual position must still block entry (Option 2, real account)');
+ // After trader closes the skipped trade, an unprotected same-direction manual position links without ordering
+ await ex.handle({id:8,date:1e12+7000,text:CLOSE});
  orders=[{symbol:'TNSR-USDT',orderId:'m4',type:'LIMIT',side:'SELL',positionSide:'BOTH',executedQty:'0',status:'NEW'}];
- assert.equal((await ex.handle({id:7,date:1e12+6000,text:OPEN})).reason,'MANUAL_FIRST','filled manual position must still block entry (manual first, real account)');
+ const callsBefore=v.calls.length;
+ const linkedRes=await ex.handle({id:9,date:1e12+8000,text:OPEN});
+ assert.equal(linkedRes.ok,true);
+ assert.equal(linkedRes.reason,'MANUAL_LINKED','unprotected same-direction manual position links without placing an entry order');
+ assert.equal(v.calls.length,callsBefore,'linking must not send an entry order');
 });
 
 test('live copy in hedge mode handles resting manual LIMIT order and venue setLeverage refusal safely within maxLeverage',async()=>{

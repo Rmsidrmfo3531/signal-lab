@@ -185,7 +185,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
  const money=v=>!fin(v)?'—':`${Number(v)>=0?'+':'−'}$${Math.abs(Number(v)).toFixed(2)}`,usdv=v=>!fin(v)?'—':`$${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`;
  const cls=v=>!fin(v)?'':Number(v)>0?'paper-profit':Number(v)<0?'paper-loss':'',px=v=>fin(v)&&Number(v)>0?esc(+Number(v).toPrecision(6)):'—';
  const pct=v=>!fin(v)?'—':`${Number(v)>=0?'+':'−'}${Math.abs(Number(v)).toFixed(1)}%`,mm=p=>p.marginMode==='ISOLATED'?'격리':'교차';
- const badge=p=>p.origin==='copy'?'<span class="vp-badge copy">카피</span>':p.origin==='scalp'?'<span class="vp-badge scalp">단타</span>':'<span class="vp-badge manual">수동</span>';
+ const badge=p=>p.origin==='copy'?(p.manualLinked?'<span class="vp-badge copy" title="수동 포지션 비율 연결 (첫 진입 생략 · TP/SL 설정 시 보호)">카피·비율연결</span>':'<span class="vp-badge copy">카피</span>'):p.origin==='scalp'?'<span class="vp-badge scalp">단타</span>':'<span class="vp-badge manual">수동</span>';
  const sum=a=>a.reduce((t,p)=>t+(Number(p.unrealized)||0),0);
  const hhmm=t=>t?new Date(t).toLocaleTimeString('ko-KR',{hour12:false}):'';
  const fail=c.venuePositionsError?`<span class="vp-fail" title="${esc(c.venuePositionsError)}">갱신 실패${list&&c.venuePositionsAt?` · ${hhmm(c.venuePositionsAt)} 목록`:''}</span>`:'';
@@ -222,7 +222,7 @@ export function venuePositionsHTML(c,copyOpen=[]){
  const posActions=p=>{
   const inProfit=fin(p.unrealized)&&Number(p.unrealized)>0,sym=esc(p.symbol),dir=esc(p.direction),sz=esc(qtyFmt(p.size)),lev=esc(p.leverage||''),mmMode=esc(p.marginMode||'CROSSED');
   const info=trInfo(p);
-  const slBtn=p.origin!=='copy'&&p.origin!=='scalp'&&!fin(p.stop)?`<button type="button" class="vp-act-btn warn" data-pos-action="SET_STOP_LOSS" data-pos-sl-roe="15" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="현재 포지션에 −15% ROE 손절(STOP_MARKET) 즉시 설정">🛡 -15% 손절</button>`:'';
+  const slBtn=(p.origin!=='copy'&&p.origin!=='scalp'||p.manualLinked)&&!fin(p.stop)?`<button type="button" class="vp-act-btn warn" data-pos-action="SET_STOP_LOSS" data-pos-sl-roe="15" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="현재 포지션에 −15% ROE 손절(STOP_MARKET) 즉시 설정">🛡 -15% 손절</button>`:'';
   const trBtn=info?`<button type="button" class="vp-act-btn" data-trail-toggle="${esc(info.disp)}" title="${info.excluded?'이 종목을 자동 트레일링 대상에 다시 포함':'이 종목을 자동 트레일링에서 제외'}">${info.excluded?'트레일 포함':'트레일 제외'}</button>`:'';
   const ofBtn=`<button type="button" class="vp-act-btn" data-open-orderflow="${sym}" title="이 종목의 호가·CVD·청산맵(FireCharts 호가 히트맵·금액대별 새우~고래 CVD·추정 청산맵) 보기">수급/CVD</button>`;
   return `<div class="vp-actions"><button type="button" class="vp-act-btn trade" data-trade-fill data-pos-symbol="${sym}" data-pos-lev="${lev}" data-pos-mm="${mmMode}" title="이 종목을 수동 주문 패널에 불러오기">주문/추매</button>${ofBtn}<button type="button" class="vp-act-btn" data-pos-action="CLOSE_HALF" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="보유 수량의 50% 시장가 부분 청산">50% 청산</button><button type="button" class="vp-act-btn danger" data-pos-action="CLOSE_ALL" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}" title="해당 포지션 전량 시장가 청산">전량</button><button type="button" class="vp-act-btn" data-pos-action="BREAKEVEN_STOP" data-pos-symbol="${sym}" data-pos-dir="${dir}" data-pos-size="${sz}"${inProfit?'':' disabled'} title="${inProfit?'평균 진입가+왕복 수수료에 본전 스탑 설정':'수익 구간에서만 본전 스탑 가능'}">본전 스탑</button>${slBtn}${trBtn}</div>`;
@@ -614,11 +614,11 @@ export function copyHTML(c){
  };
  const done=x=>`<li class="${isMan(x)?'vp-manual':''}"><span class="muted">${when(x.closedAt)}</span>${symTag(x.symbol)}${manBadge(x)}${side(x.direction)}<span>추매 ${esc(x.adds||0)}회</span><span class="muted">${held(x.openedAt,x.closedAt)}</span>${x.theirPnlUSD!=null?`<small>트레이더 ${money(x.theirPnlUSD)}</small>`:''}${settlement(x)}<b class="${cls(x.netUSD)} end">${result(x)}</b>${manualMemo(x)}</li>`;
  // Entry failures and skips under the closes (user 2026-11-17 "코인 종목 / 롱,숏 / 진입 실패 이유"), 10 per page.
- const notesAll=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY','MANUAL_PROTECT_HOLD','MANUAL_ON_LANE'].includes(e.type));
+ const notesAll=(c.events||[]).filter(e=>['SKIPPED','ADD_SKIPPED','ERROR','STOP_NOT_SET','LATE_ENTRY','MANUAL_PROTECT_HOLD','MANUAL_ON_LANE','MANUAL_LINKED','MANUAL_RELEASED'].includes(e.type));
  // Collapsed by default, 5 per page (user 2026-11-18 "진입 실패·건너뜀 부분 너무 차지하는 비율이 크다").
  const FP=5,fPages=Math.max(1,Math.ceil(notesAll.length/FP)),fPage=Math.min(failPage,fPages-1),notes=notesAll.slice(fPage*FP,fPage*FP+FP);
  const failPager=fPages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-copy-fail-page="-1"${fPage===0?' disabled':''}>‹ 이전</button><span class="muted">${fPage+1} / ${fPages}쪽</span><button type="button" class="outline-btn small" data-copy-fail-page="1"${fPage>=fPages-1?' disabled':''}>다음 ›</button></div>`:'';
- const why=e=>`${esc(e.type==='LATE_ENTRY'?'늦은 진입 시도 (진입 알림을 놓친 포지션의 추매)':COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when,c.events||[])}`;
+ const why=e=>`${esc(e.type==='LATE_ENTRY'?'늦은 진입 시도 (진입 알림을 놓친 포지션의 추매)':e.type==='MANUAL_LINKED'?'수동 포지션 비율 연결 (첫 진입 생략)':e.type==='MANUAL_RELEASED'?'수동 비율 연결 해제 (TP/SL 보호)':COPY_WHY[e.reason]||e.reason||e.type)}${e.type==='ADD_SKIPPED'?' (추매)':''}${e.detail?` <small>${esc(e.detail)}</small>`:''}${notCopiedWhy(e,when,c.events||[])}`;
  // Desktop (user 2026-11-14: the web view felt like a phone): the same data as tables with more columns;
  // phones keep the compact lists. CSS shows one or the other (.only-desk / .only-mob).
  const margin=p=>p.qty>0&&p.avg>0&&p.leverage>0?p.qty*p.avg/p.leverage:null,roe=p=>{const m=margin(p);return m&&p.unrealized!=null?p.unrealized/m*100:null};
