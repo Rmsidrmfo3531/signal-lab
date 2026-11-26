@@ -202,3 +202,74 @@ test('testnetUntrackedCardHTML renders untracked venue position safely with dire
  assert.ok(html.includes('10배 교차'));
  assert.ok(html.includes('+1.16%'));
 });
+
+test('one-time TESTNET migration purges corrupted EVAAUSDT (opened 1795599322366, -$31.95) from store, journal, and cumulative PnL while keeping other trades',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'scalp-evaa-purge-'));
+ try{
+  const badClosed={
+   ...sampleOpen(),
+   id:'evaa-bug-1',
+   status:'CLOSED',
+   openedAt:1795599322366,
+   closedAt:1795659018266,
+   closeReason:'EMERGENCY_ROE_STOP',
+   netUSD:-31.9511,
+   journaled:true,
+  };
+  const goodClosed={
+   ...sampleOpen(),
+   id:'bless-ok-1',
+   symbol:'BLESSUSDT',
+   venueSymbol:'BLESS-USDT',
+   direction:'LONG',
+   status:'CLOSED',
+   openedAt:1795657514073,
+   closedAt:1795657844865,
+   closeReason:'LADDER_TAKE_PROFIT',
+   netUSD:4.1,
+   journaled:true,
+  };
+  fs.writeFileSync(path.join(dir,'scalp-store.json'),JSON.stringify({open:[],closed:[goodClosed,badClosed],events:[],dailyStop:null}),'utf8');
+  const journalLines=[
+   {id:'evaa-old-ext',symbol:'EVAAUSDT',direction:'SHORT',entry:{at:1795599322366},exit:{at:1795600655473,reason:'EXTERNAL'},pnl:{netUSD:-5.2}},
+   {id:'evaa-bug-1',symbol:'EVAAUSDT',direction:'SHORT',entry:{at:1795599322366},exit:{at:1795659018266,reason:'EMERGENCY_ROE_STOP'},pnl:{netUSD:-31.9511}},
+   {id:'bless-ok-1',symbol:'BLESSUSDT',direction:'LONG',entry:{at:1795657514073},exit:{at:1795657844865,reason:'LADDER_TAKE_PROFIT'},pnl:{netUSD:4.1}},
+  ];
+  fs.writeFileSync(path.join(dir,'scalp-journal.jsonl'),journalLines.map(x=>JSON.stringify(x)).join('\n')+'\n','utf8');
+
+  const ex=new ScalpExecutor({
+   config:scalpExecConfig({SCALP_EXEC_MODE:'TESTNET',SCALP_STOP_LOSS:'off'}),
+   directory:dir,
+   fileName:'scalp-store.json',
+  });
+  assert.equal(ex.store.closed.length,1);
+  assert.equal(ex.store.closed[0].id,'bless-ok-1');
+  assert.equal(ex.journalRows.length,1);
+  assert.equal(ex.stats().trades,1);
+  assert.equal(ex.stats().netUSD,4.1);
+  assert.equal(ex.store.migrations.purgeEvaaBug1795599322,true);
+
+  // deleteClosedTrade removes remaining BLESSUSDT trade from store & journal, excluding from cumulative PnL
+  const del=ex.deleteClosedTrade('bless-ok-1');
+  assert.equal(del.ok,true);
+  assert.equal(ex.store.closed.length,0);
+  assert.equal(ex.journalRows.length,0);
+  assert.equal(ex.stats().trades,0);
+  assert.equal(ex.stats().netUSD,0);
+  assert.equal(ex.deleteClosedTrade('bless-ok-1').ok,false);
+ }finally{
+  fs.rmSync(dir,{recursive:true,force:true});
+ }
+});
+
+test('deleteClosedTrade is refused in LIVE mode',()=>{
+ const client={mode:'LIVE',positions:async()=>[],openOrders:async()=>[]};
+ const {ex,cleanup}=makeExec({client,mode:'LIVE',closed:[{...sampleOpen(),id:'live-1',status:'CLOSED',netUSD:-10}]});
+ try{
+  const r=ex.deleteClosedTrade('live-1');
+  assert.equal(r.ok,false);
+  assert.equal(r.reason,'SCALP_TESTNET_ONLY');
+  assert.equal(ex.store.closed.length,1);
+ }finally{cleanup()}
+});
+

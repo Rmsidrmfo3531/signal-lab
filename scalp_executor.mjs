@@ -568,7 +568,8 @@ export class ScalpExecutor{
   this.store={open:Array.isArray(saved?.open)?saved.open:[],closed:Array.isArray(saved?.closed)?saved.closed:[],events:Array.isArray(saved?.events)?saved.events:[],
    skipCounts:saved?.skipCounts||{},skips:Array.isArray(saved?.skips)?saved.skips:[],sent:Array.isArray(saved?.sent)?saved.sent:[],dailyStop:saved?.dailyStop||null,
    autoRearm:saved?.autoRearm===true,userPaused:saved?.userPaused===true,
-   managementSince:saved?.managementSince&&typeof saved.managementSince==='object'?{...saved.managementSince}:{}};
+   managementSince:saved?.managementSince&&typeof saved.managementSince==='object'?{...saved.managementSince}:{},
+   migrations:saved?.migrations&&typeof saved.migrations==='object'?{...saved.migrations}:{}};
   // An entry cut off by a restart: its outcome is read from the venue by the next check.
   for(const p of this.store.open)if(p.status==='SUBMITTING')p.status='UNKNOWN';
   // budget (testnet_budget.mjs, user 2026-11-17 "한도까지 하나로"): the daily loss, open risk and margin shared with the
@@ -584,11 +585,45 @@ export class ScalpExecutor{
   // header is computed over it (the in-store closed list stays capped). Detected signals go to their own file.
   this.journalFile=directory?path.join(directory,journalFileName):null;this.signalsFile=directory?path.join(directory,signalsFileName):null;
   const written=this.journalFile?readJsonl(this.journalFile):[];
-  this.journalRows=written.map(x=>({kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,scoreTotal:x.score?.score??x.scalpScore?.score??null,whaleBonus:whaleKey(x.score??x.scalpScore),whaleSplit:whaleSplitOf(x.score??x.scalpScore),capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null}));
+  this.journalRows=written.map(x=>this.#journalRowOf(x));
   // Ids already written: a restart between writing a line and saving the ledger must not write it twice.
   this.journalIds=new Set(written.map(x=>x?.id).filter(Boolean));
   this.journalMem=[];this.cur=null;this.btcCache=null;
-  try{this.#flushJournal();this.#save()}catch(e){this.log?.('[SCALP] journal start',e.message)}
+  try{this.#flushJournal();this.#purgeCorruptedEvaaBugRecord();this.#save()}catch(e){this.log?.('[SCALP] journal start',e.message)}
+ }
+ #journalRowOf(x){
+  return {kind:x.kind||SCALP_KINDS.MOVE,trigger:x.trigger||SCALP_TRIGGERS.SCAN,management:x.management||SCALP_MANAGEMENTS.CURRENT,openedAt:x.entry?.at??null,direction:x.direction,netUSD:x.pnl?.netUSD??null,closedAt:x.exit?.at??null,closeReason:x.exit?.reason??null,scaleIn:x.scaleIn,scoreGrade:x.score?.grade??x.scalpScore?.grade??null,scoreTotal:x.score?.score??x.scalpScore?.score??null,whaleBonus:whaleKey(x.score??x.scalpScore),whaleSplit:whaleSplitOf(x.score??x.scalpScore),capitalBasisUSD:pos(x.capitalBasisUSD)??null,initialRiskUSD:pos(x.plan?.riskUSD)??null,initialMarginUSD:pos(x.plan?.marginUSD??x.margin?.initialUSD)??null};
+ }
+ #rewriteJournal(keepFn){
+  const source=this.journalFile?readJsonl(this.journalFile):this.journalMem;
+  const kept=source.filter(keepFn);
+  const removed=source.length-kept.length;
+  if(removed>0){
+   if(this.journalFile){
+    fs.mkdirSync(path.dirname(this.journalFile),{recursive:true});
+    const tmp=`${this.journalFile}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp,kept.map(x=>JSON.stringify(x)).join('\n')+(kept.length?'\n':''),'utf8');
+    fs.renameSync(tmp,this.journalFile);
+   }else{
+    this.journalMem=kept;
+   }
+   this.journalRows=kept.map(x=>this.#journalRowOf(x));
+   this.journalIds=new Set(kept.map(x=>x?.id).filter(Boolean));
+  }
+  return removed;
+ }
+ /** One-time TESTNET cleanup (user 2026-11-26): purge the corrupted EVAAUSDT SHORT trade (opened 1795599322366, -$31.95) caused by the false-EXTERNAL bug from store & journal. */
+ #purgeCorruptedEvaaBugRecord(){
+  if(this.execMode!=='TESTNET'||this.store.migrations?.purgeEvaaBug1795599322===true)return 0;
+  const TARGET_OPEN_AT=1795599322366,WINDOW_MS=120000;
+  const isTargetClosed=x=>x?.symbol==='EVAAUSDT'&&x?.direction==='SHORT'&&Math.abs((Number(x.openedAt)||Number(x.createdAt)||0)-TARGET_OPEN_AT)<=WINDOW_MS;
+  const isTargetJournal=x=>x?.symbol==='EVAAUSDT'&&x?.direction==='SHORT'&&Math.abs((Number(x.entry?.at)||0)-TARGET_OPEN_AT)<=WINDOW_MS;
+  const beforeClosed=this.store.closed.length;
+  this.store.closed=this.store.closed.filter(x=>!isTargetClosed(x));
+  const removedClosed=beforeClosed-this.store.closed.length;
+  const removedJournal=this.#rewriteJournal(x=>!isTargetJournal(x));
+  this.store.migrations={...(this.store.migrations||{}),purgeEvaaBug1795599322:true};
+  return Math.max(removedClosed,removedJournal);
  }
  /** The management a new entry gets: TRADER_LADDER only on the TESTNET, without the automatic stop; else CURRENT. */
  #management(){return this.execMode==='TESTNET'&&this.config?.mode==='TESTNET'&&this.config.management===SCALP_MANAGEMENTS.LADDER&&this.config.stopLossEnabled===false?SCALP_MANAGEMENTS.LADDER:SCALP_MANAGEMENTS.CURRENT}
@@ -627,6 +662,26 @@ export class ScalpExecutor{
   if(this.journalFile){try{fs.rmSync(this.journalFile,{force:true})}catch{}}
   this.#save();
   return {removed,status:this.status()};
+ }
+ /** Delete one closed TESTNET scalp trade from both store.closed and scalp-journal.jsonl so it is excluded from cumulative PnL. */
+ deleteClosedTrade(id){
+  if(this.execMode!=='TESTNET')return {ok:false,reason:'SCALP_TESTNET_ONLY'};
+  const key=String(id||'').trim();
+  if(!key)return {ok:false,reason:'POSITION_NOT_FOUND'};
+  const target=this.store.closed.find(x=>x?.id===key)||null;
+  const beforeClosed=this.store.closed.length;
+  this.store.closed=this.store.closed.filter(x=>x?.id!==key);
+  const removedClosed=beforeClosed-this.store.closed.length;
+  const matchJournal=row=>{
+   if(!row)return false;
+   if(row.id===key||row.tradeKey===key)return true;
+   if(target&&row.symbol===target.symbol&&row.direction===target.direction&&target.openedAt&&row.entry?.at&&Math.abs(Number(row.entry.at)-Number(target.openedAt))<=60000)return true;
+   return false;
+  };
+  const removedJournal=this.#rewriteJournal(row=>!matchJournal(row));
+  if(!removedClosed&&!removedJournal)return {ok:false,reason:'POSITION_NOT_FOUND'};
+  this.#save();
+  return {ok:true,removed:Math.max(removedClosed,removedJournal),status:this.status()};
  }
  /** Why no new entry may be sent now (null = may). */
  #blocked(ignoreAddId=null){

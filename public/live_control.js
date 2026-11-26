@@ -909,7 +909,7 @@ export function testnetClosedHTML(o){
  if(!all.length)return '<p class="empty-small">아직 종료된 테스트넷 거래가 없습니다.</p>';
  const pages=Math.max(1,Math.ceil(all.length/TESTNET_PAGE_SIZE)),page=Math.min(tnPage,pages-1),shown=all.slice(page*TESTNET_PAGE_SIZE,page*TESTNET_PAGE_SIZE+TESTNET_PAGE_SIZE);
  const pager=pages>1?`<div class="copy-pager"><button type="button" class="outline-btn small" data-tn-page="-1"${page===0?' disabled':''}>‹ 이전</button><span class="muted">총 ${all.length}건 · ${page+1} / ${pages}쪽</span><button type="button" class="outline-btn small" data-tn-page="1"${page>=pages-1?' disabled':''}>다음 ›</button></div>`:'';
- const del=x=>x.kind==='signal'&&x.deletable?` <button type="button" class="ghost small" data-live-delete="${esc(x.key)}">삭제</button>`:'';
+ const del=x=>x.kind==='signal'&&x.deletable?` <button type="button" class="ghost small" data-live-delete="${esc(x.key)}">삭제</button>`:x.kind==='scalp'&&x.key?` <button type="button" class="ghost small" data-scalp-delete="${esc(x.key)}">삭제</button>`:'';
  const scoreTag=x=>fin(x.scalpScore?.score)?` <small class="vp-badge" title="${esc(x.scalpScore.summary||'')}">${esc(x.scalpScore.score)}점 ${esc(x.scalpScore.grade||'')}급</small>`:'';
  const tag=x=>`${x.kind==='scalp'?scalpBadge(x.scalpKind):TN_BADGE[x.kind]}${scoreTag(x)}${x.test?' <small class="muted">시험(합계 제외)</small>':''}`;
  const li=x=>`<li class="tn-${x.kind}"><span class="muted">${tnWhen(x.closedAt)}</span><b>${esc(x.symbol)}</b>${tag(x)}${side(x.direction)}<span>${esc(x.reason||'')}</span><span class="muted">${tnHeld(x.openedAt,x.closedAt)}</span>${x.kind==='scalp'?`<span>${tnLeverage(x.leverage)}</span><span>추매 ${esc(x.adds??0)}회</span><small>증거금 ${tnScalpMargin(x.margin)}</small>`:fin(x.adds)?`<span>추매 ${esc(x.adds)}회</span>`:''}<b class="${tnCls(x.netUSD)} end">${tnResult(x)}</b>${del(x)}</li>`;
@@ -1483,14 +1483,15 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
   }catch(e){s.textContent='시험 주문 요청 실패: '+e.message}
   finally{liveTestBusy=false;if(btn)btn.disabled=false;await load().catch(()=>{})}
  });
-const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 삭제할 수 없습니다',TODAY_COUNTS_FOR_DAILY_RISK:'오늘 종료된 거래는 하루 손실 한도 계산에 쓰여 내일부터 삭제할 수 있습니다',NOT_FOUND:'이미 삭제된 기록입니다',SAFETY_RECORD:'긴급 정지를 일으킨 기록이라 남겨 둡니다'};
+const DELETE_REASONS={ACTIVE:'보유 중이거나 확인이 필요한 거래는 삭제할 수 없습니다',TODAY_COUNTS_FOR_DAILY_RISK:'오늘 종료된 거래는 하루 손실 한도 계산에 쓰여 내일부터 삭제할 수 있습니다',NOT_FOUND:'이미 삭제된 기록입니다',POSITION_NOT_FOUND:'이미 삭제된 기록입니다',SCALP_TESTNET_ONLY:'테스트넷 단타 기록만 삭제할 수 있습니다',SAFETY_RECORD:'긴급 정지를 일으킨 기록이라 남겨 둡니다'};
  document.addEventListener('click',async e=>{
   if(e.target.closest?.('[data-scalp-sim-toggle]')){scalpSimOpen=!e.target.closest('details')?.open;return}
-  const b=e.target.closest?.('[data-live-delete]');if(!b)return;
-  const key=b.dataset.liveDelete;if(!key||liveDeleteBusy.has(key))return;
-  if(!confirm('이 기록을 삭제합니다. 되돌릴 수 없습니다. 계속할까요?'))return;
+  const b=e.target.closest?.('[data-live-delete],[data-scalp-delete]');if(!b)return;
+  const isScalp=Boolean(b.dataset.scalpDelete);
+  const key=isScalp?b.dataset.scalpDelete:b.dataset.liveDelete,strategy=isScalp?'scalp':'signal';if(!key||liveDeleteBusy.has(key))return;
+  if(!confirm('이 기록을 누적 수익에서 제외하고 삭제합니다. 되돌릴 수 없습니다. 계속할까요?'))return;
   liveDeleteBusy.add(key);b.disabled=true;
-  try{const r=await fetch('/api/live/delete',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})}),d=await r.json().catch(()=>({}));
+  try{const r=await fetch('/api/live/delete',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({key,strategy})}),d=await r.json().catch(()=>({}));
    if(!r.ok)throw Error(DELETE_REASONS[d.reason]||d.reason||'HTTP '+r.status)}catch(err){fail(err)}
   finally{liveDeleteBusy.delete(key);await load().catch(()=>{})}
  });

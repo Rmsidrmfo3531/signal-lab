@@ -2935,7 +2935,15 @@ const server=http.createServer(async(req,res)=>{
     return response(res,200,status)}
    if(pathname==='/api/live/disarm')return response(res,200,LIVE.mode==='LIVE'?live.disarm():(t=>({...live.status(),testnet:t}))(disarmTestnet({live,scalp:scalpExec})));
    // Finished records only (positions, unchecked states and today's closed trades stay).
-   if(pathname==='/api/live/delete'){const r=live.deleteRecord(String(body.key||''));return response(res,r.ok?200:409,r)}
+   if(pathname==='/api/live/delete'){
+    if(body?.strategy==='scalp'){
+     if(LIVE.mode==='LIVE'||SCALP_EXEC.mode!=='TESTNET')return response(res,409,{ok:false,reason:'SCALP_TESTNET_ONLY'});
+     const r=scalpExec.deleteClosedTrade(String(body.key||''));
+     if(r.ok)reportsDirty=true;
+     return response(res,r.ok?200:409,r);
+    }
+    const r=live.deleteRecord(String(body.key||''));return response(res,r.ok?200:409,r);
+   }
    if(pathname==='/api/live/kill'){const st=live.kill('MANUAL');if(LIVE.mode!=='LIVE')scalpExec.disarm('KILL_SWITCH');scalpLiveExec?.disarm('KILL_SWITCH');return response(res,200,st)}
    if(pathname==='/api/live/test-order'){
     // TESTNET only: a small DOGE long through the real order path, closed after a few seconds
