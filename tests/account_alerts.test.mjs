@@ -191,8 +191,8 @@ test('open-position PnL summary sends clean blockquote row cells (no code block)
   [
    '📊 <b>진행 중 포지션 (2개)</b> · 합계 <b>+$54.91</b>',
    '',
-   '🟢 <b>BTCUSDT\u2002\u2009</b> │롱│ <b>+$100.11</b> │ <b>+12.5%</b>',
-   '🔴 <b>SNDKUSDT</b> │숏│ <b>\u2007−$45.20</b> │ <b>\u2007−8.3%</b>',
+   '🟢 <b>BTCUSDT</b>\u2002\u2009 │ 롱 │ <b>+$100.11</b> │ +12.5%',
+   '🔴 <b>SNDKUSDT</b> │ 숏 │ <b>\u2007−$45.20</b> │ \u2007−8.3%',
   ].join('\n')
  );
 
@@ -303,7 +303,7 @@ test('P2/P3: checkRisk respects skipMarginAlert and /close previews matching liv
  const ask=await alerts.handleCommand('/close BTC LONG','123456',now);
  assert.doesNotMatch(ask,/<pre>|<code>/);
  assert.match(ask,/현재 포지션:/);
- assert.match(ask,/🔴 <b>BTCUSDT<\/b> │롱│ 수량 <b>0\.05<\/b> │ <b>−\$120\.00<\/b>/);
+ assert.match(ask,/🔴 <b>BTCUSDT<\/b> │ 롱 │ 수량 0\.05 │ <b>−\$120\.00<\/b>/);
 });
 
 

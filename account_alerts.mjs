@@ -85,21 +85,20 @@ function propWidth(s){
  }
  return w;
 }
-function padPropRight(s,targetWidth){
- const str=String(s??'');
- const gap=Math.max(0,targetWidth-propWidth(str));
+function propPadSuffix(s,targetWidth){
+ const gap=Math.max(0,targetWidth-propWidth(s));
  const en=Math.floor(gap/50);
  const thin=Math.round((gap-en*50)/20);
- return str+EN_SPACE.repeat(en)+THIN_SPACE.repeat(thin);
+ return EN_SPACE.repeat(en)+THIN_SPACE.repeat(thin);
 }
 
 export function formatPositionCell(p,{symWidth=0,pnlWidth=0,roeWidth=0}={}){
  const r=positionRowParts(p);
  const symRaw=r.sym||'—';
- const symPad=symWidth>0?padPropRight(symRaw,symWidth):symRaw;
+ const symPad=symWidth>0?propPadSuffix(symRaw,symWidth):'';
  const pnl=padFig(tabMinus(r.pnl),pnlWidth);
  const roe=r.roe?padFig(tabMinus(r.roe),roeWidth):null;
- return `${r.dot} <b>${escHtml(symPad)}</b> │${r.side||'—'}│ <b>${escHtml(pnl)}</b>${roe?` │ <b>${escHtml(roe)}</b>`:''}`;
+ return `${r.dot} <b>${escHtml(symRaw)}</b>${symPad} │ ${r.side||'—'} │ <b>${escHtml(pnl)}</b>${roe?` │ ${escHtml(roe)}`:''}`;
 }
 
 export function formatPositionsTable(positions=[]){
@@ -615,7 +614,7 @@ export class AccountAlerts{
      const symW=Math.max(...items.map(x=>propWidth(x.sym)));
      const sizeW=Math.max(...items.map(x=>x.size.length));
      const pnlW=Math.max(...items.map(x=>x.pnl.length));
-     const rows=items.map(({r,sym,size,pnl})=>`${r.dot} <b>${escHtml(padPropRight(sym,symW))}</b> │${r.side||'—'}│ 수량 <b>${escHtml(padFig(size,sizeW))}</b> │ <b>${escHtml(padFig(pnl,pnlW))}</b>`);
+     const rows=items.map(({r,sym,size,pnl})=>`${r.dot} <b>${escHtml(sym)}</b>${propPadSuffix(sym,symW)} │ ${r.side||'—'} │ 수량 ${escHtml(padFig(size,sizeW))} │ <b>${escHtml(padFig(pnl,pnlW))}</b>`);
      const more=matched.length>5?`\n…외 ${matched.length-5}건`:'';
      preview=`\n현재 포지션:\n${rows.join('\n')}${more}`;
     }
