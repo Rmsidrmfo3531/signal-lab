@@ -76,6 +76,7 @@ import {WhaleTradeStore,buildWhaleZones,whaleZonesPayload,whaleZoneLookbackMs,WH
 import {atrPct as ladderAtrPct} from './scalp_ladder.mjs';
 import {fetchOrderflow,fetchOrderflowWithFirechart,normalizeOrderflowSymbol,scanOrderflowAnomalies,ORDERFLOW_RADAR_DEFAULTS} from './orderflow.mjs';
 import {configureFirechartPersistence,FIRECHART_RANGES} from './firechart.mjs';
+import {CvdSrAlertMonitor,scanCvdSrMatrix} from './cvd_sr.mjs';
 import {buildCopyAnalytics,exportCopyTradesCSV} from './copy_analytics.mjs';
 import {displaySymbol} from './public/symbol_display.js';
 import {readPositionMode,sideParams,positionSideFor} from './bingx_position_mode.mjs';
@@ -353,7 +354,7 @@ const venuePositionsReader=realBingxClient?.mode==='LIVE'
  ?createVenuePositionsReader({read:()=>realBingxClient.positions(),markOf:vs=>Number(copyTickers.rows.find(x=>x.symbol===vs)?.lastPrice)||null}):null;
 // Manual trades on the real account (manual_ledger.mjs, user 2026-11-17 "수동 매매도 기록은 똑같이"): recorded from the
 // same venue snapshots, settled from BingX income, shown with the copy closes and totals marked 수동.
-let accountAlerts=null,realTrailing=null,realSafety=null;
+let accountAlerts=null,realTrailing=null,realSafety=null,cvdSrMonitor=null;
 // Real-account margin usage alert (real_margin_alert.mjs, user decision 2026-11-24 17:34 "1번은 교차로 진행할건데"): the
 // last BingX balance read of the real copy client (equity, availableMargin, usedMargin, unrealizedProfit). Alert only.
 // Copy listener liveness (copy_listener_health.mjs, same decision "2번은 그대로 진행"): built below when the copy is on.
@@ -1109,9 +1110,27 @@ if(COPY.mode==='LIVE'){
    });
   }catch(e){console.warn('[ALERTS DAILY]',e.message)}
  };
+ cvdSrMonitor=new CvdSrAlertMonitor({
+  directory:storage.dir,
+  sendText:sendAccountAlertTelegram,
+  log:(...a)=>console.log('[CVD_SR]',...a),
+ });
+ let cvdSrBusy=false;
+ const checkHeldCvdSr=async()=>{
+  if(cvdSrBusy||!cvdSrMonitor||!venuePositionsReader)return;
+  cvdSrBusy=true;
+  try{
+   const v=await venuePositionsReader.snapshot(realCopyPositions(),realScalpPositions());
+   const positions=Array.isArray(v?.venuePositions)?v.venuePositions:[];
+   await cvdSrMonitor.checkHeldPositions(positions,{budget:publicReadBudget});
+  }catch(e){console.warn('[CVD_SR]',e?.message||'ERROR')}
+  finally{cvdSrBusy=false}
+ };
  setInterval(()=>{void checkRiskAndRoi()},15000).unref?.();
  setInterval(()=>{void checkDaily()},60000).unref?.();
  setTimeout(()=>{void checkDaily()},25000).unref?.();
+ setInterval(()=>{void checkHeldCvdSr()},180000).unref?.();
+ setTimeout(()=>{void checkHeldCvdSr()},45000).unref?.();
  if(CONFIG.tgToken&&CONFIG.tgChat)setInterval(()=>{void accountAlerts.pollCommands()},10000).unref?.();
 }
 // The venue's public mid price for a live record (screen and exit estimates only; never an order input).
@@ -3017,6 +3036,22 @@ const server=http.createServer(async(req,res)=>{
    ].filter(s=>/^[A-Z0-9]{4,25}$/.test(s));
    return {openSymbols:[...new Set(openHeld)],realPositions};
   };
+  if(pathname==='/api/orderflow/cvd-sr'&&req.method==='GET'){
+   const force=url.searchParams.get('force')==='1';
+   try{
+    const {openSymbols,realPositions}=await realOrderflowHoldings();
+    const topMarket=(state.ranked||[]).slice(0,12).map(m=>m.symbol);
+    const list=[...new Set([...openSymbols,...ORDERFLOW_RADAR_DEFAULTS.slice(0,12),...topMarket])].slice(0,16);
+    const matrix=await scanCvdSrMatrix(list,{heldPositions:realPositions,force,budget:publicReadBudget});
+    return response(res,200,{
+     ...matrix,
+     monitoring:Boolean(cvdSrMonitor),
+     recentEvents:cvdSrMonitor?cvdSrMonitor.recentEvents().slice(0,12):[],
+    });
+   }catch(e){
+    return response(res,502,{ok:false,error:e?.message||'CVD_SR_FETCH_FAILED'});
+   }
+  }
   if(pathname==='/api/orderflow/radar'&&req.method==='GET'){
    const force=url.searchParams.get('force')==='1';
    try{
