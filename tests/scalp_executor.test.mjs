@@ -1752,6 +1752,7 @@ test('pump alert (default SCALP_PUMP_IMMEDIATE=on, TESTNET): enters reverse imme
  assert.equal(ex.store.open[0].trigger,'PUMP_ALERT');
  assert.equal(ex.store.open[0].management,'TRADER_LADDER');
  assert.equal(ex.store.open[0].ladder.tpNetPct,2,'PUMP_ALERT entry uses 2% ladder TP');
+ assert.equal(ex.store.open[0].scalpScore??null,null,'immediate PUMP_ALERT entry does not attach reversal score/grade');
  assert.deepEqual(ex.store.open[0].ladder.units,[2,2,4,8,16]);
  assert.equal(ex.pumpWatch.size,0,'immediate entry clears watch immediately');
  // UP alert enters SHORT immediately with zero reversal candle and 2% TP
