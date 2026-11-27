@@ -469,7 +469,10 @@ export function copyHTML(c){
   const basisVal=isLive?(fin(c.funds?.available)?Number(c.funds.available):Number(c.funds?.equity)):Number(c.funds?.equity);
   const ratioPct=curSizing==='BALANCE_RATIO'&&basisVal>0&&tb>0?(basisVal/tb*100).toFixed(1):null;
   const sizingModes=[['BALANCE_RATIO','잔고 비례 (자동)'],['MIN_ORDER','최소 주문'],['FIRST_1USD','$1 고정']];
-  const sizingBtns=sizingModes.map(([m,lbl])=>`<button type="button" class="outline-btn small${curSizing===m?' is-current':''}" data-copy-sizing="${m}">${lbl}</button>`).join('');
+  const sizingBtns=sizingModes.map(([m,lbl])=>{
+   const locked=isLive&&m!=='BALANCE_RATIO';
+   return `<button type="button" class="outline-btn small${curSizing===m?' is-current':''}" data-copy-sizing="${m}"${locked?' disabled title="실계좌는 안전을 위해 가용 증거금 비례(자동) 방식만 사용합니다"':''}>${lbl}</button>`;
+  }).join('');
   const curExec=c.executionMode||(ctrl.executionMode==='MAKER_FIRST'?'MAKER_FIRST':'INSTANT');
   const execBtns=[['INSTANT','⚡ 즉시 시장가 (기본)'],['MAKER_FIRST','메이커 우선 (1초)']].map(([m,lbl])=>`<button type="button" class="outline-btn small${curExec===m?' is-current':''}" data-copy-exec-mode="${m}" title="${m==='INSTANT'?'트레이더 알림 수신 즉시 시장가 체결 (가장 빠름)':'지정가(PostOnly 0.02%) 1초 대기 후 미체결분 시장가 체결'}">${lbl}</button>`).join('');
   const sizingSummary=curSizing==='BALANCE_RATIO'?(ratioPct?`잔고 비례 ${ratioPct}% (기준 $${Number(tb).toLocaleString()})`:`잔고 비례 · 기준 $${Number(tb).toLocaleString()}`):curSizing==='MIN_ORDER'?'최소 주문':'$1 고정';
@@ -483,12 +486,12 @@ export function copyHTML(c){
     <div class="ctrl-row"><span class="ctrl-label">수량 방식</span><div class="ctrl-presets">${sizingBtns}</div></div>
     <div class="ctrl-row"><span class="ctrl-label">비중 프리셋</span><div class="ctrl-presets">${presetBtns}</div></div>
     <form class="ctrl-form" data-copy-controls-form>
-     <label>기준 잔고 ($) <input name="traderBalanceUSD" type="number" min="1000" max="1000000" step="1000" value="${esc(tb)}"></label>
-     <label>종목당 최대 증거금 (%) <input name="maxSymbolMarginPct" type="number" min="0" max="100" step="1" value="${esc(ctrl.maxSymbolMarginPct??0)}" title="0 = 제한 없음"></label>
+     <label>기준 잔고 ($) <input name="traderBalanceUSD" type="number" min="1000" max="1000000" step="1" value="${esc(tb)}"></label>
+     <label>종목당 최대 증거금 (%) <input name="maxSymbolMarginPct" type="number" min="0" max="100" step="any" value="${esc(ctrl.maxSymbolMarginPct??0)}" title="0 = 제한 없음"></label>
      <label>최대 레버리지 (배) <input name="maxLeverage" type="number" min="0" max="125" step="1" value="${esc(ctrl.maxLeverage??0)}" title="0 = 기본(125배)"></label>
      <label>연속 손실 쿨다운 (회) <input name="cooldownLosses" type="number" min="0" max="20" step="1" value="${esc(ctrl.cooldownLosses??0)}" title="0 = 꺼짐"></label>
-     <label>당일 손실 쿨다운 (%) <input name="cooldownDailyLossPct" type="number" min="0" max="50" step="0.5" value="${esc(ctrl.cooldownDailyLossPct??0)}" title="0 = 꺼짐"></label>
-     <label>쿨다운 시간 (분) <input name="cooldownMinutes" type="number" min="5" max="1440" step="5" value="${esc(ctrl.cooldownMinutes??120)}"></label>
+     <label>당일 손실 쿨다운 (%) <input name="cooldownDailyLossPct" type="number" min="0" max="50" step="any" value="${esc(ctrl.cooldownDailyLossPct??0)}" title="0 = 꺼짐"></label>
+     <label>쿨다운 시간 (분) <input name="cooldownMinutes" type="number" min="5" max="1440" step="1" value="${esc(ctrl.cooldownMinutes??120)}"></label>
      <button type="submit" class="outline-btn small">설정 저장</button>
     </form>
     <div class="ctrl-filter">
@@ -1072,23 +1075,50 @@ export function readinessHTML(r,positions){
  ${r.serious?.length?`<p class="live-warn-text">주문 문제: ${r.serious.map(s=>esc(s.symbol+' '+(SERIOUS_KO[s.type]||s.type))).join(', ')}</p>`:''}`;
 }
 
-let copyActionBusy=false,liveActionBusy=false,liveTestBusy=false;
+let copyActionBusy=false,liveActionBusy=false,liveTestBusy=false,copyFlash=null,copyMutationSeq=0;
 const liveLevelsBusy=new Set(),liveDeleteBusy=new Set(),testnetCloseBusy=new Set();
+const isEditingInside=el=>Boolean(el&&typeof document!=='undefined'&&document.activeElement&&el.contains(document.activeElement)&&['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName));
+function applyCopyFlash(el){
+ if(!el||!copyFlash)return;
+ const ttl=copyFlash.err?6000:4500;
+ if(Date.now()-copyFlash.at>ttl){copyFlash=null;return}
+ const msg=el.querySelector(copyFlash.sel)||el.querySelector('[data-copy-msg]');
+ if(!msg)return;
+ msg.classList.toggle('err',Boolean(copyFlash.err));
+ msg.textContent=copyFlash.text;
+}
+function renderCopyBox(el,html){
+ if(!el)return;
+ const sc=[...el.querySelectorAll('.copy-table-scroll')].map(n=>[n.scrollLeft,n.scrollTop]);
+ el.innerHTML=html;
+ el.querySelectorAll('.copy-table-scroll').forEach((n,i)=>{if(sc[i]){n.scrollLeft=sc[i][0];n.scrollTop=sc[i][1]}});
+ applyCopyFlash(el);
+}
 
 function bindCopyButtons(el){
  if(!el||el.dataset.bound)return;el.dataset.bound='1';
  const call=async(btn,path,body,busy,msgSel='[data-copy-msg]')=>{
   if(copyActionBusy)return;
-  copyActionBusy=true;
+  copyActionBusy=true;copyMutationSeq++;
   const msg=el.querySelector(msgSel)||el.querySelector('[data-copy-msg]');
   const origText=btn?.textContent;
   if(btn){btn.disabled=true;if(busy)btn.textContent=busy}
+  let ok=false;
   try{const r=await fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}),d=await r.json().catch(()=>({}));
    if(!r.ok)throw Error(d.message||d.error||'HTTP '+r.status);
-   if(msg){msg.classList.remove('err');msg.textContent=d.summary?'✓ '+d.summary:d.armed===true?'✓ 활성화됐습니다':d.armed===false?'✓ 비활성화됐습니다':'✓ 저장됨'}}
-  catch(e){if(msg){msg.textContent='실패: '+e.message;msg.classList.add('err')}}
+   ok=true;copyMutationSeq++;
+   const text=d.summary?'✓ '+d.summary:d.armed===true?'✓ 활성화됐습니다':d.armed===false?'✓ 비활성화됐습니다':path==='/api/copy/controls'&&Number.isFinite(Number(d.traderBalanceUSD))&&body&&'traderBalanceUSD' in body?`✓ 저장됨 (기준 $${Number(d.traderBalanceUSD).toLocaleString()})`:'✓ 저장됨';
+   copyFlash={sel:msgSel,text,err:false,at:Date.now()};
+   if(msg){msg.classList.remove('err');msg.textContent=text}}
+  catch(e){
+   const text='실패: '+e.message;
+   copyFlash={sel:msgSel,text,err:true,at:Date.now()};
+   if(msg){msg.textContent=text;msg.classList.add('err')}}
   finally{copyActionBusy=false;if(btn&&origText!=null){btn.disabled=false;btn.textContent=origText}}
-  document.getElementById('liveRefresh')?.click()};
+  if(!ok)return;
+  if(typeof document!=='undefined'&&el.contains(document.activeElement))document.activeElement?.blur?.();
+  if(typeof window!=='undefined')window.dispatchEvent(new CustomEvent('signal-lab:force-refresh'));
+  else document.getElementById('liveRefresh')?.click()};
  el.addEventListener('submit',e=>{
   const safetyForm=e.target.closest('[data-real-safety-form]');
   if(safetyForm){
@@ -1237,7 +1267,7 @@ function bindCopyButtons(el){
   const execBtn=e.target.closest('[data-copy-exec-mode]');
   if(execBtn)return call(execBtn,'/api/copy/controls',{executionMode:execBtn.dataset.copyExecMode},'적용 중…','[data-copy-ctrl-msg]');
   const szBtn=e.target.closest('[data-copy-sizing]');
-  if(szBtn)return call(szBtn,'/api/copy/controls',{sizing:szBtn.dataset.copySizing},'적용 중…','[data-copy-ctrl-msg]');
+  if(szBtn&&!szBtn.disabled)return call(szBtn,'/api/copy/controls',{sizing:szBtn.dataset.copySizing},'적용 중…','[data-copy-ctrl-msg]');
   const tbBtn=e.target.closest('[data-copy-tb]');
   if(tbBtn)return call(tbBtn,'/api/copy/controls',{sizing:'BALANCE_RATIO',traderBalanceUSD:Number(tbBtn.dataset.copyTb)},'적용 중…','[data-copy-ctrl-msg]');
   const fmBtn=e.target.closest('[data-copy-filter-mode]');
@@ -1275,7 +1305,7 @@ function renderTestnetBudget(el,t){
  testnetBudgetAt=t?.budget?.at??0;testnetBudgetPolling=t?.budget?.accountEquityUSD!==undefined;
  el.hidden=!t;if(t)el.innerHTML=testnetBudgetHTML(t);
 }
-function render(o){
+function render(o,{skipCopy=false}={}){
  const $=id=>document.getElementById(id),m=modeInfo(o.mode),tn=o.testnet||null,scalpOnly=tn?.scalpOnly===true;
  if($('liveModeDetails'))$('liveModeDetails').hidden=Boolean(tn);
  if($('liveReadiness')){$('liveReadiness').hidden=scalpOnly||!o.readiness;$('liveReadiness').innerHTML=scalpOnly?'':readinessHTML(o.readiness,(o.positions||[]).map(p=>({symbol:p.symbol,direction:p.direction,unrealizedUSD:p.unrealized?.usd??null})))}
@@ -1351,8 +1381,8 @@ function render(o){
   const pending=window.__signalLabPendingRealOrder;window.__signalLabPendingRealOrder=null;
   realTradeCtrl.prefill(pending);
  }
- if($('liveCopySection')){$('liveCopySection').hidden=!copy||real||scalpOnly;if(copy&&!real&&!scalpOnly&&$('liveCopy')&&!copyActionBusy)$('liveCopy').innerHTML=copyHTML({...copy,followArmed:Boolean(o.armed&&!o.killSwitch)})}
- if($('realCopy')&&!copyActionBusy)$('realCopy').innerHTML=real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>';
+ if($('liveCopySection')){$('liveCopySection').hidden=!copy||real||scalpOnly;if(copy&&!real&&!scalpOnly&&$('liveCopy')&&!skipCopy&&!copyActionBusy&&!isEditingInside($('liveCopy')))renderCopyBox($('liveCopy'),copyHTML({...copy,followArmed:Boolean(o.armed&&!o.killSwitch)}))}
+ if($('realCopy')&&!skipCopy&&!copyActionBusy&&!isEditingInside($('realCopy')))renderCopyBox($('realCopy'),real?copyHTML(copy):'<p class="empty-small">실계좌 카피가 설정되어 있지 않습니다. 서버 <code>.env</code>에 <code>COPY_MODE=LIVE</code>와 확인 문구를 직접 넣어야 이 화면에서 켤 수 있습니다.</p>');
  // The sidebar ON / OFF is a navigation hint; the page itself shows the state once, next to its button.
  if($('navRealMode'))$('navRealMode').textContent=!real?'—':copy.armed&&!copy.killed?'ON':'OFF';
  // Testnet: the scalp's own details (rules, skips, journal), collapsed; its switch is the one testnet switch above.
@@ -1380,14 +1410,19 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
  const $=id=>document.getElementById(id);
  let mode=null,loadPending=null;
  const fail=e=>{const s=$('liveError');if(s){s.hidden=false;s.textContent='실매매 요청 실패: '+e.message}};
- const load=()=>{
-  if(loadPending)return loadPending;
-  loadPending=(async()=>{
+ const load=async({force=false}={})=>{
+  if(loadPending){
+   if(!force)return loadPending;
+   await loadPending.catch(()=>{});
+  }
+  const req=(async()=>{
+   const seq=copyMutationSeq;
    const r=await fetch('/api/live/overview',{cache:'no-store',signal:AbortSignal.timeout(15000)}),d=await r.json().catch(()=>({}));
    if(!r.ok)throw Error(d.error||'HTTP '+r.status);
-   mode=d.mode;if($('liveError'))$('liveError').hidden=true;render(d);return d;
-  })().finally(()=>{loadPending=null});
-  return loadPending;
+   mode=d.mode;if($('liveError'))$('liveError').hidden=true;render(d,{skipCopy:seq!==copyMutationSeq});return d;
+  })().finally(()=>{if(loadPending===req)loadPending=null});
+  loadPending=req;
+  return req;
  };
  const setLiveButtonsBusy=busy=>{for(const id of ['liveArm','liveDisarm','liveKill','liveResetKill']){const b=$(id);if(b)b.disabled=busy}};
  $('livePositions')?.addEventListener('click',async e=>{
@@ -1424,7 +1459,7 @@ if(typeof document!=='undefined'&&document.getElementById('liveControl')){
    await load();return d;
   }finally{if(lockLive){liveActionBusy=false;load().catch(()=>{})}}
  };
- $('liveRefresh')?.addEventListener('click',()=>load().catch(fail));
+ $('liveRefresh')?.addEventListener('click',()=>load({force:true}).catch(fail));
  $('liveArm')?.addEventListener('click',async()=>{
   if(liveActionBusy)return;
   if(!mode){try{await load()}catch(e){return fail(e)}}
@@ -1542,8 +1577,9 @@ const DELETE_REASONS={JOURNAL_READ_FAILED:'거래일지를 읽을 수 없어 기
  document.addEventListener('visibilitychange',refreshBudget);
  // 실계좌 page: the copy panel alone every 3 s (prices cached 3 s on the server, balance 15 s), while visible.
  let fastBusy=false;
- setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy||copyActionBusy)return;fastBusy=true;
-  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'){realTradeCtrl?.syncContext({visible:true,availableUSD:c.funds?.available??null,equityUSD:c.funds?.equity??null,heldPositions:c.venuePositions??[],...(c.safety!==undefined?{safety:c.safety}:{})});if(!copyActionBusy&&!el.contains(document.activeElement)){const sc=[...el.querySelectorAll('.copy-table-scroll')].map(n=>[n.scrollLeft,n.scrollTop]);el.innerHTML=copyHTML(c);el.querySelectorAll('.copy-table-scroll').forEach((n,i)=>{if(sc[i]){n.scrollLeft=sc[i][0];n.scrollTop=sc[i][1]}})}}}}catch{}finally{fastBusy=false}},3000);
+ setInterval(async()=>{const el=$('realCopy');if(!el||$('real')?.hidden||document.hidden||fastBusy||copyActionBusy)return;fastBusy=true;const seq=copyMutationSeq;
+  try{const r=await fetch('/api/copy',{cache:'no-store',signal:AbortSignal.timeout(12000)});if(r.ok){const c=await r.json().catch(()=>null);if(c?.mode==='LIVE'){realTradeCtrl?.syncContext({visible:true,availableUSD:c.funds?.available??null,equityUSD:c.funds?.equity??null,heldPositions:c.venuePositions??[],...(c.safety!==undefined?{safety:c.safety}:{})});if(seq===copyMutationSeq&&!copyActionBusy&&!isEditingInside(el))renderCopyBox(el,copyHTML(c))}}}catch{}finally{fastBusy=false}},3000);
+ window.addEventListener('signal-lab:force-refresh',()=>{void load({force:true}).catch(fail)});
  window.addEventListener('signal-lab:prefill-real-trade',e=>{
   const detail=e?.detail||window.__signalLabPendingRealOrder;
   if(!detail)return;

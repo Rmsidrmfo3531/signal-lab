@@ -228,4 +228,34 @@ test('CopyControls persists executionMode (INSTANT vs MAKER_FIRST) and live_cont
  assert.match(html,/⚡즉시체결/);
 });
 
+test('LIVE copy controls allow arbitrary dollar step, lock non-BALANCE_RATIO sizing buttons, and guard polling against input overwrites',()=>{
+ const html=copyHTML({
+  mode:'LIVE',enabled:true,armed:true,sizing:'BALANCE_RATIO',traderBalanceUSD:13333,
+  funds:{equity:3600,available:517,at:Date.now()},
+  positions:[],closed:[],events:[],
+  controls:{sizing:'BALANCE_RATIO',traderBalanceUSD:13333,maxSymbolMarginPct:15,maxLeverage:20,filterMode:'BLOCKLIST',blockedSymbols:[],allowedSymbols:[],cooldownLosses:3,cooldownDailyLossPct:6,cooldownMinutes:120},
+ });
+ // 1. Arbitrary dollar amounts (like 13333 or 9500) must not be blocked by step="1000"
+ assert.match(html,/name="traderBalanceUSD"[^>]*step="1"[^>]*value="13333"/);
+ assert.doesNotMatch(html,/name="traderBalanceUSD"[^>]*step="1000"/);
+ assert.match(html,/name="maxSymbolMarginPct"[^>]*step="any"/);
+ assert.match(html,/name="cooldownDailyLossPct"[^>]*step="any"/);
+ assert.match(html,/name="cooldownMinutes"[^>]*step="1"/);
+
+ // 2. LIVE locks sizing to BALANCE_RATIO so MIN_ORDER / FIRST_1USD buttons are disabled with explanation
+ assert.match(html,/data-copy-sizing="BALANCE_RATIO">잔고 비례 \(자동\)<\/button>/);
+ assert.match(html,/data-copy-sizing="MIN_ORDER" disabled title="[^"]*비례/);
+ assert.match(html,/data-copy-sizing="FIRST_1USD" disabled title="[^"]*비례/);
+
+ // 3. live_control.js protects focused inputs during 10s render() and 3s poll, preserves error state, and forces fresh load after save
+ const src=fs.readFileSync(new URL('../public/live_control.js',import.meta.url),'utf8');
+ assert.match(src,/if\(\$\('realCopy'\)&&!skipCopy&&!copyActionBusy&&!isEditingInside\(\$\('realCopy'\)\)\)renderCopyBox/);
+ assert.match(src,/if\(\$\('liveCopy'\).*!isEditingInside\(\$\('liveCopy'\)\)\)|&&\$\('liveCopy'\)&&!skipCopy&&!copyActionBusy&&!isEditingInside\(\$\('liveCopy'\)\)\)renderCopyBox/);
+ assert.match(src,/if\(!ok\)return;/);
+ assert.match(src,/signal-lab:force-refresh/);
+ assert.match(src,/const load=async\(\{force=false\}=\{\}\)=>/);
+ assert.match(src,/seq===copyMutationSeq&&!copyActionBusy&&!isEditingInside\(el\)/);
+});
+
+
 
