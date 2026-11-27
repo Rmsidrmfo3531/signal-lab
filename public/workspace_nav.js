@@ -53,8 +53,8 @@ function showWorkspaceRoute() {
   const crumb = document.getElementById('crumbPage');
   if (crumb) crumb.textContent = workspaceRoutes[route];
   const baseTitle = 'Signal Lab · ' + workspaceRoutes[route];
-  document.documentElement.dataset.baseTitle = baseTitle;
-  document.title = document.documentElement.dataset.updatingTitle || baseTitle;
+  if (document.documentElement?.dataset) document.documentElement.dataset.baseTitle = baseTitle;
+  document.title = document.documentElement?.dataset?.updatingTitle || baseTitle;
   document.getElementById('sidebar')?.classList.remove('open');
   window.requestAnimationFrame(() => window.scrollTo({top:0,behavior:'auto'}));
 }
