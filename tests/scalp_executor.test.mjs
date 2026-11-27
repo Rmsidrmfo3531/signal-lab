@@ -1717,16 +1717,16 @@ test('pump alert: UP enters a SHORT fade; a second alert on a held coin is refus
  assert.equal(placed(v,'MARKET').length,1);
 });
 
-test('pump alert: only the move size is waived — the other rules, the score gate and the BTC guard still block',async()=>{
+test('pump alert (SCALP_PUMP_IMMEDIATE=off): only the move size is waived — the other rules, the score gate and the BTC guard still block',async()=>{
  // Opposite side: a DOWN alert on a rise has no LONG reversal.
- {const {v,ex}=pumpMake({direction:'SHORT'});ex.arm();
+ {const {v,ex}=pumpMake({direction:'SHORT',config:{pumpImmediate:false}});ex.arm();
   const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'PUMP_NO_REVERSAL');assert.equal(placed(v,'MARKET').length,0);
   assert.equal(ex.store.skips.at(-1).trigger,'PUMP_ALERT');assert.equal(ex.pumpWatch.size,1,'kept for the next 5m closes')}
  // No volume climax: still refused.
- {const {v,ex}=pumpMake({rows:()=>smallCrash({volume:1})});ex.arm();
+ {const {v,ex}=pumpMake({rows:()=>smallCrash({volume:1}),config:{pumpImmediate:false}});ex.arm();
   const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'PUMP_NO_REVERSAL');assert.match(ex.store.skips.at(-1).detail,/NO_VOLUME_CLIMAX/);assert.equal(placed(v,'MARKET').length,0)}
  // Score gate.
- {const {v,ex}=pumpMake({config:{minScore:100}});ex.arm();
+ {const {v,ex}=pumpMake({config:{minScore:100,pumpImmediate:false}});ex.arm();
   const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'SCORE_BELOW_MINIMUM');assert.equal(placed(v,'MARKET').length,0)}
  // BTC shock guard: BTC -2 % in the last 5m candle blocks the LONG bounce.
  {const t=(BUCKET-1)*I,{v,ex}=pumpMake({btc:[[t-2*I,'60000','60000','60000','60000','100',t-I-1,'0'],[t-I,'60000','60000','60000','60000','100',t-1,'0'],[t,'60000','60000','58800','58800','1000',t+I-1,'0']]});ex.arm();
@@ -1734,6 +1734,29 @@ test('pump alert: only the move size is waived — the other rules, the score ga
  // Shared budget / balance: no balance, no order.
  {const {v,ex}=pumpMake();ex.balance=async()=>null;ex.arm();
   const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'NO_BALANCE');assert.equal(placed(v,'MARKET').length,0)}
+});
+
+test('pump alert (default SCALP_PUMP_IMMEDIATE=on, TESTNET): enters reverse immediately without waiting for 5m reversal candle or minScore, managed by TRADER_LADDER',async()=>{
+ // Even with zero reversal candle (rising candles on DOWN alert), before the 5m scan bucket, and with minScore=100 -> enters LONG immediately!
+ const clock={t:BUCKET*I+1000};
+ const {v,ex}=pumpMake({clock,direction:'SHORT',config:{minScore:100,stopLossEnabled:false,management:'TRADER_LADDER',dailyLossPct:20}});
+ ex.lastScanBucket=BUCKET-1;ex.arm();
+ assert.equal(scalpExecConfig({}).pumpImmediate,true,'TESTNET defaults to immediate pump entry');
+ assert.equal(scalpExecConfig({SCALP_PUMP_IMMEDIATE:'off'}).pumpImmediate,false);
+ const r=await ex.pumpAlert(ALERT_DOWN);
+ assert.equal(r.entered,true,JSON.stringify(r));
+ assert.equal(placed(v,'MARKET').length,1);
+ assert.equal(placed(v,'MARKET')[0].side,'BUY','DOWN alert enters LONG immediately');
+ assert.equal(ex.store.open[0].trigger,'PUMP_ALERT');
+ assert.equal(ex.store.open[0].management,'TRADER_LADDER');
+ assert.deepEqual(ex.store.open[0].ladder.units,[2,2,4,8,16]);
+ assert.equal(ex.pumpWatch.size,0,'immediate entry clears watch immediately');
+ // UP alert enters SHORT immediately with zero reversal candle
+ const {v:v2,ex:ex2}=pumpMake({clock:{t:BUCKET*I+1000},direction:'LONG',config:{minScore:100,stopLossEnabled:false,management:'TRADER_LADDER',dailyLossPct:20}});
+ ex2.lastScanBucket=BUCKET-1;ex2.arm();
+ const r2=await ex2.pumpAlert({...ALERT_DOWN,dir:'UP',key:'777:9'});
+ assert.equal(r2.entered,true,JSON.stringify(r2));
+ assert.equal(placed(v2,'MARKET')[0].side,'SELL','UP alert enters SHORT immediately');
 });
 
 test('pump alert: a coin BingX does not list is skipped with a recorded reason; stock contracts too',async()=>{
@@ -1747,12 +1770,12 @@ test('pump alert: a coin BingX does not list is skipped with a recorded reason; 
   assert.equal((await ex.pumpAlert({...ALERT_DOWN,symbol:'NVDAUSDT'})).reason,'PUMP_NOT_ON_BINGX');assert.equal(placed(v,'MARKET').length,0)}
 });
 
-test('pump alert: kept for the next 5m closes — an alert before the rejection candle enters on the next close',async()=>{
+test('pump alert (SCALP_PUMP_IMMEDIATE=off): kept for the next 5m closes — an alert before the rejection candle enters on the next close',async()=>{
  const clock={t:T0},shift=I;
  // At T0 the last closed candle is still part of the drop (no rejection yet); one candle later the hammer has closed.
  let late=false;
  const rows=()=>late?smallCrash({lastOpen:BUCKET*I}):smallCrash().slice(0,-1).map(r=>[r[0]+I,...r.slice(1,6),r[6]+I,r[7]]);
- const {v,ex}=pumpMake({clock,rows});ex.arm();
+ const {v,ex}=pumpMake({clock,rows,config:{pumpImmediate:false}});ex.arm();
  const base=ex.candles,openBar=t=>[t,'100','100','100','100','1',t+I-1,'1'];
  ex.candles=async(sym,iv,lim)=>sym==='SOLUSDT'&&iv==='5m'?[...rows(),openBar(late?(BUCKET+1)*I:BUCKET*I)]:base(sym,iv,lim);
  const first=await ex.pumpAlert(ALERT_DOWN);
@@ -1765,7 +1788,7 @@ test('pump alert: kept for the next 5m closes — an alert before the rejection 
  assert.equal(placed(v,'MARKET').length,1,JSON.stringify(ex.store.skips.slice(-3)));
  assert.equal(ex.store.open[0].trigger,'PUMP_ALERT');assert.equal(ex.pumpWatch.size,0);
  // A watch past PUMP_WATCH_MIN is dropped without an evaluation.
- const {ex:ex2}=pumpMake({direction:'SHORT'});ex2.arm();await ex2.pumpAlert(ALERT_DOWN);
+ const {ex:ex2}=pumpMake({direction:'SHORT',config:{pumpImmediate:false}});ex2.arm();await ex2.pumpAlert(ALERT_DOWN);
  ex2.now=()=>T0+16*60000;await ex2.tick(T0+16*60000);assert.equal(ex2.pumpWatch.size,0);
 });
 
@@ -1781,7 +1804,7 @@ test('pump alert: never in LIVE or OFF, never unarmed, SCALP_PUMP_ALERTS=off tur
   assert.equal((await ex.pumpAlert(ALERT_DOWN)).reason,'PUMP_ALERTS_OFF');assert.equal(placed(v,'MARKET').length,0)}
  {const {v,ex}=pumpMake();
   assert.equal((await ex.pumpAlert(ALERT_DOWN)).reason,'NOT_ARMED');assert.equal(placed(v,'MARKET').length,0);assert.equal(ex.pumpWatch.size,0)}
- {const {v,ex}=pumpMake({direction:'SHORT'});ex.arm();await ex.pumpAlert(ALERT_DOWN);assert.equal(ex.pumpWatch.size,1);
+ {const {v,ex}=pumpMake({direction:'SHORT',config:{pumpImmediate:false}});ex.arm();await ex.pumpAlert(ALERT_DOWN);assert.equal(ex.pumpWatch.size,1);
   ex.disarm();assert.equal(ex.pumpWatch.size,0);assert.equal(placed(v,'MARKET').length,0)}
  {const {v,ex}=pumpMake({config:{sides:['SHORT']}});ex.arm();
   assert.equal((await ex.pumpAlert(ALERT_DOWN)).reason,'SIDE_OFF');assert.equal(placed(v,'MARKET').length,0)}
@@ -1808,18 +1831,18 @@ test('pump alert: the window runs from the alert time — a late relay keeps wha
   const r=await ex.pumpAlert({...ALERT_DOWN,at:T0-16*60000});
   assert.equal(r.reason,'PUMP_ALERT_STALE');assert.equal(ex.pumpWatch.size,0);assert.equal(placed(v,'MARKET').length,0);
   assert.deepEqual(results,[]);assert.match(scalpReasonKo('PUMP_ALERT_STALE'),/늦게/)}
- // A DOWN alert on a rise (no reversal) stays watched until 15 min after the alert, not after its delivery.
- {const {ex}=pumpMake({direction:'SHORT'});ex.arm();
+ // A DOWN alert on a rise (no reversal) stays watched until 15 min after the alert when pumpImmediate=false.
+ {const {ex}=pumpMake({direction:'SHORT',config:{pumpImmediate:false}});ex.arm();
   const r=await ex.pumpAlert({...ALERT_DOWN,at:T0-10*60000});
   assert.equal(r.reason,'PUMP_NO_REVERSAL');assert.equal(ex.pumpWatch.get('SOLUSDT').until,T0+5*60000)}
  // A server clock a little behind Telegram's: the window starts at the delivery.
- {const {ex}=pumpMake({direction:'SHORT'});ex.arm();await ex.pumpAlert({...ALERT_DOWN,at:T0+3000});
+ {const {ex}=pumpMake({direction:'SHORT',config:{pumpImmediate:false}});ex.arm();await ex.pumpAlert({...ALERT_DOWN,at:T0+3000});
   assert.equal(ex.pumpWatch.get('SOLUSDT').until,T0+15*60000)}
 });
 
-test('pump alert: not before this candle\'s scan — an alert right after the close waits for the scan, then is evaluated (review)',async()=>{
+test('pump alert (SCALP_PUMP_IMMEDIATE=off): not before this candle\'s scan — an alert right after the close waits for the scan, then is evaluated (review)',async()=>{
  const clock={t:BUCKET*I+1000};
- const {v,ex}=pumpMake({clock});ex.lastScanBucket=BUCKET-1;ex.arm();
+ const {v,ex}=pumpMake({clock,config:{pumpImmediate:false}});ex.lastScanBucket=BUCKET-1;ex.arm();
  const reads=[],base=ex.candles;ex.candles=async(s,iv,l)=>{reads.push([s,iv]);return base(s,iv,l)};
  const r=await ex.pumpAlert(ALERT_DOWN);
  assert.deepEqual([r.entered,r.queued,r.reason],[false,true,'QUEUED_AFTER_SCAN']);
