@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import {parsePumpAlert,pumpOutcome,summarizePumpAlerts,PumpAlertBook,pumpAlertEndpoint,PUMP_COST_PCT,PUMP_HORIZONS_MIN,PUMP_ALERT_FILE} from '../pump_alert.mjs';
 import {SCALP_EXEC_COSTS} from '../scalp_executor.mjs';
-import {pumpAlertsHTML} from '../public/live_control.js';
+import {pumpAlertsHTML,scalpBadge,testnetClosedHTML} from '../public/live_control.js';
 
 // 24 alerts relayed by @ggangalt2_bot, 2026-11-23 22:24 ~ 11-24 06:09 KST (17 Bybit stock perps at the US open, 7 alts).
 const SAMPLE=JSON.parse(fs.readFileSync(new URL('./fixtures/pump_alerts_sample.json',import.meta.url),'utf8'));
@@ -159,4 +159,19 @@ test('tracking: a coin no source lists is closed at its first due time without a
  b2.record({id:3,date:m0+10000,text:text({sym:'CCCUSDT',pct:11,dir:'UP',low:90,high:100,now:100},3)});
  reads.length=0;await b2.track();
  assert.deepEqual(reads,[['BINGX','CCCUSDT'],['BINANCE','CCCUSDT']]);assert.equal(b2.records[0].trackDone,undefined);
+});
+
+test('pump alert badge: displays 공습·2% instead of 단타·급변 for PUMP_ALERT trades',()=>{
+ assert.match(scalpBadge('MOVE_REVERSAL','PUMP_ALERT'),/공습·2%/);
+ assert.doesNotMatch(scalpBadge('MOVE_REVERSAL','PUMP_ALERT'),/단타·급변/);
+ assert.match(scalpBadge('MOVE_REVERSAL','SCAN'),/단타·급변/);
+ assert.match(scalpBadge('ZONE_REVERSAL','SCAN'),/단타·매물대/);
+ const html=testnetClosedHTML({
+  scalp:{closed:[
+   {id:'p1',symbol:'BULLAUSDT',direction:'SHORT',kind:'MOVE_REVERSAL',trigger:'PUMP_ALERT',openedAt:1e12,closedAt:1e12+60000,closeReason:'LADDER_TAKE_PROFIT',netUSD:10,leverage:10},
+   {id:'s1',symbol:'ETHUSDT',direction:'LONG',kind:'MOVE_REVERSAL',trigger:'SCAN',openedAt:1e12,closedAt:1e12+30000,closeReason:'LADDER_TAKE_PROFIT',netUSD:2,leverage:10},
+  ]},
+ });
+ assert.match(html,/공습·2%/);
+ assert.match(html,/단타·급변/);
 });

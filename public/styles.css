@@ -503,6 +503,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .vp-badge.tn-signal{background:#132a3f;color:#8fc4ff;border-color:#2d5c8c}
 .vp-badge.tn-scalp{background:rgba(180,140,255,.12);color:#c9b2ff;border-color:rgba(180,140,255,.4)}
 .vp-badge.tn-scalp-zone{background:rgba(255,190,90,.12);color:#ffcf85;border-color:rgba(255,190,90,.45)}
+.vp-badge.tn-scalp-pump{background:rgba(56,189,248,.14);color:#7dd3fc;border-color:rgba(56,189,248,.45)}
 .tn-scalp-card header .paper-long{color:var(--up)}
 .tn-scalp-card header .paper-short{color:var(--down)}
 .tn-scalp-card header .tn-scalp-score{color:var(--rz-score);border-color:currentColor}
