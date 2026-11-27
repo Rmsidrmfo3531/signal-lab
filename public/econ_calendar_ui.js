@@ -121,7 +121,7 @@ function renderEventRow(ev,isRecent=false){
 
 export function renderEconomicCalendarHTML(d){
  if(!d){
-  return `<summary class="econ-summary"><span class="econ-badge neutral">📅 주요 경제지표</span><span class="econ-pills"><span class="econ-pill">고영향 거시지표 일정 불러오는 중…</span></span><span class="econ-chevron">일정 ▾</span></summary>`;
+  return `<summary class="econ-summary"><span class="econ-badge neutral">📅 주요 경제지표</span><span class="econ-pills"><span class="econ-pill">고영향 거시지표 일정 불러오는 중…</span></span><span class="econ-chevron">일정 <span aria-hidden="true">▾</span></span></summary>`;
  }
  const next=d.nextEvent||null;
  const upcoming=Array.isArray(d.upcoming)?d.upcoming:[];
@@ -188,7 +188,7 @@ export function renderEconomicCalendarHTML(d){
   <summary class="econ-summary">
    <span class="econ-badge ${badgeCls}">${badgeTxt}</span>
    <span class="econ-pills">${pills.join('')}</span>
-   <span class="econ-chevron">일정 ▾</span>
+   <span class="econ-chevron">일정 <span aria-hidden="true">▾</span></span>
   </summary>
   <div class="econ-body">
    <div class="econ-top-row">
