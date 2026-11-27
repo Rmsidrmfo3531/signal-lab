@@ -90,7 +90,7 @@ export function renderExternalSignalSummaryHTML(inbox){
  const whTag=inbox?.webhookConfigured
   ?`<span class="ext-pill wh-on">웹훅 활성</span>`
   :`<span class="ext-pill wh-off">붙여넣기 모드</span>`;
- return `<span class="ext-badge ${badgeCls}">${badgeTxt}</span><span class="ext-pills">${pills.join('')}${whTag}</span><span class="ext-chevron">열기 ▾</span>`;
+ return `<span class="ext-badge ${badgeCls}">${badgeTxt}</span><span class="ext-pills">${pills.join('')}${whTag}</span><span class="ext-chevron">열기 <span aria-hidden="true">▾</span></span>`;
 }
 
 export function renderExternalSignalListHTML(items){

@@ -12,7 +12,7 @@ const shortSym=s=>String(s||'').replace(/USDT$/,'');
 
 export function renderDominanceHTML(d){
  if(!d||!d.ok){
-  return `<summary class="dom-summary"><span class="dom-badge neutral">⏳ 시장 주도권 조회 중</span><span class="dom-pills"><span class="dom-pill">BTC.D · 알트 도미넌스 불러오는 중…</span></span><span class="dom-chevron">상세 ▾</span></summary>`;
+  return `<summary class="dom-summary"><span class="dom-badge neutral">⏳ 시장 주도권 조회 중</span><span class="dom-pills"><span class="dom-pill">BTC.D · 알트 도미넌스 불러오는 중…</span></span><span class="dom-chevron">상세 <span aria-hidden="true">▾</span></span></summary>`;
  }
  const g=d.global,b=d.breadth,del=d.deltas;
  const tone=esc(d.tone||'neutral');
@@ -102,7 +102,7 @@ export function renderDominanceHTML(d){
    <span class="dom-badge ${tone}">${esc(d.emoji||'')} ${esc(d.labelKo)}</span>
    ${d.phaseKo?`<span class="dom-phase">${esc(d.phaseKo)}</span>`:''}
    <span class="dom-pills">${summaryPills.join('')}</span>
-   <span class="dom-chevron">상세 ▾</span>
+   <span class="dom-chevron">상세 <span aria-hidden="true">▾</span></span>
   </summary>
   <div class="dom-body">
    <div class="dom-top-row">
