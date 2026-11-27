@@ -70,24 +70,45 @@ export function formatPositionPnlLine(p){
 }
 
 const FIG_SPACE='\u2007';
+const EN_SPACE='\u2002';
+const THIN_SPACE='\u2009';
 const padFig=(s,len)=>FIG_SPACE.repeat(Math.max(0,len-String(s??'').length))+String(s??'');
 const tabMinus=s=>String(s??'').replace(/^-/,'−');
+const PROP_WIDTHS={I:30,J:48,L:54,F:56,E:58,T:60,P:62,S:62,Z:60,R:64,A:66,B:66,K:66,V:66,X:66,Y:66,C:68,D:70,G:70,H:70,N:70,U:70,O:72,Q:72,M:88,W:92,'1':52};
+function propWidth(s){
+ let w=0;
+ for(const ch of String(s??'')){
+  if(PROP_WIDTHS[ch]!=null)w+=PROP_WIDTHS[ch];
+  else if(ch>='0'&&ch<='9')w+=56;
+  else if(/[\uAC00-\uD7A3]/.test(ch))w+=94;
+  else w+=60;
+ }
+ return w;
+}
+function padPropRight(s,targetWidth){
+ const str=String(s??'');
+ const gap=Math.max(0,targetWidth-propWidth(str));
+ const en=Math.floor(gap/50);
+ const thin=Math.round((gap-en*50)/20);
+ return str+EN_SPACE.repeat(en)+THIN_SPACE.repeat(thin);
+}
 
-export function formatPositionCell(p,{pnlWidth=0,roeWidth=0}={}){
+export function formatPositionCell(p,{symWidth=0,pnlWidth=0,roeWidth=0}={}){
  const r=positionRowParts(p);
+ const symRaw=r.sym||'—';
+ const symPad=symWidth>0?padPropRight(symRaw,symWidth):symRaw;
  const pnl=padFig(tabMinus(r.pnl),pnlWidth);
  const roe=r.roe?padFig(tabMinus(r.roe),roeWidth):null;
- const head=`${r.dot} <b>${escHtml(r.sym||'—')}</b>${r.side?` · ${r.side}`:''}`;
- const metrics=`손익 <b>${escHtml(pnl)}</b>${roe?`  │  수익률 <b>${escHtml(roe)}</b>`:''}`;
- return `<blockquote>${head}\n${metrics}</blockquote>`;
+ return `${r.dot} <b>${escHtml(symPad)}</b> │${r.side||'—'}│ <b>${escHtml(pnl)}</b>${roe?` │ <b>${escHtml(roe)}</b>`:''}`;
 }
 
 export function formatPositionsTable(positions=[]){
  const list=Array.isArray(positions)?positions:[];
  const parts=list.map(positionRowParts);
+ const symWidth=parts.reduce((m,r)=>Math.max(m,propWidth(r.sym||'—')),0);
  const pnlWidth=parts.reduce((m,r)=>Math.max(m,tabMinus(r.pnl).length),0);
  const roeWidth=parts.reduce((m,r)=>Math.max(m,r.roe?tabMinus(r.roe).length:0),0);
- return list.map(p=>formatPositionCell(p,{pnlWidth,roeWidth})).join('\n');
+ return list.map(p=>formatPositionCell(p,{symWidth,pnlWidth,roeWidth})).join('\n');
 }
 
 export function formatPositionsSummary(positions=[]){
@@ -99,6 +120,7 @@ export function formatPositionsSummary(positions=[]){
  const totalText=hasTotal?` · 합계 <b>${totalVal>=0?'+':'−'}$${Math.abs(totalVal).toFixed(2)}</b>`:'';
  return [
   `📊 <b>진행 중 포지션 (${sorted.length}개)</b>${totalText}`,
+  '',
   formatPositionsTable(sorted),
  ].join('\n');
 }
@@ -127,11 +149,13 @@ export function formatDailyReport({day,copyClosed=[],manualClosed=[],dailyByDay=
  const cntW=Math.max(...items.map(x=>x.cnt.length));
  const wrW=Math.max(...items.map(x=>x.wr.length));
  const netW=Math.max(...items.map(x=>x.net.length));
- const rowCells=items.map(x=>`<blockquote><b>${x.label}</b>  │  ${padFig(x.cnt,cntW)}  │  승률 ${padFig(x.wr,wrW)}  │  <b>${escHtml(padFig(x.net,netW))}</b></blockquote>`);
+ const rowLines=items.map(x=>`<b>${x.label}</b> │ ${padFig(x.cnt,cntW)} │ 승률 ${padFig(x.wr,wrW)} │ <b>${escHtml(padFig(x.net,netW))}</b>`);
  const lines=[
   `📊 <b>${liveToday?'오늘 중간 리포트':'일일 마감 리포트'} · ${escHtml(day)} KST</b>`,
   exchangeDay!=null?`거래소 실현 합계: <b>${escHtml(money(exchangeDay))}</b> (수수료·펀딩 포함)`:`원장 정산 합계: <b>${escHtml(money(cp.n+man.n?ledgerTotal:0))}</b>`,
-  ...rowCells,
+  '',
+  ...rowLines,
+  '',
   `현재 순자산: ${escHtml(usd(equityUSD))} · 보유 포지션 ${openCount}개`,
  ];
  return lines.join('\n');
@@ -586,13 +610,14 @@ export class AccountAlerts{
     if(matched.length){
      const items=matched.slice(0,5).map(p=>{
       const r=positionRowParts(p);
-      return {r,size:p.size!=null?String(p.size):'—',pnl:tabMinus(r.pnl)};
+      return {r,sym:r.sym||'—',size:p.size!=null?String(p.size):'—',pnl:tabMinus(r.pnl)};
      });
+     const symW=Math.max(...items.map(x=>propWidth(x.sym)));
      const sizeW=Math.max(...items.map(x=>x.size.length));
      const pnlW=Math.max(...items.map(x=>x.pnl.length));
-     const cells=items.map(({r,size,pnl})=>`<blockquote>${r.dot} <b>${escHtml(r.sym||'—')}</b>${r.side?` · ${r.side}`:''}\n수량 <b>${escHtml(padFig(size,sizeW))}</b>  │  손익 <b>${escHtml(padFig(pnl,pnlW))}</b></blockquote>`);
+     const rows=items.map(({r,sym,size,pnl})=>`${r.dot} <b>${escHtml(padPropRight(sym,symW))}</b> │${r.side||'—'}│ 수량 <b>${escHtml(padFig(size,sizeW))}</b> │ <b>${escHtml(padFig(pnl,pnlW))}</b>`);
      const more=matched.length>5?`\n…외 ${matched.length-5}건`:'';
-     preview=`\n현재 포지션:\n${cells.join('\n')}${more}`;
+     preview=`\n현재 포지션:\n${rows.join('\n')}${more}`;
     }
    }catch{}
    const code=String(randomInt(1000,10000));
