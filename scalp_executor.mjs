@@ -1260,7 +1260,7 @@ export class ScalpExecutor{
    const sess=minSc>0?scalpSessionMultiplier(this.now(),this.config):{session:'OFF',labelKo:'',mult:1};
    const effectiveMult=+(Math.max(0.1,Math.min(3,(scalpScore.sizeMult||1)*scoreTier.mult*sess.mult))).toFixed(4);
    if(scoreTier.active||sess.session!=='OFF')scalpScore={...scalpScore,...(scoreTier.active?{scoreTier}:{}),...(sess.session!=='OFF'?{session:sess}:{}),effectiveMult};
-   if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=scalpScore}
+   if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=det.immediatePump?null:scalpScore}
    if(!det.immediatePump&&minSc>0&&!scalpScore.pass){
     return skip('SCORE_BELOW_MINIMUM',`${scalpScore.score}점/${this.config.minScore}점 (${scalpScore.grade}급 · ${scalpScore.shortBreakdown}${whaleBonus?` · 고래매물대${whaleBonus>0?'+':''}${whaleBonus}`:''})`);
    }

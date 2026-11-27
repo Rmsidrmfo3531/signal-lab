@@ -168,10 +168,12 @@ test('pump alert badge: displays 공습·2% instead of 단타·급변 for PUMP_A
  assert.match(scalpBadge('ZONE_REVERSAL','SCAN'),/단타·매물대/);
  const html=testnetClosedHTML({
   scalp:{closed:[
-   {id:'p1',symbol:'BULLAUSDT',direction:'SHORT',kind:'MOVE_REVERSAL',trigger:'PUMP_ALERT',openedAt:1e12,closedAt:1e12+60000,closeReason:'LADDER_TAKE_PROFIT',netUSD:10,leverage:10},
-   {id:'s1',symbol:'ETHUSDT',direction:'LONG',kind:'MOVE_REVERSAL',trigger:'SCAN',openedAt:1e12,closedAt:1e12+30000,closeReason:'LADDER_TAKE_PROFIT',netUSD:2,leverage:10},
+   {id:'p1',symbol:'BULLAUSDT',direction:'SHORT',kind:'MOVE_REVERSAL',trigger:'PUMP_ALERT',scalpScore:{score:25,grade:'F'},openedAt:1e12,closedAt:1e12+60000,closeReason:'LADDER_TAKE_PROFIT',netUSD:10,leverage:10},
+   {id:'s1',symbol:'ETHUSDT',direction:'LONG',kind:'MOVE_REVERSAL',trigger:'SCAN',scalpScore:{score:82,grade:'A'},openedAt:1e12,closedAt:1e12+30000,closeReason:'LADDER_TAKE_PROFIT',netUSD:2,leverage:10},
   ]},
  });
  assert.match(html,/공습·2%/);
+ assert.doesNotMatch(html,/25점/);
  assert.match(html,/단타·급변/);
+ assert.match(html,/82점 A급/);
 });
