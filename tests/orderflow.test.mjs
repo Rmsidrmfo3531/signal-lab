@@ -98,14 +98,21 @@ test('analyzeOrderflowSeries computes CVD, bullish divergence, OI flush, ratios,
   assert.equal(shortBoost.cvdBoost, false);
   assert.equal(shortBoost.sizeMult, 1);
 
-  // UI renderer outputs KPI grid, SVG chart, and liquidation heatmap
-  const html = orderflowHTML({ ...snap, quickSymbols: ['BTCUSDT', 'SOLUSDT'], openSymbols: ['SOLUSDT'] });
+  // UI renderer outputs KPI grid, SVG chart, real-account held positions strip, and liquidation heatmap
+  const html = orderflowHTML({
+    ...snap,
+    quickSymbols: ['BTCUSDT', 'SOLUSDT'],
+    openSymbols: ['SOLUSDT'],
+    realPositions: [{ symbol: 'SOLUSDT', direction: 'SHORT', leverage: 5, unrealized: 12.34, roePct: 8.5, origin: 'manual' }],
+  });
   assert.match(html, /SOLUSDT/);
   assert.match(html, /OI 소진 \+5점 충족/);
   assert.match(html, /롱 CVD 강한반전 1\.5x 충족/);
   assert.match(html, /<svg class="of-svg"/);
   assert.match(html, /추정 청산맵/);
   assert.match(html, /of-held-dot/);
+  assert.match(html, /실계좌 보유 1/);
+  assert.match(html, /\+\$12\.34/);
 });
 
 test('detectCvdDivergence detects bearish divergence when price makes higher high while CVD weakens', () => {
