@@ -48,6 +48,7 @@ import {aiLensHigherTimeframe,aiLensRiskMap,aiLensStatus,LENS_HIGHER_INTERVAL_MS
 import {zoneBook,zoneTouches,zoneTagFields,zoneSpanMs,ZONE_PROFILES,ZONE_TOUCH_PCT} from './backtest.mjs';
 import {placeMakerThenMarket,makerLimitPrice,makerChildIds} from './maker_order.mjs';
 import {SCALP_MANAGEMENTS,TRADER_LADDER,scalpManagementOf,atrPct,ladderSpacing,planLadder,ladderZoneBoost,ladderReserve,strongZones,ladderNextAdd,ladderTpPrice} from './scalp_ladder.mjs';
+import {TWO_PCT_DEFAULTS,TWO_PCT_INTERVAL,TWO_PCT_INTERVAL_MS,detectTwoPctSetup} from './two_pct_strategy.mjs';
 
 export const SCALP_EXEC_STRATEGY='SCALP_REVERSAL';
 export const SCALP_EXEC_MODES=Object.freeze(['OFF','TESTNET']);
@@ -104,14 +105,16 @@ export const SCALP_BTC_GUARD_15M_PCT=2.5;
 export const SCALP_BTC_GUARD_RELEASE_5M_PCT=0.15;
 const REVERSAL_RECHECK_MS=30*60000;
 export const SCALP_TRIGGERS=Object.freeze({SCAN:'SCAN',PUMP:'PUMP_ALERT'});
+export const SCALP_PUMP_STRATEGIES=Object.freeze({TWO_PCT:'TWO_PCT',IMMEDIATE:'IMMEDIATE',REVERSAL:'REVERSAL'});
 // A 급변 알림 is evaluated at once and at the next 5m closes within this window (the detection needs the extreme in the
 // last 3 closed candles and a closed rejection candle, which an alert sent mid-candle does not have yet).
 export const PUMP_WATCH_MIN=15;
-const PUMP_STOP_REASONS=new Set(['NOT_ARMED','SCALP_MODE_OFF','CREDENTIALS_MISSING','SCALP_TESTNET_ONLY','KILL_SWITCH','LIVE_REFUSED','MODE_INVALID','SIDE_OFF','PUMP_NOT_ON_BINGX','SYMBOL_ALREADY_HELD','SYMBOL_HELD_BY_OTHER_STRATEGY','SYMBOL_LOSS_COOLDOWN','ALREADY_SENT','UNKNOWN','DAILY_LOSS_LIMIT']);
+const PUMP_STOP_REASONS=new Set(['NOT_ARMED','SCALP_MODE_OFF','CREDENTIALS_MISSING','SCALP_TESTNET_ONLY','KILL_SWITCH','LIVE_REFUSED','MODE_INVALID','SIDE_OFF','PUMP_NOT_ON_BINGX','SYMBOL_ALREADY_HELD','SYMBOL_HELD_BY_OTHER_STRATEGY','SYMBOL_LOSS_COOLDOWN','ALREADY_SENT','UNKNOWN','DAILY_LOSS_LIMIT','TWO_PCT_UP_ONLY']);
 const WYCKOFF_SCAN_BUDGET_MS=12_000;
 const RECHECK_REASONS=new Set(['PRICE_DRIFT','TP1_NET_RR_BELOW_MINIMUM']);
 const num=v=>{const n=Number(v);return Number.isFinite(n)?n:null};
 const pos=v=>{const n=Number(v);return Number.isFinite(n)&&n>0?n:null};
+const posNoStop=(p,cfg)=>p?.twoPct?false:cfg?.stopLossEnabled===false;
 const orderOf=d=>d?.order??d;
 const r4=x=>Number.isFinite(x)?Math.round(x*1e4)/1e4:null;
 /** The touched zone of a ZONE_REVERSAL signal (the nearer one when both touch, 4H on a tie) and both lookups, for the records. */
@@ -284,16 +287,31 @@ export function scalpExecConfig(env=process.env){
   zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT,
   // 급변 알림 trigger (user 2026-11-24): on by default; only ever acts in TESTNET mode (LIVE is refused above).
   pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_PUMP_ALERTS??'').trim().toLowerCase()),
-  // Immediate reverse entry on @ggangalt2_bot pump alerts (user 2026-11-26, TESTNET only): enter immediately
-  // without waiting for 5m reversal candles or 100-pt reversal score; SCALP_PUMP_IMMEDIATE=off restores 5m reversal wait.
-  pumpImmediate:!['off','false','0','no'].includes(String(env.SCALP_PUMP_IMMEDIATE??'').trim().toLowerCase()),
+  // @ggangalt2_bot strategy (user 2026-11-26, TESTNET only): TWO_PCT (default: 15m >=2% bullish candle -> lower-wick green-flip LONG,
+  // lower-wick SL, 1D resistance TP >=1:2 RR, 20x leverage), IMMEDIATE (legacy immediate reverse ladder), or REVERSAL (5m reversal wait).
+  ...(()=>{
+   const rawS=String(env.SCALP_PUMP_STRATEGY??'').trim().toUpperCase();
+   const hasImm=env.SCALP_PUMP_IMMEDIATE!==undefined&&String(env.SCALP_PUMP_IMMEDIATE).trim()!=='';
+   const immOn=hasImm&&!['off','false','0','no'].includes(String(env.SCALP_PUMP_IMMEDIATE).trim().toLowerCase());
+   const pumpStrategy=Object.values(SCALP_PUMP_STRATEGIES).includes(rawS)?rawS:(hasImm?(immOn?SCALP_PUMP_STRATEGIES.IMMEDIATE:SCALP_PUMP_STRATEGIES.REVERSAL):SCALP_PUMP_STRATEGIES.TWO_PCT);
+   return {pumpStrategy,pumpImmediate:pumpStrategy===SCALP_PUMP_STRATEGIES.IMMEDIATE};
+  })(),
+  twoPctLeverage:n('SCALP_TWO_PCT_LEVERAGE',TWO_PCT_DEFAULTS.leverage,1,50),
+  twoPctMinBodyPct:n('SCALP_TWO_PCT_MIN_BODY_PCT',TWO_PCT_DEFAULTS.minBodyPct,0.5,10),
+  twoPctMinNetRR:n('SCALP_TWO_PCT_MIN_RR',TWO_PCT_DEFAULTS.minNetRR,1.0,10),
+  twoPctMinStopPct:n('SCALP_TWO_PCT_MIN_STOP_PCT',TWO_PCT_DEFAULTS.minStopPct,0.1,3),
+  twoPctMaxStopPct:n('SCALP_TWO_PCT_MAX_STOP_PCT',TWO_PCT_DEFAULTS.maxStopPct,0.5,10),
+  twoPctMaxStopRoePct:n('SCALP_TWO_PCT_MAX_STOP_ROE_PCT',TWO_PCT_DEFAULTS.maxStopRoePct,20,90),
+  twoPctWatchMin:n('SCALP_TWO_PCT_WATCH_MIN',TWO_PCT_DEFAULTS.watchMin,15,180),
+  twoPctPollMs:n('SCALP_TWO_PCT_POLL_MS',TWO_PCT_DEFAULTS.pollMs,5000,60000),
+  twoPctMaxHoldMs:n('SCALP_TWO_PCT_MAX_HOLD_MIN',TWO_PCT_DEFAULTS.maxHoldMs/60000,60,4320)*60000,
   // Position management (user 2026-11-24 21:33-21:35, scalp_ladder.mjs): TRADER_LADDER (default; copy-trader style
   // 2·2·4·8·16 ladder, take profit on the average, 24 h, final line) or CURRENT (the management before). TESTNET only,
   // and only without the automatic stop (SCALP_STOP_LOSS=on keeps CURRENT).
   management:scalpManagementOf(env),
   ladderSpacingMinPct:n('SCALP_LADDER_SPACING_MIN_PCT',TRADER_LADDER.spacingMinPct,.3,10),
   ladderTpNetPct:n('SCALP_LADDER_TP_PCT',TRADER_LADDER.tpNetPct,.1,5),
-  // Pump-alert specific ladder take-profit target (user 2026-11-26): 2% price move net of fees (20% ROE at 10x), keeping normal scan at 0.6%.
+  // Pump-alert specific ladder take-profit target (legacy IMMEDIATE mode): 2% price move net of fees, keeping normal scan at 0.6%.
   pumpLadderTpNetPct:n('SCALP_PUMP_TP_PCT',2,.1,10),
   ladderMaxHoldMin:n('SCALP_LADDER_MAX_HOLD_MIN',TRADER_LADDER.maxHoldMin,60,4320),
   ladderMakerWaitMs:n('SCALP_LADDER_MAKER_WAIT_MS',5000,200,15000),
@@ -342,6 +360,7 @@ export function scalpLiveExecConfig(env=process.env){
   scaleInMarketFallback:['on','true','1','yes'].includes(String(env.SCALP_LIVE_SCALE_IN_MARKET_FALLBACK??'').trim().toLowerCase()),
   scaleInRetrySlippagePct:n('SCALP_LIVE_SCALE_IN_RETRY_SLIP_PCT',1.1,0.2,3),
   pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_LIVE_PUMP_ALERTS??'off').trim().toLowerCase()),
+  pumpStrategy:SCALP_PUMP_STRATEGIES.REVERSAL,
   pumpImmediate:false,
   // TRADER_LADDER is TESTNET only (user 2026-11-24): a live scalp keeps the management it had.
   management:SCALP_MANAGEMENTS.CURRENT,
@@ -459,25 +478,45 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  const cost={...costs,takerRate:Math.max(costs.takerRate,pos(c.takerFeeRate)??0)};
  // When stop-loss is disabled, skip the virtual-stop RR floor and only require TP1 to cover round-trip costs (user 2026-11-20).
  const minNetRR=config.stopLossEnabled===false?0:config.minNetRR;
- // Targets and the TP1 net RR do not depend on the quantity: checked on a 20-lot sample.
- let q=buildScalpPlan({signal:{...det,stop},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR});
- // A-2: When favorable drift pushed live entry near/past 38.2% TP1, auto-shift targets up the Fibonacci ladder ([50/61.8/78.6] -> [61.8/78.6/100]).
- if(!q.ok&&config.autoShiftTargets!==false&&(q.reasons[0]==='TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY'||(away&&q.reasons[0]==='TP1_NET_RR_BELOW_MINIMUM'))){
-  const ext=Number(det.evidence?.extreme),org=Number(det.evidence?.origin),mv=Number.isFinite(ext)&&Number.isFinite(org)?dir*(org-ext):0;
-  if(mv>0){
-   for(const ladder of [[.5,.618,.786],[.618,.786,1]]){
-    const shifted=ladder.map(f=>ext+dir*f*mv);
-    if(shifted.some(t=>dir*(t-entry)<=0))continue;
-    const retry=buildScalpPlan({signal:{...det,stop,targets:shifted},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR});
-    if(retry.ok){q=retry;break}
+ const lev=pos(leverage)??1;
+ if(det.twoPct){
+  const stopDistPct=dir*(entry-stop)/entry*100;
+  const minStopPct=Number(config.twoPctMinStopPct??TWO_PCT_DEFAULTS.minStopPct);
+  const maxStopPct=Number(config.twoPctMaxStopPct??TWO_PCT_DEFAULTS.maxStopPct);
+  const maxStopRoePct=Number(config.twoPctMaxStopRoePct??TWO_PCT_DEFAULTS.maxStopRoePct);
+  if(stopDistPct<minStopPct)return fail('TWO_PCT_STOP_TOO_TIGHT');
+  if(stopDistPct>Math.min(maxStopPct,maxStopRoePct/lev))return fail('TWO_PCT_STOP_TOO_WIDE');
+ }
+ let q;
+ if(det.singleTarget===true){
+  const rawTp=pos(det.targets?.[0]);
+  const tp=rawTp?Number(grid(rawTp,tick,towardMode(det.direction))):0;
+  if(!(tp>0&&dir*(tp-entry)>0))return fail('TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY');
+  const roundTrip=entry*(2*cost.takerRate+(2*cost.slippageBps+Math.max(0,cost.spreadBps||0))/10000+Math.abs(cost.fundingRate||0));
+  const netRR=(dir*(tp-entry)-roundTrip)/(Math.abs(entry-stop)+roundTrip);
+  if(!(netRR>=minNetRR))return fail('TP1_NET_RR_BELOW_MINIMUM',{netRR:Number.isFinite(netRR)?netRR:null});
+  q={ok:true,targets:[tp],estimatedNetRR:netRR};
+ }else{
+  // Targets and the TP1 net RR do not depend on the quantity: checked on a 20-lot sample.
+  q=buildScalpPlan({signal:{...det,stop},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR});
+  // A-2: When favorable drift pushed live entry near/past 38.2% TP1, auto-shift targets up the Fibonacci ladder ([50/61.8/78.6] -> [61.8/78.6/100]).
+  if(!q.ok&&config.autoShiftTargets!==false&&(q.reasons[0]==='TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY'||(away&&q.reasons[0]==='TP1_NET_RR_BELOW_MINIMUM'))){
+   const ext=Number(det.evidence?.extreme),org=Number(det.evidence?.origin),mv=Number.isFinite(ext)&&Number.isFinite(org)?dir*(org-ext):0;
+   if(mv>0){
+    for(const ladder of [[.5,.618,.786],[.618,.786,1]]){
+     const shifted=ladder.map(f=>ext+dir*f*mv);
+     if(shifted.some(t=>dir*(t-entry)<=0))continue;
+     const retry=buildScalpPlan({signal:{...det,stop,targets:shifted},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR});
+     if(retry.ok){q=retry;break}
+    }
    }
   }
+  if(!q.ok)return fail(q.reasons[0],{netRR:q.estimatedNetRR??null});
  }
- if(!q.ok)return fail(q.reasons[0],{netRR:q.estimatedNetRR??null});
  if(!pos(equity))return fail('NO_BALANCE');
- const riskUSD=equity*config.riskPct/100,lev=pos(leverage)??1,scaleIn=config.scaleIn===true;
+ const riskUSD=equity*config.riskPct/100,scaleIn=det.singleTarget===true?false:config.scaleIn===true;
  const assumedEntry=entry*(1+dir*cost.slippageBps/10000);
- const riskUnit=scaleIn?riskAtStop(det.direction,assumedEntry,stop,cost.takerRate,cost):dir*(entry-stop);
+ const riskUnit=scaleIn||det.twoPct?riskAtStop(det.direction,assumedEntry,stop,cost.takerRate,cost):dir*(entry-stop);
  // Each unit of the initial entry reserves the same notional at the worst permitted add price.
  const worstAdd=stop+(assumedEntry-stop)*SCALP_SCALE_IN.far;
  const addRiskUnit=scaleIn?assumedEntry/worstAdd*riskAtStop(det.direction,worstAdd,stop,cost.takerRate,cost):0;
@@ -497,7 +536,8 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  if(qty*entry/lev>cap){qty=cap*lev/entry;capped=true}
  qty=Number(grid(qty*(1+1e-9),step,'DOWN'))||0;
  const minPart=Number(grid(Math.max(Number(c.minQuantityBase)||0,(Number(c.minNotionalUSDT)||0)/entry*1.02,Number(step)),step,'UP'))||Number(step);
- const split=scalpSplits(qty,step,minPart);if(!split)return fail(capped?'MARGIN_CAP':'QUANTITY_BELOW_MINIMUM');
+ const split=det.singleTarget===true?(qty>=minPart-Number(step)*1e-6&&qty>0?{parts:[qty,0,0],targets:1,merged:false}:null):scalpSplits(qty,step,minPart);
+ if(!split)return fail(capped?'MARGIN_CAP':'QUANTITY_BELOW_MINIMUM');
  return {ok:true,entry,stop,targets:q.targets,qty,parts:split.parts,targetCount:split.targets,merged:split.merged,minPart,leverage:lev,
   riskUSD:qty*riskUnit,marginUSD:qty*entry/lev,capped,netRR:q.estimatedNetRR,driftPct:+driftPct.toFixed(3),takerRate:cost.takerRate,
   scaleIn:scaleIn?{version:SCALP_SCALE_IN.version,state:'WATCH',riskPct:config.riskPct,budgetUSD:riskUSD,minPart,
@@ -570,7 +610,7 @@ export class ScalpExecutor{
   this.trendCandles=trendCandles??(symbol=>this.candles(symbol,'4h',301));
   // 4H / 1D candles for the volume zones (BingX public market data, the scan's paced queue); cached per symbol and
   // timeframe until the next candle of that timeframe closes.
-  this.zoneCandles=zoneCandles??((symbol,interval,limit)=>this.candles(symbol,interval,limit));this.zoneCache=new Map();
+  this.zoneCandles=zoneCandles??((symbol,interval,limit)=>this.candles(symbol,interval,limit));this.zoneCache=new Map();this.dailyCache=new Map();
   this.file=directory?path.join(directory,fileName):null;
   const saved=this.file&&fs.existsSync(this.file)?readStore(this.file):null;
   this.store={open:Array.isArray(saved?.open)?saved.open:[],closed:Array.isArray(saved?.closed)?saved.closed:[],events:Array.isArray(saved?.events)?saved.events:[],
@@ -739,8 +779,8 @@ export class ScalpExecutor{
   if(this.armed&&this.lastScanBucket!==bucket&&this.prefetch?.bucket!==bucket&&(this.tickersFresh||this.tickers))
    this.prefetch={bucket,rows:withTimeout((this.tickersFresh||this.tickers)(),8000)};
   if(this.armed&&!this.scanning&&this.lastScanBucket!==bucket&&now-bucket*I5>=this.config.scanDelayMs)await this.scan(now);
-  // 급변 알림 candidates: after this candle's scan, once per 5m close each.
-  if(this.pumpWatch.size&&!this.scanning&&this.lastScanBucket===bucket)await this.#pumpTick();
+  // 급변 알림 candidates: TWO_PCT polls on 15s cadence for live 15m red->green flips; REVERSAL waits for 5m scan bucket inside #pumpEvaluate.
+  if(this.pumpWatch.size&&!this.scanning)await this.#pumpTick();
   const every=this.store.open.length?(this.config.stopLossEnabled===false?5000:15000):60000;
   const hasRecoverableExternal=this.config.mode==='TESTNET'&&this.store.closed.some(x=>x.closeReason==='EXTERNAL'&&!x.realized&&now-(x.closedAt||0)<7*86400000);
   if(!this.reconciling&&this.client&&now-this.lastReconcileAt>=every&&(this.store.open.length||this.armed||hasRecoverableExternal||this.store.closed.some(x=>!x.journaled)))await this.reconcile();
@@ -908,26 +948,59 @@ export class ScalpExecutor{
    this.#logSignal(ctx,result);
   }
  }
- /** 급변 알림 (crimepump 공습경보, user 2026-11-24): the coin becomes a reversal candidate now and at each 5m close for
-  * PUMP_WATCH_MIN minutes. DOWN -> LONG bounce, UP -> SHORT fade. The alert stands in for the move-size rule only
-  * (minMovePct); the detection's other rules and #consider / #enter (listing, score, BTC guard, one per symbol, shared
-  * budget, sizing, maker entry) are the scan's. TESTNET only: refused in any other mode or with any other client.
-  * Returns the first evaluation's result ({queued:true} when a scan is running: the next tick evaluates it). */
+ #pumpStrategy(){
+  if(this.config.mode!=='TESTNET')return SCALP_PUMP_STRATEGIES.REVERSAL;
+  const s=String(this.config.pumpStrategy||'').toUpperCase();
+  if(Object.values(SCALP_PUMP_STRATEGIES).includes(s))return s;
+  return this.config.pumpImmediate===false?SCALP_PUMP_STRATEGIES.REVERSAL:SCALP_PUMP_STRATEGIES.TWO_PCT;
+ }
+ /** Cached 1D candles per symbol (until next 1D close, max 6h TTL) for TWO_PCT resistance calculation. */
+ async #dailyRows(symbol,st={}){
+  const now=this.now(),hit=this.dailyCache.get(symbol);
+  if(hit&&now<hit.nextCloseAt&&now-hit.fetchedAt<6*3600000){hit.usedAt=now;return hit.rows}
+  for(const [k,v] of this.dailyCache)if(now-v.usedAt>6*3600000)this.dailyCache.delete(k);
+  let rows;
+  try{rows=await this.#paced(()=>this.zoneCandles(symbol,'1d',182),st)}
+  catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;st.error='HTTP_429'}return null}
+  if(!Array.isArray(rows)||!rows.length)return null;
+  const valid=rows.filter(r=>Array.isArray(r)&&Number.isFinite(Number(r[0]))&&Number.isFinite(Number(r[6]))).sort((a,b)=>Number(a[0])-Number(b[0]));
+  const open=valid.find(r=>Number(r[6])>=now);
+  const nextCloseAt=open?Number(open[6])+1:(valid.length?Number(valid.at(-1)[6])+1+86400000:now+86400000);
+  this.dailyCache.set(symbol,{rows:valid,nextCloseAt,fetchedAt:now,usedAt:now});
+  return valid;
+ }
+ /** 급변 알림 (crimepump 공습경보, user 2026-11-24 / 2026-11-26):
+  *  - TWO_PCT (default on TESTNET): @ggangalt2_bot selects rising coins (UP); watch 15m candles for >=2% strong bullish
+  *    candle -> subsequent 15m lower-wick green flip -> LONG entry with lower-wick SL, 1D resistance TP (>=1:2 RR), 20x.
+  *  - IMMEDIATE / REVERSAL: legacy reverse-entry modes on DOWN->LONG / UP->SHORT.
+  * TESTNET only: refused in any other mode or with any other client. */
  async pumpAlert(alert){
   if(this.config.pumpAlerts===false)return {entered:false,reason:'PUMP_ALERTS_OFF'};
   const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
   if(!activeMode||!this.client||this.client.mode!==activeMode)return {entered:false,reason:this.config.refused||'SCALP_TESTNET_ONLY'};
-  const symbol=String(alert?.symbol||'').toUpperCase(),direction=alert?.dir==='DOWN'?'LONG':alert?.dir==='UP'?'SHORT':null;
-  if(!/^[A-Z0-9]{1,30}USDT$/.test(symbol)||!direction)return {entered:false,reason:'PUMP_ALERT_INVALID'};
+  const strat=this.#pumpStrategy();
+  const symbol=String(alert?.symbol||'').toUpperCase(),dirRaw=alert?.dir==='UP'||alert?.dir==='DOWN'?alert.dir:null;
+  if(!/^[A-Z0-9]{1,30}USDT$/.test(symbol)||!dirRaw)return {entered:false,reason:'PUMP_ALERT_INVALID'};
   if(!this.armed)return {entered:false,reason:'NOT_ARMED'};
   const now=this.now();
+  const watchMin=strat===SCALP_PUMP_STRATEGIES.TWO_PCT?(Number(this.config.twoPctWatchMin)||TWO_PCT_DEFAULTS.watchMin):PUMP_WATCH_MIN;
   // The window runs from the alert's own time, not from its delivery (review 2026-11-24): an alert relayed late (listener
   // retries while the server restarts, a Telegram reconnect catch-up) keeps only what is left of it, and one older than
-  // the window is not traded — the waived move-size rule stands for the alert's move, which must still be in view.
-  const at=Number(alert.at),until=(Number.isFinite(at)&&at>0?Math.min(at,now):now)+PUMP_WATCH_MIN*60000;
+  // the window is not traded.
+  const at=Number(alert.at),until=(Number.isFinite(at)&&at>0?Math.min(at,now):now)+watchMin*60000;
   if(now>=until)return {entered:false,reason:'PUMP_ALERT_STALE'};
-  this.pumpWatch.set(symbol,{symbol,direction,since:now,until,lastBucket:null,tries:0,lastReason:null,
-   alert:{key:typeof alert.key==='string'?alert.key.slice(0,100):null,at:Number(alert.at)||now,dir:alert.dir,pct:Number(alert.pct)||null,low:Number(alert.low)||null,high:Number(alert.high)||null,price:Number(alert.price)||null,ticks:Number.isFinite(Number(alert.ticks))?Number(alert.ticks):null}});
+  const normAlert={key:typeof alert.key==='string'?alert.key.slice(0,100):null,at:Number(alert.at)||now,dir:dirRaw,pct:Number(alert.pct)||null,low:Number(alert.low)||null,high:Number(alert.high)||null,price:Number(alert.price)||null,ticks:Number.isFinite(Number(alert.ticks))?Number(alert.ticks):null};
+  if(strat===SCALP_PUMP_STRATEGIES.TWO_PCT&&dirRaw!=='UP'){
+   const prev=this.cur;
+   this.cur={symbol,direction:'LONG',trigger:SCALP_TRIGGERS.PUMP,kind:SCALP_KINDS.MOVE,evidence:{movePct:normAlert.pct}};
+   this.#skip(symbol,'TWO_PCT_UP_ONLY','하락 알림 · 상승 종목 전용');
+   this.cur=prev;
+   try{this.onPumpResult?.(normAlert.key,{entered:false,reason:'TWO_PCT_UP_ONLY',tries:1})}catch{}
+   this.#save();
+   return {entered:false,reason:'TWO_PCT_UP_ONLY'};
+  }
+  const direction=strat===SCALP_PUMP_STRATEGIES.TWO_PCT?'LONG':(dirRaw==='DOWN'?'LONG':'SHORT');
+  this.pumpWatch.set(symbol,{symbol,direction,mode:strat,since:now,until,lastBucket:null,lastCheckAt:0,lastSkipKey:null,tries:0,lastReason:null,alert:normAlert});
   if(this.scanning)return {entered:false,queued:true,reason:'QUEUED_AFTER_SCAN'};
   return await this.#pumpEvaluate(symbol)??{entered:false,queued:true,reason:'QUEUED_AFTER_SCAN'};
  }
@@ -937,16 +1010,25 @@ export class ScalpExecutor{
    await this.#pumpEvaluate(symbol).catch(e=>this.log('[SCALP] pump',symbol,e?.message));
   }
  }
- /** One evaluation of a 급변 알림 candidate on the 5m candle that has just closed (once per candle). */
+ /** One evaluation of a 급변 알림 candidate (TWO_PCT 15m poll, IMMEDIATE entry, or 5m REVERSAL close). */
  async #pumpEvaluate(symbol){
   const w=this.pumpWatch.get(symbol);if(!w)return null;
   const now=this.now(),bucket=Math.floor(now/I5);
   if(now>w.until){this.pumpWatch.delete(symbol);return {entered:false,reason:'PUMP_WATCH_EXPIRED'}}
-  const immediate=this.config.pumpImmediate!==false&&this.config.mode==='TESTNET';
-  // Non-immediate mode waits for this candle's 5m scan to settle first; immediate mode enters right away (unless a scan holds the lock).
-  if(w.lastBucket===bucket||this.scanning||(!immediate&&this.lastScanBucket!==bucket))return null;
+  const mode=w.mode||this.#pumpStrategy();
+  const isTwoPct=mode===SCALP_PUMP_STRATEGIES.TWO_PCT&&this.config.mode==='TESTNET';
+  const immediate=mode===SCALP_PUMP_STRATEGIES.IMMEDIATE&&this.config.mode==='TESTNET';
+  if(isTwoPct){
+   const pollMs=Number(this.config.twoPctPollMs)||TWO_PCT_DEFAULTS.pollMs;
+   if(this.scanning||(w.lastCheckAt>0&&now-w.lastCheckAt<pollMs))return null;
+   w.lastCheckAt=now;
+  }else{
+   // Non-immediate mode waits for this candle's 5m scan to settle first; immediate mode enters right away (unless a scan holds the lock).
+   if(w.lastBucket===bucket||this.scanning||(!immediate&&this.lastScanBucket!==bucket))return null;
+   w.lastBucket=bucket;
+  }
   // The scan's lock: #consider and the journal context (this.cur) are shared with the 5m scan.
-  this.scanning=true;w.lastBucket=bucket;w.tries++;
+  this.scanning=true;w.tries++;
   const revision=this.entryRevision,st={at:now,bucket,checked:0};
   // Only this watch: a newer alert for the coin that came during the evaluation keeps its own (and gets its own result).
   const done=(r,{stop=false}={})=>{w.lastReason=r?.entered?'ENTERED':r?.reason??null;if((stop||r?.entered||PUMP_STOP_REASONS.has(r?.reason))&&this.pumpWatch.get(symbol)===w)this.pumpWatch.delete(symbol);
@@ -956,20 +1038,72 @@ export class ScalpExecutor{
   const ctx={at:now,symbol,venueSymbol:null,kind:SCALP_KINDS.MOVE,trigger:SCALP_TRIGGERS.PUMP,pumpAlert:w.alert,direction:w.direction,barAt:null,reason:null,detail:null,
    scan:{startedAt:now,bucket,position:null,of:null,elapsedMs:0,trigger:SCALP_TRIGGERS.PUMP,try:w.tries}};
   this.cur=ctx;
-  const skip=(reason,detail=null,opt)=>{this.#skip(symbol,reason,detail);return done({entered:false,reason},opt)};
+  const skip=(reason,detail=null,opt)=>{
+   const dedupKey=opt?.dedup?`${reason}|${Math.floor(this.now()/TWO_PCT_INTERVAL_MS)}`:null;
+   if(!dedupKey||w.lastSkipKey!==dedupKey){this.#skip(symbol,reason,detail);if(dedupKey)w.lastSkipKey=dedupKey}
+   return done({entered:false,reason},opt);
+  };
   let r;
   try{
    {const why=this.#blocked();if(why)return r=skip(why,null,{stop:immediate})}
-   if(!this.config.sides.includes(w.direction))return r=skip('SIDE_OFF',w.direction,{stop:immediate});
+   if(!this.config.sides.includes(w.direction))return r=skip('SIDE_OFF',w.direction,{stop:true});
    // The universe carries BTCUSDT for the BTC shock guard and the BTC 4H trend of the score: never evaluated without it.
    try{await this.#refreshUniverse(now)}catch{}
    if(!this.universe.some(x=>x.symbol==='BTCUSDT'))return r=skip('PUMP_UNIVERSE_UNAVAILABLE',null,{stop:immediate});
    // BingX must list it as an ordinary USDT perpetual (stock / fx 'NC*' contracts are not scalped, as scalpUniverse).
    const c=(await this.contracts(symbol).catch(()=>null))?.get?.(symbol),vs=String(c?.venueSymbol||'');
-   if(!c?.tradable||!/^[A-Z0-9]{1,20}-USDT$/.test(vs)||vs.startsWith('NC'))return r=skip('PUMP_NOT_ON_BINGX',c?(c.tradable?vs:'거래 중지'):'목록에 없음',{stop:immediate});
+   if(!c?.tradable||!/^[A-Z0-9]{1,20}-USDT$/.test(vs)||vs.startsWith('NC'))return r=skip('PUMP_NOT_ON_BINGX',c?(c.tradable?vs:'거래 중지'):'목록에 없음',{stop:true});
    ctx.venueSymbol=vs;
    const ix=this.universe.findIndex(x=>x.symbol===symbol),u={symbol,venueSymbol:vs,quoteVolume:ix>=0?this.universe[ix].quoteVolume:null};
    ctx.universe={rank:ix>=0?ix+1:null,size:this.universe.length,quoteVolume:u.quoteVolume};
+   if(isTwoPct){
+    let rows15m=null;
+    try{rows15m=await this.#paced(()=>this.candles(symbol,TWO_PCT_INTERVAL,20),st)}
+    catch(e){if(e?.code==='HTTP_429'){this.cooldownUntil=this.now()+60000;return r=skip('HTTP_429',e?.code||e?.message)}return r=skip('PUMP_CANDLES_FAILED',e?.code||e?.message,{dedup:true})}
+    const [rows1d,livePx,levInfo]=await Promise.all([
+     this.#dailyRows(symbol,st),
+     withTimeout(Promise.resolve().then(()=>this.priceOf(symbol,vs)),3000).catch(()=>null),
+     typeof this.client?.leverage==='function'?Promise.resolve().then(()=>this.client.leverage(vs)).catch(()=>null):null,
+    ]);
+    if(st.error==='HTTP_429')return r=skip('HTTP_429');
+    const maxVenue=Number(levInfo?.maxLongLeverage??levInfo?.maxLeverage);
+    const cfgLev=Number(this.config.twoPctLeverage??TWO_PCT_DEFAULTS.leverage);
+    const targetLev=Math.max(1,Math.floor(maxVenue>0?Math.min(cfgLev,maxVenue):cfgLev));
+    const t=this.now();
+    const setup=detectTwoPctSetup({
+     rows15m,
+     rows1d,
+     livePrice:pos(livePx),
+     now:t,
+     leverage:targetLev,
+     costs:{...SCALP_EXEC_COSTS,takerRate:Math.max(SCALP_EXEC_COSTS.takerRate,pos(c.takerFeeRate)??0)},
+     config:{
+      minBodyPct:this.config.twoPctMinBodyPct??TWO_PCT_DEFAULTS.minBodyPct,
+      minNetRR:this.config.twoPctMinNetRR??TWO_PCT_DEFAULTS.minNetRR,
+      minStopPct:this.config.twoPctMinStopPct??TWO_PCT_DEFAULTS.minStopPct,
+      maxStopPct:this.config.twoPctMaxStopPct??TWO_PCT_DEFAULTS.maxStopPct,
+      maxStopRoePct:this.config.twoPctMaxStopRoePct??TWO_PCT_DEFAULTS.maxStopRoePct,
+      leverage:targetLev,
+     },
+    });
+    ctx.at=t;
+    if(!setup.ok)return r=skip(setup.reason,setup.detail,{dedup:true,stop:setup.reason==='SCALP_INTERVAL_UNSUPPORTED'});
+    const det={
+     ok:true,twoPct:true,singleTarget:true,symbol,direction:'LONG',kind:SCALP_KINDS.MOVE,interval:TWO_PCT_INTERVAL,
+     barAt:setup.entryCandle.openTime,entry:setup.entry,stop:setup.stop,targets:[setup.tp],leverage:targetLev,atr:setup.atr,
+     twoPctMeta:{
+      baseCandle:setup.baseCandle,entryCandle:setup.entryCandle,resistance:setup.resistance,tpSource:setup.tpSource,
+      allTimeHigh:setup.allTimeHigh,netRR:setup.netRR,stopDistPct:setup.stopDistPct,lowerWickPct:setup.lowerWickPct,leverage:targetLev,
+     },
+     evidence:{
+      symbol,origin:setup.baseCandle.open,extreme:setup.stop,movePct:setup.baseCandle.bodyPct,
+      interval:TWO_PCT_INTERVAL,twoPct:true,candleCloseAt:setup.baseCandle.closeTime,
+     },
+    };
+    ctx.barAt=det.barAt;ctx.evidence=det.evidence;ctx.atr=det.atr;ctx.lensEntry=det.entry;
+    r=await this.#consider(u,det,revision);
+    return done(r);
+   }
    if(immediate){
     let rows=null;
     try{rows=await this.#paced(()=>this.candles(symbol,'5m',20),st)}
@@ -1090,8 +1224,8 @@ export class ScalpExecutor{
   if(isLadder(p))return t+ladderHeldRisk(p);
   const d=dirOf(p.direction),e=pos(p.avg||p.entry),st=pos(p.stop),q=pos(p.size||p.qty),pending=p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedRiskUSD||0):0;
   if(!e||!st||!q)return t+pending;
-  if(this.config.stopLossEnabled===false)return t+this.#repeatRisk(p,e,p.mark)*q+pending;
-  const unit=p.scaleIn?riskAtStop(p.direction,e,st,p.takerRate):Math.max(0,d*(e-st));
+  if(posNoStop(p,this.config))return t+this.#repeatRisk(p,e,p.mark)*q+pending;
+  const unit=p.scaleIn||p.twoPct?riskAtStop(p.direction,e,st,p.takerRate):Math.max(0,d*(e-st));
   if(p.scaleIn&&p.status==='SUBMITTING')return t+Math.max(unit*q,p.riskUSD)+pending;
   return t+unit*q+pending;
  },0)}
@@ -1199,27 +1333,32 @@ export class ScalpExecutor{
      targets:[price+d*span*0.382,price+d*span*0.618,price+d*span*0.786]};
     if(this.cur){this.cur.atr=a;this.cur.lensEntry=price}
    }
-   const lev=scalpAdaptiveLeverage({atr:det.atr,price:price??det.entry,baseLeverage:this.config.leverage,maxLeverage:maxVenueLev,config:this.config});
+   const lev=det.twoPct
+    ?Math.max(1,Math.floor(maxVenueLev>0?Math.min(Number(det.leverage)||Number(this.config.twoPctLeverage)||TWO_PCT_DEFAULTS.leverage,maxVenueLev):(Number(det.leverage)||Number(this.config.twoPctLeverage)||TWO_PCT_DEFAULTS.leverage)))
+    :scalpAdaptiveLeverage({atr:det.atr,price:price??det.entry,baseLeverage:this.config.leverage,maxLeverage:maxVenueLev,config:this.config});
    const shared=this.budget?.snapshot(funds.equity,{who:'scalp'});
    if(shared&&!shared.ok)return skip('TESTNET_BUDGET_UNAVAILABLE');
    // Legacy 4H against-trend 50% reduction applies only when 100-point scoring is disabled (scoring already weights 4H trend 0/20).
-   const againstTrend=!(Number(this.config.minScore)>0)&&this.config.trendMode==='record'&&this.cur?.withTrend===false;
-   const basePlanConfig=againstTrend?{...this.config,riskPct:this.config.riskPct*SCALP_AGAINST_TREND_RISK_SCALE}:this.config;
+   const againstTrend=!det.twoPct&&!(Number(this.config.minScore)>0)&&this.config.trendMode==='record'&&this.cur?.withTrend===false;
+   const basePlanConfig=det.twoPct
+    ?{...this.config,stopLossEnabled:true,scaleIn:false,minNetRR:Number(this.config.twoPctMinNetRR??TWO_PCT_DEFAULTS.minNetRR),maxDriftPct:Math.max(Number(this.config.maxDriftPct)||0.4,0.8),driftMovePct:10,stopKeepPct:50}
+    :(againstTrend?{...this.config,riskPct:this.config.riskPct*SCALP_AGAINST_TREND_RISK_SCALE}:this.config);
    let plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
     usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:basePlanConfig});
-   if(!plan.ok&&this.#management()===SCALP_MANAGEMENTS.LADDER&&price>0&&Array.isArray(plan.reasons)&&plan.reasons.length
+   if(!plan.ok&&!det.twoPct&&this.#management()===SCALP_MANAGEMENTS.LADDER&&price>0&&Array.isArray(plan.reasons)&&plan.reasons.length
     &&plan.reasons.every(r=>r==='TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY'||r==='TP1_NET_RR_BELOW_MINIMUM')){
     const takerRate=Math.max(Number(c?.takerFeeRate)||0,SCALP_EXEC_COSTS.takerRate);
     plan={ok:true,entry:price,stop:det.stop,targets:det.targets||[],parts:[1,0,0],takerRate,netRR:plan.netRR??0,driftPct:plan.driftPct??0,qty:0,riskUSD:0,marginUSD:0,ladderBypassedFib:true};
    }
    if(this.cur)this.cur.plan={price,ok:plan.ok,entry:plan.entry??null,stop:plan.stop??null,targets:plan.targets??null,netRR:plan.netRR??null,driftPct:plan.driftPct??null,qty:plan.qty??null,riskUSD:plan.riskUSD??null,leverage:lev};
    if(!plan.ok)return skip(plan.reasons[0],plan.driftPct!=null?`${plan.driftPct}%${plan.allowedPct!=null?` > ${plan.allowedPct}%`:''}`:plan.netRR!=null?`RR ${Number(plan.netRR).toFixed(2)}`:null);
+   const skipScore=det.immediatePump===true||det.twoPct===true;
    // Data-calibrated 100-point setup score (40-coin BingX 5m Train/OOS): filter negative-EV (<minScore) & scale up A/S setups.
    let scalpScore=scoreScalpSetup({direction:det.direction,evidence:det.evidence,trend4h:this.cur?.trend4h??null,btcTrend4h,netRR:plan.netRR,config:this.config});
    // Backtest-validated confirmed-bounce sizing (C7, 40 coins Train/OOS): >=20% bounce (PF 3.55) -> 1.35x, <20% (PF 1.64) -> 0.8x.
    const minSc=Number(this.config.minScore)||0,oiBonusCfg=Number(this.config.orderflowOiBonus??5),cvdBonusCfg=Number(this.config.orderflowCvdBonus??5);
-   // 고래 매물대 ±whaleBonusCfg (user 2026-11-25 "(나) 진행", 09:51 매물대): only with the score gate on (skipped on immediate pump entry for speed).
-   const whaleOn=!det.immediatePump&&minSc>0&&this.config.whaleCvd!==false&&typeof this.whaleZones==='function',whaleBonusCfg=whaleOn?Math.max(0,Math.min(5,Number(this.config.whaleCvdBonus??WHALE_CVD_DEFAULTS.bonus))):0;
+   // 고래 매물대 ±whaleBonusCfg (user 2026-11-25 "(나) 진행", 09:51 매물대): only with the score gate on (skipped on immediate/twoPct pump entry).
+   const whaleOn=!skipScore&&minSc>0&&this.config.whaleCvd!==false&&typeof this.whaleZones==='function',whaleBonusCfg=whaleOn?Math.max(0,Math.min(5,Number(this.config.whaleCvdBonus??WHALE_CVD_DEFAULTS.bonus))):0;
    // Every candidate a bonus could lift to the gate (OI + CVD + whale) has its orderflow read; at or above the gate too, so a −whale can drop it.
    const maxOfBonus=Math.max(0,oiBonusCfg)+Math.max(0,cvdBonusCfg)+whaleBonusCfg;
    const bounce=minSc>0?scalpBounceMultiplier(det.evidence?.retracedPct,this.config):{active:false,confirmed:false,mult:1,retracedPct:null};
@@ -1227,9 +1366,9 @@ export class ScalpExecutor{
    if(bounce.active&&scalpScore.pass)scalpScore={...scalpScore,sizeMult:bounce.mult,bounce};
    else if(tierEnabled&&scalpScore.pass)scalpScore={...scalpScore,sizeMult:1};
    // Backtest-validated orderflow boost (FJ + A-3): +5pt on 30m OI flush <=-1%, +5pt & 1.5x sizing on strong CVD reversal flip (>15%).
-   const wantOrderflowBoost=!det.immediatePump&&this.config.orderflowBoost!==false&&scalpScore.score>=Math.max(0,minSc-maxOfBonus);
-   const wantSqueezeGuard=this.config.squeezeGuard!==false&&(det.immediatePump||minSc<=0||scalpScore.score>=Math.max(0,minSc-maxOfBonus));
-   const wantPreFunding=Number(this.config.preFundingWindowMin)>0&&Number(this.config.preFundingExtremePct)>0&&(det.immediatePump||minSc<=0||scalpScore.score>=Math.max(0,minSc-maxOfBonus));
+   const wantOrderflowBoost=!skipScore&&this.config.orderflowBoost!==false&&scalpScore.score>=Math.max(0,minSc-maxOfBonus);
+   const wantSqueezeGuard=this.config.squeezeGuard!==false&&(skipScore||minSc<=0||scalpScore.score>=Math.max(0,minSc-maxOfBonus));
+   const wantPreFunding=Number(this.config.preFundingWindowMin)>0&&Number(this.config.preFundingExtremePct)>0&&(skipScore||minSc<=0||scalpScore.score>=Math.max(0,minSc-maxOfBonus));
    const wantWhale=whaleOn&&scalpScore.score>=Math.max(0,minSc-maxOfBonus);
    // The orderflow and the whale trades are read side by side; a failure or a timeout of either never blocks (0 points).
    const [ofSnap,whale]=await Promise.all([
@@ -1260,8 +1399,8 @@ export class ScalpExecutor{
    const sess=minSc>0?scalpSessionMultiplier(this.now(),this.config):{session:'OFF',labelKo:'',mult:1};
    const effectiveMult=+(Math.max(0.1,Math.min(3,(scalpScore.sizeMult||1)*scoreTier.mult*sess.mult))).toFixed(4);
    if(scoreTier.active||sess.session!=='OFF')scalpScore={...scalpScore,...(scoreTier.active?{scoreTier}:{}),...(sess.session!=='OFF'?{session:sess}:{}),effectiveMult};
-   if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=det.immediatePump?null:scalpScore}
-   if(!det.immediatePump&&minSc>0&&!scalpScore.pass){
+   if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=skipScore?null:scalpScore}
+   if(!skipScore&&minSc>0&&!scalpScore.pass){
     return skip('SCORE_BELOW_MINIMUM',`${scalpScore.score}점/${this.config.minScore}점 (${scalpScore.grade}급 · ${scalpScore.shortBreakdown}${whaleBonus?` · 고래매물대${whaleBonus>0?'+':''}${whaleBonus}`:''})`);
    }
    if(wantSqueezeGuard&&ofSnap){
@@ -1278,7 +1417,7 @@ export class ScalpExecutor{
      return skip('PRE_FUNDING_EXTREME',`펀딩 ${ratePct>=0?'+':''}${ratePct.toFixed(3)}% · 정산 ${leftMin}분 전`);
     }
    }
-   if(!againstTrend&&Math.abs(effectiveMult-1)>1e-6){
+   if(!skipScore&&!againstTrend&&Math.abs(effectiveMult-1)>1e-6){
     const scaled=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
      usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,
      config:{...basePlanConfig,riskPct:basePlanConfig.riskPct*effectiveMult}});
@@ -1289,7 +1428,8 @@ export class ScalpExecutor{
    }
    // TRADER_LADDER (user 2026-11-24; 2026-11-25 fixed 1st-step sizing): keep full 2·2·4·8·16 ladder units (sizeMult=1)
    // so score/session/bounce/againstTrend downsizing multipliers never shrink the 1st entry below 2/32 of the symbol cap.
-   if(this.#management()===SCALP_MANAGEMENTS.LADDER){
+   // TWO_PCT uses fixed lower-wick SL + 1D resistance TP (never TRADER_LADDER).
+   if(!det.twoPct&&this.#management()===SCALP_MANAGEMENTS.LADDER){
     const lad=await this.#ladderPlan({u,c,plan,funds,shared,lev,sizeMult:1,trigger:this.cur?.trigger??null});
     if(!lad.ok)return skip(lad.reason,lad.detail);
     plan=lad.plan;
@@ -1368,7 +1508,7 @@ export class ScalpExecutor{
  async #precheck(u,det){
   const skip=reason=>detail=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null||trend==='range'?null:trendAllows(det.direction,trend)}
-   if(this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND')(trend)}
+   if(!det.twoPct&&this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND')(trend)}
   if(u.symbol!=='BTCUSDT'&&this.config.btcGuard!==false){
    const shock=await this.#btcShock(Math.floor(this.now()/I5));
    if(shock){
@@ -1420,8 +1560,8 @@ export class ScalpExecutor{
     if(isLadder(p))return t+ladderHeldRisk(p)*scaleOf(p);
     const sc=scaleOf(p),d=dirOf(p.direction),e=pos(p.avg||p.entry),st=pos(p.stop),q=pos(p.size||p.qty),pending=(p.scaleIn?.state==='PENDING'?(p.scaleIn.reservedRiskUSD||0):0)*sc;
     if(!e||!st||!q)return t+pending;
-    if(this.config.stopLossEnabled===false)return t+this.#repeatRisk(p,e,p.mark)*q*sc+pending;
-    const unit=p.scaleIn?riskAtStop(p.direction,e,st,p.takerRate):Math.max(0,d*(e-st));
+    if(posNoStop(p,this.config))return t+this.#repeatRisk(p,e,p.mark)*q*sc+pending;
+    const unit=p.scaleIn||p.twoPct?riskAtStop(p.direction,e,st,p.takerRate):Math.max(0,d*(e-st));
     if(p.scaleIn&&p.status==='SUBMITTING')return t+Math.max(unit*q,p.riskUSD)*sc+pending;
     return t+unit*q*sc+pending;
    },0)+reserved('riskUSD'),
@@ -1469,7 +1609,7 @@ export class ScalpExecutor{
   if(venueAvailableQty!==null&&venueAvailableQty<requestedQty&&plan.ladder)return skip('VENUE_POSITION_LIMIT',`가용 ${venueAvailableQty}개 · 첫 단위 ${requestedQty}개`);
   if(venueAvailableQty!==null&&venueAvailableQty<requestedQty){
    const qty=Number(grid(venueAvailableQty,c.quantityStep,'DOWN'))||0;
-   const split=scalpSplits(qty,c.quantityStep,plan.minPart);
+   const split=det.singleTarget===true?(qty>=plan.minPart-Number(c.quantityStep)*1e-6&&qty>0?{parts:[qty,0,0],targets:1,merged:false}:null):scalpSplits(qty,c.quantityStep,plan.minPart);
    if(!split)return skip('VENUE_POSITION_LIMIT',`가용 ${venueAvailableQty}개 · 최소 ${plan.minPart}개`);
    const ratio=qty/requestedQty;
    plan={...plan,qty,parts:split.parts,targetCount:split.targets,merged:split.merged,
@@ -1502,13 +1642,15 @@ export class ScalpExecutor{
   const tick=c.tickSize,px=v=>grid(v,tick,awayMode(d))??String(v);
   const kind=this.cur?.kind||SCALP_KINDS.MOVE;
   const trigger=this.cur?.trigger===SCALP_TRIGGERS.PUMP?SCALP_TRIGGERS.PUMP:SCALP_TRIGGERS.SCAN;
-  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,kind,trigger,...(trigger===SCALP_TRIGGERS.PUMP&&this.cur?.pumpAlert?{pumpAlert:this.cur.pumpAlert}:{}),...(kind===SCALP_KINDS.ZONE&&this.cur?.zone?{zone:this.cur.zone}:{}),mode:this.execMode,venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:'5m',
+  const slEnabled=det.twoPct===true?true:this.config.stopLossEnabled!==false;
+  const twoPctMeta=det.twoPct?{...(det.twoPctMeta||{}),netRR:Number.isFinite(Number(plan.netRR))?+Number(plan.netRR).toFixed(2):det.twoPctMeta?.netRR??null,stopPrice:plan.stop,tpPrice:plan.targets?.[0]??null}:null;
+  const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,kind,trigger,...(trigger===SCALP_TRIGGERS.PUMP&&this.cur?.pumpAlert?{pumpAlert:this.cur.pumpAlert}:{}),...(twoPctMeta?{twoPct:twoPctMeta}:{}),...(kind===SCALP_KINDS.ZONE&&this.cur?.zone?{zone:this.cur.zone}:{}),mode:this.execMode,venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:det.twoPct?TWO_PCT_INTERVAL:'5m',
    pattern:det.pattern,barAt:det.barAt,plannedEntry:det.entry,checkedPrice:plan.entry,driftPct:plan.driftPct,entry:plan.entry,stop:plan.stop,initialStop:plan.stop,targets:plan.targets,
    qty:plan.qty,initialQty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,initialRiskUSD:plan.riskUSD,marginUSD:plan.marginUSD,initialMarginUSD:plan.marginUSD,capitalBasisUSD:pos(equity)??null,netRR:plan.netRR,
-   tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.barAt+this.config.maxHoldMs,
+   tickSize:tick,quantityStep:c.quantityStep,takerRate:plan.takerRate,evidence:det.evidence,status:'SUBMITTING',createdAt:this.now(),deadline:det.twoPct?this.now()+(this.config.twoPctMaxHoldMs??TWO_PCT_DEFAULTS.maxHoldMs):det.barAt+this.config.maxHoldMs,
    avg:null,size:0,filled:0,stopOrderId:null,stopIds:[],tpOrderIds:[null,null,null],tpTries:[0,0,0],breakevenMoved:false,exitIds:[],steps:[],
-   stopLossEnabled:this.config.stopLossEnabled!==false,
-   ...(this.config.stopLossEnabled===false?{profitTargetsReady:true}:{}),
+   stopLossEnabled:slEnabled,
+   ...(!slEnabled?{profitTargetsReady:true}:{}),
    management:plan.ladder?SCALP_MANAGEMENTS.LADDER:SCALP_MANAGEMENTS.CURRENT,...(plan.ladder?{ladder:plan.ladder}:{}),
    ...(plan.scaleIn?{scaleIn:plan.scaleIn}:{}),
    // Journal context (analysis only).
@@ -1564,6 +1706,8 @@ export class ScalpExecutor{
   if(p.scaleIn){
    p.riskUSD=riskAtStop(d,p.avg,p.initialStop,p.takerRate)*p.filled;p.marginUSD=p.avg*p.filled/p.leverage;
    Object.assign(p.scaleIn,{initialEntry:p.avg,initialQty:p.filled,initialMarginUSD:p.marginUSD,initialRiskUSD:p.riskUSD});
+  }else if(p.twoPct){
+   p.riskUSD=riskAtStop(d,p.avg,p.initialStop,p.takerRate)*p.filled;p.marginUSD=p.avg*p.filled/p.leverage;
   }
   p.initialRiskUSD=p.riskUSD;p.initialMarginUSD=p.marginUSD;
   if(isLadder(p)){this.#ladderOpened(p);p.riskUSD=p.initialRiskUSD=ladderHeldRisk(p)}
@@ -1573,14 +1717,17 @@ export class ScalpExecutor{
    if(p.scaleIn)p.scaleIn.initialRiskUSD=p.riskUSD;
    p.initialRiskUSD=p.riskUSD;
   }
-  if(Math.abs(p.filled-plan.qty)>Number(c.quantityStep)/2){const s=scalpSplits(p.filled,c.quantityStep,0);if(s)p.parts=s.parts}
+  if(Math.abs(p.filled-plan.qty)>Number(c.quantityStep)/2){
+   if(p.twoPct)p.parts=[p.filled,0,0];
+   else{const s=scalpSplits(p.filled,c.quantityStep,0);if(s)p.parts=s.parts}
+  }
   p.steps.push({kind:'OPEN',at:this.now(),qty:p.filled,avg:p.avg});this.#save();
   if(!await this.#protect(p))return {entered:false,reason:p.closeReason||'NO_STOP'};
   await this.#placeTargets(p);
   trackExcursion(p,p.avg,this.now());
   // BTC 5m / 1h change around the entry: read after the orders are in, never awaited (journal only).
   void withTimeout(this.#btc(),5000).then(b=>{if(b)p.btc=b});
-  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,trigger:p.trigger,executionMode,...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,...(pos(p.hardStopPrice)?{hardStopPrice:p.hardStopPrice}:{}),targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,minScore:p.scalpScore.minScore,...(p.scalpScore.breakdown?{breakdown:{...p.scalpScore.breakdown}}:{}),...(p.scalpScore.oiBonus>0?{oiBonus:p.scalpScore.oiBonus}:{}),...(p.scalpScore.cvdBonus>0?{cvdBonus:p.scalpScore.cvdBonus}:{}),...(p.scalpScore.whaleCvd?{whaleBonus:p.scalpScore.whaleBonus||0,whaleCvd:p.scalpScore.whaleCvd,whaleSummary:p.scalpScore.whaleCvd.rule===WHALE_ZONE_RULE?whaleZoneSummaryKo(p.scalpScore.whaleCvd):whaleCvdSummaryKo(p.scalpScore.whaleCvd)}:{}),sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.scoreTier?.active?{scoreTierMult:p.scalpScore.scoreTier.mult}:{}),...(Number.isFinite(Number(p.scalpScore.effectiveMult))?{effectiveMult:p.scalpScore.effectiveMult}:{}),...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{}),...(isLadder(p)?{management:p.management,ladder:this.#ladderView(p)}:{})});
+  this.#event('OPENED',{symbol:p.symbol,direction:d,id:p.id,kind:p.kind,trigger:p.trigger,executionMode,...(p.twoPct?{twoPct:p.twoPct}:{}),...(p.zone?{zone:{tf:p.zone.tf,low:p.zone.low,high:p.zone.high,distPct:p.zone.distPct}}:{}),entry:p.avg,stop:p.stop,stopLossEnabled:p.stopLossEnabled,...(pos(p.hardStopPrice)?{hardStopPrice:p.hardStopPrice}:{}),targets:p.targets,parts:p.parts,qty:p.filled,leverage:p.leverage,riskUSD:+p.riskUSD.toFixed(2),movePct:det.evidence?.movePct,volumeX:det.evidence?.climaxVolumeRatio,merged:p.merged,...(p.scalpScore?{score:p.scalpScore.score,grade:p.scalpScore.grade,minScore:p.scalpScore.minScore,...(p.scalpScore.breakdown?{breakdown:{...p.scalpScore.breakdown}}:{}),...(p.scalpScore.oiBonus>0?{oiBonus:p.scalpScore.oiBonus}:{}),...(p.scalpScore.cvdBonus>0?{cvdBonus:p.scalpScore.cvdBonus}:{}),...(p.scalpScore.whaleCvd?{whaleBonus:p.scalpScore.whaleBonus||0,whaleCvd:p.scalpScore.whaleCvd,whaleSummary:p.scalpScore.whaleCvd.rule===WHALE_ZONE_RULE?whaleZoneSummaryKo(p.scalpScore.whaleCvd):whaleCvdSummaryKo(p.scalpScore.whaleCvd)}:{}),sizeMult:p.scalpScore.sizeMult,...(p.scalpScore.scoreTier?.active?{scoreTierMult:p.scalpScore.scoreTier.mult}:{}),...(Number.isFinite(Number(p.scalpScore.effectiveMult))?{effectiveMult:p.scalpScore.effectiveMult}:{}),...(p.scalpScore.orderflow?.summaryKo?{orderflowSummary:p.scalpScore.orderflow.summaryKo}:{}),...(p.scalpScore.session?.labelKo?{sessionLabel:p.scalpScore.session.labelKo,sessionMult:p.scalpScore.session.mult}:{})}:{}),...(isLadder(p)?{management:p.management,ladder:this.#ladderView(p)}:{})});
   this.#save();return {entered:true};
  }
  /** BTC change over the last closed 5m candle and the last hour (12 candles), cached per 5m candle. */
@@ -1660,7 +1807,7 @@ export class ScalpExecutor{
  async #openOrders(vs){const o=await this.client.openOrders(vs);return o?.orders??(Array.isArray(o)?o:[])}
  /** The attached stop is confirmed; else a whole-position stop is placed; else the position is closed. */
  async #protect(p){
-  if(this.config.stopLossEnabled===false){
+  if(posNoStop(p,this.config)){
    if(Number(this.config.hardStopRoePct)>0)return this.#ensureHardStop(p,{critical:true});
    return this.#retireStop(p);
   }
@@ -2021,7 +2168,7 @@ export class ScalpExecutor{
   Object.assign(a,{state:nextState,reason:fresh.size>0?(nextState==='SKIPPED'?'POSITION_CHANGED':null):'FLAT_DURING_RESIZE'});
   this.#save();this.#event('SCALE_IN_FILLED',{symbol:p.symbol,direction:p.direction,count:a.count,fillMarginUSD:a.fillMarginUSD,qty:a.fillQty,price:a.fillPrice,prevAvg:a.prevAvg??null,avg:p.avg,avgImprovePct:a.avgImprovePct??null,left:p.size,...(wasDefensive?{defensive:true,defensiveRoePct:defRoe}:{})});
   if(!fresh.size){await this.#finish(p);return}
-  if(this.config.stopLossEnabled===false&&Number(this.config.hardStopRoePct)>0)await this.#ensureHardStop(p,{forceReplace:true});
+  if(posNoStop(p,this.config)&&Number(this.config.hardStopRoePct)>0)await this.#ensureHardStop(p,{forceReplace:true});
   await this.#placeTargets(p);
  }
  #addDecision(p,state,reason=null){
@@ -2054,8 +2201,8 @@ export class ScalpExecutor{
  }
  /** One attempt: closed midpoint retest after entry, then a price in the band in the immediately following candle. */
  async #considerAdd(p,mark){
-  if(isLadder(p))return;
-  if(this.config.stopLossEnabled===false)return this.#considerRepeat(p,mark);
+  if(isLadder(p)||p.twoPct)return;
+  if(posNoStop(p,this.config))return this.#considerRepeat(p,mark);
   const a=p.scaleIn,now=this.now(),bucket=Math.floor(now/I5)*I5,dir=dirOf(p.direction);
   if(!a||a.state!=='WATCH')return;
   if(now>=Math.min(p.deadline,p.openedAt+SCALP_SCALE_IN.windowBars*I5))return this.#addDecision(p,'SKIPPED',a.lastReason||'WINDOW_EXPIRED');
@@ -2134,7 +2281,7 @@ export class ScalpExecutor{
    margin:equity*this.config.maxTotalMarginPct/100-source.usedMargin()};
  }
  async #recoverAdd(p,order=null){
-  if(this.config.stopLossEnabled===false)return this.#recoverRepeat(p,order);
+  if(posNoStop(p,this.config))return this.#recoverRepeat(p,order);
   const a=p.scaleIn,vs=p.venueSymbol;
   if(a.state==='PENDING'){
    let absent=false;
@@ -2220,7 +2367,7 @@ export class ScalpExecutor{
  }
  async #placeTargets(p){
   if(isLadder(p))return; // TRADER_LADDER takes profit on the average itself (#ladderTakeProfit)
-  const profitOnly=this.config.stopLossEnabled===false;
+  const profitOnly=posNoStop(p,this.config);
   if(profitOnly)await this.#retireLegacyProfitTargets(p);
   const dir=dirOf(p.direction);
   let price=profitOnly?profitLimit(p):null;
@@ -2384,8 +2531,8 @@ export class ScalpExecutor{
   this.#save();
  }
  async #tryEarlyTakeProfit(p,mark){
-  if(isLadder(p))return false;
-  const now=this.now(),opened=p.openedAt??p.createdAt,profitOnly=this.config.stopLossEnabled===false;
+  if(isLadder(p)||p.twoPct)return false;
+  const now=this.now(),opened=p.openedAt??p.createdAt,profitOnly=posNoStop(p,this.config);
   const delay=profitOnly?0:EARLY_TAKE_PROFIT_MS,retry=profitOnly?PROFIT_ONLY_RETRY_MS:EARLY_EXIT_RETRY_MS;
   const activeMode=this.config.mode==='LIVE'&&this.config.allowLive===true?'LIVE':this.config.mode==='TESTNET'?'TESTNET':null;
   if(!activeMode||!(opened>0)||now-opened<delay||now-(p.earlyTakeProfitAt??0)<retry||!(mark>0&&p.avg>0&&p.size>0))return false;
@@ -3001,7 +3148,7 @@ export class ScalpExecutor{
       continue;
      }
      if(p.scaleIn?.state==='PENDING'||p.scaleIn?.state==='RESIZE'){
-      if(this.config.stopLossEnabled===false&&!(Number(this.config.hardStopRoePct)>0))await this.#retireStop(p);
+      if(posNoStop(p,this.config)&&!(Number(this.config.hardStopRoePct)>0))await this.#retireStop(p);
       await this.#recoverAdd(p);continue;
      }
      let {size,row,other}=positionOf(list,p.venueSymbol,p.direction,p.hedge===true);let mark=pos(row?.markPrice);
@@ -3014,7 +3161,7 @@ export class ScalpExecutor{
       }
      }
      if(size>0&&p.reconcileRetryAfter&&this.now()<p.reconcileRetryAfter){continue}
-     const noStop=this.config.stopLossEnabled===false;
+     const noStop=posNoStop(p,this.config);
      // Hedge mode: a position on the other side of this coin at any check -> this trade is not settled from the
      // symbol's fund flow (its PnL and funding would be mixed in, review 2026-11-17); the fill estimate stays.
      if(other>0&&!p.otherSideSeen){p.otherSideSeen=true;this.#event('OTHER_SIDE_SEEN',{symbol:p.symbol,direction:p.direction,reason:`${other}`})}
@@ -3065,7 +3212,9 @@ export class ScalpExecutor{
        delete p.unknownOrder;
        p.status='OPEN';p.filled=p.size=size;p.avg=pos(row.avgPrice)??p.entry;p.firstEntryPrice??=pos(row.avgPrice);p.openedAt??=this.now();this.#event('ENTRY_RECOVERED',{symbol:p.symbol,qty:size});
        if(noStop){p.steps.push({kind:'OPEN',at:this.now(),qty:size,avg:p.avg});if(isLadder(p)){this.#ladderOpened(p);p.riskUSD=p.initialRiskUSD=ladderHeldRisk(p)}else this.#enableRepeat(p)}
-       const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts;if(await this.#protect(p))await this.#placeTargets(p);
+       if(p.twoPct)p.parts=[size,0,0];
+       else{const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts}
+       if(await this.#protect(p))await this.#placeTargets(p);
       }
       continue;
      }
@@ -3350,7 +3499,8 @@ export class ScalpExecutor{
     earlyTakeProfitMin:c.stopLossEnabled===false?(c.earlyFallbackMin??PROFIT_ONLY_EARLY_EXIT_MIN):EARLY_TAKE_PROFIT_MS/60000,profitHoldTargetMin:c.stopLossEnabled===false?SCALP_PROFIT_HOLD_TARGET_MIN:null,minProfitRoePct:c.stopLossEnabled===false?(c.minProfitRoePct??SCALP_MIN_PROFIT_ROE_PCT):null,partialTakeFrac:c.partialTakeFrac??SCALP_PARTIAL_TAKE_FRAC,profitOnlyMaxHoldMin:c.profitOnlyMaxHoldMin??240,makerEntry:c.makerEntry!==false,makerExit:c.makerExit!==false,adaptiveLeverage:c.adaptiveLeverage!==false,profitOnlyTargetMarginPct:c.profitOnlyTargetMarginPct??SCALP_PROFIT_ONLY_TARGET_MARGIN_PCT,
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
-    zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,pumpAlerts:c.pumpAlerts!==false&&(c.mode==='TESTNET'||(c.mode==='LIVE'&&c.allowLive===true)),pumpImmediate:c.pumpImmediate!==false&&c.mode==='TESTNET',pumpWatchMin:PUMP_WATCH_MIN,
+    zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,pumpAlerts:c.pumpAlerts!==false&&(c.mode==='TESTNET'||(c.mode==='LIVE'&&c.allowLive===true)),pumpStrategy:this.#pumpStrategy(),pumpImmediate:this.#pumpStrategy()===SCALP_PUMP_STRATEGIES.IMMEDIATE,pumpWatchMin:this.#pumpStrategy()===SCALP_PUMP_STRATEGIES.TWO_PCT?(c.twoPctWatchMin??TWO_PCT_DEFAULTS.watchMin):PUMP_WATCH_MIN,
+    twoPctLeverage:c.twoPctLeverage??TWO_PCT_DEFAULTS.leverage,twoPctMinBodyPct:c.twoPctMinBodyPct??TWO_PCT_DEFAULTS.minBodyPct,twoPctMinNetRR:c.twoPctMinNetRR??TWO_PCT_DEFAULTS.minNetRR,twoPctMinStopPct:c.twoPctMinStopPct??TWO_PCT_DEFAULTS.minStopPct,twoPctMaxStopPct:c.twoPctMaxStopPct??TWO_PCT_DEFAULTS.maxStopPct,twoPctMaxStopRoePct:c.twoPctMaxStopRoePct??TWO_PCT_DEFAULTS.maxStopRoePct,twoPctWatchMin:c.twoPctWatchMin??TWO_PCT_DEFAULTS.watchMin,
     minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreTierSizing:c.scoreTierSizing!==false,scoreTiers:{...(c.scoreTiers??SCALP_SCORE_TIERS)},scoreTierMults:{...SCALP_SCORE_TIER_MULTS},scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
     emergencyStopRoePct:c.emergencyStopRoePct??75,hardStopRoePct:c.hardStopRoePct??0,minFreeAccountMarginPct:c.minFreeAccountMarginPct??0,maxSpreadPct:c.maxSpreadPct??0,preFundingWindowMin:c.preFundingWindowMin??0,preFundingExtremePct:c.preFundingExtremePct??0,scaleInRetrySlippagePct:c.scaleInRetrySlippagePct??SCALP_REPEAT_SCALE_IN.retrySlippagePct,scaleInMarketFallback:c.scaleInMarketFallback!==false,
     defensiveAddRoePct:c.defensiveAddRoePct??40,defensiveBouncePct:c.defensiveBouncePct??0.4,defensiveForceRoePct:c.defensiveForceRoePct??55,scaleInMinStepPct:c.scaleInMinStepPct??SCALP_REPEAT_SCALE_IN.minStepPct,scaleInMaxStepPct:c.scaleInMaxStepPct??SCALP_REPEAT_SCALE_IN.maxStepPct,scaleInSteps:SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),scaleInMults:SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),
