@@ -755,6 +755,97 @@ export function firechartLegendHTML(data, { cvdMode = 'normalized', hiddenClasse
     </div>`;
 }
 
+const CVD_SR_TFS = Object.freeze([
+  ['LIVE', '실시간'],
+  ['1D', '1D'],
+  ['1W', '1W'],
+  ['1M', '1M'],
+  ['6M', '6M'],
+  ['1Y', '1Y'],
+]);
+
+/**
+ * All-symbol multi-timeframe CVD Support / Resistance summary table (no clicking one-by-one).
+ */
+export function orderflowCvdSrMatrixHTML(cvdSr, { activeSymbol = '', loading = false, filter = 'all' } = {}) {
+  const allRows = Array.isArray(cvdSr?.rows) ? cvdSr.rows : [];
+  const activeFilter = ['all', 'held', 'strong'].includes(filter) ? filter : 'all';
+  const rows = allRows.filter(r => {
+    if (activeFilter === 'held') return r.held === true;
+    if (activeFilter === 'strong') return (Number(r.strongCount) || 0) > 0;
+    return true;
+  });
+  const heldCount = allRows.filter(r => r.held).length;
+  const recent = Array.isArray(cvdSr?.recentEvents) ? cvdSr.recentEvents.slice(0, 3) : [];
+  const monBadge = cvdSr?.monitoring ? '<span class="of-sr-mon">🔔 보유 종목 생성·소멸 텔레그램 감시 ON</span>' : '';
+
+  const zonePill = (z, sym, tfLabel) => {
+    if (!z) return '<span class="of-sr-none">—</span>';
+    const isStrong = z.grade === 'STRONG';
+    if (activeFilter === 'strong' && !isStrong) return '<span class="of-sr-none">—</span>';
+    const isSup = z.kind === 'SUPPORT';
+    const cls = `${isSup ? 'of-sr-sup' : 'of-sr-res'}${isStrong ? ' is-strong' : ' is-mid'}`;
+    const tag = isSup ? '지' : '저';
+    const dist = fin(z.distPct) ? `${Number(z.distPct) >= 0 ? '+' : '−'}${Math.abs(Number(z.distPct)).toFixed(1)}%` : '';
+    const side = isSup ? 'LONG' : 'SHORT';
+    const wallLabel = `CVD ${tfLabel} ${isStrong ? '강력 ' : ''}${isSup ? '지지대' : '저항대'}`;
+    return `<button type="button" class="of-sr-pill ${cls}" data-of-send-real-order data-symbol="${esc(sym)}" data-price="${esc(z.centerPrice)}" data-side="${side}" data-wall-label="${esc(wallLabel)}" title="${esc(wallLabel)} · 강도 ${esc(z.strength)} · CVD ${esc(fmtUsdCompact(z.netDeltaUsd, true))} (클릭 시 실계좌 지정가 입력)">
+      <i>${tag}</i><b>$${esc(fmtPx(z.centerPrice))}</b><small>${esc(dist)}</small>${isStrong ? '<em>강</em>' : ''}
+    </button>`;
+  };
+
+  const body = rows.length ? `<div class="of-sr-scroll"><table class="of-sr-table">
+    <thead><tr><th>종목</th><th>현재가</th>${CVD_SR_TFS.map(([, lbl]) => `<th>${lbl}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r => {
+      const sym = String(r.symbol || '');
+      const short = String(r.displaySymbol || sym).replace(/USDT$/, '');
+      const isAct = sym === activeSymbol;
+      const dirs = Array.isArray(r.directions) && r.directions.length
+        ? r.directions.map(d => `<span class="of-sr-dir ${d === 'SHORT' ? 'neg' : 'pos'}">${d === 'SHORT' ? '숏' : '롱'}</span>`).join('')
+        : '';
+      const cells = CVD_SR_TFS.map(([k, lbl]) => {
+        const tf = r.timeframes?.[k];
+        return `<td class="of-sr-cell">${zonePill(tf?.bestResistance, sym, lbl)}${zonePill(tf?.bestSupport, sym, lbl)}</td>`;
+      }).join('');
+      return `<tr class="${r.held ? 'is-held' : ''}${isAct ? ' is-active' : ''}">
+        <td class="of-sr-sym"><button type="button" class="of-sr-sym-btn" data-of-symbol="${esc(sym)}" title="${esc(sym)} 상세 차트 보기">${r.held ? '<i class="of-held-dot"></i>' : ''}<b>${esc(short)}</b>${dirs}</button></td>
+        <td class="of-sr-px">$${esc(fmtPx(r.markPrice))}</td>
+        ${cells}
+      </tr>`;
+    }).join('')}</tbody>
+  </table></div>`
+    : `<div class="empty-small" style="padding:10px 0">${loading ? '전 종목의 실시간·1D·1W·1M·6M·1Y CVD 지지/저항대를 스캔하고 있습니다…' : activeFilter === 'held' ? '현재 실계좌 보유 중인 종목이 없습니다.' : '표시할 CVD 지지/저항대 데이터가 없습니다.'}</div>`;
+
+  const recentStrip = recent.length ? `<div class="of-sr-recent">${recent.map(ev => {
+    const short = String(ev.displaySymbol || ev.symbol || '').replace(/USDT$/, '');
+    const kindKo = ev.kind === 'SUPPORT' ? '지지' : '저항';
+    const isRem = ev.event === 'REMOVED';
+    return `<span class="of-sr-ev ${isRem ? 'rem' : 'add'}">${isRem ? '⚠️ 소멸' : ev.kind === 'SUPPORT' ? '🟢 신규' : '🔴 신규'} <b>${esc(short)}</b> ${esc(ev.tf)} ${kindKo} $${esc(fmtPx(ev.price))}</span>`;
+  }).join('')}</div>` : '';
+
+  const fBtn = (k, lbl) => `<button type="button" class="of-fc-tab${activeFilter === k ? ' active' : ''}" data-of-sr-filter="${k}" aria-pressed="${activeFilter === k}">${lbl}</button>`;
+
+  return `<section class="of-sr-box" aria-label="전 종목 CVD 멀티 타임프레임 지지·저항대">
+    <div class="of-sr-head">
+      <div>
+        <b>🧱 전 종목 CVD 지지·저항대</b>
+        <small>실시간 · 1D · 1W · 1M · 6M · 1Y 한눈에 보기 (가격 클릭 → 지정가 입력)</small>
+        ${monBadge}
+      </div>
+      <div class="of-sr-actions">
+        <div class="of-fc-span-toggle" role="group" aria-label="CVD 지지/저항 필터">
+          ${fBtn('all', `전체 (${allRows.length})`)}
+          ${fBtn('held', `보유 (${heldCount})`)}
+          ${fBtn('strong', '강력만')}
+        </div>
+        <button type="button" class="outline-btn small" data-of-sr-refresh>${loading ? '스캔 중…' : '↻ 스캔'}</button>
+      </div>
+    </div>
+    ${recentStrip}
+    ${body}
+  </section>`;
+}
+
 /**
  * Full "호가·CVD·청산맵" screen HTML renderer (pure, unit-testable).
  */
@@ -770,6 +861,9 @@ export function orderflowHTML(data, {
   error = '',
   radar = null,
   radarLoading = false,
+  cvdSr = null,
+  cvdSrLoading = false,
+  cvdSrFilter = 'all',
   fcWidth = 920,
   hiddenClasses = [],
   whaleZones = [],
@@ -834,13 +928,14 @@ export function orderflowHTML(data, {
   ${realPosStrip}
   <div class="of-chips" aria-label="빠른 종목 선택">${chips}</div>`;
 
+  const cvdSrBox = orderflowCvdSrMatrixHTML(cvdSr, { activeSymbol: activeSym, loading: cvdSrLoading, filter: cvdSrFilter });
   const radarBox = orderflowRadarHTML(radar, activeSym, radarLoading);
 
   if (error && !data) {
-    return `${controls}${radarBox}<div class="venues-status warn" style="margin:14px 18px">수급 데이터 조회 실패: ${esc(error)}</div>`;
+    return `${controls}${cvdSrBox}${radarBox}<div class="venues-status warn" style="margin:14px 18px">수급 데이터 조회 실패: ${esc(error)}</div>`;
   }
   if (!data) {
-    return `${controls}${radarBox}<div class="empty-small" style="padding:36px">호가·CVD·청산맵 데이터를 불러오는 중입니다…</div>`;
+    return `${controls}${cvdSrBox}${radarBox}<div class="empty-small" style="padding:36px">호가·CVD·청산맵 데이터를 불러오는 중입니다…</div>`;
   }
 
   const px = data.price || {}, cvd = data.cvd || {}, oi = data.oi || {}, ratios = data.ratios || {}, fund = data.funding || {}, liq = data.liquidations || {}, sig = data.scalpSignal || {};
@@ -933,7 +1028,7 @@ export function orderflowHTML(data, {
     </div>
   </div>`;
 
-  return `${controls}${error ? `<div class="venues-status warn" style="margin:8px 18px">${esc(error)}</div>` : ''}${firechartCard}${verdictBanner}${kpis}${mainGrid}${radarBox}`;
+  return `${controls}${error ? `<div class="venues-status warn" style="margin:8px 18px">${esc(error)}</div>` : ''}${cvdSrBox}${firechartCard}${verdictBanner}${kpis}${mainGrid}${radarBox}`;
 }
 
 // Browser controller (lazy-loaded when #orderflow tab is shown; auto-refreshes every 30s while open)
@@ -955,6 +1050,9 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       error: '',
       radar: null,
       radarLoading: false,
+      cvdSr: null,
+      cvdSrLoading: false,
+      cvdSrFilter: readLS('sl_of_sr_filter', 'all'),
       fcWidth: 920,
       hiddenClasses: (() => { try { return JSON.parse(readLS('sl_of_cvd_hidden', '[]')).filter(k => CVD_KEYS.includes(k)); } catch { return []; } })(),
       whaleZones: [],
@@ -1089,6 +1187,21 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
       }
     }
 
+    async function loadCvdSr({ force = false } = {}) {
+      if (state.cvdSrLoading) return;
+      state.cvdSrLoading = true;
+      render();
+      try {
+        const res = await fetch(`/api/orderflow/cvd-sr${force ? '?force=1' : ''}`, { cache: 'no-store' });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok && body.ok) state.cvdSr = body;
+      } catch {}
+      finally {
+        state.cvdSrLoading = false;
+        render();
+      }
+    }
+
     host.addEventListener('click', e => {
       const sendBtn = e.target.closest('[data-of-send-real-order]');
       if (sendBtn) {
@@ -1115,6 +1228,17 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
         state.inspected = null;
         state.inspectLocked = false;
         rerenderFirechartOnly();
+        return;
+      }
+      const srFilter = e.target.closest('[data-of-sr-filter]');
+      if (srFilter) {
+        state.cvdSrFilter = srFilter.dataset.ofSrFilter || 'all';
+        try { localStorage.setItem('sl_of_sr_filter', state.cvdSrFilter); } catch {}
+        render();
+        return;
+      }
+      if (e.target.closest('[data-of-sr-refresh]')) {
+        void loadCvdSr({ force: true });
         return;
       }
       const spanBtn = e.target.closest('[data-of-price-span]');
@@ -1239,6 +1363,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     const maybeLoadOnRoute = () => {
       if (!isVisible()) return;
       if (!state.data || Date.now() - (state.data.at || 0) > 25_000) void load();
+      if (!state.cvdSr || Date.now() - (state.cvdSr.at || 0) > 85_000) void loadCvdSr();
       if (!state.radar || Date.now() - (state.radar.at || 0) > 55_000) void loadRadar();
     };
     document.addEventListener('click', e => {
@@ -1266,6 +1391,7 @@ if (typeof document !== 'undefined' && typeof window !== 'undefined') {
     setInterval(() => {
       if (!isVisible()) return;
       void load();
+      if (!state.cvdSr || Date.now() - (state.cvdSr.at || 0) > 85_000) void loadCvdSr();
       if (!state.radar || Date.now() - (state.radar.at || 0) > 55_000) void loadRadar();
     }, 30_000);
     render();
