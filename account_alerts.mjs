@@ -69,15 +69,25 @@ export function formatPositionPnlLine(p){
  return `${r.dot} <b>${escHtml(r.sym)}</b>${sidePart}   ${r.pnl}${roe}`;
 }
 
-export function formatPositionCell(p){
+const FIG_SPACE='\u2007';
+const padFig=(s,len)=>FIG_SPACE.repeat(Math.max(0,len-String(s??'').length))+String(s??'');
+const tabMinus=s=>String(s??'').replace(/^-/,'−');
+
+export function formatPositionCell(p,{pnlWidth=0,roeWidth=0}={}){
  const r=positionRowParts(p);
- const head=`${r.dot} <b>${escHtml(r.sym||'—')}</b>${r.side?`  │  ${r.side}`:''}`;
- const metrics=`손익 <b>${escHtml(r.pnl)}</b>${r.roe?`  │  수익률 <b>${escHtml(r.roe)}</b>`:''}`;
+ const pnl=padFig(tabMinus(r.pnl),pnlWidth);
+ const roe=r.roe?padFig(tabMinus(r.roe),roeWidth):null;
+ const head=`${r.dot} <b>${escHtml(r.sym||'—')}</b>${r.side?` · ${r.side}`:''}`;
+ const metrics=`손익 <b>${escHtml(pnl)}</b>${roe?`  │  수익률 <b>${escHtml(roe)}</b>`:''}`;
  return `<blockquote>${head}\n${metrics}</blockquote>`;
 }
 
 export function formatPositionsTable(positions=[]){
- return positions.map(formatPositionCell).join('\n');
+ const list=Array.isArray(positions)?positions:[];
+ const parts=list.map(positionRowParts);
+ const pnlWidth=parts.reduce((m,r)=>Math.max(m,tabMinus(r.pnl).length),0);
+ const roeWidth=parts.reduce((m,r)=>Math.max(m,r.roe?tabMinus(r.roe).length:0),0);
+ return list.map(p=>formatPositionCell(p,{pnlWidth,roeWidth})).join('\n');
 }
 
 export function formatPositionsSummary(positions=[]){
@@ -86,7 +96,7 @@ export function formatPositionsSummary(positions=[]){
  const sorted=[...list].sort((a,b)=>(Number(b?.unrealized)||0)-(Number(a?.unrealized)||0));
  const hasTotal=sorted.some(p=>p?.unrealized!=null&&Number.isFinite(Number(p.unrealized)));
  const totalVal=hasTotal?sorted.reduce((s,p)=>s+(Number(p?.unrealized)||0),0):null;
- const totalText=hasTotal?` · 합계 <b>${totalVal>=0?'+':'-'}$${Math.abs(totalVal).toFixed(2)}</b>`:'';
+ const totalText=hasTotal?` · 합계 <b>${totalVal>=0?'+':'−'}$${Math.abs(totalVal).toFixed(2)}</b>`:'';
  return [
   `📊 <b>진행 중 포지션 (${sorted.length}개)</b>${totalText}`,
   formatPositionsTable(sorted),
@@ -111,12 +121,17 @@ export function formatDailyReport({day,copyClosed=[],manualClosed=[],dailyByDay=
  const cp=summarize(onDay(copyClosed)),man=summarize(onDay(manualClosed));
  const ledgerTotal=cp.net+man.net;
  const exchangeDay=dailyByDay&&Number.isFinite(Number(dailyByDay[day]))?Number(dailyByDay[day]):null;
- const rowCell=(label,s)=>`<blockquote><b>${label}</b>  │  ${s.n}건  │  승률 ${s.n?`${s.wr}%`:'—'}  │  <b>${escHtml(s.n?money(s.net):'—')}</b></blockquote>`;
+ const items=[{label:'카피',s:cp},{label:'수동',s:man}].map(({label,s})=>({
+  label,cnt:`${s.n}건`,wr:s.n?`${s.wr}%`:'—',net:s.n?money(s.net):'—',
+ }));
+ const cntW=Math.max(...items.map(x=>x.cnt.length));
+ const wrW=Math.max(...items.map(x=>x.wr.length));
+ const netW=Math.max(...items.map(x=>x.net.length));
+ const rowCells=items.map(x=>`<blockquote><b>${x.label}</b>  │  ${padFig(x.cnt,cntW)}  │  승률 ${padFig(x.wr,wrW)}  │  <b>${escHtml(padFig(x.net,netW))}</b></blockquote>`);
  const lines=[
   `📊 <b>${liveToday?'오늘 중간 리포트':'일일 마감 리포트'} · ${escHtml(day)} KST</b>`,
   exchangeDay!=null?`거래소 실현 합계: <b>${escHtml(money(exchangeDay))}</b> (수수료·펀딩 포함)`:`원장 정산 합계: <b>${escHtml(money(cp.n+man.n?ledgerTotal:0))}</b>`,
-  rowCell('카피',cp),
-  rowCell('수동',man),
+  ...rowCells,
   `현재 순자산: ${escHtml(usd(equityUSD))} · 보유 포지션 ${openCount}개`,
  ];
  return lines.join('\n');
@@ -569,10 +584,13 @@ export class AccountAlerts{
     const snap=await this.getSnapshot();
     const matched=(snap?.positions||[]).filter(p=>p&&(target==='ALL'||displaySymbol(p.symbol)===target)&&(!direction||p.direction===direction));
     if(matched.length){
-     const cells=matched.slice(0,5).map(p=>{
+     const items=matched.slice(0,5).map(p=>{
       const r=positionRowParts(p);
-      return `<blockquote>${r.dot} <b>${escHtml(r.sym||'—')}</b>${r.side?`  │  ${r.side}`:''}\n수량 <b>${escHtml(p.size!=null?String(p.size):'—')}</b>  │  손익 <b>${escHtml(r.pnl)}</b></blockquote>`;
+      return {r,size:p.size!=null?String(p.size):'—',pnl:tabMinus(r.pnl)};
      });
+     const sizeW=Math.max(...items.map(x=>x.size.length));
+     const pnlW=Math.max(...items.map(x=>x.pnl.length));
+     const cells=items.map(({r,size,pnl})=>`<blockquote>${r.dot} <b>${escHtml(r.sym||'—')}</b>${r.side?` · ${r.side}`:''}\n수량 <b>${escHtml(padFig(size,sizeW))}</b>  │  손익 <b>${escHtml(padFig(pnl,pnlW))}</b></blockquote>`);
      const more=matched.length>5?`\n…외 ${matched.length-5}건`:'';
      preview=`\n현재 포지션:\n${cells.join('\n')}${more}`;
     }
