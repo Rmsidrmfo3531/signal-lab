@@ -970,8 +970,8 @@ export class ScalpExecutor{
   return valid;
  }
  /** 급변 알림 (crimepump 공습경보, user 2026-11-24 / 2026-11-26):
-  *  - TWO_PCT (default on TESTNET): @ggangalt2_bot selects rising coins (UP); watch 15m candles for >=2% strong bullish
-  *    candle -> subsequent 15m lower-wick green flip -> LONG entry with lower-wick SL, 1D resistance TP (>=1:2 RR), 20x.
+  *  - TWO_PCT (default on TESTNET): @ggangalt2_bot selects coins & direction (UP -> LONG, DOWN -> SHORT);
+  *    watch 15m candles for >=2% strong trend candle -> pullback wick flip -> wick SL, 1D resistance/support TP (>=1:2 RR), 20x.
   *  - IMMEDIATE / REVERSAL: legacy reverse-entry modes on DOWN->LONG / UP->SHORT.
   * TESTNET only: refused in any other mode or with any other client. */
  async pumpAlert(alert){
@@ -990,16 +990,7 @@ export class ScalpExecutor{
   const at=Number(alert.at),until=(Number.isFinite(at)&&at>0?Math.min(at,now):now)+watchMin*60000;
   if(now>=until)return {entered:false,reason:'PUMP_ALERT_STALE'};
   const normAlert={key:typeof alert.key==='string'?alert.key.slice(0,100):null,at:Number(alert.at)||now,dir:dirRaw,pct:Number(alert.pct)||null,low:Number(alert.low)||null,high:Number(alert.high)||null,price:Number(alert.price)||null,ticks:Number.isFinite(Number(alert.ticks))?Number(alert.ticks):null};
-  if(strat===SCALP_PUMP_STRATEGIES.TWO_PCT&&dirRaw!=='UP'){
-   const prev=this.cur;
-   this.cur={symbol,direction:'LONG',trigger:SCALP_TRIGGERS.PUMP,kind:SCALP_KINDS.MOVE,evidence:{movePct:normAlert.pct}};
-   this.#skip(symbol,'TWO_PCT_UP_ONLY','하락 알림 · 상승 종목 전용');
-   this.cur=prev;
-   try{this.onPumpResult?.(normAlert.key,{entered:false,reason:'TWO_PCT_UP_ONLY',tries:1})}catch{}
-   this.#save();
-   return {entered:false,reason:'TWO_PCT_UP_ONLY'};
-  }
-  const direction=strat===SCALP_PUMP_STRATEGIES.TWO_PCT?'LONG':(dirRaw==='DOWN'?'LONG':'SHORT');
+  const direction=strat===SCALP_PUMP_STRATEGIES.TWO_PCT?(dirRaw==='UP'?'LONG':'SHORT'):(dirRaw==='DOWN'?'LONG':'SHORT');
   this.pumpWatch.set(symbol,{symbol,direction,mode:strat,since:now,until,lastBucket:null,lastCheckAt:0,lastSkipKey:null,tries:0,lastReason:null,alert:normAlert});
   if(this.scanning)return {entered:false,queued:true,reason:'QUEUED_AFTER_SCAN'};
   return await this.#pumpEvaluate(symbol)??{entered:false,queued:true,reason:'QUEUED_AFTER_SCAN'};
@@ -1066,13 +1057,14 @@ export class ScalpExecutor{
      typeof this.client?.leverage==='function'?Promise.resolve().then(()=>this.client.leverage(vs)).catch(()=>null):null,
     ]);
     if(st.error==='HTTP_429')return r=skip('HTTP_429');
-    const maxVenue=Number(levInfo?.maxLongLeverage??levInfo?.maxLeverage);
+    const maxVenue=Number((w.direction==='SHORT'?levInfo?.maxShortLeverage:levInfo?.maxLongLeverage)??levInfo?.maxLeverage);
     const cfgLev=Number(this.config.twoPctLeverage??TWO_PCT_DEFAULTS.leverage);
     const targetLev=Math.max(1,Math.floor(maxVenue>0?Math.min(cfgLev,maxVenue):cfgLev));
     const t=this.now();
     const setup=detectTwoPctSetup({
      rows15m,
      rows1d,
+     direction:w.direction,
      livePrice:pos(livePx),
      now:t,
      leverage:targetLev,
@@ -1089,11 +1081,11 @@ export class ScalpExecutor{
     ctx.at=t;
     if(!setup.ok)return r=skip(setup.reason,setup.detail,{dedup:true,stop:setup.reason==='SCALP_INTERVAL_UNSUPPORTED'});
     const det={
-     ok:true,twoPct:true,singleTarget:true,symbol,direction:'LONG',kind:SCALP_KINDS.MOVE,interval:TWO_PCT_INTERVAL,
+     ok:true,twoPct:true,singleTarget:true,symbol,direction:w.direction,kind:SCALP_KINDS.MOVE,interval:TWO_PCT_INTERVAL,
      barAt:setup.entryCandle.openTime,entry:setup.entry,stop:setup.stop,targets:[setup.tp],leverage:targetLev,atr:setup.atr,
      twoPctMeta:{
-      baseCandle:setup.baseCandle,entryCandle:setup.entryCandle,resistance:setup.resistance,tpSource:setup.tpSource,
-      allTimeHigh:setup.allTimeHigh,netRR:setup.netRR,stopDistPct:setup.stopDistPct,lowerWickPct:setup.lowerWickPct,leverage:targetLev,
+      direction:w.direction,baseCandle:setup.baseCandle,entryCandle:setup.entryCandle,resistance:setup.resistance,targetLevel:setup.targetLevel,tpSource:setup.tpSource,
+      allTimeHigh:setup.allTimeHigh,allTimeLow:setup.allTimeLow,netRR:setup.netRR,stopDistPct:setup.stopDistPct,lowerWickPct:setup.lowerWickPct,wickPct:setup.wickPct,leverage:targetLev,
      },
      evidence:{
       symbol,origin:setup.baseCandle.open,extreme:setup.stop,movePct:setup.baseCandle.bodyPct,

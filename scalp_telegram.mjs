@@ -37,12 +37,14 @@ export function scalpEventText(e){
    return `🟢 ${head} ${side(e)} ${e.leverage}배 진입 · 카피식 추매${e.trigger==='PUMP_ALERT'?' · 공습·2% (급변 알림)':''}${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n${ladderStepText(L,{fmt})}\n사다리 ${(L.units||[]).join('·')}단위 · 1단위 $${Number(L.unitMarginUSD||0).toFixed(2)} · 간격 ${L.spacingPct}% · 예약 증거금 $${Number(L.reserveMarginUSD||0).toFixed(2)}\n익절 ${fmt(L.tpPrice)} (평단 +${L.tpNetPct}% 수수료 뺀) · 마지막 선 −${L.finalLineRoePct}% ROE · 최대 ${Math.round((Number(L.maxHoldMin)||0)/60)}시간\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${sessPart}${ofPart}${execPart}`;
   }
   if(e.twoPct){
-   const tp=e.twoPct,rrTxt=Number.isFinite(Number(tp.netRR))?`1:${Number(tp.netRR).toFixed(2)}`:'—';
-   const tpLbl=tp.tpSource==='ATH_BREAKOUT_RR'?'신고점 돌파 목표':'일봉 저항';
-   const slPct=Number.isFinite(Number(tp.stopDistPct))?` (−${Number(tp.stopDistPct).toFixed(2)}%)`:'';
-   const basePct=Number.isFinite(Number(tp.baseCandle?.bodyPct))?`+${Number(tp.baseCandle.bodyPct).toFixed(1)}%`:`${e.movePct??'—'}%`;
-   const wickPct=Number.isFinite(Number(tp.lowerWickPct))?` · 아래꼬리 −${Number(tp.lowerWickPct).toFixed(2)}%`:'';
-   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입 · 공습·2% (15m 2% 매매법)\n진입 ${fmt(e.entry)} · 아래꼬리 손절 ${fmt(e.stop)}${slPct} · 위험 $${e.riskUSD}\n목표 ${fmt(e.targets?.[0])} (${tpLbl} · 손익비 ${rrTxt})\n15m 기준 양봉 ${basePct}${wickPct}${execPart}`;
+   const isShort=e.direction==='SHORT',tp=e.twoPct,rrTxt=Number.isFinite(Number(tp.netRR))?`1:${Number(tp.netRR).toFixed(2)}`:'—';
+   const tpLbl=tp.tpSource==='ATH_BREAKOUT_RR'?'신고점 돌파 목표':tp.tpSource==='ATL_BREAKDOWN_RR'?'신저점 이탈 목표':isShort?'일봉 지지':'일봉 저항';
+   const slLbl=isShort?'윗꼬리 손절':'아래꼬리 손절';
+   const slPct=Number.isFinite(Number(tp.stopDistPct))?` (${isShort?'+':'−'}${Number(tp.stopDistPct).toFixed(2)}%)`:'';
+   const basePct=Number.isFinite(Number(tp.baseCandle?.bodyPct))?`${isShort?'−':'+'}${Number(tp.baseCandle.bodyPct).toFixed(1)}%`:`${e.movePct??'—'}%`;
+   const wv=tp.wickPct??tp.lowerWickPct;
+   const wickPct=Number.isFinite(Number(wv))?` · ${isShort?'윗꼬리 +':'아래꼬리 −'}${Number(wv).toFixed(2)}%`:'';
+   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입 · 공습·2% (15m 2% 매매법)\n진입 ${fmt(e.entry)} · ${slLbl} ${fmt(e.stop)}${slPct} · 위험 $${e.riskUSD}\n목표 ${fmt(e.targets?.[0])} (${tpLbl} · 손익비 ${rrTxt})\n15m 기준 ${isShort?'음봉':'양봉'} ${basePct}${wickPct}${execPart}`;
   }
   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.trigger==='PUMP_ALERT'?' · 공습·2% (급변 알림)':''}${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${stopText} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${sessPart}${ofPart}${execPart}`;
  }
