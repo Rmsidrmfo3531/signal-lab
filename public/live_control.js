@@ -723,8 +723,8 @@ const tnWhen=t=>t?new Date(t).toLocaleString('ko-KR',{timeZone:'Asia/Seoul',mont
 const tnHeld=(a,b)=>{const m=(b-a)/60000;return !(m>=0)?'':m<90?Math.max(1,Math.round(m))+'분':m<48*60?(+(m/60).toFixed(1))+'시간':(+(m/1440).toFixed(1))+'일'};
 export const TN_BADGE={signal:'<span class="vp-badge tn-signal">신호</span>',scalp:'<span class="vp-badge tn-scalp">단타·급변</span>',
  scalpZone:'<span class="vp-badge tn-scalp tn-scalp-zone">단타·매물대</span>',
- scalpPump:'<span class="vp-badge tn-scalp tn-scalp-pump" title="깡이알트시즌2 공습경보 즉시 역추세 · 익절 2%">공습·2%</span>'};
-// Scalp badge by kind/trigger: 공습·2% = @ggangalt2_bot PUMP_ALERT (2% TP), 단타·매물대 = ZONE_REVERSAL, 단타·급변 = MOVE_REVERSAL.
+ scalpPump:'<span class="vp-badge tn-scalp tn-scalp-pump" title="깡이알트시즌2 선별 · 15분봉 2% 매매법 (아래꼬리 손절 · 일봉 저항 1:2+ 익절)">공습·2%</span>'};
+// Scalp badge by kind/trigger: 공습·2% = @ggangalt2_bot PUMP_ALERT (15m 2% 매매법), 단타·매물대 = ZONE_REVERSAL, 단타·급변 = MOVE_REVERSAL.
 export function scalpBadge(kind,trigger=null){if(trigger==='PUMP_ALERT')return TN_BADGE.scalpPump;return kind==='ZONE_REVERSAL'?TN_BADGE.scalpZone:TN_BADGE.scalp}
 
 /** Proportional display scale for legacy uncapped VST items when a testnet capital cap (default $3,000) is active. */
@@ -832,7 +832,7 @@ export function scalpPositionCardHTML(p,{allowClose=false,budget=null}={}){
   ${fin(nextAdd)&&Number(nextAdd)>0?`<span>다음 추매<b>${px(nextAdd)}</b></span>`:''}`:`${p.stopLossEnabled===false?'<span>자동 손절<b>없음</b></span>':`<span>손절가<b>${px(p.stop)}</b>${p.breakevenMoved?'<small>1차 목표 뒤 본전</small>':''}</span>`}
   <span class="tp-cell">목표<b>${tgt}</b></span>
   <span>${p.stopLossEnabled===false?'한도 계산 위험':'위험'}<b>${tnUsd(riskVal)}</b></span>`}
- </div>${p.kind==='ZONE_REVERSAL'&&p.zone?.tf?`<p class="copy-rules tn-zone">매물대 반전 · ${esc(String(p.zone.tf).toUpperCase())} 매물대 ${px(p.zone.low)}~${px(p.zone.high)}${fin(p.zone.sharePct)?` · 거래량 ${esc(Number(p.zone.sharePct).toFixed(1))}% · ${esc(p.zone.rank)}위`:''}${fin(p.zone.distPct)&&p.zone.distPct>0?` · ${esc(Number(p.zone.distPct).toFixed(2))}% 거리`:''}</p>`:''}
+ </div>${p.twoPct?`<p class="copy-rules tn-zone">15m 2% 매매법 · 기준 양봉 ${fin(p.twoPct.baseCandle?.bodyPct)?`+${esc(Number(p.twoPct.baseCandle.bodyPct).toFixed(1))}%`:'—'}${fin(p.twoPct.stopDistPct)?` · 아래꼬리 손절 −${esc(Number(p.twoPct.stopDistPct).toFixed(2))}%`:''} · ${p.twoPct.tpSource==='ATH_BREAKOUT_RR'?'신고점 돌파 목표':'일봉(1D) 저항'}${fin(p.twoPct.netRR)?` · 손익비 1:${esc(Number(p.twoPct.netRR).toFixed(2))}`:''}</p>`:''}${p.kind==='ZONE_REVERSAL'&&p.zone?.tf?`<p class="copy-rules tn-zone">매물대 반전 · ${esc(String(p.zone.tf).toUpperCase())} 매물대 ${px(p.zone.low)}~${px(p.zone.high)}${fin(p.zone.sharePct)?` · 거래량 ${esc(Number(p.zone.sharePct).toFixed(1))}% · ${esc(p.zone.rank)}위`:''}${fin(p.zone.distPct)&&p.zone.distPct>0?` · ${esc(Number(p.zone.distPct).toFixed(2))}% 거리`:''}</p>`:''}
  ${allowClose&&p.status==='OPEN'&&p.size>0&&p.id?testnetCloseButton('scalp',p.id,p):''}
  </article>`;
 }

@@ -1674,7 +1674,8 @@ const SMALL_PX=+(Number(smallCrash().at(-1)[4])+.01).toFixed(2),SMALL_PX_S=+(Num
 function pumpMake({direction='LONG',config={},btc=null,contracts=null,clock={t:T0},rows=null,price=null}={}){
  const isShort=direction==='SHORT',px=price??(isShort?SMALL_PX_S:SMALL_PX);
  const v=venue({fillAt:px});
- const ex=make(v,{clock,price:px,trend:isShort?down4h:up4h,rows:rows??(isShort?smallRise:smallCrash),config:{zoneSignals:false,stopLossEnabled:false,...config}});
+ const pumpStrategy=config.pumpStrategy??(config.pumpImmediate===false?'REVERSAL':'IMMEDIATE');
+ const ex=make(v,{clock,price:px,trend:isShort?down4h:up4h,rows:rows??(isShort?smallRise:smallCrash),config:{zoneSignals:false,stopLossEnabled:false,pumpStrategy,...config}});
  ex.contracts=async()=>contracts??new Map([['SOLUSDT',SOL],['BTCUSDT',BTC_C]]);
  ex.tickers=async()=>[{symbol:'BTC-USDT',quoteVolume:'900000000',lastPrice:'60000'},{symbol:'SOL-USDT',quoteVolume:'90000000',lastPrice:String(px)}];
  const base=ex.candles;
@@ -1736,14 +1737,15 @@ test('pump alert (SCALP_PUMP_IMMEDIATE=off): only the move size is waived — th
   const r=await ex.pumpAlert(ALERT_DOWN);assert.equal(r.reason,'NO_BALANCE');assert.equal(placed(v,'MARKET').length,0)}
 });
 
-test('pump alert (default SCALP_PUMP_IMMEDIATE=on, TESTNET): enters reverse immediately without waiting for 5m reversal candle or minScore, managed by TRADER_LADDER',async()=>{
+test('pump alert (legacy SCALP_PUMP_STRATEGY=IMMEDIATE, TESTNET): enters reverse immediately without waiting for 5m reversal candle or minScore, managed by TRADER_LADDER',async()=>{
  // Even with zero reversal candle (rising candles on DOWN alert), before the 5m scan bucket, and with minScore=100 -> enters LONG immediately!
  const clock={t:BUCKET*I+1000};
- const {v,ex}=pumpMake({clock,direction:'SHORT',config:{minScore:100,stopLossEnabled:false,management:'TRADER_LADDER',dailyLossPct:20}});
+ const {v,ex}=pumpMake({clock,direction:'SHORT',config:{minScore:100,stopLossEnabled:false,management:'TRADER_LADDER',dailyLossPct:20,pumpStrategy:'IMMEDIATE'}});
  ex.lastScanBucket=BUCKET-1;ex.arm();
- assert.equal(scalpExecConfig({}).pumpImmediate,true,'TESTNET defaults to immediate pump entry');
- assert.equal(scalpExecConfig({SCALP_PUMP_IMMEDIATE:'off'}).pumpImmediate,false);
- assert.equal(scalpExecConfig({}).pumpLadderTpNetPct,2,'PUMP_ALERT defaults to 2% net TP');
+ assert.equal(scalpExecConfig({}).pumpStrategy,'TWO_PCT','TESTNET defaults to TWO_PCT 15m strategy');
+ assert.equal(scalpExecConfig({SCALP_PUMP_STRATEGY:'IMMEDIATE'}).pumpImmediate,true);
+ assert.equal(scalpExecConfig({SCALP_PUMP_IMMEDIATE:'off'}).pumpStrategy,'REVERSAL');
+ assert.equal(scalpExecConfig({}).pumpLadderTpNetPct,2,'legacy IMMEDIATE PUMP_ALERT keeps 2% net TP');
  assert.equal(scalpExecConfig({}).ladderTpNetPct,0.6,'normal SCAN keeps 0.6% net TP');
  const r=await ex.pumpAlert(ALERT_DOWN);
  assert.equal(r.entered,true,JSON.stringify(r));
@@ -1756,7 +1758,7 @@ test('pump alert (default SCALP_PUMP_IMMEDIATE=on, TESTNET): enters reverse imme
  assert.deepEqual(ex.store.open[0].ladder.units,[2,2,4,8,16]);
  assert.equal(ex.pumpWatch.size,0,'immediate entry clears watch immediately');
  // UP alert enters SHORT immediately with zero reversal candle and 2% TP
- const {v:v2,ex:ex2}=pumpMake({clock:{t:BUCKET*I+1000},direction:'LONG',config:{minScore:100,stopLossEnabled:false,management:'TRADER_LADDER',dailyLossPct:20}});
+ const {v:v2,ex:ex2}=pumpMake({clock:{t:BUCKET*I+1000},direction:'LONG',config:{minScore:100,stopLossEnabled:false,management:'TRADER_LADDER',dailyLossPct:20,pumpStrategy:'IMMEDIATE'}});
  ex2.lastScanBucket=BUCKET-1;ex2.arm();
  const r2=await ex2.pumpAlert({...ALERT_DOWN,dir:'UP',key:'777:9'});
  assert.equal(r2.entered,true,JSON.stringify(r2));
