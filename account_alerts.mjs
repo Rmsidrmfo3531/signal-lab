@@ -46,33 +46,7 @@ const originKo=o=>o==='copy'?'카피':'수동';
 const err=msg=>Object.assign(Error(msg),{code:'INVALID_ACCOUNT_ALERTS',httpStatus:400});
 
 const escHtml=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-const isHtmlMessage=s=>/<(?:b|i|u|s|a|pre|code)\b[^>]*>[\s\S]*<\/(?:b|i|u|s|a|pre|code)>/.test(String(s||''));
-const WIDE_CHAR_RE=/[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE10-\uFE19\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
-
-function cellWidth(s){
- let w=0;
- for(const ch of String(s??''))w+=WIDE_CHAR_RE.test(ch)?2:1;
- return w;
-}
-
-function padCell(s,width,align='left'){
- const str=String(s??''),gap=Math.max(0,width-cellWidth(str));
- if(align==='right')return ' '.repeat(gap)+str;
- if(align==='center'){const left=Math.floor(gap/2);return ' '.repeat(left)+str+' '.repeat(gap-left)}
- return str+' '.repeat(gap);
-}
-
-/** Build a fixed-width monospace grid table suitable for Telegram <pre> blocks. */
-export function formatGridTable(headers,rows,{aligns=[],maxWideWidth=38}={}){
- const cols=headers.length;
- const widths=headers.map((h,i)=>Math.max(cellWidth(h),...rows.map(r=>cellWidth(r[i]??''))));
- const wideTotal=widths.reduce((a,b)=>a+b,0)+(cols-1)*3;
- const pad=wideTotal<=maxWideWidth;
- const sep=pad?' │ ':'│';
- const renderRow=cells=>cells.map((c,i)=>padCell(c,widths[i],aligns[i]||'left')).join(sep);
- const rule=widths.map((w,i)=>'─'.repeat(w+(pad?(i===0||i===cols-1?1:2):0))).join('┼');
- return [renderRow(headers),rule,...rows.map(renderRow)].join('\n');
-}
+const isHtmlMessage=s=>/<(?:b|i|u|s|a|pre|code|blockquote)\b[^>]*>[\s\S]*<\/(?:b|i|u|s|a|pre|code|blockquote)>/.test(String(s||''));
 
 function positionRowParts(p){
  const sym=displaySymbol(p?.symbol||p?.venueSymbol||'');
@@ -95,12 +69,15 @@ export function formatPositionPnlLine(p){
  return `${r.dot} <b>${escHtml(r.sym)}</b>${sidePart}   ${r.pnl}${roe}`;
 }
 
+export function formatPositionCell(p){
+ const r=positionRowParts(p);
+ const head=`${r.dot} <b>${escHtml(r.sym||'—')}</b>${r.side?`  │  ${r.side}`:''}`;
+ const metrics=`손익 <b>${escHtml(r.pnl)}</b>${r.roe?`  │  수익률 <b>${escHtml(r.roe)}</b>`:''}`;
+ return `<blockquote>${head}\n${metrics}</blockquote>`;
+}
+
 export function formatPositionsTable(positions=[]){
- const rows=positions.map(p=>{
-  const r=positionRowParts(p);
-  return [r.sym||'—',r.side||'—',r.pnl,r.roe??'—'];
- });
- return `<pre>${escHtml(formatGridTable(['종목','방향','손익','수익률'],rows,{aligns:['left','center','right','right']}))}</pre>`;
+ return positions.map(formatPositionCell).join('\n');
 }
 
 export function formatPositionsSummary(positions=[]){
@@ -134,18 +111,12 @@ export function formatDailyReport({day,copyClosed=[],manualClosed=[],dailyByDay=
  const cp=summarize(onDay(copyClosed)),man=summarize(onDay(manualClosed));
  const ledgerTotal=cp.net+man.net;
  const exchangeDay=dailyByDay&&Number.isFinite(Number(dailyByDay[day]))?Number(dailyByDay[day]):null;
- const table=formatGridTable(
-  ['구분','건수','승률','손익'],
-  [
-   ['카피',`${cp.n}건`,cp.n?`${cp.wr}%`:'—',cp.n?money(cp.net):'—'],
-   ['수동',`${man.n}건`,man.n?`${man.wr}%`:'—',man.n?money(man.net):'—'],
-  ],
-  {aligns:['left','right','right','right']}
- );
+ const rowCell=(label,s)=>`<blockquote><b>${label}</b>  │  ${s.n}건  │  승률 ${s.n?`${s.wr}%`:'—'}  │  <b>${escHtml(s.n?money(s.net):'—')}</b></blockquote>`;
  const lines=[
   `📊 <b>${liveToday?'오늘 중간 리포트':'일일 마감 리포트'} · ${escHtml(day)} KST</b>`,
   exchangeDay!=null?`거래소 실현 합계: <b>${escHtml(money(exchangeDay))}</b> (수수료·펀딩 포함)`:`원장 정산 합계: <b>${escHtml(money(cp.n+man.n?ledgerTotal:0))}</b>`,
-  `<pre>${escHtml(table)}</pre>`,
+  rowCell('카피',cp),
+  rowCell('수동',man),
   `현재 순자산: ${escHtml(usd(equityUSD))} · 보유 포지션 ${openCount}개`,
  ];
  return lines.join('\n');
@@ -598,12 +569,12 @@ export class AccountAlerts{
     const snap=await this.getSnapshot();
     const matched=(snap?.positions||[]).filter(p=>p&&(target==='ALL'||displaySymbol(p.symbol)===target)&&(!direction||p.direction===direction));
     if(matched.length){
-     const rows=matched.slice(0,5).map(p=>{
+     const cells=matched.slice(0,5).map(p=>{
       const r=positionRowParts(p);
-      return [r.sym||'—',r.side||'—',p.size!=null?String(p.size):'—',r.pnl];
+      return `<blockquote>${r.dot} <b>${escHtml(r.sym||'—')}</b>${r.side?`  │  ${r.side}`:''}\n수량 <b>${escHtml(p.size!=null?String(p.size):'—')}</b>  │  손익 <b>${escHtml(r.pnl)}</b></blockquote>`;
      });
      const more=matched.length>5?`\n…외 ${matched.length-5}건`:'';
-     preview=`\n현재 포지션:\n<pre>${escHtml(formatGridTable(['종목','방향','수량','손익'],rows,{aligns:['left','center','right','right']}))}</pre>${more}`;
+     preview=`\n현재 포지션:\n${cells.join('\n')}${more}`;
     }
    }catch{}
    const code=String(randomInt(1000,10000));
