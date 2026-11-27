@@ -78,9 +78,11 @@ test('daily KST closing report (#5) sends once after midnight and persists acros
   };
   const r1=await alerts.checkDailyReport(payload);
   assert.equal(r1.sent,true);assert.equal(r1.day,'2026-11-19');
+  assert.doesNotMatch(sent[0],/<pre>|<code>/);
   assert.match(sent[0],/일일 마감 리포트 · 2026-11-19 KST/);
   assert.match(sent[0],/거래소 실현 합계: <b>\+\$37\.15<\/b>/);
-  assert.match(sent[0],/<pre>[\s\S]*구분 │ 건수 │ 승률 │\s+손익[\s\S]*카피 │\s*2건 │\s*50% │ \+\$23\.50[\s\S]*수동 │\s*1건 │ 100% │ \+\$13\.65[\s\S]*<\/pre>/);
+  assert.match(sent[0],/<blockquote><b>카피<\/b>\s+│\s+2건\s+│\s+승률 50%\s+│\s+<b>\+\$23\.50<\/b><\/blockquote>/);
+  assert.match(sent[0],/<blockquote><b>수동<\/b>\s+│\s+1건\s+│\s+승률 100%\s+│\s+<b>\+\$13\.65<\/b><\/blockquote>/);
 
   // Restart on the same day: must not resend
   const reloaded=new AccountAlerts({directory:dir,now:()=>midnightKst+60000,sendText:async t=>{sent.push(t);return {ok:true}}});
@@ -174,8 +176,8 @@ test('copyHTML renders accountAlerts panel on LIVE',()=>{
  assert.equal(typeof formatDailyReport,'function');
 });
 
-test('open-position PnL summary sends aligned Telegram grid table, respects interval cooldown, and supports /pos command',async()=>{
- const {formatPositionPnlLine,formatPositionsSummary,formatGridTable}=await import('../account_alerts.mjs');
+test('open-position PnL summary sends clean blockquote row cells (no code block), respects interval cooldown, and supports /pos command',async()=>{
+ const {formatPositionPnlLine,formatPositionsSummary}=await import('../account_alerts.mjs');
  const positions=[
   {symbol:'NCSKSNDK2USDUSDT',direction:'SHORT',unrealized:-45.2,margin:544.58},
   {symbol:'BTCUSDT',direction:'LONG',unrealized:100.11,roePct:12.5},
@@ -183,24 +185,13 @@ test('open-position PnL summary sends aligned Telegram grid table, respects inte
  assert.equal(formatPositionPnlLine(positions[1]),'🟢 <b>BTCUSDT</b> [롱]   +$100.11 (+12.5%)');
  assert.equal(formatPositionPnlLine(positions[0]),'🔴 <b>SNDKUSDT</b> [숏]   -$45.20 (-8.3%)');
  const summary=formatPositionsSummary(positions);
+ assert.doesNotMatch(summary,/<pre>|<code>/);
  assert.equal(
   summary,
   [
    '📊 <b>진행 중 포지션 (2개)</b> · 합계 <b>+$54.91</b>',
-   '<pre>종목     │ 방향 │     손익 │ 수익률',
-   '─────────┼──────┼──────────┼───────',
-   'BTCUSDT  │  롱  │ +$100.11 │ +12.5%',
-   'SNDKUSDT │  숏  │  -$45.20 │  -8.3%</pre>',
-  ].join('\n')
- );
- // Long symbol automatically switches to compact │ separator so mobile <pre> stays narrow
- const longTable=formatGridTable(['종목','방향','손익','수익률'],[['ANTHROPICUSDT','롱','+$12.50','+25.0%']],{aligns:['left','center','right','right']});
- assert.equal(
-  longTable,
-  [
-   '종목         │방향│   손익│수익률',
-   '─────────────┼────┼───────┼──────',
-   'ANTHROPICUSDT│ 롱 │+$12.50│+25.0%',
+   '<blockquote>🟢 <b>BTCUSDT</b>  │  롱\n손익 <b>+$100.11</b>  │  수익률 <b>+12.5%</b></blockquote>',
+   '<blockquote>🔴 <b>SNDKUSDT</b>  │  숏\n손익 <b>-$45.20</b>  │  수익률 <b>-8.3%</b></blockquote>',
   ].join('\n')
  );
 
@@ -307,10 +298,11 @@ test('P2/P3: checkRisk respects skipMarginAlert and /close previews matching liv
  assert.equal(delivered.some(x=>x.kind==='margin'),false);
  assert.equal(delivered.some(x=>x.kind==='loss'),true);
 
- // /close confirmation includes live size & unrealized PnL preview table
+ // /close confirmation includes live size & unrealized PnL preview cell (no code block)
  const ask=await alerts.handleCommand('/close BTC LONG','123456',now);
+ assert.doesNotMatch(ask,/<pre>|<code>/);
  assert.match(ask,/현재 포지션:/);
- assert.match(ask,/<pre>종목\s+│ 방향 │ 수량 │\s+손익[\s\S]*BTCUSDT │\s+롱\s+│ 0\.05 │ -\$120\.00<\/pre>/);
+ assert.match(ask,/<blockquote>🔴 <b>BTCUSDT<\/b>\s+│\s+롱\n수량 <b>0\.05<\/b>\s+│\s+손익 <b>-\$120\.00<\/b><\/blockquote>/);
 });
 
 

@@ -1022,7 +1022,7 @@ async function runRealPanicFlat(confirm){
 }
 if(COPY.mode==='LIVE'){
  const sendAccountAlertTelegram=async text=>{
-  if(!/<(?:b|pre)>[\s\S]*<\/(?:b|pre)>/.test(String(text||'')))return sendTradeTelegram(text);
+  if(!/<(?:b|pre|blockquote)>[\s\S]*<\/(?:b|pre|blockquote)>/.test(String(text||'')))return sendTradeTelegram(text);
   if(persisted.notifySettings?.telegramLive===false)return;
   const {chatId:chat_id,paused,error:destErr}=await resolveTradeTelegramDestination();
   if(!chat_id||persisted.notifySettings?.telegramLive===false){if(!chat_id&&!paused)console.warn('[TRADE TELEGRAM]',destErr);return}
@@ -1313,7 +1313,7 @@ function telegramPost(payload,{ipv4=false,method='sendMessage'}={}){
   if(String(payload.parse_mode||'').toUpperCase()==='HTML'){
    txt=txt.replace(/<[^>]*$/,'');
    const open=[];
-   for(const m of txt.matchAll(/<(\/?)(b|i|u|s|code|pre|a)\b[^>]*>/gi)){
+   for(const m of txt.matchAll(/<(\/?)(b|i|u|s|code|pre|a|blockquote)\b[^>]*>/gi)){
     const tag=m[2].toLowerCase();
     if(m[1]==='/'){const idx=open.lastIndexOf(tag);if(idx>=0)open.splice(idx,1)}else open.push(tag);
    }
