@@ -293,6 +293,8 @@ export function scalpExecConfig(env=process.env){
   management:scalpManagementOf(env),
   ladderSpacingMinPct:n('SCALP_LADDER_SPACING_MIN_PCT',TRADER_LADDER.spacingMinPct,.3,10),
   ladderTpNetPct:n('SCALP_LADDER_TP_PCT',TRADER_LADDER.tpNetPct,.1,5),
+  // Pump-alert specific ladder take-profit target (user 2026-11-26): 2% price move net of fees (20% ROE at 10x), keeping normal scan at 0.6%.
+  pumpLadderTpNetPct:n('SCALP_PUMP_TP_PCT',2,.1,10),
   ladderMaxHoldMin:n('SCALP_LADDER_MAX_HOLD_MIN',TRADER_LADDER.maxHoldMin,60,4320),
   ladderMakerWaitMs:n('SCALP_LADDER_MAKER_WAIT_MS',5000,200,15000),
   // Live-account safety rails (disabled = 0 on TESTNET by default so testnet verification is unaffected; active in scalpLiveExecConfig).
@@ -1288,7 +1290,7 @@ export class ScalpExecutor{
    // TRADER_LADDER (user 2026-11-24; 2026-11-25 fixed 1st-step sizing): keep full 2·2·4·8·16 ladder units (sizeMult=1)
    // so score/session/bounce/againstTrend downsizing multipliers never shrink the 1st entry below 2/32 of the symbol cap.
    if(this.#management()===SCALP_MANAGEMENTS.LADDER){
-    const lad=await this.#ladderPlan({u,c,plan,funds,shared,lev,sizeMult:1});
+    const lad=await this.#ladderPlan({u,c,plan,funds,shared,lev,sizeMult:1,trigger:this.cur?.trigger??null});
     if(!lad.ok)return skip(lad.reason,lad.detail);
     plan=lad.plan;
     if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty,riskUSD:plan.riskUSD,management:SCALP_MANAGEMENTS.LADDER,ladderUnits:plan.ladder.units,unitMarginUSD:plan.ladder.unitMarginUSD,reserveMarginUSD:plan.ladder.reserveMarginUSD,spacingPct:plan.ladder.spacingPct});
@@ -1303,7 +1305,7 @@ export class ScalpExecutor{
  }
  /** The TRADER_LADDER plan of an entry (scalp_ladder.mjs): unit = per-symbol cap (maxMarginPct of the equity) / 32, held
   * within the shared margin room and 90 % of the free margin; spacing from the 1H ATR; the worst case reserved. */
- async #ladderPlan({u,c,plan,funds,shared,lev,sizeMult}){
+ async #ladderPlan({u,c,plan,funds,shared,lev,sizeMult,trigger=null}){
   const finalLine=Number(this.config.emergencyStopRoePct)||0;
   // Without the final line a full ladder would have no loss exit: no entry.
   if(!(finalLine>0))return {ok:false,reason:'LADDER_FINAL_LINE_OFF'};
@@ -1314,10 +1316,11 @@ export class ScalpExecutor{
   const sp=ladderSpacing({atrPct:await this.#atr1h(u.symbol),leverage:lev,finalLineRoePct:finalLine,minPct:this.config.ladderSpacingMinPct});
   const reservePct=(SCALP_EXEC_COSTS.spreadBps+SCALP_EXEC_COSTS.slippageBps)/1e4+SCALP_EXEC_COSTS.fundingRate;
   const reserve=ladderReserve({totalMarginUSD:lad.totalMarginUSD,leverage:lev,finalLineRoePct:finalLine,takerRate:plan.takerRate,reservePct});
+  const tpNetPct=trigger===SCALP_TRIGGERS.PUMP?(this.config.pumpLadderTpNetPct??2):this.config.ladderTpNetPct;
   const ladder={v:TRADER_LADDER.version,units:[...lad.units],plannedUnits:[...lad.units],unitMarginUSD:lad.unitMarginUSD,symbolCapUSD:+symbolCapUSD.toFixed(4),capUSD:lad.capUSD,
    sizeMult:lad.sizeMult,capped:lad.capped,raised:lad.raised,shortened:lad.shortened,minQty:lad.minQty,
    spacingPct:sp.spacingPct,spacingBasePct:sp.basePct,spacingCapPct:sp.capPct,spacingCapped:sp.capped,atrPct:sp.atrPct,
-   tpNetPct:this.config.ladderTpNetPct,maxHoldMin:this.config.ladderMaxHoldMin,finalLineRoePct:finalLine,reservePct,
+   tpNetPct,maxHoldMin:this.config.ladderMaxHoldMin,finalLineRoePct:finalLine,reservePct,
    reserveMarginUSD:reserve.marginUSD,reserveRiskUSD:reserve.riskUSD,filled:0,fills:[],attempt:0,lastFill:null,size:0,state:'WATCH',source:{...TRADER_LADDER.source}};
   const qty=lad.qty0;
   return {ok:true,plan:{...plan,qty,parts:[qty,0,0],targetCount:1,merged:false,marginUSD:qty*plan.entry/lev,riskUSD:reserve.riskUSD,scaleIn:null,ladder}};
@@ -3363,7 +3366,7 @@ export class ScalpExecutor{
     // TRADER_LADDER (scalp_ladder.mjs): the settings the screen and the reason glossary show.
     management:this.#management(),managementConfigured:c.management??SCALP_MANAGEMENTS.LADDER,managementSince:this.managementScope().since,
     ladderSteps:[...TRADER_LADDER.steps],ladderTotalUnits:TRADER_LADDER.totalUnits,ladderSpacingMinPct:c.ladderSpacingMinPct??TRADER_LADDER.spacingMinPct,ladderSpacingAtrMult:TRADER_LADDER.spacingAtrMult,
-    ladderTpNetPct:c.ladderTpNetPct??TRADER_LADDER.tpNetPct,ladderMaxHoldMin:c.ladderMaxHoldMin??TRADER_LADDER.maxHoldMin,ladderMaxHoldHours:+((c.ladderMaxHoldMin??TRADER_LADDER.maxHoldMin)/60).toFixed(1),
+    ladderTpNetPct:c.ladderTpNetPct??TRADER_LADDER.tpNetPct,pumpLadderTpNetPct:c.pumpLadderTpNetPct??2,ladderMaxHoldMin:c.ladderMaxHoldMin??TRADER_LADDER.maxHoldMin,ladderMaxHoldHours:+((c.ladderMaxHoldMin??TRADER_LADDER.maxHoldMin)/60).toFixed(1),
     ladderFinalLineRoePct:c.emergencyStopRoePct??75,ladderZoneTouchPct:TRADER_LADDER.zoneTouchPct,ladderZoneMinRejections:TRADER_LADDER.zoneMinRejections,ladderZoneBoost:TRADER_LADDER.zoneBoost,ladderSource:{...TRADER_LADDER.source}},
    pumpWatch:[...this.pumpWatch.values()].map(w=>({symbol:w.symbol,direction:w.direction,until:w.until,tries:w.tries,lastReason:w.lastReason??null})),
    universe:{count:this.universe.length,watchlist:this.config.watchlist,refreshedAt:this.universeAt||null,top:this.universe.slice(0,12).map(u=>u.symbol)},lastScan:this.lastScan,funds:this.funds,dailyStop:this.store.dailyStop,

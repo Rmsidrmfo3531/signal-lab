@@ -1743,20 +1743,24 @@ test('pump alert (default SCALP_PUMP_IMMEDIATE=on, TESTNET): enters reverse imme
  ex.lastScanBucket=BUCKET-1;ex.arm();
  assert.equal(scalpExecConfig({}).pumpImmediate,true,'TESTNET defaults to immediate pump entry');
  assert.equal(scalpExecConfig({SCALP_PUMP_IMMEDIATE:'off'}).pumpImmediate,false);
+ assert.equal(scalpExecConfig({}).pumpLadderTpNetPct,2,'PUMP_ALERT defaults to 2% net TP');
+ assert.equal(scalpExecConfig({}).ladderTpNetPct,0.6,'normal SCAN keeps 0.6% net TP');
  const r=await ex.pumpAlert(ALERT_DOWN);
  assert.equal(r.entered,true,JSON.stringify(r));
  assert.equal(placed(v,'MARKET').length,1);
  assert.equal(placed(v,'MARKET')[0].side,'BUY','DOWN alert enters LONG immediately');
  assert.equal(ex.store.open[0].trigger,'PUMP_ALERT');
  assert.equal(ex.store.open[0].management,'TRADER_LADDER');
+ assert.equal(ex.store.open[0].ladder.tpNetPct,2,'PUMP_ALERT entry uses 2% ladder TP');
  assert.deepEqual(ex.store.open[0].ladder.units,[2,2,4,8,16]);
  assert.equal(ex.pumpWatch.size,0,'immediate entry clears watch immediately');
- // UP alert enters SHORT immediately with zero reversal candle
+ // UP alert enters SHORT immediately with zero reversal candle and 2% TP
  const {v:v2,ex:ex2}=pumpMake({clock:{t:BUCKET*I+1000},direction:'LONG',config:{minScore:100,stopLossEnabled:false,management:'TRADER_LADDER',dailyLossPct:20}});
  ex2.lastScanBucket=BUCKET-1;ex2.arm();
  const r2=await ex2.pumpAlert({...ALERT_DOWN,dir:'UP',key:'777:9'});
  assert.equal(r2.entered,true,JSON.stringify(r2));
  assert.equal(placed(v2,'MARKET')[0].side,'SELL','UP alert enters SHORT immediately');
+ assert.equal(ex2.store.open[0].ladder.tpNetPct,2,'UP PUMP_ALERT entry also uses 2% ladder TP');
 });
 
 test('pump alert: a coin BingX does not list is skipped with a recorded reason; stock contracts too',async()=>{
