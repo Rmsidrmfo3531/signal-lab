@@ -154,13 +154,20 @@ function renderUpdateSchedule(){
  box.classList.remove('hidden');
 }
 function setUpdateButtonBusy(busy,{source='button',pct=null}={}){
- const b=$('updateButton');if(!b)return;
+ const b=$('updateButton');
  if(busy){
+  const tabTitle=Number.isFinite(pct)&&pct>0?`업데이트 중.. (${Math.floor(pct)}%) · Signal Lab`:'업데이트 중.. · Signal Lab';
+  if(document.documentElement?.dataset)document.documentElement.dataset.updatingTitle=tabTitle;
+  document.title=tabTitle;
+  if(!b)return;
   b.disabled=true;
   const prefix=source==='auto'?'↻ 자동 업데이트':'↻ 업데이트';
   b.textContent=Number.isFinite(pct)&&pct>0?`${prefix} ${Math.floor(pct)}%`:`${prefix} 중…`;
   b.title='업데이트가 진행 중입니다. 중복 실행 방지를 위해 완료될 때까지 버튼이 잠깁니다.';
  }else{
+  if(document.documentElement?.dataset)delete document.documentElement.dataset.updatingTitle;
+  document.title=document.documentElement?.dataset?.baseTitle||'Signal Lab';
+  if(!b)return;
   b.disabled=false;
   b.textContent=gitUpdate?'↻ 업데이트':'↻ 업데이트 확인';
   b.title=gitUpdate?'GitHub 최신 버전을 확인하고 적용합니다':'신뢰할 수 있는 업데이트 서버를 설정해야 작동합니다';
