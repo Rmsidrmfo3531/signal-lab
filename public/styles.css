@@ -808,6 +808,11 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible{ou
 .of-chip:hover{border-color:#4fa3ff;color:#fff}
 .of-chip.active{background:#183a5e;border-color:#59a9ff;color:#fff}
 .of-held-dot{width:6px;height:6px;border-radius:50%;background:#3ae0a5;display:inline-block}
+.of-real-positions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 14px;border-bottom:1px solid rgba(58,224,165,.18);background:rgba(14,34,30,.55)}
+.of-real-label{font-size:11px;font-weight:700;color:#3ae0a5;letter-spacing:.2px;margin-right:2px}
+.of-real-chip{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border-radius:999px;border:1px solid rgba(58,224,165,.32);background:rgba(13,25,40,.9);color:#dbe9f8;font-size:12px;cursor:pointer}
+.of-real-chip:hover,.of-real-chip.active{border-color:#3ae0a5;background:rgba(58,224,165,.14)}
+.of-real-chip .pos{color:var(--up)}.of-real-chip .neg{color:var(--down)}
 .of-verdict{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;margin:12px 18px 0;padding:10px 14px;border-radius:9px;background:#0d1c2e;border:1px solid #223b56;font-size:12.5px}
 .of-verdict-main{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
 .of-verdict-main b{font-size:14px;color:#f0f8ff}

@@ -2999,16 +2999,30 @@ const server=http.createServer(async(req,res)=>{
    return response(res,200,{...state.update,git:GIT_UPDATE,autoUpdate:GIT_UPDATE&&AUTO_UPDATE,updating:updateJob.active===true,updateJob:updateJob.active?{...updateJob}:null,bootId:SERVER_BOOT_ID,scheduledUpdate:scheduledUpdateSnapshot(),configured:Boolean(CONFIG.updateManifestURL),...appVersion,runtime,pending:pendingInfo(__dirname)?.version||null});
   }
   if(pathname==='/api/update/check'&&req.method==='POST')return response(res,200,await checkSoftwareUpdate());
+  const realOrderflowHoldings=async()=>{
+   let rows=[];
+   if(venuePositionsReader){
+    try{const snap=await venuePositionsReader.snapshot(realCopyPositions(),realScalpPositions());if(Array.isArray(snap?.venuePositions))rows=snap.venuePositions}catch{}
+   }
+   const symOf=p=>String(p?.symbol||p?.venueSymbol||'').replace(/[-_]/g,'').toUpperCase();
+   const realPositions=rows.filter(r=>/^[A-Z0-9]{4,25}$/.test(symOf(r))).map(r=>({
+    symbol:symOf(r),direction:r.direction??null,leverage:r.leverage??null,avg:r.avg??null,mark:r.mark??null,
+    unrealized:r.unrealized??null,roePct:r.roePct??null,origin:r.origin||'manual',manualLinked:r.manualLinked===true,
+   }));
+   const openHeld=[
+    ...realPositions.map(p=>p.symbol),
+    ...realCopyPositions().filter(p=>p?.status==='OPEN').map(symOf),
+    ...realScalpPositions().filter(p=>p?.status==='OPEN').map(symOf),
+    ...(live?.store?.records||[]).filter(r=>r.mode==='LIVE'&&r.status==='OPEN').map(symOf),
+   ].filter(s=>/^[A-Z0-9]{4,25}$/.test(s));
+   return {openSymbols:[...new Set(openHeld)],realPositions};
+  };
   if(pathname==='/api/orderflow/radar'&&req.method==='GET'){
    const force=url.searchParams.get('force')==='1';
    try{
-    const openHeld=[
-     ...(copyTrader?.store?.open||[]).map(p=>p.symbol),
-     ...(scalpExec?.store?.open||[]).map(p=>p.symbol),
-     ...(live?.store?.records||[]).filter(r=>r.status==='OPEN').map(r=>r.symbol),
-    ].filter(s=>/^[A-Z0-9]{4,25}$/.test(String(s||'')));
+    const {openSymbols}=await realOrderflowHoldings();
     const topMarket=(state.ranked||[]).slice(0,16).map(m=>m.symbol);
-    const list=[...new Set([...openHeld,...ORDERFLOW_RADAR_DEFAULTS,...topMarket])].slice(0,20);
+    const list=[...new Set([...openSymbols,...ORDERFLOW_RADAR_DEFAULTS,...topMarket])].slice(0,20);
     return response(res,200,await scanOrderflowAnomalies(list,{force,budget:publicReadBudget}));
    }catch(e){
     return response(res,502,{ok:false,error:e?.message||'RADAR_FETCH_FAILED'});
@@ -3025,16 +3039,14 @@ const server=http.createServer(async(req,res)=>{
    if(rangeParam&&!Object.hasOwn(FIRECHART_RANGES,rangeParam))return response(res,400,{ok:false,error:'INVALID_RANGE'});
    if(!['5m','15m','1h','4h'].includes(interval))return response(res,400,{ok:false,error:'INVALID_INTERVAL'});
    try{
-    const data=await fetchOrderflowWithFirechart(symbol,{range:rangeParam||undefined,interval,force,budget:publicReadBudget});
-    const openHeld=[
-     ...(copyTrader?.store?.open||[]).map(p=>p.symbol),
-     ...(scalpExec?.store?.open||[]).map(p=>p.symbol),
-     ...(live?.store?.records||[]).filter(r=>r.status==='OPEN').map(r=>r.symbol),
-    ].filter(s=>/^[A-Z0-9]{4,25}$/.test(String(s||'')));
+    const [data,{openSymbols,realPositions}]=await Promise.all([
+     fetchOrderflowWithFirechart(symbol,{range:rangeParam||undefined,interval,force,budget:publicReadBudget}),
+     realOrderflowHoldings(),
+    ]);
     const topMarket=(state.ranked||[]).slice(0,25).map(m=>m.symbol);
     const defaults=['BTCUSDT','ETHUSDT','SOLUSDT','XRPUSDT','DOGEUSDT','SUIUSDT','AVAXUSDT','LINKUSDT','ADAUSDT','1000PEPEUSDT'];
-    const quickSymbols=[...new Set([...openHeld,...defaults,...topMarket])].slice(0,30);
-    return response(res,200,{...data,quickSymbols,openSymbols:[...new Set(openHeld)]});
+    const quickSymbols=[...new Set([...openSymbols,...defaults,...topMarket])].slice(0,30);
+    return response(res,200,{...data,quickSymbols,openSymbols,realPositions});
    }catch(e){
     return response(res,502,{ok:false,symbol,interval,error:e?.message||'ORDERFLOW_FETCH_FAILED'});
    }

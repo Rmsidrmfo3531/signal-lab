@@ -783,9 +783,34 @@ export function orderflowHTML(data, {
   const chips = quick.slice(0, 18).map(s => {
     const short = s.replace(/USDT$/, '');
     const active = s === activeSym ? ' active' : '';
-    const held = openSet.has(s) ? '<i class="of-held-dot" title="현재 보유 중"></i>' : '';
+    const held = openSet.has(s) ? '<i class="of-held-dot" title="실계좌 보유 중"></i>' : '';
     return `<button type="button" class="of-chip${active}" data-of-symbol="${esc(s)}">${held}${esc(short)}</button>`;
   }).join('');
+
+  const realPosList = Array.isArray(data?.realPositions) ? data.realPositions : [];
+  const realPosStrip = realPosList.length ? `<div class="of-real-positions" aria-label="실계좌 보유 포지션">
+    <span class="of-real-label">실계좌 보유 ${realPosList.length}</span>
+    ${realPosList.map(p => {
+      const sym = String(p.symbol || '');
+      const short = sym.replace(/USDT$/, '');
+      const active = sym === activeSym ? ' active' : '';
+      const dirKo = p.direction === 'SHORT' ? '숏' : p.direction === 'LONG' ? '롱' : '';
+      const dirCls = p.direction === 'SHORT' ? 'neg' : p.direction === 'LONG' ? 'pos' : '';
+      const levTxt = fin(p.leverage) ? `${Number(p.leverage)}x` : '';
+      const pnlVal = fin(p.unrealized) ? Number(p.unrealized) : null;
+      const roeVal = fin(p.roePct) ? Number(p.roePct) : null;
+      const pnlCls = pnlVal == null ? '' : pnlVal > 0 ? 'pos' : pnlVal < 0 ? 'neg' : '';
+      const pnlTxt = pnlVal == null ? '' : `${pnlVal >= 0 ? '+' : '−'}$${Math.abs(pnlVal).toFixed(2)}`;
+      const roeTxt = roeVal == null ? '' : `(${roeVal >= 0 ? '+' : '−'}${Math.abs(roeVal).toFixed(1)}%)`;
+      const origTxt = p.origin === 'copy' ? (p.manualLinked ? '비율연결' : '카피') : p.origin === 'scalp' ? '단타' : '수동';
+      return `<button type="button" class="of-real-chip${active}" data-of-symbol="${esc(sym)}" title="실계좌 ${esc(origTxt)} 포지션 — 클릭하면 해당 종목 CVD 조회">
+        <i class="of-held-dot"></i><b>${esc(short)}</b>
+        ${dirKo ? `<span class="${dirCls}">${dirKo}</span>` : ''}
+        ${levTxt ? `<small class="muted">${esc(levTxt)}</small>` : ''}
+        ${pnlTxt ? `<b class="${pnlCls}">${pnlTxt} <small>${roeTxt}</small></b>` : ''}
+      </button>`;
+    }).join('')}
+  </div>` : '';
 
   const rangeBtns = FIRECHART_RANGE_TABS.map(([k, lbl]) =>
     `<button type="button" class="outline-btn small${activeRange === k ? ' active-btn' : ''}" data-of-range="${k}" aria-pressed="${activeRange === k}">${lbl}</button>`
@@ -806,6 +831,7 @@ export function orderflowHTML(data, {
     <div class="of-iv-group">${rangeBtns}</div>
     <div class="of-meta-right">${srcBadge}${updated}<button type="button" class="outline-btn small" data-of-refresh>${loading ? '불러오는 중…' : '↻ 새로고침'}</button></div>
   </div>
+  ${realPosStrip}
   <div class="of-chips" aria-label="빠른 종목 선택">${chips}</div>`;
 
   const radarBox = orderflowRadarHTML(radar, activeSym, radarLoading);
