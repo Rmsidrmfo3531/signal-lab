@@ -779,33 +779,52 @@ export function orderflowCvdSrMatrixHTML(cvdSr, { activeSymbol = '', loading = f
   const recent = Array.isArray(cvdSr?.recentEvents) ? cvdSr.recentEvents.slice(0, 3) : [];
   const monBadge = cvdSr?.monitoring ? '<span class="of-sr-mon">🔔 보유 종목 생성·소멸 텔레그램 감시 ON</span>' : '';
 
-  const zonePill = (z, sym, tfLabel) => {
+  const TF_TIER = { LIVE: 1, '1D': 2, '1W': 3, '1M': 4, '6M': 5, '1Y': 6 };
+
+  const heldBiasOf = (directions, kind, event = 'ADDED') => {
+    const dirs = [...new Set((Array.isArray(directions) ? directions : [])
+      .map(d => String(d || '').toUpperCase())
+      .filter(d => d === 'LONG' || d === 'SHORT'))];
+    if (dirs.length !== 1) return null;
+    const isSup = kind === 'SUPPORT';
+    const isAdded = event !== 'REMOVED';
+    const bullish = isSup ? isAdded : !isAdded;
+    return (dirs[0] === 'LONG' ? bullish : !bullish) ? 'FAVORABLE' : 'ADVERSE';
+  };
+
+  const zonePill = (z, sym, tfKey, tfLabel, heldDirs = []) => {
     if (!z) return '<span class="of-sr-none">—</span>';
     const isStrong = z.grade === 'STRONG';
     if (activeFilter === 'strong' && !isStrong) return '<span class="of-sr-none">—</span>';
     const isSup = z.kind === 'SUPPORT';
-    const cls = `${isSup ? 'of-sr-sup' : 'of-sr-res'}${isStrong ? ' is-strong' : ' is-mid'}`;
+    const tier = TF_TIER[tfKey] || 1;
+    const bias = heldBiasOf(heldDirs, z.kind, 'ADDED');
+    const colorCls = bias === 'FAVORABLE' ? 'of-sr-fav' : bias === 'ADVERSE' ? 'of-sr-adv' : (isSup ? 'of-sr-sup' : 'of-sr-res');
+    const cls = `${colorCls} of-tf-${tier}${isStrong ? ' is-strong' : ' is-mid'}`;
     const tag = isSup ? '지' : '저';
     const dist = fin(z.distPct) ? `${Number(z.distPct) >= 0 ? '+' : '−'}${Math.abs(Number(z.distPct)).toFixed(1)}%` : '';
     const side = isSup ? 'LONG' : 'SHORT';
     const wallLabel = `CVD ${tfLabel} ${isStrong ? '강력 ' : ''}${isSup ? '지지대' : '저항대'}`;
-    return `<button type="button" class="of-sr-pill ${cls}" data-of-send-real-order data-symbol="${esc(sym)}" data-price="${esc(z.centerPrice)}" data-side="${side}" data-wall-label="${esc(wallLabel)}" title="${esc(wallLabel)} · 강도 ${esc(z.strength)} · CVD ${esc(fmtUsdCompact(z.netDeltaUsd, true))} (클릭 시 실계좌 지정가 입력)">
-      <i>${tag}</i><b>$${esc(fmtPx(z.centerPrice))}</b><small>${esc(dist)}</small>${isStrong ? '<em>강</em>' : ''}
+    const biasText = bias === 'FAVORABLE' ? ' · 내 포지션 유리' : bias === 'ADVERSE' ? ' · 내 포지션 주의' : '';
+    const badge = isStrong ? (bias === 'FAVORABLE' ? '<em>유리</em>' : bias === 'ADVERSE' ? '<em>주의</em>' : tier >= 5 ? '<em>대형</em>' : '<em>강</em>') : '';
+    return `<button type="button" class="of-sr-pill ${cls}" data-of-send-real-order data-symbol="${esc(sym)}" data-price="${esc(z.centerPrice)}" data-side="${side}" data-wall-label="${esc(wallLabel)}"${bias ? ` data-pos-bias="${bias.toLowerCase()}"` : ''} title="${esc(wallLabel)}${biasText} · 강도 ${esc(z.strength)} · CVD ${esc(fmtUsdCompact(z.netDeltaUsd, true))} (클릭 시 실계좌 지정가 입력)">
+      <i>${tag}</i><b>$${esc(fmtPx(z.centerPrice))}</b><small>${esc(dist)}</small>${badge}
     </button>`;
   };
 
   const body = rows.length ? `<div class="of-sr-scroll"><table class="of-sr-table">
-    <thead><tr><th>종목</th><th>현재가</th>${CVD_SR_TFS.map(([, lbl]) => `<th>${lbl}</th>`).join('')}</tr></thead>
+    <thead><tr><th>종목</th><th>현재가</th>${CVD_SR_TFS.map(([k, lbl]) => `<th class="of-tf-h-${TF_TIER[k] || 1}">${lbl}</th>`).join('')}</tr></thead>
     <tbody>${rows.map(r => {
       const sym = String(r.symbol || '');
       const short = String(r.displaySymbol || sym).replace(/USDT$/, '');
       const isAct = sym === activeSymbol;
-      const dirs = Array.isArray(r.directions) && r.directions.length
-        ? r.directions.map(d => `<span class="of-sr-dir ${d === 'SHORT' ? 'neg' : 'pos'}">${d === 'SHORT' ? '숏' : '롱'}</span>`).join('')
+      const dirList = Array.isArray(r.directions) ? r.directions : [];
+      const dirs = dirList.length
+        ? dirList.map(d => `<span class="of-sr-dir ${d === 'SHORT' ? 'neg' : 'pos'}">${d === 'SHORT' ? '숏' : '롱'}</span>`).join('')
         : '';
       const cells = CVD_SR_TFS.map(([k, lbl]) => {
         const tf = r.timeframes?.[k];
-        return `<td class="of-sr-cell">${zonePill(tf?.bestResistance, sym, lbl)}${zonePill(tf?.bestSupport, sym, lbl)}</td>`;
+        return `<td class="of-sr-cell">${zonePill(tf?.bestResistance, sym, k, lbl, r.held ? dirList : [])}${zonePill(tf?.bestSupport, sym, k, lbl, r.held ? dirList : [])}</td>`;
       }).join('');
       return `<tr class="${r.held ? 'is-held' : ''}${isAct ? ' is-active' : ''}">
         <td class="of-sr-sym"><button type="button" class="of-sr-sym-btn" data-of-symbol="${esc(sym)}" title="${esc(sym)} 상세 차트 보기">${r.held ? '<i class="of-held-dot"></i>' : ''}<b>${esc(short)}</b>${dirs}</button></td>
@@ -820,7 +839,16 @@ export function orderflowCvdSrMatrixHTML(cvdSr, { activeSymbol = '', loading = f
     const short = String(ev.displaySymbol || ev.symbol || '').replace(/USDT$/, '');
     const kindKo = ev.kind === 'SUPPORT' ? '지지' : '저항';
     const isRem = ev.event === 'REMOVED';
-    return `<span class="of-sr-ev ${isRem ? 'rem' : 'add'}">${isRem ? '⚠️ 소멸' : ev.kind === 'SUPPORT' ? '🟢 신규' : '🔴 신규'} <b>${esc(short)}</b> ${esc(ev.tf)} ${kindKo} $${esc(fmtPx(ev.price))}</span>`;
+    const tier = TF_TIER[ev.tf] || 1;
+    const sent = ev.sentiment || heldBiasOf(ev.directions, ev.kind, ev.event);
+    const evCls = sent === 'FAVORABLE' ? 'fav' : sent === 'ADVERSE' ? 'adv' : (isRem ? 'rem' : 'add');
+    const icon = sent === 'FAVORABLE'
+      ? (tier >= 5 ? '🟩🔥 유리' : tier >= 3 ? '🟩 유리' : '🟢 유리')
+      : sent === 'ADVERSE'
+        ? (tier >= 5 ? '🟥🚨 주의' : tier >= 3 ? '🟥 주의' : '🔴 주의')
+        : (isRem ? '⚠️ 소멸' : ev.kind === 'SUPPORT' ? '🟢 신규' : '🔴 신규');
+    const evWord = sent ? (isRem ? '소멸' : '신규') : '';
+    return `<span class="of-sr-ev ${evCls} of-tf-${tier}">${icon} <b>${esc(short)}</b> ${esc(ev.tf)} ${kindKo}${evWord ? ` ${evWord}` : ''} $${esc(fmtPx(ev.price))}</span>`;
   }).join('')}</div>` : '';
 
   const fBtn = (k, lbl) => `<button type="button" class="of-fc-tab${activeFilter === k ? ' active' : ''}" data-of-sr-filter="${k}" aria-pressed="${activeFilter === k}">${lbl}</button>`;
@@ -829,7 +857,7 @@ export function orderflowCvdSrMatrixHTML(cvdSr, { activeSymbol = '', loading = f
     <div class="of-sr-head">
       <div>
         <b>🧱 전 종목 CVD 지지·저항대</b>
-        <small>실시간 · 1D · 1W · 1M · 6M · 1Y 한눈에 보기 (가격 클릭 → 지정가 입력)</small>
+        <small>실시간 → 1Y 기간이 길수록 물량·테두리 강조 · 보유 종목은 내 포지션 기준 유리(초록)/주의(빨강) 표시</small>
         ${monBadge}
       </div>
       <div class="of-sr-actions">
