@@ -72,12 +72,12 @@ const used=p=>p.ladder.fills.reduce((t,f)=>t+f.qty*f.price/p.leverage,0);
 
 test('a step is never given back while its PostOnly child may rest: after an outage the child is cancelled first (one fill per step, cap kept)',async()=>{
  const {v,clock,ex,p}=await opened();
- // Steps 2-4 at market.
- for(let i=0;i<3;i++){setMark(v,below(p.ladder.lastFill*.985));clock.t+=10000;await ex.reconcile()}
- assert.equal(p.ladder.filled,4);
- // Step 5 (16 units) with the maker entry: the PostOnly child rests and the network drops right after it is sent.
+ // Steps 2-3 at market.
+ for(let i=0;i<2;i++){setMark(v,below(p.ladder.lastFill*.975));clock.t+=10000;await ex.reconcile()}
+ assert.equal(p.ladder.filled,3);
+ // Step 4 (8 units, last step) with the maker entry: the PostOnly child rests and the network drops right after it is sent.
  ex.config.makerEntry=true;v.net.downAfterPostOnly=true;
- setMark(v,below(p.ladder.lastFill*.985));clock.t+=10000;await ex.reconcile();
+ setMark(v,below(p.ladder.lastFill*.975));clock.t+=10000;await ex.reconcile();
  assert.ok(p.ladder.pending?.unknown,'pending with an unknown outcome');
  const firstCid=makerChildIds(p.ladder.pending.clientOrderId).limit;
  assert.equal(v.orders.size&&[...v.orders.values()].find(o=>o.clientOrderId===firstCid)?.status,'NEW');
@@ -100,7 +100,7 @@ test('a step is never given back while its PostOnly child may rest: after an out
 test('while an add is pending the final line still closes the position (no 2-minute gap)',async()=>{
  const {v,clock,ex,p}=await opened({venue:{dropAdd:true}});
  const first=p.avg;
- setMark(v,below(first*.985));clock.t+=10000;await ex.reconcile();
+ setMark(v,below(first*.975));clock.t+=10000;await ex.reconcile();
  assert.ok(p.ladder.pending,'the add answer was lost: pending');
  // 30 s later the price is past the -75 % ROE line of the position (10x: 7.5 % under the average).
  setMark(v,+(first*(1-.08)).toFixed(2));clock.t+=30000;await ex.reconcile();
@@ -115,7 +115,7 @@ test('while an add is pending the final line still closes the position (no 2-min
 
 test('a take-profit answer lost after a partial fill: booked once, no phantom add',async()=>{
  const {v,clock,ex,p}=await opened({venue:{iocPartialLost:true}});
- setMark(v,below(p.avg*.985));clock.t+=10000;await ex.reconcile();assert.equal(p.ladder.filled,2);
+ setMark(v,below(p.avg*.975));clock.t+=10000;await ex.reconcile();assert.equal(p.ladder.filled,2);
  const size=p.size;
  setMark(v,+(p.avg*1.02).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.ok(p.ladder.exit,'TP answer lost: looked up next');
@@ -139,13 +139,13 @@ test('a take-profit answer lost and its lookup failing: the final line still clo
 
 test('zone rejections count only closed 4H candles',async()=>{
  const {v,clock,ex,p}=await opened();
- const f=p.ladder.lastFill,zone={low:+(f*.987).toFixed(2),high:+(f*.988).toFixed(2),rank:4,sharePct:2};
+ const f=p.ladder.lastFill,zone={low:+(f*.980).toFixed(2),high:+(f*.983).toFixed(2),rank:4,sharePct:2};
  const t4=Math.floor(clock.t/(4*H))*4*H;
  // Two closed rejections and one in the 4H candle still open (its "close" is the live price).
  const bar=(t,l,c)=>[t,String(c),String(c+.5),String(l),String(c),'1000',t+4*H-1,'1'];
  const rows=[bar(t4-16*H,zone.low,zone.high+1),bar(t4-12*H,zone.high+2,zone.high+3),bar(t4-8*H,zone.low,zone.high+1),bar(t4-4*H,zone.high+2,zone.high+3),bar(t4,zone.low,zone.high+1)];
  ex.zoneBookOf=async(sym,iv)=>{if(iv!=='4h')return null;ex.zoneCache.set(sym+'|4h',{rows,nextCloseAt:t4+4*H,tickSize:'0.01',usedAt:clock.t});return ()=>[zone]};
- setMark(v,+(f*.99).toFixed(2));clock.t+=10000;await ex.reconcile();
+ setMark(v,+(f*.985).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.ok(p.ladder.zones,'zones read');
  assert.deepEqual(p.ladder.zones.list,[],JSON.stringify(p.ladder.zones.list));
 });
@@ -153,8 +153,8 @@ test('zone rejections count only closed 4H candles',async()=>{
 test('no 4H / 1D zone read before the price is half a spacing from the last fill (the routine check never waits on it)',async()=>{
  const {v,clock,ex,p}=await opened();
  let reads=0;ex.zoneBookOf=async()=>{reads++;return null};
- setMark(v,+(p.ladder.lastFill*.997).toFixed(2));clock.t+=10000;await ex.reconcile();
+ setMark(v,+(p.ladder.lastFill*.993).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.equal(reads,0);
- setMark(v,+(p.ladder.lastFill*.99).toFixed(2));clock.t+=10000;await ex.reconcile();
+ setMark(v,+(p.ladder.lastFill*.985).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.equal(reads,2,'4H and 1D read once the add can come');
 });

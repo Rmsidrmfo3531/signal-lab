@@ -467,27 +467,27 @@ test('ladder: whale zones on our side count as strong zones for the ×2 step (ki
   priceOf:async()=>PX,markOf:async()=>PX,balance:async()=>({equity:10000,available:9000}),gate:()=>({ok:true}),isBusy:()=>false,now:()=>clock.t});
  ex.arm();await ex.scan();
  const p=ex.store.open[0];assert.ok(p?.ladder,'a TRADER_LADDER position');assert.equal(whaleReads,0,'no whale read at the entry with the score gate off');
- const f=p.ladder.lastFill,sp=p.ladder.spacingPct;assert.equal(sp,1.5);
- // A whale BUY zone between half a spacing and the spacing level (0.9925 f .. 0.985 f), and a SELL zone (ignored for a LONG).
- const zp=+(f*.9895).toFixed(4);
- snap=await snapOf([[T0-H,800_000,'BUY',zp],[T0-H+1,800_000,'SELL',+(f*.988).toFixed(4)]],{end:T0});
+ const f=p.ladder.lastFill,sp=p.ladder.spacingPct;assert.equal(sp,2.5);
+ // A whale BUY zone between half a spacing and the spacing level (0.9875 f .. 0.975 f), and a SELL zone (ignored for a LONG).
+ const zp=+(f*.982).toFixed(4);
+ snap=await snapOf([[T0-H,800_000,'BUY',zp],[T0-H+1,800_000,'SELL',+(f*.980).toFixed(4)]],{end:T0});
  // Partial read first: no whale zone, add at the spacing level only.
  const partial={...snap,coveragePct:50};const keep=snap;snap=partial;
- v.setMark(+(f*.99).toFixed(2));clock.t+=10_000;await ex.reconcile();
- assert.equal(whaleReads,1);assert.deepEqual(p.ladder.whaleZones.list,[]);assert.equal(p.ladder.whaleZones.code,'WHALE_ZONE_PARTIAL');assert.equal(p.ladder.filled,1,'0.99 f is above the spacing level');
+ v.setMark(+(f*.985).toFixed(2));clock.t+=10_000;await ex.reconcile();
+ assert.equal(whaleReads,1);assert.deepEqual(p.ladder.whaleZones.list,[]);assert.equal(p.ladder.whaleZones.code,'WHALE_ZONE_PARTIAL');assert.equal(p.ladder.filled,1,'0.985 f is above the 2.5% spacing level');
  // A full-coverage read whose newest pages failed (stops 2 min before its end): stale, no whale zone either (review 2026-11-25).
  snap={...keep,coveredToMs:keep.endMs-120_000};clock.t+=6*60_000;await ex.reconcile();
  assert.equal(whaleReads,2);assert.deepEqual(p.ladder.whaleZones.list,[]);assert.equal(p.ladder.whaleZones.code,'WHALE_ZONE_PARTIAL');assert.match(p.ladder.whaleZones.detail,/^STALE 120s/);
  assert.equal(p.ladder.filled,1);
  // Full read (after the 5 min retry): the BUY zone is the add level, step 2 doubled, kind WHALE recorded.
- snap=keep;clock.t+=6*60_000;v.setMark(+(f*.9885).toFixed(2));await ex.reconcile();
+ snap=keep;clock.t+=6*60_000;v.setMark(+(f*.981).toFixed(2));await ex.reconcile();
  assert.equal(whaleReads,3);assert.equal(p.ladder.whaleZones.list.length,1);assert.equal(p.ladder.whaleZones.list[0].side,'BUY');
  assert.equal(p.ladder.filled,2,JSON.stringify({next:p.ladder.next,last:p.ladder.lastReason}));
  const fill=p.ladder.fills[1];
  assert.equal(fill.zone.kind,'WHALE');assert.deepEqual(fill.zone.why,['WHALE_BUY_ZONE']);assert.ok(fill.boost>0,'×2 step');assert.equal(fill.units,4);
  const ev=ex.store.events.find(e=>e.type==='LADDER_ADD');assert.equal(ev.zone.kind,'WHALE');
  // Read again only after 15 min.
- clock.t+=60_000;v.setMark(+(p.ladder.lastFill*.99).toFixed(2));await ex.reconcile();assert.equal(whaleReads,3);
+ clock.t+=60_000;v.setMark(+(p.ladder.lastFill*.985).toFixed(2));await ex.reconcile();assert.equal(whaleReads,3);
 });
 
 test('server: /api/whale-zones read-only route and the scalp reader on budgetedPublicRead (no binance() side effects)',()=>{

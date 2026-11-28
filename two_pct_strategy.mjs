@@ -23,16 +23,22 @@ export const TWO_PCT_DEFAULTS = Object.freeze({
  // 진입 캔들 조건: 시가 반대로 눌려 꼬리 형성 뒤 방향 전환 (역방향 봉 상태 진입 금지)
  minLowerWickPct: 0.25,
  minFlipAboveOpenPct: 0.05,
- // 손절(SL) 적절성 범위: 너무 좁아 수수료/노이즈에 털리거나 너무 넓어 청산 위험 큰 자리 차단
+ // 손절(SL) 적절성 범위: 너무 좁아 수수료/노이즈에 털리거나 너무 넓어 청산 위험 큰 자리 차단 (2026-11-27 튜닝: 2.2% / 45% ROE 상한)
  minStopPct: 0.40,
- maxStopPct: 3.50,
- maxStopRoePct: 70,
- // 손익비 & 일봉(1D) 저항/지지 TP
+ maxStopPct: 2.20,
+ maxStopRoePct: 45,
+ // 손익비 & 일봉(1D) 저항/지지 TP + 1차 분할 익절(1:2 RR 50% + 본전 스탑) + 과도한 먼 TP 상한
  minNetRR: 2.0,
+ partialTpRR: 2.0,
+ maxTpRR: 6.0,
+ maxTpDistPct: 8.0,
  athFallbackRR: 2.5,
  resistanceClusterPct: 0.8,
  resistanceBufferPct: 0.1,
  minDailyCandles: 3,
+ // 동일 종목 연속 재진입 방지 쿨다운 (손절 후 4시간, 익절 후 1시간)
+ lossCooldownMin: 240,
+ winCooldownMin: 60,
  // 레버리지 & 감시/보유 시간
  leverage: 20,
  watchMin: 45,
@@ -356,30 +362,52 @@ export function detectTwoPctSetup({
  }
  const roundTrip = twoPctRoundTripCost(curPrice, costs);
  const risk = Math.abs(curPrice - stop);
- let tp, netRR, tpSource, level = null;
+ let rawTp, rawNetRR, tpSource, level = null;
  if (daily.nearest) {
-  tp = daily.nearest.targetPrice;
-  netRR = (dir * (tp - curPrice) - roundTrip) / (risk + roundTrip);
+  rawTp = daily.nearest.targetPrice;
+  rawNetRR = (dir * (rawTp - curPrice) - roundTrip) / (risk + roundTrip);
   tpSource = isShort ? 'DAILY_SUPPORT' : 'DAILY_RESISTANCE';
   level = daily.nearest;
-  if (!(netRR >= cfg.minNetRR)) {
+  if (!(rawNetRR >= cfg.minNetRR)) {
    return {
     ok: false,
     reason: 'TWO_PCT_RR_BELOW_MIN',
-    detail: `1D ${isShort ? '지지' : '저항'} ${daily.nearest.price} · 손익비 1:${Number.isFinite(netRR) ? Math.max(0, netRR).toFixed(2) : '0'} < 1:${cfg.minNetRR}`,
+    detail: `1D ${isShort ? '지지' : '저항'} ${daily.nearest.price} · 손익비 1:${Number.isFinite(rawNetRR) ? Math.max(0, rawNetRR).toFixed(2) : '0'} < 1:${cfg.minNetRR}`,
    };
   }
  } else if (daily.isPriceDiscovery) {
-  const rawTp = curPrice + dir * (roundTrip + cfg.athFallbackRR * (risk + roundTrip));
-  if (!(rawTp > curPrice * 0.05)) {
+  const discTp = curPrice + dir * (roundTrip + cfg.athFallbackRR * (risk + roundTrip));
+  if (!(discTp > curPrice * 0.05)) {
    return { ok: false, reason: 'TWO_PCT_RR_BELOW_MIN', detail: '신저점 목표가 산출 불가' };
   }
-  tp = rawTp;
-  netRR = cfg.athFallbackRR;
+  rawTp = discTp;
+  rawNetRR = cfg.athFallbackRR;
   tpSource = isShort ? 'ATL_BREAKDOWN_RR' : 'ATH_BREAKOUT_RR';
  } else {
   return { ok: false, reason: 'TWO_PCT_DAILY_UNAVAILABLE', detail: `1D ${isShort ? '지지선' : '저항선'} 산출 불가` };
  }
+ // Cap unrealistic distant 1D targets (e.g. +112% / RR 38) to a realistic swing ceiling while preserving >= minNetRR.
+ const tpMin = curPrice + dir * (roundTrip + cfg.minNetRR * (risk + roundTrip));
+ const maxTpRR = Number(cfg.maxTpRR ?? TWO_PCT_DEFAULTS.maxTpRR);
+ const maxTpDistPct = Number(cfg.maxTpDistPct ?? TWO_PCT_DEFAULTS.maxTpDistPct);
+ const capCandidates = [rawTp];
+ if (Number.isFinite(maxTpRR) && maxTpRR >= cfg.minNetRR) {
+  const atMaxRR = curPrice + dir * (roundTrip + maxTpRR * (risk + roundTrip));
+  if (atMaxRR > curPrice * 0.05) capCandidates.push(atMaxRR);
+ }
+ if (Number.isFinite(maxTpDistPct) && maxTpDistPct > 0) {
+  const atMaxDist = curPrice * (1 + (dir * maxTpDistPct) / 100);
+  if (atMaxDist > curPrice * 0.05) capCandidates.push(atMaxDist);
+ }
+ const rawCapped = dir > 0 ? Math.min(...capCandidates) : Math.max(...capCandidates);
+ const tp2 = +(dir > 0 ? Math.max(tpMin, rawCapped) : Math.min(tpMin, rawCapped)).toPrecision(8);
+ const tpCapped = dir * (rawTp - tp2) > Math.max(1e-12, curPrice * 1e-5);
+ const netRR = (dir * (tp2 - curPrice) - roundTrip) / (risk + roundTrip);
+ // 2-stage exit: 50% at 1:2 RR (locks profit + auto breakeven stop) + 50% runner to capped 1D target.
+ const partialRR = Number(cfg.partialTpRR ?? TWO_PCT_DEFAULTS.partialTpRR);
+ const splitPartial = Number.isFinite(partialRR) && partialRR >= cfg.minNetRR && netRR >= partialRR + 0.35;
+ const tp1 = splitPartial ? +(curPrice + dir * (roundTrip + partialRR * (risk + roundTrip))).toPrecision(8) : tp2;
+ const targets = splitPartial ? [tp1, tp2] : [tp2];
  const atr = simpleAtr(closed) ?? Math.max(risk, curPrice * 0.015);
  return {
   ok: true,
@@ -387,8 +415,15 @@ export function detectTwoPctSetup({
   interval: TWO_PCT_INTERVAL,
   entry: curPrice,
   stop,
-  tp,
+  tp: tp2,
+  tp1,
+  tp2,
+  targets,
+  splitPartial,
+  tpCapped,
+  rawDailyTp: +rawTp.toPrecision(8),
   netRR: r4(netRR),
+  tp1NetRR: r4(splitPartial ? partialRR : netRR),
   stopDistPct: r4(stopDistPct),
   lowerWickPct: r4(wickPct),
   wickPct: r4(wickPct),

@@ -80,16 +80,16 @@ async function opened({config={},...opt}={}){
  return {v,clock,ex,p:ex.store.open[0]};
 }
 
-test('ladder sizing: unit = cap / 32 (2·2·4·8·16), multipliers never break the cap, the min-order shrink from the end, and the refusal',()=>{
+test('ladder sizing: unit = cap / 16 (2·2·4·8), multipliers never break the cap, the min-order shrink from the end, and the refusal',()=>{
  const base={symbolCapUSD:1000,leverage:10,price:100,quantityStep:'0.01',minQty:0.01,minNotional:2};
  const a=planLadder(base);
- assert.equal(a.ok,true);assert.deepEqual(a.units,[2,2,4,8,16]);assert.equal(a.unitMarginUSD,31.25);assert.equal(a.firstMarginUSD,62.5);assert.equal(a.totalMarginUSD,1000);assert.equal(a.qty0,6.25);
+ assert.equal(a.ok,true);assert.deepEqual(a.units,[2,2,4,8]);assert.equal(a.unitMarginUSD,62.5);assert.equal(a.firstMarginUSD,125);assert.equal(a.totalMarginUSD,1000);assert.equal(a.qty0,12.5);
  const big=planLadder({...base,sizeMult:1.4});assert.equal(big.capped,true);assert.ok(big.totalMarginUSD<=1000+1e-9);
- const half=planLadder({...base,sizeMult:.5});assert.equal(half.unitMarginUSD,15.625);assert.equal(half.totalMarginUSD,500);
- const room=planLadder({...base,roomUSD:320});assert.ok(room.totalMarginUSD<=320+1e-9);assert.deepEqual(room.units,[2,2,4,8,16]);
- // First step (2 units) below the venue minimum (2 coins at 100 / 10 = $20 margin, +10 % headroom = $22 -> unit $11): raised & shortened.
- const short=planLadder({...base,symbolCapUSD:300,minQty:2});
- assert.equal(short.raised,true);assert.equal(short.unitMarginUSD,11);assert.equal(short.firstMarginUSD,22);assert.deepEqual(short.units,[2,2,4,8]);assert.ok(short.totalMarginUSD<=300);assert.equal(short.qty0,2.2);
+ const half=planLadder({...base,sizeMult:.5});assert.equal(half.unitMarginUSD,31.25);assert.equal(half.totalMarginUSD,500);
+ const room=planLadder({...base,roomUSD:320});assert.ok(room.totalMarginUSD<=320+1e-9);assert.deepEqual(room.units,[2,2,4,8]);
+ // First step (2 units) below the venue minimum (4 coins at 100 / 10 = $40 margin, +10 % headroom = $44 -> unit $22): raised & shortened.
+ const short=planLadder({...base,symbolCapUSD:300,minQty:4});
+ assert.equal(short.raised,true);assert.equal(short.unitMarginUSD,22);assert.equal(short.firstMarginUSD,44);assert.deepEqual(short.units,[2,2,4]);assert.ok(short.totalMarginUSD<=300);assert.equal(short.qty0,4.4);
  assert.deepEqual(planLadder({...base,symbolCapUSD:300,minQty:20}),{ok:false,reason:'LADDER_BELOW_MINIMUM',minUnitMarginUSD:220,capUSD:300});
  assert.equal(planLadder({...base,roomUSD:0}).reason,'MARGIN_CAP');
  // The cap is never exceeded, whatever the multiplier, minimum and room.
@@ -102,13 +102,12 @@ test('ladder sizing: unit = cap / 32 (2·2·4·8·16), multipliers never break t
 });
 
 test('strong zone x2 takes the same units off the last steps (total kept); the last step cannot grow',()=>{
- const L=[2,2,4,8,16];
- assert.deepEqual(ladderZoneBoost(L,1),{units:[2,4,4,8,14],boost:2});
- assert.deepEqual(ladderZoneBoost(L,3),{units:[2,2,4,16,8],boost:8});
- assert.deepEqual(ladderZoneBoost(L,4),{units:L,boost:0});
- assert.deepEqual(ladderZoneBoost([2,2,4,8],3),{units:[2,2,4,8],boost:0});
+ const L=[2,2,4,8];
+ assert.deepEqual(ladderZoneBoost(L,1),{units:[2,4,4,6],boost:2});
+ assert.deepEqual(ladderZoneBoost(L,2),{units:[2,2,8,4],boost:4});
+ assert.deepEqual(ladderZoneBoost(L,3),{units:L,boost:0});
  assert.deepEqual(ladderZoneBoost([2,2,4,2],2),{units:[2,2,6],boost:2});
- for(let i=0;i<5;i++)assert.equal(ladderZoneBoost(L,i).units.reduce((s,x)=>s+x,0),32);
+ for(let i=0;i<4;i++)assert.equal(ladderZoneBoost(L,i).units.reduce((s,x)=>s+x,0),16);
 });
 
 test('add level: spacing from the last fill, a strong zone in between (not too close), or the spacing level inside a zone',()=>{
@@ -124,9 +123,9 @@ test('add level: spacing from the last fill, a strong zone in between (not too c
  assert.equal(inside.level,98);assert.equal(inside.zone.at,'AT_SPACING');
  const s=ladderNextAdd({direction:'SHORT',lastFill:100,spacingPct:2,zones:[z(101.2,101.5)]});
  assert.equal(s.spacingLevel,102);assert.equal(s.level,101.2);
- // Spacing: max(1.5 %, ATR), capped under the final line at the leverage.
- assert.equal(ladderSpacing({atrPct:.4,leverage:10}).spacingPct,1.5);
- assert.equal(ladderSpacing({atrPct:2.2,leverage:10}).spacingPct,2.2);
+ // Spacing: max(2.5 %, ATR), capped under the final line at the leverage.
+ assert.equal(ladderSpacing({atrPct:.4,leverage:10}).spacingPct,2.5);
+ assert.equal(ladderSpacing({atrPct:2.8,leverage:10}).spacingPct,2.8);
  assert.deepEqual([ladderSpacing({atrPct:8,leverage:10}).spacingPct,ladderSpacing({atrPct:8,leverage:10}).capped],[3.375,true]);
  assert.equal(atrPct(hourly(T0),{now:T0}).toFixed(2),'0.40');
 });
@@ -169,37 +168,37 @@ test('management: TRADER_LADDER by default on the testnet; CURRENT on request, w
  assert.equal(tn.status().settings.management,'TRADER_LADDER');assert.equal(tn.managementScope().since,T0);
 });
 
-test('entry: same gates, first ladder step (2 units), whole ladder reserved; the card shows the next add',async()=>{
+test('entry: same gates, first ladder step (2/16 units = same $125), 50% capShare halves worst-case reserve to $1,000; the card shows the next add',async()=>{
  const {v,ex,p}=await opened();
  assert.equal(p.management,'TRADER_LADDER');assert.equal(p.scaleIn,undefined);
- assert.deepEqual(p.ladder.units,[2,2,4,8,16]);assert.equal(p.ladder.unitMarginUSD,62.5);assert.equal(p.ladder.filled,1);
- assert.equal(p.ladder.spacingPct,1.5);assert.equal(p.leverage,10);
+ assert.deepEqual(p.ladder.units,[2,2,4,8]);assert.equal(p.ladder.unitMarginUSD,62.5);assert.equal(p.ladder.filled,1);
+ assert.equal(p.ladder.spacingPct,2.5);assert.equal(p.leverage,10);
  assert.ok(Math.abs(p.size*p.avg/10-125)<.2);
- assert.equal(p.ladder.reserveMarginUSD,2000);assert.equal(p.ladder.reserveRiskUSD,1532);assert.equal(p.riskUSD,1532);
+ assert.equal(p.ladder.reserveMarginUSD,1000);assert.equal(p.ladder.reserveRiskUSD,766);assert.equal(p.riskUSD,766);
  // No take-profit / stop orders on the venue: the ladder exits itself.
  assert.equal(v.calls.filter(c=>c.reduceOnly||c.type==='STOP_MARKET').length,0);
- const src=ex.budgetSource();assert.equal(src.usedMargin(),2000);assert.equal(src.openRisk(),1532);
+ const src=ex.budgetSource();assert.equal(src.usedMargin(),1000);assert.equal(src.openRisk(),766);
  const s=ex.status(),pos=s.positions[0];
- assert.equal(pos.ladderView.step,1);assert.equal(pos.ladderView.of,5);
- assert.ok(Math.abs(pos.ladderView.nextAdd.price-p.avg*.985)<1e-6);
+ assert.equal(pos.ladderView.step,1);assert.equal(pos.ladderView.of,4);
+ assert.ok(Math.abs(pos.ladderView.nextAdd.price-p.avg*.975)<1e-6);
  const card=scalpPositionCardHTML({...pos,kind:'MOVE_REVERSAL',scalpScore:{score:87,grade:'A+'}});
  assert.match(card,/paper-long">롱/);assert.match(card,/tn-scalp-score grade-a-plus"[^>]*>87점 A\+급/);
  assert.match(scalpPositionCardHTML({...pos,direction:'SHORT'}),/paper-short">숏/);
  assert.match(card,/다음 추매<b>[\d.]+<\/b>/);assert.match(card,/익절/);
- assert.doesNotMatch(card,/자동 손절|마지막 선|예약 위험|보유\s*중|<span>보유<|급변|카피식 추매|1\/5 단계/);
+ assert.doesNotMatch(card,/자동 손절|마지막 선|예약 위험|보유\s*중|<span>보유<|급변|카피식 추매|1\/4 단계/);
  const opened_=ex.store.events.find(e=>e.type==='OPENED');
  const text=scalpEventText(opened_);
- assert.match(text,/카피식 추매/);assert.match(text,/1\/5 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 24시간/);
- assert.equal(s.settings.management,'TRADER_LADDER');assert.equal(s.settings.ladderTpNetPct,.6);assert.equal(s.settings.ladderMaxHoldMin,1440);
+ assert.match(text,/카피식 추매/);assert.match(text,/1\/4 단계 · 평단/);assert.match(text,/마지막 선 −75% ROE/);assert.match(text,/최대 24시간/);
+ assert.equal(s.settings.management,'TRADER_LADDER');assert.equal(s.settings.ladderTpNetPct,.6);assert.equal(s.settings.ladderMaxHoldMin,1440);assert.equal(s.settings.ladderCapShare,.5);
 });
 
-test('adds: at the spacing from the LAST fill, one per step, unique client ids; no 240-min cut, no -40 % defensive add',async()=>{
+test('adds: at 2.5% spacing from the LAST fill, one per step, unique client ids; no 240-min cut, no -40 % defensive add',async()=>{
  const {v,clock,ex,p}=await opened();
  const first=p.avg;
- // 1.2 % down: not yet. 300 minutes in a loss: no time cut (CURRENT would close at 240), no defensive add.
- setMark(v,'SOLUSDT',first*.988);clock.t+=300*60000;await ex.reconcile();
+ // 2.0 % down: not yet (floor raised to 2.5 %). 300 minutes in a loss: no time cut (CURRENT would close at 240), no defensive add.
+ setMark(v,'SOLUSDT',first*.980);clock.t+=300*60000;await ex.reconcile();
  assert.equal(adds(v).length,0);assert.equal(ex.store.open.length,1);
- setMark(v,'SOLUSDT',below(first*.985));clock.t+=10000;await ex.reconcile();
+ setMark(v,'SOLUSDT',below(first*.975));clock.t+=10000;await ex.reconcile();
  assert.equal(adds(v).length,1);assert.equal(p.ladder.filled,2);assert.equal(p.ladder.fills[1].units,2);assert.equal(p.ladder.fills[1].zone,null);
  const view=ex.status().positions[0];
  assert.equal(view.details.averageEntryPrice,p.avg);
@@ -207,9 +206,9 @@ test('adds: at the spacing from the LAST fill, one per step, unique client ids; 
  const card=scalpPositionCardHTML(view);
  assert.ok(card.includes(`평균 진입가<b>${p.avg.toFixed(2)}</b>`));
  assert.ok(card.includes(`첫 진입가<b>${first.toFixed(2)}</b>`));
- assert.ok(Math.abs(p.ladder.lastFill-first*.985)<.03);
- // Next level from the last fill (not the first entry): 1.5 % under the add.
- const lvl=p.ladder.lastFill*.985;
+ assert.ok(Math.abs(p.ladder.lastFill-first*.975)<.03);
+ // Next level from the last fill (not the first entry): 2.5 % under the add.
+ const lvl=p.ladder.lastFill*.975;
  setMark(v,'SOLUSDT',+(lvl+.05).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(adds(v).length,1);
  setMark(v,'SOLUSDT',+(lvl-.01).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.equal(adds(v).length,2);assert.equal(p.ladder.fills[2].units,4);
@@ -218,17 +217,17 @@ test('adds: at the spacing from the LAST fill, one per step, unique client ids; 
  // Same price again: no second order for the same step.
  clock.t+=10000;await ex.reconcile();assert.equal(adds(v).length,2);
  const ev=ex.store.events.filter(e=>e.type==='LADDER_ADD');assert.equal(ev.length,2);
- assert.match(scalpEventText(ev[1]),/카피식 추매 3\/5단계/);assert.match(scalpEventText(ev[1]),/3\/5 단계 · 평단 [\d.]+ · 다음 추매/);
+ assert.match(scalpEventText(ev[1]),/카피식 추매 3\/4단계/);assert.match(scalpEventText(ev[1]),/3\/4 단계 · 평단 [\d.]+ · 다음 추매/);
  assert.ok(!ex.store.events.some(e=>['MAX_HOLD_EXIT','SCALE_IN_FILLED'].includes(e.type)));
 });
 
 test('a strong zone between the last fill and the spacing level: the add comes there, doubled, the last step reduced',async()=>{
  const {v,clock,ex,p}=await opened();
- const f=p.avg,zone={low:+(f*.986).toFixed(2),high:+(f*.989).toFixed(2),tf:'4h',why:['OVERLAP_4H_1D','TOP_VOLUME_NODE'],rank:1};
+ const f=p.avg,zone={low:+(f*.980).toFixed(2),high:+(f*.984).toFixed(2),tf:'4h',why:['OVERLAP_4H_1D','TOP_VOLUME_NODE'],rank:1};
  p.ladder.zones={bucket:Math.floor(clock.t/(4*H)),at:clock.t,list:[zone]};
  setMark(v,'SOLUSDT',zone.high);clock.t+=10000;await ex.reconcile();
  assert.equal(adds(v).length,1);
- assert.deepEqual(p.ladder.units,[2,4,4,8,14]);assert.equal(p.ladder.fills[1].units,4);assert.equal(p.ladder.fills[1].boost,2);
+ assert.deepEqual(p.ladder.units,[2,4,4,6]);assert.equal(p.ladder.fills[1].units,4);assert.equal(p.ladder.fills[1].boost,2);
  assert.deepEqual(p.ladder.fills[1].zone.why,['OVERLAP_4H_1D','TOP_VOLUME_NODE']);
  assert.ok(Math.abs(p.ladder.fills[1].qty*p.ladder.fills[1].price/10-250)<2);
  const e=ex.store.events.find(x=>x.type==='LADDER_ADD');assert.match(scalpEventText(e),/강한 매물대 2배 \(4H·1D 매물대 겹침·최대 거래량 매물대\)/);
@@ -236,7 +235,7 @@ test('a strong zone between the last fill and the spacing level: the add comes t
 
 test('take profit: the whole position at the average + 0.6 % net of fees, booked net positive',async()=>{
  const {v,clock,ex,p}=await opened();
- setMark(v,'SOLUSDT',below(p.avg*.985));clock.t+=10000;await ex.reconcile();assert.equal(p.ladder.filled,2);
+ setMark(v,'SOLUSDT',below(p.avg*.975));clock.t+=10000;await ex.reconcile();assert.equal(p.ladder.filled,2);
  const tp=ladderTpPrice({direction:'LONG',avg:p.avg,takerRate:.0006,tpNetPct:.6,reservePct:p.ladder.reservePct,tickSize:'0.01'});
  setMark(v,'SOLUSDT',+(tp-.02).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(ex.store.open.length,1);
  setMark(v,'SOLUSDT',tp);clock.t+=10000;await ex.reconcile();
@@ -245,7 +244,7 @@ test('take profit: the whole position at the average + 0.6 % net of fees, booked
  assert.equal(ex.store.open.length,0);const x=ex.store.closed[0];
  assert.equal(x.closeReason,'LADDER_TAKE_PROFIT');assert.ok(x.netUSD>0);
  const notional=x.avg*x.filled;assert.ok(x.netUSD/notional*100>=.55,`${x.netUSD/notional*100}`);
- assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/평단 익절.*\n.*카피식 추매 2\/5단계/);
+ assert.match(scalpEventText(ex.store.events.find(e=>e.type==='CLOSED')),/평단 익절.*\n.*카피식 추매 2\/4단계/);
  const line=journalLine(x);assert.equal(line.management,'TRADER_LADDER');assert.equal(line.ladder.filled,2);
  const m=scalpMargin(x);assert.ok(Math.abs(m.initialUSD-125)<.4);assert.ok(Math.abs(m.addedUSD-125)<1.5);
  const st=ex.stats();assert.equal(st.byManagement.TRADER_LADDER.trades,1);assert.equal(st.byManagement.CURRENT.trades,0);
@@ -260,46 +259,46 @@ test('max hold: closed after 24 hours whatever the result (user 2026-11-26)',asy
  assert.ok(reasonInfo('LADDER_MAX_HOLD',ex.status().settings).desc.includes('24시간'));
 });
 
-test('final line: after the last step -75 % ROE closes as LADDER_FINAL_LINE; before it the emergency line still protects',async()=>{
+test('final line: after the 4th step -75 % ROE closes as LADDER_FINAL_LINE; before it the emergency line still protects',async()=>{
  {const {v,clock,ex,p}=await opened();
   // Ladder not full: the existing emergency line (no position ever runs unprotected).
   setMark(v,'SOLUSDT',+(p.avg*(1-.076)).toFixed(2));p.ladder.retryAfterAt=clock.t+H;clock.t+=10000;await ex.reconcile();
   assert.equal(ex.store.closed[0].closeReason,'EMERGENCY_ROE_STOP');}
  const {v,clock,ex,p}=await opened();
- for(let i=0;i<4;i++){setMark(v,'SOLUSDT',+(p.ladder.lastFill*.985-.01).toFixed(2));clock.t+=10000;await ex.reconcile()}
- assert.equal(p.ladder.filled,5);assert.equal(p.ladder.state,'COMPLETE');assert.equal(adds(v).length,4);
+ for(let i=0;i<3;i++){setMark(v,'SOLUSDT',+(p.ladder.lastFill*.975-.01).toFixed(2));clock.t+=10000;await ex.reconcile()}
+ assert.equal(p.ladder.filled,4);assert.equal(p.ladder.state,'COMPLETE');assert.equal(adds(v).length,3);
  const used=p.ladder.fills.reduce((t,f)=>t+f.qty*f.price/10,0);assert.ok(used<=p.ladder.capUSD+1e-6,`${used}`);
- assert.doesNotMatch(scalpPositionCardHTML(ex.status().positions[0]),/다음 추매|마지막 선|5\/5 단계/);
- setMark(v,'SOLUSDT',+(p.avg*(1-.07)).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(ex.store.open.length,1);assert.equal(adds(v).length,4);
+ assert.doesNotMatch(scalpPositionCardHTML(ex.status().positions[0]),/다음 추매|마지막 선|4\/4 단계/);
+ setMark(v,'SOLUSDT',+(p.avg*(1-.07)).toFixed(2));clock.t+=10000;await ex.reconcile();assert.equal(ex.store.open.length,1);assert.equal(adds(v).length,3);
  setMark(v,'SOLUSDT',+(p.avg*(1-.0751)).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.equal(ex.store.open.length,0);const x=ex.store.closed[0];
- assert.equal(x.closeReason,'LADDER_FINAL_LINE');assert.ok(x.closeMeta.roePct<=-75);assert.equal(x.closeMeta.step,5);
+ assert.equal(x.closeReason,'LADDER_FINAL_LINE');assert.ok(x.closeMeta.roePct<=-75);assert.equal(x.closeMeta.step,4);
 });
 
 test('budget: every open ladder holds its whole margin and worst-case risk, so concurrent first entries cannot over-commit',async()=>{
- // Daily loss 30 % of 10,000 = 3,000; one ladder reserves 1,532 (2,000 margin at -75 % + fees): only one fits.
- {const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:30,marginCapPct:100,now:()=>clock.t});
+ // Daily loss 15 % of 10,000 = 1,500; one 4-step ladder reserves 766 (1,000 margin at -75 % + fees): only one fits.
+ {const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:15,marginCapPct:100,now:()=>clock.t});
   const ex=make(v,{clock,symbols:['SOLUSDT','XRPUSDT','ADAUSDT'],budget});budget.register('scalp',ex.budgetSource());
   ex.arm();await ex.scan();
   assert.equal(ex.store.open.length,1);assert.ok(ex.store.skips.some(s=>s.reason==='OPEN_RISK_LIMIT'));
-  const snap=budget.snapshot(10000);assert.equal(snap.marginUSD,2000);assert.equal(snap.openRiskUSD,1532);}
- // Margin cap 60 % = 6,000: three ladders (3 x 2,000 reserved) and no fourth, although their first steps use ~375.
- const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:100,marginCapPct:60,now:()=>clock.t});
+  const snap=budget.snapshot(10000);assert.equal(snap.marginUSD,1000);assert.equal(snap.openRiskUSD,766);}
+ // Margin cap 30 % = 3,000: three ladders (3 x 1,000 reserved) and no fourth, although their first steps use ~375.
+ const v=venue(),clock={t:T0},budget=new TestnetBudget({dailyLossPct:100,marginCapPct:30,now:()=>clock.t});
  const ex=make(v,{clock,symbols:['SOLUSDT','XRPUSDT','ADAUSDT','DOTUSDT'],budget});budget.register('scalp',ex.budgetSource());
  ex.arm();await ex.scan();
  assert.equal(ex.store.open.length,3);
  assert.ok(ex.store.skips.some(s=>['MARGIN_CAP','TESTNET_MARGIN_CAP'].includes(s.reason)),JSON.stringify(ex.store.skips.map(s=>s.reason)));
  const firstUnits=ex.store.open.reduce((t,p)=>t+p.size*p.avg/p.leverage,0);assert.ok(firstUnits<400);
- assert.equal(budget.snapshot(10000).marginUSD,6000);
+ assert.equal(budget.snapshot(10000).marginUSD,3000);
  // Worst case: every step filled to the final line still fits the shared margin.
- for(const p of ex.store.open)assert.ok(p.ladder.reserveMarginUSD<=2000+1e-9);
+ for(const p of ex.store.open)assert.ok(p.ladder.reserveMarginUSD<=1000+1e-9);
 });
 
 test('restart: an add whose answer was lost is settled from the position once, never sent twice',async()=>{
  const dir=tmp(),v=venue({loseAddReply:true}),clock={t:T0};
  const ex=make(v,{clock,dir});ex.arm();await ex.scan();
  const p=ex.store.open[0];
- setMark(v,'SOLUSDT',below(p.avg*.985));clock.t+=10000;await ex.reconcile();
+ setMark(v,'SOLUSDT',below(p.avg*.975));clock.t+=10000;await ex.reconcile();
  assert.equal(adds(v).length,1);assert.ok(ex.store.open[0].ladder.pending,'kept pending: the answer was lost');
  assert.equal(ex.status().blocked,'UNRESOLVED_ORDER_STATE');
  // Restart (same files), price still at the level: settled from the position, no second order.
@@ -307,7 +306,7 @@ test('restart: an add whose answer was lost is settled from the position once, n
  clock.t+=10000;await again.reconcile();clock.t+=10000;await again.reconcile();
  const q=again.store.open[0];
  assert.equal(adds(v).length,1);assert.equal(q.ladder.filled,2);assert.equal(q.ladder.pending,undefined);
- assert.ok(Math.abs(q.ladder.fills[1].price-p.avg*.985)<.03);assert.equal(again.managementScope().since,T0);
+ assert.ok(Math.abs(q.ladder.fills[1].price-p.avg*.975)<.03);assert.equal(again.managementScope().since,T0);
  fs.rmSync(dir,{recursive:true,force:true});
 });
 
@@ -326,18 +325,18 @@ test('readiness counts only TRADER_LADDER trades from the switch time, and says 
 });
 
 test('glossary and texts: the ladder line, the new exit reasons',()=>{
- assert.equal(ladderStepText({step:3,of:5,avg:98,nextAdd:{price:95.5,zone:null}}),'3/5 단계 · 평단 98 · 다음 추매 95.5');
+ assert.equal(ladderStepText({step:3,of:4,avg:98,nextAdd:{price:95.5,zone:null}}),'3/4 단계 · 평단 98 · 다음 추매 95.5');
  const S=new ScalpExecutor({config:scalpExecConfig({})}).status().settings;
- for(const c of ['LADDER_TAKE_PROFIT','LADDER_MAX_HOLD','LADDER_FINAL_LINE','LADDER_BELOW_MINIMUM','LADDER_FINAL_LINE_OFF'])assert.ok(reasonInfo(c,S)?.label,c);
- assert.match(reasonInfo('LADDER_TAKE_PROFIT',S).desc,/\+0\.6%/);assert.match(reasonInfo('LADDER_FINAL_LINE',S).desc,/5단계.*−75% ROE/);
- assert.deepEqual([...TRADER_LADDER.steps],[2,2,4,8,16]);assert.equal(SCALP_MANAGEMENTS.LADDER,'TRADER_LADDER');
+ for(const c of ['LADDER_TAKE_PROFIT','LADDER_MAX_HOLD','LADDER_FINAL_LINE','LADDER_BELOW_MINIMUM','LADDER_FINAL_LINE_OFF','EU_SESSION_AGAINST_TREND'])assert.ok(reasonInfo(c,S)?.label,c);
+ assert.match(reasonInfo('LADDER_TAKE_PROFIT',S).desc,/\+0\.6%/);assert.match(reasonInfo('LADDER_FINAL_LINE',S).desc,/4단계.*−75% ROE/);
+ assert.deepEqual([...TRADER_LADDER.steps],[2,2,4,8]);assert.equal(SCALP_MANAGEMENTS.LADDER,'TRADER_LADDER');
 });
 
 test('SHORT: adds above the last fill, take profit below the average, all net of fees',async()=>{
  const v=venue(),clock={t:T0};setMark(v,'SOLUSDT',PX_S);
  const ex=make(v,{clock,rows:rise,trend:down4h,px:PX_S});ex.arm();await ex.scan();
  const p=ex.store.open[0];assert.equal(p.direction,'SHORT');assert.equal(p.management,'TRADER_LADDER');
- setMark(v,'SOLUSDT',+(Math.ceil(p.avg*1.015*100)/100+.01).toFixed(2));clock.t+=10000;await ex.reconcile();
+ setMark(v,'SOLUSDT',+(Math.ceil(p.avg*1.025*100)/100+.01).toFixed(2));clock.t+=10000;await ex.reconcile();
  assert.equal(adds(v).length,1);assert.equal(adds(v)[0].side,'SELL');assert.ok(p.ladder.lastFill>p.ladder.fills[0].price);
  const tp=ladderTpPrice({direction:'SHORT',avg:p.avg,takerRate:.0006,tpNetPct:.6,reservePct:p.ladder.reservePct,tickSize:'0.01'});
  assert.ok(tp<p.avg*.993);
@@ -349,7 +348,7 @@ test('SHORT: adds above the last fill, take profit below the average, all net of
 test('restart before the add was sent: the step waits 2 minutes, then is tried again with a new client id (one fill)',async()=>{
  const dir=tmp(),v=venue(),clock={t:T0};
  const ex=make(v,{clock,dir});ex.arm();await ex.scan();
- const p=ex.store.open[0],lvl=below(p.avg*.985);
+ const p=ex.store.open[0],lvl=below(p.avg*.975);
  // The process stopped after saving the pending add and before sending it.
  p.ladder.attempt=1;p.ladder.pending={step:2,index:1,units:1,plannedUnits:[...p.ladder.units],boost:0,zone:null,level:lvl,clientOrderId:p.id+'L2n1',attemptedAt:clock.t,preSize:p.size,preAvg:p.avg,requestedQty:p.size};
  ex.reconcile&&fs.writeFileSync(path.join(dir,'scalp-store.json'),JSON.stringify({version:1,strategy:'SCALP_REVERSAL',...ex.store}));
@@ -368,7 +367,7 @@ test('position cards use the same responsive grid with only the metrics for thei
  assert.match(css,/@media\(max-width:690px\)\{\.live-values\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
  assert.doesNotMatch(css,/\.live-values\{display:flex;flex-wrap:wrap/);
  const cur=scalpPositionCardHTML({symbol:'BLURUSDT',direction:'SHORT',status:'OPEN',stopLossEnabled:false,avg:0.008336,mark:0.008672,size:87462,targets:[0.008288,0.008248,0.008209],parts:[.4,.35,.25],riskUSD:9.23,leverage:10,openedAt:T0});
- const lad=scalpPositionCardHTML({symbol:'PROMUSDT',direction:'SHORT',status:'OPEN',management:'TRADER_LADDER',avg:4.608,mark:4.66,size:40.636,riskUSD:229.8,leverage:10,openedAt:T0,ladderView:{step:2,of:6,tpPrice:4.573,tpNetPct:.6,finalLineRoePct:75,reserveMarginUSD:300,maxHoldMin:1440,avg:4.608,nextAdd:{price:4.75241}}});
+ const lad=scalpPositionCardHTML({symbol:'PROMUSDT',direction:'SHORT',status:'OPEN',management:'TRADER_LADDER',avg:4.608,mark:4.66,size:40.636,riskUSD:229.8,leverage:10,openedAt:T0,ladderView:{step:2,of:4,tpPrice:4.573,tpNetPct:.6,finalLineRoePct:75,reserveMarginUSD:300,maxHoldMin:1440,avg:4.608,nextAdd:{price:4.75241}}});
  const cells=html=>(html.match(/<div class="paper-trade-values live-values">([\s\S]*?)<\/div>/)?.[1]||'').match(/<span(?:\s[^>]*)?>/g)||[];
  assert.equal(cells(cur).length,11);
  assert.equal(cells(lad).length,10);
@@ -379,16 +378,16 @@ test('position cards use the same responsive grid with only the metrics for thei
 test('P1-1/P1-2: STOPPED ladder releases unspent tail budget, journalLine uses ladder reserveRiskUSD, and TP retry allows 1-tick profitable buffer',async()=>{
  const {v,clock,ex,p}=await opened();
  const fullMargin=ex.budgetSource().usedMargin(),fullRisk=ex.budgetSource().openRisk();
- assert.equal(fullMargin,2000);
- assert.equal(fullRisk,1532);
+ assert.equal(fullMargin,1000);
+ assert.equal(fullRisk,766);
  // Once ladder stops adding, only actual open margin + its final-line risk stay reserved.
  p.ladder.state='STOPPED';
  assert.ok(ex.budgetSource().usedMargin()<200,'stopped ladder releases unspent tail margin');
  assert.ok(ex.budgetSource().openRisk()<200,'stopped ladder releases unspent tail risk');
 
  // journalLine uses ladder reserveRiskUSD rather than phantom 0.25 ATR stop
- const line=journalLine({...p,initialStop:p.avg*0.999,closedAt:clock.t+60000,closeReason:'LADDER_TAKE_PROFIT',netUSD:15.32});
- assert.equal(line.pnl.riskUSDActual,1532);
+ const line=journalLine({...p,initialStop:p.avg*0.999,closedAt:clock.t+60000,closeReason:'LADDER_TAKE_PROFIT',netUSD:7.66});
+ assert.equal(line.pnl.riskUSDActual,766);
  assert.equal(line.pnl.r,0.01);
 
  // TP retry (n>=2) applies 1-tick profitable buffer when 1st IOC expires
@@ -410,24 +409,50 @@ test('P1-1/P1-2: STOPPED ladder releases unspent tail budget, journalLine uses l
  assert.ok(iocCalls[1]<iocCalls[0],'LONG TP retry steps down 1 tick while staying profitable');
 });
 
-test('TRADER_LADDER keeps full 2/32 first-step margin on 20% testnet cap even under EU session, B-grade, low bounce, and 4H against-trend; LIVE stays 10%',async()=>{
+test('Priority 4 (EU session protection): EU 4H counter-trend blocked (EU_SESSION_AGAINST_TREND), EU with-trend halved to 0.5x; non-EU keeps full 2/16 ($125) and LIVE stays 10%',async()=>{
  // LIVE real-money scalp must remain pinned to 10% / 30%
  const liveCfg=scalpLiveExecConfig({});
  assert.equal(liveCfg.maxMarginPct,10);
  assert.equal(liveCfg.maxTotalMarginPct,30);
- // 10:00 UTC (19:00 KST) = EU session (0.5x), 4H downtrend while entering LONG = againstTrend (0.5x), minScore=50 -> B-grade/low bounce
+ // 10:00 UTC (19:00 KST) = EU session (0.5x)
  const euBucket=Math.floor(Date.parse('2026-11-16T10:00:00Z')/I);
  const euNow=euBucket*I+5000;
- const v=venue(),clock={t:euNow};
  const euRows=()=>crash({lastOpen:(euBucket-1)*I});
- const ex=make(v,{clock,rows:euRows,trend:down4h,config:{minScore:50,scoreTierSizing:true,sessionWeighting:true,sessionEuMult:0.5,bounceSizing:true,bounceLowMult:0.8,trendMode:'soft'}});
- ex.arm();await ex.scan();
- const p=ex.store.open[0];
- assert.ok(p,'entered TRADER_LADDER position');
- assert.equal(p.ladder.sizeMult,1);
- assert.equal(p.ladder.unitMarginUSD,62.5);
- assert.ok(Math.abs(p.size*p.avg/p.leverage-125)<.4,`expected full 2/32 ($125) first step, got ${(p.size*p.avg/p.leverage).toFixed(2)}`);
- assert.equal(p.ladder.reserveMarginUSD,2000);
+
+ // 1) EU session + 4H downtrend while entering LONG -> blocked by EU_SESSION_AGAINST_TREND
+ {
+  const v=venue(),clock={t:euNow};
+  const ex=make(v,{clock,rows:euRows,trend:down4h,config:{minScore:50,scoreTierSizing:true,sessionWeighting:true,sessionEuMult:0.5,bounceSizing:true,bounceLowMult:0.8,trendMode:'record'}});
+  ex.arm();await ex.scan();
+  assert.equal(ex.store.open.length,0,'EU counter-trend entry blocked');
+  assert.ok(ex.store.skips.some(s=>s.reason==='EU_SESSION_AGAINST_TREND'),JSON.stringify(ex.store.skips));
+ }
+
+ // 2) EU session + 4H uptrend (WITH trend) -> enters at 0.5x sizing ($62.5 first step, $500 reserve)
+ {
+  const v=venue(),clock={t:euNow};
+  const ex=make(v,{clock,rows:euRows,trend:up4h,config:{minScore:50,scoreTierSizing:true,sessionWeighting:true,sessionEuMult:0.5,bounceSizing:true,bounceLowMult:0.8,trendMode:'record'}});
+  ex.arm();await ex.scan();
+  const p=ex.store.open[0];
+  assert.ok(p,'EU with-trend TRADER_LADDER entered');
+  assert.equal(p.ladder.sizeMult,0.5);
+  assert.equal(p.ladder.unitMarginUSD,31.25);
+  assert.ok(Math.abs(p.size*p.avg/p.leverage-62.5)<.4,`expected EU 0.5x ($62.5) first step, got ${(p.size*p.avg/p.leverage).toFixed(2)}`);
+  assert.equal(p.ladder.reserveMarginUSD,500);
+ }
+
+ // 3) Non-EU session (03:00 UTC) keeps full 2/16 ($125 first step, $1,000 reserve) even with B-grade/low bounce
+ {
+  const v=venue(),clock={t:T0};
+  const ex=make(v,{clock,trend:up4h,config:{minScore:50,scoreTierSizing:true,sessionWeighting:true,sessionEuMult:0.5,bounceSizing:true,bounceLowMult:0.8,trendMode:'record'}});
+  ex.arm();await ex.scan();
+  const p=ex.store.open[0];
+  assert.ok(p,'non-EU TRADER_LADDER entered');
+  assert.equal(p.ladder.sizeMult,1);
+  assert.equal(p.ladder.unitMarginUSD,62.5);
+  assert.ok(Math.abs(p.size*p.avg/p.leverage-125)<.4);
+  assert.equal(p.ladder.reserveMarginUSD,1000);
+ }
 });
 
 test('#consider parallelizes pre-entry reads and passes 3.5s inner deadlineMs under 5s SCALP_WHALE_ZONE_TIMEOUT_MS',async()=>{

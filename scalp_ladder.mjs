@@ -15,10 +15,13 @@ import {roundDecimalToStep} from './decimal_grid.mjs';
 export const SCALP_MANAGEMENTS=Object.freeze({LADDER:'TRADER_LADDER',CURRENT:'CURRENT'});
 export const TRADER_LADDER=Object.freeze({
  version:1,
- // User 2026-11-25: doubled initial entry weight (2·2·4·8·16 = 5 steps, 32 total units kept).
- steps:Object.freeze([2,2,4,8,16]),
- totalUnits:32,
- spacingMinPct:1.5,spacingAtrMult:1,
+ // User 2026-11-27 testnet data review: 1~4 steps were 101W/1L (+$384.83) while 5th step (16u) lost -$569.24
+ // (TIA -$468.74, EVAA -$302.52). Capped to 4 steps [2,2,4,8] (16 units) with capShare 0.5 so step 1..4 sizing stays
+ // identical while worst-case per-symbol margin/tail loss is halved, and spacingMinPct raised 1.5% -> 2.5%.
+ steps:Object.freeze([2,2,4,8]),
+ totalUnits:16,
+ capShare:.5,
+ spacingMinPct:2.5,spacingAtrMult:1,
  // A strong zone counts as the add level when it lies at least this share of the spacing away from the last fill.
  zoneMinFrac:.5,zoneTouchPct:.3,zoneMinRejections:3,zoneBoost:2,
  tpNetPct:.6,

@@ -958,8 +958,10 @@ export function scalpSimResultHTML(d){
 /** The scalp's own details, collapsed under "단타 신호·건너뜀": rules, 롱 / 숏 totals, last scan, skip reasons, journal. */
 function scalpExitRule(S){
  if(S.management==='TRADER_LADDER'){
-  const steps=Array.isArray(S.ladderSteps)?S.ladderSteps.join('·'):'2·2·4·8·16';
-  return `카피식 추매(TRADER_LADDER): 종목당 증거금 한도(잔고 ${esc(S.maxMarginPct)}%)를 ${esc(S.ladderTotalUnits??32)}단위로 나눠 ${esc(steps)}단위 사다리(축소 배수 미적용 · 첫 진입 고정 ${esc(S.ladderSteps?.[0]??2)}/${esc(S.ladderTotalUnits??32)}) · 마지막 체결가에서 ${esc(S.ladderSpacingMinPct)}%와 1시간 ATR 중 큰 간격마다 추매(강한 4H·1D 매물대면 그 자리에서 ${esc(S.ladderZoneBoost??2)}배, 늘린 만큼 마지막 단계에서 뺌) · 평단 +${esc(S.ladderTpNetPct)}%(수수료 뺀)에 전량 익절 · 최대 ${esc(S.ladderMaxHoldHours)}시간 · 사다리를 다 채운 뒤 −${esc(S.ladderFinalLineRoePct)}% ROE 마지막 선 · 공동 한도는 사다리 전체 증거금과 최악 손실을 미리 잡음${S.makerEntry?' · Post-Only 메이커 우선':''}`;
+  const steps=Array.isArray(S.ladderSteps)?S.ladderSteps.join('·'):'2·2·4·8';
+  const effCapPct=fin(S.maxMarginPct)&&fin(S.ladderCapShare)?+(Number(S.maxMarginPct)*Number(S.ladderCapShare)).toFixed(1):S.maxMarginPct;
+  const euTag=S.sessionWeighting!==false?` · 유럽장(17~23시) ${esc(S.sessionEuMult??0.5)}x${S.euBlockCounterTrend!==false?'·4H 역추세 차단':''}`:'';
+  return `카피식 추매(TRADER_LADDER): 종목당 증거금 한도(잔고 ${esc(effCapPct)}%)를 ${esc(S.ladderTotalUnits??16)}단위로 나눠 ${esc(steps)}단위 ${Array.isArray(S.ladderSteps)?S.ladderSteps.length:4}단계 사다리(첫 진입 ${esc(S.ladderSteps?.[0]??2)}/${esc(S.ladderTotalUnits??16)}${euTag}) · 마지막 체결가에서 ${esc(S.ladderSpacingMinPct)}%와 1시간 ATR 중 큰 간격마다 추매(강한 4H·1D 매물대면 그 자리에서 ${esc(S.ladderZoneBoost??2)}배, 늘린 만큼 마지막 단계에서 뺌) · 평단 +${esc(S.ladderTpNetPct)}%(수수료 뺀)에 전량 익절 · 최대 ${esc(S.ladderMaxHoldHours)}시간 · 사다리를 다 채운 뒤 −${esc(S.ladderFinalLineRoePct)}% ROE 마지막 선 · 공동 한도는 사다리 전체 증거금과 최악 손실을 미리 잡음${S.makerEntry?' · Post-Only 메이커 우선':''}`;
  }
  const hasScore=Number(S.minScore)>0;
  const holdCut=Number(S.profitOnlyMaxHoldMin)>0?` · 물림 ${esc(S.profitOnlyMaxHoldMin)}분 컷`:'';
