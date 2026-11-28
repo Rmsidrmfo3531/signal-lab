@@ -286,3 +286,107 @@ test('cvdSrPositionSentiment maps all LONG / SHORT / hedged x SUPPORT / RESISTAN
   assert.equal(cvdSrPositionSentiment({ directions: ['LONG', 'SHORT'], kind: 'RESISTANCE', event: 'ADDED' }), 'NEUTRAL');
   assert.equal(cvdSrPositionSentiment({ directions: [], kind: 'SUPPORT', event: 'ADDED' }), 'NEUTRAL');
 });
+
+test('CvdSrAlertMonitor suppresses Telegram alerts for zones too far from markPrice while keeping baseline tracking clean', async () => {
+  const dir = tmp();
+  try {
+    let now = 1795100000000;
+    const sent = [];
+    const monitor = new CvdSrAlertMonitor({
+      directory: dir,
+      now: () => now,
+      sendText: async t => { sent.push(t); return { ok: true }; },
+    });
+
+    const mkZone = (kind, price, mark, strength = 82) => ({
+      kind,
+      centerPrice: price,
+      low: price * 0.995,
+      high: price * 1.005,
+      distPct: Math.round(((price - mark) / mark) * 10000) / 100,
+      netDeltaUsd: kind === 'SUPPORT' ? 2000000 : -2000000,
+      strength,
+      grade: 'STRONG',
+    });
+
+    const emptyTf = () => ({ supports: [], resistances: [], strongSupports: [], strongResistances: [] });
+    const mkSnap = ({ mark = 100, liveRes = [], d1Sup = [], m6Res = [] } = {}) => ({
+      symbol: 'PIEVERSEUSDT',
+      markPrice: mark,
+      timeframes: {
+        LIVE: { supports: [], resistances: liveRes, strongSupports: [], strongResistances: liveRes },
+        '1D': { supports: d1Sup, resistances: [], strongSupports: d1Sup, strongResistances: [] },
+        '1W': emptyTf(),
+        '1M': emptyTf(),
+        '6M': { supports: [], resistances: m6Res, strongSupports: [], strongResistances: m6Res },
+        '1Y': emptyTf(),
+      },
+    });
+
+    // 1. Baseline (empty)
+    await monitor.evaluateSymbol(mkSnap({ mark: 100 }), { directions: ['SHORT'], now });
+    assert.equal(sent.length, 0);
+
+    // 2. Distant zones ADDED: LIVE +11% (>5%), 1D -16% (>8%), 6M +38% (>20%) -> ALL suppressed!
+    now += 60_000;
+    const rFarAdd = await monitor.evaluateSymbol(
+      mkSnap({
+        mark: 100,
+        liveRes: [mkZone('RESISTANCE', 111, 100)],
+        d1Sup: [mkZone('SUPPORT', 84, 100)],
+        m6Res: [mkZone('RESISTANCE', 138, 100)],
+      }),
+      { directions: ['SHORT'], now }
+    );
+    assert.equal(rFarAdd.sent, false);
+    assert.equal(rFarAdd.changes.length, 0);
+    assert.equal(sent.length, 0);
+
+    // 3. Price moves closer to the already-tracked LIVE resistance (mark=108 -> 111 is now +2.8% <= 5%) -> NO false ADDED alert!
+    now += 60_000;
+    const rApproach = await monitor.evaluateSymbol(
+      mkSnap({
+        mark: 108,
+        liveRes: [mkZone('RESISTANCE', 111, 108)],
+        d1Sup: [mkZone('SUPPORT', 84, 108)],
+        m6Res: [mkZone('RESISTANCE', 138, 108)],
+      }),
+      { directions: ['SHORT'], now }
+    );
+    assert.equal(rApproach.sent, false);
+    assert.equal(rApproach.changes.length, 0);
+
+    // 4. Distant 6M resistance (+27.8% > 20%) weakens & disappears -> suppressed (still too far)
+    now += 60_000;
+    const rFarRem = await monitor.evaluateSymbol(
+      mkSnap({
+        mark: 108,
+        liveRes: [mkZone('RESISTANCE', 111, 108)],
+        d1Sup: [mkZone('SUPPORT', 84, 108)],
+        m6Res: [],
+      }),
+      { directions: ['SHORT'], now }
+    );
+    assert.equal(rFarRem.sent, false);
+    assert.equal(rFarRem.changes.length, 0);
+
+    // 5. Nearby zones ADDED: LIVE +3.2% (<=5%) and 6M +16% (<=20%) -> BOTH alert!
+    now += 60_000;
+    const rNearAdd = await monitor.evaluateSymbol(
+      mkSnap({
+        mark: 100,
+        liveRes: [mkZone('RESISTANCE', 111, 100), mkZone('RESISTANCE', 103.2, 100)],
+        d1Sup: [mkZone('SUPPORT', 84, 100)],
+        m6Res: [mkZone('RESISTANCE', 116, 100)],
+      }),
+      { directions: ['SHORT'], now }
+    );
+    assert.equal(rNearAdd.sent, true);
+    assert.equal(rNearAdd.changes.length, 2);
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], /6M █████/);
+    assert.match(sent[0], /실시간 ▫/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

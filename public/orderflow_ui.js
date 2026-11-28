@@ -777,7 +777,7 @@ export function orderflowCvdSrMatrixHTML(cvdSr, { activeSymbol = '', loading = f
   });
   const heldCount = allRows.filter(r => r.held).length;
   const recent = Array.isArray(cvdSr?.recentEvents) ? cvdSr.recentEvents.slice(0, 3) : [];
-  const monBadge = cvdSr?.monitoring ? '<span class="of-sr-mon">🔔 보유 종목 생성·소멸 텔레그램 감시 ON</span>' : '';
+  const monBadge = cvdSr?.monitoring ? '<span class="of-sr-mon" title="현재가 기준 실시간 ±5% · 1D ±8% · 1W ±12% · 1M ±15% · 6M ±20% · 1Y ±25% 이내 변동만 텔레그램 알림">🔔 보유 종목 생성·소멸 텔레그램 감시 ON</span>' : '';
 
   const TF_TIER = { LIVE: 1, '1D': 2, '1W': 3, '1M': 4, '6M': 5, '1Y': 6 };
 
