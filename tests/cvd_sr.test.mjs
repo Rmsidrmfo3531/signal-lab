@@ -11,6 +11,7 @@ import {
   clearCvdSrCache,
   CvdSrAlertMonitor,
   formatCvdSrChangeMessage,
+  cvdSrPositionSentiment,
 } from '../cvd_sr.mjs';
 import { orderflowCvdSrMatrixHTML, orderflowHTML } from '../public/orderflow_ui.js';
 
@@ -135,7 +136,7 @@ test('CvdSrAlertMonitor records baseline silently, alerts on both REMOVED and AD
     assert.equal(rHyst.changes.length, 0);
     assert.equal(sent.length, 0);
 
-    // 3. Support disappears (price broke below 94 -> mark 93) -> sends REMOVED alert!
+    // 3. Support disappears (price broke below 94 -> mark 93) -> sends REMOVED alert (ADVERSE for LONG!)
     now += 60_000;
     const rRem = await monitor.evaluateSymbol(snap({ mark: 93, strongSupport: false }), { directions: ['LONG'], now });
     assert.equal(rRem.sent, true);
@@ -143,18 +144,23 @@ test('CvdSrAlertMonitor records baseline silently, alerts on both REMOVED and AD
     assert.equal(rRem.changes[0].event, 'REMOVED');
     assert.equal(rRem.changes[0].kind, 'SUPPORT');
     assert.equal(rRem.changes[0].reason, 'PRICE_BREAK');
-    assert.match(sent[0], /보유 종목 CVD 지지\/저항 변동 · BTCUSDT \(롱\)/);
-    assert.match(sent[0], /소멸.*1D.*지지대.*가격 이탈/);
+    assert.equal(rRem.changes[0].sentiment, 'ADVERSE');
+    assert.match(sent[0], /🔴 <b>BTCUSDT \(롱\) · CVD 주의<\/b>/);
+    assert.match(sent[0], /🔴 <b>주의<\/b> │ 1D ▪▪ │ 지지대 소멸/);
+    assert.match(sent[0], /\$94\.00.*가격 이탈/);
     assert.doesNotMatch(sent[0], /<pre>|<code>|<blockquote>/);
 
-    // 4. New strong support forms at 88 -> sends ADDED alert!
+    // 4. New strong support forms at 88 -> sends ADDED alert (FAVORABLE for LONG!)
     now += 60_000;
     const rAdd = await monitor.evaluateSymbol(snap({ mark: 93, strongSupport: true, supportPrice: 88, supportStrength: 85 }), { directions: ['LONG'], now });
     assert.equal(rAdd.sent, true);
     assert.equal(rAdd.changes.length, 1);
     assert.equal(rAdd.changes[0].event, 'ADDED');
     assert.equal(rAdd.changes[0].kind, 'SUPPORT');
-    assert.match(sent[1], /신규.*1D.*지지대.*\$88\.00.*강도 85/);
+    assert.equal(rAdd.changes[0].sentiment, 'FAVORABLE');
+    assert.match(sent[1], /🟢 <b>BTCUSDT \(롱\) · CVD 유리<\/b>/);
+    assert.match(sent[1], /🟢 <b>유리<\/b> │ 1D ▪▪ │ 지지대 신규/);
+    assert.match(sent[1], /\$88\.00.*강도 85/);
     assert.doesNotMatch(sent[1], /<pre>|<code>|<blockquote>/);
 
     // 5. Persistence across restart + pruning when position closes
@@ -163,25 +169,42 @@ test('CvdSrAlertMonitor records baseline silently, alerts on both REMOVED and AD
     reloaded.pruneClosed([]);
     assert.equal(Object.keys(reloaded.store.tracked).length, 0);
 
-    // Direct message formatter sanity check
-    const msg = formatCvdSrChangeMessage({
+    // 6. Position-aware sentiment + timeframe weight/thickness (SHORT: resistance ADDED = FAVORABLE, support ADDED = ADVERSE; 6M/1Y bold+underline & sorted first)
+    const msgShortFav = formatCvdSrChangeMessage({
+      symbol: 'PIEVERSEUSDT',
+      directions: ['SHORT'],
+      markPrice: 3.876,
+      changes: [
+        { event: 'ADDED', tf: 'LIVE', kind: 'RESISTANCE', price: 3.994, distPct: 3.0, strength: 71, netDeltaUsd: -168000 },
+        { event: 'ADDED', tf: '6M', kind: 'RESISTANCE', price: 4.25, distPct: 9.6, strength: 88, netDeltaUsd: -9500000 },
+      ],
+    });
+    assert.match(msgShortFav, /🟩🔥 <b>PIEVERSEUSDT \(숏\) · CVD 대형 유리<\/b>/);
+    assert.match(msgShortFav, /🟩🔥 <b><u>대형 유리<\/u><\/b> │ <b><u>6M █████<\/u><\/b> │ <b>저항대 신규<\/b>/);
+    assert.match(msgShortFav, /🟢 <b>유리<\/b> │ 실시간 ▫ │ 저항대 신규/);
+    assert.ok(msgShortFav.indexOf('6M █████') < msgShortFav.indexOf('실시간 ▫'), 'longer/heavier TF sorted first');
+    assert.doesNotMatch(msgShortFav, /🔴|🟥|<pre>|<code>|<blockquote>/);
+
+    // SHORT + SUPPORT ADDED -> ADVERSE (red caution!), 1Y ultra-thick
+    const msgShortAdv = formatCvdSrChangeMessage({
       symbol: 'NCSKSNDK2USDUSDT',
       directions: ['SHORT'],
       markPrice: 210,
-      changes: [{ event: 'ADDED', tf: '1W', kind: 'RESISTANCE', price: 225, distPct: 7.1, strength: 79, netDeltaUsd: -1500000 }],
+      changes: [{ event: 'ADDED', tf: '1Y', kind: 'SUPPORT', price: 195, distPct: -7.1, strength: 91, netDeltaUsd: 24000000 }],
     });
-    assert.match(msg, /SNDKUSDT \(숏\)/);
-    assert.doesNotMatch(msg, /<pre>|<code>/);
+    assert.match(msgShortAdv, /🟥🚨 <b>SNDKUSDT \(숏\) · CVD 초대형 주의<\/b>/);
+    assert.match(msgShortAdv, /🟥🚨 <b><u>초대형 주의<\/u><\/b> │ <b><u>1Y ██████<\/u><\/b> │ <b>지지대 신규<\/b>/);
+    assert.doesNotMatch(msgShortAdv, /<pre>|<code>/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('orderflowCvdSrMatrixHTML renders all-symbol multi-TF table, held highlight, filters, and clickable order prefill', () => {
+test('orderflowCvdSrMatrixHTML renders all-symbol multi-TF table with TF thickness classes, held-position sentiment, filters, and clickable order prefill', () => {
   const cvdSr = {
     ok: true,
     monitoring: true,
-    recentEvents: [{ event: 'REMOVED', symbol: 'BTCUSDT', displaySymbol: 'BTCUSDT', tf: '1D', kind: 'SUPPORT', price: 94000 }],
+    recentEvents: [{ event: 'REMOVED', symbol: 'BTCUSDT', displaySymbol: 'BTCUSDT', directions: ['LONG'], sentiment: 'ADVERSE', tf: '1D', kind: 'SUPPORT', price: 94000 }],
     rows: [
       {
         symbol: 'BTCUSDT',
@@ -189,13 +212,31 @@ test('orderflowCvdSrMatrixHTML renders all-symbol multi-TF table, held highlight
         markPrice: 95200,
         held: true,
         directions: ['LONG'],
-        strongCount: 2,
+        strongCount: 3,
         timeframes: {
           LIVE: {
             bestSupport: { kind: 'SUPPORT', centerPrice: 94100, distPct: -1.16, strength: 84, grade: 'STRONG', netDeltaUsd: 3200000 },
             bestResistance: { kind: 'RESISTANCE', centerPrice: 96800, distPct: 1.68, strength: 77, grade: 'STRONG', netDeltaUsd: -2400000 },
           },
+          '6M': {
+            bestSupport: { kind: 'SUPPORT', centerPrice: 88000, distPct: -7.56, strength: 90, grade: 'STRONG', netDeltaUsd: 42000000 },
+            bestResistance: null,
+          },
           '1D': { bestSupport: null, bestResistance: null },
+        },
+      },
+      {
+        symbol: 'PIEVERSEUSDT',
+        displaySymbol: 'PIEVERSEUSDT',
+        markPrice: 3.876,
+        held: true,
+        directions: ['SHORT'],
+        strongCount: 1,
+        timeframes: {
+          '1W': {
+            bestResistance: { kind: 'RESISTANCE', centerPrice: 4.1, distPct: 5.78, strength: 82, grade: 'STRONG', netDeltaUsd: -2500000 },
+            bestSupport: null,
+          },
         },
       },
       {
@@ -213,15 +254,35 @@ test('orderflowCvdSrMatrixHTML renders all-symbol multi-TF table, held highlight
   const htmlAll = orderflowCvdSrMatrixHTML(cvdSr, { activeSymbol: 'BTCUSDT', filter: 'all' });
   assert.match(htmlAll, /전 종목 CVD 지지·저항대/);
   assert.match(htmlAll, /보유 종목 생성·소멸 텔레그램 감시 ON/);
-  assert.match(htmlAll, /<th>실시간<\/th><th>1D<\/th><th>1W<\/th><th>1M<\/th><th>6M<\/th><th>1Y<\/th>/);
-  assert.match(htmlAll, /data-of-send-real-order[^>]*data-symbol="BTCUSDT"[^>]*data-price="94100"[^>]*data-side="LONG"/);
-  assert.match(htmlAll, /⚠️ 소멸.*BTC.*1D.*지지/);
+  assert.match(htmlAll, /<th class="of-tf-h-1">실시간<\/th><th class="of-tf-h-2">1D<\/th><th class="of-tf-h-3">1W<\/th><th class="of-tf-h-4">1M<\/th><th class="of-tf-h-5">6M<\/th><th class="of-tf-h-6">1Y<\/th>/);
+  assert.match(htmlAll, /data-of-send-real-order[^>]*data-symbol="BTCUSDT"[^>]*data-price="94100"[^>]*data-side="LONG"[^>]*data-pos-bias="favorable"/);
+  assert.match(htmlAll, /of-sr-fav of-tf-5 is-strong/);
+  // SHORT held row: resistance is FAVORABLE (of-sr-fav + 유리)!
+  assert.match(htmlAll, /of-sr-fav of-tf-3 is-strong"[^>]*data-symbol="PIEVERSEUSDT"[^>]*data-pos-bias="favorable"[^>]*>[\s\S]*?<em>유리<\/em>/);
+  assert.match(htmlAll, /🔴 주의.*BTC.*1D.*지지 소멸/);
   assert.match(htmlAll, /ETH/);
 
   const htmlHeld = orderflowCvdSrMatrixHTML(cvdSr, { activeSymbol: 'BTCUSDT', filter: 'held' });
   assert.match(htmlHeld, /BTC/);
+  assert.match(htmlHeld, /PIEVERSE/);
   assert.doesNotMatch(htmlHeld, /data-of-symbol="ETHUSDT"/);
 
   const fullScreen = orderflowHTML(null, { cvdSr, cvdSrFilter: 'all' });
   assert.match(fullScreen, /of-sr-box/);
+});
+
+test('cvdSrPositionSentiment maps all LONG / SHORT / hedged x SUPPORT / RESISTANCE x ADDED / REMOVED combinations accurately', () => {
+  // SHORT: resistance ADDED or support REMOVED = FAVORABLE; support ADDED or resistance REMOVED = ADVERSE
+  assert.equal(cvdSrPositionSentiment({ directions: ['SHORT'], kind: 'RESISTANCE', event: 'ADDED' }), 'FAVORABLE');
+  assert.equal(cvdSrPositionSentiment({ directions: ['SHORT'], kind: 'SUPPORT', event: 'REMOVED' }), 'FAVORABLE');
+  assert.equal(cvdSrPositionSentiment({ directions: ['SHORT'], kind: 'SUPPORT', event: 'ADDED' }), 'ADVERSE');
+  assert.equal(cvdSrPositionSentiment({ directions: ['SHORT'], kind: 'RESISTANCE', event: 'REMOVED' }), 'ADVERSE');
+  // LONG: exact mirror
+  assert.equal(cvdSrPositionSentiment({ directions: ['LONG'], kind: 'SUPPORT', event: 'ADDED' }), 'FAVORABLE');
+  assert.equal(cvdSrPositionSentiment({ directions: ['LONG'], kind: 'RESISTANCE', event: 'REMOVED' }), 'FAVORABLE');
+  assert.equal(cvdSrPositionSentiment({ directions: ['LONG'], kind: 'RESISTANCE', event: 'ADDED' }), 'ADVERSE');
+  assert.equal(cvdSrPositionSentiment({ directions: ['LONG'], kind: 'SUPPORT', event: 'REMOVED' }), 'ADVERSE');
+  // Hedged or unknown -> NEUTRAL
+  assert.equal(cvdSrPositionSentiment({ directions: ['LONG', 'SHORT'], kind: 'RESISTANCE', event: 'ADDED' }), 'NEUTRAL');
+  assert.equal(cvdSrPositionSentiment({ directions: [], kind: 'SUPPORT', event: 'ADDED' }), 'NEUTRAL');
 });

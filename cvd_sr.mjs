@@ -371,35 +371,112 @@ export function clearCvdSrCache() {
 const TF_TOL = Object.fromEntries(CVD_SR_TIMEFRAMES.map(t => [t.key, t.matchTolPct]));
 const TF_LABEL = Object.fromEntries(CVD_SR_TIMEFRAMES.map(t => [t.key, t.labelKo]));
 
+export const CVD_SR_TF_STYLE = Object.freeze({
+  LIVE: Object.freeze({ tier: 1, bar: '▫', weightKo: '단기' }),
+  '1D': Object.freeze({ tier: 2, bar: '▪▪', weightKo: '일간' }),
+  '1W': Object.freeze({ tier: 3, bar: '▮▮▮', weightKo: '주간' }),
+  '1M': Object.freeze({ tier: 4, bar: '▮▮▮▮', weightKo: '월간' }),
+  '6M': Object.freeze({ tier: 5, bar: '█████', weightKo: '대형' }),
+  '1Y': Object.freeze({ tier: 6, bar: '██████', weightKo: '초대형' }),
+});
+
+/**
+ * Evaluate whether a CVD S/R change is FAVORABLE or ADVERSE for the user's held direction(s).
+ * - LONG:  SUPPORT ADDED / RESISTANCE REMOVED -> FAVORABLE; RESISTANCE ADDED / SUPPORT REMOVED -> ADVERSE
+ * - SHORT: RESISTANCE ADDED / SUPPORT REMOVED -> FAVORABLE; SUPPORT ADDED / RESISTANCE REMOVED -> ADVERSE
+ * - Hedged (both LONG & SHORT) or unknown -> NEUTRAL
+ */
+export function cvdSrPositionSentiment({ directions = [], kind, event = 'ADDED' } = {}) {
+  const dirs = [...new Set((Array.isArray(directions) ? directions : [])
+    .map(d => String(d || '').toUpperCase())
+    .filter(d => d === 'LONG' || d === 'SHORT'))];
+  if (dirs.length !== 1) return 'NEUTRAL';
+  const isSupport = kind === 'SUPPORT';
+  const isAdded = event !== 'REMOVED';
+  const bullish = isSupport ? isAdded : !isAdded;
+  const favorable = dirs[0] === 'LONG' ? bullish : !bullish;
+  return favorable ? 'FAVORABLE' : 'ADVERSE';
+}
+
 function sameZonePrice(a, b, tfKey) {
   const tol = TF_TOL[tfKey] || 2.0;
   if (!(a > 0 && b > 0)) return false;
   return (Math.abs(a - b) / b) * 100 <= tol;
 }
 
-/** Format a clean, single-line-aligned Telegram alert (NO <pre> / NO <code>). */
+/** Format a clean, position-aware, timeframe-weighted Telegram alert (NO <pre> / NO <code> / NO <blockquote>). */
 export function formatCvdSrChangeMessage({ symbol, directions = [], markPrice = 0, changes = [] }) {
   const sym = displaySymbol(symbol);
-  const dirLabel = directions.length
-    ? ` (${directions.map(d => (d === 'LONG' ? '롱' : d === 'SHORT' ? '숏' : d)).join('/')})`
+  const dirs = [...new Set((Array.isArray(directions) ? directions : [])
+    .map(d => String(d || '').toUpperCase())
+    .filter(d => d === 'LONG' || d === 'SHORT'))];
+  const dirLabel = dirs.length
+    ? ` (${dirs.map(d => (d === 'LONG' ? '롱' : '숏')).join('/')})`
     : '';
+
+  const enriched = (Array.isArray(changes) ? changes : []).map(ch => {
+    const style = CVD_SR_TF_STYLE[ch.tf] || CVD_SR_TF_STYLE.LIVE;
+    const sentiment = ch.sentiment || cvdSrPositionSentiment({ directions: dirs, kind: ch.kind, event: ch.event });
+    return { ...ch, style, sentiment };
+  });
+  // Longest / heaviest timeframe walls first (1Y -> 6M -> 1M -> 1W -> 1D -> LIVE)
+  enriched.sort((a, b) => (b.style.tier - a.style.tier) || (Number(b.strength) || 0) - (Number(a.strength) || 0));
+
+  const maxTier = enriched.reduce((m, x) => Math.max(m, x.style.tier), 1);
+  const allFav = enriched.length > 0 && enriched.every(x => x.sentiment === 'FAVORABLE');
+  const allAdv = enriched.length > 0 && enriched.every(x => x.sentiment === 'ADVERSE');
+  let headIcon = '🔔';
+  let headTone = 'CVD 지지/저항 변동';
+  if (allFav) {
+    headIcon = maxTier >= 5 ? '🟩🔥' : maxTier >= 3 ? '🟩' : '🟢';
+    headTone = maxTier >= 6 ? 'CVD 초대형 유리' : maxTier >= 5 ? 'CVD 대형 유리' : 'CVD 유리';
+  } else if (allAdv) {
+    headIcon = maxTier >= 5 ? '🟥🚨' : maxTier >= 3 ? '🟥' : '🔴';
+    headTone = maxTier >= 6 ? 'CVD 초대형 주의' : maxTier >= 5 ? 'CVD 대형 주의' : 'CVD 주의';
+  }
+
   const lines = [
-    `🔔 <b>보유 종목 CVD 지지/저항 변동 · ${escHtml(sym)}${escHtml(dirLabel)}</b>`,
+    `${headIcon} <b>${escHtml(sym)}${escHtml(dirLabel)} · ${headTone}</b>`,
     `현재가 <b>${escHtml(fmtPrice(markPrice))}</b>`,
-    '',
   ];
-  for (const ch of changes) {
-    const tfLbl = TF_LABEL[ch.tf] || ch.tf;
+
+  for (const ch of enriched) {
+    const { tier, bar } = ch.style;
+    const tfLbl = escHtml(TF_LABEL[ch.tf] || ch.tf);
     const kindKo = ch.kind === 'SUPPORT' ? '지지대' : '저항대';
+    const isRem = ch.event === 'REMOVED';
+    const evKo = isRem ? '소멸' : '신규';
     const dist = Number.isFinite(Number(ch.distPct))
       ? `${Number(ch.distPct) >= 0 ? '+' : '−'}${Math.abs(Number(ch.distPct)).toFixed(1)}%`
       : '—';
-    if (ch.event === 'REMOVED') {
-      const reason = ch.reason === 'PRICE_BREAK' ? '가격 이탈' : '수급 약화·소멸';
-      lines.push(`⚠️ <b>소멸</b> │ ${escHtml(tfLbl)} │ ${kindKo} <b>${escHtml(fmtPrice(ch.price))}</b> (${dist}) · ${reason}`);
+
+    let icon, badgeText;
+    if (ch.sentiment === 'FAVORABLE') {
+      icon = tier >= 5 ? '🟩🔥' : tier >= 3 ? '🟩' : '🟢';
+      badgeText = tier >= 6 ? '초대형 유리' : tier >= 5 ? '대형 유리' : '유리';
+    } else if (ch.sentiment === 'ADVERSE') {
+      icon = tier >= 5 ? '🟥🚨' : tier >= 3 ? '🟥' : '🔴';
+      badgeText = tier >= 6 ? '초대형 주의' : tier >= 5 ? '대형 주의' : '주의';
     } else {
-      const icon = ch.kind === 'SUPPORT' ? '🟢' : '🔴';
-      lines.push(`${icon} <b>신규</b> │ ${escHtml(tfLbl)} │ ${kindKo} <b>${escHtml(fmtPrice(ch.price))}</b> (${dist}) · 강도 ${ch.strength} (${escHtml(fmtUsdCompact(ch.netDeltaUsd))})`);
+      icon = tier >= 5 ? '🟨🔥' : tier >= 3 ? '🟨' : isRem ? '⚠️' : '🟡';
+      badgeText = tier >= 6 ? `초대형 ${evKo}` : tier >= 5 ? `대형 ${evKo}` : evKo;
+    }
+
+    const badgeHtml = tier >= 5 ? `<b><u>${badgeText}</u></b>` : `<b>${badgeText}</b>`;
+    const tfHtml = tier >= 5
+      ? `<b><u>${tfLbl} ${bar}</u></b>`
+      : tier >= 3
+        ? `<b>${tfLbl} ${bar}</b>`
+        : `${tfLbl} ${bar}`;
+    const zoneHtml = tier >= 3 ? `<b>${kindKo} ${evKo}</b>` : `${kindKo} ${evKo}`;
+
+    lines.push('');
+    lines.push(`${icon} ${badgeHtml} │ ${tfHtml} │ ${zoneHtml}`);
+    if (isRem) {
+      const reason = ch.reason === 'PRICE_BREAK' ? '가격 이탈' : '수급 약화·소멸';
+      lines.push(`<b>${escHtml(fmtPrice(ch.price))}</b> (${dist}) · ${reason}`);
+    } else {
+      lines.push(`<b>${escHtml(fmtPrice(ch.price))}</b> (${dist}) · 강도 ${ch.strength} (${escHtml(fmtUsdCompact(ch.netDeltaUsd))})`);
     }
   }
   return lines.join('\n');
@@ -528,6 +605,8 @@ export class CvdSrAlertMonitor {
               event: 'REMOVED',
               symbol: sym,
               displaySymbol: displaySymbol(sym),
+              directions: [...directions],
+              sentiment: cvdSrPositionSentiment({ directions, kind, event: 'REMOVED' }),
               tf: tfKey,
               kind,
               price: pz.price,
@@ -551,6 +630,8 @@ export class CvdSrAlertMonitor {
                 event: 'ADDED',
                 symbol: sym,
                 displaySymbol: displaySymbol(sym),
+                directions: [...directions],
+                sentiment: cvdSrPositionSentiment({ directions, kind, event: 'ADDED' }),
                 tf: tfKey,
                 kind,
                 price: cz.price,
