@@ -44,7 +44,12 @@ export function scalpEventText(e){
    const basePct=Number.isFinite(Number(tp.baseCandle?.bodyPct))?`${isShort?'−':'+'}${Number(tp.baseCandle.bodyPct).toFixed(1)}%`:`${e.movePct??'—'}%`;
    const wv=tp.wickPct??tp.lowerWickPct;
    const wickPct=Number.isFinite(Number(wv))?` · ${isShort?'윗꼬리 +':'아래꼬리 −'}${Number(wv).toFixed(2)}%`:'';
-   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입 · 공습·2% (15m 2% 매매법)\n진입 ${fmt(e.entry)} · ${slLbl} ${fmt(e.stop)}${slPct} · 위험 $${e.riskUSD}\n목표 ${fmt(e.targets?.[0])} (${tpLbl} · 손익비 ${rrTxt})\n15m 기준 ${isShort?'음봉':'양봉'} ${basePct}${wickPct}${execPart}`;
+   const capTag=tp.tpCapped?' · 상한 적용':'';
+   const hasTwo=Array.isArray(e.targets)&&e.targets.length>=2&&Number(e.parts?.[1])>0;
+   const tpLine=hasTwo
+    ?`1차 목표 ${fmt(e.targets[0])} (50% · 1:2 RR+본전스탑) · 2차 목표 ${fmt(e.targets[1])} (${tpLbl}${capTag} · 손익비 ${rrTxt})`
+    :`목표 ${fmt(e.targets?.[0])} (${tpLbl}${capTag} · 손익비 ${rrTxt})`;
+   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입 · 공습·2% (15m 2% 매매법)\n진입 ${fmt(e.entry)} · ${slLbl} ${fmt(e.stop)}${slPct} · 위험 $${e.riskUSD}\n${tpLine}\n15m 기준 ${isShort?'음봉':'양봉'} ${basePct}${wickPct}${execPart}`;
   }
   return `🟢 ${head} ${side(e)} ${e.leverage}배 진입${e.trigger==='PUMP_ALERT'?' · 공습·2% (급변 알림)':''}${e.kind==='ZONE_REVERSAL'?` · 매물대 반전(4H/1D)${zoneText(e.zone)}`:''}\n진입 ${fmt(e.entry)} · ${stopText} $${e.riskUSD}\n목표 ${(e.targets||[]).map((t,i)=>e.parts?.[i]>0?fmt(t):null).filter(Boolean).join(' / ')}${e.merged?' (최소 주문 때문에 목표 합침)':''}\n${e.direction==='SHORT'?'급등':'급락'} ${e.movePct??'—'}% · 거래량 ${e.volumeX??'—'}배${scorePart}${sessPart}${ofPart}${execPart}`;
  }

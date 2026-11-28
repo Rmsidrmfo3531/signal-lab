@@ -91,6 +91,7 @@ const G={
  SYMBOL_ALREADY_HELD:['limit','같은 종목 보유 중',()=>'이 종목을 이미 단타로 갖고 있거나 진입 중입니다(종목당 1개).'],
  SYMBOL_HELD_BY_OTHER_STRATEGY:['limit','다른 전략 보유',()=>'신호 전략이나 카피가 같은 종목을 갖고 있어 겹치지 않게 건너뜁니다.'],
  SYMBOL_LOSS_COOLDOWN:['limit','종목 손실 휴식',S=>`이 종목에서 손실 뒤 ${n(S.symbolLossCooldownMin)}분 동안, 또는 오늘 ${n(S.symbolDailyMaxLosses)}번 지면 자정까지 쉽니다.`],
+ EU_SESSION_AGAINST_TREND:['limit','유럽장 역추세 차단',()=>'유럽 세션(한국 17~23시)에서는 4시간 추세 반대 방향 진입을 차단합니다.'],
  BTC_DUMP_GUARD:['limit','BTC 급변 방어',S=>`BTC가 5분에 ${n(S.btcGuard5mPct)}% 또는 15분에 ${n(S.btcGuard15mPct)}% 넘게 급락(롱 보류)·급등(숏 보류)했습니다(직전 5분봉이 ${n(S.btcGuardRelease5mPct)}% 이상 반전하면 해제).`],
  SHORT_SQUEEZE_GUARD:['limit','스퀴즈 위험 보류',S=>`펀딩비가 ±${n(S.squeezeFundingPct)}% 넘게 쏠리고 30분 미결제약정이 ${n(S.squeezeOiChange30mPct)}% 넘게 늘어 반대로 튈 위험이 큽니다.`],
  PRE_FUNDING_EXTREME:['limit','펀딩 정산 직전',S=>`펀딩 정산 ${n(S.preFundingWindowMin)}분 이내에 불리한 방향 펀딩비가 ±${n(S.preFundingExtremePct)}%를 넘어 보류합니다.`],
@@ -117,6 +118,8 @@ const G={
  TWO_PCT_STOP_TOO_WIDE:['pump','손절폭 너무 넓음',S=>`꼬리 손절폭이 한도(${n(S.twoPctMaxStopPct)}%·${n(S.twoPctLeverage)}배 ROE ${n(S.twoPctMaxStopRoePct)}%)를 넘어 진입하지 않습니다.`],
  TWO_PCT_DAILY_UNAVAILABLE:['pump','일봉 데이터 부족',()=>'목표가(TP) 산출에 필요한 일봉(1D) 저항·지지 데이터를 충분히 받지 못했습니다.'],
  TWO_PCT_RR_BELOW_MIN:['pump','일봉 손익비 미달',S=>`가장 가까운 일봉(1D) 저항·지지선까지 수수료를 뺀 순손익비가 최소 기준 1:${n(S.twoPctMinNetRR)}에 못 미칩니다.`],
+ TWO_PCT_LOSS_COOLDOWN:['pump','2% 손실 휴식',S=>`이 종목에서 2% 매매법 손실 종료 뒤 ${n(S.twoPctLossCooldownMin,240)}분 동안 재진입을 쉽니다.`],
+ TWO_PCT_WIN_COOLDOWN:['pump','2% 익절 휴식',S=>`이 종목에서 2% 매매법 익절 종료 뒤 ${n(S.twoPctWinCooldownMin,60)}분 동안 고점 추격 재진입을 쉽니다.`],
  // 거래소 — data, contract and order problems
  SCALP_INTERVAL_UNSUPPORTED:['venue','지원 안 하는 봉',()=>'1분·5분·15분봉이 아닌 봉은 반전 판정을 하지 않습니다.'],
  KLINE_SCHEMA_OR_SEQUENCE_INVALID:['venue','캔들 자료 오류',()=>'받은 캔들 값이 이상하거나 순서가 끊겨 판정하지 않았습니다.'],

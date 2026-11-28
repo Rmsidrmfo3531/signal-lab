@@ -272,10 +272,11 @@ export function scalpExecConfig(env=process.env){
   squeezeGuard:!['off','false','0','no'].includes(String(env.SCALP_SQUEEZE_GUARD??'').trim().toLowerCase()),
   squeezeFundingPct:n('SCALP_SQUEEZE_FUNDING_PCT',0.10,0.01,2),
   squeezeOiChange30mPct:n('SCALP_SQUEEZE_OI_30M_PCT',2.0,0,50),
-  // Backtest-validated session asymmetry (40 coins, Train/OOS): EU(08-14 UTC / 17-23 KST) PF 0.96 -> 0.5x; US+Late(14-24 UTC / 23-09 KST) PF 2.25+ -> 1.15x.
+  // Backtest-validated session asymmetry (40 coins, Train/OOS): EU(08-14 UTC / 17-23 KST) PF 0.36 -> 0.5x & block 4H counter-trend; US+Late(14-24 UTC / 23-09 KST) -> 1.15x.
   sessionWeighting:!['off','false','0','no'].includes(String(env.SCALP_SESSION_WEIGHTING??'').trim().toLowerCase()),
   sessionEuMult:n('SCALP_SESSION_EU_MULT',0.5,0.25,1.5),
   sessionUsMult:n('SCALP_SESSION_US_MULT',1.15,0.5,1.5),
+  euBlockCounterTrend:!['off','false','0','no'].includes(String(env.SCALP_EU_BLOCK_COUNTER_TREND??'').trim().toLowerCase()),
   // Backtest-validated confirmed-bounce sizing (C7, 40 coins Train/OOS): retracedPct >=20% (WR 78.9%, PF 3.55) -> 1.35x; <20% (WR 63.9%, PF 1.64) -> 0.8x.
   bounceSizing:!['off','false','0','no'].includes(String(env.SCALP_BOUNCE_SIZING??'').trim().toLowerCase()),
   bounceThresholdPct:n('SCALP_BOUNCE_THRESHOLD_PCT',20,5,35),
@@ -287,8 +288,8 @@ export function scalpExecConfig(env=process.env){
   zoneSignals:!['off','false','0','no'].includes(String(env.SCALP_ZONE_SIGNALS??'').trim().toLowerCase()),zoneMinMovePct:SCALP_ZONE_MIN_MOVE_PCT,zoneTouchPct:ZONE_TOUCH_PCT,
   // 급변 알림 trigger (user 2026-11-24): on by default; only ever acts in TESTNET mode (LIVE is refused above).
   pumpAlerts:!['off','false','0','no'].includes(String(env.SCALP_PUMP_ALERTS??'').trim().toLowerCase()),
-  // @ggangalt2_bot strategy (user 2026-11-26, TESTNET only): TWO_PCT (default: 15m >=2% bullish candle -> lower-wick green-flip LONG,
-  // lower-wick SL, 1D resistance TP >=1:2 RR, 20x leverage), IMMEDIATE (legacy immediate reverse ladder), or REVERSAL (5m reversal wait).
+  // @ggangalt2_bot strategy (user 2026-11-26, TESTNET only): TWO_PCT (default: 15m >=2% trend candle -> wick flip LONG/SHORT,
+  // wick SL <=2.2%, 50% TP1 at 1:2 RR + auto breakeven stop + 50% TP2 at capped 1D level, 20x leverage).
   ...(()=>{
    const rawS=String(env.SCALP_PUMP_STRATEGY??'').trim().toUpperCase();
    const hasImm=env.SCALP_PUMP_IMMEDIATE!==undefined&&String(env.SCALP_PUMP_IMMEDIATE).trim()!=='';
@@ -299,15 +300,19 @@ export function scalpExecConfig(env=process.env){
   twoPctLeverage:n('SCALP_TWO_PCT_LEVERAGE',TWO_PCT_DEFAULTS.leverage,1,50),
   twoPctMinBodyPct:n('SCALP_TWO_PCT_MIN_BODY_PCT',TWO_PCT_DEFAULTS.minBodyPct,0.5,10),
   twoPctMinNetRR:n('SCALP_TWO_PCT_MIN_RR',TWO_PCT_DEFAULTS.minNetRR,1.0,10),
+  twoPctPartialTpRR:n('SCALP_TWO_PCT_PARTIAL_RR',TWO_PCT_DEFAULTS.partialTpRR,1.2,5),
+  twoPctMaxTpRR:n('SCALP_TWO_PCT_MAX_TP_RR',TWO_PCT_DEFAULTS.maxTpRR,2.5,20),
+  twoPctMaxTpDistPct:n('SCALP_TWO_PCT_MAX_TP_PCT',TWO_PCT_DEFAULTS.maxTpDistPct,2,30),
   twoPctMinStopPct:n('SCALP_TWO_PCT_MIN_STOP_PCT',TWO_PCT_DEFAULTS.minStopPct,0.1,3),
   twoPctMaxStopPct:n('SCALP_TWO_PCT_MAX_STOP_PCT',TWO_PCT_DEFAULTS.maxStopPct,0.5,10),
   twoPctMaxStopRoePct:n('SCALP_TWO_PCT_MAX_STOP_ROE_PCT',TWO_PCT_DEFAULTS.maxStopRoePct,20,90),
+  twoPctLossCooldownMin:n('SCALP_TWO_PCT_LOSS_COOLDOWN_MIN',TWO_PCT_DEFAULTS.lossCooldownMin,0,1440),
+  twoPctWinCooldownMin:n('SCALP_TWO_PCT_WIN_COOLDOWN_MIN',TWO_PCT_DEFAULTS.winCooldownMin,0,1440),
   twoPctWatchMin:n('SCALP_TWO_PCT_WATCH_MIN',TWO_PCT_DEFAULTS.watchMin,15,180),
   twoPctPollMs:n('SCALP_TWO_PCT_POLL_MS',TWO_PCT_DEFAULTS.pollMs,5000,60000),
   twoPctMaxHoldMs:n('SCALP_TWO_PCT_MAX_HOLD_MIN',TWO_PCT_DEFAULTS.maxHoldMs/60000,60,4320)*60000,
-  // Position management (user 2026-11-24 21:33-21:35, scalp_ladder.mjs): TRADER_LADDER (default; copy-trader style
-  // 2·2·4·8·16 ladder, take profit on the average, 24 h, final line) or CURRENT (the management before). TESTNET only,
-  // and only without the automatic stop (SCALP_STOP_LOSS=on keeps CURRENT).
+  // Position management (user 2026-11-24, tuned 2026-11-27): TRADER_LADDER (default; 4-step 2·2·4·8 ladder, 50% capShare,
+  // 2.5% min spacing, take profit on average, 24 h, final line) or CURRENT. TESTNET only.
   management:scalpManagementOf(env),
   ladderSpacingMinPct:n('SCALP_LADDER_SPACING_MIN_PCT',TRADER_LADDER.spacingMinPct,.3,10),
   ladderTpNetPct:n('SCALP_LADDER_TP_PCT',TRADER_LADDER.tpNetPct,.1,5),
@@ -488,14 +493,18 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
   if(stopDistPct>Math.min(maxStopPct,maxStopRoePct/lev))return fail('TWO_PCT_STOP_TOO_WIDE');
  }
  let q;
- if(det.singleTarget===true){
-  const rawTp=pos(det.targets?.[0]);
-  const tp=rawTp?Number(grid(rawTp,tick,towardMode(det.direction))):0;
-  if(!(tp>0&&dir*(tp-entry)>0))return fail('TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY');
+ if(det.singleTarget===true||det.twoPct===true){
+  const rawTp1=pos(det.targets?.[0]);
+  const tp1=rawTp1?Number(grid(rawTp1,tick,towardMode(det.direction))):0;
+  if(!(tp1>0&&dir*(tp1-entry)>0))return fail('TARGETS_NOT_BEYOND_EXECUTABLE_ENTRY');
   const roundTrip=entry*(2*cost.takerRate+(2*cost.slippageBps+Math.max(0,cost.spreadBps||0))/10000+Math.abs(cost.fundingRate||0));
-  const netRR=(dir*(tp-entry)-roundTrip)/(Math.abs(entry-stop)+roundTrip);
-  if(!(netRR>=minNetRR))return fail('TP1_NET_RR_BELOW_MINIMUM',{netRR:Number.isFinite(netRR)?netRR:null});
-  q={ok:true,targets:[tp],estimatedNetRR:netRR};
+  const rawTp2=det.targets?.length>=2?pos(det.targets[1]):null;
+  const tp2=rawTp2?Number(grid(rawTp2,tick,towardMode(det.direction))):0;
+  const hasTwo=tp2>0&&dir*(tp2-tp1)>0&&dir*(tp1-entry)>roundTrip;
+  const tp1RR=(dir*(tp1-entry)-roundTrip)/(Math.abs(entry-stop)+roundTrip);
+  const estRR=hasTwo?(dir*(tp2-entry)-roundTrip)/(Math.abs(entry-stop)+roundTrip):tp1RR;
+  if(!(estRR>=minNetRR))return fail('TP1_NET_RR_BELOW_MINIMUM',{netRR:Number.isFinite(estRR)?estRR:null});
+  q={ok:true,targets:hasTwo?[tp1,tp2]:[tp2>0&&dir*(tp2-entry)>0?tp2:tp1],estimatedNetRR:estRR};
  }else{
   // Targets and the TP1 net RR do not depend on the quantity: checked on a 20-lot sample.
   q=buildScalpPlan({signal:{...det,stop},estimate:{eligible:true,tickSize:tick,quantityStep:step,entryBasis:entry,quantity:Number(step)*20,minNotional:0,minQuantity:0},costs:cost,minNetRR});
@@ -514,7 +523,7 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
   if(!q.ok)return fail(q.reasons[0],{netRR:q.estimatedNetRR??null});
  }
  if(!pos(equity))return fail('NO_BALANCE');
- const riskUSD=equity*config.riskPct/100,scaleIn=det.singleTarget===true?false:config.scaleIn===true;
+ const riskUSD=equity*config.riskPct/100,scaleIn=(det.singleTarget===true||det.twoPct===true)?false:config.scaleIn===true;
  const assumedEntry=entry*(1+dir*cost.slippageBps/10000);
  const riskUnit=scaleIn||det.twoPct?riskAtStop(det.direction,assumedEntry,stop,cost.takerRate,cost):dir*(entry-stop);
  // Each unit of the initial entry reserves the same notional at the worst permitted add price.
@@ -536,12 +545,30 @@ export function planScalpOrder({det,price,contract:c,equity,available=null,usedM
  if(qty*entry/lev>cap){qty=cap*lev/entry;capped=true}
  qty=Number(grid(qty*(1+1e-9),step,'DOWN'))||0;
  const minPart=Number(grid(Math.max(Number(c.minQuantityBase)||0,(Number(c.minNotionalUSDT)||0)/entry*1.02,Number(step)),step,'UP'))||Number(step);
- const split=det.singleTarget===true?(qty>=minPart-Number(step)*1e-6&&qty>0?{parts:[qty,0,0],targets:1,merged:false}:null):scalpSplits(qty,step,minPart);
+ const splitTwoPct=()=>{
+  if(!(qty>=minPart-Number(step)*1e-6&&qty>0))return null;
+  if(q.targets.length>=2){
+   const q1=Number(grid(qty*0.5,step,'DOWN'))||0;
+   const q2=Number(grid(qty-q1,step,'DOWN'))||0;
+   if(q1>=minPart-Number(step)*1e-6&&q2>=minPart-Number(step)*1e-6&&q1>0&&q2>0)return {parts:[q1,q2,0],targets:2,merged:false};
+   q.targets=[q.targets[q.targets.length-1]];
+   return {parts:[qty,0,0],targets:1,merged:true};
+  }
+  return {parts:[qty,0,0],targets:1,merged:false};
+ };
+ const split=(det.singleTarget===true||det.twoPct===true)?splitTwoPct():scalpSplits(qty,step,minPart);
  if(!split)return fail(capped?'MARGIN_CAP':'QUANTITY_BELOW_MINIMUM');
  return {ok:true,entry,stop,targets:q.targets,qty,parts:split.parts,targetCount:split.targets,merged:split.merged,minPart,leverage:lev,
   riskUSD:qty*riskUnit,marginUSD:qty*entry/lev,capped,netRR:q.estimatedNetRR,driftPct:+driftPct.toFixed(3),takerRate:cost.takerRate,
   scaleIn:scaleIn?{version:SCALP_SCALE_IN.version,state:'WATCH',riskPct:config.riskPct,budgetUSD:riskUSD,minPart,
    minNotional:pos(c.minNotionalUSDT)||0}:null};
+}
+function twoPctResizeParts(qty,step,targetCount){
+ if(targetCount>=2){
+  const q1=Number(grid(qty*0.5,step,'DOWN'))||0,q2=Number(grid(qty-q1,step,'DOWN'))||0;
+  if(q1>0&&q2>0)return [q1,q2,0];
+ }
+ return [qty,0,0];
 }
 /** Deterministic client order ids: one signal candle of one symbol and side can be sent once (LONG keeps
  * the id it had before shorts were added, so a ledger written then still blocks a resend). */
@@ -1072,6 +1099,9 @@ export class ScalpExecutor{
      config:{
       minBodyPct:this.config.twoPctMinBodyPct??TWO_PCT_DEFAULTS.minBodyPct,
       minNetRR:this.config.twoPctMinNetRR??TWO_PCT_DEFAULTS.minNetRR,
+      partialTpRR:this.config.twoPctPartialTpRR??TWO_PCT_DEFAULTS.partialTpRR,
+      maxTpRR:this.config.twoPctMaxTpRR??TWO_PCT_DEFAULTS.maxTpRR,
+      maxTpDistPct:this.config.twoPctMaxTpDistPct??TWO_PCT_DEFAULTS.maxTpDistPct,
       minStopPct:this.config.twoPctMinStopPct??TWO_PCT_DEFAULTS.minStopPct,
       maxStopPct:this.config.twoPctMaxStopPct??TWO_PCT_DEFAULTS.maxStopPct,
       maxStopRoePct:this.config.twoPctMaxStopRoePct??TWO_PCT_DEFAULTS.maxStopRoePct,
@@ -1080,12 +1110,15 @@ export class ScalpExecutor{
     });
     ctx.at=t;
     if(!setup.ok)return r=skip(setup.reason,setup.detail,{dedup:true,stop:setup.reason==='SCALP_INTERVAL_UNSUPPORTED'});
+    const setupTargets=Array.isArray(setup.targets)&&setup.targets.length?setup.targets:[setup.tp];
     const det={
-     ok:true,twoPct:true,singleTarget:true,symbol,direction:w.direction,kind:SCALP_KINDS.MOVE,interval:TWO_PCT_INTERVAL,
-     barAt:setup.entryCandle.openTime,entry:setup.entry,stop:setup.stop,targets:[setup.tp],leverage:targetLev,atr:setup.atr,
+     ok:true,twoPct:true,singleTarget:setupTargets.length===1,symbol,direction:w.direction,kind:SCALP_KINDS.MOVE,interval:TWO_PCT_INTERVAL,
+     barAt:setup.entryCandle.openTime,entry:setup.entry,stop:setup.stop,targets:setupTargets,leverage:targetLev,atr:setup.atr,
      twoPctMeta:{
       direction:w.direction,baseCandle:setup.baseCandle,entryCandle:setup.entryCandle,resistance:setup.resistance,targetLevel:setup.targetLevel,tpSource:setup.tpSource,
-      allTimeHigh:setup.allTimeHigh,allTimeLow:setup.allTimeLow,netRR:setup.netRR,stopDistPct:setup.stopDistPct,lowerWickPct:setup.lowerWickPct,wickPct:setup.wickPct,leverage:targetLev,
+      allTimeHigh:setup.allTimeHigh,allTimeLow:setup.allTimeLow,netRR:setup.netRR,tp1NetRR:setup.tp1NetRR??setup.netRR,tp1:setup.tp1??setup.tp,tp2:setup.tp2??setup.tp,
+      splitPartial:setup.splitPartial===true,tpCapped:setup.tpCapped===true,rawDailyTp:setup.rawDailyTp??setup.tp,
+      stopDistPct:setup.stopDistPct,lowerWickPct:setup.lowerWickPct,wickPct:setup.wickPct,leverage:targetLev,
      },
      evidence:{
       symbol,origin:setup.baseCandle.open,extreme:setup.stop,movePct:setup.baseCandle.bodyPct,
@@ -1332,8 +1365,10 @@ export class ScalpExecutor{
    if(shared&&!shared.ok)return skip('TESTNET_BUDGET_UNAVAILABLE');
    // Legacy 4H against-trend 50% reduction applies only when 100-point scoring is disabled (scoring already weights 4H trend 0/20).
    const againstTrend=!det.twoPct&&!(Number(this.config.minScore)>0)&&this.config.trendMode==='record'&&this.cur?.withTrend===false;
+   const rawSess=scalpSessionMultiplier(this.now(),this.config);
+   const euMult=rawSess.session==='EUROPE'?rawSess.mult:1;
    const basePlanConfig=det.twoPct
-    ?{...this.config,stopLossEnabled:true,scaleIn:false,minNetRR:Number(this.config.twoPctMinNetRR??TWO_PCT_DEFAULTS.minNetRR),maxDriftPct:Math.max(Number(this.config.maxDriftPct)||0.4,0.8),driftMovePct:10,stopKeepPct:50}
+    ?{...this.config,riskPct:this.config.riskPct*euMult,stopLossEnabled:true,scaleIn:false,minNetRR:Number(this.config.twoPctMinNetRR??TWO_PCT_DEFAULTS.minNetRR),maxDriftPct:Math.max(Number(this.config.maxDriftPct)||0.4,0.8),driftMovePct:10,stopKeepPct:50}
     :(againstTrend?{...this.config,riskPct:this.config.riskPct*SCALP_AGAINST_TREND_RISK_SCALE}:this.config);
    let plan=planScalpOrder({det,price,contract:c,equity:funds.equity,available:funds.available,
     usedMargin:shared?.marginUSD??this.#usedMargin(),totalMarginCapUSD:shared?.marginCapUSD,leverage:lev,config:basePlanConfig});
@@ -1388,7 +1423,7 @@ export class ScalpExecutor{
    // Score-tier sizing by grade (user 2026-11-25 08:28): B 70~74 0.75x, B+ 75~79 0.9x, A 80~84 1.0x, A+ 85~89 1.2x, S 90+ 1.4x (initial margin cap fixed).
    const scoreTier=minSc>0?scalpScoreTierMultiplier(scalpScore.score,this.config):{active:false,tier:null,mult:1};
    // Backtest-validated session asymmetry (EU 08-14 UTC -> 0.5x, US/Late 14-24 UTC -> 1.15x; only active when scoring is enabled).
-   const sess=minSc>0?scalpSessionMultiplier(this.now(),this.config):{session:'OFF',labelKo:'',mult:1};
+   const sess=minSc>0?rawSess:{session:'OFF',labelKo:'',mult:1};
    const effectiveMult=+(Math.max(0.1,Math.min(3,(scalpScore.sizeMult||1)*scoreTier.mult*sess.mult))).toFixed(4);
    if(scoreTier.active||sess.session!=='OFF')scalpScore={...scalpScore,...(scoreTier.active?{scoreTier}:{}),...(sess.session!=='OFF'?{session:sess}:{}),effectiveMult};
    if(this.cur){this.cur.btcTrend4h=btcTrend4h;this.cur.score=skipScore?null:scalpScore}
@@ -1418,11 +1453,10 @@ export class ScalpExecutor{
      if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty??null,riskUSD:plan.riskUSD??null,sizeMult:effectiveMult});
     }
    }
-   // TRADER_LADDER (user 2026-11-24; 2026-11-25 fixed 1st-step sizing): keep full 2·2·4·8·16 ladder units (sizeMult=1)
-   // so score/session/bounce/againstTrend downsizing multipliers never shrink the 1st entry below 2/32 of the symbol cap.
-   // TWO_PCT uses fixed lower-wick SL + 1D resistance TP (never TRADER_LADDER).
+   // TRADER_LADDER (tuned 2026-11-27): 4-step 2·2·4·8 ladder (50% capShare), full 1.0x in Asia/US and 0.5x in EU session.
+   // TWO_PCT uses fixed wick SL + 2-stage TP (never TRADER_LADDER).
    if(!det.twoPct&&this.#management()===SCALP_MANAGEMENTS.LADDER){
-    const lad=await this.#ladderPlan({u,c,plan,funds,shared,lev,sizeMult:1,trigger:this.cur?.trigger??null});
+    const lad=await this.#ladderPlan({u,c,plan,funds,shared,lev,sizeMult:euMult,trigger:this.cur?.trigger??null});
     if(!lad.ok)return skip(lad.reason,lad.detail);
     plan=lad.plan;
     if(this.cur?.plan)Object.assign(this.cur.plan,{qty:plan.qty,riskUSD:plan.riskUSD,management:SCALP_MANAGEMENTS.LADDER,ladderUnits:plan.ladder.units,unitMarginUSD:plan.ladder.unitMarginUSD,reserveMarginUSD:plan.ladder.reserveMarginUSD,spacingPct:plan.ladder.spacingPct});
@@ -1435,13 +1469,13 @@ export class ScalpExecutor{
   }catch(e){return skip(e?.code==='HTTP_429'?'HTTP_429':'ENTRY_SETUP_FAILED',e?.code||e?.message)}
   finally{this.reserved.delete(u.symbol);this.reservedDirections.delete(u.symbol);this.reservedRisk.delete(u.symbol)}
  }
- /** The TRADER_LADDER plan of an entry (scalp_ladder.mjs): unit = per-symbol cap (maxMarginPct of the equity) / 32, held
-  * within the shared margin room and 90 % of the free margin; spacing from the 1H ATR; the worst case reserved. */
+ /** The TRADER_LADDER plan of an entry (scalp_ladder.mjs): 4-step 2·2·4·8 (16 units) on 50% of per-symbol cap, held
+  * within the shared margin room and 90 % of the free margin; spacing from the 1H ATR (>= 2.5%); worst case reserved. */
  async #ladderPlan({u,c,plan,funds,shared,lev,sizeMult,trigger=null}){
   const finalLine=Number(this.config.emergencyStopRoePct)||0;
   // Without the final line a full ladder would have no loss exit: no entry.
   if(!(finalLine>0))return {ok:false,reason:'LADDER_FINAL_LINE_OFF'};
-  const symbolCapUSD=funds.equity*this.config.maxMarginPct/100;
+  const symbolCapUSD=funds.equity*this.config.maxMarginPct/100*(TRADER_LADDER.capShare??1);
   const roomUSD=Math.min((shared?.marginCapUSD??funds.equity*this.config.maxTotalMarginPct/100)-(shared?.marginUSD??this.#usedMargin()),funds.available!=null?funds.available*.9:Infinity);
   const lad=planLadder({symbolCapUSD,roomUSD,leverage:lev,price:plan.entry,quantityStep:c.quantityStep,minQty:c.minQuantityBase,minNotional:c.minNotionalUSDT,sizeMult});
   if(!lad.ok)return {ok:false,reason:lad.reason,detail:lad.reason==='LADDER_BELOW_MINIMUM'?`첫 진입 최소 $${lad.minUnitMarginUSD} · 한도 $${lad.capUSD}`:null};
@@ -1495,12 +1529,38 @@ export class ScalpExecutor{
   }
   return null;
  }
- /** The cheap entry checks: 4H trend (cached per 4H candle), BTC shock guard, position cap, same-side cap, one per symbol, another strategy's coin, per-symbol loss cooldown.
+ /** Per-symbol TWO_PCT re-entry cooldown (2026-11-27): 4h after a loss, 1h after a win to block same-coin overtrading. */
+ #twoPctCooldown(symbol,now=this.now()){
+  const lossMin=Number(this.config.twoPctLossCooldownMin??TWO_PCT_DEFAULTS.lossCooldownMin)||0;
+  const winMin=Number(this.config.twoPctWinCooldownMin??TWO_PCT_DEFAULTS.winCooldownMin)||0;
+  if(!(lossMin>0)&&!(winMin>0))return null;
+  let lastLossAt=0,lastWinAt=0;
+  for(const x of this.store.closed){
+   if(x?.symbol!==symbol||!x?.twoPct||x.closeReason==='MANUAL')continue;
+   const net=Number(x.netUSD),at=Number(x.closedAt)||0;
+   if(!(at>0)||!Number.isFinite(net))continue;
+   if(net<0&&at>lastLossAt)lastLossAt=at;
+   if(net>=0&&at>lastWinAt)lastWinAt=at;
+  }
+  if(lossMin>0&&lastLossAt>0&&now-lastLossAt<lossMin*60000){
+   const leftMin=Math.max(1,Math.ceil((lossMin*60000-(now-lastLossAt))/60000));
+   return {reason:'TWO_PCT_LOSS_COOLDOWN',detail:`2% 손절 후 ${leftMin}분 남음 (${lossMin}분 휴식)`};
+  }
+  if(winMin>0&&lastWinAt>0&&now-lastWinAt<winMin*60000){
+   const leftMin=Math.max(1,Math.ceil((winMin*60000-(now-lastWinAt))/60000));
+   return {reason:'TWO_PCT_WIN_COOLDOWN',detail:`2% 익절 후 ${leftMin}분 남음 (${winMin}분 휴식)`};
+  }
+  return null;
+ }
+ /** The cheap entry checks: 4H trend (cached per 4H candle), EU counter-trend block, BTC shock guard, position cap, same-side cap, one per symbol, another strategy's coin, per-symbol cooldowns.
   * A skip result, or null. Used by #consider and, before any zone read, by #zoneCheck. */
  async #precheck(u,det){
   const skip=reason=>detail=>{this.#skip(u.symbol,reason,detail);return {entered:false,reason}};
   if(this.config.trendMode!=='off'){const trend=await this.#trend(u.symbol);if(this.cur){this.cur.trend4h=trend;this.cur.withTrend=trend==null||trend==='range'?null:trendAllows(det.direction,trend)}
    if(!det.twoPct&&this.config.trendMode==='on'&&!trendAllows(det.direction,trend))return skip(trend===null?'TREND_4H_UNAVAILABLE':'AGAINST_4H_TREND')(trend)}
+  if(!det.twoPct&&this.config.euBlockCounterTrend!==false&&this.cur?.withTrend===false&&scalpSessionMultiplier(this.now(),this.config).session==='EUROPE'){
+   return skip('EU_SESSION_AGAINST_TREND')('유럽장(17~23 KST) 4H 역추세 진입 차단');
+  }
   if(u.symbol!=='BTCUSDT'&&this.config.btcGuard!==false){
    const shock=await this.#btcShock(Math.floor(this.now()/I5));
    if(shock){
@@ -1521,6 +1581,10 @@ export class ScalpExecutor{
   if(this.store.open.some(p=>p.symbol===u.symbol)||this.reserved.has(u.symbol))return skip('SYMBOL_ALREADY_HELD')();
   let busy=false;try{busy=this.isBusy(u.symbol,u.venueSymbol)}catch{busy=true}
   if(busy)return skip('SYMBOL_HELD_BY_OTHER_STRATEGY')();
+  if(det.twoPct){
+   const tpCool=this.#twoPctCooldown(u.symbol,this.now());
+   if(tpCool)return skip(tpCool.reason)(tpCool.detail);
+  }
   const cool=this.#symbolLossCooldown(u.symbol,this.now());
   if(cool)return skip('SYMBOL_LOSS_COOLDOWN')(cool);
   return null;
@@ -1635,7 +1699,7 @@ export class ScalpExecutor{
   const kind=this.cur?.kind||SCALP_KINDS.MOVE;
   const trigger=this.cur?.trigger===SCALP_TRIGGERS.PUMP?SCALP_TRIGGERS.PUMP:SCALP_TRIGGERS.SCAN;
   const slEnabled=det.twoPct===true?true:this.config.stopLossEnabled!==false;
-  const twoPctMeta=det.twoPct?{...(det.twoPctMeta||{}),netRR:Number.isFinite(Number(plan.netRR))?+Number(plan.netRR).toFixed(2):det.twoPctMeta?.netRR??null,stopPrice:plan.stop,tpPrice:plan.targets?.[0]??null}:null;
+  const twoPctMeta=det.twoPct?{...(det.twoPctMeta||{}),netRR:Number.isFinite(Number(plan.netRR))?+Number(plan.netRR).toFixed(2):det.twoPctMeta?.netRR??null,stopPrice:plan.stop,tp1Price:plan.targets?.length>=2?plan.targets[0]:null,tp2Price:plan.targets?.length>=2?plan.targets[1]:(plan.targets?.[0]??null),tpPrice:plan.targets?.at(-1)??null,splitPartial:plan.targets?.length>=2&&plan.parts?.[1]>0}:null;
   const p={id,strategy:SCALP_EXEC_STRATEGY,strategyProfile:SCALP_EXEC_STRATEGY,kind,trigger,...(trigger===SCALP_TRIGGERS.PUMP&&this.cur?.pumpAlert?{pumpAlert:this.cur.pumpAlert}:{}),...(twoPctMeta?{twoPct:twoPctMeta}:{}),...(kind===SCALP_KINDS.ZONE&&this.cur?.zone?{zone:this.cur.zone}:{}),mode:this.execMode,venue:'BINGX',symbol:u.symbol,venueSymbol:vs,direction:d,hedge,...(otherSide?{otherSideSeen:true}:{}),interval:det.twoPct?TWO_PCT_INTERVAL:'5m',
    pattern:det.pattern,barAt:det.barAt,plannedEntry:det.entry,checkedPrice:plan.entry,driftPct:plan.driftPct,entry:plan.entry,stop:plan.stop,initialStop:plan.stop,targets:plan.targets,
    qty:plan.qty,initialQty:plan.qty,parts:plan.parts,targetCount:plan.targetCount,merged:plan.merged,leverage:plan.leverage,riskUSD:plan.riskUSD,initialRiskUSD:plan.riskUSD,marginUSD:plan.marginUSD,initialMarginUSD:plan.marginUSD,capitalBasisUSD:pos(equity)??null,netRR:plan.netRR,
@@ -1710,7 +1774,7 @@ export class ScalpExecutor{
    p.initialRiskUSD=p.riskUSD;
   }
   if(Math.abs(p.filled-plan.qty)>Number(c.quantityStep)/2){
-   if(p.twoPct)p.parts=[p.filled,0,0];
+   if(p.twoPct)p.parts=twoPctResizeParts(p.filled,c.quantityStep,p.targets?.length||1);
    else{const s=scalpSplits(p.filled,c.quantityStep,0);if(s)p.parts=s.parts}
   }
   p.steps.push({kind:'OPEN',at:this.now(),qty:p.filled,avg:p.avg});this.#save();
@@ -3204,7 +3268,7 @@ export class ScalpExecutor{
        delete p.unknownOrder;
        p.status='OPEN';p.filled=p.size=size;p.avg=pos(row.avgPrice)??p.entry;p.firstEntryPrice??=pos(row.avgPrice);p.openedAt??=this.now();this.#event('ENTRY_RECOVERED',{symbol:p.symbol,qty:size});
        if(noStop){p.steps.push({kind:'OPEN',at:this.now(),qty:size,avg:p.avg});if(isLadder(p)){this.#ladderOpened(p);p.riskUSD=p.initialRiskUSD=ladderHeldRisk(p)}else this.#enableRepeat(p)}
-       if(p.twoPct)p.parts=[size,0,0];
+       if(p.twoPct)p.parts=twoPctResizeParts(size,p.quantityStep,p.targets?.length||1);
        else{const s=scalpSplits(size,p.quantityStep,0);if(s)p.parts=s.parts}
        if(await this.#protect(p))await this.#placeTargets(p);
       }
@@ -3492,7 +3556,7 @@ export class ScalpExecutor{
     reversalRecheckMin:REVERSAL_RECHECK_MS/60000,riskPct:c.riskPct,maxOpen:c.maxOpen,leverage:c.leverage,
     maxMarginPct:c.maxMarginPct,maxTotalMarginPct:this.budget?this.budget.marginCapPct:c.maxTotalMarginPct,dailyLossPct:this.budget?this.budget.dailyLossPct:c.dailyLossPct,sharedBudget:Boolean(this.budget),maxDriftPct:c.maxDriftPct,driftMovePct:c.driftMovePct,stopKeepPct:c.stopKeepPct,maxDriftAtr:c.maxDriftAtr,universeSize:c.universeSize,balanceCapUSD:c.balanceCapUSD||null,
     zoneSignals:c.zoneSignals===true,zoneMinMovePct:c.zoneMinMovePct,zoneTouchPct:c.zoneTouchPct,pumpAlerts:c.pumpAlerts!==false&&(c.mode==='TESTNET'||(c.mode==='LIVE'&&c.allowLive===true)),pumpStrategy:this.#pumpStrategy(),pumpImmediate:this.#pumpStrategy()===SCALP_PUMP_STRATEGIES.IMMEDIATE,pumpWatchMin:this.#pumpStrategy()===SCALP_PUMP_STRATEGIES.TWO_PCT?(c.twoPctWatchMin??TWO_PCT_DEFAULTS.watchMin):PUMP_WATCH_MIN,
-    twoPctLeverage:c.twoPctLeverage??TWO_PCT_DEFAULTS.leverage,twoPctMinBodyPct:c.twoPctMinBodyPct??TWO_PCT_DEFAULTS.minBodyPct,twoPctMinNetRR:c.twoPctMinNetRR??TWO_PCT_DEFAULTS.minNetRR,twoPctMinStopPct:c.twoPctMinStopPct??TWO_PCT_DEFAULTS.minStopPct,twoPctMaxStopPct:c.twoPctMaxStopPct??TWO_PCT_DEFAULTS.maxStopPct,twoPctMaxStopRoePct:c.twoPctMaxStopRoePct??TWO_PCT_DEFAULTS.maxStopRoePct,twoPctWatchMin:c.twoPctWatchMin??TWO_PCT_DEFAULTS.watchMin,
+    twoPctLeverage:c.twoPctLeverage??TWO_PCT_DEFAULTS.leverage,twoPctMinBodyPct:c.twoPctMinBodyPct??TWO_PCT_DEFAULTS.minBodyPct,twoPctMinNetRR:c.twoPctMinNetRR??TWO_PCT_DEFAULTS.minNetRR,twoPctPartialTpRR:c.twoPctPartialTpRR??TWO_PCT_DEFAULTS.partialTpRR,twoPctMaxTpRR:c.twoPctMaxTpRR??TWO_PCT_DEFAULTS.maxTpRR,twoPctMaxTpDistPct:c.twoPctMaxTpDistPct??TWO_PCT_DEFAULTS.maxTpDistPct,twoPctMinStopPct:c.twoPctMinStopPct??TWO_PCT_DEFAULTS.minStopPct,twoPctMaxStopPct:c.twoPctMaxStopPct??TWO_PCT_DEFAULTS.maxStopPct,twoPctMaxStopRoePct:c.twoPctMaxStopRoePct??TWO_PCT_DEFAULTS.maxStopRoePct,twoPctWatchMin:c.twoPctWatchMin??TWO_PCT_DEFAULTS.watchMin,twoPctLossCooldownMin:c.twoPctLossCooldownMin??TWO_PCT_DEFAULTS.lossCooldownMin,twoPctWinCooldownMin:c.twoPctWinCooldownMin??TWO_PCT_DEFAULTS.winCooldownMin,
     minScore:c.minScore??SCALP_SCORE_DEFAULTS.minScore,highScore:c.highScore??SCALP_SCORE_DEFAULTS.highScore,highScoreSizeMult:c.highScoreSizeMult??SCALP_SCORE_DEFAULTS.highSizeMult,scoreTierSizing:c.scoreTierSizing!==false,scoreTiers:{...(c.scoreTiers??SCALP_SCORE_TIERS)},scoreTierMults:{...SCALP_SCORE_TIER_MULTS},scoreUnifiedMove:c.scoreUnifiedMove!==false,maxScaleInAdds:c.maxScaleInAdds??2,
     emergencyStopRoePct:c.emergencyStopRoePct??75,hardStopRoePct:c.hardStopRoePct??0,minFreeAccountMarginPct:c.minFreeAccountMarginPct??0,maxSpreadPct:c.maxSpreadPct??0,preFundingWindowMin:c.preFundingWindowMin??0,preFundingExtremePct:c.preFundingExtremePct??0,scaleInRetrySlippagePct:c.scaleInRetrySlippagePct??SCALP_REPEAT_SCALE_IN.retrySlippagePct,scaleInMarketFallback:c.scaleInMarketFallback!==false,
     defensiveAddRoePct:c.defensiveAddRoePct??40,defensiveBouncePct:c.defensiveBouncePct??0.4,defensiveForceRoePct:c.defensiveForceRoePct??55,scaleInMinStepPct:c.scaleInMinStepPct??SCALP_REPEAT_SCALE_IN.minStepPct,scaleInMaxStepPct:c.scaleInMaxStepPct??SCALP_REPEAT_SCALE_IN.maxStepPct,scaleInSteps:SCALP_REPEAT_SCALE_IN.stepRs.slice(0,2),scaleInMults:SCALP_REPEAT_SCALE_IN.qtyMultipliers.slice(0,2),
@@ -3501,13 +3565,13 @@ export class ScalpExecutor{
     whaleZoneHours:c.whaleZoneHours??WHALE_ZONE_DEFAULTS.lookbackHours,whaleZoneMaxPages:c.whaleZoneMaxPages??WHALE_ZONE_DEFAULTS.maxPages,whaleZoneBinAtrMult:WHALE_ZONE_DEFAULTS.binAtrMult,whaleZoneBinPct:WHALE_ZONE_DEFAULTS.binPctFallback,
     whaleZoneNearAtrMult:WHALE_ZONE_DEFAULTS.nearAtrMult,whaleZoneNearPct:WHALE_ZONE_DEFAULTS.nearPctFallback,whaleZoneTopN:WHALE_ZONE_DEFAULTS.topN,whaleZoneFloorPurpleMult:WHALE_ZONE_DEFAULTS.floorPurpleMult,
     whaleZoneFloorSharePct:WHALE_ZONE_DEFAULTS.floorSharePct,whaleZoneMinCoveragePct:WHALE_ZONE_DEFAULTS.minCoveragePct,whaleZoneMaxStaleSec:WHALE_ZONE_DEFAULTS.maxStaleMs/1000,whaleZoneRefreshMin:WHALE_ZONE_DEFAULTS.storeTtlMs/60000,
-    sessionWeighting:c.sessionWeighting!==false,sessionEuMult:c.sessionEuMult??0.5,sessionUsMult:c.sessionUsMult??1.15,
+    sessionWeighting:c.sessionWeighting!==false,sessionEuMult:c.sessionEuMult??0.5,sessionUsMult:c.sessionUsMult??1.15,euBlockCounterTrend:c.euBlockCounterTrend!==false,
     bounceSizing:c.bounceSizing!==false,bounceThresholdPct:c.bounceThresholdPct??20,bounceHighMult:c.bounceHighMult??1.35,bounceLowMult:c.bounceLowMult??0.8,
     symbolLossCooldownMin:c.symbolLossCooldownMin??120,symbolDailyMaxLosses:c.symbolDailyMaxLosses??2,
     scaleIn:c.scaleIn===true,scaleInMarginRatio:c.stopLossEnabled===false?null:1,stopLossEnabled:c.stopLossEnabled!==false,repeatedScaleIn:c.scaleIn===true&&c.stopLossEnabled===false&&this.#management()!==SCALP_MANAGEMENTS.LADDER,
     // TRADER_LADDER (scalp_ladder.mjs): the settings the screen and the reason glossary show.
     management:this.#management(),managementConfigured:c.management??SCALP_MANAGEMENTS.LADDER,managementSince:this.managementScope().since,
-    ladderSteps:[...TRADER_LADDER.steps],ladderTotalUnits:TRADER_LADDER.totalUnits,ladderSpacingMinPct:c.ladderSpacingMinPct??TRADER_LADDER.spacingMinPct,ladderSpacingAtrMult:TRADER_LADDER.spacingAtrMult,
+    ladderSteps:[...TRADER_LADDER.steps],ladderTotalUnits:TRADER_LADDER.totalUnits,ladderCapShare:TRADER_LADDER.capShare??1,ladderSpacingMinPct:c.ladderSpacingMinPct??TRADER_LADDER.spacingMinPct,ladderSpacingAtrMult:TRADER_LADDER.spacingAtrMult,
     ladderTpNetPct:c.ladderTpNetPct??TRADER_LADDER.tpNetPct,pumpLadderTpNetPct:c.pumpLadderTpNetPct??2,ladderMaxHoldMin:c.ladderMaxHoldMin??TRADER_LADDER.maxHoldMin,ladderMaxHoldHours:+((c.ladderMaxHoldMin??TRADER_LADDER.maxHoldMin)/60).toFixed(1),
     ladderFinalLineRoePct:c.emergencyStopRoePct??75,ladderZoneTouchPct:TRADER_LADDER.zoneTouchPct,ladderZoneMinRejections:TRADER_LADDER.zoneMinRejections,ladderZoneBoost:TRADER_LADDER.zoneBoost,ladderSource:{...TRADER_LADDER.source}},
    pumpWatch:[...this.pumpWatch.values()].map(w=>({symbol:w.symbol,direction:w.direction,until:w.until,tries:w.tries,lastReason:w.lastReason??null})),

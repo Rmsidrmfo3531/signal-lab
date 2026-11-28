@@ -89,7 +89,7 @@ function fakeVenue({ fillAt = 0.0622, maxLev = 25, venueSymbol = 'BULLA-USDT' } 
    return rec;
   },
  };
- return { client, orders, getLev: () => setLev, setMark: px => { fillAt = px; } };
+ return { client, orders, getLev: () => setLev, setMark: px => { fillAt = px; }, setPosSize: q => { posSize = q; } };
 }
 
 test('isStrongBullishCandle: requires >=2% body, strong body ratio, and short upper wick (Marubozu)', () => {
@@ -115,7 +115,7 @@ test('findDailyResistances: clusters 1D swing/rolling highs above entry and pres
  assert.equal(ath.isPriceDiscovery, true);
 });
 
-test('detectTwoPctSetup: enforces 15m timeframe, >=2% base candle, lower-wick green flip, SL bounds, and >=1:2 1D resistance RR', () => {
+test('detectTwoPctSetup: enforces 15m timeframe, >=2% base candle, lower-wick green flip, SL<=2.2% bounds, capped 1D TP, and 2-stage TP1(1:2)+TP2', () => {
  const now = BASE_T + 2 * M15 + 120_000; // 2 min into bar 2
  const dailyGood = makeDailyRows({ now, highs: [0.0680, 0.0720, 0.0675, 0.0665, 0.0660], base: 0.056 });
  const baseBars = [
@@ -143,7 +143,7 @@ test('detectTwoPctSetup: enforces 15m timeframe, >=2% base candle, lower-wick gr
  assert.equal(noWick.ok, false);
  assert.equal(noWick.reason, 'TWO_PCT_NO_LOWER_WICK');
 
- // 3) Forming bar dipped to 0.0613 (-1.13% lower wick) then flipped green to 0.0622 -> PASS with SL=0.0613, TP at 1D resistance (~0.066), RR >= 2.0
+ // 3) Forming bar dipped to 0.0613 (-1.13% lower wick) then flipped green to 0.0622 -> PASS with SL=0.0613, 2-stage [tp1(1:2), tp2(1D)]
  const ok = detectTwoPctSetup({
   rows15m: [...baseBars, bar15(2, 0.0620, 0.0623, 0.0613, 0.0622)],
   rows1d: dailyGood,
@@ -156,6 +156,9 @@ test('detectTwoPctSetup: enforces 15m timeframe, >=2% base candle, lower-wick gr
  assert.equal(ok.stop, 0.0613);
  assert.equal(ok.tpSource, 'DAILY_RESISTANCE');
  assert.ok(ok.netRR >= 2.0, `netRR=${ok.netRR}`);
+ assert.equal(ok.splitPartial, true);
+ assert.equal(ok.targets.length, 2);
+ assert.ok(ok.targets[0] > 0.0622 && ok.targets[0] < ok.targets[1]);
  assert.ok(ok.tp > 0.065 && ok.tp <= 0.066);
 
  // 4) Nearest 1D resistance too close (RR < 1:2) -> reject TWO_PCT_RR_BELOW_MIN
@@ -170,9 +173,9 @@ test('detectTwoPctSetup: enforces 15m timeframe, >=2% base candle, lower-wick gr
  assert.equal(lowRR.ok, false);
  assert.equal(lowRR.reason, 'TWO_PCT_RR_BELOW_MIN');
 
- // 5) Stop too wide for 20x leverage (>3.5% / >70% ROE) -> reject TWO_PCT_STOP_TOO_WIDE
+ // 5) Priority 3: Tightened SL cap (2.2% / 45% ROE at 20x) rejects 2.5% SL as TWO_PCT_STOP_TOO_WIDE
  const wideSL = detectTwoPctSetup({
-  rows15m: [...baseBars, bar15(2, 0.0620, 0.0623, 0.0590, 0.0622)],
+  rows15m: [...baseBars, bar15(2, 0.0620, 0.0623, 0.0606, 0.0622)], // ~2.57% SL -> 51.4% ROE at 20x
   rows1d: makeDailyRows({ now, highs: [0.085, 0.090, 0.082, 0.084, 0.081], base: 0.056 }),
   livePrice: 0.0622,
   now,
@@ -181,7 +184,22 @@ test('detectTwoPctSetup: enforces 15m timeframe, >=2% base candle, lower-wick gr
  assert.equal(wideSL.ok, false);
  assert.equal(wideSL.reason, 'TWO_PCT_STOP_TOO_WIDE');
 
- // 6) Follow-up candle (bar 3) after uptrend holds -> passes; if bar 2 closed below base.open -> TWO_PCT_TREND_BROKEN
+ // 6) Priority 3: Unrealistic distant 1D resistance (+100%) is capped by maxTpRR (6.0) / maxTpDistPct (8.0%)
+ const distantDaily = makeDailyRows({ now, highs: [0.140, 0.135, 0.130, 0.128, 0.125], base: 0.056 });
+ const capped = detectTwoPctSetup({
+  rows15m: [...baseBars, bar15(2, 0.0620, 0.0623, 0.0613, 0.0622)],
+  rows1d: distantDaily,
+  livePrice: 0.0622,
+  now,
+  leverage: 20,
+ });
+ assert.equal(capped.ok, true, JSON.stringify(capped));
+ assert.equal(capped.tpCapped, true);
+ assert.ok(capped.netRR <= TWO_PCT_DEFAULTS.maxTpRR + 0.05, `capped RR=${capped.netRR}`);
+ assert.ok((capped.tp - 0.0622) / 0.0622 * 100 <= TWO_PCT_DEFAULTS.maxTpDistPct + 0.05, `capped dist=${(capped.tp - 0.0622) / 0.0622 * 100}%`);
+ assert.equal(capped.targets.length, 2);
+
+ // 7) Follow-up candle (bar 3) after uptrend holds -> passes; if bar 2 closed below base.open -> TWO_PCT_TREND_BROKEN
  const now3 = BASE_T + 3 * M15 + 120_000;
  const followOk = detectTwoPctSetup({
   rows15m: [...baseBars, bar15(2, 0.0620, 0.0624, 0.0615, 0.0618), bar15(3, 0.0618, 0.0623, 0.0611, 0.0620)],
@@ -199,7 +217,7 @@ test('detectTwoPctSetup: enforces 15m timeframe, >=2% base candle, lower-wick gr
  assert.equal(broken.ok, false);
  assert.equal(broken.reason, 'TWO_PCT_TREND_BROKEN');
 
- // 7) 5m candle feed rejected as SCALP_INTERVAL_UNSUPPORTED
+ // 8) 5m candle feed rejected as SCALP_INTERVAL_UNSUPPORTED
  const m5 = 5 * 60_000;
  const badTf = detectTwoPctSetup({
   rows15m: [
@@ -213,10 +231,12 @@ test('detectTwoPctSetup: enforces 15m timeframe, >=2% base candle, lower-wick gr
  assert.equal(badTf.reason, 'SCALP_INTERVAL_UNSUPPORTED');
 });
 
-test('ScalpExecutor TWO_PCT default integration: @ggangalt2_bot UP waits for 15m green flip, enters LONG at 20x with lower-wick STOP_MARKET & 1D TAKE_PROFIT_MARKET (no ladder/score)', async () => {
+test('ScalpExecutor TWO_PCT default integration: 2-stage 50% TP1 (1:2 RR) + auto breakeven stop on fill + 50% TP2 (1D resistance)', async () => {
  assert.equal(scalpExecConfig({}).pumpStrategy, SCALP_PUMP_STRATEGIES.TWO_PCT);
  assert.equal(scalpExecConfig({}).twoPctLeverage, 20);
  assert.equal(scalpExecConfig({}).twoPctMinNetRR, 2);
+ assert.equal(scalpExecConfig({}).twoPctPartialTpRR, 2);
+ assert.equal(scalpExecConfig({}).twoPctMaxStopPct, 2.2);
  assert.equal(scalpLiveExecConfig({ SCALP_LIVE_MODE: 'LIVE', SCALP_LIVE_CONFIRM: 'REAL_MONEY_SCALP' }).pumpStrategy, SCALP_PUMP_STRATEGIES.REVERSAL);
  assert.equal(scalpLiveExecConfig({ SCALP_LIVE_MODE: 'LIVE', SCALP_LIVE_CONFIRM: 'REAL_MONEY_SCALP' }).pumpAlerts, false);
 
@@ -262,7 +282,7 @@ test('ScalpExecutor TWO_PCT default integration: @ggangalt2_bot UP waits for 15m
  assert.equal(ex.pumpWatch.size, 1);
  assert.equal(ex.store.open.length, 0);
 
- // 2) 15s later: candle flips green to 0.0622 -> tick() triggers LONG entry!
+ // 2) 15s later: candle flips green to 0.0622 -> tick() triggers LONG entry with 2-stage TP1 + TP2!
  clock.t += 16_000;
  livePrice = 0.0622;
  await ex.tick(clock.t);
@@ -278,34 +298,51 @@ test('ScalpExecutor TWO_PCT default integration: @ggangalt2_bot UP waits for 15m
  assert.equal(p.management, 'CURRENT', 'TWO_PCT never uses TRADER_LADDER');
  assert.equal(p.stopLossEnabled, true, 'TWO_PCT always uses fixed exchange SL');
  assert.equal(p.stop, 0.0613, 'SL is at lower-wick low');
- assert.ok(p.targets.length === 1 && p.targets[0] > 0.065 && p.targets[0] <= 0.066, `1D resistance TP: ${p.targets}`);
- assert.equal(p.parts[0], p.filled);
- assert.equal(p.parts[1], 0);
+ assert.equal(p.targets.length, 2, `2-stage TP1+TP2: ${p.targets}`);
+ assert.ok(p.targets[0] > 0.063 && p.targets[0] < p.targets[1], `TP1 < TP2: ${p.targets}`);
+ assert.ok(p.targets[1] > 0.065 && p.targets[1] <= 0.066, `1D resistance TP2: ${p.targets}`);
+ assert.equal(p.parts[0] + p.parts[1], p.filled);
+ assert.ok(p.parts[0] > 0 && p.parts[1] > 0 && Math.abs(p.parts[0] - p.parts[1]) <= 1, `50/50 split: ${p.parts}`);
  assert.equal(p.scalpScore ?? null, null, 'no meaningless 5m reversal score attached');
- assert.ok(p.twoPct && p.twoPct.netRR >= 2.0, JSON.stringify(p.twoPct));
+ assert.ok(p.twoPct && p.twoPct.netRR >= 2.0 && p.twoPct.splitPartial === true, JSON.stringify(p.twoPct));
 
- // Verify exchange orders: 1 MARKET BUY + 1 STOP_MARKET at 0.0613 + 1 TAKE_PROFIT_MARKET at 1D resistance
+ // Verify exchange orders: 1 MARKET BUY + 1 STOP_MARKET at 0.0613 + 2 TAKE_PROFIT_MARKET (50% TP1 + 50% TP2)
  const slOrders = v.orders.filter(o => o.type === 'STOP_MARKET' && o.status === 'NEW');
  const tpOrders = v.orders.filter(o => o.type === 'TAKE_PROFIT_MARKET' && o.status === 'NEW');
  assert.equal(slOrders.length, 1);
  assert.equal(Number(slOrders[0].stopPrice), 0.0613);
- assert.equal(tpOrders.length, 1);
- assert.equal(Number(tpOrders[0].quantity), p.filled);
+ assert.equal(tpOrders.length, 2);
+ assert.equal(Number(tpOrders[0].quantity), p.parts[0]);
+ assert.equal(Number(tpOrders[1].quantity), p.parts[1]);
 
- // 3) Reconcile must NEVER retire the STOP_MARKET, never scale in, and never early-exit in profit
+ // 3) Reconcile before TP1 must preserve wick SL and never scale in / early exit
  clock.t += 60 * 60_000; // +1h
  v.setMark(0.0630);
  await ex.reconcile();
  assert.equal(ex.store.open.length, 1, 'still open letting 1:2+ RR play out');
+ assert.equal(p.breakevenMoved, false);
  assert.equal(v.orders.filter(o => o.type === 'STOP_MARKET' && o.status === 'NEW').length, 1, 'exchange SL preserved on reconcile');
  assert.equal(v.orders.filter(o => o.type === 'MARKET').length, 1, 'no scale-in or early exit orders sent');
 
- // 4) Telegram notice, Journal line, and UI card
+ // 4) Priority 2: Simulate TP1 (50%) filling on venue -> reconcile() automatically moves STOP_MARKET to breakeven!
+ v.setPosSize(p.parts[1]);
+ v.setMark(p.targets[0] + 0.0002);
+ clock.t += 30_000;
+ await ex.reconcile();
+ assert.equal(p.tpDone[0], true, 'TP1 marked filled');
+ assert.equal(p.breakevenMoved, true, 'SL automatically moved to breakeven after TP1 fill');
+ assert.ok(p.stop >= p.avg, `breakeven stop (${p.stop}) >= avg (${p.avg})`);
+ assert.ok(ex.store.events.some(e => e.type === 'STOP_TO_BREAKEVEN'), 'STOP_TO_BREAKEVEN event emitted');
+
+ // 5) Telegram notice, Journal line, and UI card
  const openedEv = ex.store.events.find(e => e.type === 'OPENED');
  const tg = scalpEventText(openedEv);
  assert.match(tg, /공습·2%/);
  assert.match(tg, /20배/);
  assert.match(tg, /아래꼬리 손절/);
+ assert.match(tg, /1차 목표/);
+ assert.match(tg, /50% · 1:2 RR\+본전스탑/);
+ assert.match(tg, /2차 목표/);
  assert.match(tg, /일봉 저항/);
  assert.match(tg, /손익비 1:/);
 
@@ -319,10 +356,11 @@ test('ScalpExecutor TWO_PCT default integration: @ggangalt2_bot UP waits for 15m
  assert.match(card, /공습·2%/);
  assert.match(card, /15m 2% 매매법/);
  assert.match(card, /일봉\(1D\) 저항/);
+ assert.match(card, /1차 목표 뒤 본전/);
  assert.doesNotMatch(card, /점 [A-F]/);
 });
 
-test('SHORT symmetric 2% 매매법: @ggangalt2_bot DOWN watches 15m -2% bearish candle -> upper-wick red flip -> SHORT with upper-wick SL & 1D support TP', async () => {
+test('SHORT symmetric 2% 매매법: @ggangalt2_bot DOWN enters SHORT with upper-wick SL & 2-stage TP1(1:2) + TP2(1D support)', async () => {
  const now = BASE_T + 2 * M15 + 60_000;
  // Pure unit checks for SHORT candle & 1D support
  assert.equal(isStrongTrendCandle(bar15(1, 0.0630, 0.0631, 0.0598, 0.0600), 'SHORT').ok, true, '-4.76% bearish marubozu passes');
@@ -381,7 +419,7 @@ test('SHORT symmetric 2% 매매법: @ggangalt2_bot DOWN watches 15m -2% bearish 
  assert.equal(ex.pumpWatch.size, 1);
  assert.equal(ex.pumpWatch.get('FLNCUSDT').direction, 'SHORT');
 
- // 2) 15s later: candle flips red to 0.0598 -> enters SHORT with upper-wick SL=0.0607 & 1D support TP (~0.05505)
+ // 2) 15s later: candle flips red to 0.0598 -> enters SHORT with upper-wick SL=0.0607 & 2-stage [TP1(1:2), TP2(1D support)]
  clock.t += 16_000;
  livePrice = 0.0598;
  await ex.tick(clock.t);
@@ -393,7 +431,9 @@ test('SHORT symmetric 2% 매매법: @ggangalt2_bot DOWN watches 15m -2% bearish 
  assert.equal(p.stopLossEnabled, true);
  assert.equal(p.management, 'CURRENT');
  assert.equal(p.stop, 0.0607, 'SL at upper-wick high');
- assert.ok(p.targets.length === 1 && p.targets[0] >= 0.055 && p.targets[0] < 0.056, `1D support TP: ${p.targets}`);
+ assert.equal(p.targets.length, 2, `2-stage SHORT TP1+TP2: ${p.targets}`);
+ assert.ok(p.targets[0] < 0.0598 && p.targets[0] > p.targets[1], `TP1 > TP2 for SHORT: ${p.targets}`);
+ assert.ok(p.targets[1] >= 0.055 && p.targets[1] < 0.056, `1D support TP2: ${p.targets}`);
  assert.equal(p.twoPct.tpSource, 'DAILY_SUPPORT');
  assert.ok(p.twoPct.netRR >= 2.0, `netRR=${p.twoPct.netRR}`);
  assert.equal(p.scalpScore ?? null, null);
@@ -402,13 +442,15 @@ test('SHORT symmetric 2% 매매법: @ggangalt2_bot DOWN watches 15m -2% bearish 
  const tpOrders = v.orders.filter(o => o.type === 'TAKE_PROFIT_MARKET' && o.status === 'NEW');
  assert.equal(slOrders.length, 1);
  assert.equal(Number(slOrders[0].stopPrice), 0.0607);
- assert.equal(tpOrders.length, 1);
+ assert.equal(tpOrders.length, 2);
  assert.equal(tpOrders[0].side, 'BUY');
+ assert.equal(tpOrders[1].side, 'BUY');
 
  // Telegram & UI card reflect SHORT terminology cleanly
  const tg = scalpEventText(ex.store.events.find(e => e.type === 'OPENED'));
  assert.match(tg, /숏 20배 진입 · 공습·2%/);
  assert.match(tg, /윗꼬리 손절/);
+ assert.match(tg, /1차 목표/);
  assert.match(tg, /일봉 지지/);
  assert.match(tg, /15m 기준 음봉 −/);
 
@@ -416,4 +458,76 @@ test('SHORT symmetric 2% 매매법: @ggangalt2_bot DOWN watches 15m -2% bearish 
  assert.match(card, /기준 음봉 −/);
  assert.match(card, /윗꼬리 손절 \+/);
  assert.match(card, /일봉\(1D\) 지지/);
+});
+
+test('Priority 3 & 4: TWO_PCT per-symbol cooldowns (4h loss / 1h win) and EU session 0.5x sizing', async () => {
+ const euBase = Date.parse('2026-11-26T10:00:00Z'); // 10:00 UTC = 19:00 KST (EUROPE session)
+ const euBar = (idx, o, h, l, c) => [euBase + idx * M15, String(o), String(h), String(l), String(c), '1000', euBase + (idx + 1) * M15 - 1, '0'];
+ const makeEx = (clock, closed = []) => {
+  const v = fakeVenue({ fillAt: 0.0622, maxLev: 20 });
+  const BULLA = { symbol: 'BULLAUSDT', venueSymbol: 'BULLA-USDT', tickSize: '0.00001', quantityStep: '1', minQuantityBase: '1', minNotionalUSDT: 5, takerFeeRate: 0.0005, tradable: true };
+  const BTC_C = { symbol: 'BTCUSDT', venueSymbol: 'BTC-USDT', tickSize: '0.1', quantityStep: '0.001', minQuantityBase: '0.001', minNotionalUSDT: 2, tradable: true };
+  const ex = new ScalpExecutor({
+   config: { ...scalpExecConfig({}), stopLossEnabled: false, management: 'TRADER_LADDER', makerEntry: false, trendMode: 'off', minScore: 95, dailyLossPct: 15, twoPctPollMs: 15000, sessionWeighting: true, sessionEuMult: 0.5 },
+   client: v.client,
+   now: () => clock.t,
+   contracts: async () => new Map([['BULLAUSDT', BULLA], ['BTCUSDT', BTC_C]]),
+   tickers: async () => [{ symbol: 'BTC-USDT', quoteVolume: '900000000', lastPrice: '90000' }, { symbol: 'BULLA-USDT', quoteVolume: '50000000', lastPrice: '0.0622' }],
+   balance: async () => ({ equity: 3000, available: 2800 }),
+   priceOf: async () => 0.0622,
+   markOf: async () => 0.0622,
+   candles: async (sym, iv) => {
+    if (sym === 'BTCUSDT' && iv === '5m') {
+     const b = Math.floor(clock.t / 300_000);
+     return [[(b - 1) * 300_000, '90000', '90050', '89950', '90000', '100', b * 300_000 - 1, '0']];
+    }
+    if (iv === '15m') {
+     return [
+      euBar(0, 0.0580, 0.0592, 0.0578, 0.0590),
+      euBar(1, 0.0590, 0.0621, 0.0589, 0.0620),
+      euBar(2, 0.0620, 0.0623, 0.0613, 0.0622),
+     ];
+    }
+    if (iv === '1d') return makeDailyRows({ now: clock.t, highs: [0.0680, 0.0720, 0.0675, 0.0665, 0.0660], base: 0.056 });
+    return [];
+   },
+  });
+  ex.store.closed.push(...closed);
+  ex.arm();
+  return ex;
+ };
+
+ // 1) Loss cooldown (4h): blocked 2h after a TWO_PCT loss on the same symbol
+ {
+  const clock = { t: euBase + 2 * M15 + 60_000 };
+  const ex = makeEx(clock, [{ symbol: 'BULLAUSDT', twoPct: { netRR: 3 }, netUSD: -25, closeReason: 'STOP', closedAt: clock.t - 120 * 60_000 }]);
+  const res = await ex.pumpAlert({ symbol: 'BULLAUSDT', dir: 'UP', pct: 10, low: 0.059, high: 0.063, price: 0.0622, at: clock.t - 1000, key: 'c:1' });
+  assert.equal(res.entered, false);
+  assert.equal(res.reason, 'TWO_PCT_LOSS_COOLDOWN');
+ }
+
+ // 2) Win cooldown (1h): blocked 15m after a TWO_PCT win on the same symbol (prevents THEUSDT chase-loss)
+ {
+  const clock = { t: euBase + 2 * M15 + 60_000 };
+  const ex = makeEx(clock, [{ symbol: 'BULLAUSDT', twoPct: { netRR: 3 }, netUSD: 40, closeReason: 'ALL_TARGETS', closedAt: clock.t - 15 * 60_000 }]);
+  const res = await ex.pumpAlert({ symbol: 'BULLAUSDT', dir: 'UP', pct: 10, low: 0.059, high: 0.063, price: 0.0622, at: clock.t - 1000, key: 'c:2' });
+  assert.equal(res.entered, false);
+  assert.equal(res.reason, 'TWO_PCT_WIN_COOLDOWN');
+ }
+
+ // 3) EU session 0.5x sizing: riskUSD halved compared to non-EU session (0.75% of $3k = $22.50 -> ~$11.25 in EU)
+ {
+  const clockEu = { t: euBase + 2 * M15 + 60_000 };
+  const exEu = makeEx(clockEu);
+  const resEu = await exEu.pumpAlert({ symbol: 'BULLAUSDT', dir: 'UP', pct: 10, low: 0.059, high: 0.063, price: 0.0622, at: clockEu.t - 1000, key: 'c:3' });
+  assert.equal(resEu.entered, true, JSON.stringify(resEu));
+  const [pEu] = exEu.store.open;
+  const exNonEu = makeEx({ t: euBase + 2 * M15 + 60_000 });
+  exNonEu.config.sessionWeighting = false;
+  const resBase = await exNonEu.pumpAlert({ symbol: 'BULLAUSDT', dir: 'UP', pct: 10, low: 0.059, high: 0.063, price: 0.0622, at: clockEu.t - 1000, key: 'c:4' });
+  assert.equal(resBase.entered, true, JSON.stringify(resBase));
+  const [pBase] = exNonEu.store.open;
+  const ratio = pEu.riskUSD / pBase.riskUSD;
+  assert.ok(ratio >= 0.45 && ratio <= 0.55, `expected EU 0.5x riskUSD ratio, got ${ratio.toFixed(3)} (eu=$${pEu.riskUSD.toFixed(2)}, base=$${pBase.riskUSD.toFixed(2)})`);
+ }
 });
