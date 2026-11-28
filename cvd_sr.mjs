@@ -9,13 +9,17 @@ import { fetchOrderflow, normalizeOrderflowSymbol } from './orderflow.mjs';
 import { displaySymbol } from './public/symbol_display.js';
 
 export const CVD_SR_TIMEFRAMES = Object.freeze([
-  { key: 'LIVE', labelKo: '실시간', source: '15m', slice: 24, maxDistPct: 20, matchTolPct: 1.5 },
-  { key: '1D', labelKo: '1D', source: '15m', slice: 96, maxDistPct: 30, matchTolPct: 1.5 },
-  { key: '1W', labelKo: '1W', source: '4h', slice: 42, maxDistPct: 45, matchTolPct: 2.5 },
-  { key: '1M', labelKo: '1M', source: '4h', slice: 180, maxDistPct: 60, matchTolPct: 2.5 },
-  { key: '6M', labelKo: '6M', source: '1d', slice: 180, maxDistPct: 75, matchTolPct: 4.0 },
-  { key: '1Y', labelKo: '1Y', source: '1d', slice: 365, maxDistPct: 85, matchTolPct: 4.0 },
+  { key: 'LIVE', labelKo: '실시간', source: '15m', slice: 24, maxDistPct: 20, alertMaxDistPct: 5, matchTolPct: 1.5 },
+  { key: '1D', labelKo: '1D', source: '15m', slice: 96, maxDistPct: 30, alertMaxDistPct: 8, matchTolPct: 1.5 },
+  { key: '1W', labelKo: '1W', source: '4h', slice: 42, maxDistPct: 45, alertMaxDistPct: 12, matchTolPct: 2.5 },
+  { key: '1M', labelKo: '1M', source: '4h', slice: 180, maxDistPct: 60, alertMaxDistPct: 15, matchTolPct: 2.5 },
+  { key: '6M', labelKo: '6M', source: '1d', slice: 180, maxDistPct: 75, alertMaxDistPct: 20, matchTolPct: 4.0 },
+  { key: '1Y', labelKo: '1Y', source: '1d', slice: 365, maxDistPct: 85, alertMaxDistPct: 25, matchTolPct: 4.0 },
 ].map(x => Object.freeze(x)));
+
+export const CVD_SR_ALERT_MAX_DIST = Object.freeze(
+  Object.fromEntries(CVD_SR_TIMEFRAMES.map(t => [t.key, t.alertMaxDistPct]))
+);
 
 export const CVD_SR_STRONG_ENTER = 70;
 export const CVD_SR_STRONG_EXIT = 58;
@@ -495,8 +499,9 @@ export class CvdSrAlertMonitor {
     log = () => {},
     sendText = async () => ({ ok: false }),
     cooldownMs = ALERT_COOLDOWN_MS,
+    alertMaxDistByTf = CVD_SR_ALERT_MAX_DIST,
   } = {}) {
-    Object.assign(this, { now, log, sendText, cooldownMs });
+    Object.assign(this, { now, log, sendText, cooldownMs, alertMaxDistByTf });
     this.file = directory ? path.join(directory, fileName) : null;
     const saved = this.file && fs.existsSync(this.file) ? readStore(this.file) : null;
     this.store = {
@@ -504,6 +509,13 @@ export class CvdSrAlertMonitor {
       cooldowns: saved?.cooldowns && typeof saved.cooldowns === 'object' ? saved.cooldowns : {},
       recentEvents: Array.isArray(saved?.recentEvents) ? saved.recentEvents.slice(0, MAX_RECENT_EVENTS) : [],
     };
+  }
+
+  #withinAlertDist(tfKey, price, mark) {
+    if (!(price > 0 && mark > 0)) return false;
+    const lim = Number(this.alertMaxDistByTf?.[tfKey] ?? CVD_SR_ALERT_MAX_DIST[tfKey] ?? 15);
+    if (!(lim > 0)) return true;
+    return (Math.abs(price - mark) / mark) * 100 <= lim;
   }
 
   #save() {
@@ -594,7 +606,8 @@ export class CvdSrAlertMonitor {
             });
             continue;
           }
-          // Disappeared!
+          // Disappeared! Only alert when within the actionable distance of current price.
+          if (!this.#withinAlertDist(tfKey, pz.price, mark)) continue;
           const broken = kind === 'SUPPORT' ? mark <= pz.price : mark >= pz.price;
           const distPct = round(((pz.price - mark) / mark) * 100, 2);
           const cdKey = `${sym}|${tfKey}|${kind}|REMOVED`;
@@ -621,7 +634,9 @@ export class CvdSrAlertMonitor {
         for (const cz of curStrong) {
           const existed = prevList.some(pz => sameZonePrice(cz.price, pz.price, tfKey));
           if (!existed) {
+            // Track regardless of distance so later price movement toward it doesn't fire a false ADDED alert.
             kept.push(cz);
+            if (!this.#withinAlertDist(tfKey, cz.price, mark)) continue;
             const cdKey = `${sym}|${tfKey}|${kind}|ADDED`;
             const lastAt = Number(this.store.cooldowns[cdKey]) || 0;
             if (now - lastAt >= this.cooldownMs) {
